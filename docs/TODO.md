@@ -22,12 +22,18 @@ is a factual record of the v0.3 plan and is validated by
       2,212 files / 603 Skills / 6.4 MB; current `main` packs 2,236 files /
       604 Skills / 6.5 MB. Until it is published,
       `npx openai4s-skills …` does not resolve; `npx github:PKU-YuanGroup/OpenAI4S install --all`
-      works today and is what the README shows alongside it. A live
-      `npm view openai4s-skills version` still returned `E404` on 2026-09-01.
+      works today and is what every doc site and the CLI's own `--help` lead
+      with — the root README, `docs/skills.md`, `tools/`, and each Skill's own
+      page, whose Install section is worded to stay true after publication. A
+      live `npm view openai4s-skills version` still returned `E404` on 2026-09-01.
       *Done when:* `npm publish --access public` has run from a clean checkout
-      of the released tag and `npx openai4s-skills list` works on a machine
-      with no checkout. Needs an npm account with publish rights — no automated
-      agent should hold that credential.
+      of the released tag, `npx openai4s-skills list` works on a machine with
+      no checkout, and the five pages that still say the name does not resolve
+      have stopped saying it — `README.md` (also the npm and PyPI front page),
+      `README_zh.md`, `docs/skills.md`, `tools/skills-installer/README.md` and
+      `README_zh.md`; `grep -rlE --exclude='TODO*' 'not on npm yet|name does not resolve|还没有发布到 npm|名字解析不到' README.md README_zh.md docs tools`
+      lists exactly those five. Needs an npm account with publish rights — no
+      automated agent should hold that credential.
 
 ## CI and supply chain
 

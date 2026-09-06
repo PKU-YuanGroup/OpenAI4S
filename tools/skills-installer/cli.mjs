@@ -2,10 +2,10 @@
 /**
  * `openai4s-skills` -- install OpenAI4S's bundled Skills onto this machine.
  *
- *   npx openai4s-skills list
- *   npx openai4s-skills install --all
- *   npx openai4s-skills install alphafold2 boltz --target claude
+ *   npx github:PKU-YuanGroup/OpenAI4S list
  *   npx github:PKU-YuanGroup/OpenAI4S install --all
+ *   npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
+ *   npx openai4s-skills install --all          # the same CLI once it is on npm
  *
  * A Skill here is a recipe -- prose plus code plus the operational knowledge
  * needed to run it -- so "installing" one is copying a directory. The work this
@@ -37,7 +37,8 @@ const MIN_NODE_MAJOR = 18;
 const USAGE = `openai4s-skills — install the OpenAI4S Skill library locally
 
 USAGE
-  npx openai4s-skills <command> [options]
+  npx github:${DEFAULT_REPO} <command> [options]   # straight from the repository
+  npx openai4s-skills <command> [options]          # the same CLI once it is on npm
 
 COMMANDS
   list                    List available Skills (curated by default)
@@ -65,7 +66,7 @@ SOURCE
 
 OTHER
   --force                 Overwrite / remove even when locally modified
-  --dry-run               Report what would happen and write nothing
+  --dry-run               Report what would happen; write nothing to the target
   --json                  Machine-readable output (list, installed)
   --quiet                 Drop progress chatter; results still print
 

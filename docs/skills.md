@@ -60,7 +60,11 @@ treated as usable.
    Skill directories are loaded as pinned namespace packages: executable
    `__init__.py` files are intentionally not run. Put all executable sidecar
    initialization in `kernel.py`, whose exact bytes are hashed and captured.
-3. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
+3. Give the directory its bilingual `README.md` + `README_zh.md` pair
+   (`scripts/check_directory_readmes.py` enforces it) and run
+   `python scripts/render_skill_install_sections.py` to stamp the pair's
+   Install section; `tests/test_skills_installer_contract.py` fails until you do.
+4. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
 
@@ -169,21 +173,28 @@ state uses `/api/projects/<project_id>/skills/<name>/versions` and
 `.../rollback`. Project IDs are path-scoped and checked against the Store;
 bundled Skills never expose a rollback action.
 
-## Installing the Skill library elsewhere (`npx openai4s-skills`)
+## Installing the Skill library elsewhere (`npx`)
 
 A Skill is a recipe, not an OpenAI4S API object, so the library is useful to
 any agent that reads Markdown instructions. `tools/skills-installer/` is a
 zero-dependency Node CLI that copies it out of this repository:
 
 ```bash
-npx openai4s-skills list
-npx openai4s-skills install --all                  # the 43 curated Skills
-npx openai4s-skills install --collection bioskills # the 561 pinned recipes
-npx openai4s-skills install alphafold2 --target claude
-npx openai4s-skills installed
-npx openai4s-skills uninstall --all
-npx github:PKU-YuanGroup/OpenAI4S install --all    # straight from the repo
+npx github:PKU-YuanGroup/OpenAI4S list
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 --target claude
+npx github:PKU-YuanGroup/OpenAI4S installed
+npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
+
+`npx openai4s-skills <command>` is the same CLI under the package's published
+name. It is not on npm yet, so the `github:` form above is the one that
+resolves today; `docs/TODO.md` tracks the publication. Every curated Skill page
+and the collection root under `skills/` carry an **Install** section with their
+own name already filled in, rendered and checked by `scripts/render_skill_install_sections.py`, so you can
+install from whichever page you landed on and a new Skill directory cannot land
+without one.
 
 **Targets.** `--target claude` → `~/.claude/skills`, `--target claude-project`
 → `./.claude/skills`, `--target openai4s` → `<data_dir>/user-skills` (honouring
@@ -198,7 +209,7 @@ members sit one level below and are addressable by name like any other Skill.
 Neither side hardcodes a directory name, so a new bundled collection is
 installable the moment its marker exists.
 
-**Source.** The npm package carries `skills/` (about 6.4 MiB packed), so the
+**Source.** The npm package carries `skills/` (about 6.5 MiB packed), so the
 common path needs no second download; `--remote`, `--repo`, or `--ref` fetch
 the source tarball from codeload.github.com instead, cached per ref under
 `~/.cache/openai4s-skills`. A download records the ref, the URL, and the
