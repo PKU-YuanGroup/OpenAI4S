@@ -218,6 +218,30 @@
         404
       ]
     },
+    "/artifacts/([^/]+)/table/export\\.csv": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/artifacts/([^/]+)/table/profile": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/artifacts/([^/]+)/versions": {
       "content_types": [
         "application/json"
@@ -249,6 +273,18 @@
       ],
       "kinds": [
         "binary",
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/attention": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
         "json"
       ],
       "statuses": [
@@ -552,6 +588,44 @@
       ],
       "statuses": [
         400,
+        404
+      ]
+    },
+    "/diagnostics/bundle": {
+      "content_types": [
+        "application/json",
+        "application/zip"
+      ],
+      "kinds": [
+        "binary",
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/diagnostics/checks": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/diagnostics/status": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
         404
       ]
     },
@@ -904,6 +978,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/compute/tasks/([^/]+)/cancel": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/compute/tasks/([^/]+)/refresh": {
       "content_types": [
         "application/json"
@@ -949,6 +1034,17 @@
       ],
       "statuses": [
         200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/delegations/([^/]+)/continue": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
         404
       ]
     },
@@ -1677,6 +1773,30 @@
         404
       ]
     },
+    "/onboarding": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/onboarding/complete": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/orchestration/jobs": {
       "content_types": [
         "application/json"
@@ -1808,6 +1928,18 @@
       ]
     },
     "/projects/([^/]+)/action-timeline": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/projects/([^/]+)/artifact-index": {
       "content_types": [
         "application/json"
       ],

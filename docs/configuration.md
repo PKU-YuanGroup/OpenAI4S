@@ -50,6 +50,19 @@ arbitrary transport code. Use a startup plugin or deployment composition layer
 to repeat registrations after restart. `provider_specs()`, `model_presets()`,
 and `get_model_capabilities()` expose detached or immutable catalog views.
 
+### Context compaction
+
+Long runs compact automatically: `OPENAI4S_CONTEXT_WINDOW` (`262144`) is the
+window used when the model's capability entry does not declare one, and
+`OPENAI4S_COMPACTION_TRIGGER_RATIO` (`0.75`) is the fraction of that window
+at which older turns are summarized. The summary call asks the model for
+`max(8192, OPENAI4S_LLM_MAX_TOKENS)` completion tokens, clamped to the
+model's declared output cap; `OPENAI4S_COMPACTION_SUMMARY_MAX_TOKENS` sets it
+explicitly. For a self-hosted endpoint that declares no cap (every loopback
+or private address does), the request is bounded by the room the window
+leaves after the summarized chunk, so a small `context_window_tokens` in a
+`register_provider(...)` call is honoured rather than exceeded.
+
 ## Kernel environments (conda)
 
 The core engine stays stdlib-only, and the control `.venv` carries just the optional `science` extra (numpy / pandas / matplotlib). A baseline scientific stack (scipy / seaborn / scikit-learn / biopython / httpx / …, see `CORE_PACKAGES` in [`openai4s/kernel/preinstall.py`](../openai4s/kernel/preinstall.py)) is available on top of that, but **`serve` does not install it**.
@@ -142,6 +155,8 @@ sentence nobody re-reads; see [Security](security.md) for what the daemon
 exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
+
+`OPENAI4S_WEBUI` — unset (the default) serves the committed Vite workbench (`openai4s/server/webui/dist/index.html`) as the SPA shell at `/` and at deep links such as `/projects/{pid}/frames/{fid}`. Set to exactly `legacy` to serve the frozen `webui/index.html` + `app.js` escape hatch. Any other value (including `1` / `next` / `true`) keeps the new UI, so a typo cannot silently fall back. `/static/dist/` is ordinary static files under `WEBUI_DIR` either way. The retired `OPENAI4S_WEBUI_NEXT` name is ignored.
 
 ## Auto Mode rollout flags
 

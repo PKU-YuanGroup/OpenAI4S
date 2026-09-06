@@ -198,6 +198,26 @@ def test_configure_preserves_stored_model_and_base_url_when_only_touching_key(tm
     assert settings.values["llm_api_key"] == "fresh-key"
 
 
+def test_complete_skip_does_not_require_a_provider_or_key(tmp_path):
+    onboarding, settings = service(tmp_path)
+    result = onboarding.complete({"skip": True})
+    assert result.complete is True
+    assert settings.get_setting("onboarding_complete") == "1"
+    assert "super-secret" not in json.dumps(result.as_dict())
+
+
+def test_web_status_omits_data_dir_and_the_key(tmp_path):
+    onboarding, _settings = service(tmp_path)
+    onboarding.configure(provider="beta", api_key="super-secret-value")
+    payload = onboarding.web_status()
+    assert payload["outbound"] == 0
+    assert payload["contacted"] is False
+    assert payload["has_api_key"] is True
+    assert "data_dir" not in payload
+    assert "super-secret-value" not in json.dumps(payload)
+    assert "api_key" not in payload
+
+
 def test_as_dict_projects_the_key_flag_as_a_real_boolean():
     """`has_api_key` must be a `bool` in the printed projection, not whatever
     the field happens to hold.

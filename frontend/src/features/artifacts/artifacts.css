@@ -1,0 +1,60 @@
+/* F-17 Files dock chrome (M-03 search / filter / pagination). Frozen
+   contract classes (.art, .files-grid, .files-empty, #results-list) stay
+   named as in the legacy shell; F-21 owns global tokens. */
+
+.files-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px 4px;
+}
+
+.files-search,
+.files-filter-type {
+  min-width: 10ch;
+  flex: 1 1 12rem;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #d8d6d0);
+  background: var(--surface-0, inherit);
+  color: inherit;
+  border-radius: 6px;
+}
+
+.files-origin {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.files-origin .seg-btn {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #d8d6d0);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.files-origin .seg-btn.active {
+  background: var(--text-100, #1c1c19);
+  color: var(--surface-0, #fff);
+}
+
+.files-load-more {
+  margin: 8px 12px 16px;
+}
+
+.files-version-error {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn, #b45309);
+  color: var(--warn, #b45309);
+  border-radius: 6px;
+}
+
+.files-index-note {
+  margin: 0 12px 8px;
+  font-size: 12px;
+  color: var(--text-300, #6f6d68);
+}

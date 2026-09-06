@@ -25,6 +25,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from openai4s.security.fsprobe import lstat_kind
+
 _MANIFEST_ID = re.compile(r"^dyn-[0-9a-f]{64}$")
 _EVENT_ID = re.compile(r"^dya-[0-9a-f]{64}$")
 _OPERATIONS = frozenset({"promote", "activate", "rollback"})
@@ -317,7 +319,14 @@ class DynamicScopeStore:
         removed_events = 0
         removed_manifests = 0
         with self._lock:
-            if directory.is_dir() and not directory.is_symlink():
+            # lstat kinds, not pathlib predicates: on 3.14 those answer False
+            # for a directory this process cannot read, which would make the
+            # manifest sweep below delete records for a scope still on disk.
+            try:
+                kind = lstat_kind(directory)
+            except OSError:
+                kind = "other"
+            if kind == "dir":
                 removed_events = sum(
                     1 for path in directory.iterdir() if path.is_file()
                 )
@@ -325,14 +334,17 @@ class DynamicScopeStore:
                     shutil.rmtree(directory)
                 except OSError:
                     removed_events = 0
-            elif directory.is_symlink():
+            elif kind == "symlink":
                 # Never follow a corrupted on-disk scope link.
                 try:
                     directory.unlink()
                 except OSError:
                     pass
 
-            scope_removed = not directory.exists() and not directory.is_symlink()
+            try:
+                scope_removed = lstat_kind(directory) is None
+            except OSError:
+                scope_removed = False
             for path in (
                 sorted(self.manifests_dir.glob("dyn-*.json")) if scope_removed else ()
             ):

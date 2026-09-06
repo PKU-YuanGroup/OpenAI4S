@@ -59,5 +59,52 @@ export async function authenticate(page, baseUrl, explicitToken = undefined) {
       `the token bootstrap did not strip the credential from the URL: ${page.url()}`
     );
   }
+  await skipFirstRunWizard(page, baseUrl);
   return token;
+}
+
+export async function skipFirstRunWizard(page, baseUrl) {
+  // F-23: the default workbench is the Vite shell, which mounts the first-run
+  // wizard on a fresh data dir. Workbench E2E files drive dock/composer
+  // locators; a modal on top is not the product under test here. Skip is a
+  // documented first-run path (`POST {skip:true}`, zero provider calls).
+  const completeUrl = new URL("/api/v1/onboarding/complete", baseUrl);
+  const complete = await page.request.post(completeUrl.toString(), {
+    data: { skip: true },
+    headers: { "content-type": "application/json" },
+  });
+  if (complete.ok()) {
+    // Let the startup fetches settle first. Reloading with requests in flight
+    // aborts them, and WebKit surfaces an aborted fetch as a page-level error
+    // while Chromium and Firefox drop it silently -- the same abort
+    // browser_matrix.mjs already warns about above its own `authenticate`
+    // call, reintroduced here by this reload rather than by a second goto.
+    await page.waitForLoadState("networkidle").catch(() => {});
+    await page.reload({ waitUntil: "domcontentloaded" });
+  }
+  const wizard = page.locator("#onboarding");
+  if (await wizard.isVisible().catch(() => false)) {
+    await wizard.locator("button.outline-btn").first().click();
+    await wizard.waitFor({ state: "hidden", timeout: 10000 });
+  }
+}
+
+/**
+ * Poll `predicate` until it returns a truthy value. Every browser script needs
+ * this: the workbench CSP has no 'unsafe-eval', so page.waitForFunction is
+ * refused and every wait has to be a locator or an evaluate poll.
+ */
+export async function waitUntil(label, predicate, timeoutMs = 20000, intervalMs = 60) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
 }

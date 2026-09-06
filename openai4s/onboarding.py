@@ -9,12 +9,14 @@ public result.
 
 from __future__ import annotations
 
+import os
 import platform
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from openai4s.config import Config, LLMConfig, is_placeholder_api_key
+from openai4s.endpoint_identity import normalize_endpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,11 +63,28 @@ class OnboardingService:
         self.providers = providers
 
     def defaults(self, provider: str | None = None) -> dict[str, str]:
-        selected = self._provider(
-            provider or self._stored("llm_provider") or self.cfg.llm.provider
+        raw = (
+            str(provider or self._stored("llm_provider") or self.cfg.llm.provider or "")
+            .strip()
+            .lower()
         )
+        current_provider = (
+            str(self._stored("llm_provider") or self.cfg.llm.provider or "")
+            .strip()
+            .lower()
+        )
+        if raw not in self.providers:
+            # A stored or configured name this build does not dispatch is still
+            # a configuration, not a crash. The write path (`configure`) keeps
+            # the strict check; the read path names what is there so a first-run
+            # GET can tell the user to pick a supported protocol.
+            return {
+                "provider": raw,
+                "model": self._stored("llm_model") or self.cfg.llm.model or "",
+                "base_url": self._stored("llm_base_url") or self.cfg.llm.base_url or "",
+            }
+        selected = raw
         spec = self.providers[selected]
-        current_provider = self._stored("llm_provider") or self.cfg.llm.provider
         use_current = selected == current_provider
         return {
             "provider": selected,
@@ -136,6 +155,72 @@ class OnboardingService:
             self.store.set_secret_setting("llm_api_key", "", scope="llm")
         self.store.set_setting("onboarding_complete", "1")
         return self.status()
+
+    def complete(self, body: Mapping[str, Any] | None = None) -> OnboardingResult:
+        """Mark first-run complete, optionally persisting model settings.
+
+        Secrets are accepted only as caller-supplied values and are never
+        returned.  A skip (or an empty body) writes the flag without
+        contacting a provider.
+        """
+        payload = body or {}
+        skip = bool(payload.get("skip"))
+        touches_config = any(
+            payload.get(field)
+            for field in ("provider", "model", "base_url", "api_key", "clear_api_key")
+        )
+        if not skip and touches_config:
+            return self.configure(
+                provider=str(payload.get("provider") or self.defaults()["provider"]),
+                model=payload.get("model"),
+                base_url=payload.get("base_url"),
+                api_key=payload.get("api_key"),
+                clear_api_key=bool(payload.get("clear_api_key")),
+            )
+        self.store.set_setting("onboarding_complete", "1")
+        return self.status()
+
+    @staticmethod
+    def network_posture() -> dict[str, Any]:
+        """Local egress flags.  Opening this card contacts nobody."""
+        allow = os.environ.get("OPENAI4S_ALLOW_NETWORK", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        egress = (os.environ.get("OPENAI4S_EGRESS") or "").strip().lower() or "off"
+        return {
+            "allow_network": allow,
+            "egress": egress,
+            "contacted": False,
+        }
+
+    def web_status(
+        self,
+        *,
+        profiles: Mapping[str, Any] | None = None,
+        catalog: Mapping[str, Any] | None = None,
+        environment: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Redacted, zero-outbound first-run projection for the Web wizard."""
+        status = self.status()
+        payload = status.as_dict()
+        payload.pop("data_dir", None)
+        payload["base_url"] = normalize_endpoint(payload.get("base_url"))
+        payload["has_api_key"] = bool(payload.get("has_api_key"))
+        payload["outbound"] = 0
+        payload["contacted"] = False
+        payload["network"] = self.network_posture()
+        if profiles is not None:
+            payload["profiles"] = list(profiles.get("profiles") or [])
+            payload["active_id"] = profiles.get("active_id") or ""
+            payload["protocols"] = list(profiles.get("protocols") or [])
+        if catalog is not None:
+            payload["local_model_catalog"] = dict(catalog)
+        if environment is not None:
+            payload["environment"] = dict(environment)
+        return payload
 
     def status(self) -> OnboardingResult:
         defaults = self.defaults()

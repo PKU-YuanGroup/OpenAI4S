@@ -10,6 +10,39 @@ from openai4s.config import Config
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.skills import SkillCustomizationService
 from openai4s.skills_loader import SkillLoader
+from openai4s.skills_loader.loader import _parse_frontmatter
+from openai4s.store import get_store
+
+IMPORT_SEED = """---
+name: cryo-import
+description: Import me whole
+origin: draft
+requirements: [gpu, cuda]
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - api.openalex.org
+      - doi.org
+license: CC-BY-4.0
+category: structural-biology
+# keep this comment
+x-vendor-ext:
+  nested:
+    keep: me
+    list:
+      - one
+      - two
+---
+
+Original imported body.
+"""
+
+
+def _skill_version_rows(config: Config) -> int:
+    store = get_store(config.db_path)
+    row = store._conn.execute("SELECT count(*) FROM skill_versions").fetchone()
+    return int(row[0])
 
 
 def _service(tmp_path, *, with_builtin=True):
@@ -273,6 +306,174 @@ def test_import_precedence_and_catalog_enablement(tmp_path):
             raise OSError("unavailable")
 
     assert SkillCustomizationService(BrokenLoader()).catalog() == []
+
+
+def test_import_round_trip_keeps_requirements_network_license_comment_and_unknown_nested(
+    tmp_path,
+):
+    """The exam is the unknown nested key. A fixture with only name/body is
+    green before and after the fix."""
+    config, service = _service(tmp_path)
+
+    imported = service.import_document(content=IMPORT_SEED)
+
+    assert imported["ok"] is True
+    assert imported["origin"] == "user"
+    assert imported["slug"] == "cryo-import"
+    document = (
+        service.loader.user_skills_dir() / "cryo-import" / "SKILL.md"
+    ).read_text("utf-8")
+    meta, body = _parse_frontmatter(document)
+    assert meta["name"] == "cryo-import"
+    assert meta["origin"] == "user"
+    assert meta["description"] == "Import me whole"
+    assert meta["requirements"] == "[gpu, cuda]"
+    assert meta["license"] == "CC-BY-4.0"
+    assert meta["category"] == "structural-biology"
+    assert "mode: host_only" in document
+    assert "- api.openalex.org" in document
+    assert "- doi.org" in document
+    assert "# keep this comment" in document
+    assert "x-vendor-ext:" in document
+    assert "    keep: me" in document
+    assert "      - two" in document
+    assert body.strip() == "Original imported body."
+    review = imported["review"]
+    assert set(review) >= {"requirements", "capabilities", "readiness", "warnings"}
+    assert set(review["requirements"]) == {"cuda", "gpu"}
+    assert review["capabilities"]["network"]["mode"] == "host_only"
+    assert review["capabilities"]["network"]["domains"] == [
+        "api.openalex.org",
+        "doi.org",
+    ]
+    assert "state" in review["readiness"]
+    assert service.get("cryo-import")["origin"] == "user"
+
+
+def test_import_explicit_name_description_body_still_keep_the_seed_fields(tmp_path):
+    config, service = _service(tmp_path)
+
+    imported = service.import_document(
+        content=IMPORT_SEED,
+        name="Explicit Name",
+        description="explicit description",
+        body="Explicit body",
+    )
+
+    assert imported["slug"] == "explicit-name"
+    assert imported["origin"] == "user"
+    document = (
+        service.loader.user_skills_dir() / "explicit-name" / "SKILL.md"
+    ).read_text("utf-8")
+    meta, body = _parse_frontmatter(document)
+    assert meta["name"] == "Explicit Name"
+    assert meta["description"] == "explicit description"
+    assert meta["origin"] == "user"
+    assert meta["requirements"] == "[gpu, cuda]"
+    assert meta["license"] == "CC-BY-4.0"
+    assert "x-vendor-ext:" in document
+    assert "# keep this comment" in document
+    assert body.strip() == "Explicit body"
+
+
+def test_invalid_network_mode_is_400_and_does_not_write_a_version(tmp_path):
+    config, service = _service(tmp_path)
+    before = _skill_version_rows(config)
+    bad = IMPORT_SEED.replace("mode: host_only", "mode: warp")
+
+    result = service.import_document(content=bad)
+
+    assert _skill_version_rows(config) == before
+    assert result.get("code") == "skill_capability_invalid"
+    assert result.get("error")
+    user_root = service.loader.user_skills_dir()
+    assert not (user_root / "cryo-import" / "SKILL.md").exists()
+
+
+def test_gateway_import_rejects_illegal_network_mode_without_a_version_row(tmp_path):
+    config, _service_instance = _service(tmp_path)
+    handler_class = gateway_mod.make_handler(
+        config,
+        gateway_mod.WSHub(),
+        SimpleNamespace(),
+    )
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._body = lambda: {
+        "content": IMPORT_SEED.replace("mode: host_only", "mode: warp")
+    }
+    handler._json = lambda value, code=200: replies.append((code, value))
+    before = _skill_version_rows(config)
+
+    handler._api("POST", "/skills/import")
+
+    status, body = replies[-1]
+    assert _skill_version_rows(config) == before
+    assert status == 400
+    assert body.get("code") == "skill_capability_invalid"
+    assert not (
+        _service_instance.loader.user_skills_dir() / "cryo-import" / "SKILL.md"
+    ).exists()
+
+
+def test_import_rollback_review_matches_the_restored_version(tmp_path):
+    _config, service = _service(tmp_path)
+    first = service.import_document(content=IMPORT_SEED)
+    first_id = service.history("cryo-import")["installation"]["active_version_id"]
+    service.create_or_update(
+        "cryo-import",
+        "second description",
+        "Second body",
+        existing=True,
+    )
+    document = service.loader.user_skills_dir() / "cryo-import" / "SKILL.md"
+    assert "second description" in document.read_text("utf-8")
+
+    rolled = service.rollback("cryo-import", first_id)
+
+    assert rolled["ok"] is True
+    restored = document.read_text("utf-8")
+    meta, body = _parse_frontmatter(restored)
+    assert meta["description"] == "Import me whole"
+    assert meta["requirements"] == "[gpu, cuda]"
+    assert "x-vendor-ext:" in restored
+    assert body.strip() == "Original imported body."
+    assert rolled["review"]["requirements"] == first["review"]["requirements"]
+    assert rolled["review"]["capabilities"]["network"]["mode"] == "host_only"
+    assert rolled["review"] == service._review_from_document(restored)
+
+
+def test_imported_catalog_readiness_stays_beside_disabled_state(tmp_path):
+    _config, service = _service(tmp_path)
+    service.import_document(content=IMPORT_SEED)
+    service.set_enabled("cryo-import", False)
+    row = next(item for item in service.catalog() if item["name"] == "cryo-import")
+    assert row["enabled"] is False
+    assert set(row["requirements"]) == {"cuda", "gpu"}
+    assert row["capabilities"]["network"]["mode"] == "host_only"
+    assert row["readiness"]["state"] in {"ready", "needs_setup", "unknown"}
+    assert "ready" in row
+    assert row["origin"] == "user"
+
+
+def test_project_import_keeps_seed_fields_and_stamps_user_origin(tmp_path):
+    config, _personal = _service(tmp_path)
+    service = SkillCustomizationService(
+        SkillLoader(cfg=config), scope="project", project_id="proj-a"
+    )
+
+    imported = service.import_document(content=IMPORT_SEED)
+
+    assert imported["ok"] is True
+    assert imported["origin"] == "user"
+    root = service.versions.scope_root(scope="project", project_id="proj-a")
+    saved = (root / imported["slug"] / "SKILL.md").read_text("utf-8")
+    assert "x-vendor-ext:" in saved
+    assert "requirements: [gpu, cuda]" in saved
+    assert "origin: user" in saved
+    personal = _personal.loader.user_skills_dir() / "cryo-import" / "SKILL.md"
+    assert not personal.exists()
 
 
 def test_gateway_skill_routes_answer_a_real_status_and_share_enablement(tmp_path):

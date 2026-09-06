@@ -3,6 +3,11 @@ name: retrosynthesis_planning
 description: Search multi-step retrosynthesis routes from a target to stock with AiZynthFinder, then audit and rank route trees. Use for recursive planning, not mapping, forward prediction, conditions, or yield.
 origin: openai4s
 category: chemistry
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
+
 ---
 # Skill: retrosynthesis planning
 

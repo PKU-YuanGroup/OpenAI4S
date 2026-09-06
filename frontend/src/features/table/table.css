@@ -1,0 +1,119 @@
+/* M-04 Schema / Distribution / Export. Tokens come from the shell; F-21 owns globals. */
+
+.wb-table-zones {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--border, #d8d6d0);
+}
+
+.wb-table-zone-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.wb-table-approx {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning, #ca8a04);
+  border-radius: 6px;
+  background: var(--surface-1, transparent);
+  color: inherit;
+  font-size: 12px;
+}
+
+.wb-table-approx strong {
+  color: var(--warning, #ca8a04);
+}
+
+.wb-table-schema-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.wb-table-schema-table th,
+.wb-table-schema-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 0.5px solid var(--border, #d8d6d0);
+}
+
+.wb-table-unique-approx {
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-table-col-type {
+  color: var(--text-400, #6b6a66);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+
+.wb-table-dist-col {
+  margin-bottom: 10px;
+}
+
+.wb-table-dist-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.wb-table-stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.wb-table-stats dt {
+  color: var(--text-400, #6b6a66);
+}
+
+.wb-table-stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-hist {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 48px;
+  width: 100%;
+}
+
+.wb-hist-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  background: var(--accent, #2563eb);
+  opacity: 0.85;
+}
+
+.wb-hist-meta,
+.wb-hist-empty,
+.wb-table-export-note,
+.wb-table-export-meta,
+.wb-table-profile-error,
+.wb-table-export-missing {
+  font-size: 12px;
+  color: var(--text-400, #6b6a66);
+  margin: 4px 0;
+}
+
+.wb-table-export-link {
+  display: inline-block;
+  margin: 6px 0;
+}
+
+.wb-table-parquet {
+  font-size: 12px;
+  color: var(--text-400, #6b6a66);
+}

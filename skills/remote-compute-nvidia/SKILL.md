@@ -3,6 +3,12 @@ name: remote-compute-nvidia
 description: Run GPU jobs on NVIDIA NIM microservices via host.compute.create('byoc:nvidia', ...). Covers both forms — self_hosted (an nvcr.io NIM container on a local GPU with --gpus all) and hosted (the fully-managed integrate.api.nvidia.com gateway, no local GPU) — sharing one submit→poll .result()→harvest flow. Load once you've decided to dispatch to NVIDIA NIM.
 license: Apache-2.0
 origin: openai4s
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - integrate.api.nvidia.com
+
 ---
 
 You're dispatching to an NVIDIA NIM microservice. This provider speaks two

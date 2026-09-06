@@ -3209,6 +3209,11 @@ class SessionPackageService:
                 item.get("events") or [],
                 key=lambda value: int(value.get("sequence") or 0),
             ):
+                result = event.get("result")
+                if str(event.get("type") or "") == "compaction" and isinstance(
+                    result, Mapping
+                ):
+                    result = self._remap_compaction_result(result, group_map)
                 self.store.append_action_event(
                     group_id=group_map[source_group],
                     sequence=int(event.get("sequence") or 0),
@@ -3218,12 +3223,43 @@ class SessionPackageService:
                     wire_id=wire_map.get(str(event.get("wire_id") or "")),
                     canonical_arguments=event.get("canonical_arguments"),
                     raw_arguments=event.get("raw_arguments"),
-                    result=event.get("result"),
+                    result=result,
                     side_effect_class=event.get("side_effect_class"),
                     resource_keys=list(event.get("resource_keys") or []),
                     created_at=event.get("created_at"),
                 )
         return group_map, action_map, turn_map
+
+    def _remap_compaction_result(
+        self, result: Mapping[str, Any], group_map: Mapping[str, str]
+    ) -> dict[str, Any]:
+        """A compaction event names the last covered group; follow the remap.
+
+        Every other identity an event carries lives in a column the import
+        already remaps; this one rides in the ``result`` payload, and left
+        as the source id it matches nothing, so the restore would keep every
+        covered message *and* insert the note claiming they were archived.
+        ``archive_id`` points at a ``compaction_archives`` row the package
+        does not carry and the reducer never reads, so it is dropped rather
+        than left dangling.
+
+        The handoff is untrusted package text like any other, and the
+        restore hands it to the model as a ``role=system`` note, so it gets
+        the same injection screen as imported messages and cells.
+        """
+        remapped = dict(result)
+        if "handoff" in remapped:
+            remapped["handoff"] = self._scan_untrusted_text(remapped.get("handoff"))
+        covered = remapped.get("covered_through_group_id")
+        if covered:
+            mapped = group_map.get(str(covered))
+            if mapped is None:
+                raise SessionPackageError(
+                    "compaction references an unknown action group"
+                )
+            remapped["covered_through_group_id"] = mapped
+        remapped["archive_id"] = None
+        return remapped
 
     def _annotate_assistant_message(self, message: Any) -> Any:
         """Banner the plain-text content of an untrusted assistant message."""

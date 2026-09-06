@@ -564,8 +564,15 @@ def test_unreadable_environment_layout_is_reported_not_raised(tmp_path):
 
     assert report["ok"] is False
     assert "env_generation" in _problem_ids(report)
+    # 3.13: Path.is_symlink() raises on a mode-0 directory, so the layout
+    # probe reports "cannot be inspected". 3.14's is_symlink() returns False
+    # without raising; the same unreadable tree then fails at snapshot with
+    # Permission denied. Either way the verifier must report, not raise.
     assert any(
-        "layout cannot be inspected" in problem for problem in report["problems"]
+        "cannot be inspected" in problem
+        or "cannot be resolved" in problem
+        or "Permission denied" in problem
+        for problem in report["problems"]
     )
 
 
@@ -575,14 +582,14 @@ def test_environment_layout_probe_errors_are_reported_not_raised(
 ):
     _make_bringup(tmp_path)
     target = tmp_path / "environments" / "design-tool" / "generations"
-    real_is_symlink = Path.is_symlink
+    real_lstat = bringup_module.os.lstat
 
-    def racing_is_symlink(path):
-        if path == target:
+    def racing_lstat(path, *args, **kwargs):
+        if Path(path) == target:
             raise error_type("injected layout race")
-        return real_is_symlink(path)
+        return real_lstat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_symlink", racing_is_symlink)
+    monkeypatch.setattr(bringup_module.os, "lstat", racing_lstat)
     report = _verify_with_reference(tmp_path)
 
     assert report["ok"] is False
@@ -1067,6 +1074,9 @@ def test_a_missing_generation_manifest_is_caught(tmp_path):
     report = verify_bringup(tmp_path)
     assert report["ok"] is False
     assert "env_generation" in _problem_ids(report)
+    # Absence is reported as absence. The lstat probe must not turn a missing
+    # generation into an I/O-fault-sounding "cannot be inspected" first line.
+    assert "cannot be inspected" not in json.dumps(report)
 
 
 def test_a_generation_that_is_not_ready_is_caught(tmp_path):

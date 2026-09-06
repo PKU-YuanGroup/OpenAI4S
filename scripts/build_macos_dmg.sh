@@ -14,8 +14,10 @@
 # Signing follows the release environment: use a configured Developer ID
 # identity when one is supplied, otherwise fall back to an ad-hoc signature so
 # Apple Silicon does not kill an unsigned binary. This builder does not submit
-# to Apple's notary service or staple a ticket; the release gate verifies those
-# facts separately and refuses an un-notarized public DMG.
+# to Apple's notary service or staple a ticket — `scripts/notarize_macos_dmg.sh`
+# is the only place that does. The release gate verifies those facts separately
+# and refuses an un-notarized public DMG. The workflow input `macos_asset=omit`
+# (the default) skips this image rather than uploading a preview.
 set -euo pipefail
 
 APP_NAME="OpenAI4S"
@@ -372,8 +374,10 @@ OpenAI4S $VERSION — first launch on macOS
 
 1. Drag OpenAI4S.app onto the Applications folder (shown here).
 
-2. This build is $SIGNING_KIND but NOT notarized by this builder, so Gatekeeper
-   may refuse it on first launch. To open it:
+2. This build is $SIGNING_KIND. A public GitHub Release only includes this
+   image after a separate notarize-and-staple step; otherwise the asset is
+   omitted rather than shipped for Gatekeeper to refuse. A local or ad-hoc
+   build is not notarized. If Gatekeeper refuses a copy you built yourself:
      • macOS 15 (Sequoia) and newer: double-click, dismiss the warning, then go
        to System Settings → Privacy & Security and press "Open Anyway".
      • macOS 12-14: right-click (or Control-click) OpenAI4S.app → Open → Open.

@@ -1,0 +1,8 @@
+/* F-10 local. Dual-node wrappers must not become layout boxes — the .md
+   rules still apply to the sealed prefix and the live tail as if they were
+   direct children of the message. */
+
+.md-sealed,
+.md-tail {
+  display: contents;
+}

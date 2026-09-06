@@ -218,11 +218,12 @@ def test_a_check_with_no_run_id_is_refused(tmp_path):
 def test_python_browser_and_linux_private_pid_checks_are_required():
     """Item 4's binding, asserted on the manifest rather than on prose."""
     names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
-    for version in ("3.10", "3.12", "3.13"):
+    for version in ("3.10", "3.12", "3.13", "3.14"):
         assert f"Offline tests (py{version})" in names
     for engine in ("chromium", "firefox", "webkit"):
         assert f"Browser workbench E2E ({engine})" in names
     assert "Linux bubblewrap Python/R persistent interrupt" in names
+    assert "Linux bubblewrap full filesystem/egress boundary" in names
 
 
 def test_every_required_check_names_a_job_that_really_exists_in_ci():
@@ -398,7 +399,18 @@ def _pipeline_assets(tmp_path, *, source_sha=SHA):
     sdist = assets / "openai4s-0.2.0.tar.gz"
     sdist.write_bytes(b"sdist-bytes")
     _write(assets, _good_receipt(source_sha=source_sha))
-    receipt = release_receipts.build_build_receipt("dist", source_sha, [wheel, sdist])
+    receipt = release_receipts.build_build_receipt(
+        "dist",
+        source_sha,
+        [wheel, sdist],
+        workflow_run_id="7100",
+        workflow_inputs={
+            "tag": "v0.2.0",
+            "publish": False,
+            "pypi_only": False,
+            "macos_asset": "omit",
+        },
+    )
     (assets / release_receipts.build_receipt_name("dist")).write_text(
         json.dumps(receipt), "utf-8"
     )
@@ -465,7 +477,26 @@ def test_an_artifact_built_from_a_different_commit_is_refused(tmp_path):
     assets = _pipeline_assets(tmp_path)
     dmg = assets / "OpenAI4S-0.2.0-arm64.dmg"
     dmg.write_bytes(b"dmg-bytes")
-    stale = release_receipts.build_build_receipt("macos", OTHER_SHA, [dmg])
+    stale = release_receipts.build_build_receipt(
+        "macos",
+        OTHER_SHA,
+        [dmg],
+        workflow_run_id="7100",
+        workflow_inputs={
+            "tag": "v0.2.0",
+            "publish": False,
+            "pypi_only": False,
+            "macos_asset": "notarized",
+        },
+        notary={
+            "requested": True,
+            "submitted": True,
+            "stapled": True,
+            "stapler_returncode": 0,
+            "spctl_returncode": 0,
+            "post_staple_sha256": "0" * 64,
+        },
+    )
     (assets / release_receipts.build_receipt_name("macos")).write_text(
         json.dumps(stale), "utf-8"
     )
@@ -609,7 +640,7 @@ def test_replacing_a_draft_asset_and_its_manifest_together_is_caught(tmp_path):
     attestation.write_text(
         json.dumps(
             release_receipts.build_stage_attestation(
-                version="0.2.0", source_sha=SHA, assets=[wheel]
+                version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id="7100"
             )
         ),
         "utf-8",
@@ -639,7 +670,7 @@ def test_an_attestation_for_another_version_is_refused(tmp_path):
     target.write_text(
         json.dumps(
             release_receipts.build_stage_attestation(
-                version="0.2.0", source_sha=SHA, assets=[wheel]
+                version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id="7100"
             )
         ),
         "utf-8",
@@ -927,6 +958,108 @@ def test_linux_bwrap_interrupt_smoke_is_an_independent_real_runtime_job():
     assert install_steps[0].get("continue-on-error") is not True
 
 
+def test_linux_sandbox_full_is_an_independent_enforce_job_without_raw_network():
+    """The four-check filesystem/egress boundary must not collapse into the
+    interrupt job, must not allow raw networking, and must not continue-on-error.
+
+    Check-run name is attested at the frozen SHA as ci-linux-sandbox-full.
+    The release workflow still does not re-execute this smoke as a
+    platform-checks matrix leg (PLATFORM_CHECKS_UNAVAILABLE) until multiple
+    scheduled greens pass.
+    """
+    jobs = _workflow("ci.yml")["jobs"]
+    job = jobs["linux-sandbox-full"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["name"] == "Linux bubblewrap full filesystem/egress boundary"
+    assert "if" not in job, "the full boundary must run on pull requests"
+    assert job.get("continue-on-error") is not True
+
+    steps = job["steps"]
+    for step in steps:
+        assert step.get("continue-on-error") is not True, step.get("name")
+        assert "if" not in step, step.get("name")
+
+    install = "\n".join(str(step.get("run") or "") for step in steps)
+    for package in ("apparmor", "apparmor-profiles", "bubblewrap"):
+        assert package in install
+    assert "apparmor_restrict_unprivileged_userns=0" not in install
+    assert "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK" not in install
+
+    userns_steps = [
+        step for step in steps if "bwrap-userns-restrict" in str(step.get("run") or "")
+    ]
+    assert len(userns_steps) == 1
+
+    preflight_steps = [
+        step
+        for step in steps
+        if "--unshare-net" in str(step.get("run") or "")
+        and "raise SystemExit((os.getpid(), os.getppid()) != (2, 1))"
+        in str(step.get("run") or "")
+    ]
+    assert len(preflight_steps) == 1
+
+    smoke_steps = [
+        step
+        for step in steps
+        if "harness.smoke.linux_sandbox" in str(step.get("run") or "")
+    ]
+    assert len(smoke_steps) == 1
+    smoke = smoke_steps[0]
+    assert (
+        str(smoke.get("run") or "").strip()
+        == "uv run python -m harness.smoke.linux_sandbox"
+    )
+    assert smoke.get("env") == {"OPENAI4S_KERNEL_SANDBOX": "enforce"}
+    assert "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK" not in (smoke.get("env") or {})
+
+    from harness.smoke.sandbox_boundary import EXPECTED
+    from scripts import release_gates
+
+    names = {gate.name: gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
+    assert names["ci-linux-sandbox-full"] == job["name"]
+    assert "linux-sandbox" in release_gates.PLATFORM_CHECKS_UNAVAILABLE
+    assert EXPECTED == {
+        "network_blocked": True,
+        "outside_write_blocked": True,
+        "subprocess_secret_absent": True,
+        "workspace_write": True,
+    }
+
+
+def test_full_boundary_smoke_refuses_a_raw_network_override():
+    """Mutation: the interrupt job's env must not silently green this gate."""
+    from harness.smoke.sandbox_boundary import refuse_raw_network_override
+
+    with pytest.raises(RuntimeError, match="raw-network override"):
+        refuse_raw_network_override(
+            label="linux",
+            env={"OPENAI4S_KERNEL_ALLOW_RAW_NETWORK": "1"},
+        )
+    with pytest.raises(RuntimeError, match="raw-network override"):
+        refuse_raw_network_override(
+            label="linux",
+            env={"OPENAI4S_KERNEL_ALLOW_RAW_NETWORK": "true"},
+        )
+    refuse_raw_network_override(label="linux", env={})
+    refuse_raw_network_override(
+        label="linux", env={"OPENAI4S_KERNEL_ALLOW_RAW_NETWORK": "0"}
+    )
+
+
+def test_a_skipped_linux_full_boundary_check_is_refused():
+    """Mutation: a skipped check run is not evidence at the frozen SHA."""
+    listing = _listing()
+    for run in listing["check_runs"]:
+        if run["name"] == "Linux bubblewrap full filesystem/egress boundary":
+            run["conclusion"] = "skipped"
+            break
+    else:
+        raise AssertionError("fixture has no linux-sandbox-full check run")
+    with pytest.raises(GateManifestError, match="skipped"):
+        release_gates.attest_check_runs(listing, expected_sha=SHA)
+
+
 def test_the_release_binds_the_platform_checks_to_the_frozen_sha():
     """Item 4's third leg. The sandbox jobs in ci.yml run only on
     `schedule`/`workflow_dispatch`, so no check run for them exists at a release
@@ -954,10 +1087,11 @@ def test_the_release_binds_the_platform_checks_to_the_frozen_sha():
     )
 
     attested = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
-    assert not any("sandbox" in name.lower() for name in attested), (
+    assert "macOS sandbox enforcement (nightly)" not in attested, (
         "a nightly-only check must not be an attested gate: no check run for it "
         "exists at a release SHA, so requiring one makes releases unreachable"
     )
+    assert "Linux bubblewrap full filesystem/egress boundary" in attested
     # And the jobs that build artifacts must wait for them.
     for name in ("build", "macos-app"):
         assert "platform-checks" in jobs[name]["needs"]

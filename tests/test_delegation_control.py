@@ -190,6 +190,26 @@ def test_a_stop_never_reports_success_it_did_not_achieve(client):
     assert status != 200
 
 
+def test_continuing_a_stale_record_is_the_same_conflict(client):
+    """`continue` shares stop's guard and the frozen response contract lists a
+    409 for it, but every 409 assertion elsewhere reads `http_status` off a
+    directly raised GatewayError. A status that is only ever asserted off the
+    exception object is not evidence about what the route answers, and the
+    capture recorder — which only sees responses that actually left a
+    handler — had never observed one.
+    """
+    status, body = client.post(f"/frames/{client.frame_id}/delegations/nope/continue")
+    assert status == 404
+    assert body["code"] == "not_found"
+
+    child_id = client.seed_child("child-1")
+    status, body = client.post(
+        f"/frames/{client.frame_id}/delegations/{child_id}/continue"
+    )
+    assert status == 409
+    assert body["code"] == "delegation_record_stale"
+
+
 # --------------------------------------------------------------------------
 # steering input
 # --------------------------------------------------------------------------

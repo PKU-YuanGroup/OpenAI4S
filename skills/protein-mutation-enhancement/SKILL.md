@@ -8,6 +8,11 @@ description: >
 origin: openai4s
 category: workflow
 requirements: [gpu]
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Protein Mutation Enhancement Workflow

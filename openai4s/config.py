@@ -659,6 +659,14 @@ class RoadmapFeatureFlags:
 
 _RESULT_REVIEW_MODES = frozenset(("off", "review_only", "auto_fix"))
 _APPROVAL_REVIEWERS = frozenset(("user", "auto_review"))
+GUARDIAN_BUDGET_FIELDS = frozenset(
+    (
+        "guardian_timeout_s",
+        "guardian_consecutive_denial_limit",
+        "guardian_window_size",
+        "guardian_window_denial_limit",
+    )
+)
 
 # Stage 0 froze the selection precedence; the Stage 2 durable project/frame
 # resolver implements and preserves this exact order. ``deployment_explicit``
@@ -794,6 +802,20 @@ class AutoModeBudgets:
             raise ValueError(
                 "guardian_window_denial_limit must not exceed guardian_window_size"
             )
+
+    def field_authority(self, name: str) -> str:
+        """Return the single authority that meters one public budget field.
+
+        Guardian ceilings stay owned by Guardian durable state. Everything
+        else is metered by Auto Budget admission. A field must not have two
+        counters.
+        """
+
+        if name in GUARDIAN_BUDGET_FIELDS:
+            return "guardian"
+        if name in self.__dataclass_fields__:
+            return "auto_budget"
+        raise KeyError(name)
 
 
 @dataclass(frozen=True)

@@ -47,7 +47,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
@@ -108,7 +108,14 @@ class CodeEvidenceContext:
     """
 
     search_roots: tuple[Path, ...] = ()
-    artifact_checksums: Mapping[str, frozenset[str]] = MappingProxyType({})
+    # A ``default_factory``, not a shared ``MappingProxyType({})`` default:
+    # CPython 3.11 rejects the latter at class creation ("mutable default
+    # ... use default_factory") because a mappingproxy was unhashable there,
+    # and that ValueError made the whole agent package unimportable on the
+    # one supported interpreter the CI matrix does not run.
+    artifact_checksums: Mapping[str, frozenset[str]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     source_reader: Callable[[str], tuple[Path, str, bytes] | None] | None = None
     test_receipt: Callable[[str, str], bool] | None = None
     turn_id: str | None = None

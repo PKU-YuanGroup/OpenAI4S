@@ -23,8 +23,12 @@ the private process in [`SECURITY.md`](SECURITY.md).
    engine, LLM client, or web server. Optional science libraries must be
    guarded by `try/except ImportError` at every in-tree use site.
 5. **External PRs never receive secrets.** CI for pull requests must run
-   without API keys, tokens, or credentials of any kind, and must not run
-   live LLM / network / GPU / SSH / lab jobs.
+   without API keys, repository secrets, or credentials of any kind, and must
+   not run live LLM / GPU / SSH / lab jobs or reach the network for anything
+   but repository metadata. The one exception is the action-pin identity job,
+   which resolves `# vX.Y.Z` comments through the GitHub API with the job's
+   own read-only `GITHUB_TOKEN`; nothing else in `ci.yml` is networked, and
+   no job receives a repository secret.
 6. **A deferred follow-up goes in [`docs/TODO.md`](../docs/TODO.md), not in a comment.**
    Anything this repository has decided to do and has not done — especially
    when the blocker is outside the codebase, like a registry account or a
@@ -129,9 +133,10 @@ for each of these):
   regression tests.
 - The large hotspot files — `openai4s/server/gateway.py`,
   `openai4s/host_dispatch.py`, `openai4s/store.py`,
-  `openai4s/server/webui/app.js`, `openai4s/kernel/worker.py`,
+  `openai4s/kernel/worker.py`,
   `openai4s/kernel/manager.py` — were edited **surgically, never wholesale
-  rewritten**.
+  rewritten**. New workbench UI goes in `frontend/`, not legacy `app.js`;
+  rebuild and commit `openai4s/server/webui/dist/` with the source.
 - `openai4s/server/webui/vendor/` and `tests/fixtures/` were not reformatted.
 - No tests were deleted without tracked replacements
   (`git ls-files --deleted` is clean or explained).

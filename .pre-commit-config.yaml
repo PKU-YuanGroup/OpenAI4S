@@ -43,7 +43,13 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: css-tokens
+        name: CSS custom-property references must be defined
+        entry: uv run python scripts/check_css_tokens.py
+        language: system
+        pass_filenames: false
+        files: '(openai4s/server/webui/style\.css|scripts/check_css_tokens\.py)$'
 
 # Never reformat: vendored third-party assets and Skills, plus captured test
 # fixtures. These trees preserve byte-exact upstream or real-world payloads.
-exclude: '^(openai4s/server/webui/vendor/|skills/bioskills/|tests/fixtures/)'
+exclude: '^(openai4s/server/webui/vendor/|openai4s/server/webui/dist/|skills/bioskills/|tests/fixtures/)'

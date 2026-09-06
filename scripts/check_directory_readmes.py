@@ -31,6 +31,9 @@ EXCLUDED_PARTS = frozenset(
         ".git",
         ".venv",
         ".openai4s-runtime",
+        # Kernel-readable scratch the runtime writes beside a workspace;
+        # `openai4s run` in the checkout puts it at the repo root.
+        ".openai4s",
         "node_modules",
         "__pycache__",
         ".pytest_cache",

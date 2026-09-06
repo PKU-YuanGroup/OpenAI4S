@@ -306,6 +306,31 @@ class CellExecutionService:
                 # action timeline shows the group "running" forever.
                 self._finish_attempt(attempt_id, "record_failed", exc)
                 raise
+        # Before `prepare_language`, which runs Skill bootstrap (sidecar
+        # imports, `origin="system"`) on the worker it prepares. Admission
+        # further down needs that worker's measured posture and so cannot
+        # move; the unconditional half needs no posture and belongs here,
+        # or a blocked Skill's bootstrap has already executed by the time
+        # the user Cell is refused. The CLI sink is ordered the same way.
+        from openai4s.server.skill_network_admission import admit_cell_preflight
+
+        preflight = admit_cell_preflight(frame_id=session.root_frame_id)
+        if not preflight.allowed:
+            refused = self._soft_error(
+                session,
+                request,
+                emit,
+                index,
+                cell_id,
+                None,
+                preflight.refusal_message(),
+                attempt_id,
+                "skill_network_refused",
+                None,
+            )
+            if isinstance(refused.result, dict):
+                refused.result["skill_network"] = preflight.as_dict()
+            return refused
         try:
             runtime_error = self.ports.prepare_language(session, request.language)
             kernel_id = self.ports.kernel_id(session, request.language)
@@ -379,9 +404,34 @@ class CellExecutionService:
                 generation_id,
             )
 
+        from openai4s.server.skill_network_admission import admit_cell, frame_scope
+
+        sandbox_status = _session_sandbox_status(session, request.language)
+        network_decision = admit_cell(
+            frame_id=session.root_frame_id,
+            sandbox_status=sandbox_status,
+        )
+        if not network_decision.allowed:
+            refused = self._soft_error(
+                session,
+                request,
+                emit,
+                index,
+                cell_id,
+                kernel_id,
+                network_decision.refusal_message(),
+                attempt_id,
+                "skill_network_refused",
+                generation_id,
+            )
+            if isinstance(refused.result, dict):
+                refused.result["skill_network"] = network_decision.as_dict()
+            return refused
+
         lease = session.kernels.lease("r") if request.language == "r" else None
         try:
-            result = self.ports.run(session, request, cell_id, on_chunk, lease)
+            with frame_scope(session.root_frame_id):
+                result = self.ports.run(session, request, cell_id, on_chunk, lease)
         except BaseException as exc:
             # A live R process can still be protocol-desynchronized when its
             # reader exits through a callback/parse error. Close only this lease;
@@ -443,6 +493,7 @@ class CellExecutionService:
             raise
 
         result["id"] = cell_id
+        result["skill_network"] = network_decision.as_dict()
         if attempt_id is not None:
             try:
                 self.ports.mark_attempt_response(attempt_id)
@@ -870,6 +921,27 @@ def activity_title(code: str, index: int) -> str:
         elif stripped:
             break
     return f"Running analysis · cell {index}"
+
+
+def _session_sandbox_status(
+    session: CellSession, language: str
+) -> dict[str, Any] | None:
+    """Measured sandbox posture of the language slot, if a worker exists."""
+
+    slot = "r" if str(language or "").strip().lower() == "r" else "python"
+    try:
+        kernel = session.kernels.kernel(slot)
+    except Exception:  # noqa: BLE001 - admission fails closed on missing status
+        return None
+    if kernel is None:
+        return None
+    status = getattr(kernel, "sandbox_status", None)
+    if callable(status):
+        try:
+            status = status()
+        except Exception:  # noqa: BLE001
+            return None
+    return dict(status) if isinstance(status, dict) else None
 
 
 def _error_result(cell_id: str, message: str) -> dict[str, Any]:

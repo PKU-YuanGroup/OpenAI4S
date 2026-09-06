@@ -19,6 +19,10 @@ from harness.auto_mode_terminal_contract import (
 )
 from harness.cli import main
 from harness.schema import Scenario, ScenarioValidationError, load_scenario
+from openai4s.server.auto_budget import (
+    TERMINAL_USER_TRUTH,
+    is_completion_disguise,
+)
 
 _ROOT = Path(__file__).resolve().parents[1]
 _BASELINE = _ROOT / "harness" / "scenarios" / "baseline"
@@ -179,6 +183,19 @@ def test_independent_golden_freezes_exact_payloads_and_canonical_digests():
         projection.pop("identity")
         projection.pop("event_names")
         assert projection == expected["terminal_payload"]
+
+
+def test_production_budget_terminals_match_harness_truth_and_are_not_completion():
+    assert TERMINAL_USER_TRUTH["budget_exhausted"] == _USER_TRUTH["budget_exhausted"]
+    assert TERMINAL_USER_TRUTH["loop_detected"] == _USER_TRUTH["loop_detected"]
+    assert (
+        TERMINAL_USER_TRUTH["budget_measurement_unavailable"] == "无法验证 token 预算"
+    )
+    for reason in TERMINAL_USER_TRUTH:
+        for status in ("verified", "completed", "completed_with_issues", "pass"):
+            assert is_completion_disguise(status, reason) is True
+        assert is_completion_disguise("paused", reason) is False
+        assert is_completion_disguise("review_unavailable", reason) is False
 
 
 @pytest.mark.parametrize("permission", ["deny", "allow"])

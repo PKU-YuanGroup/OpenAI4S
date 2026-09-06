@@ -1,0 +1,137 @@
+/* Lane-local first-run wizard. Tokens match Customize until F-21 owns them. */
+#onboarding.modal.hidden {
+  display: none !important;
+}
+#onboarding.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 18, 14, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 70;
+  padding: 12px;
+}
+#onboarding .onb-box {
+  background: var(--panel, #fff);
+  color: var(--text, inherit);
+  border-radius: 12px;
+  width: min(640px, 94vw);
+  max-height: min(860px, 92vh);
+  overflow: auto;
+  padding: 20px 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#onboarding .onb-h {
+  font-size: 18px;
+  font-weight: 650;
+}
+#onboarding .onb-sub,
+#onboarding .onb-warn,
+#onboarding .ds {
+  font-size: 13px;
+  color: var(--text-400, #6f6d68);
+  line-height: 1.45;
+}
+#onboarding .onb-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#onboarding .onb-step {
+  border: 0.5px solid var(--border, #0002);
+  background: transparent;
+  border-radius: 999px;
+  padding: 8px 12px;
+  min-height: 40px;
+  font-size: 12px;
+}
+#onboarding .onb-step.active {
+  background: var(--bg-300, #0001);
+  font-weight: 600;
+}
+#onboarding .onb-step.done {
+  opacity: 0.85;
+}
+#onboarding .onb-error {
+  color: var(--danger, #b42318);
+  font-size: 13px;
+}
+#onboarding .onb-path,
+#onboarding .onb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#onboarding .onb-choice,
+#onboarding .cust-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+#onboarding .skill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#onboarding .cust-input,
+#onboarding select.cust-input {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 0.5px solid var(--border, #0002);
+  background: var(--bg, #fff);
+  color: inherit;
+}
+#onboarding .onb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+#onboarding .solid-btn,
+#onboarding .outline-btn,
+#onboarding .onb-actions button {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 8px 14px;
+  border-radius: 8px;
+}
+#onboarding .prof-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prof-cap[data-state="true"] {
+  color: var(--success-text, inherit);
+}
+.prof-cap[data-state="false"] {
+  color: var(--danger, inherit);
+}
+.prof-cap[data-state="unknown"] {
+  color: var(--warn, inherit);
+}
+.prof-cap[data-stale="true"] {
+  opacity: 0.65;
+}
+#onboarding .onb-warn {
+  border: 0.5px solid var(--warn, #b54708);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: inherit;
+}
+@media (max-width: 900px) {
+  #onboarding .onb-box {
+    width: 100%;
+    max-height: 96vh;
+    padding: 16px;
+  }
+  #onboarding .onb-choice,
+  #onboarding .onb-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

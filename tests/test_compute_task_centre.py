@@ -22,14 +22,21 @@ running and billing.
 
 from __future__ import annotations
 
+import io
 import json
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from openai4s.compute import registry
+from openai4s.compute.manager import ComputeError, ComputeManager
+from openai4s.compute.states import CANCELLED, RUNNING, SUCCEEDED
 from openai4s.config import Config, LLMConfig
 from openai4s.server import compute_tasks
 from openai4s.server import gateway as gateway_mod
-from openai4s.server import local_auth
+from openai4s.server import local_auth, team_policy
 
 
 class _Hub:
@@ -286,3 +293,360 @@ def test_refresh_is_a_post_because_it_harvests(client):
 def test_a_session_that_does_not_exist_is_not_a_blank_page(client):
     status, _body = client.get("/frames/f-nope/compute/tasks")
     assert status == 404
+
+
+# --------------------------------------------------------------------------
+# explicit cancel: only a confirmed POST reaches a provider
+# --------------------------------------------------------------------------
+
+
+class _Proc:
+    def __init__(self, returncode=0, stdout=b"", stderr=b""):
+        self.returncode = returncode
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.stdin = io.BytesIO()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def _submit_ssh_job(client, frame, monkeypatch):
+    """A live ssh job owned by this session, so the Web cancel path can find it."""
+    registry.add_host("lab", data_dir=client.cfg.data_dir)
+    workspace = client.runner.active_workspace_for(frame)
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen",
+        lambda *a, **k: _Proc(0, b"OPENAI4S_JOB 31337 31337\n"),
+        raising=True,
+    )
+    manager = ComputeManager(client.cfg, store=client.store, workspace=workspace)
+    return manager.submit({"provider": "ssh:lab", "command": "sleep 600"})["job_id"]
+
+
+def test_cancel_is_a_post_because_it_signals_the_remote(client):
+    frame = client.session()
+    from openai4s.server import contract
+
+    routes = contract.http_routes()
+    assert any("compute/tasks" in route and "cancel" in route for route in routes)
+    status, _body = client.get(f"/frames/{frame}/compute/tasks/job-x/cancel")
+    assert status in (404, 405), "the cancelling action answered a GET"
+
+
+@pytest.mark.stubbed_backend
+def test_cancel_without_confirm_does_not_contact_the_remote(client, monkeypatch):
+    frame = client.session()
+    job_id = _submit_ssh_job(client, frame, monkeypatch)
+    remote = []
+    built = []
+    cancels = []
+
+    def boom(*a, **k):
+        remote.append(a)
+        raise AssertionError("remote must not be contacted without confirm")
+
+    class _Manager:
+        def cancel(self, spec):
+            cancels.append(spec)
+            raise AssertionError("manager.cancel must not run without confirm")
+
+    def fake_build(*a, **k):
+        built.append(1)
+        return SimpleNamespace(compute=_Manager())
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    monkeypatch.setattr(gateway_mod, "build_dispatcher", fake_build)
+    status, body = client.post(f"/frames/{frame}/compute/tasks/{job_id}/cancel", {})
+    assert status == 400
+    assert body.get("code") == "confirmation_required"
+    assert remote == []
+    assert built == []
+    assert cancels == []
+    assert client.store.get_compute_job(job_id)["status"] == RUNNING
+
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/{job_id}/cancel", {"confirm": False}
+    )
+    assert status == 400
+    assert remote == []
+    assert built == []
+    assert cancels == []
+
+
+def test_cancel_of_another_sessions_job_is_not_found_and_does_not_contact_the_remote(
+    client, monkeypatch
+):
+    mine, theirs = client.session(), client.session()
+    job_id = _submit_ssh_job(client, theirs, monkeypatch)
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(a)
+        raise AssertionError("foreign cancel must not reach a provider")
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    status, body = client.post(
+        f"/frames/{mine}/compute/tasks/{job_id}/cancel", {"confirm": True}
+    )
+    assert status == 404
+    assert body.get("code") == "not_found"
+    assert calls == []
+    assert client.store.get_compute_job(job_id)["status"] == RUNNING
+
+
+def test_team_members_cannot_cancel_someone_elses_session():
+    """Same owner-only gate as refresh: every frame POST except revert preview."""
+    assert team_policy.is_session_control_mutation(
+        "POST", "/frames/abc/compute/tasks/job-1/cancel"
+    )
+
+
+def test_confirmed_cancel_writes_cancelled_and_contacts_the_remote(client, monkeypatch):
+    frame = client.session()
+    job_id = _submit_ssh_job(client, frame, monkeypatch)
+    seen = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        return _Proc(0)
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", fake_run, raising=True
+    )
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/{job_id}/cancel", {"confirm": True}
+    )
+    assert status == 200
+    assert body["outcome"] == "cancel_confirmed"
+    assert body["task"]["status"] == "cancelled"
+    assert body["task"]["live"] is False
+    assert client.store.get_compute_job(job_id)["status"] == CANCELLED
+    assert seen, "confirmed cancel must actually signal the remote"
+    assert any("31337" in str(argv) for argv in seen)
+
+
+def test_unreachable_cancel_is_indeterminate_and_does_not_write_cancelled(
+    client, monkeypatch
+):
+    frame = client.session()
+    job_id = _submit_ssh_job(client, frame, monkeypatch)
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(a)
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=45)
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/{job_id}/cancel", {"confirm": True}
+    )
+    assert status == 202
+    assert body["outcome"] == "cancel_indeterminate"
+    assert body["reason"] == "remote_unreachable"
+    assert "billing" in body["hint"]
+    assert body["task"]["status"] != "cancelled"
+    assert body["task"]["live"] is True
+    assert client.store.get_compute_job(job_id)["status"] != CANCELLED
+    assert calls, "unreachable is a remote attempt, not a skipped one"
+
+
+@pytest.mark.stubbed_backend
+def test_unsupported_cancel_is_indeterminate(client, monkeypatch):
+    frame = client.session()
+    client.seed(frame, job_id="job-open", status="running")
+    calls = []
+
+    class _Manager:
+        def cancel(self, spec):
+            calls.append(spec)
+            raise ComputeError(
+                "this provider cannot confirm a cancel",
+                "provider_cancel_unsupported",
+                indeterminate=True,
+            )
+
+    monkeypatch.setattr(
+        gateway_mod,
+        "build_dispatcher",
+        lambda *a, **k: SimpleNamespace(compute=_Manager()),
+    )
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/job-open/cancel", {"confirm": True}
+    )
+    assert status == 202
+    assert body["outcome"] == "cancel_indeterminate"
+    assert body["reason"] == "provider_cancel_unsupported"
+    assert "billing" in body["hint"]
+    assert client.store.get_compute_job("job-open")["status"] != CANCELLED
+    assert calls == [{"job_id": "job-open"}]
+
+
+@pytest.mark.stubbed_backend
+def test_a_natural_completion_race_returns_the_real_terminal_state(client, monkeypatch):
+    frame = client.session()
+    client.seed(frame, job_id="job-done", status="succeeded", terminal_at=1)
+    calls = []
+
+    class _Manager:
+        def cancel(self, spec):
+            calls.append(spec)
+            return {
+                "status": "succeeded",
+                "conflict": {"requested": "cancelled", "actual": "succeeded"},
+            }
+
+    monkeypatch.setattr(
+        gateway_mod,
+        "build_dispatcher",
+        lambda *a, **k: SimpleNamespace(compute=_Manager()),
+    )
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/job-done/cancel", {"confirm": True}
+    )
+    assert status == 409
+    assert body["outcome"] == "already_terminal"
+    assert body["code"] == "already_terminal"
+    # The envelope's `status` is the integer HTTP status, as it is on every
+    # error shape but one pinned legacy route. Returning the terminal state
+    # under that key clobbered the integer `public_failure` adds -- it defers
+    # to a value the route set -- and made this the second route declaring
+    # both types. The terminal state rides on `task`, where the UI reads it.
+    assert body["status"] == 409
+    assert body["task"]["status"] == "succeeded"
+    assert client.store.get_compute_job("job-done")["status"] == SUCCEEDED
+
+
+def test_cancel_after_restart_still_requires_an_explicit_confirm(
+    client, tmp_path, monkeypatch
+):
+    frame = client.session()
+    job_id = _submit_ssh_job(client, frame, monkeypatch)
+    client.store.close()
+
+    revived = _Client.__new__(_Client)
+    revived.__init__(tmp_path)
+    row = revived.store.get_compute_job(job_id)
+    assert row["status"] == RUNNING
+
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(a)
+        raise AssertionError("restart must not cancel")
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    # Opening the listing after a restart is a read. It must not signal.
+    status, body = revived.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["tasks"][0]["job_id"] == job_id
+    assert body["tasks"][0]["live"] is True
+    assert calls == []
+
+    seen = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        return _Proc(0)
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", fake_run, raising=True
+    )
+    status, body = revived.post(
+        f"/frames/{frame}/compute/tasks/{job_id}/cancel", {"confirm": True}
+    )
+    assert status == 200
+    assert body["outcome"] == "cancel_confirmed"
+    assert revived.store.get_compute_job(job_id)["status"] == CANCELLED
+    assert seen
+
+
+def test_page_load_and_ordinary_stop_never_post_cancel():
+    """The five non-goals: close page, Stop turn, delete session, timeout UI,
+    daemon restart. None of them is allowed to grow a compute cancel call.
+    """
+    island = Path("frontend/src/features/timeline/island.ts").read_text(
+        encoding="utf-8"
+    )
+    actions = Path("frontend/src/features/sessions/actions.ts").read_text(
+        encoding="utf-8"
+    )
+    deletion = Path("openai4s/server/session_deletion.py").read_text(encoding="utf-8")
+    # Page load fetches the listing. The cancel POST lives only in the
+    # confirm-gated helper, which the load path never calls.
+    load_fn = island.split("export async function loadWorkbenchState", 1)[1].split(
+        "export function scheduleWorkbenchRefresh", 1
+    )[0]
+    assert "/compute/tasks" in load_fn
+    assert "/cancel" not in load_fn
+    assert "confirm: true" not in load_fn
+    # The cancel helper itself is the only POST, and it is behind confirm().
+    assert "function cancelComputeTask" in island
+    assert "globalThis.confirm" in island
+    assert "computeCancelInFlight" in island
+    assert "JSON.stringify({ confirm: true })" in island
+    assert "may still be running and billing" in island
+    # Stop the turn / delete the session: different verbs, different resources.
+    assert "/compute/tasks/" not in actions
+    assert "compute/tasks" not in deletion
+    assert "ComputeManager" not in deletion
+    # Closing the page and a timeout UI have no compute-cancel listener.
+    frontend_root = Path("frontend/src")
+    hits = []
+    for path in list(frontend_root.rglob("*.ts")) + list(frontend_root.rglob("*.tsx")):
+        text = path.read_text(encoding="utf-8")
+        if "compute/tasks/" in text and "/cancel" in text:
+            hits.append(str(path))
+    assert hits == ["frontend/src/features/timeline/island.ts"]
+    assert "beforeunload" not in island
+    assert "visibilitychange" not in island
+
+
+def test_double_click_is_one_in_flight_request():
+    """The button disables and a Set drops a second click before fetch."""
+    island = Path("frontend/src/features/timeline/island.ts").read_text(
+        encoding="utf-8"
+    )
+    helper = island.split("async function cancelComputeTask", 1)[1].split(
+        "export function renderComputeTasksPanel", 1
+    )[0]
+    assert "computeCancelInFlight.has(jobId)" in helper
+    assert "button.disabled = true" in helper
+    assert helper.index("computeCancelInFlight.add(jobId)") < helper.index("await api(")
+    assert helper.index("button.disabled = true") < helper.index("await api(")
+
+
+def test_a_confirmed_cancel_clears_the_earlier_unconfirmed_note(client, monkeypatch):
+    """An unconfirmed attempt writes "may still be running and billing" onto
+    the row; the confirmed stop that follows must not leave it there, or the
+    Task Centre keeps warning about a job that is over."""
+    frame = client.session()
+    job_id = _submit_ssh_job(client, frame, monkeypatch)
+
+    def unreachable(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=45)
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", unreachable)
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/{job_id}/cancel", {"confirm": True}
+    )
+    assert status == 202
+    assert "billing" in (client.store.get_compute_job(job_id).get("reason") or "")
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen",
+        lambda *a, **k: _Proc(0),
+        raising=True,
+    )
+    status, body = client.post(
+        f"/frames/{frame}/compute/tasks/{job_id}/cancel", {"confirm": True}
+    )
+    assert status == 200
+    assert body["outcome"] == "cancel_confirmed"
+    row = client.store.get_compute_job(job_id)
+    assert row["status"] == CANCELLED
+    assert not row.get("reason"), row.get("reason")
+    assert "billing" not in str(body["task"].get("reason") or "")

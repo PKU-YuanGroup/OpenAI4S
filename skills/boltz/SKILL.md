@@ -10,6 +10,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   # github.com/jwohlwend/boltz/blob/main/LICENSE: MIT (© 2024 Wohlwend, Corso,
   # Passaro). verified 2026-06-30

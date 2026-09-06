@@ -641,6 +641,13 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
     ("remote", _remote),
 )
 
+#: Probes `report()` still runs for the CLI, and that a page-load GET must not.
+#: `data` calls `ensure_dirs()` (a write). `isolation` builds a temp sandbox
+#: and runs the kernel self-test (a subprocess). `remote` runs the BYOC
+#: confinement self-test (another subprocess). `runtime` walks environment
+#: roots. The web Diagnostics GET uses `passive_status()` instead of this set.
+SIDE_EFFECT_CHECKS = frozenset({"data", "isolation", "remote", "runtime"})
+
 
 def run_checks(cfg: Any) -> list[Check]:
     """Every probe, in order. A probe that raises becomes a failed check.
@@ -658,6 +665,11 @@ def run_checks(cfg: Any) -> list[Check]:
 
 
 def report(cfg: Any) -> dict[str, Any]:
+    """Full probe set, including checks that write or spawn.
+
+    The CLI wants the real answer, so this still runs `SIDE_EFFECT_CHECKS`.
+    The web Diagnostics GET must call `passive_status()` instead.
+    """
     checks = run_checks(cfg)
     worst = (
         FAIL
@@ -665,6 +677,22 @@ def report(cfg: Any) -> dict[str, Any]:
         else (WARN if any(c.status == WARN for c in checks) else OK)
     )
     return {"status": worst, "checks": [c.public() for c in checks]}
+
+
+def passive_status(cfg: Any) -> dict[str, Any]:
+    """Security posture a page-load GET may show.
+
+    No Store open, no child process, no network call, no `ensure_dirs()`.
+    Versions and permission stats are reads; posture knobs come from the
+    process environment. Schema and secret-broker probes stay off this
+    path because they open the database.
+    """
+    from openai4s.diagnostics import environment_report, passive_security_posture
+
+    return {
+        "security": passive_security_posture(cfg),
+        "environment": environment_report(),
+    }
 
 
 _MARK = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}
@@ -689,4 +717,14 @@ def render(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["Check", "FAIL", "OK", "WARN", "render", "report", "run_checks"]
+__all__ = [
+    "Check",
+    "FAIL",
+    "OK",
+    "SIDE_EFFECT_CHECKS",
+    "WARN",
+    "passive_status",
+    "render",
+    "report",
+    "run_checks",
+]

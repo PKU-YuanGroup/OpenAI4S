@@ -30,13 +30,18 @@ Two kinds of gate:
     records the exit code.
 `check_suite`
     Proven by GitHub's own check runs *at that exact SHA* rather than re-executed.
-    The browser matrix, Python support matrix, and real Linux private-PID
-    interrupt smoke already ran on the push to `main` that the tag points at,
-    so re-running them would buy nothing but latency (and, for bubblewrap, a
+    The browser matrix, Python support matrix, the real Linux private-PID
+    interrupt smoke, and the independent Linux full filesystem/egress boundary
+    smoke already ran on the push to `main` that the tag points at, so
+    re-running them would buy nothing but latency (and, for bubblewrap, a
     different host). What makes this evidence rather than an assumption is that
     the attestation is pinned to `head_sha`: a check run for a different commit
     does not count, and the check-run and workflow-run IDs are recorded so a
-    reader can go look.
+    reader can go look. The interrupt smoke allows raw networking; the full
+    boundary smoke refuses that override. The full smoke is attested here as
+    `ci-linux-sandbox-full` and is still listed in
+    `PLATFORM_CHECKS_UNAVAILABLE` until multiple scheduled runs plus a
+    candidate SHA are green.
 
 Deliberately *not* a gate: the nightly macOS/Linux sandbox jobs. They only run on
 `schedule`/`workflow_dispatch`, so no check run for them exists at a release SHA
@@ -53,10 +58,16 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
+LINUX_BOUNDARY = "linux-filesystem-and-egress"
+LINUX_CI_GATE = "ci-linux-sandbox-full"
+LINUX_REEXEC_GATE = "linux-sandbox"
+CI_ATTESTATION_STATUSES = frozenset({"passed", "failed", "missing", "skipped"})
+RELEASE_REEXECUTION_STATUSES = frozenset({"executed", "unproven"})
+
 #: Bumped whenever the receipt's shape or the gate list changes. The consumer
 #: requires an exact match rather than `>=`: an older producer cannot know about
 #: a gate added later, so accepting its receipt would silently drop that gate.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 RECEIPT_FORMAT = "openai4s-quality-receipt"
 
@@ -154,6 +165,7 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
     Gate("ci-tests-py3.10", CHECK_SUITE_KIND, check_name="Offline tests (py3.10)"),
     Gate("ci-tests-py3.12", CHECK_SUITE_KIND, check_name="Offline tests (py3.12)"),
     Gate("ci-tests-py3.13", CHECK_SUITE_KIND, check_name="Offline tests (py3.13)"),
+    Gate("ci-tests-py3.14", CHECK_SUITE_KIND, check_name="Offline tests (py3.14)"),
     Gate(
         "ci-browser-chromium",
         CHECK_SUITE_KIND,
@@ -175,6 +187,11 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
         check_name="Linux bubblewrap Python/R persistent interrupt",
     ),
     Gate(
+        "ci-linux-sandbox-full",
+        CHECK_SUITE_KIND,
+        check_name="Linux bubblewrap full filesystem/egress boundary",
+    ),
+    Gate(
         "ci-singlecell-skill",
         CHECK_SUITE_KIND,
         check_name="Single-cell workflow (Python 3.11)",
@@ -194,25 +211,32 @@ PLATFORM_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
 #: opposite things.
 #:
 #: `linux-sandbox` was in `PLATFORM_CHECK_COMMANDS`, but its hosted run failed
-#: during network-namespace setup. The targeted CI gate now loads Ubuntu's
-#: restricted bwrap profile, which may change that old result, but deliberately
-#: allows raw networking and therefore does not prove the complete boundary.
-#: Until the full smoke is re-evaluated, `build` must not depend on an unproven
-#: platform leg: doing so made every publication unreachable rather than
-#: blocking only a bad release.
+#: during network-namespace setup. CI now has an independent Ubuntu 24.04
+#: full-boundary job (`ci-linux-sandbox-full` / harness.smoke.linux_sandbox)
+#: that is attested as a check run at the frozen SHA. The interrupt job still
+#: allows raw networking and therefore does not prove this boundary.
+#:
+#: That CI check-suite attestation is not the same as re-executing the smoke
+#: inside the release workflow's `platform-checks` matrix. `build` must not
+#: grow an unproven matrix leg: doing so made every publication unreachable
+#: rather than blocking only a bad release. Multiple scheduled greens plus a
+#: candidate SHA must pass before this row moves into
+#: `PLATFORM_CHECK_COMMANDS`. Until then the evidence bundle still has to say
+#: the release-workflow platform check was not run, rather than omit the row
+#: and look like a pass.
 #:
 #: Removing it silently would have been worse than leaving it red: an absent row
 #: reads as "checked, fine". The plan's rollback clause is explicit -- a platform
 #: whose evidence is missing is degraded to preview, never recorded as passed.
-#: Once the full smoke is re-evaluated under a suitable enforced setup, it moves
-#: back into `PLATFORM_CHECK_COMMANDS` and out of here.
 PLATFORM_CHECKS_UNAVAILABLE: dict[str, str] = {
     "linux-sandbox": (
-        "harness.smoke.linux_sandbox is not currently a CI or release gate. "
-        "The targeted hosted check loads Ubuntu's restricted bwrap profile but "
-        "deliberately allows raw networking, so it does not prove the complete "
-        "Linux filesystem-and-egress boundary. That full smoke remains "
-        "verified by hand and must be re-evaluated separately."
+        "harness.smoke.linux_sandbox now runs as the independent CI job "
+        "'Linux bubblewrap full filesystem/egress boundary' and is attested "
+        "as check-suite gate ci-linux-sandbox-full at the frozen SHA. It is "
+        "not yet a release-workflow platform-checks matrix leg: multiple "
+        "scheduled greens plus a candidate SHA must pass before it leaves "
+        "this dict. The interrupt smoke still allows raw networking and does "
+        "not prove the complete Linux filesystem-and-egress boundary."
     ),
 }
 
@@ -234,6 +258,134 @@ def manifest_digest() -> str:
     """
     payload = json.dumps(manifest(), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_linux_boundary(
+    checks: Iterable[Mapping[str, Any]] = (),
+    platform_checks: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Split the Linux filesystem-and-egress boundary into two facts.
+
+    CI attestation and release-workflow re-execution are different events.
+    Flattening them into one status is how a reader could see `passed` and
+    `unproven` on the same boundary and not know which was true.
+    """
+    ci_row = next(
+        (dict(row) for row in checks if str(row.get("name") or "") == LINUX_CI_GATE),
+        None,
+    )
+    reexec_row = next(
+        (
+            dict(row)
+            for row in platform_checks
+            if str(row.get("name") or "") == LINUX_REEXEC_GATE
+        ),
+        None,
+    )
+    if ci_row is None:
+        ci = {
+            "status": "missing",
+            "gate": LINUX_CI_GATE,
+            "check_run_id": "",
+            "head_sha": "",
+        }
+    else:
+        conclusion = str(ci_row.get("conclusion") or "")
+        if conclusion == "success":
+            status = "passed"
+        elif conclusion == "skipped":
+            status = "skipped"
+        elif conclusion:
+            status = "failed"
+        else:
+            status = "missing"
+        ci = {
+            "status": status,
+            "gate": LINUX_CI_GATE,
+            "check_run_id": str(ci_row.get("check_run_id") or ""),
+            "head_sha": str(ci_row.get("head_sha") or ""),
+        }
+    if reexec_row is None:
+        reexec = {
+            "status": "unproven",
+            "gate": LINUX_REEXEC_GATE,
+            "reason": str(PLATFORM_CHECKS_UNAVAILABLE.get(LINUX_REEXEC_GATE) or ""),
+        }
+    else:
+        reexec = {
+            "status": "executed",
+            "gate": LINUX_REEXEC_GATE,
+            "returncode": reexec_row.get("returncode"),
+        }
+    evidence = {
+        "boundary": LINUX_BOUNDARY,
+        "ci_attestation": ci,
+        "release_reexecution": reexec,
+    }
+    verify_linux_boundary(evidence)
+    return evidence
+
+
+def verify_linux_boundary(evidence: Any) -> dict[str, Any]:
+    """Refuse a Linux boundary object that collapses two facts into one status."""
+    if not isinstance(evidence, Mapping):
+        raise GateManifestError("linux_boundary is not an object")
+    if str(evidence.get("boundary") or "") != LINUX_BOUNDARY:
+        raise GateManifestError(
+            f"linux_boundary names {evidence.get('boundary')!r}, expected "
+            f"{LINUX_BOUNDARY!r}"
+        )
+    # A single status field is the original defect: passed and unproven
+    # cannot share a vocabulary on the same object.
+    if "status" in evidence:
+        raise GateManifestError(
+            "linux_boundary cannot carry a flat status; ci_attestation and "
+            "release_reexecution are different facts"
+        )
+    if "unproven" in evidence:
+        raise GateManifestError(
+            "linux_boundary cannot carry a flat unproven map next to "
+            "ci_attestation; that is passed and unproven on the same boundary"
+        )
+    ci = evidence.get("ci_attestation")
+    reexec = evidence.get("release_reexecution")
+    if not isinstance(ci, Mapping) or not isinstance(reexec, Mapping):
+        raise GateManifestError(
+            "linux_boundary must have ci_attestation and release_reexecution objects"
+        )
+    ci_status = str(ci.get("status") or "")
+    reexec_status = str(reexec.get("status") or "")
+    if ci_status == "unproven":
+        raise GateManifestError(
+            "ci_attestation cannot be unproven; that fact belongs to "
+            "release_reexecution"
+        )
+    if reexec_status == "passed":
+        raise GateManifestError(
+            "release_reexecution cannot be passed; CI attestation is the "
+            "passed/failed fact"
+        )
+    if ci_status not in CI_ATTESTATION_STATUSES:
+        raise GateManifestError(
+            f"ci_attestation status {ci_status!r} is not one of "
+            f"{sorted(CI_ATTESTATION_STATUSES)}"
+        )
+    if reexec_status not in RELEASE_REEXECUTION_STATUSES:
+        raise GateManifestError(
+            f"release_reexecution status {reexec_status!r} is not one of "
+            f"{sorted(RELEASE_REEXECUTION_STATUSES)}"
+        )
+    if ci_status == "passed" and not str(ci.get("check_run_id") or ""):
+        raise GateManifestError("ci_attestation status passed requires a check-run id")
+    if reexec_status == "unproven" and not str(reexec.get("reason") or "").strip():
+        raise GateManifestError(
+            "release_reexecution status unproven must say why it was not run"
+        )
+    if reexec_status == "executed" and reexec.get("returncode") is None:
+        raise GateManifestError(
+            "release_reexecution status executed records no returncode"
+        )
+    return dict(evidence)
 
 
 def builder_facts() -> dict[str, Any]:
@@ -393,6 +545,23 @@ def verify_receipt_document(
                 f"check {gate.name!r} records no check-run id, so nobody can "
                 f"go and look at it"
             )
+
+    try:
+        boundary = verify_linux_boundary(document.get("linux_boundary"))
+    except GateManifestError as error:
+        raise GateManifestError(f"quality receipt {error}") from error
+    ci = boundary["ci_attestation"]
+    attested = check_rows[LINUX_CI_GATE]
+    if ci["status"] != "passed":
+        raise GateManifestError(
+            "linux_boundary.ci_attestation is not passed, but check-suite gate "
+            f"{LINUX_CI_GATE} concluded success"
+        )
+    if str(ci.get("check_run_id") or "") != str(attested.get("check_run_id") or ""):
+        raise GateManifestError(
+            "linux_boundary.ci_attestation check-run id does not match the "
+            f"{LINUX_CI_GATE} check row"
+        )
     return document
 
 
@@ -411,12 +580,34 @@ def build_receipt(
     consumer detect a receipt from a different gate list rather than a receipt
     with fewer rows.
     """
+    check_list = [
+        {
+            "name": str(row["name"]),
+            "check_name": str(row.get("check_name") or ""),
+            "check_run_id": str(row.get("check_run_id") or ""),
+            "run_id": str(row.get("run_id") or ""),
+            "url": str(row.get("url") or ""),
+            "conclusion": str(row.get("conclusion") or ""),
+            "head_sha": str(row.get("head_sha") or ""),
+        }
+        for row in checks
+    ]
+    platform_list = [
+        {
+            "name": str(row["name"]),
+            "command": list(row.get("command") or []),
+            "returncode": int(row["returncode"]),
+            "runner": dict(row.get("runner") or {}),
+        }
+        for row in platform_checks
+    ]
     return {
         "format": RECEIPT_FORMAT,
         "schema_version": SCHEMA_VERSION,
         "manifest_digest": manifest_digest(),
         "source_sha": str(source_sha),
         "builder": builder_facts(),
+        "linux_boundary": build_linux_boundary(check_list, platform_list),
         "gates": [
             {
                 "name": str(row["name"]),
@@ -425,27 +616,8 @@ def build_receipt(
             }
             for row in gates
         ],
-        "checks": [
-            {
-                "name": str(row["name"]),
-                "check_name": str(row.get("check_name") or ""),
-                "check_run_id": str(row.get("check_run_id") or ""),
-                "run_id": str(row.get("run_id") or ""),
-                "url": str(row.get("url") or ""),
-                "conclusion": str(row.get("conclusion") or ""),
-                "head_sha": str(row.get("head_sha") or ""),
-            }
-            for row in checks
-        ],
-        "platform_checks": [
-            {
-                "name": str(row["name"]),
-                "command": list(row.get("command") or []),
-                "returncode": int(row["returncode"]),
-                "runner": dict(row.get("runner") or {}),
-            }
-            for row in platform_checks
-        ],
+        "checks": check_list,
+        "platform_checks": platform_list,
     }
 
 

@@ -1,0 +1,22 @@
+/* F-13 component styles. Global tokens stay with F-21 / style.css. */
+
+#conn-banner {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 8px 16px;
+  background: var(--danger-bg, #fad6d6);
+  color: var(--danger, #8e2626);
+  text-align: center;
+  font-size: 13px;
+}
+
+#conn-banner.visible {
+  display: block;
+}
+
+.ctx-menu:focus,
+.ctx-menu:focus-within {
+  outline: none;
+}

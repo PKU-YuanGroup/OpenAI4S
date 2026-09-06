@@ -1083,7 +1083,8 @@ def test_cancel_that_never_landed_is_not_a_cancellation(mgr, monkeypatch):
     )
     with pytest.raises(ComputeError) as e:
         mgr.cancel({"job_id": job["job_id"]})
-    assert e.value.error_kind == "unknown_state"
+    assert e.value.error_kind == "receipt_unconfirmed"
+    assert e.value.indeterminate is True
     assert "may still be running" in str(e.value)
     assert job["status"] != "cancelled"
 

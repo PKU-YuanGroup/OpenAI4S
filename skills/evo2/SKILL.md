@@ -12,6 +12,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: Evo 2
   # github.com/ArcInstitute/evo2/blob/main/LICENSE: Apache-2.0 boilerplate.

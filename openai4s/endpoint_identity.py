@@ -26,9 +26,10 @@ surface nobody remembered to redact.
 
 from __future__ import annotations
 
+import hashlib
 import urllib.parse
 
-__all__ = ["normalize_endpoint", "endpoint_credentials"]
+__all__ = ["endpoint_sha256", "normalize_endpoint", "endpoint_credentials"]
 
 
 def normalize_endpoint(url: str | None) -> str:
@@ -59,6 +60,16 @@ def normalize_endpoint(url: str | None) -> str:
         host = f"{host}:{parts.port}"
     path = parts.path.rstrip("/")
     return urllib.parse.urlunsplit((parts.scheme, host, path, "", ""))
+
+
+def endpoint_sha256(url: str | None) -> str:
+    """Stable digest of the credential-free endpoint spelling.
+
+    Receipts bind to this rather than the raw URL so two spellings of one
+    host compare equal and userinfo never enters the identity.
+    """
+    canonical = normalize_endpoint(url)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def endpoint_credentials(url: str | None) -> bool:

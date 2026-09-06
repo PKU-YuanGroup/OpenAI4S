@@ -310,6 +310,32 @@ class SessionDeletionRepository:
                 root_where,
                 roots,
             )
+            request_tables = {
+                str(row[0])
+                for row in self._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('delegation_requests','delegation_attempts')"
+                )
+            }
+            if "delegation_requests" in request_tables:
+                request_ids = self._unique(
+                    row["request_id"]
+                    for row in self._connection.execute(
+                        "SELECT request_id FROM delegation_requests WHERE "
+                        + root_where,
+                        roots,
+                    ).fetchall()
+                )
+                if request_ids and "delegation_attempts" in request_tables:
+                    self._delete_counted(
+                        deleted_rows,
+                        "delegation_attempts",
+                        f"request_id IN {self._marks(request_ids)}",
+                        request_ids,
+                    )
+                self._delete_counted(
+                    deleted_rows, "delegation_requests", root_where, roots
+                )
             for table in (
                 "action_groups",
                 "kernel_generations",

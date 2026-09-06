@@ -15,9 +15,11 @@
 #
 # The image is not merely built: `scripts/container_smoke.sh` — the same gate
 # PR CI runs — builds it and then proves the daemon actually boots and serves
-# inside it. Only a smoke-passing image is pushed. linux/amd64 only for now:
-# the science stack under QEMU multiplies the build time without a user on the
-# other end; an arm64 slice is a deliberate later addition, not a flag flip.
+# inside it. Only a smoke-passing image is pushed. Smoke is not the Python
+# 3.14 offline suite: that series is in ci.yml's full matrix and in the
+# quality-receipt check-suite gates. linux/amd64 only for now: the science
+# stack under QEMU multiplies the build time without a user on the other
+# end; an arm64 slice is a deliberate later addition, not a flag flip.
 #
 # Login uses the job's own GITHUB_TOKEN (packages: write) — no long-lived
 # registry credential exists anywhere in the repository.

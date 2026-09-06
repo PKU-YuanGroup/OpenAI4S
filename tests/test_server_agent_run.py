@@ -789,3 +789,36 @@ def test_a_legacy_env_switch_failure_does_not_quote_the_exception(monkeypatch):
     outcome = executor.execute(None, reply, RunState([]))
 
     _assert_env_failure_is_reported_but_not_quoted(outcome.observation)
+
+
+def test_run_finished_discards_a_draft_the_cancelled_turn_never_routed():
+    """The engine ends a cancelled call before ReplyReceived/ActionRouted.
+
+    Those two events were the only places a streaming code draft was
+    discarded, so a Stop that landed mid-fence left the draft ``drafting``
+    next to an unlocked composer. ``RunFinished`` now closes it.
+    """
+    from openai4s.agent.events import RunFinished, RunStarted
+    from openai4s.agent.models import EngineResult
+
+    sent: list[dict] = []
+    sink = WebEventSink(
+        sent.append, "frame-1", [], lambda _usage: None, cancelled=lambda: True
+    )
+    sink.emit(RunStarted(4, 2))
+    sink.emit(TurnStarted(0))
+    sink.emit(
+        TextDelta("Let me compute.\n```python\nimport os\nprint(os.getcwd())\n", 0)
+    )
+    drafts = [e for e in sent if e["type"] == "notebook_cell_draft"]
+    assert drafts and drafts[-1]["status"] == "drafting"
+
+    sink.emit(RunFinished(EngineResult((), None, "cancelled", 0, None)))
+
+    drafts = [e for e in sent if e["type"] == "notebook_cell_draft"]
+    assert drafts[-1]["status"] == "discarded"
+    assert drafts[-1]["reason"] == "cancelled"
+    # A second RunFinished (a run that did route its reply) is a no-op.
+    before = len(sent)
+    sink.emit(RunFinished(EngineResult((), None, "completed", 1, None)))
+    assert len(sent) == before

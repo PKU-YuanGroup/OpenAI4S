@@ -27,6 +27,7 @@ _WHEEL_REQUIRED = frozenset(
         "openai4s/server/webui/app.js",
         "openai4s/server/webui/style.css",
         "openai4s/server/webui/vendor/3Dmol-min.js",
+        "openai4s/server/webui/dist/index.html",
         "openai4s_compute_provider/__init__.py",
         "openai4s_worker_runtime/__init__.py",
         "envs/python.yml",

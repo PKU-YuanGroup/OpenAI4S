@@ -118,6 +118,21 @@ def test_unreachable_invalid_and_oversized_probes_stay_inert():
     assert service.discover(force=True)["endpoints"] == []
 
 
+def test_catalog_does_not_open_sockets_or_refresh_in_the_background():
+    opener = _Opener({})
+    service = LocalModelDiscoveryService(
+        endpoints=_candidates(), opener=opener, cache_ttl_s=10
+    )
+    payload = service.catalog()
+    assert opener.calls == []
+    assert payload["probed"] == 0
+    assert payload["contacted"] is False
+    assert payload["background_refresh"] is False
+    assert payload["mutated_settings"] is False
+    assert not hasattr(service, "_timer")
+    assert not hasattr(service, "_thread")
+
+
 def test_default_discovery_opener_rejects_redirects():
     service = LocalModelDiscoveryService(endpoints=(_candidates()[0],))
     redirect_handler = next(

@@ -148,6 +148,13 @@ docker exec "$CONTAINER" python -c "import numpy, pandas, matplotlib, sklearn" \
   || fail "the science stack does not import inside the image"
 ok "numpy, pandas, matplotlib and scikit-learn import"
 
+# The image's interpreter is a support claim, not a smoke substitute for the
+# 3.14 offline suite. Still refuse an image that is not the series the
+# Dockerfile and the CI matrix name.
+docker exec "$CONTAINER" python -c "import sys; assert sys.version_info[:2] == (3, 14), sys.version" \
+  || fail "the image is not running Python 3.14"
+ok "container interpreter is Python 3.14"
+
 # --- the restart case ---------------------------------------------------------
 #
 # A container that cannot restart is not a deployment option. SIGKILL skips the

@@ -1,0 +1,17 @@
+# Workbench 构建产物
+
+[English](README.md)
+
+`frontend/`（`npm run build`）提交进来的构建产物。Gateway 在 `/static/dist/` 提供这棵树。它也是 `/` 与工作台深链的默认 SPA 外壳；`OPENAI4S_WEBUI=legacy` 是改发 `webui/index.html` 的逃生舱。脚本全部是带 `src=` 的外链文件，CSP `script-src 'self'` 不需要放行内联脚本。
+
+## 文件
+
+| 文件 | 职责 |
+| --- | --- |
+| `index.html` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+
+## 子目录
+
+| 目录 | 职责 |
+| --- | --- |
+| `assets/` | Vite 打出的带哈希分块。 |

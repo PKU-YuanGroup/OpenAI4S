@@ -3,6 +3,11 @@ name: evaluate-model
 description: Evaluate binary classification or regression models with confusion-matrix metrics, tie-aware ROC AUC, regression errors, and deterministic bootstrap confidence intervals; emphasizes held-out data, uncertainty, baselines, and subgroup checks.
 origin: openai4s
 category: model-evaluation
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Evaluate a model

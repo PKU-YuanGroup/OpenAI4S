@@ -201,14 +201,26 @@ def _linux_series() -> str:
     return match.group(1)
 
 
+def _container_series() -> str:
+    """The CPython series the container image runs.
+
+    Read from the first stage only; that both stages agree is the contract
+    `test_container_deployment.py` already owns.
+    """
+    text = (_ROOT / "Dockerfile").read_text("utf-8")
+    match = re.search(r"^FROM python:(\d+\.\d+)-", text, re.M)
+    assert match, "the container's Python series is not where this reads"
+    return match.group(1)
+
+
 def test_every_shipped_interpreter_is_claimed_and_tested():
-    """Not just the DMG's. Both bundles embed a CPython, and the previous
-    version of this reconciliation read one of the two build scripts."""
+    """Every bundled or containerized CPython needs both public claims."""
     classifiers = _classifier_versions()
     tested = _ci_tested_versions()
     for label, series in (
         ("macOS .dmg", _dmg_series()),
         ("Linux tarball", _linux_series()),
+        ("container image", _container_series()),
     ):
         assert (
             series in classifiers
@@ -254,6 +266,22 @@ def test_the_shipped_interpreter_is_claimed_and_tested():
     )
 
 
+def test_the_container_interpreter_is_a_release_gate():
+    """The published image runs 3.14. Until this check the release gate
+    stopped at 3.13, so a 3.14-only failure shipped as a green container
+    smoke. That the series is claimed and in the CI matrix is
+    `test_every_shipped_interpreter_is_claimed_and_tested`'s row; this one
+    reads the Dockerfile so a FROM bump cannot outrun the gate list."""
+    shipped = _container_series()
+    from scripts import release_gates
+
+    names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
+    assert f"Offline tests (py{shipped})" in names, (
+        f"the container ships Python {shipped}, which the release gate does "
+        "not require at the candidate SHA"
+    )
+
+
 def test_every_tested_version_is_a_claimed_version():
     """The other direction, and the cheaper one.
 
@@ -263,10 +291,10 @@ def test_every_tested_version_is_a_claimed_version():
     wrong, the two disagreeing is the bug.
     """
     tested, claimed = _ci_tested_versions(), _classifier_versions()
-    assert not (tested - claimed), (
-        f"CI tests Python {sorted(tested - claimed)}, which the classifiers do "
-        "not claim"
-    )
+    extra = tested - claimed
+    assert (
+        not extra
+    ), f"CI tests Python {sorted(extra)}, which the classifiers do not claim"
 
 
 def test_the_floor_is_tested_and_no_claim_sits_below_it():
@@ -286,4 +314,84 @@ def test_the_floor_is_tested_and_no_claim_sits_below_it():
     assert not below, (
         f"the classifiers claim Python {below}, which requires-python refuses "
         "to install on"
+    )
+
+
+# --------------------------------------------------------------------------
+# a claimed interpreter that no leg runs must not be broken by a default
+# --------------------------------------------------------------------------
+
+_MUTABLE_DEFAULT_CALLS = frozenset(
+    {"MappingProxyType", "dict", "list", "set", "bytearray"}
+)
+_SCANNED_PACKAGES = ("openai4s", "openai4s_compute_provider", "openai4s_worker_runtime")
+
+
+def _is_dataclass_decorator(node) -> bool:
+    import ast
+
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Attribute):
+        return target.attr == "dataclass"
+    return isinstance(target, ast.Name) and target.id == "dataclass"
+
+
+def _call_name(node) -> str | None:
+    import ast
+
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _dataclass_container_defaults() -> list[str]:
+    """Every dataclass field whose default is a container built at class time.
+
+    CPython 3.10 rejects only ``list``/``dict``/``set`` defaults; 3.11 rejects
+    any *unhashable* default, which a ``MappingProxyType`` was until 3.12
+    made it hashable. So a ``MappingProxyType({})`` default imports fine on
+    3.10 and 3.12+ and raises ``ValueError`` at class creation on 3.11 alone.
+    """
+    import ast
+
+    offenders: list[str] = []
+    for package in _SCANNED_PACKAGES:
+        for path in sorted((_ROOT / package).rglob("*.py")):
+            tree = ast.parse(path.read_text("utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                if not any(_is_dataclass_decorator(d) for d in node.decorator_list):
+                    continue
+                for item in node.body:
+                    if not isinstance(item, ast.AnnAssign) or item.value is None:
+                        continue
+                    value = item.value
+                    bad = isinstance(value, (ast.Dict, ast.List, ast.Set)) or (
+                        isinstance(value, ast.Call)
+                        and _call_name(value) in _MUTABLE_DEFAULT_CALLS
+                    )
+                    if bad and isinstance(item.target, ast.Name):
+                        rel = path.relative_to(_ROOT)
+                        offenders.append(
+                            f"{rel}:{item.lineno} {node.name}.{item.target.id}"
+                        )
+    return offenders
+
+
+def test_no_dataclass_default_is_a_container_only_some_interpreters_accept():
+    """`artifact_checksums: Mapping[...] = MappingProxyType({})` imported on
+    3.10, 3.12, 3.13 and 3.14 -- every leg the matrix runs -- and raised
+    ``ValueError: mutable default <class 'mappingproxy'> ... use
+    default_factory`` at import time on 3.11, taking the whole agent package
+    with it on an interpreter pyproject claims. A support claim the matrix
+    does not exercise is only as good as the rules that keep it true; this is
+    the one that rule needs."""
+    offenders = _dataclass_container_defaults()
+    assert not offenders, (
+        "dataclass defaults built at class time; use field(default_factory=...) "
+        f"so CPython 3.11 can import them: {offenders}"
     )

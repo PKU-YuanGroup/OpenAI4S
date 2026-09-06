@@ -11,6 +11,11 @@ description: >-
   or ranking protein-design candidates with reproducible model evidence.
 origin: openai4s
 category: biomodels
+capabilities:
+  network:
+    mode: host_only
+    domains: []
+
 ---
 
 # Compose protein-design operations over MCP

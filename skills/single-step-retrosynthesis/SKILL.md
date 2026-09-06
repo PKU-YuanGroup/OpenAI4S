@@ -3,6 +3,10 @@ name: single-step-retrosynthesis
 description: Generate ranked one-step precursor sets for a product with RetroChimera; use for disconnection ideas or expansion-policy calls. Do not recurse, search stock, or call the result a complete route.
 license: MIT
 origin: openai4s
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   third_party:
     - kind: model

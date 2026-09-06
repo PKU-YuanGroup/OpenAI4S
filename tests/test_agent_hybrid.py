@@ -43,6 +43,7 @@ class ScriptedChat:
 
 def test_native_call_beats_code_then_canonical_tool_history_reaches_next_turn(
     monkeypatch,
+    tmp_path,
 ):
     call = {
         "id": "local_list",
@@ -74,6 +75,7 @@ def test_native_call_beats_code_then_canonical_tool_history_reaches_next_turn(
         use_skills=False,
         allow_delegate=False,
         max_turns=3,
+        workspace=tmp_path,
     ).run("list the workspace, then submit")
 
     assert result["stop_reason"] == "submitted"

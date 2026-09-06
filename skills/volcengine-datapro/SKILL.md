@@ -2,6 +2,15 @@
 name: volcengine-datapro
 description: Discover and call the configured Volcengine DataPro dataPro_search(query:string) MCP tool for professional-dataset queries.
 origin: openai4s
+capabilities:
+  network:
+    mode: host_only
+    # Deliberately empty. The destination is the connector's configuration,
+    # not this Skill's to declare, and the guidance below never names the
+    # endpoint or its auth headers so the agent cannot reach around the
+    # managed connector.
+    domains: []
+
 ---
 
 # Volcengine DataPro

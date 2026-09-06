@@ -3,6 +3,13 @@ name: mineral_spectra_analysis
 description: Raman mineral mixture spectra analysis pipeline for unknown mixed-mineral spectra; preprocess noisy spectra once, iteratively match residual peaks against a reference spectral library, unmix components with NNLS, diagnose reliability, write reports, and optionally generate/evaluate synthetic benchmark cases with hidden ground truth.
 origin: openai4s
 category: spectroscopy
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - www.rruff.net
+      - rruff.net
+
 ---
 # Skill: mineral spectra analysis
 

@@ -122,6 +122,17 @@ def _guardian_denial_history(store, root_frame_id: str | None) -> list[bool]:
     ]
 
 
+def guardian_denial_history(store, root_frame_id: str | None) -> list[bool]:
+    """The Guardian breaker's denial streak, for read-only projections.
+
+    Auto Mode's budget projection reports Guardian as an authority rather than
+    keeping a second count of it, so it reads this history without owning the
+    breaker.
+    """
+
+    return _guardian_denial_history(store, root_frame_id)
+
+
 def _active_auto_mode_run_for_permission(
     store, root_frame_id: str | None, request: dict
 ) -> dict | None:
