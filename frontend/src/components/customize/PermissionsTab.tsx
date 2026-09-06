@@ -5,6 +5,7 @@ import { custTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
 import { currentId } from "../../stores/session";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, IconGhost, Note } from "./ui";
 
 type ScopeMeta = { scope: string; scope_id: string; label: string };
@@ -115,6 +116,7 @@ export function PermissionsTab() {
   useEffect(() => {
     if (!currentId.value) {
       setNote(t("cust.perm.noSessionNote"));
+      markCustomizeLoaded();
       return;
     }
     void (async () => {
@@ -122,9 +124,12 @@ export function PermissionsTab() {
         const next = await api(`/frames/${currentId.value}/permissions`);
         if (!alive()) return;
         setData(next);
+        markCustomizeLoaded();
       } catch (e) {
         if (!alive()) return;
-        setNote(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setNote(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive]);

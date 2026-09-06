@@ -2006,6 +2006,77 @@ def test_cancel_after_llm_reply_prevents_returned_cell(monkeypatch, tmp_path):
     assert stored[-1]["content"] == "_已取消。_"
 
 
+def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
+    monkeypatch, tmp_path
+):
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    entered = threading.Event()
+    release = threading.Event()
+    provider_done = threading.Event()
+    usage_accounted = threading.Event()
+    late_cancel_checks = []
+    original_add_frame_tokens = runner.store.add_frame_tokens
+
+    def record_frame_tokens(*args, **kwargs):
+        original_add_frame_tokens(*args, **kwargs)
+        usage_accounted.set()
+
+    monkeypatch.setattr(runner.store, "add_frame_tokens", record_frame_tokens)
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg
+        entered.set()
+        assert release.wait(5), "test did not release the blocked provider"
+        late_cancel_checks.append(kwargs["should_cancel"]())
+        if on_delta is not None:
+            on_delta("LATE_AFTER_STOP")
+        provider_done.set()
+        return {
+            "content": "```python\nraise AssertionError('must not run')\n```",
+            "usage": {"prompt_tokens": 13, "completion_tokens": 5},
+        }
+
+    def unexpected_execute(*args, **kwargs):
+        raise AssertionError(f"cancelled late cell was executed: {args!r} {kwargs!r}")
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", unexpected_execute)
+
+    try:
+        job = runner.submit_message(frame_id, "default", "Run a slow request")
+        assert entered.wait(2), "provider call did not start"
+        cancelled = runner.cancel(
+            frame_id,
+            job.execution_id,
+            owner=job.execution_owner,
+            reason="Stop pressed during provider request",
+        )
+
+        assert cancelled["ok"] is True and cancelled["scope"] == "running"
+        assert job.done.wait(2), "job stayed running behind the provider request"
+        assert job.wait_result()["status"] == "cancelled"
+        assert runner.is_running(frame_id) is False
+        assert runner.store.get_frame(frame_id)["status"] == "cancelled"
+        assert runner.executions.snapshot(frame_id)["owner"] is None
+
+        # Simulate the next queued turn clearing the coordinator's shared
+        # cancellation Event before the abandoned provider finally responds.
+        # The provider call's private latch must stay cancelled.
+        runner._state(frame_id, "default").cancel.clear()
+        release.set()
+        assert provider_done.wait(2), "detached provider did not finish"
+        assert usage_accounted.wait(2), "cancelled provider usage was dropped"
+        assert late_cancel_checks == [True]
+        assert "LATE_AFTER_STOP" not in json.dumps(hub.events)
+        frame = runner.store.get_frame(frame_id)
+        assert frame["input_tokens"] == 13
+        assert frame["output_tokens"] == 5
+    finally:
+        release.set()
+        runner.close()
+
+
 @pytest.mark.parametrize("with_native_call", [False, True])
 def test_plan_mode_blocks_code_and_native_tools_and_closes_history(
     monkeypatch, tmp_path, with_native_call
@@ -2417,3 +2488,78 @@ def test_wire_delegation_installs_live_event_and_child_step_sinks(tmp_path):
     step_event = next(ev for ev in hub.events if ev.get("type") == "step")
     assert step_event["step_id"] == "s-child-1"
     assert step_event["input"]["delegation"]["child_name"] == "helper"
+
+
+def test_model_path_budget_denial_ends_the_turn_as_budget_exhausted(
+    monkeypatch, tmp_path
+):
+    """An Auto Mode denial inside the provider call must not read as a Stop.
+
+    The provider call now runs on ChatModel's detached thread. When the
+    model-path denial set the shared cancel Event before re-raising, the owner
+    thread saw "cancelled" first and returned the no-op reply: ``_loop``'s
+    ``except AutoBudgetDenied`` was dead for the model path, the ledger
+    terminal said ``cancelled`` instead of ``budget_exhausted``, and the empty
+    reply was appended to the session history.
+    """
+    from openai4s.agent.ledger import branch_action_groups
+    from openai4s.storage.auto_mode import AutoBudgetDenied
+
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def denying_admit(st, *, consumer, **kwargs):
+        del st, kwargs
+        if consumer == "model":
+            raise AutoBudgetDenied("budget_exhausted", "no headroom", field="max_cells")
+        return None
+
+    monkeypatch.setattr(runner, "_admit_auto_budget", denying_admit)
+    monkeypatch.setattr(
+        gateway_mod,
+        "chat",
+        lambda *a, **k: pytest.fail("admission denial must precede the provider call"),
+    )
+    try:
+        result = runner.run_message(frame_id, "default", "spend")
+        st = runner._state(frame_id, "default")
+        terminals = [
+            (event["type"], (event.get("result") or {}).get("reason"))
+            for group in branch_action_groups(runner.store, frame_id)
+            for event in group.get("events") or ()
+            if event.get("type") in {"completed", "cancelled", "failed"}
+        ]
+    finally:
+        runner.close()
+
+    assert result["status"] == "cancelled"
+    assert terminals[-1] == ("failed", "budget_exhausted")
+    assert st.auto_budget_terminal_reason == "budget_exhausted"
+    # Nothing was appended for the denied call: no empty assistant message.
+    assert st.messages[-1]["role"] == "user"
+
+
+def test_a_team_owned_session_is_metered_and_drains_its_abandoned_streams(
+    monkeypatch, tmp_path
+):
+    """The mid-stream Stop policy follows the ledger.
+
+    A session with an owner is charged from the terminal usage event; its
+    abandoned streams must be read to it. Without an owner nothing reads the
+    ledger, and the stream is closed at the next event instead.
+    """
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    try:
+        assert runner._session_is_metered(frame_id) is False
+        runner.store.team.set_session_owner(frame_id, "member-1", project_id="default")
+        assert runner._session_is_metered(frame_id) is True
+        # A broken lookup reads as unmetered: the abandoned call is freed.
+        monkeypatch.setattr(
+            runner.store.team,
+            "session_owner",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError()),
+        )
+        assert runner._session_is_metered(frame_id) is False
+    finally:
+        runner.close()

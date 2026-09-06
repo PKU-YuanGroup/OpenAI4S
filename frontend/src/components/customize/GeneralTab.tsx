@@ -5,6 +5,7 @@ import { api } from "../../features/customize/api";
 import { custTab } from "../../features/customize/actions";
 import { getLayout, setLayout, type LayoutName } from "../../features/customize/layout";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeLoaded } from "../../features/customize/load";
 import { DiagnosticsTab } from "./DiagnosticsTab";
 import { CustRow, Hdr, Seg } from "./ui";
 
@@ -23,6 +24,7 @@ export function GeneralTab() {
         conf = {};
       }
       if (!alive()) return;
+      markCustomizeLoaded();
       setKeyLine(
         conf.has_api_key
           ? t("cust.general.apiKeyConfigured") +

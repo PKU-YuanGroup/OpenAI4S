@@ -24,4 +24,5 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`resizer.ts`](resizer.ts) | Sidebar / dock column drag. Keys `os-side-w` / `os-dock-w`. |
 | [`team.test.ts`](team.test.ts) | Identity chip, admin panel, guest redirect, trap on team modals. |
 | [`team.ts`](team.ts) | Team IIFEs. `/auth/me` probe; admin/files modals use the trap. |
-| [`upload.ts`](upload.ts) | File input / paste / drop uploads. |
+| [`upload.test.ts`](upload.test.ts) | Selection-time destination, the four-clause batch match, single flight, retry supersession, 64-failure bound. |
+| [`upload.ts`](upload.ts) | File input / paste / drop uploads, `UPLOAD_STATE`, the first-session single flight, and the send barrier's `waitForPendingUploads`. |

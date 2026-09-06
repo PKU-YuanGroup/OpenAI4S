@@ -25,6 +25,7 @@ import {
 } from "../../features/customize/environment";
 import { scheduleTimeout } from "../../features/customize/timers";
 import { useAlive, useTimerLease } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, InfoRow } from "./ui";
 
 async function refreshEnvironmentStatus(): Promise<Record<string, unknown> | null> {
@@ -230,6 +231,7 @@ export function ComputeTab() {
         setGpu(g);
         setHost(h);
         setEnvs(asList(env && env.environments) as Record<string, unknown>[]);
+        markCustomizeLoaded();
         try {
           const info = await api("/compute/remote");
           if (alive()) setRemote(info);
@@ -239,7 +241,9 @@ export function ComputeTab() {
         await loadJobs();
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
     return () => {

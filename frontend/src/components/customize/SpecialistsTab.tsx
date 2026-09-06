@@ -10,6 +10,7 @@ import {
   hint,
 } from "../../features/customize/host";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 
 export function SpecialistsTab() {
@@ -25,9 +26,12 @@ export function SpecialistsTab() {
         if (!alive()) return;
         setBuiltin(asList(d.builtin) as Record<string, unknown>[]);
         setCustom(asList(d.specialists) as Record<string, unknown>[]);
+        markCustomizeLoaded();
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive]);

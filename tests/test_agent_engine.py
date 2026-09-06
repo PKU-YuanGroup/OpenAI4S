@@ -389,3 +389,39 @@ def test_engine_has_no_direct_runtime_infrastructure_imports():
         for name in imports
         if any(name == root or name.startswith(root + ".") for root in forbidden)
     ]
+
+
+def test_cancelled_model_reply_is_not_recorded_as_history():
+    """A mid-call cancellation must not leave an empty assistant turn behind.
+
+    ``ChatModel`` answers a call cancelled while the request was on the wire
+    with the canonical no-op reply (``finish_reason == "cancelled"``). The Web
+    session list and the Action Ledger both alias ``state.messages``, so
+    appending that reply's empty assistant message poisoned every later turn
+    of the session on the Anthropic and Gemini wires, which reject a non-final
+    empty assistant message. The engine finishes before the reply is recorded,
+    routed or executed -- exactly as a cancellation seen between turns does.
+    """
+    cancelled_reply = {
+        "content": "",
+        "tool_calls": [],
+        "assistant_message": {"role": "assistant", "content": ""},
+        "finish_reason": "cancelled",
+    }
+    engine, model, _context, executor, events, _, interceptor = _engine(
+        [cancelled_reply], cancellation=FakeCancellation([False, True])
+    )
+    history = [{"role": "user", "content": "first request"}]
+
+    result = engine.run(history)
+
+    assert result.stop_reason == "cancelled"
+    assert result.turns == 0
+    assert len(model.calls) == 1
+    assert not executor.calls and not interceptor.calls
+    assert [type(event) for event in events.events] == [
+        RunStarted,
+        TurnStarted,
+        RunFinished,
+    ]
+    assert result.messages[-1] == {"role": "user", "content": "first request"}

@@ -24,6 +24,7 @@ import {
 } from "../../features/customize/models";
 import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Empty, Hdr, IconGhost, Pill, Subhead } from "./ui";
 import { VolcenginePanel } from "./vendors/volcengine";
 
@@ -58,9 +59,12 @@ export function ModelsTab() {
           active_id: asString(next.active_id),
           protocols: asList(next.protocols),
         });
+        markCustomizeLoaded();
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive]);

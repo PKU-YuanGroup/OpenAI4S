@@ -228,6 +228,11 @@ export async function openConversation(
   resetSessionScoped();
   enableComposer(true);
   hideCancel();
+  // The previous turn's composer hint goes with it. The resume watchdog
+  // resyncs by re-opening the conversation rather than calling turnDone, so
+  // without this a "Stopping…" spinner outlived the turn it described and kept
+  // spinning next to an already-unlocked composer.
+  hint("");
   if (_resumeTimer.value != null) {
     clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
   }

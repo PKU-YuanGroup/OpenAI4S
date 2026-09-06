@@ -10,6 +10,8 @@ F-15 Action Timeline kernel. `sanitize*` / `mergeActionTimelines` are pure. The 
 | --- | --- |
 | [`api.ts`](api.ts) | Same-origin `/api/v1` fetch, `optionalApi`, `hint` / later-lane `isReady` calls. |
 | [`dom.ts`](dom.ts) | `el` / `iconEl` / `ghostIconBtn` / `svgElement` / `$` / `bytes`. |
+| [`execution-request.ts`](execution-request.ts) | `exactExecutionIdentity` / `scopedExecutionRequest` (app.js:3021-3041): an interrupt names the exact execution it stops. |
+| [`execution-request.test.ts`](execution-request.test.ts) | Vitest: the interrupt names an exact execution, and refuses when it cannot. |
 | [`index.ts`](index.ts) | `bootTimeline`: WS handlers + window contract assignments. |
 | [`index.test.ts`](index.test.ts) | `installTimeline` publishes `loadWorkbenchState` for later-lane `callWindow`. |
 | [`island.ts`](island.ts) | Imperative island: 46px ledger, overview SVG, five sidebar panels, `renderActionTimeline`. |

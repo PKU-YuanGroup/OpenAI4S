@@ -14,6 +14,7 @@ import {
   insertSkillMention,
 } from "../../features/customize/host";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Empty, Hdr, IconGhost, Pill, Toggle } from "./ui";
 
 type Skill = Record<string, unknown>;
@@ -132,9 +133,12 @@ export function SkillsTab() {
         const personalSkills = asList(personalData.skills) as Skill[];
         const projectSkills = asList(projectData.skills) as Skill[];
         setSkills([...personalSkills, ...projectSkills]);
+        markCustomizeLoaded();
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive, pid]);

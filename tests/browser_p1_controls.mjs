@@ -31,7 +31,7 @@ try {
   playwright = await import(fallback);
 }
 const { chromium } = playwright;
-import { authenticate } from "./browser_auth.mjs";
+import { authenticate, waitUntil } from "./browser_auth.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 const executablePath = process.env.OPENAI4S_BROWSER_EXECUTABLE || undefined;
@@ -275,6 +275,271 @@ try {
     composerChips.unresolved === 1,
     `${composerChips.unresolved} unresolved chips`,
   );
+
+  // The three blocks below reach `UPLOAD_STATE`, `turnDone`, `grow` and
+  // `newSession` as page globals. `app.js` has them as globals; the Vite
+  // workbench (the default shell -- only OPENAI4S_WEBUI=legacy serves app.js)
+  // carries the same upload barrier, failure latch and New-session single
+  // flight but keeps them module-scoped, so the same lookups resolve to
+  // `undefined` there. Asserting through globals that do not exist is not a
+  // test, it is a guaranteed failure: scope the blocks to the shell that
+  // exposes them, and say loudly when they did not run -- a silent pass here
+  // would read as coverage of the default shell, which is exactly what this
+  // file's header warns against.
+  const legacyUploadShell = await page.evaluate(() =>
+    typeof UPLOAD_STATE !== "undefined" && typeof turnDone === "function");
+  if (!legacyUploadShell) {
+    console.log(
+      "SKIP upload-barrier / failed-upload-latch / New-session state checks: these " +
+      "assert on UPLOAD_STATE and turnDone, which app.js has as globals and the " +
+      "workbench keeps module-scoped. The workbench now carries the same fixes " +
+      "(frontend/src/features/chrome/upload.ts, features/send/send.ts), and its " +
+      "cancel path is covered shell-agnostically below; run with OPENAI4S_WEBUI=legacy " +
+      "to exercise these particular assertions.",
+    );
+  }
+  if (legacyUploadShell) {
+  // ---- Upload/send barrier: bytes are admitted before the turn -----------
+  // The old FileReader callback returned immediately, so pressing Enter after
+  // choosing a file could start list_dir while /uploads was still pending.
+  // The upload was then refused as trusted_capture_busy and the truthful but
+  // premature tool result was "0 items". Hold the real page request here and
+  // prove that no optimistic bubble or message POST can cross it.
+  const uploadRoute = "**/api/v1/uploads";
+  const sendRoute = `**/api/v1/frames/${frameId}/message`;
+  const order = [];
+  let releaseUpload;
+  let signalUploadStarted;
+  let signalMessageStarted;
+  const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+  const uploadStarted = new Promise((resolve) => { signalUploadStarted = resolve; });
+  const messageStarted = new Promise((resolve) => { signalMessageStarted = resolve; });
+  let messageCount = 0;
+  await page.route(uploadRoute, async (route) => {
+    order.push("upload-start"); signalUploadStarted();
+    await uploadGate;
+    order.push("upload-finish");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ artifact_id: "a-upload-order", filename: "upload-order.txt" }),
+    });
+  });
+  await page.route(sendRoute, async (route) => {
+    messageCount += 1; order.push("message"); signalMessageStarted();
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "accepted", request_id: "req-upload-order",
+        execution_id: "exec-upload-order", queue_position: 0,
+        owner: { kind: "agent", id: "job-upload-order" },
+      }),
+    });
+  });
+  const uploadPrompt = "__upload_barrier_list_files__";
+  const beforeUploadRelease = await page.evaluate((prompt) => {
+    const box = document.querySelector("#composer");
+    window.__uploadBarrierSavedDraft = box.value;
+    box.value = prompt;
+    const file = new File(["alpha,beta\n1,2\n"], "upload-order.txt", { type: "text/plain" });
+    window.__uploadBarrier = {
+      upload: uploadFiles([file]),
+      send: send(prompt),
+      duplicate: send(prompt),
+    };
+    return {
+      draft: box.value,
+      running: S.running,
+      preparing: !!S._sendPreparing,
+      bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+        .filter((node) => node.textContent === prompt).length,
+    };
+  }, uploadPrompt);
+  await Promise.race([
+    uploadStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("upload request did not start")), 5000)),
+  ]);
+  check(
+    "send waits behind an in-flight upload",
+    beforeUploadRelease.draft === uploadPrompt
+      && beforeUploadRelease.running === false
+      && beforeUploadRelease.preparing === true
+      && beforeUploadRelease.bubbles === 0
+      && messageCount === 0,
+    JSON.stringify({ beforeUploadRelease, messageCount, order }),
+  );
+  releaseUpload();
+  await Promise.race([
+    messageStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("message request did not start")), 5000)),
+  ]);
+  await page.evaluate(async () => {
+    await Promise.all([
+      window.__uploadBarrier.upload,
+      window.__uploadBarrier.send,
+      window.__uploadBarrier.duplicate,
+    ]);
+  });
+  const afterUploadRelease = await page.evaluate((prompt) => ({
+    draft: document.querySelector("#composer").value,
+    bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+      .filter((node) => node.textContent === prompt).length,
+  }), uploadPrompt);
+  check(
+    "one successful upload releases exactly one message",
+    JSON.stringify(order) === JSON.stringify(["upload-start", "upload-finish", "message"])
+      && messageCount === 1
+      && afterUploadRelease.draft === ""
+      && afterUploadRelease.bubbles === 1,
+    JSON.stringify({ order, messageCount, afterUploadRelease }),
+  );
+  await page.evaluate((prompt) => {
+    document.querySelectorAll(".msg.user").forEach((node) => {
+      const bubble = node.querySelector(".bubble");
+      if (bubble && bubble.textContent === prompt) node.remove();
+    });
+    turnDone("cancelled");
+    const box = document.querySelector("#composer");
+    box.value = window.__uploadBarrierSavedDraft || "";
+    delete window.__uploadBarrier; delete window.__uploadBarrierSavedDraft;
+    grow(); renderComposerRefChips(); hint("");
+  }, uploadPrompt);
+  await page.unroute(sendRoute);
+  await page.unroute(uploadRoute);
+
+  // A failed upload refuses the Enter that raced it: that Enter must preserve
+  // the draft and must not run list_dir against bytes that never arrived. The
+  // refusal is consumed when it is reported, though -- latching it left the
+  // composer dead for the rest of the session, with re-selecting a file in that
+  // same conversation as the only escape.
+  let failedMessageCount = 0;
+  await page.route(uploadRoute, (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "injected upload failure" }),
+  }));
+  await page.route(sendRoute, (route) => {
+    failedMessageCount += 1;
+    return route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "accepted", request_id: "must-not-send", queue_position: 0 }),
+    });
+  });
+  const failedPrompt = "__failed_upload_must_not_list__";
+  const failedUpload = await page.evaluate(async (prompt) => {
+    const box = document.querySelector("#composer");
+    window.__failedUploadSavedDraft = box.value;
+    box.value = prompt;
+    const file = new File(["not admitted"], "failed-upload.txt", { type: "text/plain" });
+    await Promise.all([uploadFiles([file]), send(prompt)]);
+    return {
+      draft: box.value,
+      running: S.running,
+      failures: UPLOAD_STATE.failures.size,
+      bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+        .filter((node) => node.textContent === prompt).length,
+    };
+  }, failedPrompt);
+  check(
+    // No `failures > 0` here: the record is consumed by the very report this
+    // Enter triggers, so it is already gone by the time this reads it. The
+    // refusal itself is the guarantee -- no POST, draft intact, no bubble --
+    // and `afterWarnedUpload` below covers the consume.
+    "a failed upload keeps the Enter that raced it from listing an empty workspace",
+    failedMessageCount === 0
+      && failedUpload.draft === failedPrompt
+      && failedUpload.running === false
+      && failedUpload.bubbles === 0,
+    JSON.stringify({ failedMessageCount, failedUpload }),
+  );
+  const afterWarnedUpload = await page.evaluate(async (prompt) => {
+    await send(prompt);
+    return {
+      draft: document.querySelector("#composer").value,
+      failures: UPLOAD_STATE.failures.size,
+      bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+        .filter((node) => node.textContent === prompt).length,
+    };
+  }, failedPrompt);
+  check(
+    "a reported upload failure does not brick the composer for the session",
+    failedMessageCount === 1
+      && afterWarnedUpload.draft === ""
+      && afterWarnedUpload.failures === 0
+      && afterWarnedUpload.bubbles === 1,
+    JSON.stringify({ failedMessageCount, afterWarnedUpload }),
+  );
+  await page.evaluate((prompt) => {
+    document.querySelectorAll(".msg.user").forEach((node) => {
+      const bubble = node.querySelector(".bubble");
+      if (bubble && bubble.textContent === prompt) node.remove();
+    });
+    turnDone("cancelled");
+    UPLOAD_STATE.failures.clear(); S._sendPreparing = null;
+    const box = document.querySelector("#composer");
+    box.value = window.__failedUploadSavedDraft || "";
+    delete window.__failedUploadSavedDraft;
+    grow(); renderComposerRefChips(); hint("");
+  }, failedPrompt);
+  await page.unroute(sendRoute);
+  await page.unroute(uploadRoute);
+  }
+
+  // ---- Stop sends a SCOPED cancel, on whichever shell is serving ---------
+  // Observable through the wire, not through globals, so this is the one
+  // upload/cancel check that covers the default workbench too. The workbench
+  // reached its cancel through `callLane("scopedExecutionRequest", ...)`, a
+  // name nothing ever assigned; `callLane` answers a missing name with
+  // `undefined` rather than throwing, so Stop resolved to undefined, no POST
+  // was ever sent, and nothing said so. An interrupt that names no execution
+  // is the other half: it can land on whatever started after the one the user
+  // meant to stop.
+  const cancelPosts = [];
+  const queueRoute = "**/api/v1/frames/*/execution-queue";
+  const cancelRoute = "**/api/v1/frames/*/cancel";
+  await page.route(queueRoute, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      owner: {
+        execution_id: "exec-scoped-cancel",
+        status: "running",
+        owner: { kind: "agent", id: "job-scoped-cancel" },
+      },
+      queue: [],
+    }),
+  }));
+  await page.route(cancelRoute, async (route) => {
+    cancelPosts.push({ url: route.request().url(), body: route.request().postDataJSON() });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, scope: "running" }),
+    });
+  });
+  await page.evaluate(() => { S.running = true; });
+  const stopBtn = page.locator("#cancel-btn");
+  await stopBtn.evaluate((node) => node.classList.remove("hidden"));
+  await stopBtn.click();
+  await waitUntil("the scoped cancel to reach the wire", () => cancelPosts.length > 0, 5000);
+  const cancelBody = cancelPosts[0] ? cancelPosts[0].body : {};
+  check(
+    "Stop sends one cancel naming the exact execution it means to stop",
+    cancelPosts.length === 1
+      && cancelPosts[0].url.includes(`/frames/${frameId}/cancel`)
+      && cancelBody.execution_id === "exec-scoped-cancel"
+      && cancelBody.owner_id === "job-scoped-cancel"
+      && !!cancelBody.reason,
+    JSON.stringify(cancelPosts),
+  );
+  await page.unroute(cancelRoute);
+  await page.unroute(queueRoute);
+  await page.evaluate(() => {
+    S.running = false;
+    document.querySelector("#cancel-btn")?.classList.add("hidden");
+  });
 
   // ---- P1-A: the two problem cards, which are deliberately not one -------
   // Ref problems carry {ref, code, message} and the server owns the wording;
@@ -689,6 +954,74 @@ try {
   // rather than assumed: a daemon with no profiles configured renders an empty
   // panel *correctly*, and a check that passed on whatever the developer's
   // database held would be measuring the database.
+  for (const entry of ["#customize-btn", "#settings-gear"]) {
+    await page.locator(entry).click();
+    await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
+    // The rendered heading is the shell-agnostic signal that a renderer ran.
+    // `aria-busy` is the settled marker both shells set: app.js on its
+    // render root, the workbench on the same node while the tab's first
+    // fetch is pending. Read the panel only once it settled -- the workbench
+    // paints its controls immediately under a "Loading…" line, and reading
+    // before that line goes away would call a live panel "stuck on Loading".
+    await page.locator("#cust-content .cust-h").first().waitFor({ state: "visible" });
+    await page.locator('#cust-content[aria-busy="false"]').waitFor({ state: "attached" });
+    const opened = await page.evaluate(() => ({
+      active: document.querySelector(".cust-tab.active")?.dataset.tab || "",
+      heading: document.querySelector("#cust-content .cust-h")?.textContent || "",
+      content: document.querySelector("#cust-content")?.textContent || "",
+    }));
+    check(
+      `${entry} opens the General settings panel instead of forwarding its click event`,
+      opened.active === "general" && opened.heading.length > 0 && !/^(Loading|加载中)/.test(opened.content.trim()),
+      JSON.stringify(opened),
+    );
+    await page.locator("#cust-close").click();
+  }
+
+  // A tab owns the DOM node it started with.  Hold the Skills response, move
+  // to Models, then release the stale response: the late renderer must only
+  // update its detached node and cannot replace the visible Models panel.
+  const skillsCatalogRoute = "**/api/v1/skills/catalog";
+  let releaseSkills;
+  let signalSkillsStarted;
+  let signalSkillsFulfilled;
+  const skillsGate = new Promise((resolve) => { releaseSkills = resolve; });
+  const skillsStarted = new Promise((resolve) => { signalSkillsStarted = resolve; });
+  const skillsFulfilled = new Promise((resolve) => { signalSkillsFulfilled = resolve; });
+  await page.route(skillsCatalogRoute, async (route) => {
+    signalSkillsStarted();
+    await skillsGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ skills: [{ name: "__stale_skill__", displayName: "__stale_skill__", description: "must stay detached" }] }),
+    });
+    signalSkillsFulfilled();
+  });
+  await page.locator("#customize-btn").click();
+  await page.locator('.cust-tab[data-tab="skills"]').click();
+  await Promise.race([
+    skillsStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Skills request did not start")), 5000)),
+  ]);
+  await page.locator('.cust-tab[data-tab="models"]').click();
+  await page.locator("#cust-content .prof-row").first().waitFor({ state: "visible" });
+  releaseSkills();
+  await skillsFulfilled;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const afterStaleSkills = await page.evaluate(() => ({
+    active: document.querySelector(".cust-tab.active")?.dataset.tab || "",
+    profiles: document.querySelectorAll("#cust-content .prof-row").length,
+    staleSkillVisible: (document.querySelector("#cust-content")?.textContent || "").includes("__stale_skill__"),
+  }));
+  check(
+    "a late Settings response cannot overwrite the newer tab",
+    afterStaleSkills.active === "models" && afterStaleSkills.profiles > 0 && !afterStaleSkills.staleSkillVisible,
+    JSON.stringify(afterStaleSkills),
+  );
+  await page.unroute(skillsCatalogRoute);
+  await page.locator("#cust-close").click();
+
   {
     await page.evaluate(() => openCust("models"));
     await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
@@ -736,6 +1069,53 @@ try {
   });
   check("the memory panel renders rows", memory.rows > 0, `${memory.rows} rows`);
   check("the memory master switch is drawn", memory.toggles > 0, `${memory.toggles} toggles`);
+
+  // Both New session controls are real onclick entry points.  A parameterized
+  // newSession() must not mistake the PointerEvent for a project id; each click
+  // should POST the active project's scalar id, never a serialized event.
+  await page.locator("#cust-close").click();
+  const frameCreateRoute = "**/api/v1/frames";
+  let signalFrameCreate = null;
+  await page.route(frameCreateRoute, async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      if (signalFrameCreate) signalFrameCreate(body);
+    }
+    await route.continue();
+  });
+  for (const entry of ["#new-session", "#tab-new"]) {
+    const before = await page.evaluate(() => S.currentId);
+    const posted = new Promise((resolve) => { signalFrameCreate = resolve; });
+    await page.locator(entry).click();
+    const body = await Promise.race([
+      posted,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${entry} did not create a frame`)), 5000)),
+    ]);
+    signalFrameCreate = null;
+    check(
+      `${entry} creates a session in the active project instead of forwarding its click event`,
+      body.project_id === projectId,
+      JSON.stringify(body),
+    );
+    // onclick does not await its async handler.  An explicit New session opts
+    // out of the per-project single flight, so both clicks do POST -- but the
+    // second one still has to observe the first one's frame before it can be
+    // told apart from it, so let this click land before issuing the next.
+    //
+    // Polled with page.evaluate rather than page.waitForFunction: the shell
+    // CSP carries no 'unsafe-eval', so waitForFunction is refused outright
+    // (browser_smoke.mjs makes the same note at both of its wait sites).
+    await waitUntil(
+      "the New session single-flight creation to drain",
+      () => page.evaluate(
+        (beforeId) => S.currentId !== beforeId
+          && (typeof UPLOAD_STATE === "undefined" || UPLOAD_STATE.creations.size === 0),
+        before,
+      ),
+      8000,
+    );
+  }
+  await page.unroute(frameCreateRoute);
 
   if (pageErrors.length) failures.push(`page errors: ${pageErrors.join(" | ")}`);
   if (failures.length) {

@@ -8,6 +8,7 @@ import {
   readTelemetryConsent,
 } from "../../features/customize/telemetry";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
 
@@ -41,6 +42,7 @@ export function NetworkTab() {
           groups: asList(d.groups) as Array<Record<string, unknown>>,
         });
         setDoubao(db);
+        markCustomizeLoaded();
         try {
           const sc = await api("/search/config");
           if (alive()) setSearch(sc);
@@ -49,7 +51,9 @@ export function NetworkTab() {
         }
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive]);

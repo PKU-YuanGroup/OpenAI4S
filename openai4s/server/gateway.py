@@ -5213,6 +5213,18 @@ class SessionRunner:
         ):
             return fn(st.cancel)
 
+    def _session_is_metered(self, root_frame_id: str) -> bool:
+        """Whether the team ledger charges this session (it has an owner).
+
+        The same question ``enforce_llm_quota`` and ``record_session_llm_usage``
+        answer; a broken lookup reads as unmetered, which errs on the side of
+        freeing the abandoned call.
+        """
+        try:
+            return self.store.team.session_owner(root_frame_id) is not None
+        except Exception:  # noqa: BLE001 - ownership lookup is best-effort
+            return False
+
     def enforce_llm_quota(self, root_frame_id: str) -> None:
         """Team-mode LLM quota (M2-6), consulted before a provider request.
 
@@ -6081,6 +6093,23 @@ class SessionRunner:
             self.store, self.cfg.auto_mode.budgets
         ).token_phase_active(str(st.active_auto_mode_run_id or ""))
 
+    def _auto_budget_call_context(self, st: SessionState) -> dict[str, Any]:
+        """The Auto Mode identity one model call is charged against.
+
+        Captured by ``ChatModel`` on the owning thread before the provider
+        thread starts (``call_context``). Read live at ``chat_fn`` entry
+        instead, on the detached thread, it could already be the run the next
+        turn installed after Stop: the abandoned call would then reserve,
+        settle and -- on denial -- trip and cancel a turn that never made it.
+        """
+        return {
+            "run_id": str(st.active_auto_mode_run_id or ""),
+            "action_group_id": execution_action_group(
+                getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
+            ),
+            "extra": self._auto_budget_extra_phase(st),
+        }
+
     def _admit_auto_budget(
         self,
         st: SessionState,
@@ -6091,8 +6120,15 @@ class SessionRunner:
         amount: int = 1,
         enforce_field_limit: bool = True,
         token_upper_bound: int | None = None,
+        run_id: str | None = None,
     ) -> dict | None:
-        run_id = str(st.active_auto_mode_run_id or "")
+        # ``run_id`` pins the run this reservation belongs to. Reading it live
+        # is right on the owner thread, but the model path now runs on the
+        # detached provider thread after Stop released the turn: a queued
+        # follow-up can install a new run before that thread reserves, and the
+        # abandoned call would then charge -- and on denial trip -- the run
+        # belonging to a turn that never asked to stop.
+        run_id = str(st.active_auto_mode_run_id or "") if run_id is None else run_id
         if not run_id:
             return None
         admission_id = f"{run_id}:{consumer}:{action_group_id}"
@@ -6138,17 +6174,29 @@ class SessionRunner:
         messages: Any,
         cfg: Any,
         provider_call: Callable[..., Any],
+        *,
+        run_id: str | None = None,
+        action_group_id: str | None = None,
+        extra: bool | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Admit model/token spend before crossing the provider boundary."""
+        """Admit model/token spend before crossing the provider boundary.
+
+        ``run_id`` / ``action_group_id`` / ``extra`` are the identity pinned by
+        the owning thread (``_auto_budget_call_context``); a direct caller that
+        omits them gets the live values, which is only right on that thread.
+        """
 
         admission = None
         token_admission = None
-        run_id = str(st.active_auto_mode_run_id or "")
-        group_id = execution_action_group(
-            getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
-        )
-        extra = self._auto_budget_extra_phase(st)
+        if run_id is None or action_group_id is None or extra is None:
+            live = self._auto_budget_call_context(st)
+            run_id = live["run_id"] if run_id is None else run_id
+            action_group_id = (
+                live["action_group_id"] if action_group_id is None else action_group_id
+            )
+            extra = live["extra"] if extra is None else extra
+        group_id = action_group_id
         try:
             admission = self._admit_auto_budget(
                 st,
@@ -6156,6 +6204,7 @@ class SessionRunner:
                 action_group_id=group_id,
                 amount=1,
                 enforce_field_limit=False,
+                run_id=run_id,
             )
             if extra and admission is not None:
                 bound = token_upper_bound(
@@ -6180,6 +6229,7 @@ class SessionRunner:
                     action_group_id=f"{group_id}:token",
                     amount=bound,
                     enforce_field_limit=False,
+                    run_id=run_id,
                     token_upper_bound=bound,
                 )
         except AutoBudgetDenied as denied:
@@ -6188,7 +6238,7 @@ class SessionRunner:
                     self._settle_auto_budget(admission, started=False)
                 except Exception:  # noqa: BLE001 - denial remains fail-closed
                     pass
-            self._note_auto_budget_trip(st, denied)
+            self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
             raise
         try:
             result = provider_call(messages, cfg, **kwargs)
@@ -6213,7 +6263,7 @@ class SessionRunner:
                     "adapter token usage is not verifiable",
                     field="extra_token_multiplier",
                 )
-                self._note_auto_budget_trip(st, denied)
+                self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
                 raise denied
         try:
             self._settle_auto_budget(admission, started=True)
@@ -6224,22 +6274,55 @@ class SessionRunner:
                     committed_amount=usage_total,
                 )
         except AutoBudgetDenied as denied:
-            self._note_auto_budget_trip(st, denied)
+            self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
             raise
         return result
 
     def _note_auto_budget_trip(
-        self, st: SessionState, denied: AutoBudgetDenied
+        self,
+        st: SessionState,
+        denied: AutoBudgetDenied,
+        *,
+        run_id: str | None = None,
+        cancel: bool = True,
     ) -> None:
-        st.auto_budget_terminal_reason = denied.reason
-        run_id = str(st.active_auto_mode_run_id or "")
-        if run_id:
+        """Record an Auto Mode denial, and cancel the turn it belongs to.
+
+        ``run_id`` pins the run the denial came from. Since Stop releases the
+        turn while the provider request keeps going on a detached thread, this
+        can now run *after* the next turn was admitted and installed a new run:
+        re-reading the live id there would trip that new run and set the shared
+        cancel Event, aborting a turn that never asked to stop. The caller
+        already pins the id for ``fail_measurement``; this uses the same one.
+
+        A denial whose run is no longer the active one is still recorded
+        against its own run -- the budget ledger should say that run tripped --
+        but it must not touch this session's current cancel or terminal state.
+
+        ``cancel=False`` is for the model-path callers, which re-raise the
+        denial from inside the provider call. That call now runs on ChatModel's
+        detached provider thread: setting the shared cancel Event there, before
+        the raise, made the owner thread observe "cancelled" before it saw the
+        error, so the denial was swallowed into a cancelled no-op reply and the
+        turn was recorded as cancelled rather than budget-exhausted. The raise
+        is what ends the turn; ``_loop``'s handler records the terminal reason
+        and cancels on the owner thread, as it did when the call was
+        synchronous.
+        """
+
+        active = str(st.active_auto_mode_run_id or "")
+        owning = active if run_id is None else str(run_id or "")
+        stale = run_id is not None and owning != active
+        if owning:
             try:
                 self._auto_budget().trip(
-                    run_id, reason=denied.reason, field=denied.field
+                    owning, reason=denied.reason, field=denied.field
                 )
             except Exception:  # noqa: BLE001 - trip is already fail-closed
                 pass
+        if stale or not cancel:
+            return
+        st.auto_budget_terminal_reason = denied.reason
         st.cancel.set()
 
     def _freeze_auto_budget_tokens(self, st: SessionState) -> None:
@@ -10867,9 +10950,22 @@ class SessionRunner:
         def add_usage(usage: dict) -> None:
             self.store.add_frame_tokens(
                 rid,
-                input_tokens=usage.get("prompt_tokens", 0) or 0,
-                output_tokens=usage.get("completion_tokens", 0) or 0,
+                input_tokens=(
+                    usage.get("prompt_tokens") or usage.get("input_tokens", 0) or 0
+                ),
+                output_tokens=(
+                    usage.get("completion_tokens") or usage.get("output_tokens", 0) or 0
+                ),
             )
+
+        def account_abandoned_reply(reply: Mapping[str, Any]) -> None:
+            usage = reply.get("usage")
+            if not isinstance(usage, Mapping) or not usage:
+                return
+            canonical = dict(usage)
+            add_usage(canonical)
+            if action_ledger is not None:
+                action_ledger.record_abandoned_usage(canonical)
 
         latest_user_text = next(
             (
@@ -10971,8 +11067,19 @@ class SessionRunner:
 
         def _auto_budget_chat(messages, cfg, **kwargs):
             # auto_budget sink: model inference admission before provider call.
+            # The identity was pinned by ChatModel on the owning thread; this
+            # runs on the detached provider thread, where the live one may
+            # already be the next turn's.
+            context = kwargs.pop("call_context", None) or {}
             return self._invoke_model_with_auto_budget(
-                st, messages, cfg, chat, **kwargs
+                st,
+                messages,
+                cfg,
+                chat,
+                run_id=context.get("run_id"),
+                action_group_id=context.get("action_group_id"),
+                extra=context.get("extra"),
+                **kwargs,
             )
 
         engine = AgentEngine(
@@ -10985,6 +11092,17 @@ class SessionRunner:
                 # retry backoff rather than only the gap between turns.
                 cancellation=EventCancellation(st.cancel),
                 quota_gate=_llm_quota_gate,
+                abandoned_reply=account_abandoned_reply,
+                # The quota gate reads stored counters and reserves nothing, so
+                # Stop-and-resend passes a ledger that has not been charged for
+                # the request still billing. Naming the session here bounds how
+                # many of those one member can stack.
+                call_scope=rid,
+                call_context=lambda: self._auto_budget_call_context(st),
+                # A team-owned session is charged from the terminal usage
+                # event; an abandoned stream must be read to it, or every
+                # Stop-and-resend goes unbilled against the quota ledger.
+                drain_cancelled_stream=self._session_is_metered(rid),
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,

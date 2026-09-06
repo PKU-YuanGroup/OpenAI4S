@@ -10,6 +10,8 @@ F-15 Action Timeline 内核。`sanitize*` / `mergeActionTimelines` 是纯函数�
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 `/api/v1` fetch、`optionalApi`、`hint` / 后续车道 `isReady` 调用。 |
 | [`dom.ts`](dom.ts) | `el` / `iconEl` / `ghostIconBtn` / `svgElement` / `$` / `bytes`。 |
+| [`execution-request.ts`](execution-request.ts) | `exactExecutionIdentity` / `scopedExecutionRequest`（app.js:3021-3041）：中断必须指名它要停的那一次执行。 |
+| [`execution-request.test.ts`](execution-request.test.ts) | Vitest：中断必须指名具体执行；找不到属主时拒绝发送。 |
 | [`index.ts`](index.ts) | `bootTimeline`：注册 WS handler 并把契约名字挂到 window。 |
 | [`index.test.ts`](index.test.ts) | `installTimeline` 把 `loadWorkbenchState` 挂到后续车道的 `callWindow`。 |
 | [`island.ts`](island.ts) | 命令式孤岛：46px ledger、overview SVG、五个侧栏面板、`renderActionTimeline`。 |

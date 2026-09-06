@@ -1,4 +1,5 @@
 import { closeCustomizeDom, openCustomizeDom } from "./host";
+import { beginCustomizeLoad } from "./load";
 import { customizeGeneration, customizeOpen, customizeTab, nestedEditor } from "./state";
 import { normalizeTab, type CustTab } from "./tabs";
 
@@ -15,6 +16,7 @@ export function custTab(tab?: string): void {
   const next = normalizeTab(tab);
   customizeTab.value = next;
   customizeGeneration.value += 1;
+  beginCustomizeLoad(customizeGeneration.value);
   nestedEditor.value = null;
   paintTabChrome(next);
 }

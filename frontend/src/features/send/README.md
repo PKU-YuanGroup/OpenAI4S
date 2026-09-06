@@ -13,6 +13,7 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` binds once; `installSend` stays DOM-free; Enter dispatches the text; one dispatch in flight at a time. |
 | [`candidate.ts`](candidate.ts) | Review gate three-state timing: `markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`. |
 | [`candidate.test.ts`](candidate.test.ts) | Three-state sequence, no verified demotion, durable-receipt rule. |
+| [`first-send.test.ts`](first-send.test.ts) | The first message of a fresh session dispatches only after the shared creation has opened the conversation, so `openConversation`'s reset cannot land mid-turn; the ticket and the running state survive. |
 | [`environment.ts`](environment.ts) | Standard-profile readiness banner used by `send()` / `turnDone`. |
 | [`handlers.ts`](handlers.ts) | WS types for cards / candidate / step / plan / permission; `handleFrameUpdateTurn`. |
 | [`host.ts`](host.ts) | `isReady` window lookups (`callLane` / `hostFn`); cancel-button visibility. |
