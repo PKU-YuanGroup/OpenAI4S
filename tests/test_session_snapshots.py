@@ -242,3 +242,45 @@ def test_imported_tree_rejects_path_traversal(tmp_path):
         cas.put_tree(
             [{"path": "../escape", "blob": "a" * 64, "size": 1, "mode": 0o600}]
         )
+
+
+def test_capture_reads_the_file_lstat_described_not_the_name(tmp_path):
+    """`lstat` proves the entry is regular; a plain read follows the name.
+
+    The walk skips symlinks by lstat-ing each entry, but then read the path
+    with an API that follows -- so a live child could replace the file
+    between the two calls and have the daemon read the target instead. The
+    reader now refuses a final-segment symlink outright, and refuses any
+    other swap by comparing the open file's inode with the one lstat saw.
+    """
+
+    import errno
+    import os
+
+    import pytest
+
+    from openai4s.storage.snapshots import _read_regular_no_follow
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    real = workspace / "real.txt"
+    real.write_text("audited", encoding="utf-8")
+    info = real.lstat()
+
+    assert _read_regular_no_follow(real, info) == b"audited"
+
+    secret = tmp_path / "access-token"
+    secret.write_text("HOST-ONLY-TOKEN", encoding="utf-8")
+    real.unlink()
+    real.symlink_to(secret)
+    with pytest.raises(OSError) as refused:
+        _read_regular_no_follow(real, info)
+    assert refused.value.errno in {errno.ELOOP, errno.EMLINK, errno.ENOTDIR}
+
+    # Not a symlink, but not the file that was audited either.
+    real.unlink()
+    real.write_text("swapped", encoding="utf-8")
+    if real.lstat().st_ino != info.st_ino:
+        with pytest.raises(OSError) as stale:
+            _read_regular_no_follow(real, info)
+        assert stale.value.errno == errno.ESTALE

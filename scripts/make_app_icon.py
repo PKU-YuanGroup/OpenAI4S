@@ -3,7 +3,7 @@
 
 The mark — five bonded atoms around a terminal block holding a red prompt
 chevron — exists in the repository only as raster: the 150px glyph at the left
-of ``readme-gifs-hd/openai4s_penta.gif`` and a 64px favicon.  Resampling either
+of ``assets/readme-gifs-hd/openai4s_penta.gif`` and a 64px favicon.  Resampling either
 one up to the 1024px an .icns needs produces a visibly soft icon, so this script
 rebuilds the mark from its measured geometry as flat vector primitives and
 supersamples it down instead.  The numbers below are the mark's own, read off
@@ -23,7 +23,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 # --------------------------------------------------------------------------- #
-# The brand mark, measured from readme-gifs-hd/openai4s_penta.gif (final frame).
+# The brand mark, measured from assets/readme-gifs-hd/openai4s_penta.gif (final frame).
 # Coordinates are in that glyph's own 154x131 space; everything below is a pure
 # scale of these, so the icon cannot drift from the banner.
 # --------------------------------------------------------------------------- #

@@ -153,12 +153,19 @@ class SkillService:
             content = (skill.root / "SKILL.md").read_text("utf-8")
         except Exception:  # noqa: BLE001 - loader doc is the compatibility fallback
             content = getattr(skill, "doc", "") or ""
-        return {
+        network = getattr(skill, "network", None)
+        payload = {
             "name": skill.name,
             "origin": skill.origin,
             "description": skill.description,
             "content": content,
+            "version": getattr(skill, "version", "") or "",
+            "document_sha256": getattr(skill, "document_sha256", "") or "",
         }
+        if network is not None:
+            payload["capabilities"] = network.public_dict()
+            payload["network_manifest_digest"] = network.digest
+        return payload
 
     def search(self, spec: dict) -> list:
         self.loader.discover()

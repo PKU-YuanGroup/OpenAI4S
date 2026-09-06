@@ -3,6 +3,10 @@ name: admet_genetic
 description: ADMET-guided genetic molecule optimization workflow from seed SMILES; use when the agent needs to build or run an RDKit/SA-Score/ADMET-AI GA pipeline for molecule optimization, enforce molecule lineage logs, render optimization-history HTML dashboards, and write candidate triage reports.
 origin: openai4s
 category: chemistry
+capabilities:
+  network:
+    mode: none
+    domains: []
 metadata:
   display-name: ADMET-driven genetic molecule optimization
   # SKILL.md body: "**License:** MIT (github.com/swansonk14/admet_ai)."

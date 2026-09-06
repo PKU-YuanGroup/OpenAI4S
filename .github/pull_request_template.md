@@ -72,7 +72,11 @@ Reason:
 - [ ] This PR is small and single-purpose.
 - [ ] No unrelated formatting, broad rewrite, or drive-by refactor is included.
 - [ ] Hotspot files were edited surgically if touched: `gateway.py`,
-      `host_dispatch.py`, `store.py`, `app.js`, `worker.py`, `manager.py`.
+      `host_dispatch.py`, `store.py`, `worker.py`, `manager.py`.
+- [ ] Workbench changes were made in `frontend/` (not legacy `app.js`)
+      and `openai4s/server/webui/dist/` was rebuilt and committed with the
+      source. `OPENAI4S_WEBUI=legacy` is an escape hatch, not a place to add
+      features.
 - [ ] `openai4s/server/webui/vendor/` and `tests/fixtures/` were not
       reformatted.
 

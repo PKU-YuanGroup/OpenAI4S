@@ -26,6 +26,7 @@ from openai4s.execution.process_group import (
     group_alive,
     stop_process_group,
 )
+from openai4s.security.fsprobe import lstat_is_symlink
 
 #: What the caller is shown, and now also what is retained. The tail is kept:
 #: for a command that failed, the end is what explains it.
@@ -204,7 +205,7 @@ def _workspace_snapshot(workspace: Path) -> tuple[dict[str, tuple[int, int]], bo
             dirs[:] = [
                 name
                 for name in dirs
-                if not (Path(root) / name).is_symlink()
+                if not lstat_is_symlink(Path(root) / name)
                 and name not in {".git", ".venv", "node_modules", "__pycache__"}
             ]
             for name in names:
@@ -353,6 +354,9 @@ class BashExecutor:
             "timeout": timeout_s,
         }
         try:
+            # Skill network admission runs on the Host in authorize_bash;
+            # the worker never decides whether a loaded Skill may use the
+            # network and cannot widen egress by omitting that check.
             raw_capability = self._authorization_call("authorize_bash", [binding])
         except Exception as exc:  # noqa: BLE001 — legacy dispatcher: deny
             raise RuntimeError(

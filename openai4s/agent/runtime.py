@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import queue
+import threading
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from openai4s.observability import carry_context
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
@@ -39,11 +43,12 @@ from .actions import (
 from .compaction import (
     DEFAULT_LARGE_OUTPUT_CHARS,
     CompactionArchiveMetadata,
+    CompactionCancelled,
+    ContextEstimate,
     compact,
     estimate_context,
     externalize_large_outputs,
     safe_keep_recent,
-    should_compact,
 )
 from .control import (
     call_reaches_dispatcher,
@@ -60,6 +65,186 @@ from .models import ExecutionOutcome, ModelReply, RunState
 
 LogFn = Callable[..., None]
 
+_LOG = logging.getLogger(__name__)
+
+
+class _DetachedCallBudget:
+    """Bound provider calls that outlive the turn which cancelled them.
+
+    Only *detached* calls are counted. A semaphore held for the whole life of
+    every cancellable request would have bounded healthy concurrency instead:
+    every delegated child is built with a ``cancellation`` (see
+    ``delegation._ChildCancellation``), the fan-out cap of 48 is per node, and
+    the session cap is 1000 -- so an ordinary nested fan-out routinely holds
+    more than 128 live calls and would have started refusing requests that
+    nobody ever cancelled.
+
+    ``scope`` (a session's root frame) is bounded far more tightly than the
+    process. Releasing the turn on Stop is what makes a second one admissible
+    while the first request is still billing, and the team quota gate is
+    check-then-call: it reads stored ``llm_*`` counters and reserves nothing
+    for a call in flight. Stop-and-resend therefore passes a stale ledger every
+    time, and the overrun is whatever this budget allows to stack. The
+    process-wide 128 is a resource ceiling; the per-scope limit is the one that
+    decides how far a single session can outrun its own accounting. It does not
+    make the gate reservation-based -- the in-flight window is still there --
+    it bounds it to a few calls instead of a hundred.
+    """
+
+    def __init__(self, limit: int, *, per_scope_limit: int) -> None:
+        self._limit = limit
+        self._per_scope_limit = per_scope_limit
+        self._lock = threading.Lock()
+        self._outstanding = 0
+        self._by_scope: dict[str, int] = {}
+
+    def outstanding(self, scope: str | None = None) -> int:
+        with self._lock:
+            if scope is None:
+                return self._outstanding
+            return self._by_scope.get(scope, 0)
+
+    def admit(self, scope: str | None = None) -> None:
+        """Refuse a new request while too many cancelled ones are closing."""
+
+        with self._lock:
+            if self._outstanding >= self._limit:
+                raise RuntimeError(
+                    "too many cancelled model requests are still closing; "
+                    "wait for one to time out before retrying"
+                )
+            if (
+                scope is not None
+                and self._by_scope.get(scope, 0) >= self._per_scope_limit
+            ):
+                raise RuntimeError(
+                    "this session already has cancelled model requests still "
+                    "billing; wait for one to close before sending again"
+                )
+
+    def track(self, scope: str | None = None) -> "_DetachedCall":
+        return _DetachedCall(self, scope)
+
+    def _enter(self, scope: str | None) -> None:
+        self._outstanding += 1
+        if scope is not None:
+            self._by_scope[scope] = self._by_scope.get(scope, 0) + 1
+
+    def _exit(self, scope: str | None) -> None:
+        self._outstanding = max(0, self._outstanding - 1)
+        if scope is not None:
+            remaining = self._by_scope.get(scope, 0) - 1
+            if remaining > 0:
+                self._by_scope[scope] = remaining
+            else:
+                self._by_scope.pop(scope, None)
+
+
+class _DetachedCall:
+    """One provider call's handle: at most one counted detachment, always settled.
+
+    ``detach`` (owner thread) and ``settle`` (provider thread) race, so the
+    budget counter is mutated under this handle's lock rather than the
+    budget's own -- a detach that lost the race must not add a slot the
+    settle already decided not to remove.
+    """
+
+    def __init__(self, budget: _DetachedCallBudget, scope: str | None) -> None:
+        self._budget = budget
+        self._scope = scope
+        self._lock = threading.Lock()
+        self._counted = False
+        self._settled = False
+
+    def detach(self) -> None:
+        with self._lock:
+            if self._counted or self._settled:
+                return
+            self._counted = True
+            with self._budget._lock:
+                self._budget._enter(self._scope)
+
+    def settle(self) -> None:
+        with self._lock:
+            if self._settled:
+                return
+            self._settled = True
+            if self._counted:
+                with self._budget._lock:
+                    self._budget._exit(self._scope)
+
+
+# A cancelled non-streaming urllib call may remain blocked until its response
+# or socket timeout (a streaming one ends at its next event: the transport
+# polls ``should_cancel`` per event and closes the response). Bound those
+# detached calls so repeated Stop presses cannot grow threads/sockets without
+# limit; live requests are never charged against this budget.
+# 128 process-wide is the resource ceiling. Four per session is the accounting
+# one: it leaves the ordinary Stop-then-retype flow untouched while keeping a
+# Stop-spam from stacking a hundred billed requests against a ledger that has
+# not been charged for any of them yet. Only the session's own turn is keyed
+# on a scope; delegated children pass ``call_scope=None`` (see
+# ``loop.Agent._provider_call_scope``) so that stopping a fan-out cannot
+# refuse the parent's next call.
+_PROVIDER_CALL_BUDGET = _DetachedCallBudget(128, per_scope_limit=4)
+
+
+class _LateAccounting:
+    """Run a cancelled call's accounting off the detached provider thread.
+
+    A reply that lands after Stop has no owning turn left to run its metering
+    on, and the provider thread is the wrong substitute: there is one per
+    abandoned call, they wake whenever their sockets happen to time out, and
+    the sink they invoke reaches ``Store`` and the action ledger -- which the
+    rest of this file treats as single-threaded state machines. Draining every
+    late reply through one daemon worker keeps that sink on a single known
+    thread, in arrival order, however many calls were abandoned.
+
+    The worker is started on first use and never exits: it spends its life
+    blocked in ``get()``, and being a daemon it cannot hold the process open.
+    """
+
+    def __init__(self) -> None:
+        self._start_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._pending: queue.Queue[
+            tuple[Callable[[Mapping[str, Any]], None], Mapping[str, Any]]
+        ] = queue.Queue()
+
+    def submit(
+        self,
+        sink: Callable[[Mapping[str, Any]], None],
+        reply: Mapping[str, Any],
+    ) -> None:
+        with self._start_lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(
+                    target=self._drain,
+                    name="openai4s-late-accounting",
+                    daemon=True,
+                )
+                self._worker.start()
+        # The worker is daemon-lifetime and deliberately carries no context of
+        # its own; each item carries the context of the turn that abandoned
+        # the call, so the one log line a failed metering can leave is stamped
+        # with that turn's request id instead of an empty one.
+        self._pending.put((carry_context(sink), reply))
+
+    def _drain(self) -> None:
+        while True:
+            sink, reply = self._pending.get()
+            try:
+                sink(reply)
+            except BaseException:  # noqa: BLE001 - accounting is fail-soft
+                # Nothing may end this thread: a sink that raises outside
+                # ``Exception`` (a CancelledError from an async-flavoured
+                # sink, an injected fault) would otherwise kill the only
+                # drain and leave every later late reply queued forever.
+                _LOG.exception("failed to account for an abandoned model reply")
+
+
+_LATE_ACCOUNTING = _LateAccounting()
+
 
 def _null_log(*args: object) -> None:
     del args
@@ -67,6 +252,40 @@ def _null_log(*args: object) -> None:
 
 def _allow_cell(_action: CodeCell) -> None:
     return None
+
+
+class _CancelProbe:
+    """The ``should_cancel`` the transport polls, plus the mid-stream policy.
+
+    ``abort_stream`` tells ``transport._consume`` whether Stop may end a live
+    stream at its next event (True: the default, frees the socket and the
+    provider's generation within one chunk) or must let it run to the end
+    with the deltas discarded (False: a metered session, whose team quota
+    ledger is charged from the terminal usage event that an aborted stream
+    never delivers). Handed over as an attribute rather than a second kwarg
+    because ``chat()`` and every provider adapter forward ``should_cancel``
+    untouched to ``post_sse``.
+    """
+
+    __slots__ = ("_probe", "abort_stream")
+
+    def __init__(self, probe: Callable[[], bool], *, abort_stream: bool) -> None:
+        self._probe = probe
+        self.abort_stream = abort_stream
+
+    def __call__(self) -> bool:
+        return self._probe()
+
+
+def _cancelled_model_reply() -> dict[str, Any]:
+    """Return a normalized no-op reply for an abandoned provider call."""
+
+    return {
+        "content": "",
+        "tool_calls": [],
+        "assistant_message": {"role": "assistant", "content": ""},
+        "finish_reason": "cancelled",
+    }
 
 
 @dataclass(frozen=True)
@@ -96,6 +315,28 @@ class ChatModel:
     #: raises to refuse. None (the default and the CLI's value) is a no-op,
     #: so single-user behavior is untouched (INV-1).
     quota_gate: Callable[[], None] | None = None
+    #: Optional accounting-only sink for a provider reply which arrives after
+    #: the owning turn was cancelled. It must never project content/actions.
+    abandoned_reply: Callable[[Mapping[str, Any]], None] | None = None
+    #: Session identity (root frame) used to bound how many cancelled requests
+    #: one session can leave billing while the quota gate reads a ledger that
+    #: has not been charged for them yet. None keeps only the process bound.
+    call_scope: str | None = None
+    #: Optional per-call context, captured on the OWNING thread before any
+    #: hand-off and passed to ``chat_fn`` as ``call_context=``. The Web
+    #: wrapper pins its Auto Mode identity (run, action group, token phase)
+    #: through it: read at ``chat_fn`` entry instead, on the detached provider
+    #: thread, that identity could already belong to the turn admitted after
+    #: Stop, so the reservation, its settle and any denial landed on a run
+    #: that never made the call.
+    call_context: Callable[[], Mapping[str, Any]] | None = None
+    #: Read an abandoned stream to its end instead of closing it at the next
+    #: event. Set for a metered (team-owned) session: its quota ledger is
+    #: charged from the terminal usage event via ``abandoned_reply``, and a
+    #: stream closed before that event would leave every Stop-and-resend
+    #: unbilled against the very ledger ``quota_gate`` reads. The detached-call
+    #: budget then bounds how many such drains one session can stack.
+    drain_cancelled_stream: bool = False
 
     def complete(
         self,
@@ -115,23 +356,198 @@ class ChatModel:
         else:
             source = self.tools
         kwargs: dict[str, Any] = {"tools": tuple(source)}
+        if self.call_context is not None:
+            # Here, on the owning thread: this is the last point at which the
+            # session state still describes the turn making this call.
+            kwargs["call_context"] = dict(self.call_context())
+        copied_messages = [dict(message) for message in messages]
+        if self.cancellation is None:
+            if self.stream:
+                kwargs["on_delta"] = on_delta
+            return self.chat_fn(copied_messages, self.cfg, **kwargs)
+
+        # ``urllib`` cannot close a response which is blocked in another
+        # thread. Running the provider call in a daemon thread still lets the
+        # owning Agent turn stop immediately: a streaming request ends at its
+        # next event (the transport polls ``should_cancel`` per event and
+        # closes the response) unless the session is metered and the stream
+        # must be drained for its usage, a non-streaming one may finish
+        # against its normal network timeout, and either way its result is
+        # detached and inert.
+        #
+        # The per-call Event is deliberately monotonic. The Web coordinator
+        # clears its shared cancellation Event when it admits the next queued
+        # turn. If a detached old request continued to read that shared Event
+        # directly, it could be ABA-revived and emit late deltas into the new
+        # turn. Once this call has observed cancellation, it stays cancelled.
+        cancelled = threading.Event()
+        finished = threading.Event()
+        report_lock = threading.Lock()
+        reported = False
+        outcome: dict[str, Any] = {}
+        deltas: queue.Queue[str] = queue.Queue()
+
+        def is_cancelled() -> bool:
+            if cancelled.is_set():
+                return True
+            try:
+                requested = bool(self.cancellation.cancelled())
+            except Exception:  # noqa: BLE001 - cancellation telemetry is fail-soft
+                requested = False
+            if requested:
+                cancelled.set()
+            return requested
+
+        if is_cancelled():
+            return _cancelled_model_reply()
+
+        _PROVIDER_CALL_BUDGET.admit(self.call_scope)
+        detached_call = _PROVIDER_CALL_BUDGET.track(self.call_scope)
+
+        def report_abandoned_reply() -> None:
+            nonlocal reported
+            # ``cancelled`` is this call's monotonic latch. Every path that
+            # sets it ends with the owner returning ``abandon()``, never
+            # ``outcome["reply"]``, so a stored reply is by definition a late
+            # one. Read the latch itself, not ``is_cancelled()``: the provider
+            # thread's ``finally`` must not pull the shared Event into this.
+            if (
+                not cancelled.is_set()
+                or self.abandoned_reply is None
+                or "reply" not in outcome
+            ):
+                return
+            with report_lock:
+                if reported:
+                    return
+                reported = True
+                sink = self.abandoned_reply
+                reply = outcome["reply"]
+            # Handed off rather than called here: this runs from the provider
+            # thread's ``finally`` as often as from the owning turn, and the
+            # sink writes to Store and the action ledger.
+            _LATE_ACCOUNTING.submit(sink, reply)
+
+        def abandon() -> Mapping[str, Any]:
+            # Latch before inspecting outcome: the provider may be between
+            # storing its reply and running its accounting callback.
+            cancelled.set()
+            # The owning turn is about to return while the request may still be
+            # blocked in urllib. From here it is a detached call and counts
+            # against the budget until its socket finally closes.
+            detached_call.detach()
+            report_abandoned_reply()
+            return _cancelled_model_reply()
+
         if self.stream:
-            kwargs["on_delta"] = on_delta
-        if self.cancellation is not None:
-            # The engine checks cancellation between turns, which does nothing
-            # while a rate-limited provider holds this call through a full
-            # retry budget. The transport polls this during backoff.
-            kwargs["should_cancel"] = self.cancellation.cancelled
-        return self.chat_fn([dict(message) for message in messages], self.cfg, **kwargs)
+
+            def emit_delta(text: str) -> None:
+                # WebEventSink and the action ledger are single-threaded state
+                # machines. The provider thread only queues bytes; the owning
+                # Agent thread below is the sole caller of on_delta.
+                if not is_cancelled():
+                    deltas.put(text)
+
+            kwargs["on_delta"] = emit_delta
+        kwargs["should_cancel"] = _CancelProbe(
+            is_cancelled, abort_stream=not self.drain_cancelled_stream
+        )
+
+        def invoke() -> None:
+            try:
+                # Stop can land between `Thread.start()` below and this line:
+                # the owner may already have returned `abandon()` while this
+                # thread was still waiting for the GIL through the engine
+                # unwind and the next turn's admission.
+                #
+                # Running `chat_fn` then is not merely wasted. The whole reason
+                # a cancelled call is left running is that its urllib request
+                # is already on the wire and cannot be recalled -- here it has
+                # not been sent yet, so there is nothing to salvage and a
+                # provider request that nobody will read still gets billed.
+                #
+                # The Auto Mode identity is not decided here any more: the
+                # owning thread captured it in ``call_context`` before this
+                # thread started, so a run installed after Stop cannot be
+                # charged, settled or tripped by a call it never made.
+                if is_cancelled():
+                    return
+                outcome["reply"] = self.chat_fn(
+                    copied_messages,
+                    self.cfg,
+                    **kwargs,
+                )
+            except BaseException as error:  # propagate on the owning turn
+                outcome["error"] = error
+            finally:
+                try:
+                    report_abandoned_reply()
+                finally:
+                    finished.set()
+                    detached_call.settle()
+
+        provider_thread = threading.Thread(
+            target=carry_context(invoke),
+            name="openai4s-provider-call",
+            daemon=True,
+        )
+        try:
+            provider_thread.start()
+        except BaseException:
+            detached_call.settle()
+            raise
+        while True:
+            if is_cancelled():
+                return abandon()
+            if self.stream:
+                try:
+                    delta = deltas.get(timeout=0.05)
+                except queue.Empty:
+                    # ``finished`` can be set between the timeout above and this
+                    # check, with the provider's last chunk already queued. Only
+                    # an empty queue means there is nothing left to project.
+                    if finished.is_set() and deltas.empty():
+                        break
+                    continue
+                if is_cancelled():
+                    return abandon()
+                try:
+                    on_delta(delta)
+                except BaseException:
+                    abandon()
+                    raise
+                continue
+            if finished.wait(0.05):
+                break
+        if is_cancelled():
+            return abandon()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["reply"]
+
+
+def _positive_float(value: Any) -> float | None:
+    """Return a finite number strictly greater than zero, else ``None``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed <= 0 or parsed != parsed or parsed == float("inf"):
+        return None
+    return parsed
 
 
 @dataclass
 class CompactionPolicy:
-    """Apply Context Policy V2 with a consecutive-low-yield breaker.
+    """Apply Context Policy V2 with low-yield and consecutive-failure breakers.
 
     ``metadata_provider`` is the persistence-neutral seam for Web runtimes to
     attach branch, ledger cursor, recovery pointer, and Kernel generation.  If
     omitted, the same keys are read from ``RunState.metadata``.
+    ``workspace_provider`` returns the kernel cwd so oversized outputs can be
+    copied next to the worker; a raising provider is treated as no workspace.
     """
 
     cfg: Any
@@ -145,6 +561,10 @@ class CompactionPolicy:
         Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
     ) = None
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None
+    workspace_provider: Callable[[RunState], str | None] | None = None
+    # Polled between summary chunks and handed to each summary ``chat()``;
+    # the engine's own cancellation seam never reaches those calls.
+    should_cancel: Callable[[], bool] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS
@@ -155,30 +575,54 @@ class CompactionPolicy:
     circuit_open_total: int = field(default=0, init=False)
     # Multiple of ``circuit_open_total`` at which compaction is retried.
     circuit_retry_growth: float = 1.5
+    max_failure_attempts: int = 2
+    failure_streak: int = field(default=0, init=False)
+    # Which breaker tripped, as the skip log and metadata report it.  Both
+    # streak counters can be non-zero at once, so neither one says.
+    circuit_reason: str | None = field(default=None, init=False)
 
     def prepare(self, state: RunState) -> Sequence[Mapping[str, Any]]:
         if self.minimum_yield_ratio < 0 or self.minimum_yield_ratio >= 1:
             raise ValueError("minimum_yield_ratio must be in [0, 1)")
         if self.max_low_yield_attempts < 1:
             raise ValueError("max_low_yield_attempts must be positive")
+        if self.max_failure_attempts < 1:
+            raise ValueError("max_failure_attempts must be positive")
 
+        ratio = self._calibration_ratio(state)
+        tool_schemas = self._tool_schemas(state)
+        context_budget = self._context_budget(state)
+        prepared, sent = self._prepare(state, tool_schemas, context_budget, ratio)
+        state.metadata["compaction_failure_streak"] = self.failure_streak
+        state.metadata["compaction_circuit_open"] = self.circuit_open
+        state.metadata["compaction_circuit_reason"] = self.circuit_reason
+        # The estimate of the list actually returned, which the next reply's
+        # ``input_tokens`` calibrates against; ``_prepare`` priced it already.
+        state.metadata["context_estimate_sent"] = sent.total
+        return prepared
+
+    def _trip(self, reason: str, before: ContextEstimate) -> None:
+        self.circuit_open = True
+        self.circuit_open_total = before.total
+        self.circuit_reason = reason
+
+    def _prepare(
+        self,
+        state: RunState,
+        tool_schemas: Sequence[Mapping[str, Any]],
+        context_budget: int | None,
+        calibration: float,
+    ) -> tuple[Sequence[Mapping[str, Any]], ContextEstimate]:
+        """Return the messages to send and the estimate of exactly that list."""
         metadata = self._metadata(state)
-        try:
-            tool_schemas = tuple(
-                self.tool_schema_provider(state)
-                if self.tool_schema_provider is not None
-                else ()
-            )
-        except Exception:  # noqa: BLE001 - schema accounting is fail-soft
-            tool_schemas = ()
-        try:
-            context_budget = (
-                self.context_budget_provider(state)
-                if self.context_budget_provider is not None
-                else None
-            )
-        except Exception:  # noqa: BLE001 - config fallback remains available
-            context_budget = None
+        workspace: str | None = None
+        provider = self.workspace_provider
+        if provider is not None:
+            try:
+                provided = provider(state)
+            except Exception:
+                provided = None
+            workspace = None if provided is None else str(provided)
         try:
             messages = externalize_large_outputs(
                 state.messages,
@@ -186,21 +630,25 @@ class CompactionPolicy:
                 threshold_chars=self.large_output_chars,
                 archive_metadata=metadata,
                 artifact_archiver=self.artifact_archiver,
+                workspace=workspace,
             )
         except Exception as error:  # noqa: BLE001 - preserve the live context
             state.metadata["last_externalization_error"] = str(error)[:500]
             self.log(f"[context output kept inline] Artifact archive failed: {error}")
             messages = state.messages
+            # compact() externalizes again on its way in; handing it the same
+            # workspace would fail the same way and count as a compaction
+            # failure, tripping the breaker over a write that is best-effort.
+            workspace = None
         before = estimate_context(messages, tool_schemas)
         state.metadata["context_estimate"] = before.as_dict()
+        calibrated_total = before.total * calibration
+        state.metadata["context_estimate_calibrated_total"] = calibrated_total
 
-        if not should_compact(
-            messages,
-            self.cfg,
-            tool_schemas=tool_schemas,
-            context_budget=context_budget,
+        if not self._should_trigger(
+            context_budget=context_budget, calibrated_total=calibrated_total
         ):
-            return messages
+            return messages, before
         if self.circuit_open:
             # The breaker prevents *repeated futile* compaction, not compaction
             # forever: once the context has grown materially past the size at
@@ -210,18 +658,29 @@ class CompactionPolicy:
             if before.total < self.circuit_open_total * self.circuit_retry_growth:
                 self.log(
                     "[compaction skipped] circuit breaker open after "
-                    f"{self.low_yield_streak} low-yield attempts"
+                    f"{self.circuit_reason}"
                 )
-                return messages
+                return messages, before
             self.log(
                 "[compaction retry] context grew "
                 f"{before.total} >= {self.circuit_retry_growth}x "
                 f"{self.circuit_open_total}; reopening compaction"
             )
+            # A reopened breaker gets its full budget back on both counters;
+            # the failure streak counts *consecutive* failures, and the trip
+            # that opened the circuit is not one of the retry's.
             self.circuit_open = False
+            self.circuit_reason = None
             self.low_yield_streak = 0
+            self.failure_streak = 0
             self.circuit_open_total = 0
 
+        # compact() hands the durable record to the sink from inside its
+        # archive step, before this policy has decided whether the projection
+        # is adopted.  Buffer it: a rejected compaction recorded as applied
+        # makes the history a restart rebuilds disagree with the one the run
+        # kept using.
+        deferred: list[Mapping[str, Any]] = []
         try:
             prepared = compact(
                 messages,
@@ -231,23 +690,28 @@ class CompactionPolicy:
                 archive_metadata=metadata,
                 large_output_chars=self.large_output_chars,
                 artifact_archiver=self.artifact_archiver,
-                archive_sink=self.archive_sink,
+                archive_sink=deferred.append if self.archive_sink is not None else None,
                 tool_schemas=tool_schemas,
+                context_budget=context_budget,
+                workspace=workspace,
+                should_cancel=self.should_cancel,
             )
-        except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
+        except CompactionCancelled as error:
+            # The user stopped the run; that is not a compaction failure and
+            # must not count toward the breaker.
             state.metadata["last_compaction_error"] = str(error)[:500]
-            self.log(f"[compaction skipped] durable archive failed: {error}")
-            return messages
+            self.log(f"[compaction cancelled] {error}")
+            return messages, before
+        except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
+            return self._compaction_failed(state, before, error, messages), before
         after = estimate_context(prepared, tool_schemas)
         gain = max(0, before.total - after.total)
         ratio = gain / max(1, before.total)
-        state.metadata["context_estimate"] = after.as_dict()
         state.metadata["last_compaction_yield_ratio"] = ratio
         if ratio < self.minimum_yield_ratio:
             self.low_yield_streak += 1
             if self.low_yield_streak >= self.max_low_yield_attempts:
-                self.circuit_open = True
-                self.circuit_open_total = before.total
+                self._trip(f"{self.low_yield_streak} low-yield attempts", before)
             self.log(
                 "[compaction low-yield] "
                 f"ratio={ratio:.3f} streak={self.low_yield_streak} "
@@ -266,9 +730,96 @@ class CompactionPolicy:
         # projection.  It still counts as a low-yield attempt and remains in
         # the audit archive, allowing the breaker to stop a second recurrence.
         if after.total >= before.total:
-            state.metadata["context_estimate"] = before.as_dict()
-            return messages
-        return prepared
+            # compact() itself worked; the streak counts exceptions, not gain.
+            self.failure_streak = 0
+            return messages, before
+        if self.archive_sink is not None:
+            try:
+                for payload in deferred:
+                    self.archive_sink(payload)
+            except Exception as error:  # noqa: BLE001 - unrecorded is not adopted
+                # The streak is still live here on purpose: a sink that keeps
+                # failing must trip the breaker like any other repeated
+                # failure instead of buying a fresh summary every turn.
+                return self._compaction_failed(state, before, error, messages), before
+        self.failure_streak = 0
+        state.metadata["context_estimate"] = after.as_dict()
+        return prepared, after
+
+    def _compaction_failed(
+        self,
+        state: RunState,
+        before: ContextEstimate,
+        error: BaseException,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> Sequence[Mapping[str, Any]]:
+        self.failure_streak += 1
+        state.metadata["last_compaction_error"] = str(error)[:500]
+        self.log(f"[compaction skipped] durable archive failed: {error}")
+        if self.failure_streak >= self.max_failure_attempts:
+            self._trip(f"{self.failure_streak} consecutive failures", before)
+            self.log(
+                "[compaction circuit open] "
+                f"{self.failure_streak} consecutive failures: {error}"
+            )
+        return messages
+
+    def _calibration_ratio(self, state: RunState) -> float:
+        previous = _positive_float(state.metadata.get("context_estimate_calibration"))
+        if previous is None:
+            previous = 1.0
+        actual = 0.0
+        reply = state.last_reply
+        if reply is not None:
+            usage = reply.usage
+            if isinstance(usage, Mapping):
+                actual_value = _positive_float(usage.get("input_tokens"))
+                actual = actual_value if actual_value is not None else 0.0
+        sent = _positive_float(state.metadata.get("context_estimate_sent")) or 0.0
+        if actual > 0 and sent > 0:
+            ratio = min(8.0, max(0.5, actual / sent))
+        else:
+            ratio = previous
+        state.metadata["context_estimate_calibration"] = ratio
+        return ratio
+
+    def _should_trigger(
+        self, *, context_budget: int | None, calibrated_total: float
+    ) -> bool:
+        """``calibrated_total`` already prices messages and tool schemas."""
+        window = int(
+            context_budget
+            if context_budget is not None
+            else self.cfg.context_window_tokens
+        )
+        trigger = int(
+            window * float(getattr(self.cfg, "compaction_trigger_ratio", 0.75))
+        )
+        return calibrated_total > trigger
+
+    def _tool_schemas(self, state: RunState) -> tuple[Mapping[str, Any], ...]:
+        try:
+            return tuple(
+                self.tool_schema_provider(state)
+                if self.tool_schema_provider is not None
+                else ()
+            )
+        except Exception:  # noqa: BLE001 - schema accounting is fail-soft
+            return ()
+
+    def _context_budget(self, state: RunState) -> int | None:
+        try:
+            budget = (
+                self.context_budget_provider(state)
+                if self.context_budget_provider is not None
+                else None
+            )
+        except Exception:  # noqa: BLE001 - config fallback remains available
+            return None
+        # 0 is what a capability entry whose max_output equals its window
+        # reports; it means "unknown", and a zero window would compact on
+        # every turn with a zero chunk budget.
+        return int(budget) if budget is not None and int(budget) > 0 else None
 
     def _metadata(self, state: RunState) -> CompactionArchiveMetadata:
         source = (
@@ -425,6 +976,34 @@ class LocalActionExecutor:
     # Durable kernel-generation registration for Agent-owned workers; None
     # keeps the historical in-memory-only continuity metadata.
     generation_recorder: KernelGenerationRecorder | None = None
+
+    def bind_progress_circuit(self, state: RunState) -> None:
+        """Restore the process cache from the Action Ledger, if present."""
+
+        from .ledger import restore_progress_circuit
+        from .progress_circuit import (
+            ProgressCircuit,
+            attach_progress_circuit,
+            circuit_from_state,
+        )
+
+        if circuit_from_state(state) is not None:
+            return
+        ledger = self.action_ledger
+        store = getattr(ledger, "store", None) if ledger is not None else None
+        root = getattr(ledger, "root_frame_id", None) if ledger is not None else None
+        if store is None or not str(root or "").strip():
+            attach_progress_circuit(state, ProgressCircuit())
+            return
+        try:
+            circuit = restore_progress_circuit(
+                store,
+                str(root),
+                branch_id=getattr(ledger, "branch_id", None),
+            )
+        except Exception:  # noqa: BLE001 — missing ledger APIs must not break a run
+            circuit = ProgressCircuit()
+        attach_progress_circuit(state, circuit)
 
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState

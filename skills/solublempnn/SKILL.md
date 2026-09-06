@@ -10,6 +10,10 @@ description: >
 license: Apache-2.0
 origin: openai4s
 category: biomodels
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: SolubleMPNN
   # github.com/dauparas/ProteinMPNN/blob/main/LICENSE: MIT (© 2022 Justas

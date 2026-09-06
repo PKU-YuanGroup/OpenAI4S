@@ -467,3 +467,23 @@ def test_flag_off_is_inert(tmp_path):
         is None
     )
     store.close()
+
+
+def test_evaluate_without_run_id_does_not_meter_review_budget():
+    called = {"n": 0}
+
+    def chat(messages, cfg, **kwargs):
+        called["n"] += 1
+        return _pass_chat(messages, cfg, **kwargs)
+
+    service = ScientificReviewService(store=None, config=_cfg(), chat_call=chat)
+    for _ in range(3):
+        result = service.evaluate(
+            _snapshot(),
+            result_review_mode="review_only",
+            agent_cfg=_llm(model="agent"),
+            reviewer_cfg=_llm(model="reviewer"),
+            chat_call=chat,
+        )
+        assert result["verdict"] == "pass"
+    assert called["n"] == 3

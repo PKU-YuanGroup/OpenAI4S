@@ -427,6 +427,17 @@ def test_job_result_cache_warning_egress_hint_and_cancel(capsys):
     )
 
 
+def test_cancel_error_is_indeterminate_when_the_remote_did_not_confirm():
+    recorder = _Recorder(
+        [{"error": "still there", "error_kind": "receipt_unconfirmed"}]
+    )
+    job = _ComputeJob(recorder, "ssh:lab", "job-1")
+    with pytest.raises(RuntimeError) as exc:
+        job.cancel()
+    assert exc.value.error_kind == "receipt_unconfirmed"
+    assert exc.value.indeterminate is True
+
+
 def test_idempotency_key_reaches_the_host(tmp_path, monkeypatch):
     """`docs/compute.md` has told users to pass this for a while; the SDK
     never forwarded it, so a retry became a second remote job — the exact

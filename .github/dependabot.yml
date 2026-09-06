@@ -47,13 +47,23 @@ updates:
     groups:
       # The only pre-commit ecosystem left ungrouped, which is why one Monday
       # produced two separate hook PRs. Batch the half that is normally inert
-      # against the rule sets pinned in pyproject.toml, and deliberately leave
-      # majors out of the group: a major hook bump is a style or lint-policy
-      # change that has to be read on its own, not merged as one row of a
-      # version table (black 23.3.0 -> 26.5.1 reformatted 234 files).
+      # against the rule sets pinned in pyproject.toml, and deliberately keep
+      # black out of the group: a black bump is a style change that has to be
+      # read on its own, not merged as one row of a version table (black
+      # 23.3.0 -> 26.5.1 reformatted 234 files).
+      #
+      # `exclude-patterns`, not `update-types`, because this ecosystem cannot
+      # evaluate `update-types`. Dependabot resolves pre-commit hooks as git
+      # refs and does not semver-classify them: every hook bump it has opened
+      # carries `dependency-type: direct:production` with NO `update-type:`
+      # trailer, while the uv and github-actions PRs from the same Mondays
+      # carry `update-type: version-update:semver-patch`. A group filtered only
+      # on `update-types` therefore matched nothing, and the group batched zero
+      # updates from the day it was added -- which is why the separate hook PRs
+      # it was meant to stop kept arriving and kept being consolidated by hand.
       hook-versions:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        exclude-patterns: ["https://github.com/psf/black"]
     open-pull-requests-limit: 3
 
   - package-ecosystem: "github-actions"
@@ -62,6 +72,15 @@ updates:
       interval: "weekly"
       day: "monday"
     groups:
+      # Same rule as the hook group above, and here the filter actually works:
+      # github-actions IS semver-classified, so `update-types` matches. It was
+      # missing, and a major went through as one row of a two-row version
+      # table -- setup-uv 9.0.0 -> 10.0.1 batched with a codeql-action patch.
+      # Action majors land in release.yml (`id-token: write`, OIDC PyPI
+      # publish) and scorecard.yml (`security-events: write`), where the only
+      # human-readable content of the diff is a `# vX.Y.Z` comment, so they
+      # have to arrive as their own PR.
       workflow-actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5

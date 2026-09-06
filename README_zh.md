@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · 面向科学家的开源 AI" width="480"/>
+<img src="assets/readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · 面向科学家的开源 AI" width="480"/>
 
 ### 面向科学家的开源 AI
 
@@ -116,16 +116,16 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 <table>
 <tr>
-  <td width="50%"><b>Live API 工作流</b>:从 UniProt / RCSB 到 3D 结构和报告<br/><img src="readme-gifs-hd/demo-01-hd.gif" alt="Live API 工作流:从 UniProt / RCSB 到 3D 结构和报告"></td>
-  <td width="50%"><b>真实数据分析</b>:人胰岛素 INS 从 UniProt / RCSB 到可复现报告<br/><img src="readme-gifs-hd/demo-05-hd.gif" alt="真实数据分析:人胰岛素 INS 从 UniProt / RCSB 到可复现报告"></td>
+  <td width="50%"><b>Live API 工作流</b>:从 UniProt / RCSB 到 3D 结构和报告<br/><img src="assets/readme-gifs-hd/demo-01-hd.gif" alt="Live API 工作流:从 UniProt / RCSB 到 3D 结构和报告"></td>
+  <td width="50%"><b>真实数据分析</b>:人胰岛素 INS 从 UniProt / RCSB 到可复现报告<br/><img src="assets/readme-gifs-hd/demo-05-hd.gif" alt="真实数据分析:人胰岛素 INS 从 UniProt / RCSB 到可复现报告"></td>
 </tr>
 <tr>
-  <td width="50%"><b>可视化 Artifact 编辑</b>:一句话把 confidence 阈值线抬到 75<br/><img src="readme-gifs-hd/demo-02-hd.gif" alt="可视化 Artifact 编辑:一句话把 confidence 阈值线抬到 75"></td>
-  <td width="50%"><b>注释驱动图表编辑</b>:圈选区域并重绘图例配色<br/><img src="readme-gifs-hd/demo-06-hd.gif" alt="注释驱动图表编辑:圈选区域并重绘图例配色"></td>
+  <td width="50%"><b>可视化 Artifact 编辑</b>:一句话把 confidence 阈值线抬到 75<br/><img src="assets/readme-gifs-hd/demo-02-hd.gif" alt="可视化 Artifact 编辑:一句话把 confidence 阈值线抬到 75"></td>
+  <td width="50%"><b>注释驱动图表编辑</b>:圈选区域并重绘图例配色<br/><img src="assets/readme-gifs-hd/demo-06-hd.gif" alt="注释驱动图表编辑:圈选区域并重绘图例配色"></td>
 </tr>
 <tr>
-  <td width="50%"><b>计划模式科研分析</b>:青蒿素与紫杉醇溶解度预测<br/><img src="readme-gifs-hd/demo-03-hd.gif" alt="计划模式科研分析:青蒿素与紫杉醇溶解度预测"></td>
-  <td width="50%"><b>蛋白质工程</b>:从序列到突变候选与结构解释<br/><img src="readme-gifs-hd/demo-04-hd.gif" alt="蛋白质工程:从序列到突变候选与结构解释"></td>
+  <td width="50%"><b>计划模式科研分析</b>:青蒿素与紫杉醇溶解度预测<br/><img src="assets/readme-gifs-hd/demo-03-hd.gif" alt="计划模式科研分析:青蒿素与紫杉醇溶解度预测"></td>
+  <td width="50%"><b>蛋白质工程</b>:从序列到突变候选与结构解释<br/><img src="assets/readme-gifs-hd/demo-04-hd.gif" alt="蛋白质工程:从序列到突变候选与结构解释"></td>
 </tr>
 </table>
 
@@ -200,14 +200,14 @@ docker compose exec openai4s openai4s url   # 带令牌、可直接打开的 URL
 内置的 604 个 Skill 是配方——文字、代码，以及跑通它们所需的操作知识——其中没有任何东西是 OpenAI4S 专属的。一条命令就能把它们从本仓库装到机器上：
 
 ```bash
-npx openai4s-skills install --all                  # 43 个精选 Skill
-npx openai4s-skills install --collection bioskills # 561 个固定版生信配方
-npx openai4s-skills install alphafold2 boltz --target claude
-npx openai4s-skills list
-npx openai4s-skills uninstall --all
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # 43 个精选 Skill
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定版生信配方
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
+npx github:PKU-YuanGroup/OpenAI4S list
+npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
-`--target claude` 写入 `~/.claude/skills`，`--target openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写入你指定的任意位置；在写任何东西之前，解析出的绝对路径都会先打印出来，而 `--dry-run` 什么都不写。每个已安装文件的 SHA-256 都会记进 Skills 旁边的清单，因此重装会拒绝覆盖你改过的 Skill，卸载也只删它自己写下的文件。想中间不经任何发布、直接从本仓库运行：`npx github:PKU-YuanGroup/OpenAI4S install --all`。
+上面这些写法直接从本仓库运行 CLI，中间不经任何发布；`npx openai4s-skills …` 是同一套 CLI 的发布名写法，只是这个包还没有发布到 npm。`--target claude` 写入 `~/.claude/skills`，`--target openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写入你指定的任意位置；在往目标写任何东西之前，解析出的绝对路径都会先打印出来，而 `--dry-run` 到此为止、不再写入。每个已安装文件的 SHA-256 都会记进 Skills 旁边的清单，因此重装会拒绝覆盖你改过的、或不是它自己装的 Skill，卸载也只删它自己写下的文件。[`skills/`](skills/) 下每个精选 Skill 页面和集合根目录页面都带一节**安装**，命令里已经填好它自己的名字，所以你跳到哪一页，就可以在哪一页直接装。
 
 如果你本来就在跑 OpenAI4S，那 604 个你已经全有了——同名时自带 Skill 优先于数据目录里的那个。这条命令是为反方向准备的。
 
@@ -270,7 +270,7 @@ npx openai4s-skills uninstall --all
 
 OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
-提 PR 前请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
+提 PR 前请先阅读 [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
 
 ### 开发环境配置
 
@@ -330,16 +330,19 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 <a href="https://github.com/Nobody-Zhang" title="Nobody-Zhang"><img src=".github/contributors/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
 <a href="https://github.com/wangyu-sd" title="wangyu-sd"><img src=".github/contributors/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
 <a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
+<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
 <a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
+<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
 <a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
 <a href="https://github.com/ClarenceYC" title="ClarenceYC"><img src=".github/contributors/ClarenceYC.png" width="64" height="64" alt="ClarenceYC" /></a>
-<a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
+<a href="https://github.com/cursoragent" title="cursoragent"><img src=".github/contributors/cursoragent.png" width="64" height="64" alt="cursoragent" /></a>
 <a href="https://github.com/yusowa0716" title="yusowa0716"><img src=".github/contributors/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
 <a href="https://github.com/riiiiiiin" title="riiiiiiin"><img src=".github/contributors/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>
 <a href="https://github.com/jiangzx25" title="jiangzx25"><img src=".github/contributors/jiangzx25.png" width="64" height="64" alt="jiangzx25" /></a>
 <a href="https://github.com/stau-7001" title="stau-7001"><img src=".github/contributors/stau-7001.png" width="64" height="64" alt="stau-7001" /></a>
 <a href="https://github.com/EQSTLab" title="EQSTLab"><img src=".github/contributors/EQSTLab.png" width="64" height="64" alt="EQSTLab" /></a>
+<a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>由 <code>scripts/update_contributors.py</code> 每日根据 GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">贡献者图谱</a>与维护中的公开署名名单自动生成。</sub>

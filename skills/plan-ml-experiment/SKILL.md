@@ -3,6 +3,11 @@ name: plan-ml-experiment
 description: Plan reproducible machine-learning experiments with leakage-safe random, grouped, or chronological splits; deterministic configuration fingerprints; dataset checksums; seeds, baselines, ablations, and artifact manifests.
 origin: openai4s
 category: reproducibility
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Plan an ML experiment

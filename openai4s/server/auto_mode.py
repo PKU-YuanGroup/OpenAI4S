@@ -14,6 +14,7 @@ from dataclasses import asdict
 from typing import Any, Callable, Mapping, Protocol
 
 from openai4s.config import AutoModeConfig
+from openai4s.server.auto_budget import AutoBudgetAdmission, user_truth_for
 from openai4s.server.reviews import legacy_auto_mode_selection
 from openai4s.server.session_package import session_import_quarantine_key
 
@@ -866,10 +867,37 @@ class AutoModeService:
             # stage may add a complete only-tighten project/frame resolver;
             # accepting half-effective budget PATCHes here would be false.
             "budgets": asdict(self.config.auto_mode.budgets),
-            "run": _public_run(raw_run),
+            "run": self._public_run_with_budget(raw_run, root_frame_id=root_frame_id),
             "last_event_id": last_event_id,
             "last_event_ordinal": last_event_ordinal,
         }
+
+    def _public_run_with_budget(
+        self, raw_run: Any, *, root_frame_id: str
+    ) -> dict | None:
+        public = _public_run(raw_run)
+        if public is None:
+            return None
+        run_id = public.get("run_id")
+        admission = AutoBudgetAdmission(
+            self.store, getattr(self.config.auto_mode, "budgets", None)
+        )
+        projected = admission.project_usage(str(run_id), root_frame_id=root_frame_id)
+        public["legacy"] = bool(projected.get("legacy"))
+        if not projected.get("legacy"):
+            usage = projected.get("budget_usage")
+            circuit = projected.get("circuit")
+            if isinstance(usage, Mapping):
+                public["budget_usage"] = dict(usage)
+            if isinstance(circuit, Mapping):
+                public["circuit"] = dict(circuit)
+            reason = public.get("terminal_reason") or (
+                circuit.get("reason") if isinstance(circuit, Mapping) else None
+            )
+            truth = user_truth_for(reason)
+            if truth:
+                public["user_truth"] = truth
+        return public
 
     def patch(self, frame_id: str, body: Any) -> dict:
         _root, root_frame_id, project_id, _branch_id = self._scope(frame_id)

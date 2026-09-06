@@ -15,6 +15,7 @@ be replayed and validated.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -121,6 +122,39 @@ def _canonical_json(value: Any) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _read_regular_no_follow(path: Path, expected: os.stat_result) -> bytes:
+    """Read the exact file `lstat` described, or raise.
+
+    `lstat` proves the entry was a regular file at that instant; a plain
+    `read_bytes()` then follows whatever the name points at *now*. A child
+    process still alive in the workspace can replace the file with a symlink
+    to a Host-only path in between, and this walker runs with daemon
+    privileges -- so the bytes it captures would be ones the child could not
+    open itself. O_NOFOLLOW refuses a final-segment symlink; the fstat
+    comparison refuses every other swap, including a fresh regular file at
+    the same name. O_NONBLOCK keeps a FIFO planted at that name from hanging
+    the open before the mode can be checked.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        actual = os.fstat(fd)
+        if not stat.S_ISREG(actual.st_mode):
+            raise OSError(errno.EINVAL, f"not a regular file: {path}")
+        if (actual.st_ino, actual.st_dev) != (expected.st_ino, expected.st_dev):
+            raise OSError(errno.ESTALE, f"file replaced between stat and read: {path}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def _digest(data: bytes) -> str:
@@ -246,7 +280,7 @@ class WorkspaceCAS:
                     skipped.append({"path": relative, "reason": "too_large"})
                     continue
                 try:
-                    data = path.read_bytes()
+                    data = _read_regular_no_follow(path, info)
                 except OSError as error:
                     skipped.append({"path": relative, "reason": f"read: {error}"})
                     continue
@@ -596,6 +630,95 @@ class WorkspaceCAS:
             except FileNotFoundError:
                 pass
         return {**preview, "applied": True}
+
+    def materialize(
+        self,
+        tree_id: str,
+        destination: str | Path,
+        *,
+        paths: Iterable[str] | None = None,
+        file_mode: int | None = None,
+    ) -> dict[str, Any]:
+        """Write a tree (or selected paths) into ``destination``.
+
+        Unlike :meth:`restore`, this does not delete extra files in the
+        destination and never consults a baseline. It is the child-scratch and
+        parent-materialize primitive: published Artifact versions are not
+        touched.
+        """
+
+        with self._lock:
+            return self._materialize_locked(
+                tree_id, destination, paths=paths, file_mode=file_mode
+            )
+
+    def _materialize_locked(
+        self,
+        tree_id: str,
+        destination: str | Path,
+        *,
+        paths: Iterable[str] | None = None,
+        file_mode: int | None = None,
+    ) -> dict[str, Any]:
+        base = Path(destination).expanduser().resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        tree = self.get_tree(tree_id)
+        wanted = None if paths is None else {_safe_relative(item) for item in paths}
+        written: list[str] = []
+        for entry in tree.get("entries") or []:
+            relative = _safe_relative(str(entry.get("path") or ""))
+            if wanted is not None and relative not in wanted:
+                continue
+            target = (base / relative).resolve()
+            if base not in target.parents and target != base:
+                raise ValueError(f"materialize escaped destination: {relative}")
+            mode = (
+                int(file_mode)
+                if file_mode is not None
+                else int(entry.get("mode") or 0o600)
+            )
+            self._atomic_write(
+                target,
+                self.get_blob(str(entry["blob"])),
+                mode=mode & 0o777,
+            )
+            written.append(relative)
+        return {
+            "tree_id": tree_id,
+            "destination": str(base),
+            "written": written,
+            "deleted_versions": 0,
+        }
+
+    def diff_trees(self, before_tree_id: str, after_tree_id: str) -> dict[str, Any]:
+        """Compare two captured trees. Used to isolate a child's outputs."""
+
+        with self._lock:
+            before = self._entry_map(self.get_tree(before_tree_id))
+            after = self._entry_map(self.get_tree(after_tree_id))
+        added: list[str] = []
+        changed: list[str] = []
+        removed: list[str] = []
+        unchanged: list[str] = []
+        for path in sorted(set(before) | set(after)):
+            left = before.get(path)
+            right = after.get(path)
+            if left is None:
+                added.append(path)
+            elif right is None:
+                removed.append(path)
+            elif self._same_entry(left, right):
+                unchanged.append(path)
+            else:
+                changed.append(path)
+        return {
+            "before_tree_id": before_tree_id,
+            "after_tree_id": after_tree_id,
+            "added": added,
+            "changed": changed,
+            "removed": removed,
+            "unchanged": unchanged,
+        }
 
     def _blob_path(self, blob_id: str) -> Path:
         if len(blob_id) != 64 or any(ch not in "0123456789abcdef" for ch in blob_id):

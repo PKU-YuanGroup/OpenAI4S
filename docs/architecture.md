@@ -278,10 +278,155 @@ the local delivery delta and exposes the latest version's scope-checked,
 path-free observations/producer frame through the Artifact lineage projection.
 That lets the Provenance UI identify a delegated child without pretending it
 was a root Notebook Cell. Session-package, share-snapshot, and Artifact-ZIP
-serialization do **not** include a portable observation ledger; a client-side
-metadata export only mirrors the current local lineage projection. Portable
-observation serialization remains outside this rollout and must not be inferred
-from the local table.
+serialization still do **not** write a portable observation ledger in this
+release; a client-side metadata export only mirrors the current local lineage
+projection. The schema, bounds, and importer compatibility for a future
+optional v1 file are frozen below. Do not infer portable observation
+provenance from the local table, a share snapshot, or an Artifact ZIP.
+
+##### Portable capture observations (schema freeze; export off)
+
+This release does not enable export or import of capture observations. No
+production path may write `artifact_observations.json`. The local
+`artifact_capture_observations` table, the path-free lineage DTO, and
+`lineage.json` edges remain unchanged. A future enablement may add one
+optional schema-v1 file; it must not bump `PACKAGE_SCHEMA_VERSION`.
+
+The file, when a future exporter is switched on, is
+`artifact_observations.json` at the package root. It is listed in
+`manifest.json` like any other member (`path`, `size`, `sha256`). Packages
+that omit it remain valid v1. The document is:
+
+```json
+{
+  "schema_version": 1,
+  "observations": [ /* records, deterministic order */ ],
+  "observations_sha256": "<sha256 of canonical {schema_version, observations}>"
+}
+```
+
+`schema_version` must equal package schema 1. `observations_sha256` is the
+hex digest of the canonical JSON of `{schema_version, observations}` — the
+same construction `manifest_sha256` uses on its body. Unknown document keys
+fail closed. A future successful import may add
+`observation_imported_count` to the import result; current importers omit
+the field, and clients must treat absence as zero. Observations are capture
+occasions, not authorship, peer review, or a claim that the bytes are true.
+
+The record whitelist is path-free. Import accepts only identities that
+already exist in the same package, then remaps every one. The same
+`version_id` may appear on more than one observation so two Cells that
+captured the same bytes stay two occasions; `(version_id, producing_cell_id)`
+and `observation_id` are unique inside the file.
+
+| Field | Type | Required | Package entity / rule |
+|---|---|---|---|
+| `observation_id` | string, ≤512 | yes | New identity on import; unique in the file. Not a reused source id. |
+| `artifact_id` | string, ≤512 | yes | `artifacts.json` `artifacts[].artifact_id`. |
+| `version_id` | string, ≤512 | yes | That artifact's `versions[].version_id` in `artifacts.json`. A version that exists on a different packaged artifact is a cross-entity reference and is rejected. |
+| `producing_cell_id` | string, ≤512 | yes | `notebook.json` `cells[].producing_cell_id`. |
+| `capture_kind` | string | yes | Closed set: `version_created`, `same_cell_merge`, `head_checksum_reused`. |
+| `filename` | string | yes | Basename only, matching the referenced version's filename. Validated as a safe artifact filename (no `/`, `\\`, `..`, or secret names). Not a filesystem path. |
+| `created_at` | integer | yes | Capture timestamp. Copied, not remapped. |
+| `frame_id` | string or null | no | `session.json` `source.root_frame_id` or `snapshots.json` `branches[].branch_id`. Absent/null is allowed. A delegated frame that is not a packaged branch is out of scope and is rejected. |
+| `content_type` | string or null | no | Mirrors the referenced `artifacts.json` version. |
+| `size_bytes` | integer or null | no | Mirrors the referenced version. |
+| `checksum` | 64-hex string or null | no | Content SHA-256 of the bytes, never a path. |
+| `env_snapshot_id` | string or null | no | `environment.json` `artifact_environment_snapshots[].snapshot_id`. Not a raw environment dump. |
+| `source` | object, string, or null | no | Sanitized provenance envelope, the same member already carried on an `artifacts.json` version. Not remapped (it describes an event on the exporter's machine). |
+| `input_version_ids` | string[] | no (default `[]`) | Each id is a `version_id` in `artifacts.json`. |
+| `updated_at` | integer or null | no | Last local merge time. Copied, not remapped. |
+
+Forbidden record fields: `path`, `snapshot_path`, `ordinal`, `kernel_id`,
+`generation_id`, `project_id`, `root_frame_id`, Cell `code`, hooks,
+credentials, and raw environment payloads. Presence of a forbidden field
+fails closed. Extra keys outside the whitelist fail closed. Path leakage is
+a dedicated error, not an unknown-key warning. Nested credential-shaped
+bytes fail the same secret scan the rest of the package uses.
+
+**Limits.** At most 100,000 observation records, and the file is at most
+16 MiB (`16 << 20` bytes). Either bound fail-closes with
+`SessionPackageError` before any Store write; the importer must not truncate,
+skip the tail, or import a prefix. These bounds are tighter than the ZIP
+entry cap (64 MiB) and match the existing `lineage_edges` count cap. A
+future exporter that would exceed either bound must refuse the export.
+
+**v1 optional-file rule.** Schema v1 already requires the current JSON set
+and allows the manifest to list additional files. Unlisted ZIP members are
+still rejected. A listed extra file is hash-checked and secret-scanned, then
+ignored by the current importer. The only extra name a future observation
+consumer may read is `artifact_observations.json`; any other listed extra
+file stays ignored.
+
+**Compatibility probe (real old importer, this commit).** Two packages were
+driven through `SessionDomainService.session_import` /
+`SessionPackageService.import_bytes` — the production schema-v1 importer, not
+a copy of it:
+
+| Package | Old importer outcome |
+|---|---|
+| Schema v1, no `artifact_observations.json` | Imported. Quarantined view-only session. No `observation_imported_count`. |
+| Schema v1, manifest lists `artifact_observations.json` | Imported. Extra file ignored. Zero observation rows written. |
+| Unlisted extra ZIP member | Rejected (`session package contains unlisted files`). |
+| Listed extra file with a Bearer-token canary | Rejected (`session package contains secret material`). |
+| Listed extra file with `path` / `snapshot_path` and no secret shape | Imported; extra file ignored; zero observation rows. |
+
+**Conclusion: `v1 可安全启用`.** The old importer ignores a well-formed listed
+optional file and still imports a package that lacks it. It does not crash,
+and it does not consume observations. A future exporter may add
+`artifact_observations.json` without breaking current recipients. Enablement
+is still blocked on implementing the whitelist, remapping, 100,000 / 16 MiB
+fail-closed checks, and share projection; this release must not write the
+file. Evidence: `test_old_importer_accepts_v1_package_without_artifact_observations`,
+`test_old_importer_ignores_listed_artifact_observations_file`,
+`test_portable_observation_v1_enablement_conclusion`.
+
+###### Threat model
+
+Three attacker capabilities matter at this boundary. Each fails closed
+before write; a rejected import rolls back like any other package fault.
+
+1. **Cross-entity ID remapping.** The attacker authors
+   `artifact_observations.json` so that `artifact_id`, `version_id`,
+   `producing_cell_id`, `frame_id`, `env_snapshot_id`, or
+   `input_version_ids` name identities from another session, mix an
+   artifact with a version that belongs to a different packaged artifact, or
+   reuse a source id so import collides with a live local row.
+   *Mitigation:* every reference must resolve inside the same package graph
+   (`artifacts.json` / `notebook.json` / `session.json`+`snapshots.json` /
+   `environment.json`). `version_id` must belong to the named `artifact_id`.
+   Import allocates new `observation_id` values and remaps every accepted
+   reference through the same maps the rest of the package uses. Source ids
+   never become live local ids.
+
+2. **Scope closure.** The attacker plants a frame, branch, environment, or
+   input version that is not in this package — a sibling project, a
+   delegated child frame that was never exported, or a version the artifact
+   exporter excluded as secret/unavailable — hoping import will attach the
+   observation to whatever those ids happen to mean on the recipient.
+   *Mitigation:* the allowed frame set is exactly
+   `source.root_frame_id ∪ branches[].branch_id`. A delegated `frame_id`
+   that is not a packaged branch is out of scope. Excluded artifacts take
+   their observations with them: an observation pointing at a version the
+   package omitted is rejected. No global or cross-session lookup. Share
+   projection, when later enabled, shows only producer/capture metadata that
+   survived this closure; it still does not treat an observation as
+   authorship.
+
+3. **Path and secret leakage.** The attacker (or a buggy exporter) puts
+   `path`, `snapshot_path`, absolute workspace paths, kernel generation
+   dumps, or credential-shaped bytes into the optional file, or relies on
+   an old importer that does not parse the file to smuggle them through.
+   *Mitigation:* the whitelist omits path fields; their presence is a
+   dedicated fail-closed error, not an unknown-key warning. Filenames pass
+   the existing safe-artifact-filename check. The current importer already
+   secret-scans every extra file as raw bytes (`_contains_secret_bytes`)
+   and rejects the archive. A future consumer additionally runs
+   `_assert_secret_free` on the parsed document. Kernel state, hooks, and
+   raw environments are not in the whitelist. Canaries:
+   `test_old_importer_rejects_secret_canary_in_optional_observation_file`,
+   `test_portable_observation_path_canary_fails_closed`,
+   `test_portable_observation_malicious_references_fail_closed`.
 
 Truthful capture also requires exclusive authorship of the shared workspace.
 With Stage 1 enabled, one per-session coordinator admits foreground capture,

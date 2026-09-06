@@ -42,6 +42,12 @@ for _name in [n for n in os.environ if _LLM_ENV_LEAK.match(n)]:
     del os.environ[_name]
 for _name in _ROADMAP_ENV_LEAK:
     os.environ.pop(_name, None)
+# `scripts/release_pipeline.Pipeline` defaults its workflow run id from the
+# runner's GITHUB_RUN_ID and now compares it against every build receipt. On
+# an Actions runner that variable is the real run, the fixtures record 7100,
+# and every release test refused its own receipts -- green on a laptop, red
+# only in CI. A test that wants the runner's id sets it explicitly.
+os.environ.pop("GITHUB_RUN_ID", None)
 
 # The non-LLM definition-time defaults leak the same way and are frozen at the
 # same moment: ``Config``'s field defaults read these at class definition, so
@@ -75,6 +81,11 @@ for _name in (
     "OPENAI4S_WORKER_CONNECT",
     "OPENAI4S_WORKER_ADVERTISE",
     "OPENAI4S_RECONCILE_INTERVAL",
+    # SPA-shell escape hatch. Read at request time by gateway._serve_index;
+    # a leftover OPENAI4S_WEBUI=legacy would serve webui/index.html (or 404
+    # in fixtures that planted only dist/).
+    "OPENAI4S_WEBUI",
+    "OPENAI4S_WEBUI_NEXT",
 ):
     os.environ.pop(_name, None)
 
@@ -194,6 +205,11 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         "OPENAI4S_SHARE_BASE_DOMAIN",
         "OPENAI4S_SHARE_ALLOW_INSECURE",
         "OPENAI4S_MCP_DEADLINE_S",
+        # Request-time SPA-shell switch. A leftover OPENAI4S_WEBUI=legacy
+        # would make GET / serve webui/index.html (or 404 in fixtures that
+        # only planted dist/). OPENAI4S_WEBUI_NEXT is the retired F-04 name.
+        "OPENAI4S_WEBUI",
+        "OPENAI4S_WEBUI_NEXT",
     ):
         monkeypatch.delenv(var, raising=False)
     # The BYOC confinement self-test caches its verdict process-wide, keyed by

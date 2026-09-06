@@ -1,0 +1,80 @@
+# 待办
+
+[English](TODO.md)
+
+本仓库已经决定要做、但还没做的后续事项。每条都写清"做完长什么样"，好让读者
+分得清"待办"和"忘了"。凡是负责人在代码库之外的——一份凭据、一个 registry 账号、
+一台机器——都该记在这里，而不是记在一句没人会去 grep 的注释里。
+
+*已规划*而非待办的工作在
+[`docs/next-version-progress.md`](next-version-progress.md)；那份文档是
+v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本文件收的是线头。
+
+## 发布
+
+- [ ] **把 `openai4s-skills` 发布到 npm。** 包已经完整并有关卡把守
+      （`node tools/skills-installer/selftest.mjs`、
+      `node tools/skills-installer/check_package.mjs`）。在干净 checkout 上，已发布的
+      `v0.2.0` tag 通过全部 16 项 installer 自测，并打出 2,212 个文件 / 603 个
+      Skill / 6.4 MB；当前 `main` 则打出 2,236 个文件 / 604 个 Skill / 6.5 MB。
+      在发布之前，`npx openai4s-skills …` 解析不到；
+      `npx github:PKU-YuanGroup/OpenAI4S install --all` 今天就能用，也是各处文档
+      和 CLI 自己的 `--help` 打头的写法——根 README、`docs/skills.md`、`tools/`，
+      以及每个 Skill 自己的页面（那一节的措辞在发布之后依然成立）。2026-09-01
+      实时执行 `npm view openai4s-skills version` 仍返回 `E404`。
+      *做完的标准：* 在已发布 tag 的干净 checkout 上跑过
+      `npm publish --access public`，在一台没有 checkout 的机器上
+      `npx openai4s-skills list` 可用，并且仍写着"这个名字解析不到"的五个页面都已
+      改掉这句话——`README.md`（同时是 npm 与 PyPI 的首页）、`README_zh.md`、
+      `docs/skills.md`、`tools/skills-installer/README.md` 与 `README_zh.md`；
+      `grep -rlE --exclude='TODO*' 'not on npm yet|name does not resolve|还没有发布到 npm|名字解析不到' README.md README_zh.md docs tools`
+      列出的正是这五个。这需要一个有发布权限的 npm 账号——任何自动化 agent 都不该
+      持有这份凭据。
+
+## CI 与供应链
+
+- [ ] **把周一的依赖 PR 跨 ecosystem 合批。** `groups:` 按设计是 per-ecosystem
+      的，所以 uv、pre-commit、github-actions 三路更新会分成三个 PR，至今已被
+      手工并到同一分支上至少四次（#75、#97、#131）。Dependabot 支持用配置解决：
+      顶层加 `multi-ecosystem-groups`，再给每个 `updates` 条目加
+      `multi-ecosystem-group: <名字>`。这次没做，是因为那些条目得交出各自的
+      `schedule:` 块，而配错会让 Dependabot 干脆不再开 PR——那比它要修的问题
+      更糟；这件事该有自己的 PR，并观察一个真实的周一。
+      *做完的标准：* 有一个 Dependabot PR 同时带着不止一个 ecosystem 的更新，
+      且下一个周一的运行照常开 PR。
+      第一次尝试学到的（已从 [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143)
+      中撤出，留待单独落地）：`update-types`、`exclude-patterns`、`dependency-type`
+      是只属于 `groups:` 的键，写在条目级会被拒绝；同一 ecosystem 同一目录写第二个
+      条目只是维护者示例里的写法；而这种成对条目所需的互补 `ignore` 同样会过滤
+      *安全*更新，现有的 `groups:` 从不会。`tests/test_governance.py` 现在会在离线
+      环境下对前两条直接失败。
+
+## 最近关掉的，记下来免得再查一遍
+
+Action pin 的身份现在会在普通 pull request CI 中校验。`action-pins` job 以只校验、
+不修写的模式运行按 commit 固定的 `pinact-action`，并启用 tag 核验；离线治理测试则继续
+要求每个 workflow action 都带精确的 40 位 hex SHA 和 `# vX.Y.Z` 声明。真实 pinact
+运行接受了当前工作树；把 Checkout 的 `v7.0.1` SHA 错注成 `# v7.0.0` 的负对照则因
+身份不匹配而失败。
+
+CPython 3.14 现在既有 classifier，也进入 CI 测试矩阵，并安装 3.14 容器所用的
+science extra。环境绑定夹具改为创建不带 pip 的真实虚拟环境，而不是裸解释器符号链接，
+所以它对 `sys.executable` 的精确断言在 3.13 与 3.14 上都仍有意义。bring-up verifier
+改用 fail-closed 的 `lstat` 检查，避开 3.14 中会吞掉探测错误的
+`Path.is_symlink()` 行为；嵌套 xdist capture 测试也只显式加载其契约真正使用的插件。
+最终锁定环境的 Python 3.14.4 完整套件结果为 **8094 通过 / 23 跳过**。
+
+本地 kernel worker 现在会 spawn 进自己的 session，因此投向 daemon 进程组的信号
+不再同时投向其下的每一个 cell——这正是 Linux + bubblewrap 本来就没有的那处分歧。
+它是连同两件让它成为改进而非交易的事一起落地的：worker 的进程组在 spawn 时就被
+记下、`kill` 改走既有的停止阶梯，从而能收掉 cell 自己起的子进程（这在以前做不到，
+因为 worker 的组**就是** daemon 的组）；以及 `openai4s run` 装上了一个 SIGINT
+处理器，做终端那个组级 Ctrl-C 从前所做的事。
+
+`tests/test_mcp_lifecycle.py`、`tests/test_local_jobs.py`、
+`tests/test_cluster_session_production_wiring.py`、
+`tests/test_orchestration_routes.py`、`tests/test_telemetry_transmission.py`
+与 `tests/test_cell_watchdog.py` 里的墙钟预算，现在都改成等待条件而不是等钟。
+值得记下原因，因为当初标出它们的那次审计对了一半：它们没有一个在 CI 里红过，
+而其中两处根本不是 flake，而是静默的覆盖流失——sleep 太短时测试照样是绿的，
+但它走的恰恰是它被写出来要避开的那条路径。

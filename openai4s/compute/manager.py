@@ -94,10 +94,12 @@ def _confinement_mode(value: str | None = None) -> str:
     return mode
 
 
-# Error kinds that, by themselves, mean "the remote may or may not have acted".
-# Everything else is a definite rejection *only* when the raiser says so —
-# `indeterminate` is the explicit signal, and this set is merely its default.
-_INDETERMINATE_KINDS = frozenset({"unknown_state"})
+# The vocabulary lives in `compute.states` (the kernel-side SDK and the
+# gateway read the same names); these bindings keep this module's importers
+# working. `indeterminate` on the error is the explicit signal, and
+# `_INDETERMINATE_KINDS` is merely its default.
+_INDETERMINATE_KINDS = states.INDETERMINATE_KINDS
+CANCEL_INDETERMINATE_REASONS = states.CANCEL_INDETERMINATE_REASONS
 
 
 class ComputeError(RuntimeError):
@@ -3261,7 +3263,7 @@ class ComputeManager:
                 f"job {job['job_id']!r} has no recorded remote process to "
                 f"signal; inspect {job.get('workdir')} on {job.get('alias')} "
                 f"by hand",
-                "unknown_state",
+                "receipt_unconfirmed",
                 indeterminate=True,
             )
         try:
@@ -3273,7 +3275,7 @@ class ComputeManager:
             raise ComputeError(
                 f"cancel could not reach {job['alias']}: {e}; the remote "
                 f"job may still be running",
-                "unknown_state",
+                "remote_unreachable",
                 indeterminate=True,
             )
         if proc.returncode != 0:
@@ -3285,7 +3287,7 @@ class ComputeManager:
                 f"cancel failed on {job['alias']} (exit {proc.returncode}): "
                 f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
                 f"; the remote job may still be running",
-                "unknown_state",
+                "receipt_unconfirmed",
                 indeterminate=True,
             )
 
@@ -3301,29 +3303,139 @@ class ComputeManager:
                 Path(td),
             )
 
+    def _cancel_failure(self, error: ComputeError) -> ComputeError:
+        """Map a terminate failure onto the closed-set cancel reasons.
+
+        Confirmed cancel is a separate path. Anything short of a provider
+        agreeing that the job is gone stays indeterminate so a caller cannot
+        render it as cancelled.
+        """
+        kind = error.error_kind
+        if kind in CANCEL_INDETERMINATE_REASONS:
+            if error.indeterminate:
+                return error
+            return ComputeError(str(error), kind, indeterminate=True)
+        message = str(error).lower()
+        if (
+            kind == "invalid_request"
+            or "unsupported" in message
+            or "not support" in message
+        ):
+            return ComputeError(
+                str(error), "provider_cancel_unsupported", indeterminate=True
+            )
+        if (
+            "could not reach" in message
+            or "timed out" in message
+            or "timeout" in message
+            or "deadline" in message
+        ):
+            return ComputeError(str(error), "remote_unreachable", indeterminate=True)
+        return ComputeError(
+            str(error), states.REASON_CANCEL_UNCONFIRMED, indeterminate=True
+        )
+
+    def _record_unconfirmed_cancel(self, job: dict, error: ComputeError) -> None:
+        """Leave the job live and record that a cancel was asked, not granted.
+
+        Only a job that is still live carries the note. `_persist` is an
+        unconditional UPDATE, so if the poll thread committed a terminal
+        state between the pre-check and the failed terminate, writing here
+        would overwrite the terminal row's own `reason` with "may still be
+        running" and append a cancel event to a finished job.
+        """
+        if self._store is not None:
+            try:
+                row = self._store.get_compute_job(job["job_id"]) or {}
+            except Exception:  # noqa: BLE001 - bookkeeping must not mask the cancel
+                row = {}
+            if row.get("status") in states.TERMINAL_STATES:
+                return
+        self._persist(
+            job["job_id"],
+            reason=(
+                "cancel could not be confirmed; the job may still be "
+                "running and billing"
+            ),
+        )
+        self._event(
+            job["job_id"],
+            "cancel_unconfirmed",
+            {
+                "error_kind": error.error_kind,
+                "indeterminate": True,
+            },
+        )
+
     def cancel(self, kw: dict) -> dict:
         with self._lock:
             job = self._jobs.get(kw["job_id"])
         if job is None:
             raise ComputeError(f"no such job {kw['job_id']!r}", "not_found")
+        current = job.get("status")
+        if current in states.TERMINAL_STATES:
+            # Already over. Signalling a finished job is not a cancel, and it
+            # would be a remote call made for a fact we already hold.
+            return {
+                "status": current,
+                "conflict": {
+                    "requested": states.CANCELLED,
+                    "actual": current,
+                },
+                "hint": (
+                    "the job reached a terminal state before the cancel "
+                    "landed; the recorded outcome is unchanged"
+                ),
+            }
         fam, rest = self._split(job["provider"])
-        if fam == "ssh":
-            self._terminate_ssh_job(job)
-        else:
-            sandbox_id = job.get("sandbox_id")
-            if not sandbox_id:
-                raise ComputeError(
-                    f"job {job['job_id']!r} has no recorded sandbox to "
-                    f"terminate; it may still be running and billing",
-                    "unknown_state",
-                    indeterminate=True,
-                )
-            self._terminate_sandbox(rest, sandbox_id)
+        try:
+            if fam == "ssh":
+                self._terminate_ssh_job(job)
+            else:
+                sandbox_id = job.get("sandbox_id")
+                if not sandbox_id:
+                    raise ComputeError(
+                        f"job {job['job_id']!r} has no recorded sandbox to "
+                        f"terminate; it may still be running and billing",
+                        states.REASON_CANCEL_UNCONFIRMED,
+                        indeterminate=True,
+                    )
+                self._terminate_sandbox(rest, sandbox_id)
+        except ComputeError as error:
+            # Every terminate failure is an unconfirmed stop, a provider's
+            # `not_found` for a sandbox this side still holds included: that
+            # is not "no such job" (the job exists and may be billing), and
+            # `_cancel_failure` returns an already-closed-set error untouched.
+            mapped = self._cancel_failure(error)
+            self._record_unconfirmed_cancel(job, mapped)
+            if mapped is error:
+                raise
+            raise mapped from error
+        except Exception as error:  # noqa: BLE001
+            # A helper that died before reading stdin (BrokenPipeError), a
+            # reply file that is not JSON, an OSError from Popen: none is a
+            # ComputeError, and every one of them leaves the remote in a state
+            # this side cannot confirm. Unmapped, they escaped with no
+            # `cancel_unconfirmed` record and no `indeterminate` flag, so the
+            # SDK read them as a definite rejection.
+            mapped = ComputeError(
+                f"cancel failed on {job.get('alias') or job['provider']}: "
+                f"{type(error).__name__}: {error}; the remote job may still be "
+                f"running",
+                states.REASON_CANCEL_UNCONFIRMED,
+                indeterminate=True,
+            )
+            self._record_unconfirmed_cancel(job, mapped)
+            raise mapped from error
         conflict = self._commit_terminal(
             job,
             states.CANCELLED,
             event="cancelled",
             terminal_at=_now_ms(),
+            # An earlier unconfirmed attempt may have left "may still be
+            # running and billing" on the row; a confirmed stop clears it,
+            # or the Task Centre keeps warning about a job that is over.
+            reason="",
             termination_reason=states.REASON_USER_CANCELLED,
         )
         if conflict is not None:

@@ -12,6 +12,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: DiffDock
   # github.com/gcorso/DiffDock/blob/main/LICENSE: MIT (© 2022 Corso, Stärk,

@@ -1,4 +1,4 @@
-# Default-safe PR CI: the offline gate.
+# Default-safe PR CI: networked action-pin identity plus offline gates.
 #
 # Security posture (do not weaken without a security review):
 #   - Triggered by plain `pull_request` / `push`, a secret-free schedule, or a
@@ -6,9 +6,10 @@
 #     `..._target` trigger variant is forbidden in this workflow: it would
 #     let PR-controlled code run with access to repository secrets.
 #   - `permissions` is read-only (contents: read) for every job.
-#   - No secrets are referenced or injected anywhere in this workflow.
+#   - No repository secrets are referenced or injected anywhere in this
+#     workflow. Pinact receives only the job's read-only GitHub token.
 #   - GitHub-hosted runners only — no self-hosted runners.
-#   - The default offline gate runs pytest plus deterministic `tier:pr`
+#   - The default offline gates run pytest plus deterministic `tier:pr`
 #     harness scenarios. Pytest's addopts deselect opt-in markers (external /
 #     network / live_llm / gpu / ssh / lab / docker / browser), and the harness
 #     CLI requires explicit offline eligibility, so neither path uses secrets or
@@ -38,7 +39,7 @@ concurrency:
 jobs:
   branch-name:
     name: Branch naming policy
-    # Enforces the CONTRIBUTING.md branch-naming table on PR head branches.
+    # Enforces the .github/CONTRIBUTING.md branch-naming table on PR head branches.
     # dependabot branches (dependabot/...) are exempt. `main` is allowed so
     # casual contributors can PR from their fork's main branch.
     #
@@ -64,9 +65,31 @@ jobs:
           if printf '%s' "$HEAD_REF" | grep -Eq "$policy"; then
             echo "ok: $HEAD_REF"
           else
-            echo "::error::Branch name '$HEAD_REF' violates the naming policy in CONTRIBUTING.md (expected main, next, or <prefix>/<name> with prefix one of feat|fix|docs|test|refactor|chore|ui|harness|science|release|hotfix)"
+            echo "::error::Branch name '$HEAD_REF' violates the naming policy in .github/CONTRIBUTING.md (expected main, next, or <prefix>/<name> with prefix one of feat|fix|docs|test|refactor|chore|ui|harness|science|release|hotfix)"
             exit 1
           fi
+
+  action-pins:
+    name: Action pins match version comments
+    # The offline governance test proves the local shape (full SHA plus a
+    # version comment), but only a networked check can prove that the tag in
+    # that comment actually dereferences to the SHA beside it. Keep this in
+    # ordinary PR CI so a stale or fabricated annotation cannot merge green.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflows
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify action pins and version comments
+        uses: suzuki-shunsuke/pinact-action@896d595f299e71d65b9d28349d6956abe144390a # v3.0.0
+        with:
+          # Validation only: this job has read-only permissions and must never
+          # rewrite a contributor's branch. `verify` makes pinact resolve each
+          # version comment through the GitHub API and compare it with the SHA.
+          fix: "false"
+          verify: "true"
 
   lint:
     name: Lint (pre-commit)
@@ -81,6 +104,9 @@ jobs:
         run: uv sync --locked
       - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+      - name: CSS custom-property references must be defined
+        if: success() || failure()
+        run: uv run python scripts/check_css_tokens.py
 
   # Its own job, not a second step in `lint`. As a step it could only ever run
   # when pre-commit had already passed, so a branch that failed formatting and
@@ -183,6 +209,29 @@ jobs:
         run: |
           cd "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/openai4s-release-venv/bin/python" "${GITHUB_WORKSPACE}/scripts/release_import_smoke.py"
+      # The one interpreter pyproject claims that no offline-tests leg runs.
+      # CPython 3.11 rejects a dataclass default 3.10 and 3.12+ both accept
+      # (a ``MappingProxyType`` was unhashable there), and one such default
+      # made the whole agent package unimportable on 3.11 while every job
+      # stayed green. Installing and importing the same wheel under 3.11 is
+      # cheap and catches that class without a fourth ten-minute matrix leg.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install the core wheel under the untested-but-claimed CPython 3.11
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_NO_INDEX: "1"
+        run: |
+          python3.11 -m venv "${RUNNER_TEMP}/openai4s-release-venv-311"
+          wheel_path="$(find dist -maxdepth 1 -name 'openai4s-*.whl' -print -quit)"
+          "${RUNNER_TEMP}/openai4s-release-venv-311/bin/python" -m pip install --no-deps "$wheel_path"
+      - name: Import installed modules and exercise the installed CLI on 3.11
+        env:
+          PYTHONPATH: ""
+        run: |
+          cd "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/openai4s-release-venv-311/bin/python" "${GITHUB_WORKSPACE}/scripts/release_import_smoke.py"
 
   windows-launcher:
     name: Windows launcher parses on Windows
@@ -241,10 +290,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 is here because the macOS .dmg embeds it: the build that
-        # reaches the most end users was, until this line, the one Python
-        # nothing tested. 3.10 is the floor from requires-python.
-        python-version: ["3.10", "3.12", "3.13"]
+        # 3.13 is here because the macOS .dmg embeds it, and 3.14 because the
+        # container image runs it. 3.10 is the floor from requires-python.
+        python-version: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -254,8 +302,13 @@ jobs:
           # depth-1 checkout does not contain those objects, so the check can
           # only skip. Deepening one job makes it a check CI actually performs
           # instead of one that is enforced on developer machines and nowhere
-          # else; deepening all three would pay for the same answer twice more.
-          fetch-depth: ${{ matrix.python-version == '3.12' && 0 || 1 }}
+          # else; deepening all four would pay for the same answer twice more.
+          #
+          # Written as `!= '3.12' && 1 || 0` on purpose. The `cond && 0 || 1`
+          # form never yields 0: `0` is falsy in the expression language, so
+          # `true && 0` falls through to `|| 1`, and every row -- the 3.12 one
+          # included -- fetched depth 1 while this comment claimed otherwise.
+          fetch-depth: ${{ matrix.python-version != '3.12' && 1 || 0 }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
@@ -267,12 +320,16 @@ jobs:
       - name: Install dev, science, and chemistry dependencies
         if: matrix.python-version == '3.12'
         run: uv sync --locked --extra science --extra chemistry
-      # The .dmg's interpreter. The science extra is not optional here even
-      # though the core is stdlib-only: the science-dependent test modules
-      # importorskip pandas/matplotlib, so without the extra they silently
-      # skip and the job stops validating the interpreter the .dmg ships.
+      # The .dmg and container interpreters. The science extra is not optional
+      # here even though the core is stdlib-only: the science-dependent test
+      # modules importorskip pandas/matplotlib, so without the extra they
+      # silently skip and the jobs stop validating the interpreters we ship.
+      # One step for both rather than one per interpreter: two conditions
+      # for the same install drift apart, and the row that loses the extra
+      # keeps passing while it stops validating anything. (Job-level `if:`
+      # cannot see `matrix`, which is why this is a step-level condition.)
       - name: Install dev and science dependencies
-        if: matrix.python-version == '3.13'
+        if: matrix.python-version == '3.13' || matrix.python-version == '3.14'
         run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
         run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests
@@ -282,7 +339,7 @@ jobs:
         # addopts already passes -q; a second -q would suppress the summary line.
         #
         # `-n auto` because this one command *was* CI: 1094 of this job's 1122
-        # seconds were spent here, and the other sixteen jobs put together came
+        # seconds were spent here, and every other job put together came
         # to under eight minutes. Nothing else on the critical path was worth
         # optimising while the suite ran on one core.
         #
@@ -448,6 +505,22 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      # F-22: the UMD parser contract is Node-only (no daemon, no Playwright).
+      # A step on this job, not a new job — the 17 PR-job count is locked.
+      - name: Scientific renderer parser smoke
+        run: node tests/scientific_renderers_smoke.cjs
+      # F-23: Vitest on this Node job, not a new job — the 17 PR-job count
+      # stays locked. frontend/package-lock.json is the rebuild pin.
+      - name: Frontend unit tests (Vitest)
+        run: |
+          npm ci --prefix frontend
+          npm test --prefix frontend
+      # F-23: committed dist must match `npm run build`. A skipped rebuild
+      # would ship a workbench that is not the source this PR changed.
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
@@ -546,6 +619,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server
         run: uv sync --locked
       # Before the browser: the harness's own redaction, schema, binding and
@@ -636,6 +714,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
@@ -750,10 +833,47 @@ jobs:
           OPENAI4S_KERNEL_ALLOW_RAW_NETWORK: "1"
         run: uv run python -m harness.smoke.linux_bwrap_interrupt
 
-  # The full Linux boundary smoke still does not run here. It includes network
-  # denial and has not yet been re-evaluated with the restricted bwrap profile
-  # loaded above. Keep that broader claim manual rather than interpreting the
-  # raw-network interrupt job as evidence for network confinement.
+  # Independent of the interrupt job above. That job deliberately sets
+  # OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1, so a green interrupt check is not
+  # evidence of filesystem or egress confinement. This job is the four-check
+  # full boundary: outside write denied, raw network denied, workspace write
+  # allowed, child secret absent, under enforce, with the same restricted
+  # bwrap profile. A raw-network override is a hard failure inside the smoke.
+  # No continue-on-error. The check run is attested at the frozen SHA as
+  # `ci-linux-sandbox-full`. The release workflow's platform-checks matrix
+  # does not re-execute this smoke until multiple scheduled greens plus a
+  # candidate SHA have passed (see release_gates.PLATFORM_CHECKS_UNAVAILABLE).
+  linux-sandbox-full:
+    name: Linux bubblewrap full filesystem/egress boundary
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - name: Refresh Ubuntu package metadata
+        run: sudo apt-get update
+      - name: Install bubblewrap and its restricted AppArmor profile
+        run: >-
+          sudo apt-get install --yes --no-install-recommends
+          apparmor apparmor-profiles bubblewrap
+      - name: Load Ubuntu's bwrap-only user-namespace policy
+        run: >-
+          sudo apparmor_parser --replace
+          /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+      - name: Prove bubblewrap can create PID and network namespaces
+        run: >-
+          /usr/bin/bwrap --die-with-parent --new-session --unshare-ipc --unshare-uts
+          --unshare-pid --unshare-net --ro-bind / / --dev /dev --proc /proc --
+          /usr/bin/python3 -c
+          'import os; raise SystemExit((os.getpid(), os.getppid()) != (2, 1))'
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Require the four Linux filesystem and egress boundaries
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+        run: uv run python -m harness.smoke.linux_sandbox
 
   linux-bundle-smoke:
     name: Linux app bundle builds and imports (nightly)

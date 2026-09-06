@@ -5,7 +5,7 @@
 不属于 Python 包的开发者与用户侧工具。
 
 `openai4s/` 下的一切都会打进 wheel 并在运行时被导入；这里的东西不会。它通过
-另一条渠道分发——目前是 npm——并刻意不写进
+另一条渠道分发——今天是直接从本仓库 `npx`，包发布后是 npm——并刻意不写进
 `[tool.setuptools.packages.find]`，因此 `pip install openai4s` 不会带上任何
 JavaScript。
 
@@ -13,7 +13,7 @@ JavaScript。
 
 | 目录 | 职责 |
 | --- | --- |
-| [`skills-installer/`](skills-installer/) | `npx openai4s-skills` 背后的 `openai4s-skills` 命令。它把本仓库自带的 Skill 库复制到 Claude Code、OpenAI4S 数据目录，或用户指定的任意目录——并写下清单，使卸载精确、覆盖默认拒绝。 |
+| [`skills-installer/`](skills-installer/) | `openai4s-skills` 命令——今天以 `npx github:PKU-YuanGroup/OpenAI4S <command>` 运行，包发布到 npm 后即 `npx openai4s-skills`。它把本仓库自带的 Skill 库复制到 Claude Code、OpenAI4S 数据目录，或用户指定的任意目录——并写下清单，使卸载精确、覆盖默认拒绝。 |
 
 ## 它处在什么位置
 

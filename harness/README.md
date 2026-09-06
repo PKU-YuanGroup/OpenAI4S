@@ -166,6 +166,6 @@ CI can rely on.
 ## Governance
 
 Harness changes follow the project-owned
-[harness invariants](../CONTRIBUTING.md#harness-invariants) and offline-test
+[harness invariants](../.github/CONTRIBUTING.md#harness-invariants) and offline-test
 policy. New behavior should be backed by deterministic scenario contracts, and
 intentional golden changes must be reviewed explicitly.

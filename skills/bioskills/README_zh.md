@@ -9,6 +9,26 @@
 上游采用 MIT 许可证，原文完整保存在 `LICENSE`。OpenAI4S 将这批内容视为一份固定版本、
 只读的第三方资源，而不是 561 个由 OpenAI4S 分别维护的实现。
 
+## 安装
+
+这里是一个集合，而不是单个 Skill：一个目录条目背后是 561 份配方。有 Node 18+、且 `PATH` 上有 `git`（npm 靠它解析 `github:` 形式的包名）即可，无需先克隆仓库：
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
+```
+
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入 `./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写到你指定的任意位置。往目标写任何东西之前，都会先打印解析出的绝对路径；`--dry-run` 到此为止，不再写入。重装时，若目标副本被你改过、或者不是它自己装的，就拒绝覆盖；`uninstall` 也只删除它自己写过的文件。只想要其中一份配方时直接点名即可——`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`——名字取 `MANIFEST.json` 里的 `directory` 字段，`uninstall` 和 `installed` 认的也是它。把全部 561 份装进 `~/.claude/skills`，等于让每个 Claude Code 会话的 prompt 都带上 561 条 description——正是下文“发现机制与上下文成本”一节要避免的开销——所以在这个目标上请只点名你需要的配方，`--collection` 留给 agent 会去搜索的目录（`--dir`）。包发布到 npm 之后，同一条命令的简写是 `npx openai4s-skills install --collection bioskills --target claude`。
+
+没有 Node 时，直接取配方本身。各份配方要平铺摆放——`<目标>/<配方>/`，也就是 `--collection` 写出来的样子——因为嵌在 skills 目录里的 `bioskills/` 文件夹不会被发现。tarball 是整个仓库（超过 100 MB），下面这条管道是 POSIX shell（macOS、Linux、WSL）写法：
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/bioskills
+mkdir -p ~/.claude/skills && mv bioskills/*/ ~/.claude/skills/
+```
+
+同一份内容的图形界面版本是点击下载整个[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)，Windows 上也走这条路：解压后把 `skills/bioskills/` 里面的各个目录拷出来——拷配方，不要连文件夹一起拷。单份配方用 `python3 -m zipfile -c <配方>.zip <配方>` 就能打成上传框认的压缩包。如果你本来就在跑 OpenAI4S，那这里没有任何东西需要安装——wheel 自带的就是此处这份固定版集合。目标目录、来源记录，以及安装器拒绝去做的那些事：[`tools/skills-installer/`](../../tools/skills-installer/README_zh.md)。
+
 ## 包含内容
 
 资源包覆盖 63 个类别，包括序列与比对文件 I/O、变异检测、表达与表观组学、单细胞与空间

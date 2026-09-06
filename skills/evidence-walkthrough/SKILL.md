@@ -3,6 +3,11 @@ name: evidence-walkthrough
 description: Run the reference end-to-end research pass — fixed database query, local analysis, versioned artifacts with lineage, then an exported evidence package that verifies in a clean environment. Use as the first-run demonstration, as a benchmark case, or when a result must be handed to someone who was not there when it ran.
 origin: openai4s
 category: research-workflow
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Evidence walkthrough

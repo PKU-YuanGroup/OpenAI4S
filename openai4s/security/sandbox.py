@@ -96,6 +96,15 @@ class SandboxStatus:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def host_only_boundary_holds(self) -> bool:
+        """True when this kernel cannot raw-socket and Host is the network path."""
+
+        return (
+            self.enforced is True
+            and self.self_test_passed is True
+            and self.network_policy == "blocked"
+        )
+
 
 @dataclass(frozen=True)
 class KernelReadIsolation:

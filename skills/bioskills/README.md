@@ -10,6 +10,55 @@ The upstream work is MIT-licensed; its exact license text is preserved in
 `LICENSE`. OpenAI4S treats the collection as a pinned, read-only third-party
 resource, not as 561 independently maintained OpenAI4S implementations.
 
+## Install
+
+This is a collection rather than one Skill: 561 recipe directories behind a
+single catalog entry. With Node 18+ and `git` on `PATH` (npm resolves a
+`github:` spec through it), and nothing cloned:
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
+```
+
+`--target claude` writes to `~/.claude/skills`, `claude-project` to
+`./.claude/skills`, `openai4s` to `<data_dir>/user-skills`, and `--dir <path>`
+to anywhere you name. The resolved absolute path is printed before anything is
+written there, and `--dry-run` stops at that plan. A reinstall refuses to
+overwrite a copy you have edited or one it did not install, and `uninstall`
+removes only the files it wrote. Name one recipe instead of the whole collection
+when one is all you want —
+`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`
+— and the `directory` field of `MANIFEST.json` is where those names come from;
+it is also the name `uninstall` and `installed` answer to. Installing all 561
+into `~/.claude/skills` puts 561 descriptions into every Claude Code session's
+prompt — the cost the *Discovery and context cost* section below exists to avoid
+— so on that target name the recipes you need, and keep `--collection` for a
+directory an agent searches (`--dir`). Once the package is on npm,
+`npx openai4s-skills install --collection bioskills --target claude` is the
+short form of the same command.
+
+Without Node, take the recipes themselves. They must sit flat —
+`<target>/<recipe>/`, exactly what `--collection` writes — because a
+`bioskills/` folder nested inside a skills directory is not discovered. The
+tarball is the whole repository (over 100 MB), and the pipe is a POSIX shell
+recipe (macOS, Linux, WSL):
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/bioskills
+mkdir -p ~/.claude/skills && mv bioskills/*/ ~/.claude/skills/
+```
+
+The click-through form of that same download is the
+[repository zip](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip),
+which is also the route to take on Windows: extract it and copy the directories
+inside `skills/bioskills/` out — the recipes, not the folder itself. One recipe
+becomes an upload-field `.zip` with
+`python3 -m zipfile -c <recipe>.zip <recipe>`. If you already run OpenAI4S there
+is nothing to install — the wheel ships the pinned collection exactly as it
+stands here. Targets, provenance, and what the installer refuses to do:
+[`tools/skills-installer/`](../../tools/skills-installer/README.md).
+
 ## What is included
 
 The collection covers 63 categories, including sequence and alignment I/O,

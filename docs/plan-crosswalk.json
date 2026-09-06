@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "5e44f90dab9b6fcd7f062a23f880a15c07b7829844babc1b9303189dc070cc22"
+      "evidence_digest": "fb7807a090d78a5cffb02b91e878145df920b04bb4ba2957d703c9c67e2551b4"
     },
     {
       "source": "R1",
@@ -77,11 +77,11 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入；不自动 poll、cancel 或重提",
       "status": "closed",
-      "status_note": "owner-scoped read-only remote task centre: `GET /frames/<id>/compute/tasks` plus an explicit `.../refresh`, rendered by app.js `computePanel`. Opening the page returns the durable record and says it did not poll; one session cannot enumerate another's; `unknown` is not rendered as a failure; process handles and cluster paths are not published. The previous `open` label predated the work.",
+      "status_note": "owner-scoped remote task centre: `GET /frames/<id>/compute/tasks` plus an explicit `.../refresh`. Opening the page returns the durable record and says it did not poll; one session cannot enumerate another's; `unknown` is not rendered as a failure; process handles and cluster paths are not published. The previous `open` label predated the work. This row's conclusion -- no *automatic* poll, cancel or resubmit -- still holds after P1-4 added an explicit confirm-gated cancel: closing the page, stopping a turn, deleting a session, a timeout UI and a daemon restart are each asserted not to reach it.",
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b17a8ea94abcaecd8e52653b583477925628618938b3138deca4692d72cf604"
+      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
     },
     {
       "source": "R1",
@@ -95,7 +95,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
+      "evidence_digest": "2f9aa117b024396ea360d0cb678b5626e4ff541d2fd6184f24462f6c946108e5"
     },
     {
       "source": "R1",
@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_compute_lifecycle.py,tests/test_compute_trust_boundary.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_stage11_remote_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "0566c6249dd1c01e5178cbcb0b6fa7ea0276b2fa6fc5b3241a5ebf8c6433411d"
+      "evidence_digest": "366457648a55792feb79c71496547c8ec042fad6127632a1b58bb16d5fe01902"
     },
     {
       "source": "R2",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "6366b0dc25dc7345879bc36141527191e5e8bebd788b6f69e0cdd2c4a9e4924a"
+      "evidence_digest": "ee5153eaa7d823ead821c192b896daea477390f6b0e0c12f78e2212eeff6d4a2"
     },
     {
       "source": "R2",
@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "be1477a1812bbba455540dc485c1b9ef6b2604400e90760353bf7cbbadc9a407"
+      "evidence_digest": "40085cbfceab23dae20c277feb09562fbe0f271343f85898afe6e1a44afc7d35"
     },
     {
       "source": "R2",
@@ -314,7 +314,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "b7fcd8955392ed5c449ddb66ec4b22bc92a1df542c89bb6293ab5fb553932b18"
+      "evidence_digest": "83a05fdfe088278a205a5c6b0ef425e65f5002c6de3ca598ec4ee5203e0b7e47"
     },
     {
       "source": "R3",
@@ -328,7 +328,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
+      "evidence_digest": "2f9aa117b024396ea360d0cb678b5626e4ff541d2fd6184f24462f6c946108e5"
     },
     {
       "source": "R3",
@@ -449,11 +449,11 @@
       "integrated": "P2、P1-B",
       "plan_conclusion": "owner-scoped 只读面板可进 P1；完整合同 P2",
       "status": "closed",
-      "status_note": "the P1-B half this version promised -- an owner-scoped read-only panel that does not poll on open -- is on the production path and covered. The full Poll/Harvest/Cancel/Reconcile workbench contract with imported/quarantined semantics remains P2 by decision D8 and enters no public API this version.",
+      "status_note": "the P1-B half this version promised -- an owner-scoped panel that does not poll on open -- is on the production path and covered. Decision D8 kept the full Poll/Harvest/Cancel/Reconcile workbench at P2 with no public API; the next-version report has since promoted the Cancel half to core scope (P1-4), and `POST /frames/<fid>/compute/tasks/<job_id>/cancel` is now a public route. Harvest, Reconcile and the imported/quarantined semantics remain P2 under D8; the panel is no longer read-only.",
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b17a8ea94abcaecd8e52653b583477925628618938b3138deca4692d72cf604"
+      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
     },
     {
       "source": "R5",
@@ -481,7 +481,7 @@
       "tests": "tests/test_compute_alias_registration.py,tests/test_compute_trust_boundary.py,tests/test_compute_durability.py,tests/test_sdk_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "0165194064a87c01c89d8757733dbddbec3c02c3eb5fc4a51d49fbd1c54680bf"
+      "evidence_digest": "a071098892f48b88944f750fe9fe1177f1b5bcbf1a7c3b10bc3dbb4be817593c"
     },
     {
       "source": "R5",
@@ -560,11 +560,11 @@
       "integrated": "P2、P1-B",
       "plan_conclusion": "只读入口 P1；完整控制 P2",
       "status": "closed",
-      "status_note": "same split as R4/P2-1: the session-isolated read-only entry is delivered and covered; the full workbench stays P2 by decision D8.",
+      "status_note": "same split as R4/P2-1, with the same amendment: the session-isolated entry is delivered and covered, and P1-4 has promoted explicit cancel out of D8's P2 bucket into a public route. The rest of the workbench stays P2.",
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b17a8ea94abcaecd8e52653b583477925628618938b3138deca4692d72cf604"
+      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
     },
     {
       "source": "R6",
@@ -578,7 +578,7 @@
       "tests": "tests/test_local_job_envelope.py,tests/test_local_job_lifecycle.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
+      "evidence_digest": "865dc95c3bae6c29af3fe8b6ea468dd567dde6c1bc5ddd2ad42a3cbb756df650"
     },
     {
       "source": "R6",
@@ -592,7 +592,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "69a6a54004d6a34f775ae214d6cb654a5ee3670f82764444ab05b1fc5b531217"
+      "evidence_digest": "9bb7cc940bebb74b255c460ec1bcd26b050265e496fc24eac92b9b19ad29298c"
     },
     {
       "source": "R6",
@@ -606,7 +606,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_artifact_mutation_service.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "9a67b0f229d120dbdff94656a9972a82f701461685bce1e256cb34c1fc6077ba"
+      "evidence_digest": "c0e68e61454239cb26ab35a68ff1d6fa84858cd9d4dc59f890c73c16ec02ad58"
     },
     {
       "source": "R6",
@@ -648,7 +648,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_queued_followups.py,tests/test_specialist_connector_allowlist.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1bf59d5a7237146fe02e028ff1cc9fec9fef37740ef85d546e3e8013c9539b01"
+      "evidence_digest": "71bb8860433f850d2d0b45e574477918656be607676bd6eabab6025d75f8d322"
     },
     {
       "source": "R6",
@@ -662,7 +662,7 @@
       "tests": "tests/test_renderer_capability_honesty.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1093731cd8291a78464ec2e7a44a4c5c67df9d3a34f6a32b69a1d50b52d89b57"
+      "evidence_digest": "4bf2944794c004eecda3f9c5a690cb0f867baa87c178a7fc775701f45b6e6e09"
     },
     {
       "source": "R6",
@@ -703,7 +703,7 @@
       "tests": "tests/test_local_job_lifecycle.py,tests/test_local_job_envelope.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
+      "evidence_digest": "865dc95c3bae6c29af3fe8b6ea468dd567dde6c1bc5ddd2ad42a3cbb756df650"
     },
     {
       "source": "R7",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "11eddf43340b9f8ede8e036b21ee2048aff87bd60471cd3fe36fc0be03ec0589"
+      "evidence_digest": "fc210b22c73e86d3ae5f2c4b3ec7cfd06a354ac6f77c506bda400ac597f3eef2"
     },
     {
       "source": "R7",

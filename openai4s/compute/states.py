@@ -58,6 +58,24 @@ UNKNOWN = "unknown"
 #: sandbox bills unnoticed.
 LIVE_STATES: tuple[str, ...] = (QUEUED, STAGING, SUBMITTED, RUNNING, UNKNOWN)
 
+#: The reason a failed cancel falls back to when nothing more specific is
+#: known: the remote may still be running and billing.
+REASON_CANCEL_UNCONFIRMED = "receipt_unconfirmed"
+
+#: Closed-set reasons a *failed* cancel may carry. HTTP and the Task Centre
+#: map every one of them onto ``cancel_indeterminate``; none is a confirmed
+#: stop. Spelled once here because the manager, the kernel-side SDK and the
+#: gateway each carried a copy, and copies are where a new reason lands once.
+CANCEL_INDETERMINATE_REASONS: frozenset[str] = frozenset(
+    {"remote_unreachable", REASON_CANCEL_UNCONFIRMED, "provider_cancel_unsupported"}
+)
+
+#: Error kinds that, by themselves, mean "the remote may or may not have
+#: acted" -- the cancel reasons plus ``unknown_state``, which a cancel
+#: re-labels onto one of them. ``indeterminate`` on the error is the explicit
+#: signal; this set is merely its default.
+INDETERMINATE_KINDS: frozenset[str] = CANCEL_INDETERMINATE_REASONS | {"unknown_state"}
+
 #: Mutually exclusive end states. The scorecard's requirement is exactly this:
 #: no job is in two of them, and none of them is reachable by default.
 TERMINAL_STATES: tuple[str, ...] = (SUCCEEDED, FAILED, TIMED_OUT, CANCELLED)
@@ -179,6 +197,9 @@ LEGACY_STATUS_MAP: dict[str, tuple[str, str | None]] = {
 __all__ = [
     "ALL_STATES",
     "CANCELLED",
+    "CANCEL_INDETERMINATE_REASONS",
+    "INDETERMINATE_KINDS",
+    "REASON_CANCEL_UNCONFIRMED",
     "FAILED",
     "IllegalTransition",
     "LEGACY_STATUS_MAP",

@@ -3,6 +3,11 @@ origin: openai4s
 name: figure-composer
 description: "Compose one publication-grade multi-panel figure. Entry from a one-line claim + data refs, OR from an existing figure via `derive_outline(png)`. Runs a per-figure loop: outline (12-col grid, per-panel ask + label_budget) → fan-out one sub-agent per panel (each loads `figure-style`) → tile + stamp letters → adversarial composite review with two-tier feedback (Tier-1 outline_revisions / Tier-2 per-panel violations) → regen affected panels, ≤3 rounds. Loads panel_task / compose_figure / compose_crops / composite_review_task / derive_outline into the kernel. For one standalone plot use `figure-style`; for whole-paper figure ordering use `paper-narrative`."
 license: Apache-2.0
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 

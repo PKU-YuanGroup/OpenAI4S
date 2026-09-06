@@ -38,7 +38,7 @@ jobs:
           FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '60' }}
         run: |
           mkdir -p "${RUNNER_TEMP}/openai4s-fuzz-corpus"
-          uv run --locked --extra fuzz python fuzz/protocol_fuzzer.py \
+          uv run --locked --extra fuzz python scripts/protocol_fuzzer.py \
             "${RUNNER_TEMP}/openai4s-fuzz-corpus" \
             -max_total_time="${FUZZ_SECONDS}" \
             -max_len=1048576

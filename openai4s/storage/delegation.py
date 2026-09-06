@@ -8,6 +8,11 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from openai4s.storage.delegation_attempts import (
+    DelegationAttemptRepository,
+    DelegationRequestConflict,
+)
+
 DELEGATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS delegation_sessions (
     root_frame_id TEXT PRIMARY KEY,
@@ -98,6 +103,9 @@ class DelegationProjectionRepository:
         self._connection = connection
         self._lock = lock
         self._clock_ms = clock_ms
+        self._attempts = DelegationAttemptRepository(
+            connection, lock, clock_ms=clock_ms
+        )
         with self._lock:
             self._connection.executescript(DELEGATION_SCHEMA)
             self._connection.commit()
@@ -141,6 +149,7 @@ class DelegationProjectionRepository:
                         "WHERE root_frame_id=? AND status IN ('pending','running')",
                         (root,),
                     ).fetchall()
+                    stopped_ids = [child["child_id"] for child in rows]
                     for child in rows:
                         result = _encode_result(
                             {
@@ -161,6 +170,11 @@ class DelegationProjectionRepository:
                             "AND status IN ('pending','running')",
                             (result, now, root, child["child_id"]),
                         )
+                    try:
+                        self._attempts.stop_live_attempts_locked(stopped_ids)
+                    except sqlite3.OperationalError as error:
+                        if "no such table" not in str(error).lower():
+                            raise
                     self._connection.execute(
                         "UPDATE delegation_steering SET status='discarded' "
                         "WHERE root_frame_id=? AND status='queued'",
@@ -192,6 +206,10 @@ class DelegationProjectionRepository:
         count: int,
         depth: int,
         parent_child_id: str | None,
+        parent_action_group_id: str | None = None,
+        native_call_id: str | None = None,
+        request_sha256: str | None = None,
+        payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         root = _required("root_frame_id", root_frame_id)
         owner = _required("owner_instance_id", owner_instance_id)
@@ -200,12 +218,31 @@ class DelegationProjectionRepository:
         depth = int(depth)
         if count < 0 or depth < 0:
             raise ValueError("delegation reservation values must be non-negative")
+        identity = None
+        if parent_action_group_id and native_call_id and request_sha256:
+            identity = (
+                str(parent_action_group_id).strip(),
+                str(native_call_id).strip(),
+                str(request_sha256).strip(),
+            )
+            if count != 1:
+                raise ValueError("idempotent reservation is one child at a time")
         now_ms = self._clock_ms()
         now = now_ms / 1000.0
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 session = self._lease_locked(root, owner, runner)
+                if identity is not None:
+                    reused = self._reuse_request_locked(
+                        root,
+                        parent_action_group_id=identity[0],
+                        native_call_id=identity[1],
+                        request_sha256=identity[2],
+                    )
+                    if reused is not None:
+                        self._connection.commit()
+                        return reused
                 spawned = int(session["spawned"])
                 limit = int(session["budget_limit"])
                 if spawned + count > limit:
@@ -235,6 +272,33 @@ class DelegationProjectionRepository:
                             now,
                         ),
                     )
+                request_row = None
+                attempt_row = None
+                if identity is not None:
+                    try:
+                        request_row = self._attempts.insert_request_locked(
+                            root_frame_id=root,
+                            parent_action_group_id=identity[0],
+                            native_call_id=identity[1],
+                            request_sha256=identity[2],
+                            child_id=child_ids[0],
+                            payload=payload,
+                        )
+                    except sqlite3.IntegrityError:
+                        self._connection.rollback()
+                        reused = self._reuse_request_locked(
+                            root,
+                            parent_action_group_id=identity[0],
+                            native_call_id=identity[1],
+                            request_sha256=identity[2],
+                        )
+                        if reused is None:
+                            raise
+                        return reused
+                    attempt_row = self._attempts.insert_attempt_locked(
+                        request_id=request_row["request_id"],
+                        child_id=child_ids[0],
+                    )
                 self._connection.execute(
                     "UPDATE delegation_sessions SET spawned=?,active=active+?,"
                     "child_sequence=?,updated_at=? WHERE root_frame_id=?",
@@ -244,10 +308,156 @@ class DelegationProjectionRepository:
             except Exception:
                 self._connection.rollback()
                 raise
-            return {
+            result = {
                 "child_ids": child_ids,
                 "budget": self._budget_locked(root),
+                "reused": False,
             }
+            if request_row is not None:
+                result["request_id"] = request_row["request_id"]
+            if attempt_row is not None:
+                result["attempt_id"] = attempt_row["attempt_id"]
+                result["attempt_no"] = attempt_row["attempt_no"]
+            return result
+
+    def continue_request(
+        self,
+        *,
+        root_frame_id: str,
+        owner_instance_id: str,
+        runner_instance_id: str,
+        child_id: str,
+        depth: int,
+        parent_child_id: str | None,
+    ) -> dict[str, Any]:
+        """Create the next attempt for a durable request. Never called by restore."""
+
+        root = _required("root_frame_id", root_frame_id)
+        owner = _required("owner_instance_id", owner_instance_id)
+        runner = _required("runner_instance_id", runner_instance_id)
+        target = _required("child_id", child_id)
+        depth = int(depth)
+        if depth < 0:
+            raise ValueError("delegation reservation values must be non-negative")
+        now_ms = self._clock_ms()
+        now = now_ms / 1000.0
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                session = self._lease_locked(root, owner, runner)
+                request = self._attempts.request_for_child_locked(
+                    root_frame_id=root, child_id=target
+                )
+                if request is None:
+                    raise KeyError(f"no durable delegation request for {target!r}")
+                latest = self._attempts.latest_attempt_locked(request["request_id"])
+                if latest is not None and latest["state"] in {"pending", "running"}:
+                    raise DelegationRequestConflict(
+                        "delegation attempt already in flight; "
+                        f"child {latest['child_id']!r} is {latest['state']}"
+                    )
+                spawned = int(session["spawned"])
+                limit = int(session["budget_limit"])
+                if spawned + 1 > limit:
+                    raise RuntimeError(
+                        f"session spawn cap reached ({limit}); already spawned "
+                        f"{spawned}, requested 1"
+                    )
+                sequence = int(session["child_sequence"]) + 1
+                new_child_id = f"child-{depth}-{sequence}"
+                self._connection.execute(
+                    "INSERT INTO delegation_children("
+                    "root_frame_id,child_id,parent_child_id,depth,status,"
+                    "owner_instance_id,runner_instance_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        root,
+                        new_child_id,
+                        parent_child_id,
+                        depth,
+                        "pending",
+                        owner,
+                        runner,
+                        now,
+                    ),
+                )
+                attempt = self._attempts.insert_attempt_locked(
+                    request_id=request["request_id"],
+                    child_id=new_child_id,
+                    previous_attempt_id=latest["attempt_id"] if latest else None,
+                )
+                self._connection.execute(
+                    "UPDATE delegation_sessions SET spawned=?,active=active+1,"
+                    "child_sequence=?,updated_at=? WHERE root_frame_id=?",
+                    (spawned + 1, sequence, now_ms, root),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+            return {
+                "child_ids": [new_child_id],
+                "budget": self._budget_locked(root),
+                "reused": False,
+                "request_id": request["request_id"],
+                "attempt_id": attempt["attempt_id"],
+                "attempt_no": attempt["attempt_no"],
+                "payload": request.get("payload") or {},
+                "previous_child_id": target,
+            }
+
+    def request_for_child(
+        self, *, root_frame_id: str, child_id: str
+    ) -> dict[str, Any] | None:
+        root = _required("root_frame_id", root_frame_id)
+        target = _required("child_id", child_id)
+        with self._lock:
+            request = self._attempts.request_for_child_locked(
+                root_frame_id=root, child_id=target
+            )
+            if request is None:
+                return None
+            latest = self._attempts.latest_attempt_locked(request["request_id"])
+            return {**request, "latest_attempt": latest}
+
+    def _reuse_request_locked(
+        self,
+        root: str,
+        *,
+        parent_action_group_id: str,
+        native_call_id: str,
+        request_sha256: str,
+    ) -> dict[str, Any] | None:
+        existing = self._attempts.lookup_locked(
+            root_frame_id=root,
+            parent_action_group_id=parent_action_group_id,
+            native_call_id=native_call_id,
+        )
+        if existing is None:
+            return None
+        if existing["request_sha256"] != request_sha256:
+            raise DelegationRequestConflict(
+                "delegation request digest conflict for "
+                f"native_call_id {native_call_id!r}"
+            )
+        latest = self._attempts.latest_attempt_locked(existing["request_id"])
+        # The attempt row is the authority for which child is current.
+        # `delegation_requests.child_id` is attempt 1's child and never moves,
+        # while `continue_request` mints a fresh child per retry; reading the
+        # child from one table and the attempt id from the other hands back a
+        # pair that never existed together -- attempt 1's child, whose output
+        # is the failure that prompted the retry, labelled with the id of the
+        # attempt actually in flight.
+        child_id = str(latest["child_id"]) if latest else existing["child_id"]
+        return {
+            "child_ids": [child_id],
+            "budget": self._budget_locked(root),
+            "reused": True,
+            "request_id": existing["request_id"],
+            "attempt_id": latest["attempt_id"] if latest else None,
+            "attempt_no": latest["attempt_no"] if latest else None,
+            "payload": existing.get("payload") or {},
+        }
 
     def release(
         self,
@@ -344,6 +554,15 @@ class DelegationProjectionRepository:
                     runner_instance_id,
                     message,
                 )
+            try:
+                self._attempts.update_attempt_state_locked(
+                    child_id,
+                    state,
+                    artifact_refs=child.get("artifact_refs"),
+                )
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error).lower():
+                    raise
             self._connection.commit()
             return self._child_locked(root, child_id, include_text=True)
 
@@ -422,6 +641,14 @@ class DelegationProjectionRepository:
             if include_text:
                 message["text_preview"] = item["text_preview"]
             messages.append(message)
+        try:
+            identity = self._attempts.project_for_child_locked(
+                root_frame_id=row["root_frame_id"], child_id=row["child_id"]
+            )
+        except sqlite3.OperationalError as error:
+            if "no such table" not in str(error).lower():
+                raise
+            identity = {}
         return {
             "child_id": row["child_id"],
             "name": row["name"],
@@ -439,6 +666,9 @@ class DelegationProjectionRepository:
             "created_at": row["created_at"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
+            "request_id": identity.get("request_id"),
+            "attempt_id": identity.get("attempt_id"),
+            "artifact_refs": identity.get("artifact_refs") or [],
             "progress": {
                 "turn_boundary": int(row["turn_boundary"] or 0),
                 "max_turns": row["max_turns"],
@@ -619,4 +849,8 @@ def _positive(value: Any) -> int | None:
     return number if number > 0 else None
 
 
-__all__ = ["DELEGATION_SCHEMA", "DelegationProjectionRepository"]
+__all__ = [
+    "DELEGATION_SCHEMA",
+    "DelegationProjectionRepository",
+    "DelegationRequestConflict",
+]

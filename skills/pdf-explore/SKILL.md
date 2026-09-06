@@ -4,6 +4,11 @@ name: pdf-explore
 description: "Use this skill when the user has attached a PDF, paper, report, or other document and the answer needs content from more than one place in it: summarize the methods or any other section, compare sections, find where a topic is discussed, read a value or label off a figure or chart, or find/list/extract every instance of something across the whole document (datasets, benchmarks, citations, figures, table rows, accession numbers — including appendices). Skip it only for a single lookup of 1–4 pages quoted in your very next response — `read_file(pages=[...])` attaches pages as images that are dropped from context after one turn, so multi-section answers end up re-reading the same ranges repeatedly. Parses the PDF once in the Python kernel: `pdf_pages` (pages as persistent text), `pdf_outline` (TOC), `pdf_scan` (rank pages by relevance), `pdf_map`/`pdf_extract` (per-page summary / structured fields via parallel low-cost calls). For PDF creation/manipulation, use reportlab/pypdf directly."
 fold_cue: "instead_of=read_file use=pdf_pages/pdf_outline/pdf_scan for multi-page PDF reads — read_file pages drop after one turn"
 license: Apache-2.0
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # PDF Explore — navigate a PDF too big to embed

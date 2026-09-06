@@ -138,6 +138,7 @@ class EngineResult:
     stop_reason: str
     turns: int
     last_reply: ModelReply | None
+    progress_reason: str | None = None
 
     @property
     def messages(self) -> tuple[Message, ...]:

@@ -31,7 +31,11 @@
 # string, so an image built from the index would be silently older than the
 # checkout it was built in. Building the wheel here is the path
 # `.github/workflows/ci.yml`'s release-artifacts job already proves installable.
-FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS builder
+# 3.14 is the shipped container interpreter. It must stay in
+# `.github/workflows/ci.yml`'s offline matrix and in
+# `scripts/release_gates.py` CHECK_SUITE_GATES; `tests/test_platform_support.py`
+# reads this FROM line rather than restating the series.
+FROM python:3.14-slim-bookworm@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63 AS builder
 
 WORKDIR /src
 # The build backend first, in its own layer: it changes only when the pin in
@@ -45,7 +49,7 @@ RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
         --wheel-dir /wheels /src
 
 # --- runtime stage -----------------------------------------------------------
-FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS runtime
+FROM python:3.14-slim-bookworm@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63 AS runtime
 
 # `science` installs numpy/pandas/matplotlib/scikit-learn so agent cells can do
 # actual work. Pass `--build-arg OPENAI4S_EXTRAS=` for the stdlib-only control

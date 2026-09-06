@@ -3,6 +3,10 @@ name: reaction-condition-recommendation
 description: Recommend ranked catalyst, reagent, and solvent labels for a fully specified reaction using the reviewed Parrot USPTO checkpoint. Not for unknown reactions or lab procedures.
 license: MIT
 origin: openai4s
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   third_party:
     - kind: code

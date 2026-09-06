@@ -281,8 +281,9 @@ class CapabilityStateRepository:
         *,
         kind: str | None = None,
         name: str | None = None,
+        event: str | None = None,
         session_id: str | None = None,
-        limit: int = 200,
+        limit: int | None = 200,
     ) -> list[dict]:
         where: list[str] = []
         params: list[Any] = []
@@ -292,6 +293,9 @@ class CapabilityStateRepository:
         if name:
             where.append("normalized_name=?")
             params.append(_normalized(name))
+        if event:
+            where.append("event=?")
+            params.append(str(event).strip().lower())
         if session_id:
             where.append("scope='session' AND scope_id=?")
             params.append(str(session_id))
@@ -304,8 +308,10 @@ class CapabilityStateRepository:
         # ``clock_ms`` can produce identical timestamps for a burst of events;
         # rowid preserves their append order while event_id is intentionally
         # random and therefore cannot be used as a chronology tie-breaker.
-        sql += " ORDER BY created_at DESC,rowid DESC LIMIT ?"
-        params.append(max(1, min(int(limit), 2000)))
+        sql += " ORDER BY created_at DESC,rowid DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(1, min(int(limit), 2000)))
         with self._lock:
             rows = self._connection.execute(sql, tuple(params)).fetchall()
         output = []

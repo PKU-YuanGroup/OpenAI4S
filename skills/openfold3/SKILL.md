@@ -9,6 +9,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: OpenFold3
   # github.com/aqlaboratory/openfold-3/blob/main/LICENSE: Apache-2.0. HF model

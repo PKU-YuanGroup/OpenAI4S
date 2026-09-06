@@ -194,6 +194,9 @@ def test_the_probe_route_answers(api, monkeypatch):
     assert result["code"] == 200
     assert result["body"]["reachable"] is True
     assert result["body"]["contacted"] is True
+    assert result["body"]["tool_execution"] == 0
+    assert result["body"]["outbound"] <= 2
+    assert "capability_receipt" in result["body"]
 
 
 def test_an_unconfigured_profile_is_not_probed_at_all(api, monkeypatch):

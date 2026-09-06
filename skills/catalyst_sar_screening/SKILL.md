@@ -4,6 +4,11 @@ description: HARD-LOCKED Catalyst-Design-Agent FAIRChem UMA (uma-s-1p1, oc20) SA
 origin: openai4s
 category: chemistry
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
+
 ---
 # Skill: catalyst SAR screening
 

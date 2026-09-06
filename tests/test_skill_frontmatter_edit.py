@@ -138,6 +138,132 @@ def test_an_unknown_future_field_is_kept_too():
     assert "not_invented_yet: 42" in out
 
 
+IMPORT_SEED = """---
+name: cryo-import
+description: Import me whole
+origin: draft
+requirements: [gpu, cuda]
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - api.openalex.org
+      - doi.org
+license: CC-BY-4.0
+category: structural-biology
+# keep this comment
+x-vendor-ext:
+  nested:
+    keep: me
+    list:
+      - one
+      - two
+---
+
+Original imported body.
+"""
+
+
+def test_import_rewrite_keeps_unknown_nested_keys_comments_and_network():
+    """The import seed is the pasted document. Empty original is the bug:
+    rewrite would then emit only name/description/origin and this fixture
+    would still pass if it only asserted those three."""
+    out = frontmatter_edit.rewrite_import(
+        IMPORT_SEED,
+        name="cryo-import",
+        description="Import me whole",
+        body="Original imported body.",
+    )
+    meta, body = _parse_frontmatter(out)
+    assert meta["name"] == "cryo-import"
+    assert meta["origin"] == "user"
+    assert meta["origin"] != "draft"
+    assert meta["requirements"] == "[gpu, cuda]"
+    assert meta["license"] == "CC-BY-4.0"
+    assert meta["category"] == "structural-biology"
+    assert "mode: host_only" in out
+    # Whole lines, not substrings: the author's domain list must survive
+    # verbatim, indentation included.
+    lines = out.splitlines()
+    assert "      - api.openalex.org" in lines
+    assert "      - doi.org" in lines
+    assert "# keep this comment" in out
+    assert "x-vendor-ext:" in out
+    assert "    keep: me" in out
+    assert "      - two" in out
+    assert body.strip() == "Original imported body."
+
+
+def test_capitalised_owned_keys_are_replaced_not_duplicated():
+    """`_parse_frontmatter` lowercases keys and keeps the last occurrence. A
+    document written with `Name:` / `Origin:` was not recognised as owning
+    those fields: fresh lowercase lines were prepended and the capitalised
+    originals kept after them -- and the loader read the originals. An edit
+    that did not take effect; an import stamped `origin: user` that loaded
+    as whatever the author had written."""
+    pasted = """---
+Name: Old Name
+Description: old description
+Origin: personal
+requirements: [gpu]
+---
+
+Body.
+"""
+    out = frontmatter_edit.rewrite_import(
+        pasted, name="new-name", description="new description", body="Body."
+    )
+    meta, _ = _parse_frontmatter(out)
+    assert meta["name"] == "new-name"
+    assert meta["description"] == "new description"
+    assert meta["origin"] == frontmatter_edit.IMPORT_ORIGIN
+    assert meta["requirements"] == "[gpu]"
+    assert "Old Name" not in out and "Origin:" not in out
+
+
+def test_a_multi_line_description_is_written_back_as_a_block_not_as_keys():
+    """The loader returns a `description: |` block with its newlines. Written
+    back as a bare `description: <value>`, the continuation landed at column
+    0: the description lost every line but the first, and a second line that
+    named a key became a real top-level field of the imported skill."""
+    pasted = """---
+name: demo
+description: |
+  First line.
+  capabilities: injected
+  Third line.
+---
+
+Body.
+"""
+    meta, body = _parse_frontmatter(pasted)
+    out = frontmatter_edit.rewrite_import(
+        pasted, name=meta["name"], description=meta["description"], body=body
+    )
+    again, _ = _parse_frontmatter(out)
+    assert again["description"] == meta["description"]
+    assert (
+        "First line." in again["description"] and "Third line." in again["description"]
+    )
+    assert "capabilities" not in again
+    assert again["origin"] == frontmatter_edit.IMPORT_ORIGIN
+
+
+def test_import_rewrite_from_empty_seed_cannot_invent_dropped_fields():
+    """If import forgets to pass the pasted document, nothing but the
+    owned fields exists to keep. This is the hollow-test trap: a fixture
+    with only name/description/body is green either way."""
+    out = frontmatter_edit.rewrite_import(
+        "",
+        name="cryo-import",
+        description="Import me whole",
+        body="Original imported body.",
+    )
+    assert "requirements:" not in out
+    assert "x-vendor-ext:" not in out
+    assert "license:" not in out
+
+
 # --------------------------------------------------------------------------
 # through the service a user actually reaches
 # --------------------------------------------------------------------------

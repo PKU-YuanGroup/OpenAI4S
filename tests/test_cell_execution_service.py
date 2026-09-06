@@ -195,6 +195,33 @@ def test_malformed_capture_lease_fails_before_cell_identity_or_admission(tmp_pat
     assert harness.order == []
 
 
+def test_skill_network_admission_runs_before_kernel_run(tmp_path, monkeypatch):
+    """The Cell sink always consults skill-network admission, even with no loads."""
+    calls = {"admit": 0}
+
+    def _admit(**kwargs):
+        calls["admit"] += 1
+        from openai4s.server.skill_network_admission import AdmissionDecision
+
+        return AdmissionDecision(
+            allowed=True,
+            reason=None,
+            blocked_on=(),
+            sink="cell",
+        )
+
+    monkeypatch.setattr("openai4s.server.skill_network_admission.admit_cell", _admit)
+    harness = Harness()
+    service = CellExecutionService(harness.ports())
+    service.execute(
+        _session(tmp_path),
+        CellRequest("print(1)", "agent"),
+        lambda _event: None,
+    )
+    assert calls["admit"] == 1
+    assert "run" in harness.order
+
+
 def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
     harness = Harness()
     harness.capture_result = CaptureResult(
@@ -448,9 +475,12 @@ def test_finished_event_is_bounded_without_mutating_result_or_record(
     for field, value in original.items():
         assert finished[field] == value[:8] + cell_run.LIVE_OUTPUT_TRUNCATION
         assert finished[field].count(cell_run.LIVE_OUTPUT_TRUNCATION) == 1
-    assert result.result == {**original, "id": "cell-terminal"}
+    stored = result.result
+    assert stored["id"] == "cell-terminal"
+    for field, value in original.items():
+        assert stored[field] == value
+    assert stored["skill_network"]["allowed"] is True
     assert harness.records[0]["result"] is result.result
-    assert harness.records[0]["result"] == {**original, "id": "cell-terminal"}
 
 
 def test_interrupted_result_wins_over_its_error_text_in_notebook_event(tmp_path):

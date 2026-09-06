@@ -184,6 +184,7 @@ def test_a_session_is_not_marked_seen_while_telemetry_is_off(store, captured):
         ("plan", "ok"),
         ("cancelled", "cancelled"),
         ("max_turns", "timeout"),
+        ("no_progress", "timeout"),
         ("failed", "error"),
     ],
 )
@@ -197,6 +198,14 @@ def test_every_engine_stop_reason_maps_to_a_declared_outcome(stop_reason, expect
 
     assert turn_outcome(stop_reason) == expected
     assert expected in RECORD["outcome"].members
+
+
+def test_the_progress_circuit_stop_is_a_bounded_stop_not_an_error():
+    """The circuit's reason is read from its owner, not restated: if the
+    engine renames it this fails here rather than drifting to `error`."""
+    from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
+
+    assert turn_outcome(NO_PROGRESS_STOP_REASON) == turn_outcome("max_turns")
 
 
 def test_an_unrecognised_stop_reason_is_error_not_ok():

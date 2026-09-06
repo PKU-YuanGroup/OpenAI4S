@@ -1,8 +1,10 @@
 # Web App API Contract (as implemented)
 
 This document records the **actual** HTTP/WebSocket contract between
-`openai4s/server/gateway.py` (backend) and `openai4s/server/webui/app.js`
-(frontend), including known warts and gaps. It is descriptive, not
+`openai4s/server/gateway.py` (backend) and the workbench frontend
+(`frontend/` source, served from `openai4s/server/webui/dist/`;
+`openai4s/server/webui/app.js` is the `OPENAI4S_WEBUI=legacy` hatch),
+including known warts and gaps. It is descriptive, not
 aspirational: every claim below maps to the Gateway/frontend or to a focused
 service they compose (notably the execution coordinator, session-domain,
 workbench-state, and permission services). If you change that public surface,
@@ -203,10 +205,11 @@ contract.
   Only `broadcast` events are sequenced; point-to-point snapshots delivered on
   subscribe (`execution_queue`, pending approval cards) and the replay control
   frames deliberately carry no `seq`.
-- The frontend is a single-page app served from the working tree
-  (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
-  shell (`index.html`) to support deep links. Unknown non-GET, non-API paths
-  return `404 {"error": "not found"}`.
+- The frontend is a single-page app. `/`, `/index.html`, and any unknown
+  non-API `GET` serve the SPA shell (`webui/dist/index.html` by default;
+  `webui/index.html` when `OPENAI4S_WEBUI=legacy`) so deep links such as
+  `/projects/{pid}/frames/{fid}` work. `/static/*` is the ordinary static
+  tree. Unknown non-GET, non-API paths return `404 {"error": "not found"}`.
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
@@ -297,7 +300,7 @@ or stored `Content-Type`:
 
 | Route | Body | Notes |
 | --- | --- | --- |
-| `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/index.html`. |
+| `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/dist/index.html` (or `webui/index.html` when `OPENAI4S_WEBUI=legacy`). |
 | `GET /static/<rel>` | file bytes | Path-traversal-guarded; 404/403 as JSON. |
 | `GET /api/artifacts/{ident}` | artifact bytes | Compatibility route. `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
 | `GET /api/v1/artifacts/versions/{version_id}` | immutable artifact-version bytes | Stage 1 trusted completion links use this reserved canonical route only. The server helper rejects empty and dot-only identifiers and encodes slash, Unicode, and URL metacharacters into one path segment. The route resolves that exact version or 404 and never falls back to an Artifact id or filename, so a reopened link remains bound to the same bytes after the head changes. |
@@ -338,6 +341,24 @@ success response body. Serializer shapes are in §4.
 | `GET|POST|PUT|PATCH /config/llm` | GET → `{provider,model,base_url,has_api_key}`. Write → persists `provider`/`model`/`base_url`; `api_key` only overwrites when non-empty; `clear_api_key:true` empties it. Changing provider without a replacement key also clears the old provider-bound credential so it cannot be reinterpreted or sent to the new provider → `{"ok":true,"has_api_key"}`. The raw key is never returned. |
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}], datapro:[{query,dataset_type,json_pointer,content,artifact_id,root_frame_id,project_id}]}`; empty `q` → empty lists. `datapro` searches every recursively indexed key and scalar in successful DataPro content; each hit is a logical result occurrence, so equal records at different JSON pointers remain distinct. |
 | `GET /` (i.e. `/api` or `/api/v1/`) | `{"service":"openai4s","ok":true}`. |
+
+### First-run onboarding
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /onboarding` | Redacted first-run state: which of the four decisions — model path, the explicit Test, environment/network readiness, first Project — are already satisfied. Derived entirely from stored state, so opening the wizard contacts no provider and cannot be used to probe whether a key works. No credential value appears in the payload. |
+| `POST /onboarding/complete` | Marks first-run finished. In team mode this is admin-only (`403 admin_only`): the state is installation-wide, so a member dismissing it would be deciding for everyone. |
+
+### Diagnostics
+
+All three are admin-only in team mode on every verb (`403 admin_only`, never
+404) and answer with `Cache-Control: no-store`.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /diagnostics/status` | Passive security posture (`security`, `environment`, `request_id`): permission stats plus the sandbox / egress / secret-store / confinement env knobs. No network, no child process, no Store open. |
+| `POST /diagnostics/checks` | The full `doctor.report()` — the same probes the CLI `doctor` runs, side effects included (a temp sandbox self-test, environment root walks). `{"status","checks":[…],"request_id"}`. |
+| `POST /diagnostics/bundle` | Streams the redacted support zip (`application/zip`, `Content-Disposition: attachment`). The body is ignored — the client cannot name the output path. One generation in flight per process and one per principal per 60 s (`429 rate_limited`; a 413 or a failed generation does not spend the cooldown); `413 payload_too_large` above 32 MiB. |
 
 ### Models and model profiles
 
@@ -420,7 +441,7 @@ identifiers, tokens, authorization codes, and API Keys are never returned.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /projects` | `{"projects":[project…],"total":n}`. **No pagination:** the frontend sends `?limit=100&offset=0` but the handler ignores both parameters and always returns *all* projects; `total` is just `len(projects)`. Do not document or rely on offset semantics — they do not exist. |
+| `GET /projects` | `{"projects":[project…],"total":n}` on an unparameterized request (compatibility full dump). With `q`, `limit`, `cursor`, or `offset`, the envelope also carries `next_cursor` and `has_more`. `limit` is 1–100 (default 100, values above 100 are capped). Official clients page by opaque keyset `cursor` on `(last_active_at DESC NULLS LAST, project_id DESC)`; `offset` is honoured only for one compatibility window and must not be combined with `cursor`. `q` searches project `name` and `description` only: trim, at most 128 Unicode code points, parameterized `LIKE … ESCAPE` with `\`, `%`, `_` treated as literals, ASCII case-insensitive and non-ASCII exact. `total` is the exact count after the team-visibility filter and `q`, not after `LIMIT`. An illegal cursor or one bound to a different `q` / principal returns `400 invalid_cursor` and does not restart at page one. |
 | `POST /projects` | Body `{name?,description?,context?}` → project JSON (with `conversation_count: 0`). |
 | `GET /projects/{pid}` | Project JSON, or `{}` when not found (**not** a 404). |
 | `GET /projects/{pid}/action-timeline?limit=` | Bounded cross-session safe Timeline projection with session labels. |
@@ -548,6 +569,12 @@ A session's kernel is on the daemon by default. Asking for it to be on a granted
 
 `state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
 
+### Cross-session attention
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /attention?limit=&cursor=` | Read-only aggregation of what is waiting across every visible session: `{items, next_cursor}`. An item is `{id, source_kind, source_id, state, severity, frame_id, project_id, title, updated_at, target:{surface,dock,frame_id}, action_hint}`. Four closed sets: `source_kind` ∈ `running`/`queued`/`approval`/`recovery`/`blocked`/`compute`, `severity` ∈ `high`/`medium`/`low`, `target.surface` ∈ `session`, `target.dock` ∈ `timeline`/`recovery`/`security`/`compute`. They are closed so the client builds navigation locally and the server never emits a URL. Items are deduplicated by `source_kind + source_id` — one card per fact, not per source that noticed it. The cursor is keyset over `(updated_at, id)` and bound to the caller's scope and filter fingerprint. Team visibility is applied *before* aggregation, ordering and `limit`, so a row the caller may not see cannot consume a slot. The GET has no side effects: no kernel spawn, no provider call, no harvest. Retry / approve / restore remain on their existing mutation routes. |
+
 ### Permissions
 
 | Method & path | Behavior |
@@ -651,7 +678,9 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. Exact-version completion deliveries are included; import verifies their snapshots and remaps message, Artifact, version, manifest, and URL identities atomically. An orphaned or inconsistent delivery rejects the package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
-| `GET /artifacts/{aid}/table` | Stage 9 workbench. Bounded full-dataset sort/filter/page over CSV/TSV/Parquet. A snapshot above 32 MiB, or a table above 250,000 data rows, 256 columns, or 2,000,000 rectangularized cells → `413 {"code":"artifact_too_large"}`. Parquet additionally preflights at most 512 row groups and 64 MiB decoded bytes before reading columns. Flag-off → `403 {"code":"workbench_disabled"}`. |
+| `GET /artifacts/{aid}/table` | Stage 9 workbench. Bounded full-dataset sort/filter/page over CSV/TSV/Parquet. Query: `sort` (must equal a header exactly), `dir=desc` (only the literal `desc` is descending), `q_{column_header}` (integer/number: trim then equal; other columns: case-insensitive substring), `offset` (negative becomes 0, non-integer 400), `limit` (default 50, clamped 1–500, non-integer 400), optional `version_id` (exact immutable snapshot; **never** falls back to latest). A snapshot above 32 MiB, or a table above 250,000 data rows, 256 columns, or 2,000,000 rectangularized cells → `413 {"code":"artifact_too_large"}`. Parquet additionally preflights at most 512 row groups and 64 MiB decoded bytes before reading columns. Missing optional Parquet engine → `415 {"code":"parquet_unavailable"}`. Flag-off → `403 {"code":"workbench_disabled"}`. |
+| `GET /artifacts/{aid}/table/profile` | Stage 9 workbench. Per-column type/missing/unique/min/max/mean/histogram for the filtered set. `version_id` is required. `q_{column_header}` uses the same parser as `/table`. Passing `sort`, `dir`, `offset`, or `limit` → `400 {"code":"invalid_query"}`. Histogram bins ≤ 50. If exact unique cannot be finished inside the tracking bound, `approximate` is `true` rather than a pretended exact count. Stats are not persisted. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/table/export.csv` | Stage 9 workbench. Full filtered CSV (same parser for `sort`/`dir`/`q_…`). `version_id` is required. Optional `spreadsheet_safe=1` prefixes formula-like headers and cells for spreadsheet downloads while preserving complete signed numeric/scientific literals; omitted or `spreadsheet_safe=0` preserves raw values for direct/scientific API callers. Other values → `400 {"code":"invalid_query"}`. `offset`/`limit` → `400 {"code":"invalid_query"}`. Server-side chunks ≤ 1 MiB; total output above 32 MiB → `413 {"code":"artifact_too_large"}`. Success is `text/csv` with `X-Artifact-Id`/`X-Version-Id`/`X-Checksum`/`X-Filtered-Rows`/`X-Approximate`. Flag-off → `403 workbench_disabled`. |
 | `GET /artifacts/{aid}/diff` | Stage 9 workbench. Unified diff between two versions (default oldest→newest), bounded to 8 MiB and 50,000 lines per version; excess → `413 {"code":"artifact_too_large"}`. |
 | `POST /artifacts/{aid}/structure` | Stage 9 workbench. Save a Ketcher mol/SMILES payload as a new version, or `{unchanged:true}` when the checksum matches the head. |
 | `GET /artifacts/{aid}/pdf-text` | Stage 9 workbench. Page-quoted PDF text for locator comments; snapshots above 32 MiB → `413 artifact_too_large`. |
@@ -701,7 +730,9 @@ current lineage response and is not a portable observation ledger.
 | `POST /artifacts/{aid}/versions/{vid}/restore` | Reverts the live file + latest pointer → `{"ok":true,"artifact":…}` or `404 {"error":…}`; broadcasts a *bare* `artifact_created` (see §3). |
 | `POST|PUT|PATCH /artifacts/{aid}/edit` | Body `{content}` (text). Non-text artifact → `415`; unknown → `404` (both via `GatewayError`) → `{"ok":true,"artifact_id","version_id","size_bytes"}`. |
 | `POST|PUT|PATCH /artifacts/{aid}/rename` | Body `{filename}`; missing → `400`; unknown → `404` → `{"ok":true,"artifact_id","filename"}`. |
-| `GET /artifacts/{aid}/table` | Stage 9: `{artifact_id,version_id,filename,columns,column_types,rows,total_rows,offset,limit,sorted_by,descending,filters}`. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/table` | Stage 9: `{artifact_id,version_id,filename,columns,column_types,rows,total_rows,offset,limit,sorted_by,descending,filters}`. Optional `version_id` selects that exact snapshot. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/table/profile` | Stage 9: `{artifact_id,version_id,checksum,filtered_rows,approximate,schema_version,columns:[{name,type,missing,unique,min,max,mean,histogram}],filters}`. |
+| `GET /artifacts/{aid}/table/export.csv` | Stage 9: `text/csv` body of the complete filtered set; `spreadsheet_safe=1` opts into formula neutralization (the Workbench download default), while omission/`0` keeps raw cells; metadata in `X-Artifact-Id`, `X-Version-Id`, `X-Checksum`, `X-Filtered-Rows`, `X-Approximate`. |
 | `GET /artifacts/{aid}/diff` | Stage 9: `{artifact_id,from_version_id,to_version_id,changed,diff}`. |
 | `POST /artifacts/{aid}/structure` | Stage 9: `{ok,artifact_id,version_id,unchanged,structure}`. Same-checksum save is a no-op. |
 | `GET /artifacts/{aid}/pdf-text` | Stage 9: `{artifact_id,version_id,pages:[{page,text}]}`. |
@@ -730,6 +761,7 @@ from the message:
 | `skill_no_version_history` | `404` | version history requested for a skill with none |
 | `skill_version_storage_unavailable` | `503` | the version store is absent — a missing dependency, not a bad request |
 | `skill_write_failed` | `500` | the write itself failed (`OSError`, permissions) |
+| `skill_capability_invalid` | `400` | import only: `capabilities.network.mode` is outside the closed set. The document parsed, the declared mode is unusable, nothing was written. The strictness is the import boundary's — the tolerant reader still degrades an already-stored Skill's unknown mode to `unknown` |
 
 Why it mattered beyond tidiness: `api()` in the web client throws only on a
 non-2xx, and the Customize editor's save handler does not inspect the body — so
@@ -749,7 +781,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `GET /skills/catalog` | `{"skills":[{…,enabled}…]}`. |
 | `PUT|PATCH /skills/catalog/{name}/enabled` | Body `{enabled}` → `{"ok":true}`. Skill enablement is persisted through scoped capability state and is enforced by discovery/prompt/runtime loading. |
 | `POST /skills` | Create a Web-authored `user` Skill under `<data_dir>/user-skills`: `{name,description?,body|content}`. Bundled-name collisions and unsafe paths are rejected. |
-| `POST /skills/import` | Accepts a raw `SKILL.md` in `content` (frontmatter parsed) or explicit fields, then writes a normalized `user` document; imported frontmatter cannot claim bundled trust. |
+| `POST /skills/import` | Accepts a raw `SKILL.md` in `content` (frontmatter parsed) or explicit `{name, description, body}`. The pasted frontmatter is kept, not normalized: only `name`, `description` and `origin` are rewritten — `origin` is always `user`, so imported frontmatter cannot claim bundled trust — and `requirements`, `capabilities`, `license`, `category`, comments and unknown nested keys survive verbatim. `capabilities.network` is validated strictly on this path: a `mode` outside the closed set answers `400` `skill_capability_invalid` and writes nothing (no version row, no file). The `200` carries `review` — `{requirements, capabilities, readiness, warnings}`, a safe summary of what the document declares, never an authorization. |
 | `GET|PUT|PATCH|DELETE /skills/{name}` | Read / update / delete a user Skill (URL-encoded name). Bundled `openai4s` Skills remain non-editable/non-deletable. |
 | `GET /skills/{name}/versions` | Personal immutable version/event history plus safe active manifest; never returns stored source bytes. |
 | `POST /skills/{name}/rollback` | Body `{version_id}` atomically activates a retained personal version. |
@@ -831,6 +863,9 @@ the route index so the surface is discoverable from one place.
 | `POST /compute/jobs` | Body `{command|code,kind("bash"),cwd?,deadline_s?}` → job row. `deadline_s` defaults to one hour and is refused above 24 h with `job_bad_deadline`; there is no unbounded run. **Local code-exec endpoint** — protected only by the Origin check + loopback bind. |
 | `POST /compute/jobs/{id}/cancel` | Cancel result. |
 | `GET /compute/jobs/{id}` | Job row, plus `output`. |
+| `GET /frames/{fid}/compute/tasks` | This session's remote compute work (owner-scoped; another session's jobs are neither listed nor counted). Opening it does not contact a provider. |
+| `POST /frames/{fid}/compute/tasks/{job_id}/refresh` | Contacts the remote for ONE job because a person asked; the probe is also the harvest. |
+| `POST /frames/{fid}/compute/tasks/{job_id}/cancel` | Body must be `{"confirm": true}` (`400 confirmation_required` otherwise, with zero remote calls). `200 {"outcome":"cancel_confirmed","task"}` only when the provider confirmed the stop; `202 {"outcome":"cancel_indeterminate","reason","hint","task"}` when it could not (`remote_unreachable` / `receipt_unconfirmed` / `provider_cancel_unsupported`) — the job stays live and **may still be running and billing**; `409 already_terminal` when the job reached a terminal state first (the real state rides on `task.status`); `404 not_found` for a job this session does not own. |
 
 A job row carries `status` from `queued|running|done|failed|cancelled|timeout|abandoned`.
 The last two are distinct on purpose: `timeout` is the daemon stopping a job that
@@ -926,12 +961,12 @@ chunks and flag-off completion chunks omit `delivery_id`.
 | `notebook_cell_chunk` | `frame_id`, `producing_cell_id`, `stream`, `chunk` | Appends output to that exact live Cell. Unknown/replayed fields are tolerated. |
 | `notebook_cell_finished` | start identity (including the unchanged `state_revision` and `generation_id`) plus complete source/output/error, figures/files and usage | Replaces the live projection with the authoritative finished revision. |
 | `step` | `frame_id`, `step_id`, `kind`, `title`, `input`, `status:"running"` | A semantic step began (host call, artifact save, …). |
-| `step_update` | `frame_id`, `step_id`, `status`, `output`, `summary` | Step finished/patched. `status` is `done` or `error`; delegate steps may also end `warning` (task not done but not broken: `partial`/`blocked`/stopped/`max_turns` — green `done` is reserved for a child whose `task_status` is `completed`, and a fan-out takes the worst child's status). A delegate step's `output` is the structured projection `{name, child_id, frame_id, task_status, stop_reason, turns, max_turns, environment, summary, limitations, artifacts, children?, raw}` with the bounded raw string reserved for the details reveal; its `summary` is the task_status word, never a hardcoded "done". Child steps forwarded from a delegated agent carry the child identity under `input.delegation` and persist root-keyed. Artifact-save steps emit `step`+`step_update` back-to-back. |
+| `step_update` | `frame_id`, `step_id`, `status`, `output`, `summary` | Step finished/patched. `status` is `done` or `error`; delegate steps may also end `warning` (task not done but not broken: `partial`/`blocked`/stopped/`max_turns`/`no_progress` — green `done` is reserved for a child whose `task_status` is `completed`, and a fan-out takes the worst child's status). A delegate step's `output` is the structured projection `{name, child_id, frame_id, task_status, stop_reason, turns, max_turns, environment, summary, limitations, artifacts, children?, raw}` with the bounded raw string reserved for the details reveal; its `summary` is the task_status word, never a hardcoded "done". Child steps forwarded from a delegated agent carry the child identity under `input.delegation` and persist root-keyed. Artifact-save steps emit `step`+`step_update` back-to-back. |
 | `plan_ready` | `frame_id`, `plan_id`, `status`, `plan`, `artifact_id` | A plan-mode turn produced a structured plan. |
 | `plan_progress` | `frame_id`, `plan_id`, `step_id`, `status`, `note` | A plan step ticked during auto-execution. |
 | `await_permission` | `frame_id`, `decision_id`, `tool`, `kind`, `title`, `input`, `target`, `suggested_patterns`, `scopes`, `sub_agent` | A tool call is blocked awaiting user approval (answer via `POST /api/frames/{fid}/decision`). Emitted from `openai4s/permissions.py`. |
 | `permission_resolved` | `frame_id`, `decision_id`, `allow`, `scope`, and after restart: `resolution_context`, `requires_continue`, `original_action_executed`, `continuation_expires_at`, `continuation_authorization` | The pending prompt was answered / timed out. An after-restart event explicitly says the old operation did not execute and whether the user must start a fresh continuation. |
-| `frame_update` | `frame_id`, `status`, `request_id`, `code` + `output_committed?` (terminal turn events), `task_summary` (only with `status:"titled"`) | Turn/session lifecycle. Emitted statuses: `processing`, `completed`, `failed`, `cancelled`, `success` (REPL cell), `updated` (rename/PATCH), and `titled` — the background auto-title thread's upgrade of the placeholder session title, which carries an extra `task_summary` field (the new title) that no other status has. Every turn event — `processing`, the single terminal form, and the turn's `text_reset`/`text_chunk` — also carries `execution_id`, and that is the field a client filters on. A request id cannot separate two turns: clients may reuse `X-Request-Id`, and the ordering that matters (`processing(A)`, `processing(B)`, `failed(A)` — A unwinding after B was promoted out of the queue) then looks like B's own terminal event. A terminal whose `execution_id` differs from the running turn's must not close it. When one side names no execution the pair falls back to `request_id`, and when neither names anything the event is treated as current: that is the pre-identity contract, and anything stricter strands every turn against an older daemon. The `processing` event carries `request_id` too, and it is the one a queued follow-up depends on: that turn's 202 resolved while an earlier turn still owned the screen, so `processing` — "your turn is running now" — is the first moment its id is current. Under an HTTP job it is the same string the 202 returned; a direct call (CLI, recovery replay) mints one rather than emitting an empty field. A terminal turn event also carries `request_id` — the same id the submit 202 returned — and, when the turn failed, a stable `code` (`max_turns` for turn-limit exhaustion; `llm_request_burst`, `llm_rate_limited`, or `llm_upstream_overloaded` for controlled LLM capacity failures; otherwise the projector's, defaulting to `turn_failed`). These local codes never expose the provider's raw error code or message. `output_committed:true` is added only when the failure happened after bytes were streamed or a tool ran: `llm/models.py` calls it the retry veto, because a transparent retry there duplicates visible output or re-fires a side effect however retryable the status looks. It is never emitted as `false` — absent is "no claim", and a `false` would assert a safety the projector cannot know. The frontend treats `completed|failed|cancelled|success|done` as terminal. A gated turn sends exactly one terminal frame event, after `candidate_resolved`, and includes `review_status` plus `user_truth`; the durable stored frame status remains `done` for a completed turn. |
+| `frame_update` | `frame_id`, `status`, `request_id`, `code` + `output_committed?` (terminal turn events), `task_summary` (only with `status:"titled"`) | Turn/session lifecycle. Emitted statuses: `processing`, `completed`, `failed`, `cancelled`, `success` (REPL cell), `updated` (rename/PATCH), and `titled` — the background auto-title thread's upgrade of the placeholder session title, which carries an extra `task_summary` field (the new title) that no other status has. Every turn event — `processing`, the single terminal form, and the turn's `text_reset`/`text_chunk` — also carries `execution_id`, and that is the field a client filters on. A request id cannot separate two turns: clients may reuse `X-Request-Id`, and the ordering that matters (`processing(A)`, `processing(B)`, `failed(A)` — A unwinding after B was promoted out of the queue) then looks like B's own terminal event. A terminal whose `execution_id` differs from the running turn's must not close it. When one side names no execution the pair falls back to `request_id`, and when neither names anything the event is treated as current: that is the pre-identity contract, and anything stricter strands every turn against an older daemon. The `processing` event carries `request_id` too, and it is the one a queued follow-up depends on: that turn's 202 resolved while an earlier turn still owned the screen, so `processing` — "your turn is running now" — is the first moment its id is current. Under an HTTP job it is the same string the 202 returned; a direct call (CLI, recovery replay) mints one rather than emitting an empty field. A terminal turn event also carries `request_id` — the same id the submit 202 returned — and, when the turn failed, a stable `code` (`max_turns` for turn-limit exhaustion; `no_progress` when the progress circuit tripped — the Engine forced `completion=None`, so the turn is `failed` rather than left at the `completed` default, and the streamed prose reads "Stopped repeating actions. Edit the prompt or continue explicitly."; `llm_request_burst`, `llm_rate_limited`, or `llm_upstream_overloaded` for controlled LLM capacity failures; otherwise the projector's, defaulting to `turn_failed`). These local codes never expose the provider's raw error code or message. `output_committed:true` is added only when the failure happened after bytes were streamed or a tool ran: `llm/models.py` calls it the retry veto, because a transparent retry there duplicates visible output or re-fires a side effect however retryable the status looks. It is never emitted as `false` — absent is "no claim", and a `false` would assert a safety the projector cannot know. The frontend treats `completed|failed|cancelled|success|done` as terminal. A gated turn sends exactly one terminal frame event, after `candidate_resolved`, and includes `review_status` plus `user_truth`; the durable stored frame status remains `done` for a completed turn. |
 | `kernel_status` | `frame_id`, `status` ∈ `restarted|stopped|started|env_changed|packages_installed|ended`, plus per-status extras (`generation`, `env`, `installed`, `ok`, `state`, `ended_reason`, `requires_kernel_recovery`) | Kernel lifecycle changes. A successful branch revert emits `ended` after invalidating both language slots. |
 | `execution_state` | `frame_id`, `execution_id`, `owner:{kind,id}`, `status` (`queued|running|finalizing|completed|failed|cancelled`), `queue_position`, `reason` | One exact ticket changed state. |
 | `execution_queue` | authoritative snapshot fields from `GET /frames/{fid}/execution` | Queue/position projection; also sent immediately after `view_session`. |
@@ -1008,10 +1043,11 @@ compatibility; keep both when touching these serializers.
 
 ## 5. Known gaps and sharp edges (summary)
 
-- `GET /api/projects` accepts but **ignores** `limit`/`offset`; there is no
-  project pagination. Real bounded reads exist for `from`/`limit` on messages,
-  `limit` on frames, and the Timeline's `before_ordinal`/`after_ordinal` +
-  `limit` windows (§2).
+- `GET /api/projects` pages by opaque `cursor` (`limit` 1–100) and, for one
+  compatibility window, honours `offset`. An unparameterized request still
+  returns the full list. Real bounded reads also exist for `from`/`limit` on
+  messages, `limit` on frames, and the Timeline's `before_ordinal`/`after_ordinal`
+  + `limit` windows (§2).
 - `artifact_created` has four payload shapes; every field is optional (§3).
 - Uploads are JSON/base64, not multipart, and are strict: exactly one content
   field, whitespace tolerated, anything else outside the base64 alphabet

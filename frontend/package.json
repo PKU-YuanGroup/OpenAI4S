@@ -1,0 +1,30 @@
+{
+  "name": "openai4s-webui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "OpenAI4S workbench frontend (Preact 10 + signals + TypeScript + Vite).",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "extract-i18n": "node src/i18n/extract-i18n.mjs",
+    "extract-i18n:check": "node src/i18n/extract-i18n.mjs --check"
+  },
+  "dependencies": {
+    "@preact/signals": "^2.3.2",
+    "preact": "^10.26.9"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/node": "^22.15.29",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  }
+}

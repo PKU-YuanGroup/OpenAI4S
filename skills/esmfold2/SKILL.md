@@ -17,6 +17,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: ESMFold2
   # SKILL.md body: "**License:** MIT (code github.com/Biohub/esm + weights HF

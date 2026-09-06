@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
   <title>OpenAI4S</title>
+  <link rel="preload" href="/static/vendor/fonts/AnthropicSans-Roman-Variable-CFxw3nG7.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/static/vendor/fonts/AnthropicSerif-Roman-Variable-C-BHYa_K.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/static/vendor/fonts/AnthropicMono-Roman-Web-B88FVziN.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="icon" href="/static/favicon_anim_64.gif" />
   <link rel="stylesheet" href="/static/style.css" />
   <script src="/static/theme-bootstrap.js"></script>
@@ -174,8 +177,8 @@
   <!-- Team files modal (team mode / OPENAI4S_DATA_ROOTS; hidden otherwise) -->
   <div id="team-files-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="team-files-title"><div class="modal-box small-box"><div class="modal-head"><span id="team-files-title">Team files</span><div class="modal-actions"><button id="team-files-upload" class="outline-btn small"><span class="ic" data-icon="cloud-upload" data-icon-size="14"></span><span>Upload</span></button><input id="team-files-input" type="file" style="display:none" /><button id="team-files-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close"></button></div></div><div class="modal-body"><div id="team-files-crumbs" class="team-files-crumbs"></div><div id="team-files-list" class="team-files-list"></div></div></div></div>
 
-  <script src="/static/favicon.js"></script>
-  <script src="/static/scientific_renderers.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/favicon.js" defer></script>
+  <script src="/static/scientific_renderers.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>

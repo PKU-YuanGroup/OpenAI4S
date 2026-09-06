@@ -115,4 +115,4 @@ def test_an_empty_project_may_still_open_a_new_session():
     one is the right thing to do."""
     start = APP_JS.index("async function openProject(")
     body = APP_JS[start : APP_JS.index("\n}", start)]
-    assert "newSession()" in body
+    assert "await newSession(id)" in body

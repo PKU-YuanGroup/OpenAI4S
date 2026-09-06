@@ -32,6 +32,12 @@ from pathlib import Path
 
 from openai4s.capabilities import CapabilityStateService
 from openai4s.config import Config, get_config
+from openai4s.skills_loader.capabilities import (
+    NetworkCapability,
+    compose_readiness,
+    resolve_network_capability,
+    unknown_capability,
+)
 from openai4s.skills_loader.versions import project_skills_root
 
 _VALID_ORIGINS = ("openai4s", "organization", "personal", "draft", "unknown")
@@ -295,6 +301,8 @@ class Skill:
     # preserves progressive disclosure when a collection contains hundreds of
     # recipes whose summaries alone would otherwise consume the context.
     collection: str | None = None
+    #: Closed-set network declaration. Never an authorization.
+    network: NetworkCapability = field(default_factory=unknown_capability)
 
     @property
     def read_only(self) -> bool:
@@ -362,6 +370,8 @@ class Skill:
             "state_scope_id": state.get("scope_id", ""),
             "version": self.version,
             "document_sha256": self.document_sha256,
+            "network_manifest_digest": self.network.digest,
+            "network_mode": self.network.mode,
             "sidecar": {
                 "present": self.has_kernel,
                 "sha256": self.sidecar_sha256,
@@ -684,6 +694,10 @@ def _bootstrap_runtime_code(
         "            'exports': [],\n"
         "            'import_mode': 'module',\n"
         "            'loaded_at_ns': _time_ns(),\n"
+        "            'document_sha256': diagnostic_entry.get('document_sha256'),\n"
+        "            'network_manifest_digest': diagnostic_entry.get(\n"
+        "                'network_manifest_digest'),\n"
+        "            'network_mode': diagnostic_entry.get('network_mode'),\n"
         "        }\n"
         "        audit_emit('openai4s.skill_sidecar_loaded', event)\n"
         "        event_mirror.append(event)\n"
@@ -1178,6 +1192,13 @@ class SkillLoader:
                 version = str(meta.get("version") or "").strip()
                 if not version:
                     version = (sidecar_sha256 or document_sha256)[:12]
+                network = resolve_network_capability(
+                    raw_text=raw,
+                    name=str(name),
+                    directory=child.name,
+                    collection=collection,
+                    source=source,
+                )
                 discovered[child.name] = Skill(
                     name=name,
                     root=child,
@@ -1192,6 +1213,7 @@ class SkillLoader:
                     document_sha256=document_sha256,
                     sidecar_sha256=sidecar_sha256,
                     collection=collection,
+                    network=network,
                 )
                 for kind, identity, spelling in current_identities:
                     claimed_identities[identity] = (
@@ -1441,6 +1463,10 @@ class SkillLoader:
                 or (self._last_manifest or {}).get("manifest_id"),
                 "version": skill.version,
                 "sidecar_sha256": skill.sidecar_sha256,
+                "skill_id": skill.name,
+                "document_digest": skill.document_sha256,
+                "manifest_digest": skill.network.digest,
+                "network_mode": skill.network.mode,
             },
         )
 
@@ -1510,30 +1536,35 @@ class SkillLoader:
 
     def catalog(self, *, include_disabled: bool = False) -> list[dict]:
         """Lightweight listing (name/description/origin) — no full docs."""
-        return [
-            {
-                "name": s.name,
-                "description": s.description,
-                "origin": s.origin,
-                "distribution_scope": s.source,
-                "has_kernel": s.has_kernel,
-                "enabled": self.is_enabled(s.name),
-                # Deliberately beside `enabled` and deliberately not folded
-                # into it. A disabled Skill can be perfectly ready and an
-                # enabled one can be missing its hardware; merging them means a
-                # user who enables a Skill believes they have made it work.
-                "requirements": list(s.requirements),
-                "readiness": skill_readiness(s.requirements),
-                "version": s.version,
-                "document_sha256": s.document_sha256,
-                "sidecar_sha256": s.sidecar_sha256,
-                # Public provenance/filtering metadata. None identifies the
-                # ordinary curated/user catalog; "bioskills" identifies the
-                # pinned third-party collection without changing Skill names.
-                "collection": s.collection,
-            }
-            for s in self.skills(include_disabled=include_disabled).values()
-        ]
+        rows = []
+        for s in self.skills(include_disabled=include_disabled).values():
+            readiness = compose_readiness(s.requirements, s.network)
+            rows.append(
+                {
+                    "name": s.name,
+                    "description": s.description,
+                    "origin": s.origin,
+                    "distribution_scope": s.source,
+                    "has_kernel": s.has_kernel,
+                    "enabled": self.is_enabled(s.name),
+                    # Deliberately beside `enabled` and deliberately not folded
+                    # into it. A disabled Skill can be perfectly ready and an
+                    # enabled one can be missing its hardware; merging them means a
+                    # user who enables a Skill believes they have made it work.
+                    "requirements": list(s.requirements),
+                    "readiness": readiness,
+                    "ready": bool(readiness.get("ready")),
+                    "capabilities": s.network.public_dict(),
+                    "version": s.version,
+                    "document_sha256": s.document_sha256,
+                    "sidecar_sha256": s.sidecar_sha256,
+                    # Public provenance/filtering metadata. None identifies the
+                    # ordinary curated/user catalog; "bioskills" identifies the
+                    # pinned third-party collection without changing Skill names.
+                    "collection": s.collection,
+                }
+            )
+        return rows
 
     def system_context(self, *, only: frozenset[str] | None = None) -> str:
         """Progressive-disclosure block for the system prompt.

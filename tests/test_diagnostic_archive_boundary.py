@@ -719,6 +719,67 @@ def test_a_private_class_name_is_reported_as_its_base_family():
     )
 
 
+# --- 7. four canary classes the web bundle must also survive ---------------
+
+SECRET_UNNAMED = "sk-live-" + "aa11bb22cc33dd44ee55ff66"
+PROMPT_CANARY = "unpublished-hypothesis-omega-prime-sequence"
+RESEARCH_CANARY = "embargoed-cohort-gamma-raw-counts"
+WEB_CANARIES = (SECRET_UNNAMED, FOREIGN_PATH, PROMPT_CANARY, RESEARCH_CANARY)
+
+
+def test_a_secret_under_an_unrecognised_env_name_never_reaches_the_bundle(
+    cfg, tmp_path, monkeypatch
+):
+    """Shape-based redaction only sees values it is shown.
+
+    Putting a credential-shaped string in `OPENAI4S_LLM_API_KEY` tests the
+    denylist of names this module already knows. The exam is a secret sitting
+    under a variable the redactor has never heard of — if the archive dumps
+    `os.environ`, that is how it leaks.
+    """
+    monkeypatch.setenv("HOST_PRIVATE_SLOT_ORANGE", SECRET_UNNAMED)
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        json.dumps({"HOST_PRIVATE_SLOT_ORANGE": SECRET_UNNAMED}) + "\n",
+        encoding="utf-8",
+    )
+    blob = assert_archive_clean(cfg, tmp_path, where="unrecognised env name")
+    assert SECRET_UNNAMED.encode() not in blob
+
+
+def test_prompt_and_research_bytes_are_not_in_the_archive(cfg, tmp_path):
+    """The bundle is postures and versions, not the work."""
+    cfg.db_path.write_bytes(b"SQLite format 3\x00" + RESEARCH_CANARY.encode())
+    (cfg.data_dir / "messages.json").write_text(PROMPT_CANARY, encoding="utf-8")
+    notebook = cfg.data_dir / "notebooks"
+    notebook.mkdir()
+    (notebook / "session.ipynb").write_text(PROMPT_CANARY, encoding="utf-8")
+    workspace = cfg.data_dir / "workspaces" / "p1"
+    workspace.mkdir(parents=True)
+    (workspace / "results.csv").write_text(RESEARCH_CANARY, encoding="utf-8")
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        json.dumps({"event": "http_request", "prompt": PROMPT_CANARY}) + "\n",
+        encoding="utf-8",
+    )
+    names, blob = _bundle_parts(cfg, tmp_path)
+    for canary in (PROMPT_CANARY, RESEARCH_CANARY, FOREIGN_PATH):
+        assert canary.encode() not in blob, canary
+    joined = " ".join(names)
+    assert "openai4s.db" not in joined
+    assert "messages.json" not in joined
+    assert "notebooks" not in joined
+    assert "workspaces" not in joined
+    assert "session.ipynb" not in joined
+
+
+def test_an_absolute_path_canary_does_not_survive_into_member_names(cfg, tmp_path):
+    (cfg.data_dir / "logs" / "app.out").write_text(
+        f"failed to open {FOREIGN_PATH}\n", encoding="utf-8"
+    )
+    names, blob = _bundle_parts(cfg, tmp_path)
+    assert FOREIGN_PATH.encode() not in blob
+    assert not any(FOREIGN_PATH in n for n in names)
+
+
 def test_a_private_class_name_reaches_no_reporting_surface(cfg, tmp_path):
     from openai4s.server.agent_run import _env_switch_notice
     from openai4s.server.errors import record_diagnostic

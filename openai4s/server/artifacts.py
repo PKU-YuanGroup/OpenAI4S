@@ -29,6 +29,7 @@ from openai4s.artifact_restore import (
     trusted_snapshot_roots,
 )
 from openai4s.execution import CaptureResult
+from openai4s.security.fsprobe import lstat_is_symlink
 from openai4s.server.errors import record_diagnostic
 from openai4s.storage.artifacts import ArtifactDeliveryReferenceError
 
@@ -3023,7 +3024,7 @@ class ArtifactManager:
         for path in stale_paths:
             try:
                 candidate = Path(os.path.abspath(Path(path).expanduser()))
-                if candidate.is_symlink():
+                if lstat_is_symlink(candidate):
                     continue
                 resolved = candidate.resolve(strict=False)
                 allowed = False

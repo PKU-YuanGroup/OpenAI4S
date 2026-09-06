@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.cell_record import DelegatedCellRecorder
+from openai4s.agent.delegation import _child_context_budget
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
@@ -187,37 +188,6 @@ Turn = TranscriptTurn
 _format_observation = format_observation
 
 
-class _CancellationAwareModel:
-    """Prevent a cancelled local Agent from executing a late model reply.
-
-    ``urllib`` cannot reliably abort a response already in flight.  Checking on
-    both sides of the blocking call still guarantees that cancellation starts
-    no *new* request and that a late reply cannot dispatch tools, code, or a
-    structured completion.  The engine observes cancellation immediately after
-    the resulting no-op outcome and exits with ``stop_reason=cancelled``.
-    """
-
-    def __init__(self, delegate: Any, cancelled: Callable[[], bool]) -> None:
-        self._delegate = delegate
-        self._cancelled = cancelled
-
-    def complete(
-        self,
-        messages: Sequence[Mapping[str, Any]],
-        on_delta: Callable[[str], None],
-    ) -> Mapping[str, Any]:
-        if self._is_cancelled():
-            return _cancelled_model_reply()
-        reply = self._delegate.complete(messages, on_delta)
-        return _cancelled_model_reply() if self._is_cancelled() else reply
-
-    def _is_cancelled(self) -> bool:
-        try:
-            return bool(self._cancelled())
-        except Exception:  # noqa: BLE001 - cancellation telemetry cannot crash a run
-            return False
-
-
 class _LedgerTranscriptEventSink:
     """Persist canonical events before updating the compatible CLI transcript."""
 
@@ -228,15 +198,6 @@ class _LedgerTranscriptEventSink:
     def emit(self, event: Any) -> None:
         self.ledger.emit(event)
         self.transcript.emit(event)
-
-
-def _cancelled_model_reply() -> dict[str, Any]:
-    return {
-        "content": "",
-        "tool_calls": [],
-        "assistant_message": {"role": "assistant", "content": ""},
-        "finish_reason": "cancelled",
-    }
 
 
 def _completion_summary(completion: Any) -> str | None:
@@ -496,6 +457,31 @@ class Agent:
         and must retain the ``LazyKernel`` zero-spawn contract.
         """
 
+        # B-02's Cell sink reaches here too. `CellExecutionService` is the Web
+        # path; a CLI run and every delegated child execute their Cells through
+        # `LocalActionExecutor`, so a Skill bound `raw_required` used to run
+        # unconfined here while the Web parent refused the identical Cell.
+        # Before the first worker exists, apply the unconditional half: a
+        # declared `raw_required` manifest is refused whatever the sandbox
+        # reports.  Once a Python/R worker exists, use its measured posture so
+        # a later-loaded `host_only` Skill cannot bypass the Web Cell sink.
+        # First-spawn posture is checked in `_admit_spawned_cell_kernel`, before
+        # Skill bootstrap or user code executes.
+        from openai4s.server.skill_network_admission import raw_required_binding
+
+        language = str(getattr(_action, "language", "python") or "python")
+        with self._foreground_lock:
+            kernel = self._r_kernel if language == "r" else self._foreground_kernel
+        if kernel is not None:
+            self._admit_spawned_cell_kernel(kernel)
+        else:
+            refused = raw_required_binding(self.frame_id)
+            if refused is not None:
+                raise PermissionError(
+                    f"skill {refused.skill_id!r} requires raw kernel network and "
+                    "is blocked in this version"
+                )
+
         if not self.cfg.roadmap_features.stage1_trusted_delivery:
             return
         from openai4s.kernel.readiness import (
@@ -506,6 +492,28 @@ class Agent:
         readiness = standard_profile_readiness(enabled=True)
         if readiness.get("ready") is not True:
             raise EnvironmentReadinessError(readiness)
+
+    def _admit_spawned_cell_kernel(self, kernel: object) -> None:
+        """Apply the full Skill-network Cell policy to an actual worker.
+
+        Creating a worker is not executing a Cell.  This seam lets CLI and
+        delegated runs inspect the same measured posture as the Web path while
+        still preserving lazy zero-spawn turns that use only native tools or
+        structured finalization.
+        """
+
+        from openai4s.server.skill_network_admission import admit_cell
+
+        try:
+            sandbox_status = getattr(kernel, "sandbox_status", None)
+        except Exception:  # noqa: BLE001 - unavailable posture must fail closed
+            sandbox_status = None
+        decision = admit_cell(
+            frame_id=self.frame_id,
+            sandbox_status=sandbox_status,
+        )
+        if not decision.allowed:
+            raise PermissionError(decision.refusal_message())
 
     def _install_cell_recorder(self) -> None:
         """Give this Agent durable ``execution_log`` recording for its cells.
@@ -598,6 +606,9 @@ class Agent:
                 self._foreground_kernel = kernel
 
         def bootstrap(kernel: Any) -> None:
+            # The worker exists, so its actual sandbox posture is now
+            # measurable. Refuse before any executable Skill sidecar bootstrap.
+            self._admit_spawned_cell_kernel(kernel)
             if self._skill_loader is None or self._cancelled():
                 return
             boot = self._skill_loader.bootstrap_code()
@@ -635,22 +646,67 @@ class Agent:
                     if action_ledger is not None
                     else transcript_events
                 )
+
+                def _account_abandoned_reply(reply: Mapping[str, Any]) -> None:
+                    """Meter a reply that landed after this run was cancelled.
+
+                    Only the Web loop used to wire this, so a cancelled CLI run
+                    or delegated child quarantined its late reply (right) and
+                    then never reached ``record_session_llm_usage`` (wrong) --
+                    the quota-ledger hole ``record_abandoned_usage`` exists to
+                    close, left open on every non-Web path.
+                    """
+
+                    if action_ledger is None:
+                        return
+                    usage = reply.get("usage")
+                    if isinstance(usage, Mapping) and usage:
+                        action_ledger.record_abandoned_usage(usage)
+
                 model: Any = ChatModel(
                     self.cfg.llm,
                     chat,
                     tools=lambda messages: with_finalize_response(
                         tool_catalog.specs_for(messages)
                     ),
-                    # Complements the wrapper below: that one stops a late
-                    # reply from acting, this one lets the transport abandon a
-                    # retry backoff it is merely sleeping through.
+                    # ChatModel owns cancellation end to end: it refuses to
+                    # start a cancelled call, returns the canonical no-op reply
+                    # for one that is cancelled mid-flight while the request is
+                    # quarantined and metered through ``abandoned_reply``, and
+                    # lets the transport abandon a retry backoff it is merely
+                    # sleeping through. A second wrapper re-checking the raw
+                    # signal after ChatModel returned could only discard a reply
+                    # that was already delivered as real -- unmetered, since
+                    # ``abandon()`` never ran for it.
                     cancellation=self.cancellation,
+                    abandoned_reply=_account_abandoned_reply,
+                    call_scope=self._provider_call_scope(),
+                    drain_cancelled_stream=self._session_is_metered(),
                 )
-                if self.cancellation is not None:
-                    model = _CancellationAwareModel(
-                        model,
-                        lambda: bool(self.cancellation.cancelled()),
-                    )
+                # The providers only this run can build: the live tool
+                # catalogue prices the trigger and the kernel cwd receives
+                # the kernel-readable copy of an oversized output.
+                policy_providers: dict[str, Any] = dict(
+                    log=self._log,
+                    context_budget_provider=_child_context_budget(self.cfg),
+                    tool_schema_provider=lambda state: with_finalize_response(
+                        tool_catalog.specs_for(state.messages)
+                    ),
+                    workspace_provider=lambda _s: run_cwd,
+                    should_cancel=(
+                        (lambda: bool(self.cancellation.cancelled()))
+                        if self.cancellation is not None
+                        else None
+                    ),
+                )
+                context_policy = self.context_policy or CompactionPolicy(
+                    self.cfg, **policy_providers
+                )
+                bind_runtime = getattr(context_policy, "bind_runtime", None)
+                if self.context_policy is not None and callable(bind_runtime):
+                    # A delegated child's steering wrapper is built before the
+                    # run exists and cannot know the catalogue or cwd itself.
+                    bind_runtime(**policy_providers)
                 engine = AgentEngine(
                     model,
                     LocalActionExecutor(
@@ -669,9 +725,7 @@ class Agent:
                         ),
                         generation_recorder=self._generation_recorder,
                     ),
-                    context_policy=(
-                        self.context_policy or CompactionPolicy(self.cfg, log=self._log)
-                    ),
+                    context_policy=context_policy,
                     event_sink=event_sink,
                     cancellation=self.cancellation,
                     completion=CompletionSignal(lambda: self.dispatcher.last_output),
@@ -693,6 +747,70 @@ class Agent:
             completion=result.completion,
             turns=result.turns,
         )
+
+    def _session_is_metered(self) -> bool:
+        """Whether the team ledger charges this run's session root.
+
+        A delegated child of a team-owned Web session meters through
+        ``_account_abandoned_reply`` like its parent, so its abandoned streams
+        must be drained for their usage too. No Store, no root, or no owner
+        reads as unmetered.
+        """
+
+        frame_id = str(self.frame_id or "")
+        if not frame_id:
+            return False
+        store = getattr(self.dispatcher, "store", None)
+        team = getattr(store, "team", None)
+        resolve = getattr(store, "resolve_frame_scope", None)
+        if team is None or not callable(resolve):
+            return False
+        try:
+            scope = resolve(frame_id)
+            root = scope.get("root_frame_id") if isinstance(scope, Mapping) else None
+            return team.session_owner(str(root or frame_id)) is not None
+        except Exception:  # noqa: BLE001 - metering must never fail the turn
+            return False
+
+    def _provider_call_scope(self) -> str | None:
+        """The session a turn's detached provider calls are bounded against.
+
+        The budget exists because the quota gate reads a ledger that has not
+        been charged for calls still in flight, and that ledger charges the
+        session root (``record_session_llm_usage`` resolves the same way). So
+        for the session's own turn the bound is keyed on the root, not on
+        whatever branch frame the turn happens to run in.
+
+        Delegated children are deliberately *not* keyed on the root (nor on
+        their own frame): see the comment below. Their detached calls are
+        bounded by the process ceiling alone.
+        """
+
+        if self.delegate_depth > 0:
+            # A delegated child's detached calls count against the process
+            # ceiling only. Keyed on the session root they shared the root's
+            # four accounting slots, so one Stop on a fan-out -- or a parent
+            # cell's ordinary ``host.stop_child`` on a few in-flight siblings,
+            # with no Stop pressed at all -- filled them, and the parent's very
+            # next model call was refused as an internal error until the
+            # abandoned sockets closed. The per-session bound exists to keep a
+            # user's Stop-and-resend from stacking billed requests against a
+            # ledger not yet charged for them; children are stopped by code,
+            # and a fan-out of 48 cannot fit a four-slot bound.
+            return None
+        frame_id = str(self.frame_id or "")
+        if not frame_id:
+            return None
+        store = getattr(self.dispatcher, "store", None)
+        resolve = getattr(store, "resolve_frame_scope", None)
+        if not callable(resolve):
+            return frame_id
+        try:
+            scope = resolve(frame_id)
+        except Exception:  # noqa: BLE001 - a bound must never fail the turn
+            return frame_id
+        root = scope.get("root_frame_id") if isinstance(scope, Mapping) else None
+        return str(root or frame_id)
 
     def _action_ledger(
         self, tool_catalog: Any, task: str
@@ -823,6 +941,13 @@ class Agent:
             with self._foreground_lock:
                 self._r_kernel = k
                 self._r_kernel_env = want_env
+        try:
+            # R has no sidecar bootstrap, but admission still precedes the first
+            # user expression and uses this exact worker's measured posture.
+            self._admit_spawned_cell_kernel(k)
+        except BaseException:
+            self._shutdown_r_kernel()
+            raise
         if self._generation_recorder is not None:
             self._generation_recorder.observe(k, language="r")
         if self.cancellation is not None:

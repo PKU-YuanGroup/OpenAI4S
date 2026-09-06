@@ -6,6 +6,11 @@ description: >
   landmark clinical trials.
 license: Apache-2.0
 origin: openai4s
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Indication Dossier

@@ -31,6 +31,7 @@ from .actions import (
     NativeToolBatch,
     NativeToolCall,
 )
+from .compaction import COMPACTION_NOTE_PREFIX, content_digest
 from .events import (
     ActionRouted,
     AgentEvent,
@@ -79,6 +80,8 @@ class LedgerStore(Protocol):
     def append_action_event(self, **values: Any) -> dict: ...
 
     def append_tool_action_group(self, **values: Any) -> dict: ...
+
+    def append_action_group_with_events(self, **values: Any) -> dict: ...
 
     def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]: ...
 
@@ -341,6 +344,7 @@ class RuntimeActionLedger:
             self.append_terminal(
                 event.result.stop_reason,
                 completion=event.result.completion,
+                progress_reason=getattr(event.result, "progress_reason", None),
             )
 
     def _append_action(
@@ -490,24 +494,46 @@ class RuntimeActionLedger:
 
         record_session_llm_usage(self.store, self.root_frame_id, usage)
 
-    def _reply_accounting(
-        self, reply: ModelReply
-    ) -> tuple[dict[str, int] | None, float | None]:
-        """Return canonical counters and a price-derived charge, if known."""
+    def record_abandoned_usage(self, usage: Mapping[str, Any] | None) -> None:
+        """Meter a cancelled provider call whose late reply cannot be replayed.
 
-        allowed = (
-            "input_tokens",
-            "output_tokens",
-            "cache_read",
-            "cache_write",
-            "reasoning_tokens",
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-        )
+        No action group is appended: the reply was deliberately quarantined
+        and must never become conversation history. Only the provider counters
+        are retained so Stop cannot bypass the team quota ledger.
+        """
+
+        self._record_team_usage(self._canonical_usage(usage))
+
+    _USAGE_KEYS = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "reasoning_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    )
+
+    @classmethod
+    def _canonical_usage(cls, source: Any) -> dict[str, int] | None:
+        """The one usage normalisation every metered reply goes through.
+
+        Both the normal path (``_reply_accounting``) and the abandoned-reply
+        path (``record_abandoned_usage``) feed ``record_session_llm_usage``,
+        which reads the canonical ``input_tokens``/``output_tokens`` only. The
+        ``chat()`` facade already emits both key families, but a reply that
+        reached the ledger without it -- an injected transport, a test fake --
+        used to meter on one path and as zero on the other, depending on
+        which of the two hand-written coercions folded the OpenAI aliases.
+        One rule: allow-listed keys, non-negative ints, aliases folded into the
+        canonical names when those are absent.
+        """
+
+        if not isinstance(source, Mapping):
+            return None
         usage: dict[str, int] = {}
-        source = reply.usage if isinstance(reply.usage, Mapping) else {}
-        for key in allowed:
+        for key in cls._USAGE_KEYS:
             value = source.get(key)
             if value is None or isinstance(value, bool):
                 continue
@@ -517,6 +543,20 @@ class RuntimeActionLedger:
                 continue
             if parsed >= 0:
                 usage[key] = parsed
+        for canonical, alias in (
+            ("input_tokens", "prompt_tokens"),
+            ("output_tokens", "completion_tokens"),
+        ):
+            if canonical not in usage and alias in usage:
+                usage[canonical] = usage[alias]
+        return usage or None
+
+    def _reply_accounting(
+        self, reply: ModelReply
+    ) -> tuple[dict[str, int] | None, float | None]:
+        """Return canonical counters and a price-derived charge, if known."""
+
+        usage = self._canonical_usage(reply.usage)
         if not usage:
             return None, None
         if not self.provider:
@@ -592,6 +632,7 @@ class RuntimeActionLedger:
         *,
         completion: Any = None,
         error: Any = None,
+        progress_reason: Any = None,
     ) -> dict | None:
         if self.terminal_recorded:
             return None
@@ -609,6 +650,8 @@ class RuntimeActionLedger:
             payload["completion"] = _redact_value(completion, frozenset())
         if error is not None:
             payload["error"] = _redact_value(error, frozenset())
+        if progress_reason:
+            payload["progress_reason"] = str(progress_reason)
         self.store.append_action_event(
             group_id=group["group_id"],
             type=(
@@ -620,6 +663,57 @@ class RuntimeActionLedger:
         )
         self.terminal_recorded = True
         return group
+
+    def append_compaction(
+        self,
+        handoff: str,
+        covered_through_group_id: str | None,
+        archive_id: str | None = None,
+    ) -> dict:
+        """Append a kind=compaction group that old reducers skip.
+
+        ``assistant_message`` is left unset so a pre-compaction
+        ``reduce_action_groups`` treats the row as incomplete and continues
+        without raising, replaying the full uncompacted history.  Coverage
+        and the handoff text live on the event payload, matching
+        ``append_terminal``.  Group and event land in one transaction: a
+        compaction group without its event would restore an empty note in
+        place of the previous handoff.
+        """
+        return self.store.append_action_group_with_events(
+            root_frame_id=self.root_frame_id,
+            branch_id=self.branch_id or self.root_frame_id,
+            turn_id=self.turn_id,
+            kind="compaction",
+            group_id=f"ag-{uuid.uuid4().hex[:16]}",
+            admission_operation="action_group:append",
+            events=[
+                {
+                    "type": "compaction",
+                    "result": {
+                        "handoff": _redact_free_text(str(handoff or ""), frozenset()),
+                        "covered_through_group_id": (
+                            str(covered_through_group_id)
+                            if covered_through_group_id
+                            else None
+                        ),
+                        "archive_id": archive_id,
+                    },
+                }
+            ],
+        )
+
+    def covered_through_group_id(self, compacted_messages: Sequence[Any]) -> str | None:
+        """Map compact() middle messages onto this branch's coverage bound.
+
+        See :func:`compaction_cover_group_id` for the group→message rule.
+        """
+        return compaction_cover_group_id(
+            branch_action_groups(
+                self.store, self.root_frame_id, branch_id=self.branch_id
+            ),
+            compacted_messages,
+        )
 
 
 def _terminal_reasons(groups: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -684,18 +778,105 @@ def _synthetic_tool_result(
     }
 
 
-def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Reduce immutable groups into canonical messages after the system prompt.
+def _compaction_event_fields(group: Mapping[str, Any]) -> tuple[str | None, str]:
+    """Read the coverage bound (a group id) and handoff text from a group."""
+    for event in group.get("events") or ():
+        if not isinstance(event, Mapping) or event.get("type") != "compaction":
+            continue
+        payload = event.get("result")
+        if not isinstance(payload, Mapping):
+            payload = event
+        handoff = str(payload.get("handoff") or "")
+        covered = payload.get("covered_through_group_id")
+        return (str(covered) if covered else None), handoff
+    return None, ""
 
-    Each group contributes either a complete message unit or nothing.  In
-    particular, native assistant declarations are always followed by exactly
-    one tool result per declared call, including synthetic crash/cancel results.
+
+def _apply_compaction(
+    history: list[tuple[int, dict[str, Any]]],
+    note_index: int,
+    covered_index: int,
+    handoff: str,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Keep the earliest user, drop covered messages, insert the new handoff.
+
+    Positions are indexes into the branch's spliced group sequence, never
+    ordinals: ordinals restart at 0 on a forked branch behind the inherited
+    parent prefix, so they do not order that sequence.  A later compaction
+    replaces any earlier handoff note.  Observation messages also have
+    ``role=user``; the head is the first user message, which is the original
+    task (ledger has no system prompt).
     """
-    history: list[dict[str, Any]] = []
+    user_messages = [
+        (index, message)
+        for index, message in history
+        if message.get("role") == "user" and not message.get("compaction_handoff")
+    ]
+    first_user = min(user_messages, key=lambda item: item[0]) if user_messages else None
+    kept: list[tuple[int, dict[str, Any]]] = []
+    skipped_head = False
+    for index, message in history:
+        if (
+            not skipped_head
+            and first_user is not None
+            and index == first_user[0]
+            and message.get("role") == "user"
+        ):
+            skipped_head = True
+            continue
+        if message.get("compaction_handoff"):
+            continue
+        if index <= covered_index:
+            continue
+        kept.append((index, message))
+    content = handoff
+    if not content.startswith(COMPACTION_NOTE_PREFIX):
+        # Restore must hand the model the same note compact() built in memory;
+        # a bare handoff reads as standing instruction, not compacted history.
+        content = COMPACTION_NOTE_PREFIX + content
+    note = {
+        "role": "system",
+        "content": content,
+        "compaction_handoff": True,
+    }
+    out: list[tuple[int, dict[str, Any]]] = []
+    if first_user is not None:
+        out.append(first_user)
+    out.append((note_index, note))
+    out.extend(kept)
+    return out
+
+
+def _reduce_action_groups_annotated(
+    groups: Sequence[Mapping[str, Any]],
+) -> list[tuple[int, dict[str, Any]]]:
+    """Reduce groups into ``(position, message)`` pairs, applying compaction.
+
+    ``position`` is the group's index in ``groups`` — the branch's spliced
+    sequence — which is the only axis that orders an inherited parent prefix
+    and the child's own groups together.
+    """
+    history: list[tuple[int, dict[str, Any]]] = []
     terminal = _terminal_reasons(groups)
-    for group in groups:
+    positions: dict[str, int] = {}
+    for index, group in enumerate(groups):
+        group_id = str(group.get("group_id") or "")
+        if group_id and group_id not in positions:
+            positions[group_id] = index
+    for index, group in enumerate(groups):
         kind = str(group.get("kind") or "")
         if kind == "terminal":
+            continue
+        if kind == "compaction":
+            covered_id, handoff = _compaction_event_fields(group)
+            if not handoff.strip():
+                # A group without its event (or with nothing to hand over)
+                # covers nothing and must not erase the previous note.
+                continue
+            covered_index = positions.get(covered_id or "", -1)
+            if covered_index >= index:
+                covered_index = -1
+            history = _apply_compaction(history, index, covered_index, handoff)
             continue
         raw_message = group.get("assistant_message")
         message = (
@@ -705,7 +886,7 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         )
         if kind in {"user", "system", "permission_resolution"}:
             if message and message.get("role") in {"user", "system"}:
-                history.append(message)
+                history.append((index, message))
             continue
         if message is None or message.get("role") != "assistant":
             # A corrupt/incomplete group must not leak a partial action.
@@ -752,7 +933,7 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     result.setdefault("wire_id", call.wire_id)
                     result.setdefault("name", call.name)
                 unit.append(result)
-            history.extend(unit)
+            history.extend((index, item) for item in unit)
             continue
 
         observation_messages: list[dict[str, Any]] = []
@@ -792,8 +973,94 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
             else:
                 detail = "[Observation]\nERROR:\nexecution was interrupted before an observation was recorded"
             observation_messages = [{"role": "user", "content": detail}]
-        history.extend([message, *observation_messages])
+        history.extend((index, item) for item in (message, *observation_messages))
     return history
+
+
+def _same_message(reconstructed: Mapping[str, Any], live: Any) -> bool:
+    """Whether a ledger-reconstructed message is the live message compact() saw.
+
+    The live copy may have been externalized, in which case its content is a
+    marker and ``content_archive`` names the digest of the original bytes
+    the ledger still holds.
+    """
+    if not isinstance(live, Mapping):
+        return False
+    if live.get("role") != reconstructed.get("role"):
+        return False
+    if live.get("content") == reconstructed.get("content"):
+        return True
+    archive = live.get("content_archive")
+    if isinstance(archive, Mapping) and archive.get("sha256"):
+        return content_digest(reconstructed.get("content")) == archive["sha256"]
+    return False
+
+
+def compaction_cover_group_id(
+    groups: Sequence[Mapping[str, Any]],
+    compacted_messages: Sequence[Any],
+) -> str | None:
+    """Map compact() middle messages onto the last fully covered group.
+
+    compact() keeps a two-message head (system prompt + first task) and a
+    recent tail.  The Action Ledger has no system prompt, so the head is the
+    earliest user message.  Each remaining group contributes the same
+    messages ``reduce_action_groups`` would emit.
+
+    Drop handoff notes, skip the head user, then treat the next
+    ``len(compacted_messages)`` reconstructed messages as the compacted
+    middle.  The cover bound is the id of the last group whose messages all
+    lie in that middle.  A group that straddles middle/tail is not covered,
+    so restore cannot drop a tail observation from the same cell.
+
+    When the count cannot be aligned with the reconstructed body — the live
+    history carried a message the ledger has no group for, or the reverse —
+    the answer is ``None``: nothing is provably covered, and a bound guessed
+    in the other direction deletes the tail compact() deliberately kept.
+    """
+    annotated = _reduce_action_groups_annotated(groups)
+    n_middle = len(compacted_messages)
+    body = [
+        (index, message)
+        for index, message in annotated
+        if not message.get("compaction_handoff")
+    ]
+    if not body or n_middle <= 0:
+        return None
+    rest = body[1:]
+    if n_middle > len(rest):
+        return None
+    middle = rest[:n_middle]
+    # The count alone cannot tell a live-only message inside the middle from
+    # a shorter ledger: both ends of the compacted middle must be the same
+    # messages the ledger reconstructs there, or the bound would slide into
+    # the tail compact() kept.
+    if not (
+        _same_message(middle[0][1], compacted_messages[0])
+        and _same_message(middle[-1][1], compacted_messages[-1])
+    ):
+        return None
+    tail_indexes = {index for index, _ in rest[n_middle:]}
+    fully_covered = [index for index, _ in middle if index not in tail_indexes]
+    if not fully_covered:
+        return None
+    group_id = str(groups[fully_covered[-1]].get("group_id") or "")
+    return group_id or None
+
+
+def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Reduce immutable groups into canonical messages after the system prompt.
+
+    Each group contributes either a complete message unit or nothing.  In
+    particular, native assistant declarations are always followed by exactly
+    one tool result per declared call, including synthetic crash/cancel results.
+
+    A ``kind="compaction"`` group keeps the earliest user message, drops every
+    other message from a group at or before ``covered_through_group_id`` in
+    the branch sequence, inserts the structured handoff note, and lets later
+    groups append normally.  A later compaction replaces the previous note.
+    """
+    return [message for _, message in _reduce_action_groups_annotated(groups)]
 
 
 def branch_action_groups(
@@ -842,6 +1109,59 @@ def restore_action_history(
     )
 
 
+def restore_progress_circuit(
+    store: LedgerStore,
+    root_frame_id: str,
+    *,
+    branch_id: str | None = None,
+) -> Any:
+    """Rebuild the generic no-progress circuit from durable action groups.
+
+    ``RunState.metadata`` is only a process cache. Callers that resume after a
+    restart or compaction must use this entry point rather than a checkpoint.
+
+    Only the groups after the latest external ``user`` group matter. That
+    anchor is found with an index probe (the latest ``user`` ordinal) and a
+    second probe says whether anything follows it; only then are the epoch's
+    groups read with their events. The earlier "outline" pass still ran
+    ``SELECT *`` over every group on the branch -- wire state, assistant
+    message and usage blobs included, under the Store lock -- on every Web
+    message, for a circuit that, right after ``append_user``, is empty by
+    definition. A store that cannot answer the probes (or a branch with no
+    local user group, whose epoch may start in an inherited prefix) takes
+    the full, fork-aware path.
+    """
+
+    from .progress_circuit import reconstruct_progress_circuit
+
+    latest = getattr(store, "latest_action_group_ordinal", None)
+    list_groups = getattr(store, "list_action_groups", None)
+    if callable(latest) and callable(list_groups):
+        selected = branch_id or root_frame_id
+        try:
+            last_user = latest(root_frame_id, branch_id=selected, kind="user")
+        except TypeError:
+            last_user = None
+        if isinstance(last_user, int) and not isinstance(last_user, bool):
+            # The epoch is anchored on the user group itself, so it rides
+            # along (events are irrelevant for a user row); the groups after
+            # it are the only ones read with their events.
+            anchor: Mapping[str, Any] = {"kind": "user", "ordinal": last_user}
+            if latest(root_frame_id, branch_id=selected) == last_user:
+                return reconstruct_progress_circuit([anchor])
+            epoch = [anchor]
+            epoch.extend(
+                dict(group)
+                for group in list_groups(
+                    root_frame_id, branch_id=selected, after_ordinal=last_user
+                )
+            )
+            return reconstruct_progress_circuit(epoch)
+    return reconstruct_progress_circuit(
+        branch_action_groups(store, root_frame_id, branch_id=branch_id)
+    )
+
+
 def new_turn_id() -> str:
     return f"turn-{uuid.uuid4().hex[:16]}"
 
@@ -850,8 +1170,10 @@ __all__ = [
     "REDACTED",
     "RuntimeActionLedger",
     "branch_action_groups",
+    "compaction_cover_group_id",
     "new_turn_id",
     "redact_tool_call",
     "reduce_action_groups",
     "restore_action_history",
+    "restore_progress_circuit",
 ]
