@@ -112,6 +112,7 @@ from openai4s.server import (
     orchestration_routes,
     project_listing,
     retrieval_source,
+    sandbox_grants,
     team_policy,
     team_routes,
     ws_frames,
@@ -199,6 +200,8 @@ from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
     artifact_security_headers,
     embeddable_security_headers,
+    ketcher_editor_security_headers,
+    sandboxed_artifact_security_headers,
     security_headers,
 )
 from openai4s.server.session_deletion import SessionDeletionService
@@ -655,8 +658,10 @@ def _sanitize_header_value(value: str) -> str:
 
 # Static UI transport (ETag / 304 / gzip / fingerprint Cache-Control). These
 # apply only to `_serve_index` / `_serve_static` / the large-file branch of
-# `_stream_file`. `_send` stays `Cache-Control: no-cache` so API JSON and
-# Artifact bytes keep the same headers they always had.
+# `_stream_file`. All three body writers resolve `Cache-Control` the same way
+# -- `extra` over the security profile over `no-cache` -- and emit it exactly
+# once, so API JSON keeps `no-cache` while a profile carrying its own value
+# (the granted preview's `no-store`) is honoured rather than contradicted.
 _STATIC_STREAM_BYTES = 8 * 1024 * 1024
 _GZIP_MIN_BYTES = 1024
 _GZIP_CACHE_MAX_BYTES = 48 * 1024 * 1024
@@ -13227,6 +13232,37 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         for origin in (getattr(cfg, "trusted_proxy_origins", ()) or ())
     )
 
+    def _app_origins() -> tuple[str, ...]:
+        """Loopback origins the application shell may frame.
+
+        Both loopback names at the bound port: the operator may have opened
+        either, and the sandbox origin is deliberately *the other one*, so a
+        preview opened from `127.0.0.1` is framed by `127.0.0.1` and served
+        from `localhost`, or the reverse. Nothing else is admitted -- a
+        non-loopback deployment gets no interactive preview. A granted
+        response separately binds frame-ancestors to its sole minting origin.
+        """
+        names = tuple(name for name, _other in sandbox_grants.LOOPBACK_PAIRS)
+        if cfg.host not in names:
+            return ()
+        return tuple(f"http://{host}:{_allowed_port}" for host in names)
+
+    def _default_security() -> dict[str, str]:
+        """The shell profile every unprofiled response carries.
+
+        One writer for one fact: `_send`, `_serve_index`, `_send_static_bytes`
+        and both branches of `_stream_file` all answer with this, so no
+        response can drift to a shell policy that cannot frame the sandbox
+        origin. It is a pure function of the bind host and port, which do
+        not change after `make_handler`.
+        """
+        return security_headers(frame_src=_app_origins())
+
+    # Its own instance on purpose: `runner.completion_delivery` exists only
+    # when Stage 1 trusted delivery is enabled, and the grant route verifies
+    # snapshots in every posture. Both derive their roots from `cfg.data_dir`.
+    sandbox_delivery = CompletionDeliveryService(store=store, data_dir=cfg.data_dir)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "openai4s-gateway/1.0"
         protocol_version = "HTTP/1.1"
@@ -13247,7 +13283,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.send_response(code)
             self.send_header("Content-Type", _sanitize_header_value(ctype))
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache")
             # Echoed so a user reporting a failure can hand over an id that ties
             # their request to this daemon's log line for it.
             request_id = getattr(self, "_correlation_id", "")
@@ -13258,10 +13293,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # truthiness: an empty profile is a caller that computed one and
             # got nothing, and silently answering that with the permissive UI
             # shell policy is the one direction this must never fail in.
-            hardened = security if security is not None else security_headers()
-            for k, v in hardened.items():
-                self.send_header(k, _sanitize_header_value(v))
-            for k, v in (extra or {}).items():
+            hardened = security if security is not None else _default_security()
+            # One header per name, by dict merge: the default `no-cache` yields
+            # to a profile that carries its own `Cache-Control` (the granted
+            # preview says `no-store`), and `extra` overrides both -- never a
+            # second contradictory copy of a header already written.
+            for k, v in {
+                "Cache-Control": "no-cache",
+                **hardened,
+                **(extra or {}),
+            }.items():
                 self.send_header(k, _sanitize_header_value(v))
             self.end_headers()
             if body:
@@ -14062,6 +14103,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             self.close_connection = True
                             self._json({"error": "cross-origin request refused"}, 403)
                             return
+                # A grant-bearing path authenticates itself and reaches
+                # exactly one thing, so it is admitted before the session
+                # gates -- the sandbox origin has no cookie to present. It is
+                # placed above them rather than beside them so no later route
+                # addition can accidentally sit behind the same prefix.
+                if path.startswith(sandbox_grants.SANDBOX_PREFIX):
+                    if method != "GET":
+                        self._json({"error": "not found"}, 404)
+                        return
+                    self._serve_sandbox_grant(path)
+                    return
                 # Team guard (OPENAI4S_TEAM_MODE): resolves every request to a
                 # user or the loopback-CLI service identity, and *replaces*
                 # the single-credential token gate below — a member's browser
@@ -14302,7 +14354,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 log_event(
                     "http_request",
                     method=method,
-                    path=path,
+                    path=(
+                        "/sandbox/[redacted]"
+                        if path.startswith(sandbox_grants.SANDBOX_PREFIX)
+                        else path
+                    ),
                     status=getattr(self, "_last_status", None),
                 )
                 reset_correlation_id(correlation_token)
@@ -14325,7 +14381,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if _webui_legacy_enabled()
                 else WEBUI_DIR / "dist" / "index.html"
             )
-            self._serve_ui_file(index, "text/html; charset=utf-8")
+            self._serve_ui_file(
+                index,
+                "text/html; charset=utf-8",
+                security=_default_security(),
+            )
 
         def _serve_static(self, path: str) -> bool:
             if path in ("/", "/index.html"):
@@ -14343,10 +14403,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 assert target is not None
                 ctype = _guess_ctype(target.name)
                 # The one static document that is itself framed: `/ketcher`
-                # embeds the vendored editor's entry page. Everything else
-                # under /static/ keeps the shell's frame denial.
+                # embeds the vendored editor's entry page. The pinned editor
+                # also needs string compilation for its chemistry bindings.
+                # Everything else keeps the shell's no-eval/frame-denial policy.
                 security = (
-                    embeddable_security_headers()
+                    ketcher_editor_security_headers()
                     if rel == _FRAMED_STATIC_DOCUMENT
                     else None
                 )
@@ -14362,15 +14423,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             extra: dict | None,
             security: dict[str, str] | None,
         ) -> None:
-            """Write a static response whose Cache-Control `_send` cannot express.
+            """Write a static response with the transport headers `_send` omits.
 
-            `_send` hard-wires `no-cache`. Fingerprint names need
-            `public, max-age=31536000, immutable`; sending both would combine
-            into a contradictory policy. 304 still applies the security
-            profile — an empty body is not an opt-out.
+            Fingerprint names need `public, max-age=31536000, immutable`, and
+            this writer carries the ETag/gzip transport API JSON has no use
+            for. Cache-Control follows the same precedence as `_send` and is
+            written once. 304 still applies the security profile — an empty
+            body is not an opt-out.
             """
             extra = dict(extra or {})
-            cache_control = extra.pop("Cache-Control", "no-cache")
+            profile = security if security is not None else _default_security()
+            cache_control = extra.pop(
+                "Cache-Control", profile.get("Cache-Control", "no-cache")
+            )
             self._last_status = code
             self.send_response(code)
             self.send_header("Content-Type", _sanitize_header_value(ctype))
@@ -14379,8 +14444,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             request_id = getattr(self, "_correlation_id", "")
             if request_id:
                 self.send_header("X-Request-Id", _sanitize_header_value(request_id))
-            profile = security if security is not None else security_headers()
             for key, value in profile.items():
+                if key == "Cache-Control":
+                    continue
                 self.send_header(key, _sanitize_header_value(value))
             for key, value in extra.items():
                 self.send_header(key, _sanitize_header_value(value))
@@ -14481,10 +14547,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.send_response(304)
                 self.send_header("Content-Type", _sanitize_header_value(ctype))
                 self.send_header("Content-Length", "0")
-                cache_control = extra.get("Cache-Control", "no-cache")
+                profile = security if security is not None else _default_security()
+                cache_control = extra.get(
+                    "Cache-Control", profile.get("Cache-Control", "no-cache")
+                )
                 self.send_header("Cache-Control", _sanitize_header_value(cache_control))
-                profile = security if security is not None else security_headers()
                 for key, value in profile.items():
+                    if key == "Cache-Control":
+                        continue
                     self.send_header(key, _sanitize_header_value(value))
                 for key, value in extra.items():
                     if key == "Cache-Control":
@@ -14497,7 +14567,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 self._json({"error": "not found"}, 404)
                 return
-            cache_control = extra.pop("Cache-Control", "no-cache")
+            profile = security if security is not None else _default_security()
+            cache_control = extra.pop(
+                "Cache-Control", profile.get("Cache-Control", "no-cache")
+            )
             with source:
                 self._last_status = 200
                 self.send_response(200)
@@ -14509,8 +14582,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # its own headers instead of going through _send, so it has to
                 # opt in explicitly — and it takes the same `security` profile
                 # as `_serve_file`, or the two writers of one fact drift.
-                profile = security if security is not None else security_headers()
                 for key, value in profile.items():
+                    if key == "Cache-Control":
+                        continue
                     self.send_header(key, _sanitize_header_value(value))
                 for key, value in extra.items():
                     self.send_header(key, _sanitize_header_value(value))
@@ -14522,6 +14596,157 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self.wfile.write(chunk)
 
         # ---- artifact bytes --------------------------------------------
+        def _serve_sandbox_grant(self, path: str) -> None:
+            """Serve artifact bytes on the sandbox origin, under a grant.
+
+            The one route reachable without a session credential, so it is
+            written as an allowlist: a grant that verifies, a `/preview/`
+            path below it, and an artifact whose frame the grant names. Any
+            other shape is 404 with no detail -- a probe of this origin must
+            not learn whether an id exists.
+            """
+            if not _auth_token:
+                # Nothing signs grants, so none can be honoured. This is the
+                # posture where the app never offers a sandboxed preview.
+                self._json({"error": "not found"}, 404)
+                return
+            if self._presents_session_cookie():
+                # A legitimate spend is the cross-site subframe load, on which
+                # a SameSite=Strict cookie is never sent. A request that does
+                # carry the daemon's own cookie is therefore a grant URL opened
+                # top-level on a name that also holds a session -- the one
+                # context in which this executable document could load the
+                # authenticated API as a *same-site* subresource and read
+                # other frames' bytes. Refused outright: the inert `/preview/`
+                # route on the app origin serves that reader.
+                self._json({"error": "not found"}, 404)
+                return
+            try:
+                token, remainder = sandbox_grants.split_path(path)
+                if not _app_origins():
+                    raise sandbox_grants.GrantError("unsupported preview origin")
+                spend_origin, _ = sandbox_grants.origin_pair(
+                    self.headers.get("Host", ""), _allowed_port
+                )
+                grant = sandbox_grants.verify(_auth_token, token, origin=spend_origin)
+            except sandbox_grants.GrantError:
+                self._json({"error": "not found"}, 404)
+                return
+            if not remainder.startswith("/preview/"):
+                self._json({"error": "not found"}, 404)
+                return
+            ident = unquote(remainder[len("/preview/") :])
+            primary = ident == grant.artifact_id
+            if primary:
+                artifact = store.get_artifact(grant.artifact_id)
+                version = store.version_meta(grant.version_id)
+            else:
+                # A sibling: by id, else the one file of that name *in this
+                # frame* -- the same question the inert `/preview/` route asks
+                # once it knows the referring report, so both previews answer
+                # a relative reference the same way.
+                artifact = store.get_artifact(
+                    ident
+                ) or store.artifact_by_unique_filename(ident, grant.frame_id)
+                version = (
+                    store.version_meta(str(artifact.get("latest_version_id") or ""))
+                    if artifact
+                    else None
+                )
+            if (
+                not isinstance(artifact, dict)
+                or not isinstance(version, dict)
+                or str(artifact.get("root_frame_id") or "") != grant.frame_id
+                or version.get("artifact_id") != artifact.get("artifact_id")
+            ):
+                # Includes the cross-frame case: a preview of one session's
+                # report resolving another session's file by name.
+                self._json({"error": "not found"}, 404)
+                return
+            # Always serve a captured version, never mutable workspace bytes.
+            # The primary is pinned to the version the grant names; a sibling
+            # is its *current* captured version (docs/security.md: this is not
+            # a frozen multi-file bundle).
+            try:
+                body = sandbox_delivery.read_verified_snapshot(version)
+            except DeliveryValidationError as error:
+                # Daemon-side only: the response stays an uninformative 404,
+                # but the operator can tell a damaged snapshot from a forged
+                # or expired grant, as the app-origin exact-version read can.
+                record_diagnostic(error, surface="artifact:sandbox_read")
+                self._json({"error": "not found"}, 404)
+                return
+            ctype = (
+                "text/html; charset=utf-8"
+                if primary
+                else version.get("content_type")
+                or _guess_ctype(str(version.get("filename") or ident))
+            )
+            self._send(
+                200,
+                body,
+                ctype,
+                security=sandboxed_artifact_security_headers(grant.app_origin),
+            )
+
+        def _presents_session_cookie(self) -> bool:
+            """True when the request carries one of the daemon's own cookies.
+
+            Scanned from the raw header rather than parsed. `SimpleCookie` does
+            not skip a pair it cannot read -- it abandons the rest of the
+            header, so `a="unterminated; os_token=x` parses to no names at all
+            -- and the document this refusal exists to contain runs with
+            `allow-same-origin` on that very hostname, so it could set one
+            malformed cookie and hide the real `os_token` behind it. A guard
+            whose bypass the guarded party can write is not a guard.
+
+            Presence, not validity: a stale or wrong `os_token` still marks a
+            browsing context that once held a session on this name. Only an
+            exact name at a pair boundary counts, so cookies of other local
+            apps on the same hostname (cookies ignore ports) are not ours.
+            """
+            ours = {"os_token", _TEAM_COOKIE}
+            raw = self.headers.get("Cookie", "") or ""
+            return any(pair.split("=", 1)[0].strip() in ours for pair in raw.split(";"))
+
+        def _referring_preview_frame(self) -> str | None:
+            """The root frame of the `/preview/` document that referenced us.
+
+            Artifact responses carry `Referrer-Policy: same-origin`, so a
+            report's relative `<img src="figure.png">` arrives with the
+            report's own `/preview/<ident>` URL as its Referer. That names
+            the frame the reference is *about*, which is what lets the inert
+            route answer it the way the granted route does. Anything that is
+            not a same-host `/preview/` referrer yields None.
+            """
+            headers = getattr(self, "headers", None)
+            if headers is None:
+                return None
+            try:
+                referer = urlparse(headers.get("Referer", "") or "")
+            except ValueError:
+                return None
+            host = (headers.get("Host", "") or "").strip().lower()
+            if (
+                not host  # absent Host: `"" == ""` would admit any Referer
+                or not referer.path.startswith("/preview/")
+                or referer.netloc.lower() != host
+            ):
+                return None
+            ident = unquote(referer.path[len("/preview/") :])
+            if ident.startswith("versions/"):
+                ident = ident[len("versions/") :]
+            artifact = store.get_artifact(ident)
+            if artifact is None:
+                version = store.version_meta(ident)
+                artifact = (
+                    store.get_artifact(str(version.get("artifact_id") or ""))
+                    if isinstance(version, dict)
+                    else None
+                )
+            frame_id = str((artifact or {}).get("root_frame_id") or "").strip()
+            return frame_id or None
+
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
             # Artifact bytes are user/agent-authored and may be navigated to as
             # a top-level document, outside the Workbench iframe's sandbox.
@@ -14585,7 +14810,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # with a straight face. The UI never sends a filename here (it
                 # always sends `a.id`), so nothing first-party relied on the
                 # guess.
-                meta = store.artifact_by_unique_filename(decoded_ident)
+                #
+                # A relative reference inside a report is narrower than that:
+                # it means the file *next to* the report. When the Referer
+                # names the report, ask within its frame first -- the same
+                # rule the granted preview applies -- and only then fall back
+                # to store-wide uniqueness for a bare `/artifacts/<name>`.
+                # Only for the preview route: `force_html` marks it and is the
+                # sole caller that sets it. A bare `/api/v1/artifacts/<name>`
+                # keeps the store-wide rule -- widening *its* resolution on a
+                # Referer is not what a rendered document's relative reference
+                # asked for.
+                frame_id = self._referring_preview_frame() if force_html else None
+                meta = (
+                    store.artifact_by_unique_filename(decoded_ident, frame_id)
+                    if frame_id
+                    else None
+                ) or store.artifact_by_unique_filename(decoded_ident)
                 if meta:
                     path = meta.get("path")
             else:
@@ -17215,6 +17456,61 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             }
                             for v in vs
                         ]
+                    }
+                )
+                return
+            m = re.fullmatch(r"/artifacts/([^/]+)/sandbox-grant", sub)
+            if m and method == "POST":
+                # Minted here, where the caller is authenticated, and spent on
+                # the sandbox origin, which has no credential of its own. The
+                # grant names the artifact's frame so the document's sibling
+                # files resolve and nothing else does.
+                artifact = store.get_artifact(m.group(1))
+                if not isinstance(artifact, dict):
+                    self._json({"error": "artifact not found"}, 404)
+                    return
+                self._team_guard_served_artifact(artifact)
+                if (
+                    not _auth_token
+                    or not _app_origins()
+                    or not str(artifact.get("root_frame_id") or "").strip()
+                ):
+                    # No signing secret, so no sandboxed preview exists to
+                    # grant. The client falls back to the inert preview.
+                    self._json({"error": "sandbox preview unavailable"}, 409)
+                    return
+                version_id = (
+                    q.get("version_id") or [artifact.get("latest_version_id")]
+                )[0]
+                version = store.version_meta(str(version_id or ""))
+                if not version or version.get("artifact_id") != artifact["artifact_id"]:
+                    self._json({"error": "artifact version not found"}, 404)
+                    return
+                try:
+                    sandbox_delivery.verify_snapshot(version)
+                except DeliveryValidationError as error:
+                    record_diagnostic(error, surface="artifact:sandbox_grant")
+                    self._json({"error": "sandbox preview unavailable"}, 409)
+                    return
+                try:
+                    app_origin, sandbox_origin = sandbox_grants.origin_pair(
+                        self.headers.get("Host", ""), _allowed_port
+                    )
+                    token = sandbox_grants.mint(
+                        _auth_token,
+                        str(artifact["root_frame_id"]),
+                        app_origin=app_origin,
+                        artifact_id=artifact["artifact_id"],
+                        version_id=version["version_id"],
+                    )
+                except sandbox_grants.GrantError:
+                    self._json({"error": "sandbox preview unavailable"}, 409)
+                    return
+                self._json(
+                    {
+                        "origin": sandbox_origin,
+                        "path": sandbox_grants.grant_path(token, m.group(1)),
+                        "expires_in": sandbox_grants.DEFAULT_TTL_SECONDS,
                     }
                 )
                 return

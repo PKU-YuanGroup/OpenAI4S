@@ -59,7 +59,7 @@ mutually hostile at the host-filesystem level.
 | **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | the provider helper runs inside a real OS boundary — Seatbelt on macOS, bubblewrap on Linux — that puts the user's home out of reach — a `tmpfs` over it on Linux; on macOS a denial of `file-read-data` *and* `file-read-xattr`, since an xattr on macOS routinely holds the file's own bytes and `getxattr` was serving what `open` refused — confines writes to the job's stage directory, and (macOS) denies the keychain services, because the credential is read *by securityd* and no file rule covers that. `available()` proves it by establishing a boundary and probing it, not by `which`; the helper re-checks from inside before reading a credential and exits 71 without acting if it does not hold. **The network is deliberately not isolated** (`network_isolated: false`) — calling a provider's REST API is the helper's whole job, so outbound egress is a separate capability and is not enabled. `enforce` refuses `byoc:*` ops only where no boundary can be established: no `bwrap`/`sandbox-exec` on `PATH`, a host that fails the self-test (e.g. unprivileged user namespaces disabled), or a platform with no backend — and it refuses on *every* op, not just submit. `auto` degrades visibly in those same cases; `off` skips the wrapping entirely (see [`docs/compute.md`](compute.md)) |
 | **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | credentials behind an opaque reference in the system keychain (after a real round-trip self-test) or the process environment; `auto` **fails closed** when neither is available. Plaintext is reachable only by asking for it by name, and no obfuscated-file fallback exists |
 | **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
-| **Browser response headers** | always on | a static UI CSP with no inline executable scripts or `'unsafe-inline'` in `script-src`, plus a stricter response-level sandbox with `script-src 'none'` / `connect-src 'none'` on untrusted Artifact bytes; `nosniff` / `X-Frame-Options` / `Referrer-Policy` cover every response |
+| **Browser response headers** | always on | the app shell permits only external same-origin scripts; the exact vendored Ketcher editor document additionally needs `unsafe-eval` for its upstream runtime. App-origin Artifact bytes remain script-free. Executable HTML previews require a scoped grant on the other loopback origin, with a response-level sandbox and closed fetch directives. `nosniff`, framing policy, and `Referrer-Policy` apply at the response boundary; see the preview limitations below |
 
 `web_fetch` rejects loopback and private-network targets by default to reduce
 SSRF risk. `OPENAI4S_ALLOW_PRIVATE_FETCH=1` is an explicit trusted-local
@@ -124,6 +124,94 @@ persist the selected standing rule. A `once` choice instead creates one exact
 `root_frame_id` + tool + permission-target grant, expires after 15 minutes, and
 is consumed atomically only when a fresh matching action reaches an `ask`
 decision. Stored/redacted approval payloads are never executed as arguments.
+
+### Executable Artifact previews use a scoped alternate origin
+
+The default Preact Workbench creates an HTML iframe with the empty sandbox
+attribute and, on a direct HTTP loopback deployment, asks for an
+authenticated `POST /api/v1/artifacts/{id}/sandbox-grant` before navigating
+it anywhere; a granted URL is remembered per Artifact version until shortly
+before it expires, so reopening the same report does not mint again. The
+alternate origin is the other loopback hostname (`127.0.0.1` ↔ `localhost`)
+at the daemon's port; no second listener is started. On any other origin, and
+whenever the grant is refused, the frame loads the inert app-origin preview
+(`/preview/<artifact-id>` or `/preview/<version-id>` for an exact version)
+instead. There is no client-side origin override: the client derives the one
+alternate origin from its own location and accepts a grant only for exactly
+that origin.
+
+A signed grant binds a nonempty Artifact root frame, the selected Artifact
+version, an expiry, the minting app origin, and the exact alternate origin
+where it may be spent. Its default lifetime is one hour. The URL is
+`/sandbox/<grant>/preview/<artifact-id-or-filename>`: a relative image or script
+URL retains the grant in its path. Grant routes accept only reads of Artifact
+bytes in that frame; they expose no API or app shell and neither require nor
+set a session cookie. Missing, forged, expired, cross-frame, and wrong-Host
+grants return 404. In particular, changing the preview URL's hostname back to
+the app hostname cannot return executable Artifact bytes. The only permitted
+framing ancestor is the origin that minted the grant. A grant request that
+presents the daemon's own session cookie (`os_token`, or the team login
+cookie) is also refused with 404: the legitimate spend is the cross-site
+subframe load, on which a `SameSite=Strict` cookie is never sent, so a cookie
+can only mean a grant URL opened top-level on a loopback name that also holds
+a session -- the one browsing context in which the executable document could
+load that name's authenticated API as a same-site subresource (an `<img>` of
+another frame's file, readable through a canvas) and then navigate itself
+away with the bytes. Cookies of other local applications on the same
+hostname are not the daemon's and do not count. The cookie is read by
+scanning the raw header, because a cookie parser that abandons a malformed
+pair would let the previewed document hide the credential behind one it sets
+itself. This closes the reachable path -- a grant URL opened from the address
+bar or a bookmark, where the cookie is sent -- rather than every path: a
+cross-site top-level navigation withholds a `SameSite=Strict` cookie from the
+navigation itself while the loaded document's own same-origin subresources
+still carry it. Nothing in the Workbench links a grant URL that way, and the
+response grants no popup or top-navigation sandbox permission, so the
+document cannot arrange it; the residual below still applies.
+The main document remains pinned to the selected captured version. Sibling
+resources resolve by ID or an unambiguous filename within that frame and use
+their current captured versions; this is not a frozen multi-file bundle. The
+inert `/preview/` route answers a report's relative reference by the same
+frame-scoped rule when the request's same-origin `Referer` names the report,
+so a figure does not render in one preview mode and 404 in the other.
+All served bytes must pass snapshot checksum verification, and a missing or
+damaged snapshot does not fall back to a mutable workspace file.
+
+The granted response and upgraded iframe use
+`sandbox="allow-scripts allow-same-origin"`. This lets a report execute its
+inline JavaScript and load granted sibling images, styles, and scripts while
+remaining cross-origin with the Workbench. The response CSP blocks `fetch`,
+XHR, WebSocket, form submission, external script/image/style resources,
+plugins, and base-URL changes; it grants no popup or top-navigation sandbox
+permission. This is narrower than a general web runtime: reports that fetch
+JSON or third-party libraries need to package their data and dependencies
+locally. Ordinary `/preview/` and Artifact-byte URLs on the app origin retain
+`script-src 'none'` and the response sandbox, including direct navigation.
+Ketcher is authenticated first-party UI and stays on the app origin, with
+same-origin framing and API access.
+Its pinned upstream runtime requires JavaScript string evaluation. Only the
+exact `/static/vendor/ketcher/index.html` document receives a `script-src`
+policy with `'unsafe-eval'`; it still loads scripts only from the same origin
+and does not permit inline script. The `/ketcher` wrapper, main app shell,
+and all Artifact response policies keep their existing evaluation limits.
+This exception trusts the vendored editor's runtime and is not granted to
+model-authored HTML.
+
+**This is not a browser egress or per-document isolation guarantee.** Artifact
+JavaScript can read its grant from `location.pathname`, and CSP fetch/form
+directives do not prevent an iframe from navigating itself to an external URL
+carrying that grant or report data. `Referrer-Policy: no-referrer` on grant
+responses prevents automatic referrer disclosure, not explicit disclosure by
+the report. A leaked grant remains a bearer read capability until expiry for
+anyone able to reach the daemon at the bound Host; it is not revoked by a
+browser logout. Grants share the alternate browser origin, and a browser that
+previously opened the app on that hostname may already have origin storage or
+cookies there. Frame scoping is HTTP authorization, not a separate origin for
+each report. Host binding closes the navigation back into the current
+Workbench's origin; it does not remove these residual risks. Wildcard binds,
+remote origins, and unverified reverse-proxy topologies therefore receive no
+executable preview grant. Keep the daemon loopback-bound and treat grant URLs
+as sensitive, temporary links.
 
 ### The Notebook REPL is off by default
 

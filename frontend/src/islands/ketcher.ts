@@ -5,7 +5,6 @@
  * (`frame-ancestors 'self'`). The iframe must not carry a sandbox attribute.
  */
 
-import { sandboxOrigin } from "../stores/session";
 import { openModalEl } from "../features/chrome/modal";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { $, el } from "./dom";
@@ -23,7 +22,7 @@ export function openKetcher(a?: ArtifactRow | null): void {
   if (!body) return;
   body.innerHTML = "";
   const frame = el("iframe");
-  applyKetcherFrame(frame, sandboxOrigin.value || "", a && a.id ? a.id : null);
+  applyKetcherFrame(frame, a && a.id ? a.id : null);
   body.appendChild(frame);
   openModalEl($("#modal"));
 }

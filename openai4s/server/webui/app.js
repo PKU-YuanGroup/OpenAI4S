@@ -1453,6 +1453,7 @@ Object.assign(I18N.zh, {
   "viewer.renderer.matched": "匹配：{0}",
   "viewer.renderer.version": "版本 {0}",
   "viewer.renderer.noscript": "预览不执行脚本。交互式报表请下载后在本地打开。",
+  "viewer.renderer.interactive": "交互式预览运行在隔离的备用 loopback 源上。若一直空白，请重新打开该文件或下载报表。",
   "viewer.sequence.omitted": "为保持界面流畅，其余 {0} 个残基未展开。",
   "viewer.sequence.summary": "{0} 条序列 · {1} 个残基 · {2}",
   "viewer.table.shape": "共 {0} 行 × {1} 列",
@@ -2667,6 +2668,7 @@ Object.assign(I18N.en, {
   "viewer.renderer.matched": "Matched by {0}",
   "viewer.renderer.version": "Version {0}",
   "viewer.renderer.noscript": "This preview runs no scripts. Download an interactive report to use it.",
+  "viewer.renderer.interactive": "Interactive preview, isolated on the alternate loopback origin. If it stays blank, reopen the artifact or download the report.",
   "viewer.sequence.omitted": "{0} additional residues are collapsed to keep the viewer responsive.",
   "viewer.sequence.summary": "{0} sequences · {1} residues · {2}",
   "viewer.table.shape": "{0} rows × {1} columns",
@@ -8839,6 +8841,17 @@ function renderArtifactBody(body, a) {
     renderArtifactDescriptor(body, a, compatibilityRendererDescriptor(a));
   });
 }
+// The frozen legacy shell keeps inert HTML previews. Interactive previews
+// are owned by the Preact workbench in frontend/.
+function renderHtmlPreview(content, a) {
+  const frame = el("iframe");
+  frame.setAttribute("sandbox", "");
+  frame.src = `/preview/${encodeURIComponent(a.id)}`;
+  content.appendChild(frame);
+  const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript"));
+  content.appendChild(note);
+}
+
 function renderArtifactDescriptor(body, a, descriptor) {
   body.innerHTML = "";
   const renderer = descriptor.renderer || {};
@@ -8854,7 +8867,7 @@ function renderArtifactDescriptor(body, a, descriptor) {
   const url = artUrl(a); const nm = String(a.filename || "").toLowerCase();
   if (rendererId === "image") renderAnnotatableImage(content, a, url);
   else if (rendererId === "pdf") { const frame = el("iframe"); frame.dataset.currentPage = "1"; frame.src = url + "#page=1"; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "pdf", frame); }
-  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", ""); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript")); content.appendChild(note); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
+  else if (rendererId === "html-preview") { renderHtmlPreview(content, a); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
   else if (rendererId === "molecule-3d") molecule(content, url, nm);
   else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
   else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);
@@ -9108,7 +9121,7 @@ function renderChemistry2D(container, a, url) {
       $("#modal-download").style.display = "none";
       const body = $("#modal-body"); body.innerHTML = "";
       const frame = el("iframe");
-      frame.src = (S.sandboxOrigin || "") + "/ketcher?artifact_id=" + encodeURIComponent(a.id);
+      frame.src = "/ketcher?artifact_id=" + encodeURIComponent(a.id);
       frame.setAttribute("allow", "clipboard-read; clipboard-write");
       body.appendChild(frame); openModalEl($("#modal"));
     };
@@ -11024,7 +11037,7 @@ function renderProvReview(body, a, lin) {
   const save = inter.find(i => i.kind === "save");
   if (save && save.at) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(save.at))));
 }
-function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = (S.sandboxOrigin || "") + "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
+function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
 function renderLocatorComments(container, a, kind, viewer) {
   const box = el("div", "wb-locator");
   box.appendChild(el("div", "wb-locator-title", t("wb.locator.title")));
@@ -13744,7 +13757,6 @@ function makeColResizer(host, kind) {
 
 /* ---------- init ---------- */
 async function init() {
-  try { S.sandboxOrigin = (window.__OPERON__ || {}).sandboxOrigin || ""; } catch {}
   paintIcons();
   document.documentElement.lang = LANG === "en" ? "en" : "zh";
   applyStaticI18n(document); refreshLangToggle();

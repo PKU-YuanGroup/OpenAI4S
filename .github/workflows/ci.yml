@@ -584,6 +584,13 @@ jobs:
             # version links, verifies every downloaded checksum across reload
             # and reopen, and proves same-head capture observations survive.
             node tests/browser_stage1_trusted_delivery.mjs
+            # The committed Preact Artifact Viewer, on its own disposable
+            # daemon. Both localhost/127.0.0.1 directions must run report
+            # scripts and sibling images while refusing cross-session reads
+            # and self-navigation to the app origin with the same grant.
+            # Also checks exact versions, inert fallback and real Ketcher
+            # edit/save. Header checks cannot prove the UI uses these paths.
+            node tests/browser_sandbox_preview.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure

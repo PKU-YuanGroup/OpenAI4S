@@ -1124,6 +1124,13 @@ def _drive_seeded_downloads(
     writes: tuple[tuple[str, str, str, dict[str, list[str]], dict], ...] = (
         (
             "POST",
+            r"/artifacts/([^/]+)/sandbox-grant",
+            f"/artifacts/{artifact_id}/sandbox-grant",
+            {"version_id": [version_id]},
+            {},
+        ),
+        (
+            "POST",
             r"/frames/([^/]+)/plan/(approve|resume|revise|discard)",
             f"/frames/{frame_id}/plan/approve",
             {},
@@ -1157,6 +1164,12 @@ def _drive_seeded_downloads(
         handler = _probe_handler(
             recorder, handler_class, method, path, route, headers, query, body
         )
+        if route == r"/artifacts/([^/]+)/sandbox-grant":
+            # Mint is origin-bound; a real listener Host is part of its input.
+            handler.headers = {
+                **handler.headers,
+                "Host": f"127.0.0.1:{runner.cfg.port}",
+            }
         try:
             handler._api(method, path)
         except Exception as error:  # noqa: BLE001

@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { authenticate } from "./browser_auth.mjs";
+import { authenticate, boundedLogCollector, minimalChildEnvironment } from "./browser_auth.mjs";
 
 const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturePath = path.join(workspaceRoot, "tests", "test_stage1_browser_fixture.py");
@@ -236,21 +236,6 @@ async function allocateLoopbackPort() {
   });
 }
 
-function minimalChildEnvironment(extra = {}) {
-  const environment = {
-    PYTHONDONTWRITEBYTECODE: "1",
-    PYTHONUTF8: "1",
-    OPENAI4S_SKIP_DOTENV: "1",
-    OPENAI4S_SECRET_STORE: "plaintext",
-    OPENAI4S_UNATTENDED_APPROVAL: "deny",
-    ...extra,
-  };
-  for (const key of ["PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "WINDIR"]) {
-    if (process.env[key]) environment[key] = process.env[key];
-  }
-  return environment;
-}
-
 function runFixture(args, extraEnvironment = {}) {
   const child = spawnSync(pythonPath, [fixturePath, ...args], {
     cwd: workspaceRoot,
@@ -286,15 +271,6 @@ async function startTripwire() {
     count: () => calls,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
-}
-
-function boundedLogCollector(stream) {
-  let value = "";
-  stream?.setEncoding("utf8");
-  stream?.on("data", (chunk) => {
-    value = (value + chunk).slice(-64 * 1024);
-  });
-  return () => value;
 }
 
 async function waitUntil(label, operation, timeoutMs = 30000, intervalMs = 80) {

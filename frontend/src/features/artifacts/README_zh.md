@@ -26,6 +26,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`http-stub.ts`](http-stub.ts) | Vitest 用的 JSON `Response` 替身。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`。 |
+| [`preview.ts`](preview.ts) | 精确版本的 scoped grant 升级（按版本缓存 grant、改写说明文字），以及 grant 被拒后回退到惰性的 `/preview/<id-or-version>`。 |
+| [`preview.test.ts`](preview.test.ts) | 生产渲染器 grant 生命周期、grant 复用与过期、源与路径拒绝、精确版本回退、非回环源保持惰性及已移除 iframe 回归测试。 |
 | [`renderers.ts`](renderers.ts) | 十个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。 |
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |

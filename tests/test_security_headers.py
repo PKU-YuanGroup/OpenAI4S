@@ -25,6 +25,9 @@ from openai4s.server.security_headers import (
     artifact_security_headers,
     content_security_policy,
     embeddable_security_headers,
+    ketcher_editor_security_headers,
+    sandboxed_artifact_content_security_policy,
+    sandboxed_artifact_security_headers,
     security_headers,
 )
 
@@ -90,7 +93,7 @@ def test_policy_never_parses_html_to_authorize_scripts():
         for name, p in parameters.items()
         if p.kind is not inspect.Parameter.KEYWORD_ONLY
     ] == []
-    assert set(parameters) == {"frame_ancestors"}
+    assert set(parameters) == {"frame_ancestors", "frame_src", "allow_eval"}
 
 
 def test_untrusted_artifact_policy_cannot_execute_or_reach_same_origin():
@@ -165,37 +168,90 @@ def test_the_shell_itself_is_still_unframeable():
     assert security_headers()["X-Frame-Options"] == "DENY"
 
 
-def test_the_preview_says_why_it_is_static_instead_of_showing_a_dead_panel(
-    index_html,
-):
-    """A skill's interactive dashboard renders its chrome and never draws.
+def test_only_the_pinned_ketcher_editor_can_compile_javascript_strings():
+    editor = ketcher_editor_security_headers()
+    wrapper = embeddable_security_headers()
+    policy = editor["Content-Security-Policy"]
+    # 'unsafe-eval' subsumes WebAssembly compilation, so the narrower keyword
+    # is not repeated beside it: the editor's directive is exactly this.
+    assert _directive(policy, "script-src") == "script-src 'self' 'unsafe-eval'"
+    assert "'unsafe-inline'" not in _directive(policy, "script-src")
+    assert editor == {
+        **wrapper,
+        "Content-Security-Policy": wrapper["Content-Security-Policy"].replace(
+            "script-src 'self' 'wasm-unsafe-eval'",
+            "script-src 'self' 'unsafe-eval'",
+        ),
+    }
+    for profile in (
+        security_headers(),
+        wrapper,
+        artifact_security_headers(),
+        sandboxed_artifact_security_headers("http://127.0.0.1:8760"),
+    ):
+        assert "'unsafe-eval'" not in profile["Content-Security-Policy"]
 
-    That is deliberate -- `script-src 'none'`, no `allow-scripts`, and the
-    iframe's own `sandbox=""` all agree -- but silently showing an empty canvas
-    is indistinguishable from a broken artifact. The preview has to say it.
-    """
+
+def _html_preview_renderer(app_js: str) -> str:
+    """The body of `renderHtmlPreview`, where the whole decision lives."""
+    start = app_js.index("function renderHtmlPreview(")
+    end = app_js.index("function renderArtifactDescriptor(", start)
+    return app_js[start:end]
+
+
+def test_legacy_preview_remains_inert(index_html):
     app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
-    preview_line = next(
-        line for line in app_js.splitlines() if 'rendererId === "html-preview"' in line
-    )
-
-    assert 't("viewer.renderer.noscript")' in preview_line
+    body = _html_preview_renderer(app_js)
+    assert 'frame.setAttribute("sandbox", "")' in body
+    assert 't("viewer.renderer.noscript")' in body
+    # The note is the only explanation a legacy user gets for a blank canvas,
+    # so it has to exist in both of the frozen shell's inline tables.
     for language_marker in (
         '"viewer.renderer.noscript": "预览不执行脚本',
         '"viewer.renderer.noscript": "This preview runs no scripts',
     ):
         assert language_marker in app_js, "the note must exist in both languages"
+    assert 'setAttribute("sandbox", "allow-scripts' not in app_js
+    assert '(S.sandboxOrigin || "") + "/ketcher' not in app_js
 
 
-def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html):
-    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
-    preview_line = next(
-        line for line in app_js.splitlines() if 'rendererId === "html-preview"' in line
-    )
+def test_executable_preview_policy_names_only_the_minting_ancestor():
+    origin = "http://127.0.0.1:8760"
+    headers = sandboxed_artifact_security_headers(origin)
+    policy = headers["Content-Security-Policy"]
+    assert _directive(policy, "frame-ancestors") == f"frame-ancestors {origin}"
+    assert _directive(policy, "sandbox") == "sandbox allow-scripts allow-same-origin"
+    assert _directive(policy, "connect-src") == "connect-src 'none'"
+    assert _directive(policy, "form-action") == "form-action 'none'"
+    assert _directive(policy, "base-uri") == "base-uri 'none'"
+    assert "X-Frame-Options" not in headers
+    assert headers["Referrer-Policy"] == "no-referrer"
+    assert headers["Cache-Control"] == "no-store"
 
-    assert 'frame.setAttribute("sandbox", "")' in preview_line
-    assert "allow-scripts" not in preview_line
-    assert "allow-forms" not in preview_line
+
+@pytest.mark.parametrize(
+    "app_origin",
+    [
+        "",
+        # Both loopback names at once: the shape that let a report navigate its
+        # frame from the sandbox name to the cookie name and stay framed.
+        "http://127.0.0.1:8760 http://localhost:8760",
+        "https://127.0.0.1:8760",
+        "http://127.0.0.1:8760/",
+        "http://127.0.0.1:8760; script-src *",
+        None,
+    ],
+)
+def test_executable_preview_policy_refuses_anything_but_one_origin(app_origin):
+    """The minting origin is singular by type, and a bad one fails closed.
+
+    A sequence parameter here once type-checked a two-origin call; a caller
+    bug must raise, not degrade into a wider `frame-ancestors`.
+    """
+    with pytest.raises(ValueError):
+        sandboxed_artifact_content_security_policy(app_origin)
+    with pytest.raises(ValueError):
+        sandboxed_artifact_security_headers(app_origin)
 
 
 def test_connect_src_is_same_origin_only():

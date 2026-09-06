@@ -194,6 +194,18 @@
         404
       ]
     },
+    "/artifacts/([^/]+)/sandbox-grant": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/artifacts/([^/]+)/structure": {
       "content_types": [
         "application/json"

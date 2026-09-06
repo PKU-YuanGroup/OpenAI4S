@@ -5187,6 +5187,274 @@ def test_preview_route_forces_html_content_type(tmp_path):
     assert security["X-Frame-Options"] == "SAMEORIGIN"
 
 
+@pytest.mark.parametrize(
+    "app_host,sandbox_host", [("127.0.0.1", "localhost"), ("localhost", "127.0.0.1")]
+)
+def test_a_sandbox_grant_is_minted_scoped_and_spendable(
+    tmp_path, app_host, sandbox_host
+):
+    from openai4s.server import sandbox_grants
+
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+    app_headers = _auth_headers(cfg, {"Host": f"{app_host}:{cfg.port}"})
+    handler.headers = app_headers
+    report = st.workspace / "report.html"
+    report.write_text("<html><script>1</script></html>")
+    rec = runner._register_file(st, report, "c1", lambda e: None)
+    sibling = st.workspace / "figure.txt"
+    sibling.write_text("own sibling")
+    runner._register_file(st, sibling, "c1", lambda e: None)
+    other_frame = store.new_frame(kind="turn", project_id="default", status="ready")
+    foreign = tmp_path / "foreign.txt"
+    foreign.write_text("foreign secret canary")
+    other = store.save_artifact(
+        path=str(foreign),
+        filename="figure.txt",
+        content_type="text/plain",
+        frame_id=other_frame,
+        size_bytes=foreign.stat().st_size,
+        checksum=hashlib.sha256(foreign.read_bytes()).hexdigest(),
+    )
+
+    try:
+        handler.path = f"/api/v1/artifacts/{rec['artifact_id']}/sandbox-grant"
+        handler._route("POST")
+        assert sends[-1][0] == 200, sends[-1]
+        payload = json.loads(sends[-1][1])
+        assert payload["expires_in"] == sandbox_grants.DEFAULT_TTL_SECONDS
+        assert payload["origin"] == f"http://{sandbox_host}:{cfg.port}"
+        grant_path = payload["path"]
+        # A later workspace mutation and head update cannot change minted bytes.
+        report.write_text("new head")
+        runner._register_file(st, report, "c2", lambda e: None)
+        handler.headers = {"Host": f"{sandbox_host}:{cfg.port}"}
+        handler.path = grant_path
+        handler._route("GET")
+        assert sends[-1][:2] == (200, b"<html><script>1</script></html>")
+        headers = sends[-1][3]
+        assert (
+            f"frame-ancestors http://{app_host}:{cfg.port};"
+            in headers["Content-Security-Policy"]
+        )
+        assert (
+            "sandbox allow-scripts allow-same-origin"
+            in headers["Content-Security-Policy"]
+        )
+        assert "X-Frame-Options" not in headers
+        assert headers["Referrer-Policy"] == "no-referrer"
+
+        handler.path = grant_path.rsplit("/", 1)[0] + "/figure.txt"
+        handler._route("GET")
+        assert sends[-1][:2] == (200, b"own sibling")
+        handler.path = grant_path.rsplit("/", 1)[0] + "/" + other["artifact_id"]
+        handler._route("GET")
+        assert sends[-1][0] == 404
+        assert b"foreign secret canary" not in sends[-1][1]
+
+        # The inert app-origin preview answers the same relative reference the
+        # same way once the Referer names the report: `figure.txt` is
+        # ambiguous store-wide (the other frame has one too) but unique next
+        # to this report. Without a referring report the bare lookup stays
+        # the store-wide, ambiguous-means-404 rule it always was.
+        handler.headers = _auth_headers(
+            cfg,
+            {
+                "Host": f"{app_host}:{cfg.port}",
+                "Referer": f"http://{app_host}:{cfg.port}/preview/{rec['artifact_id']}",
+            },
+        )
+        handler.path = "/preview/figure.txt"
+        handler._route("GET")
+        assert sends[-1][:2] == (200, b"own sibling")
+        handler.headers = _auth_headers(cfg, {"Host": f"{app_host}:{cfg.port}"})
+        handler._route("GET")
+        assert sends[-1][0] == 404
+
+        # A spend that carries the daemon's own cookie is a grant URL opened
+        # top-level on a name that also holds a session; a framed spend is
+        # cross-site and never carries one. Presence alone refuses, wrong
+        # value included; an unrelated cookie from another local app on the
+        # same hostname does not.
+        from openai4s.server import local_auth
+
+        handler.path = grant_path
+        for cookie in (
+            f"os_token={local_auth.load_or_mint(cfg.data_dir)}",
+            "os_token=stale-or-wrong",
+            "os_user=someone",
+            "a=1; os_token=x; b=2",
+            # A cookie the sandboxed document can set on this hostname itself.
+            # `SimpleCookie` abandons the header after it, so parsing rather
+            # than scanning would hide the real credential behind it.
+            'a="unterminated; os_token=x',
+        ):
+            handler.headers = {"Host": f"{sandbox_host}:{cfg.port}", "Cookie": cookie}
+            handler._route("GET")
+            assert sends[-1][0] == 404, cookie
+        for cookie in ("other_local_app=1", "garbage;;=\x01"):
+            handler.headers = {"Host": f"{sandbox_host}:{cfg.port}", "Cookie": cookie}
+            handler._route("GET")
+            assert sends[-1][0] == 200, cookie
+        handler.headers = {"Host": f"{sandbox_host}:{cfg.port}"}
+
+        # The navigation exploit must fail even with an authenticated cookie/header.
+        handler.path = grant_path
+        handler.headers = app_headers
+        handler._route("GET")
+        assert sends[-1][0] == 404
+        handler.headers = {"Host": f"{sandbox_host}:{cfg.port}"}
+        handler._route("POST")
+        assert sends[-1][0] == 404
+        handler.path = grant_path.split("/preview/")[0] + "/api/v1/frames"
+        handler._route("GET")
+        assert sends[-1][0] == 404
+
+        # Historical request pins that version; an unknown version never falls back.
+        handler.headers = app_headers
+        handler.path = f"/api/v1/artifacts/{rec['artifact_id']}/sandbox-grant"
+        handler._query = lambda: {"version_id": [rec["version_id"]]}
+        handler._route("POST")
+        assert sends[-1][0] == 200
+        handler._query = lambda: {"version_id": ["v-nope"]}
+        handler._route("POST")
+        assert sends[-1][0] == 404
+        handler._query = lambda: {}
+        handler.path = "/api/v1/artifacts/a-nope/sandbox-grant"
+        handler._route("POST")
+        assert sends[-1][0] == 404
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize(
+    "reason", ["blank_scope", "unsupported_host", "wildcard_bind", "no_secret"]
+)
+def test_sandbox_grant_unavailable_is_an_honest_inert_fallback(
+    tmp_path, monkeypatch, reason
+):
+    if reason == "no_secret":
+        monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    if reason == "wildcard_bind":
+        cfg.host = "0.0.0.0"
+    report = st.workspace / "report.html"
+    report.write_text("inert")
+    rec = runner._register_file(st, report, "c1", lambda e: None)
+    if reason == "blank_scope":
+        with store._lock:
+            store._conn.execute(
+                "UPDATE artifacts SET root_frame_id=NULL WHERE artifact_id=?",
+                (rec["artifact_id"],),
+            )
+            store._conn.commit()
+    handler, sends = _bytes_handler(cfg, runner)
+    handler.headers = _auth_headers(cfg, {"Host": f"127.0.0.1:{cfg.port}"})
+    if reason == "unsupported_host":
+        handler.headers["Host"] = f"[::1]:{cfg.port}"
+    handler.path = f"/api/v1/artifacts/{rec['artifact_id']}/sandbox-grant"
+    try:
+        handler._route("POST")
+        assert sends[-1][0] == 409, sends[-1]
+        assert "path" not in json.loads(sends[-1][1])
+    finally:
+        runner.close()
+
+
+def test_sandbox_preview_verifies_snapshot_and_preserves_html_rendering(
+    tmp_path, monkeypatch
+):
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+    # The response stays an uninformative 404/409, but the daemon records
+    # which surface saw the damaged snapshot -- as the app-origin exact-version
+    # read does -- so an operator can tell it from a forged or expired grant.
+    surfaces: list[str] = []
+    monkeypatch.setattr(
+        gateway_mod,
+        "record_diagnostic",
+        lambda error, surface=None, **kw: surfaces.append(surface),
+    )
+    report = st.workspace / "report.html"
+    report.write_text("<h1>Report</h1>")
+    rec = runner._register_file(st, report, "c1", lambda e: None)
+    with store._lock:
+        store._conn.execute(
+            "UPDATE artifact_versions SET content_type='text/plain' WHERE version_id=?",
+            (rec["version_id"],),
+        )
+        store._conn.commit()
+    mint_path = f"/api/v1/artifacts/{rec['artifact_id']}/sandbox-grant"
+    try:
+        handler.headers = _auth_headers(cfg, {"Host": f"127.0.0.1:{cfg.port}"})
+        handler.path = mint_path
+        handler._route("POST")
+        assert sends[-1][0] == 200
+        grant_path = json.loads(sends[-1][1])["path"]
+        handler.path = grant_path
+        handler.headers = {"Host": f"localhost:{cfg.port}"}
+        handler._route("GET")
+        assert sends[-1][:3] == (200, b"<h1>Report</h1>", "text/html; charset=utf-8")
+
+        snapshot = Path(store.version_meta(rec["version_id"])["snapshot_path"])
+        snapshot.write_text("<h1>Forged</h1>")  # same size, wrong checksum
+        handler._route("GET")
+        assert sends[-1][0] == 404
+        assert b"Forged" not in sends[-1][1]
+        assert surfaces == ["artifact:sandbox_read"]
+        handler.headers = _auth_headers(cfg, {"Host": f"127.0.0.1:{cfg.port}"})
+        handler.path = mint_path
+        handler._route("POST")
+        assert sends[-1][0] == 409
+        snapshot.unlink()
+        handler._route("POST")
+        assert sends[-1][0] == 409
+        assert surfaces == ["artifact:sandbox_read"] + ["artifact:sandbox_grant"] * 2
+    finally:
+        runner.close()
+
+
+def test_send_emits_exactly_one_cache_control_per_response(tmp_path):
+    """`_send` writes `Cache-Control` once, whoever decided it.
+
+    The default is `no-cache`; a profile that carries its own value (the
+    granted preview says `no-store`) replaces it rather than joining it, and
+    `extra` overrides both. Asserted on the wire, not on the profile dict a
+    stubbed writer was handed: a second contradictory copy of the header is
+    exactly the drift a dict-level assertion cannot see.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    emitted: list[tuple[str, str]] = []
+    handler.send_response = lambda code: None
+    handler.send_header = lambda key, value: emitted.append((key, value))
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+
+    def cache_control() -> list[str]:
+        values = [value for key, value in emitted if key == "Cache-Control"]
+        emitted.clear()
+        return values
+
+    try:
+        handler._send(200, b"{}", "application/json")
+        assert cache_control() == ["no-cache"]
+        handler._send(
+            200,
+            b"<html></html>",
+            "text/html",
+            security=gateway_mod.sandboxed_artifact_security_headers(
+                "http://127.0.0.1:8760"
+            ),
+        )
+        assert cache_control() == ["no-store"]
+        handler._send(200, b"", "text/plain", extra={"Cache-Control": "max-age=60"})
+        assert cache_control() == ["max-age=60"]
+    finally:
+        runner.close()
+
+
 def test_send_serializes_only_the_artifact_security_profile(tmp_path):
     """The final HTTP writer must not add the UI shell's DENY/CSP headers.
 
@@ -5215,6 +5483,56 @@ def test_send_serializes_only_the_artifact_security_profile(tmp_path):
     assert [value for key, value in emitted if key == "X-Frame-Options"] == [
         "SAMEORIGIN"
     ]
+
+
+def test_every_unprofiled_writer_answers_with_the_same_shell_policy(tmp_path):
+    """One default CSP, whichever writer and whichever status code.
+
+    `_send` is not the only body writer: `_send_static_bytes` and both branches
+    of `_stream_file` build their own headers. A 304 replaces the stored
+    response's headers, so a writer that substituted a different default would
+    swap the shell's policy for one that cannot frame the sandbox origin --
+    and nothing would notice, because no route-level test looks past which
+    profile was *selected* to what the writer actually substitutes.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    emitted: list[tuple[str, str]] = []
+    handler.send_response = lambda code: None
+    handler.send_header = lambda key, value: emitted.append((key, value))
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    handler.headers = {"If-None-Match": '"etag-1"'}
+    asset = tmp_path / "big.aaaaaaaa.js"
+    asset.write_bytes(b"console.log(1)\n")
+
+    def policies() -> list[str]:
+        found = [value for key, value in emitted if key == "Content-Security-Policy"]
+        emitted.clear()
+        return found
+
+    try:
+        handler._send(200, b"{}", "application/json")
+        send = policies()
+        handler._send_static_bytes(200, b"x", "application/javascript", None, None)
+        static_bytes = policies()
+        handler._stream_file(
+            asset, "application/javascript", extra={"ETag": '"etag-2"'}
+        )
+        streamed_200 = policies()
+        handler._stream_file(
+            asset, "application/javascript", extra={"ETag": '"etag-1"'}
+        )
+        streamed_304 = policies()
+    finally:
+        runner.close()
+
+    assert send == static_bytes == streamed_200 == streamed_304
+    assert len(send) == 1
+    # And it is the profile that can frame the preview, not the bare shell one.
+    for origin in (f"http://127.0.0.1:{cfg.port}", f"http://localhost:{cfg.port}"):
+        assert origin in send[0]
 
 
 def test_an_empty_security_profile_is_not_read_as_no_profile(tmp_path):
@@ -5331,9 +5649,17 @@ def test_the_framed_editor_documents_are_the_only_relaxed_static_responses(tmp_p
             assert security is not None, framed
             assert "frame-ancestors 'self'" in security["Content-Security-Policy"]
             assert security["X-Frame-Options"] == "SAMEORIGIN"
-            # First-party code, so the shell's script policy is unchanged.
-            assert "script-src 'self' 'wasm-unsafe-eval'" in (
-                security["Content-Security-Policy"]
+            # String compilation is confined to the pinned editor document;
+            # the first-party wrapper keeps the shell's no-eval policy. Exact
+            # directives, not substrings: a wider grant must not slip past.
+            expected_script_src = (
+                "script-src 'self' 'unsafe-eval'"
+                if framed == "/static/vendor/ketcher/index.html"
+                else "script-src 'self' 'wasm-unsafe-eval'"
+            )
+            assert f"{expected_script_src};" in security["Content-Security-Policy"]
+            assert ("'unsafe-eval'" in security["Content-Security-Policy"]) == (
+                framed == "/static/vendor/ketcher/index.html"
             )
 
         # A real sibling file under the very same vendored directory, so this

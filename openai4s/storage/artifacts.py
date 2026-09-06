@@ -320,8 +320,16 @@ class ArtifactRepository:
             ).fetchone()
         return self._get_artifact(row["artifact_id"]) if row else None
 
-    def artifact_by_unique_filename(self, filename: str) -> dict | None:
+    def artifact_by_unique_filename(
+        self, filename: str, root_frame_id: str | None = None
+    ) -> dict | None:
         """Resolve a filename only when exactly one artifact carries it.
+
+        With ``root_frame_id`` the question is asked within one frame, which
+        is how a report's relative ``<img src="figure.png">`` is meant to be
+        read: the file *next to* the report, not any file of that name
+        anywhere. Both preview routes ask through this one method so they
+        cannot answer the same reference differently.
 
         The unscoped lookup above answers "the most recently created artifact
         with this name, anywhere" -- so `GET /artifacts/report.pdf` served
@@ -334,11 +342,13 @@ class ArtifactRepository:
         and the honest answer to an ambiguous question is not one of the
         candidates.
         """
+        sql = "SELECT artifact_id FROM artifacts WHERE filename=?"
+        params: tuple = (filename,)
+        if root_frame_id is not None:
+            sql += " AND root_frame_id=?"
+            params = (filename, root_frame_id)
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT artifact_id FROM artifacts WHERE filename=? LIMIT 2",
-                (filename,),
-            ).fetchall()
+            rows = self._connection.execute(sql + " LIMIT 2", params).fetchall()
         if len(rows) != 1:
             return None
         return self._get_artifact(rows[0]["artifact_id"])
