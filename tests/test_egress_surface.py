@@ -262,8 +262,13 @@ _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 #: `curl` sites from 94/119/127/130/218 to 100/125/133/136/224. Because the
 #: fingerprint covers line numbers, a pure edit above a hit moves it. No file
 #: entered or left the surface and no new client was recognized.
+#: The Scenario generator adds one negative sandbox probe: its child attempts
+#: socket.create_connection only to the parent-created 127.0.0.1 listener.
+#: A successful connection aborts verification. The destination is never model
+#: supplied, and a guarded Host call would test the parent rather than the
+#: child network boundary. No other inventory site changed in this re-pin.
 _PINNED_SKILL_EGRESS_FINGERPRINT = (
-    "dc7d2f483827dc07580699e60dc2ede3fc92ea989593e937c03f8de53f8e3904"
+    "ef99deba3d9549954b873db727d868710af672505d498f272fa5149641522bac"
 )
 
 _SKILL_EGRESS_PATTERNS = (
