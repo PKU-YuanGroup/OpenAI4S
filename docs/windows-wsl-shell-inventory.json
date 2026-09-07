@@ -1,0 +1,3192 @@
+{
+  "baseline": "bca1183fcc1cd9f4820bb54139ecdaaf63adfcf6",
+  "provenance": "Tracked baseline files from a Linux checkout; hashes are file bytes. Bash -n is syntax-only; no domain workflow is certified. Dynamic aliases/configuration commands may not be discovered.",
+  "counts": {
+    "scripts": 226,
+    "script_categories": {
+      "product_or_build": 13,
+      "science_recipe": 213
+    },
+    "shell_syntax_checked": 224,
+    "shell_syntax_failed": 0,
+    "generated_shell_templates": 6,
+    "python_process_or_bash_call_sites": 25
+  },
+  "scripts": [
+    {
+      "path": "scripts/build_linux_bundle.sh",
+      "lines": 614,
+      "sha256": "5bcee65acf7cade6cf6d720ef0e0e3d514f0e444bd909943a4e91c846c07a24c",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/build_macos_dmg.sh",
+      "lines": 414,
+      "sha256": "9635e4e8731a6c79f1bf4f2137ba845ab96e1e6befca47166c12decc6579226b",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/build_windows_zip.sh",
+      "lines": 285,
+      "sha256": "a3fd74671a34d710189eb2a7d6e0341f282b8c4c1adad58d23d024313bf75f0b",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/container_smoke.sh",
+      "lines": 217,
+      "sha256": "86515ed4b136f6ced97580d17157eb5e18965675b9898fc664576d541e5bd4de",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/fold_remote.sh",
+      "lines": 101,
+      "sha256": "045ef9f4612e1a08e191ed5b5ddd05950c415e07698affd2ca68e019a5b0e24e",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/notarize_macos_dmg.sh",
+      "lines": 100,
+      "sha256": "3e59d96ab376f20b52e99dc5a0384a04dd8ef5d842c92559af82dac7b467029e",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/revalidate_release_tag.sh",
+      "lines": 37,
+      "sha256": "f31837aa810a72f4f8f991ebe645822e2dca607600a9454983007a0d64f25842",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/setup_envs.sh",
+      "lines": 13,
+      "sha256": "dff0ccfab9ea1d7817c867707b116481e9af69a67647e09f171238ac6eaa45f4",
+      "first_line": "#!/bin/sh",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/windows/OpenAI4S.cmd",
+      "lines": 19,
+      "sha256": "535a9b6781e3034386218a40e1202a6b889bc7b6ac7098bd39ce75cd0ee18c2f",
+      "first_line": "@echo off",
+      "category": "product_or_build",
+      "syntax": null,
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/windows/bootstrap.sh",
+      "lines": 387,
+      "sha256": "2a1476f64ea4145b756abe2c5561af40f1fa7c6fa3e1c5e0f2d2f6bbe2958fd9",
+      "first_line": "#!/bin/sh",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "scripts/windows/openai4s.ps1",
+      "lines": 842,
+      "sha256": "86e1019eb5c18c099d28d8933896ae56251328143e11839519300efe5827d130",
+      "first_line": "#Requires -Version 5.1",
+      "category": "product_or_build",
+      "syntax": null,
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "setup.sh",
+      "lines": 83,
+      "sha256": "2f1060126daff0d5222cf33cbf08d8ac5b6ede465fb1a94771a3d73199962709",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alignment-files-alignment-amplicon-clipping/scripts/ampliconclip_workflow.sh",
+      "lines": 46,
+      "sha256": "0aa0bdc1c10c977f1db12f57c7adb4cd0b43b48bf8acd435fe01a7655fa2d36a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alignment-files-alignment-sorting/scripts/sort_pipeline.sh",
+      "lines": 34,
+      "sha256": "5b11630ae51d682212b045b7f640120947550d23ca0f20a6acac779992107b3f",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alignment-files-alignment-validation/scripts/validate_alignment.sh",
+      "lines": 41,
+      "sha256": "f22af1eef8912ea3becf9113941be866597df2592ae624846af0e764c23b8d9c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alignment-files-duplicate-handling/scripts/markdup_pipeline.sh",
+      "lines": 30,
+      "sha256": "1cc1bf818e2b460e15decdf32c9c255c73370eea06340c17951ad41f7b447919",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alignment-files-reference-operations/scripts/prepare_reference.sh",
+      "lines": 37,
+      "sha256": "92f70b1aa9ea9ff82b8ee3bf5ef13efb00239bca2044d8152305d8f0396687ca",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alignment-files-sam-bam-basics/scripts/convert_formats.sh",
+      "lines": 41,
+      "sha256": "506f4af05844a0b91b534dd5ea446e065c434202b2d9339e042425d3a44b846e",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alternative-splicing-differential-splicing/scripts/diff_splicing_rmats.sh",
+      "lines": 50,
+      "sha256": "cd90c184e16eece83b277b93991b54a4dc9c092d7542c39e3a42272a1c0659b2",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-alternative-splicing-long-read-splicing/scripts/longread_splicing_pipeline.sh",
+      "lines": 92,
+      "sha256": "08603e8db913926c5c98f6a352a933b9f79b1b3215fde9d3cbc4fa5af62399f3",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-atac-seq-allele-specific-accessibility/scripts/wasp_ase_pipeline.sh",
+      "lines": 115,
+      "sha256": "3d95bb0913e586bcad0f21308216f2e8f08400ecce9bc18b8c92ee51b3f52e99",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-atac-seq-atac-peak-calling/scripts/call_atac_peaks.sh",
+      "lines": 79,
+      "sha256": "1ecf087afba6ec3cf16d31e1b502cf7fc3ef162bbe61b554ca73055c56be5e49",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-atac-seq-consensus-peakset/scripts/iterative_overlap.sh",
+      "lines": 60,
+      "sha256": "77966341bb9455cafcb85f398e77cb2e26a822bd36ec3dca725a97b502891c06",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-atac-seq-deep-learning-atac/scripts/chrombpnet_pipeline.sh",
+      "lines": 70,
+      "sha256": "299a8b1f260b5b7fed5b350a75d2b85b72c3194a9bcb40c4b5afa927dae3f143",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-atac-seq-enhancer-gene-linking/scripts/run_abc.sh",
+      "lines": 80,
+      "sha256": "119dab7e9054746a0dfc003c3a3a6027e72e58f8cbd578e6dd51a85196e21cfb",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-atac-seq-footprinting/scripts/run_tobias.sh",
+      "lines": 71,
+      "sha256": "503278b3ddaa7f5e3bf7b7567ecdda6be45d06e390c6c049cbf482ab7136f377",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-effector-gene-prioritization/scripts/magma_genebased.sh",
+      "lines": 56,
+      "sha256": "6861b655c1fd9d273b9fed2dd5e62bc4647ad9964badb12cf3cef50bec4e4d6f",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-fine-mapping/scripts/finemap_pipeline.sh",
+      "lines": 65,
+      "sha256": "e411691e5e1441ea805e2a11eabf5273a72fa61ff2fd106a8855871f9ea31397",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-fine-mapping/scripts/susiex_multiancestry.sh",
+      "lines": 75,
+      "sha256": "a2708d493953bdd5286e2df6e6308c3b7f0d2cbe9e11b2327940fe95a64d54bf",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-genetic-correlation/scripts/ldsc_crosstrait_rg.sh",
+      "lines": 79,
+      "sha256": "4c11143f6af1b24ed5a8078760a2dcb0767d28608aa914037560c07cf42c36d9",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-genomic-sem/scripts/mtag_pipeline.sh",
+      "lines": 66,
+      "sha256": "759fea28b894f6f600667ebd504a9f7e6c7e5ecba28d8044bccb32345db0a0aa",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-heritability-partitioning/scripts/ldak_sumher.sh",
+      "lines": 101,
+      "sha256": "f8c00b2d1fcb40ca7542c030a4e82b89c0e159ee1539aa80b87469e4a7653607",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-heritability-partitioning/scripts/ldsc_partitioned_h2.sh",
+      "lines": 136,
+      "sha256": "de6dc0bfba9f8f45214d4b60b7936917a4b784523275251b2a6eecd6a2247c29",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-transcriptome-wide-association/scripts/focus_finemap.sh",
+      "lines": 71,
+      "sha256": "b133cf71f3c7e95bd36e11d11b8658a081de9880c14c5a08000906c35b25249c",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-causal-genomics-transcriptome-wide-association/scripts/s_predixcan_pipeline.sh",
+      "lines": 87,
+      "sha256": "1fec873f5d6db9404751f278ad92cfc8767d0a4e6cf34cf783f55c8eb791b6a3",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chemoinformatics-ml-docking-rescoring/scripts/ml_hybrid_dock.sh",
+      "lines": 111,
+      "sha256": "03d5c90de8a5c6371b2bb3d79a9e64f982420e66994979c26b816e37265ebf6e",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chemoinformatics-qsar-modeling/scripts/chemprop_pipeline.sh",
+      "lines": 45,
+      "sha256": "c38dac298c4460c38284d4cc147434ea39b39716a3594e48d9de7688f30cf356",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-chipseq-qc/scripts/calculate_frip.sh",
+      "lines": 20,
+      "sha256": "bfa8c085a866611c0c22d9d494f3dd985dc69434d45951ae96e484e76f5434d1",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-chipseq-qc/scripts/run_idr.sh",
+      "lines": 32,
+      "sha256": "b84ae4e3dea48b00db1afe261c54f0fb992ff3faf4b078c70ba7e9959af23473",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-chipseq-visualization/scripts/deeptools_heatmap.sh",
+      "lines": 43,
+      "sha256": "9b1cdc04dee9f310fd2aa63102cff3bcadffd7b7cf9147d3f81eb1ac1209e6a7",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-chromatin-state-segmentation/scripts/chromhmm_pipeline.sh",
+      "lines": 98,
+      "sha256": "f8a0ee5e042ca9bb1f8e5b8aafb64565b97dd263f20a5e466545b0ed271768c5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-cut-and-run-tag/scripts/cutandrun_pipeline.sh",
+      "lines": 135,
+      "sha256": "9ed8964085e3806f918d5be8a34674b9ca1dea28754f2d77bdeb6041d41b3da8",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-motif-analysis/scripts/motif_analysis.sh",
+      "lines": 101,
+      "sha256": "da3eedaf45d1907bfd4a37b7f45fbb51a230c65c435df5ac2f40e67c222f15cf",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-peak-calling/scripts/macs3_peak_calling.sh",
+      "lines": 165,
+      "sha256": "9b0f37d33d63c09dc7d4b6ab068a82c9ca84d2dbd40948c680a57eff138d93e3",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-chip-seq-super-enhancers/scripts/run_rose.sh",
+      "lines": 43,
+      "sha256": "ddd3416087007dd4f58439ddaa8f9f0316ca0de130d611015d78219ab771bb1a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clinical-databases-hla-typing/scripts/optitype_workflow.sh",
+      "lines": 96,
+      "sha256": "7cec52377579bc9ab174b64f91f4fe2d38a2778c99e1db9de5328e1cd1c44f06",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clinical-databases-hla-typing/scripts/t1k_workflow.sh",
+      "lines": 121,
+      "sha256": "3b1c2f43638020d6fe7bfdcf857a3440fce308c8ce78a06dce4bc3a0547123ec",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clinical-databases-msi-detection/scripts/msi_detection.sh",
+      "lines": 114,
+      "sha256": "f78e46d54d8a8cf14cd48db8e040b96626d077d37c767efb253eb074b5541a01",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clinical-databases-polygenic-risk/scripts/prsice2_workflow.sh",
+      "lines": 80,
+      "sha256": "2555100976e5c1b0a00fd6333701196565190f7b6ba096b898bf1331dcdad9b7",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-ago-clip-mirna-targets/scripts/run_chimeric_eclip.sh",
+      "lines": 69,
+      "sha256": "b776f3c05e7fb3c335cdd18f59bb7120e17cf3cdd1688211e685fcf3b23cd6e0",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-clip-alignment/scripts/align_clip.sh",
+      "lines": 89,
+      "sha256": "103c26b532b4be626d2abb6022cd68a9c77299be59714e608dd15e672782f9d4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-clip-motif-analysis/scripts/find_motifs.sh",
+      "lines": 87,
+      "sha256": "a7168c802aab7757047ae5aeac70be4e52ec76c6fe501abebfcba92990250bc4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-clip-peak-calling/scripts/call_peaks.sh",
+      "lines": 91,
+      "sha256": "3ebc149439cba10e018deb7ef72eed2fb2d3fa0b25a68c812ea686464e0353db",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-clip-preprocessing/scripts/preprocess_clip.sh",
+      "lines": 133,
+      "sha256": "c4877fbb551b88edad0b3eaf45d102ce4e4de2283ae1becbdeff4f3d3010f429",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-clip-qc/scripts/clip_qc.sh",
+      "lines": 124,
+      "sha256": "9efe4600199e441e2469e9d5bb6e11f16491a810e9581f4334c8caccafdb5477",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-crosslink-site-detection/scripts/detect_crosslinks.sh",
+      "lines": 88,
+      "sha256": "5d9abbe664f43eeea9f13449f9aedaca0023c603877adacff1274e0138786794",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-m6a-clip/scripts/run_miclip2.sh",
+      "lines": 95,
+      "sha256": "d7d4a49d747829a6b2baf21c6821287b5d553aa06e5a9141aaf3e9bd859bba11",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-clip-seq-stamp-antibody-free/scripts/run_stamp.sh",
+      "lines": 72,
+      "sha256": "4525b9e30a42380c6ffcec429ca4fd261c660ef1448cb7f77486c1068dfef4c4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-comparative-annotation-projection/scripts/toga_annotation_projection.sh",
+      "lines": 74,
+      "sha256": "e5f2567766e1abb5060b5a197cea0b2475bfe7c974b437a370f2511ebbeb8902",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-gene-family-evolution/scripts/cafe5_birth_death_analysis.sh",
+      "lines": 95,
+      "sha256": "3d53635d1d43c85cfb79710fa36ea8652badbf8d5b10891edb1323ab8b3a8db8",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-gene-tree-species-tree-reconciliation/scripts/ale_dtl_reconciliation.sh",
+      "lines": 72,
+      "sha256": "80e72abf80050573d9a38c3c0d7945e271430d32f32842f59c4d03bafe401cfd",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-genome-distance-and-species-delineation/scripts/skani_ani_species_delineation.sh",
+      "lines": 86,
+      "sha256": "1e73c30d5404934793e89875c29e0843ca88eaf91ad350b81b754711a56f1025",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-introgression-detection/scripts/dsuite_abba_baba_workflow.sh",
+      "lines": 88,
+      "sha256": "a0a4a8da430d3448da49bd14dac67b9e39a91169fe45a2588ffc2be6ccb97f0c",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-pangenome-analysis/scripts/panaroo_bacterial_pangenome.sh",
+      "lines": 102,
+      "sha256": "215aa670a6c4abe58cd8f80b910a5ff2864843e6238a33b91d03180523573857",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-whole-genome-alignment/scripts/progressive_cactus_wga.sh",
+      "lines": 59,
+      "sha256": "96a364382f7238e4fd3116fadb4629dca5edb87db70ef3cd041a8bc4c18ae04a",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-comparative-genomics-whole-genome-duplication/scripts/wgd_v2_ks_pipeline.sh",
+      "lines": 86,
+      "sha256": "71bac731026e683d1d2284bee1ac6628baa5579456dc14075b95f85e525e9b6c",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-copy-number-cnvkit-analysis/scripts/run_cnvkit.sh",
+      "lines": 71,
+      "sha256": "563dd70f6858488eee5817ae988073cfe9733ec8d194810ee7b8071a6f3232ff",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-copy-number-focal-amplification-ecdna/scripts/run_ampliconsuite.sh",
+      "lines": 55,
+      "sha256": "b44b5f3c78066eb23cd72e6b4fa8bc207faaa182c8230d11d8314c88b24878d4",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-copy-number-gatk-cnv/scripts/run_gatk_cnv.sh",
+      "lines": 65,
+      "sha256": "4268df29196c5293f9a9171f89ed69214db19bbdf1e2140735d514ec2e0fc5e7",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-copy-number-recurrent-cnv/scripts/run_gistic2.sh",
+      "lines": 42,
+      "sha256": "1a392bd42c1277599296b2fdde30fb57a172b98807a2f11420aada74b63ff98c",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-crispr-screens-bagel-essentiality/scripts/run_bagel2.sh",
+      "lines": 70,
+      "sha256": "896cd9f2bbc09338fe452677d0ae036615d89a63d3d4f3865ea70e4a81295638",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-crispr-screens-base-editing-analysis/scripts/base_editing_analysis.sh",
+      "lines": 115,
+      "sha256": "d1dc5db71c7184fe51800fe66f548161103f84f75cf4868d78d629bebc35a389",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-crispr-screens-crispresso-editing/scripts/crispresso_analysis.sh",
+      "lines": 44,
+      "sha256": "ab9d0d6cb04634fd1fb6829f2b15b2f2dbc729342107a9c041e8f745f8266e08",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-crispr-screens-mageck-analysis/scripts/mageck_workflow.sh",
+      "lines": 43,
+      "sha256": "29fbe7a5cab4209ffb6d343afec42b2f010f245c00c0b7577c17ee8c228727a4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-biomart-queries/scripts/coordinate_table.sh",
+      "lines": 48,
+      "sha256": "ec87e60bbad74cd3d6b0d59e123a34b7b34d0c0a7c3cb23ac6f659566e06ed00",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-local-blast/scripts/create_database.sh",
+      "lines": 42,
+      "sha256": "83dbcba46cba31714dc0e2f938964e479ee7370f2918c02e1bbc18b75161aafc",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-local-blast/scripts/reciprocal_best.sh",
+      "lines": 53,
+      "sha256": "072c9b25e06e3fd19abbb8d448d3b6c3370afb31fcb9dc7da52095d8f6b119ee",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-local-blast/scripts/run_blast.sh",
+      "lines": 46,
+      "sha256": "7a292b3f2a2ba17c460316f18c894a1dbeb6eee1231736f0289409206ba5e829",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-ncbi-datasets-cli/scripts/bulk_dehydrated.sh",
+      "lines": 51,
+      "sha256": "cc04d1d1c75d2a087b191aec094e5f733a1aa639521769085d7a89dadfd02042",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-ncbi-datasets-cli/scripts/download_genome.sh",
+      "lines": 34,
+      "sha256": "160e710c888dd7ae1e50b420aa4a09c0077b838cdff603404299090f9aa52061",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-ncbi-datasets-cli/scripts/gene_metadata.sh",
+      "lines": 36,
+      "sha256": "20769702aa9871dc12dae8dc0d5cbd4ca952d63513ccc1b578a95636a487affe",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-remote-homology/scripts/foldseek_search.sh",
+      "lines": 44,
+      "sha256": "be609b701f17f1ab10085a6ce26a7742422ea99397e6f6fbeb4b34a25a961dc1",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-remote-homology/scripts/iterative_profile.sh",
+      "lines": 57,
+      "sha256": "732d49616d9665521a53b143eb4aff99f82e6a3802ccdeaf7068de652701df9d",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-remote-homology/scripts/pfam_annotation.sh",
+      "lines": 36,
+      "sha256": "195170f6ff57d7df447b67723985173805c99b97494d8a6d6bc94c4de504923b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-sra-data/scripts/download_batch.sh",
+      "lines": 76,
+      "sha256": "5e939eaa1e71a5f8d67441154bc945af01084366785844c59e24a0bac100523a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-sra-data/scripts/download_single.sh",
+      "lines": 42,
+      "sha256": "d639af6de701237f53bbaa252c4ed6b3c820d05c180df4663fdddfa49e76f454",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-database-access-sra-data/scripts/prefetch_large.sh",
+      "lines": 57,
+      "sha256": "8ed2ebedbc8510efa2c44273cae8d91d3add3362798674246f95e791ef9b7c06",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-ecological-genomics-edna-metabarcoding/scripts/obitools3_edna_pipeline.sh",
+      "lines": 88,
+      "sha256": "248389e41ea8a51c5012cc7f5b351ba157eb78919b46e29e141abb8b615bb13e",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-epitranscriptomics-m6a-peak-calling/scripts/macs3_peaks.sh",
+      "lines": 61,
+      "sha256": "8187568b5d8680fb1d098f547d65ca0ff408787f526d19ccb6bbfffde0a0e9be",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-epitranscriptomics-merip-preprocessing/scripts/align_merip.sh",
+      "lines": 63,
+      "sha256": "655d1f7b7079c8d157b7b6bf8701c4316379c3f8bbe3ffb7f24f4f6276d69a98",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-epitranscriptomics-modification-visualization/scripts/deeptools_metagene.sh",
+      "lines": 75,
+      "sha256": "2954829eaf5d138f7620c51c3b1ea82d258724b9fa664d5f77588683340482c9",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-annotation-qc/scripts/busco_genome_vs_proteome.sh",
+      "lines": 35,
+      "sha256": "dd271cbf23a7be8d73b7c878fc4dad7ac18a33b75ffb4fc3222719976fc29651",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-annotation-transfer/scripts/liftoff_transfer.sh",
+      "lines": 61,
+      "sha256": "dd87d92adcf2106556ecfe99e52c9338408ad71ce67c750170c0157b4e9a5052",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-annotation-transfer/scripts/miniprot_crossspecies.sh",
+      "lines": 62,
+      "sha256": "624ef5208b94c236d9aae0261a0ba29f5544710ee151de61bd1f766a2bfda84e",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-eukaryotic-gene-prediction/scripts/braker3_pipeline.sh",
+      "lines": 81,
+      "sha256": "4e3891dd426f806341cfde96112caf0d2b9782dfc8a5aa9270d9af61549a95a4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-eukaryotic-gene-prediction/scripts/galba_protein_only.sh",
+      "lines": 64,
+      "sha256": "1c333a9c4b421332ae859c046e01a3fb1297e0873f90d03c32b227ad35e3abc5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-functional-annotation/scripts/functional_annotation.sh",
+      "lines": 57,
+      "sha256": "cb3fa5c3b177ab60ec12ee7e080234b7a28a4f5e50b159baac72ce88abea0430",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-ncrna-annotation/scripts/ncrna_annotation.sh",
+      "lines": 95,
+      "sha256": "14739317504f63379a0ac6165ecec495fe9653eb18b44fee3d4dc4f1931031e2",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-prokaryotic-annotation/scripts/bakta_annotation.sh",
+      "lines": 69,
+      "sha256": "2d4e0de52190033e53f98962425ed9e420306f8c3b2e0b4f4f34817659b08ba5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-annotation-repeat-annotation/scripts/repeat_annotation.sh",
+      "lines": 67,
+      "sha256": "1c520bbbb84c8b67f4e9b4a1f7d538d56f6e935cc4667e969507591b8eeee24c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-assembly-polishing/scripts/polish_assembly.sh",
+      "lines": 71,
+      "sha256": "209af8cbc9fb416d7b726212a59e5f4bb4b3b5db200326773736a855b669fac4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-assembly-qc/scripts/run_qc.sh",
+      "lines": 42,
+      "sha256": "7466b1e38415ae732b2185201e9d792c2e43a8c142294643443f249ceac5ea7b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-contamination-detection/scripts/fcs_screen.sh",
+      "lines": 40,
+      "sha256": "7df60e167da5abc46c3da714ce573ca5104d20e7a3d951b71c1fc4e49d54f078",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-contamination-detection/scripts/mag_qc_pipeline.sh",
+      "lines": 56,
+      "sha256": "9edcfacb7b9585c6ec64bacf175043f4990ad9b4e07821f6ac52227aa689ed78",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-genome-profiling/scripts/profile_genome.sh",
+      "lines": 48,
+      "sha256": "95b11e0d5eb28fc96743c5dedfb9a1ddab5e86610afb98e44064838d7c10d5b5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-hifi-assembly/scripts/hifi_assembly_workflow.sh",
+      "lines": 67,
+      "sha256": "834557360a6b2995a50a49eba74a4d0cb7cb56cec3aa0c68bd6cb017b66d3f3c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-long-read-assembly/scripts/flye_assembly.sh",
+      "lines": 64,
+      "sha256": "7aa3f136ea03675bbc5d755c2214a719580837e2502e838b53a0e1b23c6e2387",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-metagenome-assembly/scripts/metagenome_workflow.sh",
+      "lines": 58,
+      "sha256": "1d9467c57d553963d16d2bf67c303d58dc5bcb41eff5f01c9c23429baf55a03b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-scaffolding/scripts/yahs_scaffolding.sh",
+      "lines": 59,
+      "sha256": "6bc223e8e89d7ad14562ec4d99d96d6e0e91ee9d27299baa7a3ca443dfa3bdf4",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-assembly-short-read-assembly/scripts/bacterial_assembly.sh",
+      "lines": 41,
+      "sha256": "59b9124afb1f6b4666d455437de6257c471df88827c72b96cb1cf5e958341a8a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-bed-file-basics/scripts/validate_bed.sh",
+      "lines": 44,
+      "sha256": "030b54b7f40f2aca63f389fe0edd9d89916ce193bb44ab8165f67692ae1bce9e",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-bedgraph-handling/scripts/bam_to_bigwig.sh",
+      "lines": 36,
+      "sha256": "296424dedae9ecaa1763cd2f2e38867825f99e90f125ac5b8d4e133e5a5101f3",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-bigwig-tracks/scripts/bedgraph_to_bigwig.sh",
+      "lines": 45,
+      "sha256": "62b38f26d84983c5cf05f4e168d971343c189207270d85ed8cffd0dbd61b135c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-coverage-analysis/scripts/bedgraph_from_bam.sh",
+      "lines": 50,
+      "sha256": "645cf8bf9b98f39c681c0228b35c8a368d05453e42b5d7ecd1449ebe12b0b6a3",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-gtf-gff-handling/scripts/gffread_convert.sh",
+      "lines": 40,
+      "sha256": "4ded8aa395f30932b1205a6047a55786c9ca9ea60af28fcc0fcecf3e3b69fdab",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-interval-arithmetic/scripts/intersect_examples.sh",
+      "lines": 64,
+      "sha256": "7b137663c6b9be7905ac92202420dd6c549390f50da02f3baa0c12e04881fcae",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-overlap-significance/scripts/shuffle_permutation_test.sh",
+      "lines": 35,
+      "sha256": "32931b21e1bef29721de7287e1c99ec6d2fef1c4c140b56c13584a1343d13a94",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-genome-intervals-proximity-operations/scripts/create_promoters.sh",
+      "lines": 52,
+      "sha256": "3684941dde546a3b094c5a6d9dae66c266ea87081f44eb5a915b2f2e6b7c3ee0",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-hi-c-analysis-contact-pairs/scripts/fastq_to_pairs.sh",
+      "lines": 45,
+      "sha256": "44f869eecacfe1540748d41cca1e4643be880bb7de4738805e8e29fabd2a0b97",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-hi-c-analysis-hichip-plac-loops/scripts/run_fithichip.sh",
+      "lines": 48,
+      "sha256": "e022f0c279135c848edaacfcbe1b4fde66b0efd9c15e421373482d02aa7a3587",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-immunoinformatics-mhc-class-ii-prediction/scripts/run_class_ii.sh",
+      "lines": 25,
+      "sha256": "a6768df7c7dfb1981f125afe9d8e6275043513e68b6c39987126668cf865bebb",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-basecalling/scripts/basecall_pipeline.sh",
+      "lines": 43,
+      "sha256": "16500cdc9a137c8e0286db6ba1ae701b41bb7f94d288b52ee73eb1e317e08c3d",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-basecalling/scripts/dorado_basecall.sh",
+      "lines": 36,
+      "sha256": "206396479e3b953c94bb11e79c29b782f0f17678681d9d3b1c3824a326c39353",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-clair3-variants/scripts/clair3_workflow.sh",
+      "lines": 38,
+      "sha256": "359754de1433769bbbb6a14df37fd7769e60e0a3635fd7f4fcdff8e6d957ece9",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-haplotype-phasing/scripts/longphase_sv_cophasing.sh",
+      "lines": 33,
+      "sha256": "21b666077c843c016a7d79b1160a525352855e67767ceb6d51f687f0a8f5a2ee",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-haplotype-phasing/scripts/phase_and_haplotag.sh",
+      "lines": 33,
+      "sha256": "7a7e5f607c5f6d6f3cfc4a89f0b5edcf6620104794df65fa1459dc2d56b1056a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-isoseq-analysis/scripts/isoseq_workflow.sh",
+      "lines": 42,
+      "sha256": "c796a2047920e46fb20d384a312882bf3aca928f0dfc8e908e7217423028dad8",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-isoseq-analysis/scripts/sqanti3_qc.sh",
+      "lines": 34,
+      "sha256": "5f3b3686b98ca659fd34163cd26f7f76f304b38f94156fed97ff3b8b7bea6f93",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-long-read-alignment/scripts/methylation_passthrough.sh",
+      "lines": 33,
+      "sha256": "ecc957ddb84594244358c3c842ed22ed462c62c1ce647dbab6f3c8e04bfe2bb5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-long-read-alignment/scripts/minimap2_align.sh",
+      "lines": 35,
+      "sha256": "4e70a7e6bd95884e2d298fd4868ed06df2bdb05ca6139c5e5e59c0494b8ad2fb",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-long-read-qc/scripts/qc_workflow.sh",
+      "lines": 39,
+      "sha256": "c35fe2ab9623496e114f362228afa487886b27e6acee34a36129e479a03eeb3a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-medaka-polishing/scripts/medaka_polish.sh",
+      "lines": 23,
+      "sha256": "b9c6eb621d2f54f1dbd6a87ebd70b8d66d51219df688d37f29a1fa3c301aa73f",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-medaka-polishing/scripts/medaka_variant.sh",
+      "lines": 24,
+      "sha256": "e03dc598cb85bdd6204e171b7426fc6e8f881ab84f6b4859740024b5163bd9a5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-nanopore-methylation/scripts/modkit_methylation.sh",
+      "lines": 37,
+      "sha256": "153be6f4e35d78c24c727b7cadc00d39f4ef0d684bea59c539e011a1b8be17ba",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-long-read-sequencing-structural-variants/scripts/sv_calling.sh",
+      "lines": 38,
+      "sha256": "173b34fb79e8b1f5b05844ec95cc3bee15116d2c72b5eedc7f05bcdd4d6eed2a",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-abundance-estimation/scripts/bracken_abundance.sh",
+      "lines": 37,
+      "sha256": "0fa97fe47a90fca4c457d3c64067e00930e464c0180677f0f5b7d23e2e6d5d16",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-amr-detection/scripts/run_amrfinder.sh",
+      "lines": 31,
+      "sha256": "c3516b47a304a25f5a99b0d10f6f26a1a9861dec0d679a8a28140b64987c473b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-contamination-controls/scripts/host_depletion.sh",
+      "lines": 23,
+      "sha256": "1a38e4f7fe5b66c532d3e7646da7e4d93f06c1c7f2d5f6e364db557ec908c764",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-functional-profiling/scripts/humann_workflow.sh",
+      "lines": 39,
+      "sha256": "759d196a7a87202889b219996a12521b9c6c8969d0243036cf983131f68abb57",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-kraken-classification/scripts/kraken2_classify.sh",
+      "lines": 49,
+      "sha256": "9e76e23ff887e16d8bd46be9ec6342064795aa474d17d918db55f8767642016b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-metaphlan-profiling/scripts/metaphlan_profile.sh",
+      "lines": 34,
+      "sha256": "4a37565dee19011e8862326b05a05bfd90b640f81476e848bc8be8f15850f0ed",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-strain-tracking/scripts/instrain_workflow.sh",
+      "lines": 33,
+      "sha256": "e03c02f44102ddca60b484b2bb35a4af959a765076ed7767d8f3b85598bfb8fe",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-metagenomics-strain-tracking/scripts/mash_comparison.sh",
+      "lines": 26,
+      "sha256": "c062599f592e5ff4d876d92062ed94a08dc5bfd1cc9598f812858454f101f44e",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-methylation-analysis-bismark-alignment/scripts/bismark_basic.sh",
+      "lines": 54,
+      "sha256": "093ebde5a39dfe7832b14e11e2ce46831f24337c1579a68ff5b920f7570d4056",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-methylation-analysis-methylation-calling/scripts/extract_methylation.sh",
+      "lines": 55,
+      "sha256": "634e0ca7f2d425983962772581c6113c15e181b311e54306a5627b4df6063e05",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-microbiome-amplicon-processing/scripts/remove_primers.sh",
+      "lines": 28,
+      "sha256": "59493d584866798720d825590b5d10668e88d2574495e7afc481b4a258c4c397",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-microbiome-diversity-analysis/scripts/core_metrics_qiime2.sh",
+      "lines": 63,
+      "sha256": "56bdbe6f8264f2d704d9059eed8ef7074631bc83469f110411fe00adf1dc0868",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-microbiome-functional-prediction/scripts/run_picrust2.sh",
+      "lines": 49,
+      "sha256": "ed6ed4e92e2e2088901791c1151fed2cc70fac6d498313f129bab0c7d78a9d72",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-microbiome-qiime2-workflow/scripts/qiime2_16s.sh",
+      "lines": 91,
+      "sha256": "079e332eda349253b7643f251f7257580a7aa884985edba420c2373bf9b56645",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-microbiome-taxonomy-assignment/scripts/assign_qiime2_region.sh",
+      "lines": 49,
+      "sha256": "b8a660164455b1f0ac875ee454599729aa6d0385f7ff3d63eb9c7a25aefa7243",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phasing-imputation-genotype-imputation/scripts/run_beagle_imputation.sh",
+      "lines": 42,
+      "sha256": "4df7d81f961dbb91f7fa9d03c1d71ce1fdbf8ec93049f1cd807574141dce698c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phasing-imputation-haplotype-phasing/scripts/run_shapeit.sh",
+      "lines": 50,
+      "sha256": "1c99ce01800d7e548aa0ab910992367d8466e9b269d98f500a18f6ffb07d6ce5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phasing-imputation-reference-panels/scripts/prepare_panel.sh",
+      "lines": 56,
+      "sha256": "49bdfb86e21d0541624d5d01800078b62c378d446709f40506b85473dd951f88",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phylogenetics-modern-tree-inference/scripts/iqtree_basic.sh",
+      "lines": 27,
+      "sha256": "8e5b7c42ddfe80449d8878319119b4543e4d816b022c7deed5071b8199318ea9",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phylogenetics-modern-tree-inference/scripts/partitioned_analysis.sh",
+      "lines": 39,
+      "sha256": "22876ded66447f5ff448686c74c9f67394372d326c48ce3fffdb08564490eb46",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phylogenetics-modern-tree-inference/scripts/raxml_analysis.sh",
+      "lines": 32,
+      "sha256": "6573691e017a85752093b3c751991d910d80fad46929a40d194474855f79b36b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-phylogenetics-species-trees/scripts/astral_pipeline.sh",
+      "lines": 65,
+      "sha256": "eb9a76efb332089a9dd9fdffbbb5cbae83444ea7cbf6e8d072dd1bf4100412d5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-population-genetics-association-testing/scripts/gwas_pipeline.sh",
+      "lines": 100,
+      "sha256": "2c502fb06152951f832c066c28c1a7fa767839f7e40e6dc40ceacd52b62f2394",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-population-genetics-linkage-disequilibrium/scripts/ld_analysis.sh",
+      "lines": 52,
+      "sha256": "252780f53e7707004447afb383c340a05cc210d42709f6c3f3eb38fb97035453",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-population-genetics-plink-basics/scripts/qc_pipeline.sh",
+      "lines": 46,
+      "sha256": "4b77f994149a830fcdad4393693419e37d09b9f1a55514735060b0755dcb82c3",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-population-genetics-population-structure/scripts/structure_analysis.sh",
+      "lines": 59,
+      "sha256": "aaaf3056f3724eb9313e5f36adc03a2ff3304388075ee696dea0b96c0b28a13e",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-population-genetics-rare-variant-association/scripts/rare_variant_test.sh",
+      "lines": 48,
+      "sha256": "9142016dd1576b0a74aaaa60dd3ea842177376447a9ccdc4cd21f00c8b9a17b5",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-proteomics-dia-analysis/scripts/diann_analysis.sh",
+      "lines": 53,
+      "sha256": "e7700be79cd1548bcd820aab5a668b6c52663734c6a2e5e665ca0db1b2eec764",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-alignment-bowtie2-alignment/scripts/align_bowtie2.sh",
+      "lines": 35,
+      "sha256": "37319734fafde6435404260d9a34ebff25f9ee560cd5b635b80ed915a7d5247a",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-alignment-bwa-alignment/scripts/align_bwa.sh",
+      "lines": 38,
+      "sha256": "8242d5c765a96bc2fbb0f5210bcea2a598f5b0935f3a75b83548df60ca85ceb5",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-alignment-hisat2-alignment/scripts/align_hisat2.sh",
+      "lines": 28,
+      "sha256": "b19417731c18c66b5251484eb5015877dce0703bbabb2f9e03f1985e63e37434",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-alignment-star-alignment/scripts/align_star.sh",
+      "lines": 43,
+      "sha256": "4694a15d731797dae1c1bafb359d7eb5c203704a660815f158b84d6b9cfc25cf",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-adapter-trimming/scripts/trim_adapters.sh",
+      "lines": 45,
+      "sha256": "45827985cb87504bba8b4ff5049348bd0853eeaf7588e2eba6906fd0d511d5f6",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-contamination-screening/scripts/screen_samples.sh",
+      "lines": 46,
+      "sha256": "9b179e2e8410f0e8053979116af8585b68eeb4ee3769bc2fe896676845177e69",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-fastp-workflow/scripts/fastp_pipeline.sh",
+      "lines": 60,
+      "sha256": "85884e3b41ee23a32b0fae55817f3511fdb9e51cb453a9a7ba6fc693941aa759",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-quality-filtering/scripts/quality_filter.sh",
+      "lines": 44,
+      "sha256": "e34574f02aae93798d767ec68b6c65b3a35a333a05eca5ce3927f3153430d102",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-quality-reports/scripts/run_qc_pipeline.sh",
+      "lines": 29,
+      "sha256": "e9005519aecdc3ed29faf3cab6b84351b5b5292acd44bd5f93d37b1dd7755eff",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-rnaseq-qc/scripts/check_rrna.sh",
+      "lines": 53,
+      "sha256": "7326161a82ef83760496643d9314f4f3078723294238a41479e551f473dc9fde",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-rnaseq-qc/scripts/rnaseq_qc.sh",
+      "lines": 34,
+      "sha256": "eb9126faf3290a635d953dbb212f4703aa3f293169b909ca44264e935931c4fe",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-read-qc-umi-processing/scripts/umi_workflow.sh",
+      "lines": 67,
+      "sha256": "ef532d2da1b51988bd73d46fc52cd204eb64715cee78b331373c43e47c270ea9",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-reporting-automated-qc-reports/scripts/multiqc_pipeline.sh",
+      "lines": 108,
+      "sha256": "d4b166488ba82a0e8b1ac983eec8d3c1e9fbc831335d9f1e69bef84e9302d1ad",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-ribo-seq-initiation-site-mapping/scripts/map_initiation_sites.sh",
+      "lines": 36,
+      "sha256": "2e8d1517c3c4fc7f277c1ae8bc8d703d55134f3bf0cdd7b2eea57f1d835d17e2",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-ribo-seq-orf-detection/scripts/detect_orfs.sh",
+      "lines": 42,
+      "sha256": "c74b19885225c1141970330e75173f8234ff7f047192bfa1233504adb0fd5ffe",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-ribo-seq-riboseq-preprocessing/scripts/preprocess_riboseq.sh",
+      "lines": 82,
+      "sha256": "fd06593903e8a4417bd643faf81d2b7619089a9bb4994ffaf7feacb90f0f56b5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-quantification-alignment-free-quant/scripts/kallisto_quant.sh",
+      "lines": 31,
+      "sha256": "31929abf6fc92a982a79dbde25fd62ec6818788bbaf27bdd6ced39ce7dee82ee",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-quantification-alignment-free-quant/scripts/salmon_quant.sh",
+      "lines": 35,
+      "sha256": "23ec12a39972f8928feedc9563ad074b9c7115e874583d112f9890c729628096",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-quantification-featurecounts-counting/scripts/count_genes.sh",
+      "lines": 23,
+      "sha256": "00caba4595329b8b973a64cf7ad77f44e4260216ba62f686444f980a9f61d7fb",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-structure-covariation-analysis/scripts/run_rscape.sh",
+      "lines": 36,
+      "sha256": "ea88a79980dfca72b2edee2193b7ae90fcbbc1c879a8a6d5aea23ec8fc0b0631",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-structure-ncrna-search/scripts/custom_cm.sh",
+      "lines": 53,
+      "sha256": "6f0a8bb41d9cbf83d57d578d451922012a6edceddebd539aa92c2683162cd474",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-structure-ncrna-search/scripts/rfam_search.sh",
+      "lines": 50,
+      "sha256": "d01abbf10a24080b4468e0010c42ff0768905f9cf49604381f5606d89f642d40",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-structure-secondary-structure-prediction/scripts/consensus_structure.sh",
+      "lines": 48,
+      "sha256": "0d3d04cc8aa34086db08c3d32f9f84ec0d690a45398bd34005b55251f2535ce2",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-rna-structure-structure-probing/scripts/shapemapper_analysis.sh",
+      "lines": 48,
+      "sha256": "f6d30817fd286e63bb2c4489bc21cb6b69c5635c378460ba4b28cd529f24f0d5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-small-rna-seq-mirdeep2-analysis/scripts/mirdeep2_workflow.sh",
+      "lines": 87,
+      "sha256": "25f691d09f55f9d4387f101c3a2f7270252c28aa3fbda0c5c1ebf42aa9fc887d",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-small-rna-seq-smrna-preprocessing/scripts/preprocess_smrna.sh",
+      "lines": 68,
+      "sha256": "3cca2e779ac1eab48c55d5fb2716d08a610841042af1620cd82506236fcad7ca",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-tcr-bcr-analysis-mixcr-analysis/scripts/mixcr_workflow.sh",
+      "lines": 52,
+      "sha256": "6a30dda383cb484055f497f8be269d5fe106fdf37ab7f4b1363619fbfc96179b",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-tcr-bcr-analysis-vdjtools-analysis/scripts/diversity_analysis.sh",
+      "lines": 51,
+      "sha256": "517577c6598a057c62bfc2dbe9c78fd503bccee7c2f7674f69a3f67710202195",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-consensus-sequences/scripts/generate_consensus.sh",
+      "lines": 54,
+      "sha256": "608b166bd6bc8c1e32fba506f18337edddb47c4d56e3162f52eed9368d43b7b5",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-deepvariant/scripts/run_deepvariant.sh",
+      "lines": 36,
+      "sha256": "67f3b51f97a54aef8f4269be97c2f273eedc0552316b23c34d17c84257a48801",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-filtering-best-practices/scripts/filter_variants.sh",
+      "lines": 58,
+      "sha256": "bda731ebcb4e85b02b5374693552c9e2753167bec6b5925eef6c633994b1839f",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-gatk-variant-calling/scripts/joint_calling.sh",
+      "lines": 35,
+      "sha256": "398fc8fb1baaf951817ff951da46a5cdda81e78aadff097100f452f43c8ca1d1",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-gatk-variant-calling/scripts/single_sample.sh",
+      "lines": 40,
+      "sha256": "3ba045b541633a8a82a6b2fb396eca9177a0562b4e07986fbc757f58948e4997",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-joint-calling/scripts/joint_calling_gatk.sh",
+      "lines": 62,
+      "sha256": "032be5914ad609f43c4387a9f4d8750d4db8b4fe945c8252acaa540ace29df0f",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-structural-variant-calling/scripts/call_svs.sh",
+      "lines": 47,
+      "sha256": "bd2d4c2d82b1f24bf85b2de0261f6fe1ef196355a0ac19f3d55b6a5593e73f89",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-variant-annotation/scripts/annotate_vcf.sh",
+      "lines": 45,
+      "sha256": "d24d9b2b9454ade14d534aa40e8aed8115d3b56ae0fe94d3139a68321aba5f28",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-variant-calling/scripts/call_variants.sh",
+      "lines": 49,
+      "sha256": "e05b3696b79d0eeda25f1893f6863010e7813b9ef83a56b6f84d0d5e56604c62",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-variant-normalization/scripts/normalize_vcf.sh",
+      "lines": 56,
+      "sha256": "79ff7b62e297783a1ea71b9fc3b288c4fec9984ac31405d75d170e03272044be",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-variant-calling-vcf-manipulation/scripts/compare_vcfs.sh",
+      "lines": 66,
+      "sha256": "0387def59572df40ca31386b1afaa729bbb6e72cadadcdd2db06879250fa692d",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflow-management-nf-core-pipelines/scripts/run_nf_core.sh",
+      "lines": 26,
+      "sha256": "6b8a9f309cf103597b3a29b58cc6a8c03e36856e8e8f4e31e66122b62b03ed60",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-atacseq-pipeline/scripts/atacseq_workflow.sh",
+      "lines": 183,
+      "sha256": "58f21a12bc24b957244d7ec13e28899729c0eddc5a1f5237bdf631ec3ca1ee91",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-chipseq-pipeline/scripts/narrow_peak_workflow.sh",
+      "lines": 113,
+      "sha256": "efde8d96e356b1d14131c19d4635d65e3ca89fccddb52ca96e75aa7658fb2e2c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-clip-pipeline/scripts/clip_full_pipeline.sh",
+      "lines": 227,
+      "sha256": "fe6ec298597b36d1235c5d138b7bee74a94abe3442f53696e1136f9260351d89",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-cnv-pipeline/scripts/cnvkit_workflow.sh",
+      "lines": 135,
+      "sha256": "b05165d3ae35446c5482f474a240cbcdeae02497de7d455c328b8a7eed8f8c88",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-crispr-screen-pipeline/scripts/crispr_pipeline.sh",
+      "lines": 56,
+      "sha256": "ed40aeef229bf3951179ed54bad0fbc4d65ec45185f8893eafd4736dc77f76c1",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-edna-pipeline/scripts/edna_pipeline.sh",
+      "lines": 135,
+      "sha256": "4314be8c55feba75643e5a3349fbec07c86bc7ee4c40ef61f63172fdfb7c4896",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-fastq-to-variants/scripts/bwa_bcftools_workflow.sh",
+      "lines": 158,
+      "sha256": "af56fbc6d2522818a4626e8c15ea0e6b539604792c667d93e4e324ca6a56bb63",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-fastq-to-variants/scripts/bwa_gatk_workflow.sh",
+      "lines": 179,
+      "sha256": "106bc2c366b2525c3722d951219319bc775aa54e4d021d20a3a9bbf51ec9dfb2",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-genome-annotation-pipeline/scripts/eukaryotic_annotation_pipeline.sh",
+      "lines": 153,
+      "sha256": "19423ec398c0fa4b8c4d91ee22b001c2ad6f4c8683ce904f78ea0f22c5f8be1c",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-genome-annotation-pipeline/scripts/prokaryotic_annotation_pipeline.sh",
+      "lines": 79,
+      "sha256": "e34ca062e24115b5cfe1638131074eee10b105e13417074c0c2c467a42091e95",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-genome-assembly-pipeline/scripts/bacterial_assembly.sh",
+      "lines": 72,
+      "sha256": "a3c9ae11fe4e84eb95b05e7ad3e60d500c9a8a29ca6b1df1e48ca5ad9d6b9cb1",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-gwas-pipeline/scripts/gwas_workflow.sh",
+      "lines": 104,
+      "sha256": "994453db0e85bf7e436bf7f55bc3cbff1fc56a56f2af4976d42db143529dfd63",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-longread-sv-pipeline/scripts/ont_sv_calling.sh",
+      "lines": 87,
+      "sha256": "6c4995e80b53a3497690720025e33ebe66cba9324b44a5d8ab1728d744f6baaa",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-merip-pipeline/scripts/merip_full_pipeline.sh",
+      "lines": 90,
+      "sha256": "3b5549f44783a53042f5ec267b58d0b4d3dff2ca37fea3b53a10fde058ccee78",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-metagenomics-pipeline/scripts/metagenomics_workflow.sh",
+      "lines": 138,
+      "sha256": "5207c4c5e46208da46e04d6aeb1d4f1050aadb94b632271dccce2bba621558ef",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-outbreak-pipeline/scripts/outbreak_workflow.sh",
+      "lines": 211,
+      "sha256": "6ce9680628d571c045d24b2f3f2439d4bfd22b126363e6fb422a72841350882f",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-riboseq-pipeline/scripts/riboseq_full_pipeline.sh",
+      "lines": 73,
+      "sha256": "aa94d9a2d60c5f2d89bb0e2213171c8d540b6a79c33927500493448d07cad6bc",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-rnaseq-to-de/scripts/star_deseq2_workflow.sh",
+      "lines": 104,
+      "sha256": "722ce462aa9113d0c2767672b004d283fe9ef1406cd879b923124e28e17e86ec",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-smrna-pipeline/scripts/smrna_full_pipeline.sh",
+      "lines": 85,
+      "sha256": "d1ed2210253f8ff41a70a671796684e3042a0b9523a73b102052716b2999d243",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-somatic-variant-pipeline/scripts/run_mutect2.sh",
+      "lines": 71,
+      "sha256": "3b0a2dd29aba58f1435b09c1c6048cc5da84a8629947f61a1df2af92a20f62ea",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-splicing-pipeline/scripts/splicing_pipeline.sh",
+      "lines": 121,
+      "sha256": "d1a58be9d75dcfa064d7583aca61bc871fdc5a802aba8a144e267e3658470534",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "skills/bioskills/bio-workflows-tcr-pipeline/scripts/tcr_full_pipeline.sh",
+      "lines": 94,
+      "sha256": "ec478bc3784d560259fd1fb6c42af9690dd28d96951cb65452c4183265a1ab93",
+      "first_line": "#!/bin/bash",
+      "category": "science_recipe",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    },
+    {
+      "path": "start.sh",
+      "lines": 17,
+      "sha256": "4cb0c703e5d6d85008b2e830c50159597550b2430fe215cbff072d360dafbcf6",
+      "first_line": "#!/usr/bin/env bash",
+      "category": "product_or_build",
+      "syntax": {
+        "shell": "Ubuntu Bash",
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "runtime_status": "not certified per workflow"
+    }
+  ],
+  "generated_shell_templates": [
+    {
+      "path": "scripts/build_linux_bundle.sh",
+      "line": 247,
+      "label": "CLI",
+      "first_line": "#!/bin/bash"
+    },
+    {
+      "path": "scripts/build_linux_bundle.sh",
+      "line": 271,
+      "label": "LAUNCHER",
+      "first_line": "#!/bin/bash"
+    },
+    {
+      "path": "scripts/build_linux_bundle.sh",
+      "line": 376,
+      "label": "INSTALL",
+      "first_line": "#!/bin/bash"
+    },
+    {
+      "path": "scripts/build_linux_bundle.sh",
+      "line": 427,
+      "label": "UNINSTALL",
+      "first_line": "#!/bin/bash"
+    },
+    {
+      "path": "scripts/build_macos_dmg.sh",
+      "line": 190,
+      "label": "CLI",
+      "first_line": "#!/bin/bash"
+    },
+    {
+      "path": "scripts/build_macos_dmg.sh",
+      "line": 215,
+      "label": "LAUNCHER",
+      "first_line": "#!/bin/bash"
+    }
+  ],
+  "remote_shell_templates": [
+    "openai4s/compute/templates/run.sh.tmpl",
+    "openai4s/compute/templates/wrapper.sh.tmpl"
+  ],
+  "process_call_sites": [
+    {
+      "path": "openai4s/benchmark/steps.py",
+      "line": 577,
+      "call": "subprocess.run",
+      "argument": "actual_canary_command",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/benchmark/steps.py",
+      "line": 600,
+      "call": "subprocess.run",
+      "argument": "[sys.executable, str(adapter_path), str(canary_output_path), str(downstream_path), *adapter_flags]",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/cli/main.py",
+      "line": 594,
+      "call": "subprocess.Popen",
+      "argument": "command",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/cli/main.py",
+      "line": 1179,
+      "call": "subprocess.run",
+      "argument": "[tool, 'env', 'list']",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/cli/main.py",
+      "line": 1288,
+      "call": "subprocess.run",
+      "argument": "cmd",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/compute/manager.py",
+      "line": 711,
+      "call": "subprocess.Popen",
+      "argument": "argv",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/compute/manager.py",
+      "line": 1930,
+      "call": "subprocess.Popen",
+      "argument": "argv",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/compute/manager.py",
+      "line": 3137,
+      "call": "subprocess.Popen",
+      "argument": "self._ssh_argv(alias, f'cat -- {remote}')",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/jobs.py",
+      "line": 540,
+      "call": "subprocess.Popen",
+      "argument": "argv",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/kernel/env_generations.py",
+      "line": 259,
+      "call": "subprocess.run",
+      "argument": "[str(part) for part in argv]",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/kernel/preinstall.py",
+      "line": 171,
+      "call": "subprocess.run",
+      "argument": "cmd",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/kernel/preinstall.py",
+      "line": 513,
+      "call": "subprocess.run",
+      "argument": "argv",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/kernel/transport.py",
+      "line": 179,
+      "call": "subprocess.Popen",
+      "argument": "command",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/mcp_client.py",
+      "line": 363,
+      "call": "subprocess.Popen",
+      "argument": "command",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/mcp_servers/protein_design/service.py",
+      "line": 536,
+      "call": "subprocess.run",
+      "argument": "['git', '-C', str(repository), 'rev-parse', 'HEAD']",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/mcp_servers/protein_design/service.py",
+      "line": 588,
+      "call": "subprocess.run",
+      "argument": "command",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/orchestration/local/backend.py",
+      "line": 836,
+      "call": "subprocess.Popen",
+      "argument": "launch_argv",
+      "shell": "False",
+      "executable": null
+    },
+    {
+      "path": "openai4s/orchestration/slurm/broker.py",
+      "line": 339,
+      "call": "subprocess.Popen",
+      "argument": "command",
+      "shell": "False",
+      "executable": null
+    },
+    {
+      "path": "openai4s/sdk/bash.py",
+      "line": 408,
+      "call": "subprocess.Popen",
+      "argument": "command",
+      "shell": "True",
+      "executable": null
+    },
+    {
+      "path": "openai4s/security/byoc_confinement.py",
+      "line": 697,
+      "call": "subprocess.run",
+      "argument": "argv",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/security/sandbox.py",
+      "line": 742,
+      "call": "subprocess.run",
+      "argument": "command",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/security/secret_broker.py",
+      "line": 231,
+      "call": "subprocess.run",
+      "argument": "argv",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/server/review_scratch.py",
+      "line": 145,
+      "call": "subprocess.run",
+      "argument": "[sys.executable, '-I', str(script)]",
+      "shell": null,
+      "executable": null
+    },
+    {
+      "path": "openai4s/server/volcengine_arkcli.py",
+      "line": 136,
+      "call": "subprocess.Popen",
+      "argument": "list(argv)",
+      "shell": "False",
+      "executable": null
+    },
+    {
+      "path": "openai4s/tools/dynamic.py",
+      "line": 338,
+      "call": "subprocess.run",
+      "argument": "command",
+      "shell": null,
+      "executable": null
+    }
+  ],
+  "parse_errors": []
+}

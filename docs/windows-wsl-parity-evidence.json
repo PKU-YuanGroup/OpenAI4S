@@ -1,0 +1,305 @@
+{
+  "commit": "bca1183fcc1cd9f4820bb54139ecdaaf63adfcf6",
+  "collected_at": "2026-09-07T18:28:05.770862+00:00",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2",
+  "python": "3.12.3",
+  "uid": 1000,
+  "dependencies": {
+    "bash": "/usr/bin/bash",
+    "bwrap": "/usr/bin/bwrap",
+    "secret-tool": "/usr/bin/secret-tool",
+    "python": null,
+    "python3": "/usr/bin/python3",
+    "pip": null,
+    "Rscript": null,
+    "micromamba": null,
+    "conda": null,
+    "node": null,
+    "npx": "/mnt/c/nvm4w/nodejs/npx",
+    "uv": null,
+    "uvx": null
+  },
+  "preflight": {
+    "exit_code": 0,
+    "stdout": "preflight-ok WSL2 bubblewrap-0.9.0\n",
+    "stderr": ""
+  },
+  "system_secret_store": {
+    "available": false,
+    "error": "SecretStoreUnavailable",
+    "detail": "refusing to handle credentials without a secure store (secret-service present but unusable: Command '['secret-tool', 'store', '--label', 'OpenAI4S v2/6c617906beb15fa6df254f972f25bd9a/__selftest__/probe', 'service', 'openai4s', 'version', 'v2', 'namespace', '6c617906beb15fa6df254f972f25bd9a', 'scope', '__selftest__', 'name', 'probe']' timed out after 10.0 seconds)."
+  },
+  "host_bash": {
+    "posix": {
+      "exit_code": 0,
+      "stdout": "parity-ok",
+      "stderr": ""
+    },
+    "bash_conditional": {
+      "exit_code": 127,
+      "stdout": "",
+      "stderr": "/bin/sh: 1: [[: not found\n"
+    },
+    "source": {
+      "exit_code": 127,
+      "stdout": "",
+      "stderr": "/bin/sh: 1: source: not found\n"
+    }
+  },
+  "windows_interop": {
+    "tested": true,
+    "stdout": "0  \n",
+    "error": null,
+    "windows_marker_changed": true,
+    "python_stdout": "42\n",
+    "persistent_stdout": "41\n",
+    "recovery_stdout": "43\n"
+  },
+  "bundle_source_copy": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "copied_default_ui": false,
+  "source_verifier": {
+    "passed": true,
+    "skills": 604
+  },
+  "generated_cli_fixture": {
+    "exit_code": 0,
+    "stdout": "resolved-python3=/usr/bin/python3\nresolved-python=",
+    "stderr": ""
+  },
+  "corrupt_archive_install": {
+    "exit_code": 2,
+    "stdout": "",
+    "stderr": "\ngzip: stdin: not in gzip format\ntar: Child returned status 1\ntar: Error is not recoverable: exiting now\n"
+  },
+  "old_cli_survived": false,
+  "desktop_package": {
+    "installed_app": "/home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64",
+    "default_ui_present": false,
+    "build_path_console_scripts": [
+      {
+        "name": "dotenv",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "f2py",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "fonttools",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "httpx",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "idna",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "igraph",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "isympy",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "natsort",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "normalizer",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "numba",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "numpy-config",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "plotly_get_chrome",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "pyftmerge",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "pyftsubset",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "pypdfium2",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "scanpy",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "session-info",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "session-info2",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "tabulate",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "tqdm",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "ttx",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      },
+      {
+        "name": "zarr",
+        "shebang": "#!/home/audit/openai4s/.build/linux/stage/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/python3"
+      }
+    ],
+    "relocated_f2py": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "bwrap: execvp /home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64/runtime/bin/f2py: No such file or directory\n"
+    },
+    "relocated_numpy_module": {
+      "exit_code": 0,
+      "stdout": "2.5.3\n",
+      "stderr": ""
+    },
+    "relocated_pip": {
+      "exit_code": 0,
+      "stdout": "pip 26.2.1 from /home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64/runtime/lib/python3.13/site-packages/pip (python 3.13)\n",
+      "stderr": ""
+    },
+    "provenance": "Additional actual-package probes, separate from scripts/probe_wsl_parity.py. The original builder directory was hidden only inside temporary bubblewrap mount namespaces for relocation checks.",
+    "payload_sha256": "503be04b0464a605559d576411711f7946ed586338949bce46c5f24af620c82b",
+    "windows_zip_sha256": "08250bbcb861c8a7f2d41bc68d349b755834d7d24a5ac9647d5a7d9bbc4896e2",
+    "linux_verifier": {
+      "exit_code": 0,
+      "depth": "executed",
+      "embedded_python": "3.13.15",
+      "scientific_imports": 38,
+      "skills": 604,
+      "pyc_files": 9675
+    },
+    "windows_launcher": {
+      "powershell": "5.1",
+      "path_contains_spaces_and_chinese": true,
+      "exit_code": 0,
+      "reported_ready": true,
+      "browser_open_suppressed": true,
+      "data_dir": "/home/audit/.openai4s"
+    },
+    "windows_http": {
+      "unauthenticated_status": 401,
+      "authenticated_homepage_status": 404
+    },
+    "windows_launcher_lifecycle": [
+      {
+        "Action": "status",
+        "ExitCode": 0,
+        "Output": "already-installed /home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64\ndaemon: running (pid 6142) at http://127.0.0.1:18876/?token=<redacted>\n  model    : doubao-seed-2.0-pro\n  data_dir : /home/audit/.openai4s"
+      },
+      {
+        "Action": "stop",
+        "ExitCode": 0,
+        "Output": "already-installed /home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64\ndaemon stopped (pid 6142)"
+      },
+      {
+        "Action": "status-after-stop",
+        "ExitCode": 1,
+        "Output": "already-installed /home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64\ndaemon: not running"
+      }
+    ]
+  },
+  "validation": {
+    "baseline_commit": "bca1183fcc1cd9f4820bb54139ecdaaf63adfcf6",
+    "core_runtime_modified": false,
+    "full_offline_suite": {
+      "command": "uv run --locked pytest -n auto --maxprocesses=4 --dist loadfile --basetemp=/home/audit/o4s-pytest-ram/full-suite -o tmp_path_retention_policy=failed",
+      "environment": "Ordinary audit user, explicit Linux PATH, private tmpfs temporary data",
+      "passed": 8303,
+      "skipped": 136,
+      "failed": 2,
+      "warnings": 1,
+      "seconds": 852.74,
+      "exit_code": 1,
+      "failures": [
+        {
+          "test": "tests/test_mcp_client.py::test_streamable_http_body_watchdog_interrupts_a_chunked_slow_drip",
+          "observation": "TimeoutError instead of expected MCPTimeout"
+        },
+        {
+          "test": "tests/test_skill_product_surface.py::test_team_member_cannot_reactivate_legacy_host_skill_poison_over_http",
+          "observation": "HTTP helper received an empty response without a status line"
+        }
+      ]
+    },
+    "failed_test_recheck": {
+      "selection": "The two failed node IDs above",
+      "command_prefix": "uv run --locked pytest -n 0",
+      "environment": "Same ordinary audit user and explicit Linux PATH, ordinary disk temporary directories",
+      "passed": 2,
+      "seconds": 17.92,
+      "exit_code": 0,
+      "interpretation": "Causes unconfirmed; the full suite is not recorded as a pass"
+    },
+    "focused_existing_tests_passed": 199,
+    "shell_syntax_files_passed": 224,
+    "pre_commit_all_files": "passed",
+    "directory_documentation": {
+      "maintained_directories": 160,
+      "direct_files": 1476,
+      "result": "passed"
+    },
+    "source_secret_scan": {
+      "files": 3787,
+      "result": "passed"
+    }
+  },
+  "fresh_distro": {
+    "preflight_exit_code": 1,
+    "bubblewrap": null,
+    "secret_tool": null,
+    "secret_store_error": "SecretStoreUnavailable"
+  },
+  "secret_service_metadata_after_packages": {
+    "default_alias": "/",
+    "collections": [
+      "/org/freedesktop/secrets/collection/session"
+    ],
+    "scope": "Only the isolated audit user; no secret values read"
+  },
+  "path_lookup": {
+    "inherited_entry_count": 43,
+    "inherited_mnt_entry_count": 34,
+    "observations": {
+      "inherited": {
+        "missing_command_median_ms": 209.46239099976083,
+        "missing_command_max_ms": 225.40853900000002,
+        "npx": "/mnt/c/nvm4w/nodejs/npx",
+        "node": null
+      },
+      "linux_only": {
+        "missing_command_median_ms": 0.034233999940624926,
+        "missing_command_max_ms": 0.08739399982005125,
+        "npx": null,
+        "node": null
+      }
+    },
+    "method": "Five time.perf_counter samples of shutil.which for a nonexistent synthetic command, using its path= argument; no environment changed. Linux-only path: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin. Not a full-suite profiler."
+  }
+}
