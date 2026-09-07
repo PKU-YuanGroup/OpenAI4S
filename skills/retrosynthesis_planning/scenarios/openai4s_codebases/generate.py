@@ -9,8 +9,11 @@ import json
 import os
 import py_compile
 import shutil
+import socket
+import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -22,6 +25,242 @@ NAMES = (
     "05_condition_recommendation",
     "06_yield_estimation",
 )
+
+PUBLIC_MODULES = (
+    "benchmark_common.py",
+    "single_step_benchmark.py",
+    "multistep_benchmark.py",
+    "atom_mapping_benchmark.py",
+    "forward_benchmark.py",
+    "condition_benchmark.py",
+    "yield_benchmark.py",
+    "route_review.py",
+    "kernel.py",
+)
+
+
+class VerificationError(RuntimeError):
+    """A fixed, public diagnostic safe to include in generation provenance."""
+
+
+def _diagnostic(error: Exception) -> str:
+    # Parser/compiler/OS errors can contain source text, paths or child output.
+    # Only our own fixed diagnostics may be serialized into the manifest.
+    return str(error) if isinstance(error, VerificationError) else type(error).__name__
+
+
+def _environment(workspace: Path, temporary: Path) -> dict[str, str]:
+    """No operator variables, import paths or credentials cross this boundary."""
+    return {
+        "PATH": os.defpath,
+        "LANG": "C.UTF-8",
+        "HOME": str(temporary),
+        "TMPDIR": str(temporary),
+        "TMP": str(temporary),
+        "TEMP": str(temporary),
+        "PWD": str(workspace),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+def _runtime_roots() -> tuple[Path, ...]:
+    # -I -S uses the base interpreter and stdlib without loading site-packages,
+    # .pth files or the operator's virtualenv. Never allow the repository root.
+    candidates = (
+        Path(sys.executable).resolve().parent,
+        Path(sysconfig.get_path("stdlib")).resolve(),
+        Path(sysconfig.get_path("platstdlib")).resolve(),
+        Path(sys.base_prefix).resolve() / "lib",
+        Path("/usr/lib"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/System/Library"),
+    )
+    # Preserve /lib and /lib64 as mount destinations on merged-/usr Linux:
+    # the ELF loader still names those lexical paths in an otherwise empty root.
+    return tuple(dict.fromkeys(path.absolute() for path in candidates if path.is_dir()))
+
+
+def _runtime_denials() -> tuple[Path, ...]:
+    # -S suppresses imports, but filesystem access needs an independent deny:
+    # an installed distribution can include the same GT and private fixtures.
+    paths = {Path(sysconfig.get_path(key)).resolve() for key in ("purelib", "platlib")}
+    for root in _runtime_roots():
+        for pattern in (
+            "site-packages",
+            "dist-packages",
+            "python*/site-packages",
+            "python*/dist-packages",
+        ):
+            for path in root.glob(pattern):
+                if path.is_dir():
+                    paths.update((path.absolute(), path.resolve()))
+    return tuple(sorted(path for path in paths if path.is_dir()))
+
+
+def _sandbox_command(
+    command: list[str], *, readonly: Path, results: Path, temporary: Path
+) -> list[str]:
+    if sys.platform != "darwin" and not sys.platform.startswith("linux"):
+        raise VerificationError("verification requires an available OS sandbox")
+    allowed = (*_runtime_roots(), readonly)
+    if sys.platform == "darwin":
+        from openai4s.security.sandbox import (
+            KernelReadIsolation,
+            wrap_seatbelt_command,
+        )
+
+        executable = shutil.which("sandbox-exec")
+        if executable:
+            wrapped = wrap_seatbelt_command(
+                command,
+                executable=executable,
+                workspace=results,
+                temp_dir=temporary,
+                allow_raw_network=False,
+                deny_read=tuple(("subpath", str(path)) for path in _runtime_denials()),
+                read_isolation=KernelReadIsolation(
+                    roots=("/",), allowed_roots=(*allowed, temporary, Path("/dev"))
+                ),
+            )
+            # This verifier only normalizes files. It needs no subprocesses,
+            # parent-process metadata, Apple Events or Mach service clients.
+            wrapped[
+                2
+            ] += "(deny process-fork process-info* mach-lookup appleevent-send)\n"
+            # KERN_PROCARGS2 is a separate sysctl path around process-info*;
+            # its name includes the PID, so an exact kern.procargs2 rule misses it.
+            wrapped[2] += '(deny sysctl-read (sysctl-name-prefix "kern.proc"))\n'
+            # dyld opens the mount root during interpreter startup. Grant only
+            # that directory itself; no descendant data becomes readable.
+            wrapped[2] += '(allow file-read-data (literal "/"))\n'
+            return wrapped
+    elif sys.platform.startswith("linux"):
+        executable = shutil.which("bwrap")
+        if executable:
+            # Start with an empty root, not a host-root bind with path masks.
+            # Private PID and network namespaces close /proc and socket aliases.
+            wrapped = [
+                executable,
+                "--die-with-parent",
+                "--new-session",
+                "--unshare-all",
+                "--tmpfs",
+                "/",
+            ]
+            for path in allowed:
+                wrapped.extend(("--ro-bind", str(path), str(path)))
+            for path in _runtime_denials():
+                if any(path == root or root in path.parents for root in allowed):
+                    wrapped.extend(("--tmpfs", str(path), "--remount-ro", str(path)))
+            wrapped.extend(
+                (
+                    "--bind",
+                    str(results),
+                    str(results),
+                    "--bind",
+                    str(temporary),
+                    str(temporary),
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--remount-ro",
+                    "/",
+                    "--chdir",
+                    str(results),
+                    "--",
+                    *command,
+                )
+            )
+            return wrapped
+    raise VerificationError("verification requires an available OS sandbox")
+
+
+def _python(command: list[str], imports: Path) -> list[str]:
+    bootstrap = (
+        "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+        "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')"
+    )
+    return [
+        str(Path(sys.executable).resolve()),
+        "-I",
+        "-S",
+        "-B",
+        "-c",
+        bootstrap,
+        str(imports),
+        *command,
+    ]
+
+
+def _probe_boundary(
+    *, readonly: Path, results: Path, temporary: Path, denied: tuple[Path, ...]
+) -> None:
+    probe = readonly / "boundary_probe.py"
+    probe.write_text(
+        "import os, pathlib, socket, sys\n"
+        "port = int(sys.argv[1])\n"
+        "allowed, results, *denied = map(pathlib.Path, sys.argv[2:])\n"
+        "allowed.read_bytes()\n"
+        "(results / 'probe').write_text('ok')\n"
+        "(results / 'probe').unlink()\n"
+        "try:\n allowed.write_bytes(b'changed')\n"
+        "except OSError: pass\n"
+        "else: raise SystemExit(21)\n"
+        "for path in denied:\n"
+        " try: path.read_bytes()\n"
+        " except OSError: pass\n"
+        " else: raise SystemExit(22)\n"
+        " link = results / 'probe-link'\n"
+        " try:\n  link.symlink_to(path); link.read_bytes()\n"
+        " except OSError: pass\n"
+        " else: raise SystemExit(23)\n"
+        " finally: link.unlink(missing_ok=True)\n"
+        " try:\n  os.link(path, link); link.read_bytes()\n"
+        " except OSError: pass\n"
+        " else: raise SystemExit(24)\n"
+        " finally: link.unlink(missing_ok=True)\n"
+        "try:\n socket.create_connection(('127.0.0.1', port), timeout=2).close()\n"
+        "except OSError: pass\n"
+        "else: raise SystemExit(25)\n"
+        "if sys.platform == 'darwin':\n"
+        " import ctypes\n"
+        " mib = (ctypes.c_int * 3)(1, 49, os.getppid())\n"
+        " size = ctypes.c_size_t(262144)\n"
+        " buffer = ctypes.create_string_buffer(size.value)\n"
+        " if ctypes.CDLL(None).sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) == 0:\n"
+        "  raise SystemExit(26)\n",
+        encoding="utf-8",
+    )
+    try:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            command = _python(
+                [
+                    str(probe),
+                    str(listener.getsockname()[1]),
+                    str(readonly / "workspace" / "installation.json"),
+                    str(results),
+                    *(str(path) for path in denied),
+                ],
+                readonly / "skills",
+            )
+            _checked(
+                _sandbox_command(
+                    command, readonly=readonly, results=results, temporary=temporary
+                ),
+                root=results,
+                environment=_environment(results, temporary),
+            )
+    except Exception as error:
+        raise VerificationError(
+            "verification OS sandbox boundary probe failed"
+        ) from error
+    finally:
+        probe.unlink()
 
 
 def _sha256(path: Path) -> str:
@@ -67,22 +306,23 @@ def _command(root: Path, query: Path) -> list[str]:
     return [executable, "run", task, "--mode", "codebase_change", "--json"]
 
 
-def _checked(command: list[str], *, root: Path, environment: dict[str, str]) -> str:
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    if completed.returncode:
-        raise RuntimeError(
-            f"verification command failed ({completed.returncode}): "
-            f"{' '.join(command[:3])}\n{completed.stdout[-2000:]}"
+def _checked(command: list[str], *, root: Path, environment: dict[str, str]) -> None:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+            check=False,
         )
-    return completed.stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise VerificationError("verification process could not complete") from error
+    if completed.returncode:
+        raise VerificationError(
+            f"verification command failed (exit {completed.returncode}); output omitted"
+        )
 
 
 def _verify_case(root: Path, name: str, gt: Path, generated: Path) -> str:
@@ -91,66 +331,108 @@ def _verify_case(root: Path, name: str, gt: Path, generated: Path) -> str:
     installer = test_cases / "install.py"
     evaluator = test_cases / "evaluate.py"
     scenario = json.loads(case.read_text(encoding="utf-8"))["scenario"]
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join(
-        (str(root / "skills"), environment.get("PYTHONPATH", ""))
-    )
     with tempfile.TemporaryDirectory(prefix=f"openai4s-{name}-") as temporary:
-        scratch = Path(temporary)
+        scratch = Path(temporary).resolve()
         gt_workspace = scratch / "gt"
         generated_workspace = scratch / "generated"
+        environment = _environment(scratch, scratch)
         for workspace in (gt_workspace, generated_workspace):
             _checked(
-                [
-                    sys.executable,
-                    str(installer),
-                    "--case",
-                    str(case),
-                    "--workspace",
-                    str(workspace),
-                ],
+                _python(
+                    [
+                        str(installer),
+                        "--case",
+                        str(case),
+                        "--workspace",
+                        str(workspace),
+                    ],
+                    root / "skills",
+                ),
                 root=root,
                 environment=environment,
             )
         _checked(
-            [sys.executable, str(gt), "--workspace", str(gt_workspace)],
+            _python([str(gt), "--workspace", str(gt_workspace)], root / "skills"),
             root=root,
             environment=environment,
         )
-        hidden = scratch / "private-evaluator-hidden"
-        (generated_workspace / "private_evaluator").rename(hidden)
-        try:
-            _checked(
+        readonly = scratch / "runner"
+        public_workspace = readonly / "workspace"
+        public_workspace.mkdir(parents=True)
+        shutil.copytree(generated_workspace / "public", public_workspace / "public")
+        shutil.copyfile(
+            generated_workspace / "installation.json",
+            public_workspace / "installation.json",
+        )
+        results = scratch / "results"
+        results.mkdir()
+        (public_workspace / "results").symlink_to(results, target_is_directory=True)
+        worker_temp = scratch / "worker-temp"
+        worker_temp.mkdir()
+        modules = readonly / "skills" / "retrosynthesis_planning"
+        modules.mkdir(parents=True)
+        for module in PUBLIC_MODULES:
+            shutil.copyfile(
+                root / "skills" / "retrosynthesis_planning" / module, modules / module
+            )
+        candidate = readonly / "candidate.py"
+        shutil.copyfile(generated, candidate)
+        _probe_boundary(
+            readonly=readonly,
+            results=results,
+            temporary=worker_temp,
+            denied=(
+                gt_workspace / "results" / "intermediate_results.json",
+                generated_workspace / "private_evaluator" / "references.json",
+                gt,
+                case,
+            ),
+        )
+        _checked(
+            _sandbox_command(
+                _python(
+                    [str(candidate), "--workspace", str(public_workspace)],
+                    readonly / "skills",
+                ),
+                readonly=readonly,
+                results=results,
+                temporary=worker_temp,
+            ),
+            root=results,
+            environment=_environment(results, worker_temp),
+        )
+        gt_artifact = gt_workspace / "results" / "intermediate_results.json"
+        generated_artifact = results / "intermediate_results.json"
+        expected = gt_artifact.read_bytes()
+        descriptor = os.open(
+            generated_artifact, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        )
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise VerificationError("generated artifact must be a regular file")
+            artifact_bytes = handle.read(len(expected) + 1)
+        if expected != artifact_bytes:
+            raise VerificationError(
+                "generated artifact does not exactly match GT artifact"
+            )
+        (generated_workspace / "results" / "intermediate_results.json").write_bytes(
+            artifact_bytes
+        )
+        _checked(
+            _python(
                 [
-                    sys.executable,
-                    str(generated),
+                    str(evaluator),
+                    "--scenario",
+                    scenario,
                     "--workspace",
                     str(generated_workspace),
                 ],
-                root=root,
-                environment=environment,
-            )
-        finally:
-            hidden.rename(generated_workspace / "private_evaluator")
-        gt_artifact = gt_workspace / "results" / "intermediate_results.json"
-        generated_artifact = (
-            generated_workspace / "results" / "intermediate_results.json"
-        )
-        if gt_artifact.read_bytes() != generated_artifact.read_bytes():
-            raise RuntimeError("generated artifact does not exactly match GT artifact")
-        _checked(
-            [
-                sys.executable,
-                str(evaluator),
-                "--scenario",
-                scenario,
-                "--workspace",
-                str(generated_workspace),
-            ],
+                root / "skills",
+            ),
             root=root,
             environment=environment,
         )
-        return _sha256(generated_artifact)
+        return hashlib.sha256(artifact_bytes).hexdigest()
 
 
 def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
@@ -159,10 +441,12 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
     gt = base.parent / "gt_codebases" / f"{name}.py"
     generated = base / f"{name}.py"
     if generated.exists() and not overwrite:
-        raise RuntimeError(f"refusing to overwrite {generated}; pass --overwrite")
+        raise VerificationError(
+            "refusing to overwrite existing source; pass --overwrite"
+        )
+    command = _command(root, query)
     if generated.exists():
         generated.unlink()
-    command = _command(root, query)
     completed = subprocess.run(
         command,
         cwd=root,
@@ -182,6 +466,8 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
         "openai4s_output_sha256": output_sha256,
         "openai4s_exit_code": completed.returncode,
         "generated_codebase": str(generated.relative_to(root)),
+        "generation_interface": "openai4s run --mode codebase_change",
+        "post_generation_conformance_repair": False,
         "status": "failed",
     }
     if completed.returncode == 0 and generated.is_file():
@@ -191,15 +477,15 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
         if hits:
             record["verification_error"] = f"forbidden source references: {hits}"
         else:
-            py_compile.compile(str(generated), doraise=True)
             record["generated_sha256"] = _sha256(generated)
             try:
+                py_compile.compile(str(generated), doraise=True)
                 record["verified_artifact_sha256"] = _verify_case(
                     root, name, gt, generated
                 )
                 record["status"] = "generated_verified"
             except Exception as error:
-                record["verification_error"] = str(error)
+                record["verification_error"] = _diagnostic(error)
                 record["status"] = "generated_verification_failed"
     elif completed.returncode == 0:
         record["verification_error"] = "OpenAI4S exited successfully without source"
@@ -215,23 +501,42 @@ def main() -> int:
     args = parser.parse_args()
     root = _root()
     selected = NAMES if args.scenario == "all" else (args.scenario,)
+    manifest_path = Path(__file__).with_name("generation_manifest.json")
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.exists()
+        else {"schema_version": 3, "generator": "OpenAI4S", "entries": []}
+    )
+    previous = {entry["name"]: entry for entry in manifest["entries"]}
     records = []
     failed = False
+    changed = False
     for name in selected:
+        generated = Path(__file__).with_name(f"{name}.py")
+        before = _sha256(generated) if generated.is_file() else None
         try:
             record = _entry(root, name, overwrite=args.overwrite)
         except Exception as error:  # Keep per-Scenario provenance on failure.
-            record = {"name": name, "status": "failed", "error": str(error)}
+            record = {"name": name, "status": "failed", "error": _diagnostic(error)}
         records.append(record)
         failed = failed or record["status"] != "generated_verified"
-    manifest = {
-        "schema_version": 2,
-        "generator": "OpenAI4S CLI",
-        "generation_kind": "actual_cli_run",
-        "entries": records,
-    }
-    _write_json(Path(__file__).with_name("generation_manifest.json"), manifest)
-    print(json.dumps(manifest, sort_keys=True))
+        after = _sha256(generated) if generated.is_file() else None
+        # A refused overwrite or failure before a source change is an attempt,
+        # not replacement provenance for the unchanged artifact.
+        if (
+            record["status"] == "generated_verified"
+            or before != after
+            or name not in previous
+        ):
+            previous[name] = record
+            changed = True
+    if changed:
+        manifest["entries"] = list(previous.values())
+        manifest["generation_kind"] = "per_entry_generation"
+        _write_json(manifest_path, manifest)
+    print(
+        json.dumps({"attempts": records, "manifest_updated": changed}, sort_keys=True)
+    )
     return 1 if failed else 0
 
 

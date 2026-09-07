@@ -27,12 +27,15 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
 from retrosynthesis_planning.benchmark_common import (
     BenchmarkProtocolError,
     build_intermediate_artifact,
     write_json_atomic,
 )
 from retrosynthesis_planning.single_step_benchmark import (
+    ChemistryDependencyError,
     SingleStepProtocolError,
     build_intermediate_results,
     normalize_prediction_payloads,
@@ -237,7 +240,10 @@ def run(
     model_manifest = load_model_manifest(workspace)
 
     if canonicalizer is None:
-        canonicalizer = select_canonicalizer()
+        canonicalizer = select_canonicalizer(
+            prefer_rdkit=installation.get("dataset_profile")
+            != "synthetic_protocol_smoke"
+        )
 
     records, _input_hashes = build_records(
         workspace, top_k=top_k, canonicalizer=canonicalizer
@@ -289,14 +295,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--rdkit",
         action="store_true",
         help="Use the benchmark RDKit canonicalizer instead of the fixture's "
-        "identity canonicalizer (required for production chemistry data).",
+        "identity canonicalizer (selected automatically for production data).",
     )
     args = parser.parse_args(argv)
 
     workspace = Path(args.workspace)
     try:
-        artifact = run(workspace, canonicalizer=select_canonicalizer(args.rdkit))
-    except (BenchmarkProtocolError, SingleStepProtocolError) as exc:
+        artifact = run(
+            workspace,
+            canonicalizer=select_canonicalizer(True) if args.rdkit else None,
+        )
+    except (
+        BenchmarkProtocolError,
+        SingleStepProtocolError,
+        ChemistryDependencyError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:

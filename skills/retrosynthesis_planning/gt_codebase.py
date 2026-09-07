@@ -138,6 +138,61 @@ def _fixture_mode(workspace: Path) -> bool:
     return installation.get("dataset_profile") == "synthetic_protocol_smoke"
 
 
+def _verify_installation(
+    workspace: Path, scenario: str, *, include_private: bool
+) -> None:
+    """Check the installed dataset without opening the other process's boundary."""
+
+    if scenario not in SCENARIO_IDS:
+        raise BenchmarkProtocolError(f"unsupported scenario {scenario!r}")
+    installation = _mapping(workspace / "installation.json")
+    if (
+        installation.get("scenario") != scenario
+        or installation.get("scenario_id") != SCENARIO_IDS[scenario]
+    ):
+        raise BenchmarkProtocolError("workspace scenario identity mismatch")
+    hashes = installation.get("file_sha256")
+    if not isinstance(hashes, Mapping):
+        raise BenchmarkProtocolError("installation file_sha256 must be an object")
+    required = {"public/inputs.json", "public/model_outputs.json", "public/config.json"}
+    extra_public = {
+        "single_step": "model_manifest.json",
+        "multistep": "stock.json",
+        "conditions": "vocabulary.json",
+    }.get(scenario)
+    if extra_public:
+        required.add(f"public/{extra_public}")
+    if include_private:
+        required.add("private_evaluator/references.json")
+    if not required.issubset(hashes):
+        raise BenchmarkProtocolError("installation is missing required file hashes")
+    for relative, expected in hashes.items():
+        parts = relative.split("/") if isinstance(relative, str) else []
+        if (
+            len(parts) != 2
+            or parts[0] not in {"public", "private_evaluator"}
+            or not _SAFE_JSON_NAME.fullmatch(parts[1])
+        ):
+            raise BenchmarkProtocolError("installation contains an unsafe file name")
+        if parts[0] == "private_evaluator" and not include_private:
+            continue
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise BenchmarkProtocolError(f"invalid installed file hash: {relative}")
+        target = workspace / relative
+        if target.parent.is_symlink() or target.is_symlink():
+            raise BenchmarkProtocolError(
+                f"installed file must not be a symlink: {relative}"
+            )
+        try:
+            actual = _sha256_file(target)
+        except OSError as exc:
+            raise BenchmarkProtocolError(
+                f"installed file is unavailable: {relative}"
+            ) from exc
+        if actual != expected:
+            raise BenchmarkProtocolError(f"installed file hash mismatch: {relative}")
+
+
 def install_test_case(case_path: str | Path, workspace: str | Path) -> dict[str, Any]:
     """Install one bundled case while preserving the public/private boundary."""
 
@@ -207,10 +262,15 @@ def _normalize_atom_fixture(
             row["reaction_id"] == reaction_id for row in records
         ):
             raise BenchmarkProtocolError("unknown or duplicate fixture mapping output")
-        if not isinstance(output["correspondence"], list) or not isinstance(
-            output["bond_changes"], list
-        ):
-            raise BenchmarkProtocolError("fixture mapping arrays are required")
+        if not isinstance(output["valid"], bool):
+            raise BenchmarkProtocolError("fixture mapping valid must be a boolean")
+        for field in ("correspondence", "bond_changes", "issues"):
+            if not isinstance(output[field], list):
+                raise BenchmarkProtocolError(
+                    f"fixture mapping {field} must be an array"
+                )
+            for value in output[field]:
+                require_text(value, field=f"fixture mapping {field} entry")
         records.append(dict(output))
     if {row["reaction_id"] for row in records} != expected:
         raise BenchmarkProtocolError("fixture mapping output must cover every reaction")
@@ -303,12 +363,8 @@ def _normalize(scenario: str, workspace: Path) -> tuple[Any, dict[str, Any]]:
 def run_pipeline(scenario: str, workspace: str | Path) -> dict[str, Any]:
     """Run only the public pipeline and freeze an intermediate artifact."""
 
-    if scenario not in SCENARIO_IDS:
-        raise BenchmarkProtocolError(f"unsupported scenario {scenario!r}")
     root = Path(workspace).resolve()
-    installation = _mapping(root / "installation.json")
-    if installation.get("scenario_id") != SCENARIO_IDS[scenario]:
-        raise BenchmarkProtocolError("workspace scenario identity mismatch")
+    _verify_installation(root, scenario, include_private=False)
     artifact, _context = _normalize(scenario, root)
     _write_json(root / "results" / "intermediate_results.json", artifact)
     return artifact
@@ -327,6 +383,7 @@ def evaluate_workspace(scenario: str, workspace: str | Path) -> dict[str, Any]:
     """Score a frozen public artifact from the evaluator side of the boundary."""
 
     root = Path(workspace).resolve()
+    _verify_installation(root, scenario, include_private=True)
     artifact = _mapping(root / "results" / "intermediate_results.json")
     _verify_artifact(artifact, scenario)
     recomputed, context = _normalize(scenario, root)

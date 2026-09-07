@@ -127,11 +127,13 @@ def connectivity_canonicalize(smiles: str) -> str:
 
 
 def rdkit_canonicalize(smiles: str) -> str:
-    """Canonicalize a SMILES string using RDKit if available, else identity."""
+    """Canonicalize a SMILES string with the required chemistry dependency."""
     try:
         from rdkit import Chem
-    except ImportError:
-        return smiles.strip()
+    except ImportError as exc:
+        raise RuntimeError(
+            "RDKit is required for scientific SMILES canonicalization"
+        ) from exc
     molecule = Chem.MolFromSmiles(smiles)
     if molecule is None:
         raise BenchmarkProtocolError(f"cannot parse SMILES {smiles!r}")
@@ -437,6 +439,8 @@ def main() -> int:
         installation_path = workspace / "installation.json"
         with open(installation_path, "r", encoding="utf-8") as f:
             installation = json.load(f)
+        if not isinstance(installation, Mapping):
+            raise BenchmarkProtocolError("installation.json must be an object")
         if (
             installation.get("scenario_id")
             != "forward_prediction_uspto_mit_separated_v1"
@@ -469,8 +473,12 @@ def main() -> int:
             raise BenchmarkProtocolError("random_seed must be an integer")
 
         # Validate and normalize inputs
+        fixture = installation.get("dataset_profile") == "synthetic_protocol_smoke"
+        isomeric_canonicalizer = (
+            identity_isomeric_canonicalize if fixture else rdkit_canonicalize
+        )
         normalized_inputs = validate_forward_inputs(
-            inputs_data, canonicalizer=identity_isomeric_canonicalize
+            inputs_data, canonicalizer=isomeric_canonicalizer
         )
 
         # Normalize outputs
@@ -478,8 +486,12 @@ def main() -> int:
             normalized_inputs,
             outputs_data,
             top_k=top_k,
-            isomeric_canonicalizer=identity_isomeric_canonicalize,
-            connectivity_canonicalizer=connectivity_canonicalize,
+            isomeric_canonicalizer=isomeric_canonicalizer,
+            connectivity_canonicalizer=(
+                connectivity_canonicalize
+                if fixture
+                else rdkit_connectivity_canonicalize
+            ),
         )
 
         # Build intermediate artifact
@@ -494,7 +506,7 @@ def main() -> int:
         write_json_atomic(output_path, artifact)
 
         return 0
-    except (BenchmarkProtocolError, json.JSONDecodeError, OSError) as exc:
+    except (BenchmarkProtocolError, json.JSONDecodeError, OSError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

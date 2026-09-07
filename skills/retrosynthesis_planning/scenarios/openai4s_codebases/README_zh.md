@@ -9,6 +9,16 @@
 `generation_manifest.json` 冻结生成接口、未完整结束的 Agent 轨迹状态、修复披露、
 prompt/源码哈希和验证产物。
 
+`generate.py --scenario NAME --overwrite` 只重新生成所选 Scenario，并保留其他条目的
+provenance。未指定 `--overwrite` 时，已有源码及其 provenance 保持不变。验证只暂存
+公开 fixture 和经过审查的 benchmark 模块，使用干净环境及操作系统沙箱，禁止访问
+仓库、GT 输出和网络。验证要求可用的 macOS Seatbelt 或 Linux bubblewrap；无法建立
+隔离时验证失败。子进程输出及机器本地错误细节不会写入 manifest。
+
+只有 `dataset_profile=synthetic_protocol_smoke` 使用 fixture 字符串规范化。其他
+profile 的化学规范化必须使用 RDKit。离线测试执行每个已提交的生成 CLI，将其产物
+字节与 GT 比较，并校验记录的产物哈希。
+
 ## 文件
 
 | 文件 | Scenario |

@@ -468,10 +468,13 @@ def main() -> int:
         installation_path = workspace / "installation.json"
         with open(installation_path, "r", encoding="utf-8") as f:
             installation = json.load(f)
+        if not isinstance(installation, Mapping):
+            raise BenchmarkProtocolError("installation.json must be an object")
         if installation.get("scenario_id") != "reaction_atom_mapping_curated_v1":
             raise BenchmarkProtocolError(
                 "installation scenario_id must be reaction_atom_mapping_curated_v1"
             )
+        fixture = installation.get("dataset_profile") == "synthetic_protocol_smoke"
         public_inputs_path = workspace / "public" / "inputs.json"
         with open(public_inputs_path, "r", encoding="utf-8") as f:
             public_inputs = json.load(f)
@@ -488,49 +491,71 @@ def main() -> int:
         config_path = workspace / "public" / "config.json"
         with open(config_path, "r", encoding="utf-8") as f:
             json.load(f)
-        # Validate exact fixture schema for model_outputs
-        for index, row in enumerate(model_outputs, start=1):
-            require_exact_fields(
-                row,
-                {"reaction_id", "correspondence", "bond_changes", "valid", "issues"},
-                field=f"model_outputs row {index}",
-            )
-            if not isinstance(row["correspondence"], list):
-                raise BenchmarkProtocolError(
-                    f"model_outputs row {index} correspondence must be an array"
-                )
-            if not isinstance(row["bond_changes"], list):
-                raise BenchmarkProtocolError(
-                    f"model_outputs row {index} bond_changes must be an array"
-                )
-            if not isinstance(row["valid"], bool):
-                raise BenchmarkProtocolError(
-                    f"model_outputs row {index} valid must be a boolean"
-                )
-            if not isinstance(row["issues"], list):
-                raise BenchmarkProtocolError(
-                    f"model_outputs row {index} issues must be an array"
-                )
-
-        # Validate coverage
+        # Both output schemas require one record per public reaction.
         reaction_ids = {r["reaction_id"] for r in reactions}
-        prediction_ids = {p["reaction_id"] for p in model_outputs}
+        prediction_ids: set[str] = set()
+        for index, row in enumerate(model_outputs, start=1):
+            if not isinstance(row, Mapping):
+                raise BenchmarkProtocolError(
+                    f"model_outputs row {index} must be an object"
+                )
+            reaction_id = require_text(row.get("reaction_id"), field="reaction_id")
+            if reaction_id not in reaction_ids or reaction_id in prediction_ids:
+                raise BenchmarkProtocolError(
+                    f"unknown or duplicate reaction {reaction_id!r}"
+                )
+            prediction_ids.add(reaction_id)
+            if fixture:
+                require_exact_fields(
+                    row,
+                    {
+                        "reaction_id",
+                        "correspondence",
+                        "bond_changes",
+                        "valid",
+                        "issues",
+                    },
+                    field=f"model_outputs row {index}",
+                )
+                for field in ("correspondence", "bond_changes", "issues"):
+                    if not isinstance(row[field], list):
+                        raise BenchmarkProtocolError(
+                            f"model_outputs row {index} {field} must be an array"
+                        )
+                    for entry_index, entry in enumerate(row[field], start=1):
+                        require_text(
+                            entry,
+                            field=f"model_outputs row {index} {field} entry {entry_index}",
+                        )
+                if not isinstance(row["valid"], bool):
+                    raise BenchmarkProtocolError(
+                        f"model_outputs row {index} valid must be a boolean"
+                    )
+
         if reaction_ids != prediction_ids:
             raise BenchmarkProtocolError(
                 "model_outputs must cover exactly the public reactions"
             )
 
-        # Build intermediate artifact
+        # Production rows carry raw mapper output, which must be analyzed using
+        # RDKit instead of trusting pre-analyzed fixture correspondence labels.
+        if not fixture:
+            _chem()
+        records = (
+            model_outputs
+            if fixture
+            else normalize_mapping_outputs(reactions, model_outputs)
+        )
         artifact = build_intermediate_artifact(
             "reaction_atom_mapping_curated_v1",
-            model_outputs,
-            metadata={"fixture_preanalyzed": True},
+            records,
+            metadata={"fixture_preanalyzed": fixture},
         )
 
         output_path = workspace / "results" / "intermediate_results.json"
         write_json_atomic(output_path, artifact)
         return 0
-    except (BenchmarkProtocolError, OSError, json.JSONDecodeError) as exc:
+    except (BenchmarkProtocolError, OSError, json.JSONDecodeError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

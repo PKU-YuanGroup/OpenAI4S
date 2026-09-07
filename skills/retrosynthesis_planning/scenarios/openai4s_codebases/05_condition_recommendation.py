@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
 from retrosynthesis_planning.benchmark_common import (
     BenchmarkProtocolError,
     build_intermediate_artifact,
@@ -18,6 +20,7 @@ from retrosynthesis_planning.condition_benchmark import (
     normalize_condition_outputs,
     validate_condition_inputs,
 )
+from retrosynthesis_planning.single_step_benchmark import rdkit_canonicalize
 
 SCENARIO_ID = "reaction_condition_uspto_categorical_v1"
 
@@ -107,7 +110,12 @@ def main() -> int:
         if not isinstance(model_outputs, list):
             raise BenchmarkProtocolError("model_outputs must be an array")
         normalized_inputs = validate_condition_inputs(
-            inputs, canonicalizer=identity_canonicalize
+            inputs,
+            canonicalizer=(
+                identity_canonicalize
+                if installation.get("dataset_profile") == "synthetic_protocol_smoke"
+                else rdkit_canonicalize
+            ),
         )
 
         # Normalize outputs

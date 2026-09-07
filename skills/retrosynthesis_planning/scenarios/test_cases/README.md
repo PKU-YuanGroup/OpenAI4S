@@ -17,6 +17,9 @@ uv run python skills/retrosynthesis_planning/scenarios/test_cases/install.py \
 
 The installer creates disjoint `public/`, `private_evaluator/`, and `results/`
 directories plus an `installation.json` containing every installed file hash.
+The GT pipeline checks the public hashes without opening private files. The
+evaluator verifies both boundaries before scoring; changed or missing files
+invalidate the installation instead of silently changing a frozen score.
 Run the matching public pipeline, freeze its output, and only then evaluate:
 
 ```bash

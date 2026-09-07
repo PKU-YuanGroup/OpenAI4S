@@ -15,7 +15,9 @@ uv run python skills/retrosynthesis_planning/scenarios/test_cases/install.py \
 ```
 
 安装器生成互相分离的 `public/`、`private_evaluator/`、`results/`，并在
-`installation.json` 记录所有安装文件的 SHA256。之后运行匹配的公开 pipeline，
+`installation.json` 记录所有安装文件的 SHA256。GT pipeline 只校验公开文件的哈希，
+不打开私有文件。evaluator 在评分前校验两个边界；文件被修改或缺失会使安装失效，
+不会静默改变冻结结果的分数。之后运行匹配的公开 pipeline，
 冻结输出，再由 evaluator 读取私有 Ground Truth：
 
 ```bash

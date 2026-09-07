@@ -9,11 +9,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
 from retrosynthesis_planning.benchmark_common import (
     BenchmarkProtocolError,
     build_intermediate_artifact,
     write_json_atomic,
 )
+from retrosynthesis_planning.single_step_benchmark import rdkit_canonicalize
 from retrosynthesis_planning.yield_benchmark import (
     normalize_yield_outputs,
     validate_yield_inputs,
@@ -106,7 +109,13 @@ def main() -> int:
 
         # Validate and normalize inputs
         validated_inputs = validate_yield_inputs(
-            inputs_raw, canonicalizer=identity_canonicalize, require_all_splits=True
+            inputs_raw,
+            canonicalizer=(
+                identity_canonicalize
+                if installation.get("dataset_profile") == "synthetic_protocol_smoke"
+                else rdkit_canonicalize
+            ),
+            require_all_splits=True,
         )
 
         # Validate and normalize outputs

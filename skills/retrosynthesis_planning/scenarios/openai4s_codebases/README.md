@@ -13,6 +13,20 @@ Generation interface, incomplete Agent-run state, repair disclosure, prompt and
 source hashes, and verification artifacts are frozen in
 `generation_manifest.json`.
 
+`generate.py --scenario NAME --overwrite` regenerates only that Scenario and
+preserves the other provenance entries. Without `--overwrite`, an existing
+source and its provenance remain unchanged. Verification stages only the public
+fixture and reviewed benchmark modules, uses a clean environment and an OS
+sandbox, and denies access to the repository, GT outputs, and network. It
+requires usable macOS Seatbelt or Linux bubblewrap; unavailable isolation fails
+verification. Child output and machine-local error details are not persisted
+in the manifest.
+
+Only `dataset_profile=synthetic_protocol_smoke` uses fixture string
+canonicalization. Other profiles require RDKit for chemical normalization.
+The offline tests execute every committed generated CLI, compare its artifact
+bytes with GT, and check the recorded artifact hash.
+
 ## Files
 
 | File | Scenario |

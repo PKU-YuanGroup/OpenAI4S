@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from openai4s.config import get_config
+from openai4s.kernel.environment import build_kernel_environment
 
 sys.path.insert(0, str(get_config().skills_dir))
 
@@ -739,10 +740,8 @@ def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
         assert installation["ground_truth_boundary"] == "private_evaluator"
         hidden = tmp_path / f"{scenario}-private"
         (workspace / "private_evaluator").rename(hidden)
-        environment = dict(os.environ)
-        environment["PYTHONPATH"] = os.pathsep.join(
-            (str(get_config().skills_dir), environment.get("PYTHONPATH", ""))
-        )
+        environment = build_kernel_environment(cwd=str(workspace))
+        environment["PYTHONPATH"] = str(get_config().skills_dir)
         completed = subprocess.run(
             [sys.executable, str(gt_path), "--workspace", str(workspace)],
             cwd=get_config().skills_dir.parent,
@@ -752,12 +751,29 @@ def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
             check=False,
         )
         assert completed.returncode == 0, completed.stderr
-        artifact = json.loads(
-            (workspace / "results" / "intermediate_results.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        artifact_path = workspace / "results" / "intermediate_results.json"
+        gt_bytes = artifact_path.read_bytes()
+        artifact = json.loads(gt_bytes)
         assert artifact["scenario_id"] == scenario_id
+        if entry["status"].startswith("generated"):
+            assert entry["status"] == "generated_verified"
+            artifact_path.unlink()
+            completed = subprocess.run(
+                [sys.executable, str(generated_path), "--workspace", str(workspace)],
+                cwd=get_config().skills_dir.parent,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            assert completed.returncode == 0, completed.stderr
+            generated_bytes = artifact_path.read_bytes()
+            assert generated_bytes == gt_bytes
+            assert (
+                hashlib.sha256(generated_bytes).hexdigest()
+                == entry["verified_artifact_sha256"]
+            )
         hidden.rename(workspace / "private_evaluator")
         metrics = evaluate_workspace(scenario, workspace)
         assert metrics["scenario_id"] == scenario_id
