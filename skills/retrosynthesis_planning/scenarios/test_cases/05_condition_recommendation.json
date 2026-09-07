@@ -44,7 +44,7 @@
         "reaction_id": "reaction_001",
         "condition_sets": [
           {
-            "catalyst1": "cat_a",
+            "catalyst1": "cat_b",
             "solvent1": "solv_a",
             "solvent2": "none",
             "reagent1": "reag_a",

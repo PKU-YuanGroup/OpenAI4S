@@ -35,6 +35,22 @@ is a factual record of the v0.3 plan and is validated by
       lists exactly those five. Needs an npm account with publish rights — no
       automated agent should hold that credential.
 
+- [ ] **Freeze the six retrosynthesis production datasets.** Every row in
+      `skills/retrosynthesis_planning/scenarios/test_cases/database_sources.json`
+      is `"release_status": "not_frozen"` — USPTO-50K, PaRoutes, the curated
+      atom-mapping benchmark, the MIT-licensed USPTO forward split, the
+      reviewed Parrot condition snapshot, and the Buchwald-Hartwig HTE
+      distribution-shift splits. Until they are frozen the six bundled cases
+      are deterministic protocol smoke tests with one row each and make no
+      scientific-accuracy claim, which is the single fact separating "six
+      benchmarks" from "six wiring checks". The blocker is outside the
+      codebase: acquiring each source, reviewing its redistribution licence,
+      and pinning a revision. *Done when:* each scenario row carries
+      `release_status: "frozen"` with `revision`, `license`, `split` and
+      `sha256`, and `test_production_database_registry_fails_closed_until_frozen`
+      passes against the frozen rows. Needs a maintainer with the licence
+      decision; no automated agent should make it.
+
 ## CI and supply chain
 
 - [ ] **Batch the Monday dependency PRs across ecosystems.** `groups:` is

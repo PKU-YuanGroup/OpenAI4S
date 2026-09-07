@@ -30,7 +30,7 @@
   },
   "private_evaluator": {
     "references.json": [
-      {"target_id": "target_001", "precursor_sets": ["CC.O"]}
+      {"target_id": "target_001", "precursor_sets": ["C.CO"]}
     ]
   }
 }

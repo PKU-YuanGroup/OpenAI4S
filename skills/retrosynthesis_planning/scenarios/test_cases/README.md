@@ -23,11 +23,18 @@ invalidate the installation instead of silently changing a frozen score.
 Run the matching public pipeline, freeze its output, and only then evaluate:
 
 ```bash
-uv run python skills/retrosynthesis_planning/scenarios/pipelines/01_single_step_retrosynthesis.py \
+uv run python skills/retrosynthesis_planning/scenarios/gt_codebases/01_single_step_retrosynthesis.py \
   --workspace /tmp/openai4s-retro-case
 uv run python skills/retrosynthesis_planning/scenarios/test_cases/evaluate.py \
   --scenario single_step --workspace /tmp/openai4s-retro-case
 ```
+
+Each case's `private_evaluator/references.json` deliberately does **not** repeat
+the model's own rank-1 public output: a reference copied from the prediction
+makes every accuracy 1.0 by construction, and a scorer returning a constant
+would pass. `tests/test_retrosynthesis_evaluator.py` pins the resulting
+non-trivial values, so "correcting" a reference back to the model's answer is a
+red test, not a silent improvement.
 
 `database_sources.json` is the production-data registry. Entries marked
 `not_frozen` must not be silently downloaded or republished. A maintainer must

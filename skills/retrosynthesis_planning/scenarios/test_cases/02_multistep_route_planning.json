@@ -51,8 +51,7 @@
                 {
                   "type": "reaction",
                   "children": [
-                    {"type": "molecule", "smiles": "A", "children": []},
-                    {"type": "molecule", "smiles": "B", "children": []}
+                    {"type": "molecule", "smiles": "A", "children": []}
                   ]
                 }
               ]

@@ -148,20 +148,24 @@ def verify_installed_hashes(
     is the "mismatched input" failure the protocol requires.
     """
 
-    declared = installation.get("hashes") or installation.get("files")
+    declared = installation.get("file_sha256")
     observed: dict[str, str] = {}
     if isinstance(declared, Mapping):
         for name, expected in declared.items():
             if not isinstance(name, str) or not isinstance(expected, str):
                 raise BenchmarkProtocolError(
-                    "installation.json hashes must map file names to hex digests"
+                    "installation.json file_sha256 must map paths to hex digests"
                 )
-            path = workspace / "public" / name
+            # Keys are boundary-prefixed. The private boundary is deliberately
+            # absent from this process, so only public files are recomputed.
+            if not name.startswith("public/"):
+                continue
+            path = workspace / name
             actual = _sha256_file(path)
             observed[name] = actual
             if actual != expected:
                 raise BenchmarkProtocolError(
-                    f"hash mismatch for public/{name}: declared {expected!r} "
+                    f"hash mismatch for {name}: declared {expected!r} "
                     f"but observed {actual!r}"
                 )
     return observed

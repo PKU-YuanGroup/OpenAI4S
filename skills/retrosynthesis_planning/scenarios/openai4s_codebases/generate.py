@@ -39,6 +39,43 @@ PUBLIC_MODULES = (
 )
 
 
+#: Every field a manifest entry may carry. ``_entry`` writes the machine subset
+#: and a maintainer may add the disclosed subset by hand, but neither side may
+#: invent a field the other has never heard of -- that is how the committed
+#: rows drifted into a shape this generator cannot reproduce.
+ENTRY_FIELDS = frozenset(
+    {
+        "name",
+        "query",
+        "query_sha256",
+        "gt_codebase",
+        "gt_sha256",
+        "generated_codebase",
+        "generated_sha256",
+        "verified_artifact_sha256",
+        "generation_interface",
+        "openai4s_command",
+        "openai4s_output_sha256",
+        "openai4s_exit_code",
+        "post_generation_conformance_repair",
+        "status",
+        "verification_error",
+        "error",
+        # Disclosed hand-recorded provenance: the model behind the endpoint and
+        # the state of an Agent run cannot be observed from this process.
+        "model",
+        "run_completion",
+        "post_generation_review_repair",
+    }
+)
+#: Fields every entry must carry, whoever wrote it.
+REQUIRED_ENTRY_FIELDS = frozenset({"name", "status"})
+#: Interfaces an entry may claim. ``_entry`` can only ever produce the first.
+GENERATION_INTERFACES = frozenset(
+    {"openai4s run --mode codebase_change", "openai4s.llm.chat"}
+)
+
+
 class VerificationError(RuntimeError):
     """A fixed, public diagnostic safe to include in generation provenance."""
 
@@ -234,6 +271,9 @@ def _probe_boundary(
         "  raise SystemExit(26)\n",
         encoding="utf-8",
     )
+    # The exit statuses the probe source above uses to report a breach it
+    # detected, as opposed to any other reason the child failed to run.
+    violations = frozenset({21, 22, 23, 24, 25, 26})
     try:
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -248,16 +288,32 @@ def _probe_boundary(
                 ],
                 readonly / "skills",
             )
-            _checked(
-                _sandbox_command(
-                    command, readonly=readonly, results=results, temporary=temporary
-                ),
-                root=results,
-                environment=_environment(results, temporary),
+            wrapped = _sandbox_command(
+                command, readonly=readonly, results=results, temporary=temporary
             )
+            try:
+                _checked(
+                    wrapped,
+                    root=results,
+                    environment=_environment(results, temporary),
+                )
+            except VerificationError as error:
+                # The probe reports each violation with its own exit status. A
+                # breach it actually detected must never be reported with the
+                # same words as a missing sandbox, or a caller that tolerates
+                # "no isolation here" silently tolerates "isolation failed".
+                if getattr(error, "exit_code", None) in violations:
+                    raise VerificationError(
+                        "verification OS sandbox boundary was not honoured"
+                    ) from error
+                raise VerificationError(
+                    "verification OS sandbox boundary probe could not run"
+                ) from error
+    except VerificationError:
+        raise
     except Exception as error:
         raise VerificationError(
-            "verification OS sandbox boundary probe failed"
+            "verification OS sandbox boundary probe could not run"
         ) from error
     finally:
         probe.unlink()
@@ -272,6 +328,7 @@ def _sha256(path: Path) -> str:
 
 
 def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
@@ -320,9 +377,13 @@ def _checked(command: list[str], *, root: Path, environment: dict[str, str]) -> 
     except (OSError, subprocess.SubprocessError) as error:
         raise VerificationError("verification process could not complete") from error
     if completed.returncode:
-        raise VerificationError(
+        failure = VerificationError(
             f"verification command failed (exit {completed.returncode}); output omitted"
         )
+        # Set dynamically so the exception stays declared above the frozen
+        # egress-inventory line numbers in tests/test_egress_surface.py.
+        failure.exit_code = completed.returncode  # type: ignore[attr-defined]
+        raise failure
 
 
 def _verify_case(root: Path, name: str, gt: Path, generated: Path) -> str:
@@ -385,6 +446,8 @@ def _verify_case(root: Path, name: str, gt: Path, generated: Path) -> str:
                 gt_workspace / "results" / "intermediate_results.json",
                 generated_workspace / "private_evaluator" / "references.json",
                 gt,
+                gt.parent.parent / "pipelines" / gt.name,
+                root / "skills" / "retrosynthesis_planning" / "gt_codebase.py",
                 case,
             ),
         )
@@ -445,6 +508,21 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
             "refusing to overwrite existing source; pass --overwrite"
         )
     command = _command(root, query)
+    preserved = generated.read_bytes() if generated.is_file() else None
+    try:
+        return _generate(root, name, query, gt, generated, command)
+    finally:
+        # A run that produced nothing is an attempt, not a replacement: the
+        # previously verified source is restored so its provenance still holds.
+        # This has to be a finally — the record is built after the child runs,
+        # so any failure in between used to leave the file deleted.
+        if preserved is not None and not generated.exists():
+            generated.write_bytes(preserved)
+
+
+def _generate(
+    root: Path, name: str, query: Path, gt: Path, generated: Path, command: list[str]
+) -> dict[str, object]:
     if generated.exists():
         generated.unlink()
     completed = subprocess.run(
@@ -472,7 +550,10 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
     }
     if completed.returncode == 0 and generated.is_file():
         source = generated.read_text(encoding="utf-8")
-        forbidden = ("gt_codebase", "gt_codebases", "private_evaluator")
+        # Mirrors the four paths the task forbids. "gt_codebases" is already a
+        # substring of "gt_codebase"; "pipelines" was missing, and that
+        # directory is a byte-identical copy of the GT entry points.
+        forbidden = ("gt_codebase", "private_evaluator", "pipelines")
         hits = [item for item in forbidden if item in source]
         if hits:
             record["verification_error"] = f"forbidden source references: {hits}"
@@ -489,6 +570,11 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
                 record["status"] = "generated_verification_failed"
     elif completed.returncode == 0:
         record["verification_error"] = "OpenAI4S exited successfully without source"
+    # Bind the writer to the declared schema, so a new field here is a red test
+    # rather than a manifest shape nothing can reproduce.
+    undeclared = set(record) - ENTRY_FIELDS
+    if undeclared:
+        raise VerificationError(f"undeclared manifest fields: {sorted(undeclared)}")
     return record
 
 
@@ -532,7 +618,7 @@ def main() -> int:
             changed = True
     if changed:
         manifest["entries"] = list(previous.values())
-        manifest["generation_kind"] = "per_entry_generation"
+        manifest.setdefault("generation_kind", "per_entry_generation")
         _write_json(manifest_path, manifest)
     print(
         json.dumps({"attempts": records, "manifest_updated": changed}, sort_keys=True)

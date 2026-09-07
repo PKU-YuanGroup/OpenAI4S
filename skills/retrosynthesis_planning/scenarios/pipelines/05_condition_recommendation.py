@@ -1,4 +1,8 @@
-"""OpenAI4S-generated public pipeline for Scenario 5."""
+"""Deprecated alias for the reviewed GT condition-recommendation entry point.
+
+A reviewed evaluator reference, not generation output; see
+../gt_codebases/ and README.md.
+"""
 
 import sys
 from pathlib import Path

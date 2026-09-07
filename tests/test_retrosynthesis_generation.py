@@ -230,6 +230,40 @@ def test_per_scenario_regeneration_preserves_other_entries(
     assert entries[1:] == original["entries"][1:]
 
 
+@pytest.mark.stubbed_backend
+def test_a_failed_regeneration_preserves_the_verified_source_and_manifest(
+    generator, monkeypatch, tmp_path
+):
+    root = tmp_path / "root"
+    shutil.copytree(
+        ROOT / "skills",
+        root / "skills",
+        ignore=shutil.ignore_patterns("bioskills", "__pycache__"),
+    )
+    target = root / "skills" / "retrosynthesis_planning" / "scenarios"
+    target = target / "openai4s_codebases"
+    name = generator.NAMES[0]
+    source = target / f"{name}.py"
+    manifest = target / "generation_manifest.json"
+    source_before = source.read_bytes()
+    manifest_before = manifest.read_bytes()
+    monkeypatch.setattr(generator, "__file__", str(target / "generate.py"))
+    monkeypatch.setattr(
+        generator,
+        "_command",
+        lambda r, q: [sys.executable, "-c", "raise SystemExit(3)"],
+    )
+    monkeypatch.setattr(
+        generator.sys, "argv", ["generate.py", "--scenario", name, "--overwrite"]
+    )
+
+    assert generator.main() == 1
+
+    # A generation that produced nothing is an attempt, not a replacement.
+    assert source.read_bytes() == source_before
+    assert manifest.read_bytes() == manifest_before
+
+
 def test_real_verification_blocks_private_reads_credentials_and_public_writes(
     generator, monkeypatch, tmp_path
 ):
@@ -259,12 +293,39 @@ def test_real_verification_blocks_private_reads_credentials_and_public_writes(
     try:
         artifact_hash = generator._verify_case(ROOT, name, gt, candidate)
     except generator.VerificationError as error:
-        if (
-            "sandbox" in str(error)
-            and os.environ.get("OPENAI4S_REQUIRE_GENERATION_SANDBOX") != "1"
-        ):
+        # Only an absent or unusable sandbox may be skipped. "boundary was not
+        # honoured" means the probe caught a real escape and must fail here.
+        unavailable = "requires an available OS sandbox" in str(
+            error
+        ) or "boundary probe could not run" in str(error)
+        if unavailable and os.environ.get("OPENAI4S_REQUIRE_GENERATION_SANDBOX") != "1":
             pytest.skip(
                 "OS sandbox unavailable inside this test runner; verifier failed closed"
             )
         raise
     assert len(artifact_hash) == 64
+
+
+@pytest.mark.stubbed_backend
+def test_a_detected_boundary_breach_is_never_reported_as_a_missing_sandbox(
+    generator, monkeypatch, tmp_path
+):
+    def breached(command, *, root, environment):
+        failure = generator.VerificationError("verification command failed (exit 22)")
+        failure.exit_code = 22
+        raise failure
+
+    monkeypatch.setattr(generator, "_checked", breached)
+    monkeypatch.setattr(generator.sys, "platform", "darwin")
+    monkeypatch.setattr(generator.shutil, "which", lambda name: "/usr/bin/sandbox-exec")
+    monkeypatch.setattr(generator, "_runtime_roots", lambda: ())
+    monkeypatch.setattr(generator, "_runtime_denials", lambda: ())
+    readonly, results, temporary = (
+        tmp_path / name for name in ("readonly", "results", "temporary")
+    )
+    for path in (readonly, results, temporary):
+        path.mkdir()
+    with pytest.raises(generator.VerificationError, match="was not honoured"):
+        generator._probe_boundary(
+            readonly=readonly, results=results, temporary=temporary, denied=()
+        )

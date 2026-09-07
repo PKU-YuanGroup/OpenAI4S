@@ -21,11 +21,16 @@ uv run python skills/retrosynthesis_planning/scenarios/test_cases/install.py \
 冻结输出，再由 evaluator 读取私有 Ground Truth：
 
 ```bash
-uv run python skills/retrosynthesis_planning/scenarios/pipelines/01_single_step_retrosynthesis.py \
+uv run python skills/retrosynthesis_planning/scenarios/gt_codebases/01_single_step_retrosynthesis.py \
   --workspace /tmp/openai4s-retro-case
 uv run python skills/retrosynthesis_planning/scenarios/test_cases/evaluate.py \
   --scenario single_step --workspace /tmp/openai4s-retro-case
 ```
+
+每个用例的 `private_evaluator/references.json` 都**刻意不等于**模型自己的 rank-1
+公开输出：参考答案若照抄预测，所有准确率都会因构造而恒为 1.0，一个只会返回常数的
+scorer 也能通过。`tests/test_retrosynthesis_evaluator.py` 钉住了由此得到的非平凡
+数值，因此把参考答案"改回"模型的答案会让测试变红，而不是悄悄变好。
 
 `database_sources.json` 是正式数据库注册表。标为 `not_frozen` 的条目不得静默下载或
 重新发布；维护者必须先冻结来源 revision、许可证结论、split 和 SHA256。在此之前，

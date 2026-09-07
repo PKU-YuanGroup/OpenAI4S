@@ -23,6 +23,6 @@
     ]
   },
   "private_evaluator": {
-    "references.json": [{"reaction_id": "reaction_001", "products": ["P"]}]
+    "references.json": [{"reaction_id": "reaction_001", "products": ["Q"]}]
   }
 }

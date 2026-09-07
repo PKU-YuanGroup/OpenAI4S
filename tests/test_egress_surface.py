@@ -267,8 +267,11 @@ _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 #: A successful connection aborts verification. The destination is never model
 #: supplied, and a guarded Host call would test the parent rather than the
 #: child network boundary. No other inventory site changed in this re-pin.
+#: Re-pinned again when the generator gained its manifest-schema declaration:
+#: that constant sits above the probe, so its single site moved from 225 to
+#: 262. Same file, same client, same one site; nothing entered or left.
 _PINNED_SKILL_EGRESS_FINGERPRINT = (
-    "ef99deba3d9549954b873db727d868710af672505d498f272fa5149641522bac"
+    "36e2ed60ce8ee5fd33fc4c11ac1c03d0e8d794ca021a0ae177a8f5dcb4267e78"
 )
 
 _SKILL_EGRESS_PATTERNS = (

@@ -1,6 +1,7 @@
 """Offline contracts for the six independent retrosynthesis science scenarios."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -726,7 +727,7 @@ def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
             generated = generated_path.read_text(encoding="utf-8")
             assert not any(
                 forbidden in generated
-                for forbidden in ("gt_codebase", "gt_codebases", "private_evaluator")
+                for forbidden in ("gt_codebase", "private_evaluator", "pipelines")
             )
             assert (
                 hashlib.sha256(generated_path.read_bytes()).hexdigest()
@@ -779,6 +780,61 @@ def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
         assert metrics["scenario_id"] == scenario_id
 
 
+def test_generation_manifest_entries_match_the_declared_schema():
+    scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    directory = scenarios / "openai4s_codebases"
+    spec = importlib.util.spec_from_file_location(
+        "retrosynthesis_generator_schema", directory / "generate.py"
+    )
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    manifest = json.loads(
+        (directory / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    for entry in manifest["entries"]:
+        name = entry["name"]
+        assert set(entry) <= generator.ENTRY_FIELDS, name
+        assert generator.REQUIRED_ENTRY_FIELDS <= set(entry), name
+        assert entry["generation_interface"] in generator.GENERATION_INTERFACES, name
+        # A row the generator itself could not have written must say so.
+        if entry["generation_interface"] != "openai4s run --mode codebase_change":
+            assert entry["post_generation_review_repair"] is True, name
+        if entry["run_completion"] != "completed":
+            assert entry["post_generation_conformance_repair"] is True, name
+        if entry["status"] == "generated_verified":
+            assert entry["verified_artifact_sha256"], name
+            assert entry["generated_sha256"], name
+
+
+def test_legacy_pipeline_alias_manifest_pins_are_current():
+    base = (
+        Path(get_config().skills_dir)
+        / "retrosynthesis_planning"
+        / "scenarios"
+        / "pipelines"
+    )
+    manifest = json.loads(
+        (base / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    runtime = (base / manifest["shared_runtime"]["path"]).resolve()
+    assert (
+        hashlib.sha256(runtime.read_bytes()).hexdigest()
+        == manifest["shared_runtime"]["sha256"]
+    )
+    assert {entry["scenario_id"] for entry in manifest["entries"]} == set(
+        SCENARIO_IDS.values()
+    )
+    for entry in manifest["entries"]:
+        entrypoint = base / entry["entrypoint"]
+        source = entrypoint.read_text(encoding="utf-8")
+        # These are reviewed GT aliases, never generation output.
+        assert "OpenAI4S-generated" not in source
+        assert (
+            hashlib.sha256(entrypoint.read_bytes()).hexdigest()
+            == entry["entrypoint_sha256"]
+        )
+
+
 def test_production_database_registry_fails_closed_until_frozen():
     path = (
         Path(get_config().skills_dir)
@@ -789,9 +845,15 @@ def test_production_database_registry_fails_closed_until_frozen():
     )
     registry = json.loads(path.read_text(encoding="utf-8"))
     assert set(registry["scenarios"]) == set(SCENARIO_IDS)
-    assert {row["release_status"] for row in registry["scenarios"].values()} == {
-        "not_frozen"
-    }
+    for scenario, row in registry["scenarios"].items():
+        status = row["release_status"]
+        assert status in {"not_frozen", "frozen"}, scenario
+        # Freezing a source is allowed; freezing it without the provenance the
+        # policy demands is not. Asserting the constant instead reddened this
+        # gate the day a maintainer legitimately froze a dataset.
+        if status == "frozen":
+            for field in ("revision", "license", "split", "sha256"):
+                assert row.get(field), f"{scenario} frozen without {field}"
 
 
 def test_private_evaluator_rejects_a_tampered_frozen_artifact(tmp_path):

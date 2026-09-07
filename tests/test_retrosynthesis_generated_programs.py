@@ -2,12 +2,13 @@
 
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from openai4s.kernel.environment import build_kernel_environment
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
 SCENARIOS = SKILLS / "retrosynthesis_planning" / "scenarios"
@@ -45,7 +46,10 @@ def _run(name, workspace, *, stdlib_only=True):
             str(workspace),
         ],
         cwd=workspace,
-        env=dict(os.environ),
+        # These are model-written programs. Handing them the operator's whole
+        # environment would give LLM-generated code the provider credentials
+        # this PR's own generator test asserts must never cross the boundary.
+        env=build_kernel_environment(cwd=str(workspace)),
         capture_output=True,
         text=True,
         check=False,

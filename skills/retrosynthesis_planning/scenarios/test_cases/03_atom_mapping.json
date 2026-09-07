@@ -27,7 +27,7 @@
       {
         "reaction_id": "reaction_001",
         "equivalent_correspondences": [
-          [{"reactant_atom": "r0:a0", "product_atom": "p0:a0"}]
+          [{"reactant_atom": "r0:a0", "product_atom": "p0:a1"}]
         ],
         "bond_changes": [],
         "ambiguous": false

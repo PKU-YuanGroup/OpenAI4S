@@ -159,13 +159,17 @@ def rdkit_connectivity_canonicalize(smiles: str) -> str:
 
 
 def normalize_precursor_set(raw: str, *, canonicalizer: Canonicalizer) -> list[str]:
-    """Normalize a dot-separated set of precursor SMILES."""
+    """Normalize a dot-separated precursor set as an unordered multiset."""
     if not raw.strip():
         return []
-    parts = [p.strip() for p in raw.split(".") if p.strip()]
-    if not parts:
-        return []
-    return [canonicalizer(p) for p in parts]
+    parts = raw.split(".")
+    if any(not part.strip() for part in parts):
+        raise BenchmarkProtocolError("precursor set contains an empty component")
+    canonical = [canonicalizer(part.strip()) for part in parts]
+    # Component order is not chemistry: an unsorted set makes "B.A" and "A.B"
+    # two different reactions and diverges from the frozen GT artifact.
+    canonical.sort()
+    return canonical
 
 
 def _normalize_components(

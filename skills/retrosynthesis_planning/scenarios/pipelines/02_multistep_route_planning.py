@@ -1,4 +1,8 @@
-"""OpenAI4S-generated public pipeline for Scenario 2."""
+"""Deprecated alias for the reviewed GT budgeted multistep entry point.
+
+A reviewed evaluator reference, not generation output; see
+../gt_codebases/ and README.md.
+"""
 
 import sys
 from pathlib import Path
