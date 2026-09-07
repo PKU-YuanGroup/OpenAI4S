@@ -5,7 +5,7 @@
   "generation_provenance": "Deprecated compatibility mapping; these files are not OpenAI4S-generated outputs.",
   "shared_runtime": {
     "path": "../../gt_codebase.py",
-    "sha256": "b6e964b3e424ef1e89397622ce0f3f3263065481a8ce511266607f7f3086790e"
+    "sha256": "f6c754c2bc09f50348e6488811b73fad398fa4b736e581bbac8a28e5870eb5dc"
   },
   "entries": [
     {

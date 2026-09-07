@@ -208,11 +208,10 @@ def _verify_installation(
         required.add(f"public/{extra_public}")
     if not required.issubset(hashes):
         raise BenchmarkProtocolError("installation is missing required file hashes")
+    # Validates the anchor itself; the public digests stay the manifest's.
+    # Substituting public inputs against an installed case is a supported
+    # workflow, so the frozen case does not overrule them.
     case = _frozen_case(installation)
-    if case is not None:
-        # Prefer the frozen case over the workspace manifest: the manifest is
-        # writable by whoever runs the pipeline, the Skill tree is not.
-        hashes = _frozen_hashes(case, "public")
     _verify_hashes(workspace, hashes, boundary="public")
     if not include_private:
         return
@@ -228,6 +227,9 @@ def _verify_installation(
     if "private_evaluator/references.json" not in private_hashes:
         raise BenchmarkProtocolError("installation is missing required file hashes")
     if case is not None:
+        # The ground truth is the half a manifest stored beside it cannot
+        # vouch for: rewriting references.json and its own digest is two edits,
+        # not one, so the authority has to live outside the workspace.
         private_hashes = _frozen_hashes(case, "private_evaluator")
     # The public manifest is not covered by any digest, so the profile that
     # selects identity-vs-RDKit canonicalization is cross-checked against the

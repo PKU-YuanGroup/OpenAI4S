@@ -214,6 +214,28 @@ def test_forged_references_and_their_own_digest_are_still_rejected(tmp_path):
         evaluate_workspace("yield", workspace)
 
 
+def test_substituting_a_public_input_against_an_installed_case_is_allowed(tmp_path):
+    # The frozen case anchors the ground truth, not the inputs: re-pointing an
+    # installed workspace at different public data is a supported workflow, and
+    # the only test that covered it needed RDKit, so it skipped everywhere but
+    # one CI row.
+    workspace = _install(tmp_path, "forward")
+    path = workspace / "public" / "inputs.json"
+    path.write_text(
+        json.dumps([{"reaction_id": "reaction_001", "reactants": "B", "reagents": ""}])
+    )
+    manifest_path = workspace / "installation.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["file_sha256"]["public/inputs.json"] = hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+    run_pipeline("forward", workspace)
+
+    assert (workspace / "results" / "intermediate_results.json").is_file()
+
+
 def test_a_workspace_may_not_claim_a_frozen_case_it_was_not_built_from(tmp_path):
     workspace = _install(tmp_path, "yield")
     path = workspace / "installation.json"
