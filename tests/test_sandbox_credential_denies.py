@@ -184,6 +184,7 @@ def _bwrap(monkeypatch, tmp_path, *, fake_proc=True):
     test is never taken by accident. Forcing it is the only way this is checked
     at all before a Linux run — the divergence CLAUDE.md warns about.
     """
+    monkeypatch.setattr(sandbox.wsl, "is_wsl", lambda: False)
     if fake_proc:
         real_exists = os.path.exists
         monkeypatch.setattr(

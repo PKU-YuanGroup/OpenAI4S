@@ -8,6 +8,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| [`wsl_sandbox.py`](wsl_sandbox.py) | 真实 WSL2 验收：Windows 程序与加载器、IPC/proc 别名、Hyper-V socket、DPAPI 持久存储/删除及中断后继续执行。 |
 | [`__init__.py`](__init__.py) | 标记这是一个需显式启用的 smoke 包，导入它不会执行任何检查。 |
 | [`linux_bwrap_interrupt.py`](linux_bwrap_interrupt.py) | 真实 hosted Linux 的进程身份检查。它在 bubblewrap 下启动带团队读取隔离的 Python 与 R kernel，要求 `--unshare-pid` 和 `--info-fd`，验证命令进程是 PID 2 且已固定 pidfd，中断一个正在运行的长 Cell，再证明同一个持久命名空间仍能执行下一 Cell。CI 特意设置 `OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1`，让进程身份的证据不依赖网络配置；因此它只证明 private-PID/interrupt 契约，不证明网络隔离。Ubuntu 24.04 还会拒绝没有 profile 的 bwrap 创建 user namespace；CI 加载发行版自带、会剥离子进程 capability 的 `bwrap-userns-restrict`，而不是关闭整台 runner 的 AppArmor 限制。 |
 | [`macos_sandbox.py`](macos_sandbox.py) | Darwin/Seatbelt 检查，失败即拒绝：沙箱必须确实强制生效并通过自测，否则程序直接报错。随后它从 worker 内部证明工作区外的写入和对外网络都被挡住、工作区内的写入仍然可用，并且 worker 派生的子进程看不到 daemon 的 secret。 |

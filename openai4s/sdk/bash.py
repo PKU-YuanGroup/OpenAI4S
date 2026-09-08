@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import os
 import secrets
+import shutil
 import subprocess
 import threading
 import time
@@ -32,6 +33,20 @@ from openai4s.security.fsprobe import lstat_is_symlink
 #: for a command that failed, the end is what explains it.
 _STDOUT_BUDGET_CHARS = 30_000
 _STDERR_BUDGET_CHARS = 8_000
+
+
+def _shell_executable() -> str:
+    """The interpreter `host.bash` runs a command under.
+
+    `shell=True` alone means `/bin/sh`, which on Debian and Ubuntu is dash --
+    so `[[ ]]`, `source` and process substitution failed as syntax errors in a
+    capability the model is told is Bash. Resolving it rather than naming
+    `/bin/bash` outright keeps the fix from turning a dialect mismatch into
+    total loss of the capability on an image that has no bash at all (Alpine,
+    busybox, distroless, NixOS): there, `/bin/sh` is still the POSIX shell that
+    `shell=True` would have used.
+    """
+    return shutil.which("bash") or "/bin/sh"
 
 
 class _BoundedTail:
@@ -408,6 +423,7 @@ class BashExecutor:
             proc = subprocess.Popen(
                 command,
                 shell=True,
+                executable=_shell_executable(),
                 cwd=str(cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

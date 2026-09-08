@@ -265,6 +265,7 @@ _SECRET_BACKENDS = frozenset(
         "none",
         "macos-keychain",
         "secret-service",
+        "windows-dpapi",
         "env-injection",
         "plaintext-db",
         "memory",

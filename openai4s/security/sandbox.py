@@ -51,6 +51,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from . import wsl
+
 _SANDBOX_ENV = "OPENAI4S_KERNEL_SANDBOX"
 _RAW_NETWORK_ENV = "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK"
 _VALID_MODES = frozenset({"auto", "enforce", "off"})
@@ -559,6 +561,7 @@ def wrap_bwrap_command(
     deny_read: Sequence[tuple[str, str]] = (),
     read_isolation: KernelReadIsolation | None = None,
     info_fd: int | None = None,
+    seccomp_fd: int | None = None,
     new_session: bool = True,
 ) -> list[str]:
     """Wrap ``command`` in a read-only-root bubblewrap mount namespace."""
@@ -566,6 +569,8 @@ def wrap_bwrap_command(
     workspace_s = str(workspace)
     temp_s = str(temp_dir)
     isolation = _workspace_isolation_paths(workspace, read_isolation)
+    wsl_host = wsl.is_wsl()
+    wsl_denials = wsl.read_denials() if wsl_host else ()
     isolation_roots = tuple(str(root) for root in isolation[1]) if isolation else ()
     allowed_roots = tuple(str(root) for root in isolation[2]) if isolation else ()
     wrapped = [
@@ -588,13 +593,23 @@ def wrap_bwrap_command(
         if int(info_fd) < 0:
             raise SandboxConfigurationError("bubblewrap info fd must be non-negative")
         wrapped.extend(["--info-fd", str(int(info_fd))])
-    if isolation_roots:
+    if isolation_roots or wsl_host:
         # A private PID namespace closes /proc/<sibling>/root, which would
         # otherwise provide an alias around the mount hiding the shared root.
         wrapped.append("--unshare-pid")
+    if seccomp_fd is not None:
+        wrapped.extend(["--seccomp", str(seccomp_fd)])
     if not allow_raw_network:
         wrapped.append("--unshare-net")
     wrapped.extend(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
+    # Restore only the workspace, the resolver and private temp below these
+    # masks. Hiding the host PID namespace also closes /proc/<host>/root
+    # mount aliases.
+    if wsl_host:
+        wrapped.extend(_bwrap_read_masks(wsl_denials))
+        # Before the read-only remounts below: a bind whose destination has to
+        # be created inside an already-immutable tmpfs fails.
+        wrapped.extend(wsl.resolver_rebinds(tuple(path for _, path in wsl_denials)))
     if isolation_roots:
         # Hide every existing and future private path behind fresh mounts. The
         # bubblewrap source of every later bind is resolved through oldroot,
@@ -607,6 +622,9 @@ def wrap_bwrap_command(
             continue
         wrapped.extend(["--ro-bind", root, root])
     wrapped.extend(["--bind", temp_s, temp_s])
+    for _, path in wsl_denials:
+        if path not in wsl.WRITABLE_MASKS and os.path.isdir(path):
+            wrapped.extend(["--remount-ro", path])
     if isolation_roots:
         # remount-ro is deliberately non-recursive in bubblewrap: the parent
         # tmpfs becomes immutable while the nested workspace bind stays rw and
@@ -618,7 +636,7 @@ def wrap_bwrap_command(
     wrapped.extend(_bwrap_read_masks(deny_read))
     # ...and after `--proc /proc` above, which is what makes this reachable:
     # the mount would otherwise replace whatever was bound over it.
-    if not isolation_roots:
+    if not isolation_roots and not wsl_host:
         wrapped.extend(_bwrap_daemon_environ_mask())
     wrapped.extend(
         [
@@ -648,6 +666,7 @@ from pathlib import Path
 ) = sys.argv[1:7]
 sibling_files = json.loads(sibling_files_json)
 allowed_files = json.loads(allowed_files_json)
+expect_wsl_boundary = sys.argv[7:8] == ["1"]
 
 def can_write(name):
     try:
@@ -720,6 +739,20 @@ checks = {
     ),
 }
 required = ["workspace_write", "temp_write", "outside_write_blocked"]
+if expect_wsl_boundary:
+    import errno
+    checks["wsl_private_pid"] = os.getpid() == 2 and os.getppid() == 1
+    checks["wsl_interop_hidden"] = (
+        not os.access("/init", os.X_OK) and not Path("/run/WSL").exists()
+    )
+    try:
+        channel = socket.socket(40, socket.SOCK_STREAM)
+    except OSError as exc:
+        checks["wsl_vsock_denied"] = exc.errno == errno.EPERM
+    else:
+        channel.close()
+        checks["wsl_vsock_denied"] = False
+    required.extend(["wsl_private_pid", "wsl_interop_hidden", "wsl_vsock_denied"])
 if expect_network_blocked == "1":
     required.append("network_blocked")
 if sibling_files:
@@ -991,12 +1024,22 @@ class KernelSandbox:
         self._bwrap_info_write_fd: int | None = None
         self._bwrap_launcher_pid: int | None = None
         self._bwrap_worker_pidfd: int | None = None
+        self._private_pid = self._read_isolation is not None or wsl.is_wsl()
+        self._seccomp_file = None
 
     def wrap_command(self, command: Sequence[str]) -> list[str]:
         argv = [str(part) for part in command]
         if not self.status.enforced:
             return argv
-        if self._read_isolation is not None:
+        # Windows hardlinks cannot cross into a Linux filesystem workspace.
+        # Scan WSL workspaces on Windows mounts, where aliases can cross the
+        # masked Windows boundary; retain the full scan for team isolation.
+        if self._read_isolation is not None or (
+            wsl.is_wsl()
+            and any(
+                self._workspace.is_relative_to(root) for root in wsl.windows_mounts()
+            )
+        ):
             _assert_no_external_workspace_hardlinks(self._workspace)
         if not self._executable or not self._temp_dir:
             raise SandboxUnavailableError("enabled sandbox has no runtime boundary")
@@ -1012,7 +1055,7 @@ class KernelSandbox:
             )
         if self.status.backend == "bubblewrap":
             info_fd = None
-            if self._read_isolation is not None:
+            if self._private_pid:
                 self._reset_bwrap_process_identity()
                 try:
                     read_fd, write_fd = os.pipe()
@@ -1023,6 +1066,12 @@ class KernelSandbox:
                 self._bwrap_info_read_fd = read_fd
                 self._bwrap_info_write_fd = write_fd
                 info_fd = write_fd
+            if wsl.is_wsl():
+                if self._seccomp_file is not None:
+                    self._seccomp_file.close()
+                self._seccomp_file = tempfile.TemporaryFile()
+                self._seccomp_file.write(wsl.socket_filter())
+                self._seccomp_file.seek(0)
             return wrap_bwrap_command(
                 argv,
                 executable=self._executable,
@@ -1032,6 +1081,7 @@ class KernelSandbox:
                 deny_read=self._deny_read,
                 read_isolation=self._read_isolation,
                 info_fd=info_fd,
+                seccomp_fd=self._seccomp_file.fileno() if self._seccomp_file else None,
                 # The *spawner* owns the session here, not bubblewrap. Asking
                 # bwrap to create a second one for its command splits the
                 # wrapper and the Cell's subprocesses into different process
@@ -1054,9 +1104,14 @@ class KernelSandbox:
     def popen_pass_fds(self) -> tuple[int, ...]:
         """File descriptors the next local Popen must inherit exactly once."""
 
-        if self._bwrap_info_write_fd is None:
-            return ()
-        return (self._bwrap_info_write_fd,)
+        return tuple(
+            fd
+            for fd in (
+                self._bwrap_info_write_fd,
+                self._seccomp_file.fileno() if self._seccomp_file else None,
+            )
+            if fd is not None
+        )
 
     def _read_bwrap_info(self, descriptor: int) -> Mapping[str, Any]:
         deadline = time.monotonic() + _BWRAP_INFO_TIMEOUT_S
@@ -1215,7 +1270,7 @@ class KernelSandbox:
         cancellation appear successful while arbitrary Cell code continues.
         """
 
-        if self._read_isolation is None or self.status.backend != "bubblewrap":
+        if not self._private_pid or self.status.backend != "bubblewrap":
             return
         read_fd = self._bwrap_info_read_fd
         write_fd = self._bwrap_info_write_fd
@@ -1380,6 +1435,9 @@ class KernelSandbox:
         self._bwrap_worker_pidfd = worker_pidfd
 
     def _reset_bwrap_process_identity(self) -> None:
+        if self._seccomp_file is not None:
+            self._seccomp_file.close()
+            self._seccomp_file = None
         for field in ("_bwrap_info_read_fd", "_bwrap_info_write_fd"):
             descriptor = getattr(self, field)
             setattr(self, field, None)
@@ -1496,7 +1554,7 @@ class KernelSandbox:
             return False
 
         pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
-        if self._read_isolation is not None:
+        if self._private_pid:
             # In a private PID namespace the command is a grandchild of the
             # outer launcher. Use only the persistent pidfd established below
             # bubblewrap's authenticated-by-inheritance namespace-init report;
@@ -1667,7 +1725,13 @@ def _run_self_test(
         "0" if allow_raw_network else "1",
         json.dumps([str(path) for path in sibling_files]),
         json.dumps([str(path) for path in allowed_files]),
+        "1" if backend == "bubblewrap" and wsl.is_wsl() else "0",
     ]
+    seccomp_file = None
+    if backend == "bubblewrap" and wsl.is_wsl():
+        seccomp_file = tempfile.TemporaryFile()
+        seccomp_file.write(wsl.socket_filter())
+        seccomp_file.seek(0)
     if backend == "seatbelt":
         command = wrap_seatbelt_command(
             probe,
@@ -1694,6 +1758,7 @@ def _run_self_test(
             # establish the same one. Left at the default it attested to a
             # configuration no kernel, dynamic tool or preinstall probe runs.
             new_session=False,
+            seccomp_fd=seccomp_file.fileno() if seccomp_file else None,
         )
     try:
         completed = runner(
@@ -1710,10 +1775,13 @@ def _run_self_test(
             text=True,
             timeout=8,
             check=False,
+            **({"pass_fds": (seccomp_file.fileno(),)} if seccomp_file else {}),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"self-test could not start: {_bounded_diagnostic(exc)}"
     finally:
+        if seccomp_file is not None:
+            seccomp_file.close()
         for candidate in (workspace_file, temp_file):
             try:
                 candidate.unlink(missing_ok=True)
@@ -1739,6 +1807,10 @@ def _run_self_test(
     returncode = int(getattr(completed, "returncode", 1))
     checks = payload.get("checks") if payload else None
     required_checks = ["workspace_write", "temp_write", "outside_write_blocked"]
+    if backend == "bubblewrap" and wsl.is_wsl():
+        required_checks.extend(
+            ["wsl_private_pid", "wsl_interop_hidden", "wsl_vsock_denied"]
+        )
     if not allow_raw_network:
         required_checks.append("network_blocked")
     if isolation is not None:

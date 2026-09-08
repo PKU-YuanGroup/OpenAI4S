@@ -10,6 +10,8 @@ Tool，`openai4s/` 下也没有任何模块会导入它们。
 
 | 文件 | 职责 |
 | --- | --- |
+| [`relocate_bundle_scripts.py`](relocate_bundle_scripts.py) | 在签名与打包前，将 Python console script 的解释器改为同目录的包内运行时。 |
+| `probe_wsl_parity.py` | 手动启用的 WSL 诊断：用临时合成数据检查密钥后端、真实 host.bash/kernel、Windows 互操作、源码打包、CLI PATH 和坏包恢复。必须指定 Windows 临时目录；退出 0 只表示采集完毕，不表示已对齐。详见 docs/ 的双语调查。 |
 | `build_macos_dmg.sh` | 打包 macOS `.app` 与 `.dmg`。内核要靠 `sys.executable` 拉起 worker，一旦把应用 freeze 掉就会坏，所以这里改成内嵌一份可重定位的独立 CPython，源码以散装 `.py` 的形式原样带上，并把 CORE 科学栈预装进运行时，首次启动不需要联网。签名跟随发布环境：配置了 `OPENAI4S_MACOS_SIGNING_IDENTITY` 就真正用它签（并做 `codesign --verify`），否则回退到 ad-hoc 签名；构建器本身从不做公证——只有 `notarize_macos_dmg.sh` 会联系 Apple，那份证据由发布闸门单独校验。 |
 | `notarize_macos_dmg.sh` | 给 DMG 签名，然后 `notarytool submit --wait`、staple、`stapler validate`、`spctl`。在联系任何 Apple 服务之前，对最小 Developer ID + 公证凭据集做 fail-fast 预检。默认单测从不访问公证服务，只覆盖凭据、ticket/digest 绑定与省略。release workflow 的 `macos_asset` 输入为 `notarized` 或 `omit`（默认 omit：不上传 preview DMG）。 |
 | `build_linux_bundle.sh` | 打包 Linux `.tar.gz`：同一份内嵌的可重定位 CPython、同一份预装科学栈、同样原样带上的源码树，外加一个自定位启动器、一份 `.desktop` 模板和面向单用户的 `install.sh`。刻意不做 AppImage——一个靠 FUSE 挂载的 squashfs，对于「本职就是在 bubblewrap 下拉起子进程」的程序是错误的宿主，而且它会在执行 cell 的时候才坏，不是在启动的时候。可以在 macOS 上交叉构建（全程不编译），只跳过那些必须**运行**目标才能做的检查，并且明说跳过了。 |

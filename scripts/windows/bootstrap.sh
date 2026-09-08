@@ -48,7 +48,12 @@ run_preflight() {
     exit 1
   fi
 
-  for tool in awk grep tar; do
+  if [ "$(id -u)" = 0 ]; then
+    echo "OpenAI4S must run as your ordinary WSL user, not root" >&2
+    exit 1
+  fi
+
+  for tool in awk grep tar flock; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       echo "required WSL tool is missing: $tool" >&2
       echo "use Ubuntu 24.04 or newer (wsl --install -d Ubuntu-24.04)" >&2
@@ -59,7 +64,7 @@ run_preflight() {
   if ! command -v bwrap >/dev/null 2>&1; then
     echo "bubblewrap $MIN_BWRAP_VERSION or newer is required for isolated cells" >&2
     echo "inside Ubuntu 24.04, run: sudo apt update && sudo apt install -y bubblewrap" >&2
-    exit 1
+    exit 10
   fi
   BWRAP_VERSION="$(bwrap --version 2>/dev/null | awk '{print $NF}')"
   if [ -z "$BWRAP_VERSION" ] || ! version_at_least "$BWRAP_VERSION" "$MIN_BWRAP_VERSION"; then
@@ -77,7 +82,7 @@ run_preflight() {
   # preflight decides. The exact-argv guarantee belongs to the daemon's own
   # sandbox self-test, which does pass new_session=False.
   if ! bwrap --die-with-parent --new-session \
-      --unshare-ipc --unshare-uts --unshare-net \
+      --unshare-ipc --unshare-uts --unshare-net --unshare-pid \
       --ro-bind / / --dev /dev --proc /proc -- /bin/true >/dev/null 2>&1; then
     echo "bubblewrap $BWRAP_VERSION is installed but cannot create the WSL2 sandbox" >&2
     echo "confirm this distribution is WSL2 with: wsl -l -v" >&2
@@ -270,8 +275,108 @@ digest_of() {
   fi
 }
 
+# Exit 11 means "this data directory holds no usable installation", which the
+# Windows launcher answers by installing the payload instead of refusing.
+NOT_INSTALLED=11
+
+resolve_app() {
+  REQUESTED="$1"
+  if [ -L "$APP_ROOT/current" ]; then
+    CURRENT="$(readlink "$APP_ROOT/current")"
+    case "$CURRENT" in
+      */*|''|*[!a-zA-Z0-9._-]*) echo "invalid installed application pointer" >&2; exit 1 ;;
+    esac
+    case "$REQUESTED:$CURRENT" in
+      current:*|"$REQUESTED:$REQUESTED-"*) printf '%s\n' "$APP_ROOT/$CURRENT"; return ;;
+    esac
+  fi
+  # Every payload is content-addressed as <bundle>-<digest>, so `$APP_ROOT/
+  # $REQUESTED` is a path `install` never writes. Naming it here reported a
+  # fully installed tree as "not installed" whenever the pointer was missing,
+  # foreign or interrupted mid-`select_install` -- with the recovery scan
+  # sitting unreachable four lines below. Scan the requested bundle's own
+  # generations first, and only then, for `current`, any other installation.
+  if [ "$REQUESTED" != current ]; then
+    for CANDIDATE in "$APP_ROOT/$REQUESTED" "$APP_ROOT/$REQUESTED-"*; do
+      if [ -x "$CANDIDATE/bin/openai4s" ]; then
+        printf '%s\n' "$CANDIDATE"
+        return
+      fi
+    done
+    echo "OpenAI4S is not installed in $DATA_DIR" >&2
+    exit "$NOT_INSTALLED"
+  fi
+  # Older installations predate the pointer. Do not install a new payload to
+  # answer status/stop; use the one already owned by this user's data directory.
+  for CANDIDATE in "$APP_ROOT"/OpenAI4S-*; do
+    if [ -x "$CANDIDATE/bin/openai4s" ]; then
+      printf '%s\n' "$CANDIDATE"
+      return
+    fi
+  done
+  echo "OpenAI4S is not installed in $DATA_DIR" >&2
+  exit "$NOT_INSTALLED"
+}
+
+select_install() {
+  SELECTED="$1"
+  POINTER="$APP_ROOT/.current-$$"
+  # -f, like install_cli_link's own `ln -sfn`: a `.current-<pid>` left by a
+  # killed earlier run whose pid has since been recycled otherwise fails under
+  # `set -e` on every launch, with no message naming the dotfile to delete.
+  ln -sf "${SELECTED##*/}" "$POINTER"
+  # -T is what stops `mv` moving the pointer *into* the directory `current`
+  # resolves to, and it is a GNU extension. Where it is missing the rename is
+  # still correct, just briefly absent -- and this whole action holds the
+  # install lock, so no concurrent installer can observe the gap.
+  mv -Tf "$POINTER" "$APP_ROOT/current" 2>/dev/null || {
+    rm -f "$APP_ROOT/current"
+    mv "$POINTER" "$APP_ROOT/current"
+  }
+  install_cli_link "$SELECTED"
+}
+
+# Which installed tree, if any, the recorded daemon is executing from. A build
+# is immutable and content-addressed, so anything else is reclaimable -- but a
+# running analysis still imports lazily out of its own tree.
+running_app() {
+  PIDFILE="$DATA_DIR/openai4s.pid"
+  [ -r "$PIDFILE" ] || return 0
+  RUNNING_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  case "$RUNNING_PID" in ''|*[!0-9]*) return 0 ;; esac
+  readlink "/proc/$RUNNING_PID/exe" 2>/dev/null || true
+}
+
+# Immutable payloads are never overwritten, so without this every update left a
+# full bundle behind -- inside a WSL VHDX, which does not shrink when files are
+# finally deleted. Four releases is several GB, and the fifth install fails with
+# a disk-full message about a disk this scheme filled.
+prune_installs() {
+  KEEP="$1"
+  IN_USE="$(running_app)"
+  for CANDIDATE in "$APP_ROOT"/OpenAI4S-*; do
+    [ -d "$CANDIDATE" ] || continue
+    [ "$CANDIDATE" != "$KEEP" ] || continue
+    case "$IN_USE" in "$CANDIDATE"/*) continue ;; esac
+    rm -rf -- "$CANDIDATE"
+  done
+}
+
 case "$ACTION" in
+prepare)
+  if [ "$(id -u)" != 0 ] || ! command -v apt-get >/dev/null 2>&1; then
+    echo "automatic preparation requires a Debian/Ubuntu WSL distribution and root" >&2
+    exit 1
+  fi
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap
+  ;;
+
 preflight)
+  if [ -n "${1:-}" ] && [ "$(uname -m)" != "$1" ]; then
+    echo "this package is for $1, but the WSL distribution uses $(uname -m)" >&2
+    exit 1
+  fi
   run_preflight
   ;;
 
@@ -279,12 +384,25 @@ install)
   TARBALL="${1:?install needs the payload path}"
   EXPECTED="${2:?install needs the expected sha256}"
   DIRNAME="${3:?install needs the bundle directory name}"
-  APP="$APP_ROOT/$DIRNAME"
+  case "$DIRNAME" in
+    OpenAI4S-*) ;;
+    *) echo "invalid bundle directory name" >&2; exit 1 ;;
+  esac
+  case "$DIRNAME" in */*|*[!a-zA-Z0-9._-]*) echo "invalid bundle directory name" >&2; exit 1 ;; esac
+  case "$EXPECTED" in ''|*[!a-f0-9]*) echo "invalid payload digest" >&2; exit 1 ;; esac
+  [ "${#EXPECTED}" -eq 64 ] || { echo "invalid payload digest" >&2; exit 1; }
+  mkdir -p "$APP_ROOT"
+  exec 9> "$APP_ROOT/.install.lock"
+  flock -w 120 9 || { echo "another installation is still in progress; retry shortly" >&2; exit 1; }
+  # Each payload is immutable and uniquely addressed. A running older daemon
+  # retains its source/runtime paths even when a newer payload has the same version.
+  APP="$APP_ROOT/$DIRNAME-$EXPECTED"
   MARKER="$APP/.installed"
 
   if [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$EXPECTED" ] && [ -x "$APP/bin/openai4s" ]; then
     configure_network "$APP" 0
-    install_cli_link "$APP"
+    select_install "$APP"
+    prune_installs "$APP"
     echo "already-installed $APP"
     exit 0
   fi
@@ -309,25 +427,46 @@ install)
     exit 1
   fi
 
-  mkdir -p "$APP_ROOT"
-  # Replace rather than overlay: unpacking a new version on top of an old tree
-  # leaves whatever the new one dropped, and a stale .py next to a new one is
-  # the sort of bug that only shows up in someone else's analysis.
-  rm -rf "$APP"
-  tar -xzf "$TARBALL" -C "$APP_ROOT"
-  if [ ! -x "$APP/bin/openai4s" ]; then
-    echo "the payload did not unpack into $APP" >&2
+  STAGING="$(mktemp -d "$APP_ROOT/.staging-XXXXXXXX")"
+  cleanup_install() {
+    case "$STAGING" in "$APP_ROOT"/.staging-*) rm -rf -- "$STAGING" ;; esac
+  }
+  trap cleanup_install EXIT
+  trap 'exit 1' HUP INT TERM
+  tar -xzf "$TARBALL" --no-same-owner -C "$STAGING"
+  STAGED_APP="$STAGING/$DIRNAME"
+  if [ ! -x "$STAGED_APP/bin/openai4s" ]; then
+    echo "the payload did not unpack into $STAGED_APP" >&2
     exit 1
   fi
-  configure_network "$APP" 1
-  install_cli_link "$APP"
+  INSTALL_APP="$APP"
+  configure_network "$STAGED_APP" 1
+  APP="$INSTALL_APP"
   # The marker is the *last* step, because it is what makes the next launch
   # take the already-installed fast path. Written first, an install that then
   # failed to write pip.conf (unwritable tree, ENOSPC) left a tree marked
   # complete: every later launch skipped the extraction, re-entered
   # configure_network with FRESH_INSTALL=0, and failed the same way with no
   # route back to a working install.
-  printf '%s\n' "$EXPECTED" > "$MARKER"
+  printf '%s\n' "$EXPECTED" > "$STAGED_APP/.installed"
+  if [ -e "$APP" ]; then
+    # This path is the payload's own digest, so an existing tree here is the
+    # same bytes -- incomplete, or damaged since. Refusing outright made that
+    # unrepairable: the fast path rejects it, the re-extract lands, and every
+    # later launch repeats both and refuses again, with `doctor` (which does
+    # not delete app trees) as the only suggestion. Replace it, unless the
+    # recorded daemon is still executing out of it.
+    case "$(running_app)" in
+      "$APP"/*)
+        echo "a running OpenAI4S is using $APP; run OpenAI4S.cmd stop first" >&2
+        exit 1
+        ;;
+    esac
+    rm -rf -- "$APP"
+  fi
+  mv "$STAGED_APP" "$APP"
+  select_install "$APP"
+  prune_installs "$APP"
   echo "installed $APP"
   ;;
 
@@ -335,12 +474,18 @@ serve)
   DIRNAME="${1:?serve needs the bundle directory name}"
   HOST="${2:-127.0.0.1}"
   PORT="${3:-8760}"
-  APP="$APP_ROOT/$DIRNAME"
+  # The Windows launcher runs this action inside a hidden wsl.exe with no
+  # stream capture, so anything printed before the exec below reaches no
+  # console and -- until this redirect -- no file either: `resolve_app`'s
+  # refusals, an invalid Fake-IP mode, an unreadable `.installed`. The launcher
+  # then blamed localhost forwarding and pointed at an empty log.
+  mkdir -p "$DATA_DIR/logs"
+  exec >>"$DATA_DIR/logs/app.out" 2>&1
+  APP="$(resolve_app "$DIRNAME")"
   if [ ! -x "$APP/bin/openai4s" ]; then
     echo "not installed: $APP" >&2
     exit 1
   fi
-  mkdir -p "$DATA_DIR/logs"
   configure_fake_ip_dns
 
   OPENAI4S_HOST="$HOST"
@@ -348,21 +493,20 @@ serve)
   OPENAI4S_KERNEL_SANDBOX="${OPENAI4S_KERNEL_SANDBOX:-enforce}"
   OPENAI4S_NO_OPEN=1
   export OPENAI4S_HOST OPENAI4S_PORT OPENAI4S_KERNEL_SANDBOX OPENAI4S_NO_OPEN
+  OPENAI4S_BUNDLE_ID="$(cat "$APP/.installed")"
+  export OPENAI4S_BUNDLE_ID
 
-  # Let the CLI own detachment and wait for its internal /health check. A bare
-  # shell `setsid ... &` can be reaped when a non-interactive wsl.exe session
-  # ends before the child reaches exec, leaving an empty log and a launcher that
-  # waits on a daemon which never existed. The CLI redirects every descriptor,
-  # creates a new POSIX session, and returns only after the service is healthy.
-  "$APP/bin/openai4s" serve \
-    --host "$HOST" --port "$PORT" --no-browser --detached
-  echo "serving http://$HOST:$PORT/  (log: $DATA_DIR/logs/app.out)"
+  # The Windows launcher owns a hidden wsl.exe for this foreground process.
+  # Detaching into systemd leaves WSL free to stop the whole distribution when
+  # the last terminal exits, even while the scientist is using the browser.
+  exec "$APP/bin/openai4s" serve \
+    --host "$HOST" --port "$PORT" --no-browser
   ;;
 
 cli)
   DIRNAME="${1:?cli needs the bundle directory name}"
   shift
-  APP="$APP_ROOT/$DIRNAME"
+  APP="$(resolve_app "$DIRNAME")"
   if [ ! -x "$APP/bin/openai4s" ]; then
     echo "not installed: $APP" >&2
     exit 1

@@ -481,6 +481,17 @@ def _confined_probe(
         # context — but only for availability failures, not configuration ones.
         if mode == "enforce":
             raise
+        # The launch that follows is deliberately unconfined, so it must not
+        # inherit this sandbox's descriptors: `popen_pass_fds()` would hand a
+        # foreign interpreter bubblewrap's info-pipe write end and the seccomp
+        # program, which its own docstring says are inherited exactly once by
+        # the wrapped command.
+        if sandbox is not None:
+            try:
+                sandbox.close()
+            except Exception:  # noqa: BLE001
+                pass
+            sandbox = None
         argv = list(base_argv)
     return argv, env, sandbox
 
@@ -517,6 +528,7 @@ def run_confined_probe(
             timeout=timeout,
             env=env,
             start_new_session=True,
+            pass_fds=getattr(sandbox, "popen_pass_fds", lambda: ())(),
         )
     finally:
         if sandbox is not None:

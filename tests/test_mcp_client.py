@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -143,6 +144,12 @@ def _socketpair_deadline_opener(
     """urllib opener whose HTTPS connection uses one deterministic socketpair."""
 
     class _SocketpairConnection(_DeadlineHTTPSConnection):
+        def __init__(self, *args, **kwargs):
+            # There is no TLS handshake on this socketpair. Loading system CA
+            # files must not consume the short deadline meant for body reads.
+            kwargs["context"] = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            super().__init__(*args, **kwargs)
+
         def connect(self) -> None:
             self.sock = client
             self._absolute_deadline._register_socket(client)
@@ -473,7 +480,13 @@ def test_streamable_http_body_reader_stops_when_the_transport_retires():
 
 
 @pytest.mark.stubbed_backend
-def test_streamable_http_body_watchdog_interrupts_a_chunked_slow_drip():
+def test_streamable_http_body_watchdog_interrupts_a_chunked_slow_drip(monkeypatch):
+    # Exercise the watchdog deliberately; a shorter socket timeout racing it
+    # is a separate contract below. Keep this real blocked read longer-lived.
+    monkeypatch.setattr(
+        "openai4s.http_deadline.socket_timeout_setter",
+        lambda _response: lambda _remaining: client.settimeout(2.0),
+    )
     client, peer = socket.socketpair()
     peer.sendall(
         b"HTTP/1.1 200 OK\r\n"
@@ -519,6 +532,22 @@ def test_streamable_http_body_watchdog_interrupts_a_chunked_slow_drip():
     assert 0.15 <= time.monotonic() - started < 1.0
     assert exchange.expired is True
     assert not producer.is_alive()
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_socket_timeout_preceding_watchdog_uses_mcp_error():
+    response = _HTTPResponse(200, b"unfinished")
+
+    def timed_out(_size):
+        raise TimeoutError("socket read timed out")
+
+    response.read1 = timed_out
+    exchange = HTTPExchangeDeadline(2.0)
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+    with pytest.raises(MCPTimeout, match="exceeded 2s"):
+        connection._read_body(response, exchange)
+    assert not exchange.expired
 
 
 @pytest.mark.stubbed_backend

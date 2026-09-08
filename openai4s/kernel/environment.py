@@ -210,7 +210,15 @@ def build_kernel_environment(
         # carries no credential and helps its pip/CLI subprocesses stay bound
         # to that same environment.
         env["VIRTUAL_ENV"] = str(host_env["VIRTUAL_ENV"])
-    env["PATH"] = path
+    # On WSL the inherited PATH ends in the whole Windows PATH, so `which
+    # python`/`which git` inside a Cell can resolve to a Windows .exe reached
+    # over the interop bridge the sandbox exists to close. Doing it here rather
+    # than only in the CLI entrypoint covers every kernel spawn: the Jupyter
+    # KernelSpec bridge, the harness and in-process embedders never call
+    # `openai4s.cli.main.main()`.
+    from openai4s.security.wsl import is_wsl, linux_path
+
+    env["PATH"] = linux_path(path) if is_wsl() else path
 
     workspace = Path(cwd or os.getcwd()).resolve(strict=False)
     env["PWD"] = str(workspace)

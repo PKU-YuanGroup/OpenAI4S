@@ -184,6 +184,7 @@ else
     --target "$SITE" \
     $PKGS
 fi
+python3 "$REPO_ROOT/scripts/relocate_bundle_scripts.py" "$RUNTIME"
 # The third-party test suites are dead weight in a shipped app — ~50MB of .py
 # that nothing imports, plus the bytecode step 8 would then have to compile.
 # Only directories literally named test/tests go: `testing` packages stay,
@@ -200,7 +201,7 @@ find "$RUNTIME" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
 #    on openai4s/ + openai4s_compute_provider/ + skills/ + envs/ being siblings
 # --------------------------------------------------------------------------- #
 echo "-- [4/10] copying source tree --"
-rsync -a \
+rsync -a --include '/openai4s/server/webui/dist/***' \
   --exclude '.git' --exclude '.venv' --exclude '.build' --exclude 'dist' \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '.pytest_cache' \
   --exclude '*.egg-info' --exclude '.env' --exclude '.env.*' --exclude '!.env.example' \
@@ -258,7 +259,9 @@ done
 APPDIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 export PYTHONPATH="$APPDIR/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUSERBASE="${PYTHONUSERBASE:-${OPENAI4S_DATA_DIR:-$HOME/.openai4s}/pysite}"
-exec "$APPDIR/runtime/bin/python3" -m openai4s "$@"
+export PATH="$APPDIR/runtime/bin:$PATH"
+# Preserve the caller's cwd without importing its openai4s.py over this bundle.
+exec "$APPDIR/runtime/bin/python3" -P -m openai4s "$@"
 CLI
 chmod +x "$APPDIR/bin/$APP_NAME_LOWER"
 

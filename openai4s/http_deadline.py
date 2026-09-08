@@ -225,7 +225,7 @@ def read_body_capped(
       watchdog can close the body socket between a positive budget check and
       either ``settimeout`` or ``read1``; those operations can then report
       ``OSError``, ``IncompleteRead``, or an empty chunk.  Only failures that
-      coincide with an actual watchdog expiry become ``on_timeout``.  A merely
+      coincide with a socket timeout or watchdog expiry become ``on_timeout``. A merely
       late clock still cannot invalidate a body already known to be complete.
     * ``on_unbounded`` makes a missing read bound fatal.  Pass ``None`` only
       where the transport is known not to be a socket at all.
@@ -271,6 +271,10 @@ def read_body_capped(
             if arm is not None:
                 arm(remaining)
             chunk = read_once(min(65_536, limit + 1 - total))
+        except TimeoutError:
+            # The socket's own bound can expire before the watchdog thread
+            # runs. A failed read is still a timeout in the caller's vocabulary.
+            raise on_timeout() from None
         except Exception:
             # Socket shutdown is intentionally allowed to surface through
             # several stdlib exception types.  Convert only when the watchdog

@@ -128,6 +128,7 @@ echo "   bundling $(printf '%s\n' "$PKGS" | grep -c .) packages from $(basename 
 "$RUNPY" -m pip install --upgrade --no-warn-script-location pip >/dev/null
 # shellcheck disable=SC2086
 "$RUNPY" -m pip install --no-warn-script-location $PKGS
+python3 "$REPO_ROOT/scripts/relocate_bundle_scripts.py" "$RUNTIME"
 # The third-party test suites are dead weight in a shipped app — ~50MB of .py
 # that nothing imports, plus the bytecode step 8 would then have to compile and
 # sign for all of it. Only directories literally named test/tests go: `testing`
@@ -147,7 +148,7 @@ find "$RUNTIME" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
 #    on openai4s/ + openai4s_compute_provider/ + skills/ + envs/ being siblings
 # --------------------------------------------------------------------------- #
 echo "-- [4/10] copying source tree --"
-rsync -a \
+rsync -a --include '/openai4s/server/webui/dist/***' \
   --exclude '.git' --exclude '.venv' --exclude '.build' --exclude 'dist' \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '.pytest_cache' \
   --exclude '*.egg-info' --exclude '.env' --exclude '.env.*' --exclude '!.env.example' \
@@ -202,7 +203,9 @@ BIN="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 RES="$(cd -P "$BIN/../.." && pwd)"
 export PYTHONPATH="$RES/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUSERBASE="${PYTHONUSERBASE:-${OPENAI4S_DATA_DIR:-$HOME/.openai4s}/pysite}"
-exec "$BIN/python3" -m openai4s "$@"
+export PATH="$BIN:$PATH"
+# Preserve the caller's cwd without importing its openai4s.py over this bundle.
+exec "$BIN/python3" -P -m openai4s "$@"
 CLI
 chmod +x "$RUNTIME/bin/$APP_NAME_LOWER"
 

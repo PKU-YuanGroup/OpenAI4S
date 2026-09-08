@@ -553,11 +553,62 @@ def _mode(value: str | None = None) -> str:
     return mode
 
 
+class WindowsDPAPIBackend(_Backend):
+    """Use the logged-in Windows user's protected store from a WSL Host."""
+
+    name = "windows-dpapi"
+    persistent = True
+    secure = True
+
+    def available(self) -> bool:
+        # Probe what `request` actually needs, not just the interpreter: a
+        # distribution that ships no machine-id would otherwise be reported
+        # available and then fail on first use, which is the failure mode
+        # `_self_test` exists to move forward in time.
+        from .windows_dpapi import machine_identity
+        from .wsl import powershell_path
+
+        try:
+            if powershell_path() is None:
+                return False
+            machine_identity()
+        except (OSError, RuntimeError):
+            return False
+        return True
+
+    def _request(self, action, namespace, scope, name, value=None):
+        from .windows_dpapi import request
+
+        try:
+            return request(action, namespace, scope, name, value)
+        except (OSError, RuntimeError) as exc:
+            # OSError too: this backend crosses the WSL interop boundary, and a
+            # bare errno escaping `Store.secrets` sails past every caller's
+            # `except SecretBrokerError`.
+            raise SecretBrokerError(str(exc)) from None
+
+    def put(self, namespace: str, scope: str, name: str, secret: str) -> None:
+        self._request("put", namespace, scope, name, secret)
+
+    def get(self, namespace: str, scope: str, name: str) -> str | None:
+        return self._request("get", namespace, scope, name)
+
+    def delete(self, namespace: str, scope: str, name: str) -> None:
+        self._request("delete", namespace, scope, name)
+
+
 def _system_backends() -> list[_Backend]:
     # Ordered by preference. A desktop keychain is interactive and durable; env
     # injection is what a server deployment actually has. Plaintext is never in
     # this list — `auto` must not reach it by falling off the end.
-    return [KeychainBackend(), SecretServiceBackend(), EnvInjectionBackend()]
+    return [
+        KeychainBackend(),
+        # Preserve an existing usable Linux keyring on WSL. Fresh WSL installs
+        # without a desktop session use Windows account protection instead.
+        SecretServiceBackend(),
+        WindowsDPAPIBackend(),
+        EnvInjectionBackend(),
+    ]
 
 
 class SecretBroker:

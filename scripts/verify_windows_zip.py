@@ -108,7 +108,7 @@ _REQUIRED_BOOTSTRAP_RUNTIME = (
     "--unshare-net",
     "OPENAI4S_KERNEL_SANDBOX",
     "--no-browser",
-    "--detached",
+    'exec "$APP/bin/openai4s" serve',
     "install_cli_link",
     "OPENAI4S_PYPI_INDEX_URL",
     # Mirror config files are rewritten only when they carry this marker; a

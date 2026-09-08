@@ -8,6 +8,7 @@ Small checks that cross a real runtime or platform boundary, which is why they o
 
 | File | Responsibility |
 | --- | --- |
+| [`wsl_sandbox.py`](wsl_sandbox.py) | Real WSL2 acceptance: Windows executables/loaders, IPC/proc aliases, Hyper-V sockets, DPAPI persistence/deletion and interrupt/continue. |
 | [`__init__.py`](__init__.py) | Marks the opt-in smoke package; importing it runs nothing. |
 | [`linux_bwrap_interrupt.py`](linux_bwrap_interrupt.py) | The real hosted-Linux process-identity check. It starts team-isolated Python and R kernels under bubblewrap, requires `--unshare-pid` plus `--info-fd`, verifies the command is PID 2 and has a pinned pidfd, interrupts a live long Cell, then proves the same persistent namespace answers another Cell. CI deliberately sets `OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1` so process-identity evidence is independent of network setup; this smoke therefore makes no network-isolation claim. Ubuntu 24.04 also denies an unprofiled bwrap's user namespace; CI loads the distribution's capability-stripping `bwrap-userns-restrict` profile instead of disabling the host-wide AppArmor restriction. |
 | [`macos_sandbox.py`](macos_sandbox.py) | The Darwin/Seatbelt check, and it fails closed: the sandbox must come out enforced and pass its self-test, or the program raises. It then proves from inside the worker that writes outside the workspace and outbound network are blocked, that a workspace write still works, and that a subprocess the worker spawns cannot see the daemon's secrets. |

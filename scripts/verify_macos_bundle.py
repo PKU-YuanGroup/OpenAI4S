@@ -36,6 +36,7 @@ from bundle_contract import BundleCheckError  # noqa: E402
 from bundle_contract import bundled_imports  # noqa: E402
 from bundle_contract import check_bytecode  # noqa: E402
 from bundle_contract import check_no_secrets  # noqa: E402
+from bundle_contract import check_python_scripts  # noqa: E402
 from bundle_contract import check_sources  # noqa: E402
 from bundle_contract import declared_version  # noqa: E402
 
@@ -250,6 +251,7 @@ def verify(target: Path) -> None:
         version = declared_version(src)
         _check_plist(app, version)
         skills = check_sources(src)
+        check_python_scripts(runtime.parents[1])
         bundled = bundled_imports()
         python_version = _check_runtime(runtime, app, bundled)
         compiled = check_bytecode([src, runtime.parents[1] / "lib"])

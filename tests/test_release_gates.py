@@ -1505,7 +1505,8 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     # `stop` most of all, which has to work when DNS is what is wedged.
     assert "status|url|stop|--help|-h|help) ;;" in bootstrap
     assert "--no-browser" in bootstrap
-    assert "--detached" in bootstrap
+    assert 'exec "$APP/bin/openai4s" serve' in bootstrap
+    assert "--detached" not in bootstrap
     # User-edited mirror files survive relaunch, and explicit `off` has a real
     # state transition instead of leaving the old managed mirror in place.
     assert 'MANAGED_MARK="managed-by-openai4s-windows-launcher"' in bootstrap
@@ -1609,8 +1610,15 @@ def test_the_wsl_bootstrap_never_acquires_carriage_returns():
         assert windows_side in build
 
 
-def _write_fake_linux_payload(path: Path, version: str, arch: str) -> str:
-    """A tarball with the shape the Windows launcher depends on, and nothing else."""
+def _write_fake_linux_payload(
+    path: Path, version: str, arch: str, marker: str = "placeholder"
+) -> str:
+    """A tarball with the shape the Windows launcher depends on, and nothing else.
+
+    ``marker`` changes the payload bytes, and so its digest, without changing
+    the bundle directory name -- which is what an update of the same version
+    looks like to `install`.
+    """
     top = f"OpenAI4S-{version}-linux-{arch}"
     executable = (
         "OpenAI4S",
@@ -1628,7 +1636,7 @@ def _write_fake_linux_payload(path: Path, version: str, arch: str) -> str:
     )
     with tarfile.open(path, "w:gz") as archive:
         for relative in executable + plain:
-            payload = b"placeholder\n"
+            payload = marker.encode("utf-8") + b"\n"
             info = tarfile.TarInfo(f"{top}/{relative}")
             info.size = len(payload)
             info.mode = 0o755 if relative in executable else 0o644
@@ -1644,8 +1652,8 @@ def _run_windows_bootstrap_install(
     **overrides: str,
 ) -> subprocess.CompletedProcess[str]:
     shell = shutil.which("sh")
-    if shell is None:
-        pytest.skip("the Windows bootstrap integration contract needs a POSIX sh")
+    if shell is None or not sys.platform.startswith("linux"):
+        pytest.skip("the Windows bootstrap integration contract needs Linux/WSL tools")
     data_dir = tmp_path / "data"
     env = os.environ.copy()
     for name in (
@@ -1696,7 +1704,7 @@ def test_windows_launcher_off_restores_official_indexes(tmp_path):
     assert installed.returncode == 0, installed.stderr
 
     data_dir = tmp_path / "data"
-    pip_conf = data_dir / "app" / bundle_dir / "runtime" / "pip.conf"
+    pip_conf = data_dir / "app" / "current" / "runtime" / "pip.conf"
     condarc = data_dir / "network" / "condarc"
     assert mirror in pip_conf.read_text("utf-8")
     assert mirror in condarc.read_text("utf-8")
@@ -1735,7 +1743,7 @@ def test_windows_launcher_claims_the_pristine_bundle_pip_conf_on_install(tmp_pat
     first = _run_windows_bootstrap_install(tmp_path, tarball, digest, bundle_dir)
     assert first.returncode == 0, first.stderr
 
-    pip_conf = tmp_path / "data" / "app" / bundle_dir / "runtime" / "pip.conf"
+    pip_conf = tmp_path / "data" / "app" / "current" / "runtime" / "pip.conf"
     claimed = pip_conf.read_text("utf-8")
     assert "managed-by-openai4s-windows-launcher" in claimed
     assert "index-url" not in claimed
@@ -1765,7 +1773,7 @@ def test_windows_launcher_never_rewrites_user_owned_network_files(tmp_path):
     assert initial.returncode == 0, initial.stderr
 
     data_dir = tmp_path / "data"
-    pip_conf = data_dir / "app" / bundle_dir / "runtime" / "pip.conf"
+    pip_conf = data_dir / "app" / "current" / "runtime" / "pip.conf"
     condarc = data_dir / "network" / "condarc"
     user_pip = b"[global]\ntimeout = 19\n"
     user_conda = b"channels:\n  - private\n"

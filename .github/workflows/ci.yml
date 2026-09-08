@@ -261,6 +261,9 @@ jobs:
             throw "scripts/windows/openai4s.ps1 does not parse"
           }
           Write-Host "parsed OK ($($tokens.Count) tokens)"
+      - name: Windows PowerShell 5.1 launcher contracts
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/test_windows_launcher.ps1
       - name: Refuse, with guidance, on a machine that has no WSL
         shell: pwsh
         env:
