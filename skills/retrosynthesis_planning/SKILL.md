@@ -55,6 +55,27 @@ reaction-AND semantics; a backend `solved=true` flag is never trusted. Preserve
 search statistics, termination reason, failed routes, duplicates, and budget
 violations in the intermediate artifact.
 
+## Scenario GT-codebases
+
+For any of the six Science Queries, use the same basename across
+`scenarios/queries/`, `scenarios/gt_codebases/`, and
+`scenarios/openai4s_codebases/`. The query is the frozen OpenAI4S input and must
+describe every installed public file and field needed to align with the case.
+The GT entrypoint is a reviewed evaluator reference; never label it as generated
+code. The generated entrypoint must come from an actual OpenAI4S CLI run, whose
+status and hashes are frozen in
+`scenarios/openai4s_codebases/generation_manifest.json`.
+
+Install the evaluation example with `scenarios/test_cases/install.py`. Run each
+codebase against only the installed `public/` boundary. Freeze
+`results/intermediate_results.json` before the separate
+`scenarios/test_cases/evaluate.py` process reads `private_evaluator/`. Treat
+bundled cases as protocol smoke tests, never as scientific accuracy evidence.
+Consult `scenarios/test_cases/database_sources.json` and fail closed while a
+production dataset is marked `not_frozen`. Missing LLM credentials or failed
+generation must remain explicit; copying the GT source into the generated
+directory is prohibited.
+
 ## Cross-model route admission gate
 
 Treat planner `solved=true` as stock closure, not reaction feasibility. For a

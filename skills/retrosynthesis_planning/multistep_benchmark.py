@@ -269,7 +269,9 @@ def normalize_planner_outputs(
                 stock=stock,
                 canonicalizer=canonicalizer,
             )
-            signature = route_signature(route_copy)
+            signature = route_signature(
+                route_copy, canonicalizer=_supplied(canonicalizer)
+            )
             duplicate_of = seen_signatures.get(signature)
             seen_signatures.setdefault(signature, rank)
             routes.append(
@@ -297,9 +299,22 @@ def normalize_planner_outputs(
     return tuple(normalized)
 
 
-def _canonicalization_mode() -> str:
-    """Report whether route matching can actually canonicalize chemistry."""
+def _supplied(canonicalizer: Canonicalizer) -> Canonicalizer | None:
+    """Return the caller's canonicalizer, or None when it is the default.
 
+    Passing the module default through would change which implementation
+    ``route_review`` uses; passing an explicitly supplied one is the whole
+    point of the seam.
+    """
+
+    return None if canonicalizer is rdkit_canonicalize else canonicalizer
+
+
+def _canonicalization_mode(canonicalizer: Canonicalizer | None = None) -> str:
+    """Report which normalization actually produced the route comparisons."""
+
+    if canonicalizer is not None:
+        return "supplied"
     try:
         rdkit_canonicalize("CCO")
     except Exception:
@@ -310,6 +325,8 @@ def _canonicalization_mode() -> str:
 def evaluate_routes(
     normalized: Sequence[Mapping[str, Any]],
     reference_rows: Iterable[Mapping[str, Any]],
+    *,
+    canonicalizer: Canonicalizer | None = None,
 ) -> dict[str, Any]:
     # The non-empty invariant is enforced on the normalize side by every
     # validate_* helper; without it here the metric divisions below reduce
@@ -318,11 +335,11 @@ def evaluate_routes(
         raise BenchmarkProtocolError("normalized planner records must not be empty")
     # ``route_signature``/``route_similarity`` fall back to a stripped raw
     # string when RDKit is absent, so the headline recovery and similarity
-    # metrics can answer a string-comparison question instead of a chemical
-    # one. ``normalize_planner_outputs`` fails closed; scoring cannot, because
-    # ``route_review`` offers no canonicalizer seam - so record which mode
-    # produced the numbers, inside the envelope ``result_sha256`` covers.
-    canonicalization = _canonicalization_mode()
+    # metrics could answer a string-comparison question instead of a chemical
+    # one, and the same workspace scored differently depending on what was
+    # importable. Callers that pinned normalization on the pipeline side now
+    # pin it here too; the mode stays recorded inside ``result_sha256``.
+    canonicalization = _canonicalization_mode(canonicalizer)
     references: dict[str, list[Mapping[str, Any]]] = {}
     for index, row in enumerate(reference_rows, start=1):
         require_exact_fields(row, REFERENCE_FIELDS, field=f"reference row {index}")
@@ -345,7 +362,9 @@ def evaluate_routes(
     for item in normalized:
         target_id = str(item["target_id"])
         refs = references[target_id]
-        ref_signatures = {route_signature(route) for route in refs}
+        ref_signatures = {
+            route_signature(route, canonicalizer=canonicalizer) for route in refs
+        }
         first_exact: int | None = None
         best_similarity = 0.0
         solved_routes = 0
@@ -360,7 +379,9 @@ def evaluate_routes(
             best_similarity = max(
                 best_similarity,
                 *(
-                    route_similarity(route["raw_route"], reference)
+                    route_similarity(
+                        route["raw_route"], reference, canonicalizer=canonicalizer
+                    )
                     for reference in refs
                 ),
             )
@@ -397,11 +418,16 @@ def evaluate_routes(
         "targets": target_results,
         "caveat": "A verified solved route reaches the frozen stock; it is not experimental validation.",
     }
-    if canonicalization != "rdkit":
+    if canonicalization == "raw_string":
         result["caveat"] += (
             " RDKit was unavailable, so route matching compared raw SMILES"
             " strings; these recovery and similarity numbers are not a"
             " chemical comparison."
+        )
+    elif canonicalization == "supplied":
+        result["caveat"] += (
+            " Route matching used the canonicalizer the caller supplied, not"
+            " RDKit; these numbers are only as chemical as that function."
         )
     result["result_sha256"] = sha256_json(result)
     return result

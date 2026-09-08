@@ -1,12 +1,17 @@
 """Offline contracts for the six independent retrosynthesis science scenarios."""
 
+import hashlib
+import importlib.util
 import json
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from openai4s.config import get_config
+from openai4s.kernel.environment import build_kernel_environment
 
 sys.path.insert(0, str(get_config().skills_dir))
 
@@ -35,6 +40,12 @@ from retrosynthesis_planning.forward_benchmark import (  # noqa: E402
     evaluate_forward_predictions,
     normalize_forward_outputs,
     validate_forward_inputs,
+)
+from retrosynthesis_planning.gt_codebase import (  # noqa: E402
+    SCENARIO_IDS,
+    evaluate_workspace,
+    install_test_case,
+    run_pipeline,
 )
 from retrosynthesis_planning.multistep_benchmark import (  # noqa: E402
     evaluate_routes,
@@ -249,7 +260,7 @@ def test_yield_protocol_preserves_raw_predictions_and_reports_worst_group():
 def test_unified_cli_evaluates_hashed_condition_artifact(tmp_path):
     conditions = {slot: f"{slot}_a" for slot in SLOTS}
     artifact = build_intermediate_artifact(
-        "reaction_condition_tuple_closed_vocab_v1",
+        "reaction_condition_uspto_categorical_v1",
         [
             {
                 "reaction_id": "r1",
@@ -667,3 +678,194 @@ def test_snapshot_refuses_a_symlink_that_escapes_the_base(tmp_path):
     os.symlink(outside / "weights.bin", base / "models" / "weights.bin")
     with pytest.raises(ReactionModelDeploymentError, match="symlink"):
         snapshot_artifacts([base / "models"], base=base)
+
+
+def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
+    scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    names = {
+        "single_step": "01_single_step_retrosynthesis",
+        "multistep": "02_multistep_route_planning",
+        "atom_mapping": "03_atom_mapping",
+        "forward": "04_forward_prediction",
+        "conditions": "05_condition_recommendation",
+        "yield": "06_yield_estimation",
+    }
+    manifest = json.loads(
+        (scenarios / "openai4s_codebases" / "generation_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entries = {entry["name"]: entry for entry in manifest["entries"]}
+    assert set(entries) == set(names.values())
+    for scenario, scenario_id in SCENARIO_IDS.items():
+        name = names[scenario]
+        entry = entries[name]
+        query_path = scenarios / "queries" / f"{name}.query.md"
+        gt_path = scenarios / "gt_codebases" / f"{name}.py"
+        case_path = scenarios / "test_cases" / f"{name}.json"
+        case = json.loads(case_path.read_text(encoding="utf-8"))
+        query = query_path.read_text(encoding="utf-8")
+        assert case["scenario_id"] == scenario_id
+        assert case["query_source"] == f"../queries/{name}.query.md"
+        assert "## Installed public inputs" in query
+        assert "private_evaluator" in query
+        for public_name in case["public"]:
+            assert f"PATH/public/{public_name}" in query
+        assert (
+            hashlib.sha256(query_path.read_bytes()).hexdigest() == entry["query_sha256"]
+        )
+        assert hashlib.sha256(gt_path.read_bytes()).hexdigest() == entry["gt_sha256"]
+        assert entry["query"] == str(
+            query_path.relative_to(get_config().skills_dir.parent)
+        )
+        assert entry["gt_codebase"] == str(
+            gt_path.relative_to(get_config().skills_dir.parent)
+        )
+        generated_path = scenarios / "openai4s_codebases" / f"{name}.py"
+        if entry["status"].startswith("generated"):
+            assert generated_path.is_file()
+            generated = generated_path.read_text(encoding="utf-8")
+            assert not any(
+                forbidden in generated
+                for forbidden in ("gt_codebase", "private_evaluator", "pipelines")
+            )
+            assert (
+                hashlib.sha256(generated_path.read_bytes()).hexdigest()
+                == entry["generated_sha256"]
+            )
+        else:
+            assert not generated_path.exists()
+
+        workspace = tmp_path / scenario
+        installation = install_test_case(case_path, workspace)
+        assert installation["ground_truth_boundary"] == "private_evaluator"
+        hidden = tmp_path / f"{scenario}-private"
+        (workspace / "private_evaluator").rename(hidden)
+        environment = build_kernel_environment(cwd=str(workspace))
+        environment["PYTHONPATH"] = str(get_config().skills_dir)
+        completed = subprocess.run(
+            [sys.executable, str(gt_path), "--workspace", str(workspace)],
+            cwd=get_config().skills_dir.parent,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        artifact_path = workspace / "results" / "intermediate_results.json"
+        gt_bytes = artifact_path.read_bytes()
+        artifact = json.loads(gt_bytes)
+        assert artifact["scenario_id"] == scenario_id
+        if entry["status"].startswith("generated"):
+            assert entry["status"] == "generated_verified"
+            artifact_path.unlink()
+            completed = subprocess.run(
+                [sys.executable, str(generated_path), "--workspace", str(workspace)],
+                cwd=get_config().skills_dir.parent,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            assert completed.returncode == 0, completed.stderr
+            generated_bytes = artifact_path.read_bytes()
+            assert generated_bytes == gt_bytes
+            assert (
+                hashlib.sha256(generated_bytes).hexdigest()
+                == entry["verified_artifact_sha256"]
+            )
+        hidden.rename(workspace / "private_evaluator")
+        metrics = evaluate_workspace(scenario, workspace)
+        assert metrics["scenario_id"] == scenario_id
+
+
+def test_generation_manifest_entries_match_the_declared_schema():
+    scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    directory = scenarios / "openai4s_codebases"
+    spec = importlib.util.spec_from_file_location(
+        "retrosynthesis_generator_schema", directory / "generate.py"
+    )
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    manifest = json.loads(
+        (directory / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    for entry in manifest["entries"]:
+        name = entry["name"]
+        assert set(entry) <= generator.ENTRY_FIELDS, name
+        assert generator.REQUIRED_ENTRY_FIELDS <= set(entry), name
+        assert entry["generation_interface"] in generator.GENERATION_INTERFACES, name
+        # A row the generator itself could not have written must say so.
+        if entry["generation_interface"] != "openai4s run --mode codebase_change":
+            assert entry["post_generation_review_repair"] is True, name
+        if entry["run_completion"] != "completed":
+            assert entry["post_generation_conformance_repair"] is True, name
+        if entry["status"] == "generated_verified":
+            assert entry["verified_artifact_sha256"], name
+            assert entry["generated_sha256"], name
+
+
+def test_legacy_pipeline_alias_manifest_pins_are_current():
+    base = (
+        Path(get_config().skills_dir)
+        / "retrosynthesis_planning"
+        / "scenarios"
+        / "pipelines"
+    )
+    manifest = json.loads(
+        (base / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    runtime = (base / manifest["shared_runtime"]["path"]).resolve()
+    assert (
+        hashlib.sha256(runtime.read_bytes()).hexdigest()
+        == manifest["shared_runtime"]["sha256"]
+    )
+    assert {entry["scenario_id"] for entry in manifest["entries"]} == set(
+        SCENARIO_IDS.values()
+    )
+    for entry in manifest["entries"]:
+        entrypoint = base / entry["entrypoint"]
+        source = entrypoint.read_text(encoding="utf-8")
+        # These are reviewed GT aliases, never generation output.
+        assert "OpenAI4S-generated" not in source
+        assert (
+            hashlib.sha256(entrypoint.read_bytes()).hexdigest()
+            == entry["entrypoint_sha256"]
+        )
+
+
+def test_production_database_registry_fails_closed_until_frozen():
+    path = (
+        Path(get_config().skills_dir)
+        / "retrosynthesis_planning"
+        / "scenarios"
+        / "test_cases"
+        / "database_sources.json"
+    )
+    registry = json.loads(path.read_text(encoding="utf-8"))
+    assert set(registry["scenarios"]) == set(SCENARIO_IDS)
+    for scenario, row in registry["scenarios"].items():
+        status = row["release_status"]
+        assert status in {"not_frozen", "frozen"}, scenario
+        # Freezing a source is allowed; freezing it without the provenance the
+        # policy demands is not. Asserting the constant instead reddened this
+        # gate the day a maintainer legitimately froze a dataset.
+        if status == "frozen":
+            for field in ("revision", "license", "split", "sha256"):
+                assert row.get(field), f"{scenario} frozen without {field}"
+
+
+def test_private_evaluator_rejects_a_tampered_frozen_artifact(tmp_path):
+    scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    workspace = tmp_path / "tampered"
+    install_test_case(
+        scenarios / "test_cases" / "04_forward_prediction.json", workspace
+    )
+    artifact = run_pipeline("forward", workspace)
+    artifact["records"][0]["predictions"][0]["isomeric_product"] = "tampered"
+    (workspace / "results" / "intermediate_results.json").write_text(
+        json.dumps(artifact), encoding="utf-8"
+    )
+    with pytest.raises(BenchmarkProtocolError, match="trajectory hash mismatch"):
+        evaluate_workspace("forward", workspace)

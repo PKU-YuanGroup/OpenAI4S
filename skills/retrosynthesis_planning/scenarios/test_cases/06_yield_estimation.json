@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "scenario": "yield",
+  "scenario_id": "buchwald_hartwig_yield_ood_v1",
+  "query_source": "../queries/06_yield_estimation.query.md",
+  "dataset": {
+    "profile": "synthetic_protocol_smoke",
+    "license": "CC0-1.0",
+    "scientific_accuracy_claim": false
+  },
+  "public": {
+    "inputs.json": [
+      {"reaction_id": "reaction_001", "split": "random_test", "reactants": "A0", "reagents": "", "product": "P0"},
+      {"reaction_id": "reaction_002", "split": "mff_test1", "reactants": "A1", "reagents": "", "product": "P1"},
+      {"reaction_id": "reaction_003", "split": "mff_test2", "reactants": "A2", "reagents": "", "product": "P2"},
+      {"reaction_id": "reaction_004", "split": "mff_test3", "reactants": "A3", "reagents": "", "product": "P3"},
+      {"reaction_id": "reaction_005", "split": "mff_test4", "reactants": "A4", "reagents": "", "product": "P4"}
+    ],
+    "config.json": {"random_seed": 2026},
+    "model_outputs.json": [
+      {"reaction_id": "reaction_001", "predicted_yield_percent": 50.0, "interval_lower": 40.0, "interval_upper": 60.0, "domain_status": "matched"},
+      {"reaction_id": "reaction_002", "predicted_yield_percent": 55.0, "interval_lower": 40.0, "interval_upper": 70.0, "domain_status": "uncertain"},
+      {"reaction_id": "reaction_003", "predicted_yield_percent": 60.0, "interval_lower": 45.0, "interval_upper": 75.0, "domain_status": "uncertain"},
+      {"reaction_id": "reaction_004", "predicted_yield_percent": 65.0, "interval_lower": 45.0, "interval_upper": 80.0, "domain_status": "out_of_domain"},
+      {"reaction_id": "reaction_005", "predicted_yield_percent": 70.0, "interval_lower": 50.0, "interval_upper": 90.0, "domain_status": "out_of_domain"}
+    ]
+  },
+  "private_evaluator": {
+    "references.json": [
+      {"reaction_id": "reaction_001", "yield_percent": 52.0},
+      {"reaction_id": "reaction_002", "yield_percent": 57.0},
+      {"reaction_id": "reaction_003", "yield_percent": 58.0},
+      {"reaction_id": "reaction_004", "yield_percent": 68.0},
+      {"reaction_id": "reaction_005", "yield_percent": 72.0}
+    ]
+  }
+}

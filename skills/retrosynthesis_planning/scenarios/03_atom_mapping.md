@@ -172,21 +172,18 @@ private_evaluator/
 reference_repository/
 ├── README.md
 ├── environment.yml
-├── run.sh
-├── input/
-├── src/
-│   ├── validate_reactions.py
-│   ├── run_mapper.py
-│   ├── audit_mapping.py
-│   ├── extract_bond_changes.py
-│   └── build_outputs.py
-├── results/
-│   ├── mapped_reactions.jsonl
-│   ├── bond_changes.jsonl
-│   └── intermediate_results.json
-└── analysis/
-    └── diagnostics.py
+├── pipelines/
+│   └── 03_atom_mapping.py
+└── test_cases/
+    ├── install.py
+    ├── evaluate.py
+    ├── database_sources.json
+    └── 03_atom_mapping.json
 ```
+
+仓库中的实际参考实现位于 `scenarios/pipelines/` 与
+`scenarios/test_cases/`。合成 fixture 中预分析的 mapping 只检查协议边界；正式
+benchmark 必须在 chemistry 环境实际执行 mapping，并使用冻结的 symmetry-aware GT。
 
 ## 评估自动化实现难度
 

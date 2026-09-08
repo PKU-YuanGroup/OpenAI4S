@@ -31,6 +31,19 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
       列出的正是这五个。这需要一个有发布权限的 npm 账号——任何自动化 agent 都不该
       持有这份凭据。
 
+- [ ] **冻结六个 retrosynthesis 生产数据集。**
+      `skills/retrosynthesis_planning/scenarios/test_cases/database_sources.json`
+      里六行全是 `"release_status": "not_frozen"`：USPTO-50K、PaRoutes、精选
+      atom-mapping benchmark、MIT 许可的 USPTO forward split、复核过的 Parrot
+      condition 快照，以及 Buchwald-Hartwig HTE 分布漂移 split。在冻结之前，
+      随包分发的六个样例只是每个一行的确定性协议冒烟测试，不做任何科学准确性
+      声明——这正是"六个 benchmark"与"六个接线检查"之间唯一的区别。阻塞点在代码
+      库之外：获取每个来源、审查其再分发许可、并钉住一个 revision。
+      *完成标志：* 每个 scenario 行都是 `release_status: "frozen"`，并带上
+      `revision`、`license`、`split` 和 `sha256`，且
+      `test_production_database_registry_fails_closed_until_frozen` 在冻结后的
+      行上仍然通过。需要有许可决策权的维护者，不应由自动化 agent 决定。
+
 ## CI 与供应链
 
 - [ ] **把周一的依赖 PR 跨 ecosystem 合批。** `groups:` 按设计是 per-ecosystem

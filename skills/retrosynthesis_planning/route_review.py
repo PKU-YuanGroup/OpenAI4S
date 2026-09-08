@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .kernel import canonicalize_smiles
 
@@ -26,18 +26,23 @@ def _node_kind(node: Mapping[str, Any]) -> str:
     return "molecule"
 
 
-def _safe_canonicalize(smiles: Any) -> str:
+Canonicalizer = Callable[[str], str]
+
+
+def _safe_canonicalize(smiles: Any, canonicalizer: Canonicalizer | None = None) -> str:
     value = str(smiles or "").strip()
     if not value:
         return ""
     try:
-        return canonicalize_smiles(value)
+        return (canonicalizer or canonicalize_smiles)(value)
     except (TypeError, ValueError):
         return value
 
 
 def _reaction_descriptor(
-    node: Mapping[str, Any], product_smiles: str | None
+    node: Mapping[str, Any],
+    product_smiles: str | None,
+    canonicalizer: Canonicalizer | None = None,
 ) -> dict[str, Any]:
     metadata = node.get("metadata")
     metadata = metadata if isinstance(metadata, Mapping) else {}
@@ -45,7 +50,7 @@ def _reaction_descriptor(
         smiles
         for child in _children(node)
         if _node_kind(child) == "molecule"
-        and (smiles := _safe_canonicalize(child.get("smiles")))
+        and (smiles := _safe_canonicalize(child.get("smiles"), canonicalizer))
     )
     template = str(
         node.get("template")
@@ -64,7 +69,7 @@ def _reaction_descriptor(
         )
     ).strip()
     return {
-        "product": _safe_canonicalize(product_smiles),
+        "product": _safe_canonicalize(product_smiles, canonicalizer),
         "precursors": precursors,
         "template": template,
         "mapped_reaction": mapped_reaction,
@@ -110,12 +115,19 @@ def _route_tree(route: Mapping[str, Any]) -> dict[str, Any]:
     return dict(tree) if isinstance(tree, Mapping) else {}
 
 
-def route_signature(route: Mapping[str, Any]) -> str:
-    """Return a stable chemistry-context signature for one normalized route."""
+def route_signature(
+    route: Mapping[str, Any], *, canonicalizer: Canonicalizer | None = None
+) -> str:
+    """Return a stable chemistry-context signature for one normalized route.
+
+    ``canonicalizer`` is the seam a caller uses to pin which normalization
+    produced the signature. Without it the result silently depends on whether
+    RDKit happens to be importable in this process.
+    """
     tree = _route_tree(route)
     reactions = sorted(
         (
-            _reaction_descriptor(node, product)
+            _reaction_descriptor(node, product, canonicalizer)
             for node, product, _path in _iter_reactions(tree)
         ),
         key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=True),
@@ -123,7 +135,8 @@ def route_signature(route: Mapping[str, Any]) -> str:
     leaves = sorted(
         smiles
         for node, _path in _iter_molecules(tree)
-        if not _children(node) and (smiles := _safe_canonicalize(node.get("smiles")))
+        if not _children(node)
+        and (smiles := _safe_canonicalize(node.get("smiles"), canonicalizer))
     )
     payload = {"reactions": reactions, "leaves": leaves}
     digest = hashlib.sha256(
@@ -158,11 +171,13 @@ def deduplicate_routes(
     return unique
 
 
-def _route_feature_set(route: Mapping[str, Any]) -> set[str]:
+def _route_feature_set(
+    route: Mapping[str, Any], canonicalizer: Canonicalizer | None = None
+) -> set[str]:
     tree = _route_tree(route)
     features: set[str] = set()
     for node, product, _path in _iter_reactions(tree):
-        descriptor = _reaction_descriptor(node, product)
+        descriptor = _reaction_descriptor(node, product, canonicalizer)
         identity = descriptor["template"] or descriptor["mapped_reaction"]
         if identity:
             features.add(f"rxn:{identity}")
@@ -171,16 +186,18 @@ def _route_feature_set(route: Mapping[str, Any]) -> set[str]:
         features.update(f"precursor:{item}" for item in descriptor["precursors"])
     for node, _path in _iter_molecules(tree):
         if not _children(node):
-            smiles = _safe_canonicalize(node.get("smiles"))
+            smiles = _safe_canonicalize(node.get("smiles"), canonicalizer)
             if smiles:
                 features.add(f"leaf:{smiles}")
     return features
 
 
-def route_feature_set(route: Mapping[str, Any]) -> frozenset[str]:
+def route_feature_set(
+    route: Mapping[str, Any], *, canonicalizer: Canonicalizer | None = None
+) -> frozenset[str]:
     """Return the stable public feature set used for route comparison."""
 
-    return frozenset(_route_feature_set(route))
+    return frozenset(_route_feature_set(route, canonicalizer))
 
 
 def _jaccard(left: set[str], right: set[str]) -> float:
@@ -190,7 +207,12 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(union) if union else 0.0
 
 
-def route_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
+def route_similarity(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+    *,
+    canonicalizer: Canonicalizer | None = None,
+) -> float:
     """Compare routes by reaction, product, precursor, and terminal features.
 
     ``_jaccard`` scores two empty sets as ``1.0``, which is the right
@@ -199,8 +221,8 @@ def route_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> float
     every reference. Scoring treats "no features" as no evidence.
     """
 
-    left_features = set(route_feature_set(left))
-    right_features = set(route_feature_set(right))
+    left_features = set(route_feature_set(left, canonicalizer=canonicalizer))
+    right_features = set(route_feature_set(right, canonicalizer=canonicalizer))
     if not left_features or not right_features:
         return 0.0
     return _jaccard(left_features, right_features)

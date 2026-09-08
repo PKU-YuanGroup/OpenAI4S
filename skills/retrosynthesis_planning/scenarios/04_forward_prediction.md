@@ -168,21 +168,18 @@ private_evaluator/
 reference_repository/
 ├── README.md
 ├── environment.yml
-├── run.sh
-├── input/
-├── src/
-│   ├── validate_inputs.py
-│   ├── admit_model.py
-│   ├── run_forward.py
-│   ├── normalize_products.py
-│   └── build_outputs.py
-├── results/
-│   ├── predictions.jsonl
-│   ├── diagnostics.csv
-│   └── intermediate_results.json
-└── analysis/
-    └── figures.py
+├── pipelines/
+│   └── 04_forward_prediction.py
+└── test_cases/
+    ├── install.py
+    ├── evaluate.py
+    ├── database_sources.json
+    └── 04_forward_prediction.json
 ```
+
+仓库中的实际参考实现位于 `scenarios/pipelines/` 与
+`scenarios/test_cases/`。公开 pipeline 固定完整 Top-K 输出；产品 reference 只留在
+private evaluator 边界。
 
 ## 评估自动化实现难度
 
