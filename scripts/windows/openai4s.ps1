@@ -693,10 +693,26 @@ function Test-OpenAI4SServing([string] $Distro, [string] $BootstrapLinux, [strin
 }
 
 function Assert-AppPage([string] $AppUrl) {
+    # Test-Serving already proved the port answers with a raw socket, which is
+    # deliberate: this package's documented audience runs Clash/TUN resolvers
+    # and a Windows localhost proxy. Windows PowerShell 5.1's Invoke-WebRequest
+    # resolves [Net.WebRequest]::DefaultWebProxy from the machine's WinINET
+    # settings and has no -NoProxy (that is PowerShell 6+), and with
+    # localhostForwarding=false $AppUrl carries the WSL NAT address -- a dotted
+    # private literal that "bypass proxy for local addresses" does not cover.
+    # Left proxied, this check refuses a daemon it was only asked to confirm.
+    $previousProxy = [System.Net.WebRequest]::DefaultWebProxy
     try {
+        [System.Net.WebRequest]::DefaultWebProxy = $null
         $page = Invoke-WebRequest -UseBasicParsing -Uri $AppUrl -TimeoutSec 10
-        if ($page.StatusCode -eq 200 -and $page.Content -match '<title>OpenAI4S</title>') { return }
-    } catch { }
+        # Prefix, not the exact tag: the sign-in query 303s to the workbench
+        # shell, and a team daemon 303s to its login page, whose title is
+        # `OpenAI4S -- sign in`.
+        # Both are the application answering; only neither is a failure.
+        if ($page.StatusCode -eq 200 -and $page.Content -match '<title>OpenAI4S') { return }
+    } catch { } finally {
+        [System.Net.WebRequest]::DefaultWebProxy = $previousProxy
+    }
     Stop-WithGuidance 'the daemon is reachable but the OpenAI4S page could not be loaded.' @(
         'The application is not ready to use. Run OpenAI4S.cmd doctor.',
         'If an older version is still running, finish your work, run',
@@ -706,8 +722,14 @@ function Assert-AppPage([string] $AppUrl) {
 
 function Show-RunningBuild([string] $Distro, [string] $BootstrapLinux, [string] $BundleDir, [string] $Expected) {
     $result = Invoke-BootstrapCapture $Distro $BootstrapLinux @('cli', $BundleDir, 'status', '--json')
+    # Invoke-WslCaptureNative folds stderr into Output on purpose (wsl.exe's
+    # NAT localhost-proxy warning would otherwise abort the call), so the
+    # capture is not a JSON document. Select the payload line the way Get-AppUrl
+    # selects the URL; joining the whole capture made one warning line render
+    # "your session is still running version unknown" on every single launch.
+    $document = $result.Lines | Where-Object { $_ -like '{*}' } | Select-Object -Last 1
     $running = $null
-    try { $running = ($result.Lines -join "`n") | ConvertFrom-Json } catch { }
+    if ($document) { try { $running = $document | ConvertFrom-Json } catch { } }
     if (-not $running -or $running.bundle_id -ne $Expected) {
         $version = if ($running.version) { $running.version } else { 'unknown' }
         Write-Host "  update installed; your existing session is still running version $version." -ForegroundColor Yellow
@@ -802,13 +824,21 @@ $packageLinux = ConvertTo-WslPath $distro $Here
 $bootstrap = "$packageLinux/wsl/bootstrap.sh"
 
 # Management remains available even when this ZIP's payload is missing or bad.
+# Exit 11 is bootstrap.sh's "nothing is installed in this data directory": on a
+# first-ever run there is no `current` to inspect, so fall through and install
+# the payload rather than refusing `doctor` -- the command Assert-AppPage's own
+# guidance sends a stuck user to -- and `--help`.
 if (Test-SandboxIndependentCli $Arguments) {
-    exit (Invoke-AppCli $distro $bootstrap 'current' $Arguments)
+    $code = Invoke-AppCli $distro $bootstrap 'current' $Arguments
+    if ($code -ne 11) { exit $code }
 }
 
 $facts = Get-PackageFacts
 $payloadLinux = "$packageLinux/payload/$($facts.PayloadName)"
 
+# Reached by a management command only when nothing is installed yet, and by
+# every ordinary launch. Preflight still does not gate the management commands:
+# doctor must stay reachable when bubblewrap is what the user is diagnosing.
 if (-not (Test-SandboxIndependentCli $Arguments)) {
     $arch = if ($facts.BundleDir -match '-aarch64$') { 'aarch64' } else { 'x86_64' }
     $code = Invoke-Bootstrap $distro $bootstrap @('preflight', $arch)
@@ -894,7 +924,15 @@ while ((Get-Date) -lt $deadline) {
             exit 0
         }
     }
-    if ($server.HasExited) { break }
+    if ($server.HasExited) {
+        # The hidden WSL process is gone: bootstrap.sh refused or the daemon
+        # exited. Both wrote to the log; the 60s timeout guidance below would
+        # blame localhost forwarding for a failure that never reached the port.
+        Stop-WithGuidance 'the daemon exited before it started serving.' @(
+            'Read the log from inside WSL:',
+            "    $(Get-WslLogCommand $distro)"
+        )
+    }
     Start-Sleep -Milliseconds 500
 }
 

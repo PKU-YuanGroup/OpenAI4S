@@ -8,7 +8,8 @@ if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
 $ast.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -in @('Select-Distro', 'Get-WslBootstrapArgs', 'ConvertTo-NativeArgument', 'Start-Bootstrap')
+    $node.Name -in @('Select-Distro', 'Get-WslBootstrapArgs', 'ConvertTo-NativeArgument', 'Start-Bootstrap',
+                     'Show-RunningBuild', 'Assert-AppPage')
 }, $false) | ForEach-Object { Invoke-Expression $_.Extent.Text }
 function Stop-WithGuidance([string]$Message, $Lines) { throw $Message }
 function Test-DistroHasInstall($Name) { return $Name -eq 'Ubuntu-existing' }
@@ -47,4 +48,40 @@ function Start-Process {
     return [pscustomobject]@{ HasExited = $false }
 }
 Start-Bootstrap 'Ubuntu' '/package with spaces/bootstrap.sh' @('serve', 'current') | Out-Null
+
+# Invoke-WslCaptureNative folds stderr into Output on purpose, so a status
+# capture is not a JSON document: wsl.exe's NAT localhost-proxy warning must not
+# be read as "a different build is running".
+$script:told = @()
+function Write-Host { param($Object, $ForegroundColor) $script:told += [string] $Object }
+function Invoke-BootstrapCapture {
+    param($Distro, $BootstrapLinux, $BootstrapArgs)
+    return [pscustomobject]@{
+        ExitCode = 0
+        Lines    = @(
+            'wsl: Detected localhost proxy configuration.',
+            '{"running":true,"pid":42,"version":"9.9.9","bundle_id":"beef"}'
+        )
+    }
+}
+Show-RunningBuild 'Ubuntu' '/b.sh' 'OpenAI4S-9.9.9' 'beef'
+if ($script:told.Count -ne 0) { throw 'a warning line was read as a different build' }
+Show-RunningBuild 'Ubuntu' '/b.sh' 'OpenAI4S-9.9.9' 'cafe'
+if ($script:told.Count -eq 0) { throw 'a genuinely older build was not reported' }
+if ((($script:told) -join ' ') -notmatch 'version 9\.9\.9') { throw 'the running version was lost' }
+
+# The page check must not go through the machine's WinINET proxy, and the team
+# sign-in page is the application answering too.
+$script:proxyDuringCall = 'unset'
+[System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy('http://127.0.0.1:7897')
+$script:sentinel = [System.Net.WebRequest]::DefaultWebProxy
+function Invoke-WebRequest {
+    param($Uri, $TimeoutSec, [switch]$UseBasicParsing)
+    $script:proxyDuringCall = [System.Net.WebRequest]::DefaultWebProxy
+    return [pscustomobject]@{ StatusCode = 200; Content = '<title>OpenAI4S &#8212; sign in</title>' }
+}
+Assert-AppPage 'http://172.20.0.2:8760/?token=synthetic'
+if ($null -ne $script:proxyDuringCall) { throw 'the page check went through the system proxy' }
+if ([System.Net.WebRequest]::DefaultWebProxy -ne $script:sentinel) { throw 'the system proxy was not restored' }
+
 Write-Output "PowerShell $($PSVersionTable.PSVersion): launcher contracts passed"

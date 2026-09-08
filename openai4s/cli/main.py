@@ -845,7 +845,21 @@ def cmd_status(args) -> int:
         ) as r:
             health = json.loads(r.read().decode("utf-8"))
         if getattr(args, "json", False):
-            state = _recorded_state(cfg) if endpoint is not None else None
+            # Keyed on the sidecar describing *this* pid, not on
+            # `_recorded_endpoint`: that answers a stricter question (is the
+            # recorded generation still the live one, which needs a Linux
+            # process start token) and has nothing to do with which build is
+            # running. Gating on it reported `version: null, bundle_id: null`
+            # for a healthy current daemon, and the Windows launcher renders
+            # that as "your session is still running an older version".
+            state = _recorded_state(cfg)
+            recorded = (state or {}).get("pid")
+            if (
+                not isinstance(recorded, int)
+                or isinstance(recorded, bool)
+                or recorded != pid
+            ):
+                state = None
             print(
                 json.dumps(
                     {
