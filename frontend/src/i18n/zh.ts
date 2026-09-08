@@ -1209,6 +1209,7 @@ const dict: Record<string, string> = {
   "viewer.renderer.matched": "匹配：{0}",
   "viewer.renderer.version": "版本 {0}",
   "viewer.renderer.noscript": "预览不执行脚本。交互式报表请下载后在本地打开。",
+  "viewer.renderer.interactive": "交互式预览运行在隔离的备用 loopback 源上。若一直空白，请重新打开该文件或下载报表。",
   "viewer.sequence.omitted": "为保持界面流畅，其余 {0} 个残基未展开。",
   "viewer.sequence.summary": "{0} 条序列 · {1} 个残基 · {2}",
   "viewer.table.shape": "共 {0} 行 × {1} 列",

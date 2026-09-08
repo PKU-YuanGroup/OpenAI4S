@@ -388,14 +388,21 @@ def test_skill_egress_scan_recognizes_each_supported_client_family():
 #: session cookie. Frozen the same way and for the same reason.
 _WEBUI = _PACKAGE / "server" / "webui"
 
-#: Absolute URLs the client may *name*, each with why it is not a request. A
-#: string is not egress; a string handed to something that fetches it is. Both
-#: of these are inert, so they are listed rather than removed -- and listed with
-#: a reason, so a third entry has to argue for itself.
+#: Absolute URLs the client may *name*, each with its bounded purpose. A
+#: string is not egress; a string handed to something that fetches it is.
+#: Most entries are inert. The loopback pair constructs the separately tested
+#: scoped preview origin; it cannot be replaced with an arbitrary destination.
 #:
 #: `vendor/` is excluded from the scan entirely: it is upstream minified code,
 #: and a URL inside a bundled library is not the client choosing to call it.
 _WEBUI_NAMED_HOSTS = {
+    "localhost": "constructs the exact alternate loopback preview origin at "
+    "the current daemon port; used only after an authenticated, origin-bound "
+    "Artifact grant. Frontend origin/path tests and browser_sandbox_preview "
+    "verify the scoped iframe destination and refuse external overrides",
+    "127.0.0.1": "the reverse direction of the same bounded preview origin: "
+    "selected only when the app is HTTP localhost at this daemon port, then "
+    "matched against the signed grant response before navigating the iframe",
     "www.w3.org": "the SVG XML namespace passed to createElementNS -- an "
     "identifier, never dereferenced by any browser",
     "api.tavily.com": "displayed as the default search endpoint in Customize. "
@@ -422,6 +429,23 @@ _WEBUI_REQUEST_SITES = (
     "new EventSource(",
     "new WebSocket(",
 )
+
+
+#: Hosts admitted only where the built preview-origin resolver names them: the
+#: compiled workbench bundle, next to the `hostname===` comparison that derives
+#: the other loopback name. Anywhere else -- the frozen legacy shell, a
+#: satellite page -- a loopback literal is a new absolute URL and has to argue
+#: for itself like any other host, or the tree-wide allowance would let a
+#: copy-pasted `"http://127.0.0.1"` base URL through unremarked.
+_WEBUI_SCOPED_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def _webui_host_accounted(path: str, host: str, near: str) -> bool:
+    if host not in _WEBUI_NAMED_HOSTS:
+        return False
+    if host in _WEBUI_SCOPED_HOSTS:
+        return path.startswith("server/webui/dist/assets/") and 'hostname==="' in near
+    return True
 
 
 def _webui_sources() -> list[Path]:
@@ -501,13 +525,43 @@ def test_every_external_host_the_client_names_is_accounted_for():
     unaccounted = sorted(
         {
             (path, line, host)
-            for path, line, host, _ in _webui_absolute_urls()
-            if host not in _WEBUI_NAMED_HOSTS
+            for path, line, host, near in _webui_absolute_urls()
+            if not _webui_host_accounted(path, host, near)
         }
     )
     assert not unaccounted, (
         "client code names a host with no recorded reason:\n"
         + "\n".join(f"  {path}:{line} -> {host}" for path, line, host in unaccounted)
         + "\n\nAdd it to _WEBUI_NAMED_HOSTS with why it is not a request, or "
-        "remove it."
+        "remove it. A loopback name is already listed there but only counts "
+        "inside the built preview-origin resolver (see _WEBUI_SCOPED_HOSTS): "
+        "naming one anywhere else needs its own argument."
     )
+
+
+def test_the_loopback_hosts_count_only_inside_the_built_origin_resolver():
+    """The scoping half of the allowance, which no real source line exercises.
+
+    Only the compiled `resolveSandboxOrigin` may name a loopback host, so the
+    rows admitting them are the one place a copy-pasted `"http://127.0.0.1"`
+    base URL in the frozen shell could slip through unremarked. Nothing in the
+    tree currently sits on the refusing side of that rule, so the negative
+    cases are constructed rather than found -- otherwise the helper would be a
+    pin that cannot fail.
+    """
+    resolver = 'e.hostname==="127.0.0.1"?"http://localhost":'
+    assert _webui_host_accounted(
+        "server/webui/dist/assets/index-BzJ6k69J.js", "127.0.0.1", resolver
+    )
+    # Same host, same file, but not the resolver: an ordinary absolute URL.
+    assert not _webui_host_accounted(
+        "server/webui/dist/assets/index-BzJ6k69J.js",
+        "127.0.0.1",
+        'fetch("http://127.0.0.1" + "/api/v1/status")',
+    )
+    # The frozen shell and the satellite pages get no loopback allowance.
+    for path in ("server/webui/app.js", "server/webui/login.js"):
+        assert not _webui_host_accounted(path, "localhost", resolver)
+    # Unscoped rows keep their tree-wide reason; unknown hosts stay refused.
+    assert _webui_host_accounted("server/webui/app.js", "www.w3.org", "")
+    assert not _webui_host_accounted("server/webui/app.js", "evil.example", resolver)

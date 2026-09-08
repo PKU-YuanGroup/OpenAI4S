@@ -26,6 +26,8 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`http-stub.ts`](http-stub.ts) | JSON `Response` stand-in for Vitest. |
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`. |
+| [`preview.ts`](preview.ts) | Scoped exact-version grant upgrade with a per-version grant cache, the retargeted caption, and the inert `/preview/<id-or-version>` fallback once a grant is refused. |
+| [`preview.test.ts`](preview.test.ts) | Production renderer grant lifecycle, grant reuse and expiry, origin/path rejection, exact-version fallback, non-loopback inertness, and detached iframe regression tests. |
 | [`renderers.ts`](renderers.ts) | Ten scientific glues + image/pdf/html/3Dmol islands via `isReady`. PDF iframe gets F-18 `sandbox=""`. |
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` union keys; 5000×100 cap. |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape` (app.js:8771-8802). |

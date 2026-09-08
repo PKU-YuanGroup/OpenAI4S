@@ -16,6 +16,8 @@ who embeds a document rather than by what the document contains.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 def artifact_content_security_policy() -> str:
     """Policy for untrusted, user- or agent-authored Artifact bytes.
@@ -24,16 +26,10 @@ def artifact_content_security_policy() -> str:
     sandboxed iframe, so the sandbox rides the response and applies in either
     navigation mode.
 
-    **Artifact HTML never executes script in the product.** `script-src 'none'`
-    says so, the sandbox has no `allow-scripts`, and `app.js` frames previews
-    with `sandbox=""`; all three agree on purpose. A skill that emits an
-    interactive dashboard — `retrosynthesis_planning`, `admet_genetic` — gets a
-    static rendering in the Workbench and in a `/preview/` tab, and its
-    interactivity only on a downloaded copy opened from the filesystem. That is
-    a deliberate trade, not an oversight: these bytes are model-authored, and
-    the alternative is executing them on the origin that holds the session
-    cookie. Say it here rather than leaving a reader to infer it from three
-    separate files.
+    App-origin Artifact HTML never executes script. The ordinary preview,
+    direct download, and frozen legacy iframe retain this inert policy.
+    Only the separately validated, Host-bound grant namespace may use the
+    executable sandbox policy below.
 
     `allow-same-origin` is the one sandbox token granted, and it buys back the
     sub-resources a report needs. Without it the document is on an opaque
@@ -62,6 +58,83 @@ def artifact_content_security_policy() -> str:
     )
 
 
+def _one_minting_origin(app_origin: str) -> str:
+    """Refuse anything but a single, whole `http://` origin.
+
+    The first draft of this policy took a *sequence* of ancestors and was
+    handed both loopback names, which let a report navigate its own frame
+    from the sandbox name to the cookie name and stay framed. The type now
+    says what the data already is: a grant is minted by exactly one origin,
+    and that origin is the only permitted ancestor. Anything else is a
+    caller bug, and a caller bug here must not degrade into a wider policy.
+    """
+    origin = str(app_origin or "")
+    if (
+        not origin.startswith("http://")
+        or origin.endswith("/")
+        or any(ch.isspace() for ch in origin)
+        or ";" in origin
+        or "," in origin
+    ):
+        raise ValueError("sandbox preview needs exactly one minting origin")
+    return origin
+
+
+def sandboxed_artifact_content_security_policy(app_origin: str) -> str:
+    """Policy for artifact bytes served on the *sandbox* origin.
+
+    The grant route must validate its signed spend origin before selecting
+    this policy. Cross-origin isolation protects the embedding Workbench;
+    the grant namespace accepts no session credential and exposes only scoped
+    Artifact snapshots. Other previews share the same browser origin.
+
+    Fetches, forms, and external resources are blocked, but an iframe can
+    navigate itself. Such navigation can disclose its bearer path and readable
+    bytes. This policy is not a general data-exfiltration boundary.
+
+    `frame-ancestors` names the one minting origin literally: `'self'` would
+    mean the sandbox origin, which is not who embeds this.
+    """
+    ancestors = _one_minting_origin(app_origin)
+    return "; ".join(
+        [
+            "default-src 'none'",
+            # The document's own inline script is the point of this origin.
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "media-src 'self' data: blob:",
+            "connect-src 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            f"frame-ancestors {ancestors}",
+            # `allow-same-origin` is safe here and not on the app origin: this
+            # document's origin is the sandbox, so keeping it buys `'self'` for
+            # sub-resources without granting reach into anything.
+            "sandbox allow-scripts allow-same-origin",
+        ]
+    )
+
+
+def sandboxed_artifact_security_headers(app_origin: str) -> dict[str, str]:
+    """Headers for an executable artifact preview on the sandbox origin."""
+    headers = security_headers()
+    headers["Content-Security-Policy"] = sandboxed_artifact_content_security_policy(
+        app_origin
+    )
+    headers["Referrer-Policy"] = "no-referrer"
+    headers["Cache-Control"] = "no-store"
+    # Dropped, not set to a permissive value: `X-Frame-Options` has no "this
+    # origin" form, and its non-standard `ALLOWALL` relies on browsers
+    # ignoring a value they cannot parse. `frame-ancestors` is the standard
+    # control and takes precedence wherever both appear, so the honest thing
+    # is to let it be the only one.
+    headers.pop("X-Frame-Options", None)
+    return headers
+
+
 def artifact_security_headers() -> dict[str, str]:
     """Hardened headers for an embeddable, untrusted Artifact document."""
     headers = security_headers()
@@ -73,7 +146,7 @@ def artifact_security_headers() -> dict[str, str]:
     return headers
 
 
-def embeddable_security_headers() -> dict[str, str]:
+def embeddable_security_headers(*, allow_eval: bool = False) -> dict[str, str]:
     """Headers for a UI-owned document the Workbench loads in an iframe.
 
     `/ketcher` and the vendored editor it frames are first-party documents, not
@@ -84,23 +157,60 @@ def embeddable_security_headers() -> dict[str, str]:
     """
     headers = security_headers()
     headers["Content-Security-Policy"] = content_security_policy(
-        frame_ancestors="'self'"
+        frame_ancestors="'self'", allow_eval=allow_eval
     )
     headers["X-Frame-Options"] = "SAMEORIGIN"
     return headers
 
 
-def content_security_policy(*, frame_ancestors: str = "'none'") -> str:
+def ketcher_editor_security_headers() -> dict[str, str]:
+    """Allow the pinned first-party editor's generated chemistry bindings.
+
+    Ketcher 3.7.0 uses JavaScript string compilation as well as WebAssembly.
+    Without this permission its initialization raises EvalError and structure
+    import/export waits forever. Only the exact vendored editor document uses
+    this profile; its blob worker inherits it. The wrapper, Workbench, and
+    all untrusted Artifact responses keep their existing no-eval policies.
+    """
+    return embeddable_security_headers(allow_eval=True)
+
+
+def content_security_policy(
+    *,
+    frame_ancestors: str = "'none'",
+    frame_src: Sequence[str] = (),
+    allow_eval: bool = False,
+) -> str:
     """Return the static UI-shell policy.
 
-    ``frame_ancestors`` is the one directive that varies by document, and it
-    varies because of who embeds it, not because of what it contains.
+    ``allow_eval`` is the one directive that varies by what the document
+    *contains*: it exists for a single pinned first-party bundle that compiles
+    JavaScript strings, and nothing model-authored is ever built with it.
+
+    Two more directives vary, and both vary by *who is on the other side of a
+    frame boundary* rather than by what this document contains:
+
+    ``frame_ancestors``
+        who may embed this document.
+    ``frame_src``
+        who this document may embed. It has to name the sandbox origin
+        explicitly: `default-src 'self'` is the `frame-src` fallback, and the
+        sandbox origin is deliberately a *different* origin, so the shell's own
+        policy refuses to frame it until it is named. That is not theoretical
+        -- it is what Chromium did, with "Framing 'http://localhost:PORT/'
+        violates ... default-src 'self'", while every response header on the
+        sandbox side was already correct.
     """
     script_src = ["'self'"]
-    # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
-    # permits exactly that and nothing else — unlike 'unsafe-eval', it does not
-    # re-enable eval()/new Function() for injected script.
-    script_src.append("'wasm-unsafe-eval'")
+    if allow_eval:
+        # 'unsafe-eval' already covers WebAssembly compilation, so the narrower
+        # keyword below would be dead weight beside it.
+        script_src.append("'unsafe-eval'")
+    else:
+        # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
+        # permits exactly that and nothing else — unlike 'unsafe-eval', it does
+        # not re-enable eval()/new Function() for injected script.
+        script_src.append("'wasm-unsafe-eval'")
 
     policy = "; ".join(
         [
@@ -122,16 +232,17 @@ def content_security_policy(*, frame_ancestors: str = "'none'") -> str:
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'self'",
+            " ".join(["frame-src", "'self'", *frame_src]),
             f"frame-ancestors {frame_ancestors}",
         ]
     )
     return policy
 
 
-def security_headers() -> dict[str, str]:
+def security_headers(*, frame_src: Sequence[str] = ()) -> dict[str, str]:
     """Headers applied to every response the gateway emits."""
     return {
-        "Content-Security-Policy": content_security_policy(),
+        "Content-Security-Policy": content_security_policy(frame_src=frame_src),
         # The gateway serves user/agent-authored artifacts; sniffing turns a
         # text/plain artifact into an executable document.
         "X-Content-Type-Options": "nosniff",
@@ -150,5 +261,8 @@ __all__ = [
     "artifact_security_headers",
     "content_security_policy",
     "embeddable_security_headers",
+    "ketcher_editor_security_headers",
+    "sandboxed_artifact_content_security_policy",
+    "sandboxed_artifact_security_headers",
     "security_headers",
 ]

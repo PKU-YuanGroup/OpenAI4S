@@ -1209,6 +1209,7 @@ const dict: Record<string, string> = {
   "viewer.renderer.matched": "Matched by {0}",
   "viewer.renderer.version": "Version {0}",
   "viewer.renderer.noscript": "This preview runs no scripts. Download an interactive report to use it.",
+  "viewer.renderer.interactive": "Interactive preview, isolated on the alternate loopback origin. If it stays blank, reopen the artifact or download the report.",
   "viewer.sequence.omitted": "{0} additional residues are collapsed to keep the viewer responsive.",
   "viewer.sequence.summary": "{0} sequences · {1} residues · {2}",
   "viewer.table.shape": "{0} rows × {1} columns",

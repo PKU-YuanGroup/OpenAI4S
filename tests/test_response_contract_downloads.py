@@ -255,6 +255,10 @@ def test_updating_a_real_annotation_still_answers_with_it(server):
 #: useless contract, which is the same class of defect as the refusal-only
 #: entry this gate replaced -- just harder to see.
 SUCCESS_REQUIRED: dict[str, tuple[int, frozenset[str]]] = {
+    "POST /artifacts/([^/]+)/sandbox-grant": (
+        200,
+        frozenset({"origin", "path", "expires_in"}),
+    ),
     "GET /frames/([^/]+)/action-timeline": (
         200,
         frozenset({"groups", "count", "root_frame_id"}),

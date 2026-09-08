@@ -4,8 +4,7 @@ import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { artifactWorkbench, _kc } from "../../stores/notebook";
-import { sandboxOrigin } from "../../stores/session";
-import { applyArtifactIframeSandbox, htmlPreviewSrc } from "../../islands/frames";
+import { applyArtifactIframeSandbox } from "../../islands/frames";
 import {
   callWindow,
   el,
@@ -26,6 +25,7 @@ import {
   type MolfileModel,
 } from "./catalog";
 import { renderSheet } from "./sheet";
+import { renderHtmlPreview } from "./preview";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
@@ -536,11 +536,7 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
 }
 
 function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
-  const frame = el("iframe");
-  applyArtifactIframeSandbox(frame, "html-preview");
-  frame.src = htmlPreviewSrc(sandboxOrigin.value || "", a.id);
-  content.appendChild(frame);
-  content.appendChild(el("p", "muted renderer-noscript", translate("viewer.renderer.noscript")));
+  renderHtmlPreview(content, a);
   if (artifactWorkbenchOn()) callWindow("renderLocatorComments", content, a, "html");
 }
 
