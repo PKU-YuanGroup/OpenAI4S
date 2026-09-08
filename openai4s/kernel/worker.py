@@ -52,21 +52,31 @@ from functools import partial
 _TRUSTED_PACKAGE_PARENT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 )
+# This must run before the protocol imports below, which is why they are not at
+# the top of the file and why each carries a suppression comment. Unlike the
+# retrosynthesis test's, these are load-bearing: the insert sits inside an `if`,
+# so ruff's allowance for imports after a sys.path mutation does not apply and
+# stripping them really does raise E402.
+#
+# Keep them short. `combine_as_imports` is off, so isort renders each aliased
+# name as its own one-line statement and then decides to collapse on the code
+# alone, while Black measures the same line with the comment -- put the two on
+# opposite sides of 88 and they rewrap it against each other forever. Only the
+# aliased imports here are exposed, and only while they stay collapsed:
+# `_MAX_FRAME_BYTES` is 72 characters of code, so its trailing comment may be 16
+# and is 14. The first import is already past 88 on code alone, so it stays
+# wrapped and is not exposed at all.
 if (
     os.path.isfile(os.path.join(_TRUSTED_PACKAGE_PARENT, "openai4s", "__init__.py"))
     and _TRUSTED_PACKAGE_PARENT not in sys.path
 ):
     sys.path.insert(0, _TRUSTED_PACKAGE_PARENT)
 
-from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+from openai4s.kernel.protocol import (  # noqa: E402
     JSON_WORST_BYTES_PER_CHAR as _JSON_WORST_BYTES_PER_CHAR,
 )
-from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
-    MAX_FRAME_BYTES as _MAX_FRAME_BYTES,
-)
-from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
-    MAX_OUTPUT_CHARS as MAX_OUTPUT,
-)
+from openai4s.kernel.protocol import MAX_FRAME_BYTES as _MAX_FRAME_BYTES  # noqa: E402
+from openai4s.kernel.protocol import MAX_OUTPUT_CHARS as MAX_OUTPUT  # noqa: E402
 
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap

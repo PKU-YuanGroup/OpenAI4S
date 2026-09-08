@@ -49,10 +49,7 @@ from openai4s.security.permissions import (
     FILE_MODE,
 )
 from openai4s.security.permissions import fsync_dir as _fsync_dir
-from openai4s.security.permissions import (
-    harden_dir,
-    harden_file,
-)
+from openai4s.security.permissions import harden_dir, harden_file
 
 #: Filename of the per-daemon signing secret, under the data dir.
 SECRET_FILENAME = "worker-bootstrap-secret"

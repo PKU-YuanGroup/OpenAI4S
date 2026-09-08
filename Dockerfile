@@ -35,7 +35,7 @@
 # `.github/workflows/ci.yml`'s offline matrix and in
 # `scripts/release_gates.py` CHECK_SUITE_GATES; `tests/test_platform_support.py`
 # reads this FROM line rather than restating the series.
-FROM python:3.14-slim-bookworm@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63 AS builder
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS builder
 
 WORKDIR /src
 # The build backend first, in its own layer: it changes only when the pin in
@@ -49,7 +49,7 @@ RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
         --wheel-dir /wheels /src
 
 # --- runtime stage -----------------------------------------------------------
-FROM python:3.14-slim-bookworm@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63 AS runtime
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS runtime
 
 # `science` installs numpy/pandas/matplotlib/scikit-learn so agent cells can do
 # actual work. Pass `--build-arg OPENAI4S_EXTRAS=` for the stdlib-only control

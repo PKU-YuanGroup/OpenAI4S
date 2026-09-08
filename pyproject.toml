@@ -211,6 +211,42 @@ markers = [
 target-version = ["py310"]
 line-length = 88
 
+[tool.isort]
+# Same reason as the block above and the one below: state the setting instead of
+# inheriting whatever the pinned formatter happens to compute. isort was the one
+# formatter of the three with no section here -- its entire configuration was
+# `--profile black` on the hook's command line -- so everything the profile does
+# not name was whatever the pinned version shipped, across an 8.0.1 -> 9.0.1
+# major that moved exactly those defaults.
+#
+# `src_paths` is the load-bearing entry. It defaults to `(cwd/"src", cwd)`, so
+# first-party detection was a property of the process rather than of the
+# repository: run isort from anywhere but the repo root and `openai4s` is
+# demoted to third-party, which moves the section breaks. A relative path in a
+# config file resolves against that file's directory, which puts the answer back
+# in the repository where the other two blocks already keep theirs.
+#
+# `profile` restates the hook's `--profile black` so that a bare `isort .` -- the
+# default an editor integration runs -- lays imports out the way the gate does,
+# instead of emitting a diff the gate then reverts. It does not make that run
+# safe, and nothing here can: the byte-exact trees are guarded only by
+# pre-commit's own `exclude:`, so a bare `isort .` still rewrites 318 of the 408
+# pinned files under `skills/bioskills/`. Mirroring those paths into a `skip`
+# here would not reach the gate either -- the hook's `args:` replaces the
+# upstream manifest's `--filter-files`, and without it isort ignores `skip` for
+# files named on the command line, which is the only way pre-commit invokes it.
+#
+# `py_version` states the union-across-versions default explicitly, which is the
+# correct one for a `requires-python = ">=3.10"` package that CI runs on 3.10
+# through 3.14; narrowing it to the floor would misfile `tomllib`, which this
+# repository imports and which only became stdlib in 3.11.
+#
+# Like the black block, this changes no output: the tree is byte-identical with
+# and without it.
+profile = "black"
+py_version = "3"
+src_paths = ["."]
+
 [tool.ruff.lint]
 # State the rule set instead of inheriting whatever the pinned ruff calls its
 # default. Until now there was no [tool.ruff] section at all, so the rule set

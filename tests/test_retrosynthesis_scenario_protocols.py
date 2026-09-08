@@ -74,9 +74,21 @@ from retrosynthesis_planning.reproducibility_bundle import (  # noqa: E402
     build_reproducibility_bundle,
 )
 from retrosynthesis_planning.route_review import route_similarity  # noqa: E402
-from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402
-    main as scenario_cli_main,
-)
+
+# No trailing suppression comment on this one, unlike its neighbours -- with one
+# the two formatters never agree about it. `combine_as_imports` is off, so isort
+# renders an aliased name as its own one-line statement whatever the trailing
+# comma says, then decides to collapse on the code alone: 84 characters, inside
+# the 88 limit. Black measures the line isort emitted, comment included: 98,
+# outside it, so Black wraps it back. Neither budges, and every hook run reports
+# the file as modified. It is the alias that opens this, not the length: a plain
+# name with the same 84 characters keeps its trailing comma and is left alone.
+#
+# Dropping the comment costs nothing. The suppression was already inert -- ruff
+# exempts imports that follow the sys.path mutation above, so this file is clean
+# with the rule explicitly selected. Its neighbours keep theirs only because
+# rewriting all fifteen is a separate change.
+from retrosynthesis_planning.scenario_benchmark_cli import main as scenario_cli_main
 from retrosynthesis_planning.yield_benchmark import (  # noqa: E402
     SPLITS,
     evaluate_yield_predictions,
