@@ -408,6 +408,7 @@ class BashExecutor:
             proc = subprocess.Popen(
                 command,
                 shell=True,
+                executable="/bin/bash",
                 cwd=str(cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

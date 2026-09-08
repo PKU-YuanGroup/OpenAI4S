@@ -41,7 +41,9 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Protocol
 
 from openai4s.kernel.protocol import MAX_FRAME_BYTES
@@ -121,6 +123,13 @@ def _reset_inherited_signal_dispositions() -> None:
     signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
 
+# Linux's parent-death signal follows the creating thread. A request/job thread
+# ends after one Cell, so spawning bubblewrap there silently kills a persistent
+# kernel as soon as the request finishes. This single daemon-lived thread owns
+# process creation only; protocol readers, interrupts and cleanup stay unchanged.
+_PROCESS_SPAWNER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kernel-spawn")
+
+
 class PipeTransport:
     """The local worker: a child process over three pipes.
 
@@ -176,7 +185,11 @@ class PipeTransport:
             # backgrounded daemon's R kernels silently drop every interrupt.
             # See `_reset_inherited_signal_dispositions` for the full chain.
             options["preexec_fn"] = _reset_inherited_signal_dispositions
-        self._proc = subprocess.Popen(command, **options)
+        self._proc = (
+            _PROCESS_SPAWNER.submit(subprocess.Popen, command, **options).result()
+            if sys.platform.startswith("linux")
+            else subprocess.Popen(command, **options)
+        )
         # Read at spawn, from the pid, not later from `os.getpgid`: once the
         # leader is reaped the lookup fails, which is exactly when a surviving
         # group most needs signalling (`execution/process_group.py` says the

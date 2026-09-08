@@ -6,6 +6,7 @@ import os
 import signal
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,24 @@ def test_persistent_namespace():
         k.execute("x = 41")
         r = k.execute("print(x + 1)")
         assert r["stdout"].strip() == "42"
+
+
+def test_kernel_survives_the_request_thread_that_created_it(tmp_path):
+    kernel = None
+    try:
+        with ThreadPoolExecutor(max_workers=1) as requests:
+            kernel = requests.submit(Kernel, cwd=str(tmp_path)).result(timeout=15)
+            first = requests.submit(kernel.execute, "marker = 41").result(timeout=15)
+            assert first["error"] is None
+        # The request thread is now gone, as after a Web REPL/Agent turn. The
+        # next request must see the same worker and its original namespace.
+        time.sleep(0.1)
+        result = kernel.execute("print(marker + 1)")
+        assert result["error"] is None
+        assert result["stdout"].strip() == "42"
+    finally:
+        if kernel is not None:
+            kernel.shutdown()
 
 
 def test_files_read_are_runtime_observations_not_source_guesses(tmp_path):
@@ -1216,6 +1235,29 @@ def test_killing_the_worker_also_ends_what_the_cell_started():
         )
         assert result["error"] is None, result
         grandchild = int(result["stdout"].strip())
+        worker_pidfd = getattr(k._sandbox, "_bwrap_worker_pidfd", None)
+        if worker_pidfd is not None:
+            # WSL/team kernels report namespace-local PIDs. Resolve the sole
+            # child through the pinned worker before inspecting it on the Host.
+            fields = dict(
+                line.split(":", 1)
+                for line in Path(f"/proc/self/fdinfo/{worker_pidfd}")
+                .read_text()
+                .splitlines()
+                if ":" in line
+            )
+            worker = int(fields["Pid"])
+            children = (
+                Path(f"/proc/{worker}/task/{worker}/children").read_text().split()
+            )
+            assert len(children) == 1
+            host_child = int(children[0])
+            status = Path(f"/proc/{host_child}/status").read_text()
+            ns_pid = next(
+                line for line in status.splitlines() if line.startswith("NSpid:")
+            )
+            assert int(ns_pid.split()[-1]) == grandchild
+            grandchild = host_child
         assert os.getpgid(grandchild) == os.getpgid(k._proc.pid), (
             "the cell's subprocess is not in the worker's group, so this test "
             "would pass without the stop ladder ever being exercised"

@@ -32,13 +32,16 @@ from openai4s.security.sandbox import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_warn_once_dedup():
+def _reset_warn_once_dedup(monkeypatch):
     """``_warn_once`` dedups by message for the whole process, so a warning
     already emitted by an earlier test (e.g. a real kernel on a bwrap-less CI
     runner) would make a later ``pytest.warns`` assertion see nothing.  Reset
     the cache before each test so the security-warning assertions are
     order-independent."""
     sandbox_module._warned_details.clear()
+    # This module injects generic Linux/macOS backends. Actual WSL behavior has
+    # its own contracts and smoke; do not inherit the machine running pytest.
+    monkeypatch.setattr(sandbox_module.wsl, "is_wsl", lambda: False)
     yield
 
 

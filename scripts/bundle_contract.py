@@ -26,7 +26,9 @@ import hashlib
 import json
 import re
 import unicodedata
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 _HERE = Path(__file__).resolve().parent
 
@@ -44,6 +46,7 @@ REQUIRED_SOURCES = (
     "openai4s/compute/templates/run.sh.tmpl",
     "openai4s/compute/templates/wrapper.sh.tmpl",
     "openai4s/server/webui/index.html",
+    "openai4s/server/webui/dist/index.html",
     "openai4s/server/webui/theme-bootstrap.js",
     "openai4s/server/webui/app.js",
     "openai4s/server/webui/style.css",
@@ -92,6 +95,39 @@ _CREDENTIAL_ASSIGNMENT = re.compile(r"(?i)(api[_-]?key|secret|token)\s*=\s*[\"']
 
 class BundleCheckError(RuntimeError):
     """A shipped bundle does not satisfy the contract."""
+
+
+def check_web_assets(src: Path) -> None:
+    """Check the default page's local resources, including hashed Vite assets."""
+    web = src / "openai4s/server/webui"
+
+    class Resources(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            field = "src" if tag == "script" else "href" if tag == "link" else None
+            url = dict(attrs).get(field, "")
+            if not url or not url.startswith("/static/"):
+                return
+            path = web / unquote(urlsplit(url).path).removeprefix("/static/")
+            if not path.resolve().is_relative_to(web.resolve()) or not path.is_file():
+                raise BundleCheckError(f"default Web UI resource is missing: {url}")
+
+    Resources().feed((web / "dist/index.html").read_text("utf-8"))
+
+
+def check_python_scripts(runtime: Path) -> None:
+    """Reject Python console commands pointing at the build machine."""
+    from relocate_bundle_scripts import HEADER, python_body
+
+    for path in (runtime / "bin").iterdir():
+        if path.is_symlink() or not path.is_file():
+            continue
+        with path.open("rb") as source:
+            if source.read(2) != b"#!":
+                continue
+            source.seek(0)
+            content = source.read()
+        if python_body(content) is not None and not content.startswith(HEADER):
+            raise BundleCheckError(f"Python command is not relocatable: {path.name}")
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +298,7 @@ def check_sources(src: Path) -> int:
     missing = [name for name in REQUIRED_SOURCES if not (src / name).is_file()]
     if missing:
         raise BundleCheckError("source tree is missing: " + ", ".join(missing))
+    check_web_assets(src)
     # Two floors, not one total. Folding the 561-recipe collection into the
     # same count made the curated floor unfalsifiable: a bundle that shipped
     # bioskills and dropped every curated Skill still cleared 20.

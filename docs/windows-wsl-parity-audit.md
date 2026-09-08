@@ -4,9 +4,29 @@
 
 Baseline: `bca1183fcc1cd9f4820bb54139ecdaaf63adfcf6`, 2026-09-07.
 The user already has WSL2. The target is the same scientific workflow as the macOS download.
-This branch records the investigation, reproducible probes and acceptance order. It does not change production runtime behavior or certify a Windows release.
+The branch now includes production fixes following the original investigation. The baseline observations below are historical; they are not the current branch's results. This is WSL2 x86_64 validation, not certification of every Windows configuration.
 
-## Conclusion and evidence
+## Implemented fixes
+
+| Findings | Change | User-visible result |
+| --- | --- | --- |
+| W0 | Focused WSL adapter, Windows/session mount masks, private PID namespace and AF_VSOCK filter; reuse the existing sandbox and interrupt lifecycle | Scientific code cannot use Windows interop to bypass its boundary; Python/R cancellation preserves the live analysis state |
+| W1, W5 | Exclude infrastructure distributions; verify architecture, ordinary user and usable bubblewrap; offer Ubuntu prerequisite installation | First launch selects a user distribution and explains/prepares the missing isolation component |
+| W2 | Windows user-scoped DPAPI backend behind SecretBroker; retain an existing usable Linux keyring | Fresh WSL can save model credentials without setting up a Linux desktop keyring or writing plaintext |
+| W3, W4, W9 | Embedded runtime on CLI PATH, Linux tool lookup, explicit Bash executable | Shell commands use the selected analysis environment and support `source` / `[[ ]]` |
+| W6–W8 | Digest-addressed staging and atomic current pointer, package-independent management, running-build identity | A failed update preserves the working installation; updates report a pending restart and leave active work running |
+| C1, C2 | Shared macOS/Linux builder fixes for default UI and relocatable Python entry points; stronger artifact verification | The downloaded app opens its actual workbench and scientific commands keep working after installation |
+| W10 — found during browser acceptance | One process-creation thread lives with the daemon instead of a short request | A completed Web Cell no longer loses its worker when its request thread ends; subsequent Cells and reloads retain variables |
+| W11 — found during standalone launch | The Windows launcher retains a hidden WSL process for the foreground Linux server | No terminal needs to stay open; stopping the server also releases the background WSL process |
+| C3 — found in installed-package acceptance | Bundled Linux/macOS CLIs disable Python's implicit current-directory import with `-P` | A project containing `openai4s.py` or a source checkout cannot replace the installed application; the working directory is preserved |
+
+The final full-suite check also reproduced an existing HTTP timeout race. The shared bounded reader now classifies a socket timeout consistently even when it precedes the watchdog. Regression tests exercise both orderings without loading unrelated TLS trust files into a 200 ms socketpair deadline.
+
+The WSL-specific policy lives in `security/wsl.py`; encrypted storage lives in `security/windows_dpapi.py`. The existing kernel protocol, scientific services and UI remain unchanged. The two short-lived sandbox callers now pass the same required descriptors as persistent kernels. Hardlink scanning is retained for team isolation and Windows-backed workspaces, rather than scanning every Linux development checkout at startup.
+
+Automated acceptance includes `harness.smoke.wsl_sandbox`, the real Python/R interrupt smoke, offline regression contracts, native PowerShell 5.1 launcher contracts and actual Windows-browser/package checks. See the follow-up verification record at the end of this report.
+
+## Baseline conclusion and evidence
 
 The existing Linux Python kernel runs in WSL. Most gaps are missing product setup or additional boundaries between Windows and Linux. macOS already gets an embedded Python/science stack, launcher environment, OS sandbox and login keychain. Having WSL2 alone does not provide equivalent conditions inside a distribution.
 
@@ -140,3 +160,21 @@ bwrap --unshare-net --ro-bind / / --tmpfs "$PARITY_BUILD_ROOT" \
 ```
 
 Concurrent build/install/full-suite work also saw WSL service connection timeouts (`0x8007274c`). One launcher attempt reported an unreachable folder after the same spaces/Chinese path had installed successfully. The service timeout's root cause was not established, and this does not demonstrate Unicode path incompatibility. Separately test service timeout, retry and diagnostic behavior.
+
+## Fix verification — 2026-09-07
+
+These results supersede the baseline failures above. The environment remains an ordinary user in the isolated Ubuntu 24.04 WSL2 x86_64 distribution; the Windows browser is Chromium and the launcher runs under Windows PowerShell 5.1. The core still uses only the Python standard library.
+
+- The real WSL smoke passes with enforced isolation: Windows executables, a copied executable/interop loader, host process aliases, interop sockets and Hyper-V sockets cannot bypass the boundary. Confined environment probes and dynamic tools execute successfully. Python and R both retain variables after interruption; R/jsonlite were installed as test prerequisites, not added to the base product.
+- The actual Windows browser can authenticate, load the default page and its resources, save/delete a synthetic model credential through DPAPI, upload/download CSV byte for byte, compute a mean of 2.0, render/download a PNG and exact result table, refresh and continue with the same dataframe, interrupt and continue, and export the notebook. Notebook execution was explicitly enabled with `OPENAI4S_NOTEBOOK_REPL=1`; no live model provider was called.
+- The final payload executes its embedded Python/science validation. The final Windows ZIP passes native verification, including payload digest, ASCII PowerShell, CRLF/LF contracts and resources. Wheel and sdist build and verification pass. All-file pre-commit, strict mypy, 160-directory bilingual coverage and the source credential scan pass; the offline harness passes 38/38 scenarios.
+- The final ZIP launched from a Windows source-checkout working directory and passed the scientist flow above. Five Windows-only health checks over 120 seconds confirmed standalone operation after the launcher exited, without WSL commands or UNC reads keeping the distribution alive.
+- Installing the final payload while the previous payload was running retained its PID, runtime identity and live dataframe; saved results remained byte-identical. After a normal stop and a restart of only the test WSL distribution, the final package reopened those results and re-read the input CSV to compute 6. A synthetic DPAPI secret survived the restart and was then deleted. This does not claim that in-memory variables survive a daemon restart.
+- Management worked from a launcher folder containing no payload. Final-package normal stops returned 0. One earlier stop exceeded the default five-second wait and returned 2, then exited on its own and released the hidden WSL helpers; no forced stop was used.
+- The broader existing browser smoke still exceeded its 20-second queue-admission wait without a concurrent build. A separate instrumented run observed normal handoff after 18.585 seconds, with kernel construction taking 0.447 seconds and scientific bootstrap 10.247 seconds; an earlier loaded run took 39.1 seconds. The unmodified full browser script is **not passed**, and cold-start performance parity remains unverified. WSL service connection timeouts were also observed under concurrent load.
+- The concurrent full-suite run was terminated around 83% by the 4 GB test VM's OOM killer and is not counted as a completed pass. Removing that load exposed W11 during standalone launch: a detached Linux service did not prevent this systemd WSL distribution from stopping. [Microsoft documents this lifecycle distinction](https://learn.microsoft.com/en-us/windows/wsl/systemd). The Windows launcher now retains a hidden WSL process while the Linux server runs in the foreground; stopping the server ends that process without changing global WSL settings.
+- The final independent full offline run completed with **8345 passed, 107 skipped, 0 failed**, and one expected unsupported-platform sandbox warning, in 1052.39 seconds. It used two workers and a private 1 GiB tmpfs for temporary test files; a 2 GiB swap file added inside the lab late in the run was disabled and removed afterwards. Focused lifetime/MCP checks passed 37 tests; packaging/WSL checks passed 113 tests. Windows PowerShell 5.1 launcher contracts also passed.
+
+Archive digests and final-run receipts are recorded in the evidence JSON's `fix_verification` section. Build validation reused the previously assembled science runtime and repeated the builder's source-copy, CLI generation, bytecode compilation, full Linux verification and Windows packaging steps with the production changes.
+
+This is WSL2 x86_64 acceptance evidence. It does not certify macOS execution, ARM, arbitrary distributions/network modes, real provider login/inference, Windows reboot, Conda provisioning or all domain recipes.

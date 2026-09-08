@@ -351,6 +351,7 @@ class DynamicToolWorker:
                 # daemon's controlling terminal and with it the TIOCSTI escape
                 # `--new-session` exists to close.
                 start_new_session=True,
+                pass_fds=getattr(sandbox, "popen_pass_fds", lambda: ())(),
             )
         except subprocess.TimeoutExpired as error:
             raise RuntimeError(

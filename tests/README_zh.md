@@ -18,6 +18,8 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`test_windows_launcher.ps1`](test_windows_launcher.ps1) | 原生 PowerShell 5.1 启动器契约：用户发行版选择、数据归属保留与准备步骤的显式身份。在 Windows CI 中运行，不进入 WSL。 |
+| [`test_wsl_parity.py`](test_wsl_parity.py) | WSL 适配层、DPAPI 传输、科学命令重定位、默认 UI 资源与失败安装保留的离线回归。 |
 | [`conftest.py`](conftest.py) | 建立 import 路径，给每个测试一份独立的数据目录，配好 fake LLM 的配置与 key，用完清理 `Store`，并存放共享的 pytest fixture。它还会把这套 suite 本该度量、而不是从运行者那里继承来的 posture 钉死：`OPENAI4S_UNATTENDED_APPROVAL=deny`、`OPENAI4S_SECRET_STORE=plaintext`（这样没有任何测试会写进开发者的登录钥匙串）、`OPENAI4S_NOTEBOOK_REPL=0`、把 git-ignored `.env` 里可能带进来的 share 与 MCP 超时变量清空，以及把遥测 endpoint 指向 `https://127.0.0.1:1/`——最后这条不是假想中的卫生问题：曾有一个 benchmark 用例给自己授予了同意，于是每台开发机和每个 CI runner 都真的向线上 endpoint POST 了一个全新的安装 id。最后，当设置了 `OPENAI4S_CAPTURE_SCHEMAS` 时它会装上响应形状记录器，并在每个 `stubbed_backend` 测试前后暂停它。 |
 | [`_ports.py`](_ports.py) | 为要绑定真实 gateway `ThreadingHTTPServer` 的测试提供无竞态的端口分配。probe-then-rebind 式的 `_free_port` 会在探测的 `close()` 与服务器 `bind()` 之间被并行的 xdist worker 抢走端口——Frozen-shapes CI 任务正是这样经由 `test_team_auth_routes` 挂掉的——因此 `bound_gateway_server` 只对端口 0 bind 一次、握住 socket 不放，让调用方在 `make_handler` 已为 Host allowlist 快照真实 `cfg.port` 之后再挂上真正的 handler 类。只把端口号写进 `Config`、从不绑定它的测试继续用各自本地的 `_free_port`：一个从未被绑定的数字没有竞态可输。 |
 | [`_envs.py`](_envs.py) | 环境绑定测试所用的真实解释器前缀。conda 形状的夹具以前只是一条指向 `sys.executable` 的裸 `bin/python` 符号链接，它不再能自报夹具自己的前缀：复制来的 python-build-standalone 启动器在 Linux 3.10 上会丢掉运行时目录树，而裸符号链接在较新的构建上会解析到基解释器。`real_python_prefix` 建一个不带 pip 的 venv——`pyvenv.cfg` 加一条链接——让 kernel 的 `sys.executable` 在 CI 矩阵的每个解释器上都指向所选环境，而这段写法只存在一处，而不是每个建环境的模块各抄一份。 |

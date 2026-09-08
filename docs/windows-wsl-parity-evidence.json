@@ -301,5 +301,174 @@
       }
     },
     "method": "Five time.perf_counter samples of shutil.which for a nonexistent synthetic command, using its path= argument; no environment changed. Linux-only path: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin. Not a full-suite profiler."
+  },
+  "fix_verification": {
+    "collected_at": "2026-09-08T01:02:23.131280+00:00",
+    "branch": "feat/windows-wsl-parity",
+    "baseline_commit": "bca1183fcc1cd9f4820bb54139ecdaaf63adfcf6",
+    "scope": "Windows PowerShell 5.1 launcher, Chromium on Windows, isolated Ubuntu 24.04.4 WSL2 x86_64, uid 1000, enforce sandbox",
+    "environment": {
+      "kernel": "6.18.33.2-microsoft-standard-WSL2",
+      "test_python": "3.12.3",
+      "bundle_python": "3.13",
+      "bubblewrap": "0.9.0",
+      "ram_gib": 4,
+      "cpus": 4,
+      "r_test_only": "4.3.3 with jsonlite",
+      "full_suite_temporary_swap_gib": 2,
+      "swap_note": "Added only inside the test distro late in the full run, then disabled and removed after completion; no global Windows WSL setting changed."
+    },
+    "artifacts": {
+      "windows_zip": "OpenAI4S-0.2.0-windows-x86_64.zip",
+      "windows_zip_sha256": "4b96d7dee08b43ac5d4f6c8a5b062b61cdafb9cc18662d80deddb03e29c092e5",
+      "linux_payload_sha256": "45a719e1ec5fc949bc76cc623798d8d5fcbce4662415eec9bf2a4e9b0ac5d8f0",
+      "installed_runtime": {
+        "pid": 447,
+        "version": "0.2.0",
+        "bundle_id": "45a719e1ec5fc949bc76cc623798d8d5fcbce4662415eec9bf2a4e9b0ac5d8f0"
+      },
+      "assembly": "Reused the previously assembled scientific runtime; restaged final source through builder rsync rules and CLI heredoc, compiled bytecode, ran the full Linux verifier and Windows builder.",
+      "linux_bundle_verifier": "passed, including 38 scientific imports, resources, bytecode and relocation",
+      "windows_zip_verifier": "passed natively on Windows, including digests, ASCII PowerShell, CRLF/LF, foreground lifecycle and default UI assets",
+      "wheel_sdist_build_and_verifier": "passed",
+      "installed_relocation": {
+        "installed_app": "/home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64-45a719e1ec5fc949bc76cc623798d8d5fcbce4662415eec9bf2a4e9b0ac5d8f0",
+        "default_ui_present": true,
+        "build_path_console_scripts": [],
+        "relocated_f2py": {
+          "exit_code": 0,
+          "stdout": "2.5.3\n",
+          "stderr": ""
+        },
+        "relocated_numpy_module": {
+          "exit_code": 0,
+          "stdout": "2.5.3\n",
+          "stderr": ""
+        },
+        "relocated_pip": {
+          "exit_code": 0,
+          "stdout": "pip 26.2.1 from /home/audit/.openai4s/app/OpenAI4S-0.2.0-linux-x86_64-45a719e1ec5fc949bc76cc623798d8d5fcbce4662415eec9bf2a4e9b0ac5d8f0/runtime/lib/python3.13/site-packages/pip (python 3.13)\n",
+          "stderr": ""
+        }
+      }
+    },
+    "browser_scientist_flow": {
+      "entry_and_data": {
+        "default_ui": 200,
+        "static_assets": "passed",
+        "secure_model_save_delete": "passed",
+        "csv_upload_download": "byte-identical",
+        "projectId": "proj_ab1c20284efe",
+        "frameId": "f-ecba234fb058",
+        "upload": {
+          "artifact_id": "a-5f445b5f3f87",
+          "id": "a-5f445b5f3f87",
+          "filename": "experiment.csv"
+        }
+      },
+      "analysis": {
+        "csv_analysis": "mean=2.0",
+        "figure": "rendered and downloaded PNG",
+        "table": "exact values",
+        "reload": "dataframe retained",
+        "interrupt": "dataframe retained",
+        "notebook_export": "passed",
+        "websocket_events": 60
+      },
+      "method": "Actual Chromium and Notebook UI, authenticated API calls for synthetic model profile and CSV upload/download; explicit OPENAI4S_NOTEBOOK_REPL=1. No live provider call or model setup wizard certification.",
+      "standalone": {
+        "without_terminal_seconds": 120,
+        "health_samples": 5,
+        "passed": true
+      },
+      "standalone_method": "Five Windows-only HTTP health samples across 120 seconds after launcher exit, without any WSL command or UNC read during the check.",
+      "after_wsl_restart": {
+        "phase": "restart",
+        "saved_results": "byte-identical",
+        "computation": "AFTER_WSL_RESTART=6"
+      },
+      "restart_method": "Normal stop, terminate only OpenAI4S-Parity-Test, relaunch the unchanged final ZIP with PowerShell 5.1; saved CSV identical, fresh kernel re-read inputs and computed sum 6. In-memory variables are not claimed to survive daemon restart.",
+      "encrypted_secret_after_wsl_restart": "synthetic DPAPI canary read successfully, deleted and absence confirmed"
+    },
+    "update_and_stop": {
+      "running_before_install": {
+        "pid": 714,
+        "version": "0.2.0",
+        "bundle_id": "53f8d38d6ff98efa82b6d30a08644ebb825722e2b835d5dcd3e61ee27d861017"
+      },
+      "running_after_install": {
+        "pid": 714,
+        "version": "0.2.0",
+        "bundle_id": "53f8d38d6ff98efa82b6d30a08644ebb825722e2b835d5dcd3e61ee27d861017"
+      },
+      "analysis_after_install": {
+        "phase": "update",
+        "saved_results": "byte-identical",
+        "computation": "AFTER_UPDATE=6"
+      },
+      "update_method": "Installed final payload while previous 53f8d38 payload ran with the corrected foreground launcher; old PID and payload identity stayed unchanged, dataframe and saved results remained valid.",
+      "stop_without_zip_payload": {
+        "pid": 466,
+        "normal_stop_exit_code": 0,
+        "force_used": false,
+        "payload_independent_management": true
+      },
+      "earlier_slow_stop": {
+        "payload_independent_management": true,
+        "normal_stop_exit_code": 2,
+        "force_used": false,
+        "remaining_server_helpers": 0,
+        "eventually_stopped": true
+      },
+      "slow_stop_note": "One normal stop exceeded its default five-second wait, reported exit 2, then exited without force and released all launcher helpers. Later final-package stops returned 0."
+    },
+    "gates": {
+      "full_offline_suite": {
+        "result": "passed",
+        "summary": "8345 passed, 107 skipped, 1 warning in 1052.39s (0:17:32)",
+        "command": "uv run pytest --tb=short -n 2 --dist loadfile --basetemp=$TMPDIR/pytest -o tmp_path_retention_policy=failed",
+        "temporary_storage": "1 GiB tmpfs in a private mount namespace; ordinary audit user; two workers"
+      },
+      "focused_lifetime_and_mcp": {
+        "result": "passed",
+        "passed": 37
+      },
+      "focused_package_and_wsl": {
+        "result": "passed",
+        "passed": 113
+      },
+      "windows_powershell_contracts": {
+        "result": "passed",
+        "version": "5.1.26100.9168"
+      },
+      "all_file_precommit_and_strict_mypy": "passed",
+      "bilingual_directory_indexes": {
+        "result": "passed",
+        "directories": 160,
+        "files": 1482
+      },
+      "source_secret_scan": {
+        "result": "passed",
+        "files": 3792
+      },
+      "offline_scenario_harness": {
+        "result": "passed",
+        "passed": 38,
+        "total": 38
+      },
+      "real_wsl_sandbox": "passed: Windows mounts and aliases, copied PE/interop loader, host proc aliases, interop socket and AF_VSOCK denied; environment probe and dynamic tool work",
+      "real_python_r_interrupt": "passed: both retain variables after exact scoped interruption",
+      "existing_full_browser_smoke": {
+        "sandbox": "enforce",
+        "script": "tests/browser_smoke.mjs",
+        "exit_code": 1
+      }
+    },
+    "known_validation_gaps": [
+      "Unmodified tests/browser_smoke.mjs still exceeded its 20-second queued-Agent admission bound with no concurrent build. This full browser gate is NOT passed.",
+      "Diagnostic run with a longer bound observed normal handoff after 18.585 seconds; measured kernel creation 0.447 s and scientific bootstrap 10.247 s. Earlier loaded run handed off after 39.1 s. These timings do not certify cold-start performance parity.",
+      "An earlier full-suite attempt under concurrent build/browser load was OOM-killed near 83% on the 4 GiB lab; it is not counted as a pass.",
+      "No native macOS, Windows ARM, other distro/network-mode matrix, real provider login/inference, full Windows reboot, Conda provisioning, or all scientific workflow recipes certified."
+    ]
   }
 }

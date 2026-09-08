@@ -40,6 +40,8 @@ def _statefile_payload(cfg) -> str:
             "host": cfg.host,
             "port": cfg.port,
             "started_at": int(time.time()),
+            "version": __version__,
+            "bundle_id": os.environ.get("OPENAI4S_BUNDLE_ID", ""),
         }
     )
 
@@ -842,6 +844,19 @@ def cmd_status(args) -> int:
             _url(cfg, with_token=False, endpoint=endpoint) + "health", timeout=3
         ) as r:
             health = json.loads(r.read().decode("utf-8"))
+        if getattr(args, "json", False):
+            state = _recorded_state(cfg) if endpoint is not None else None
+            print(
+                json.dumps(
+                    {
+                        "running": True,
+                        "pid": pid,
+                        "version": (state or {}).get("version"),
+                        "bundle_id": (state or {}).get("bundle_id"),
+                    }
+                )
+            )
+            return 0
         print(f"daemon: running (pid {pid}) at {_url(cfg, endpoint=endpoint)}")
         print(f"  model    : {health.get('model')}")
         # The loopback health response is intentionally a minimal public
@@ -2039,7 +2054,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="run in the background (Linux/macOS, including WSL2)",
     )
     ps.set_defaults(fn=cmd_serve)
-    sub.add_parser("status", help="check daemon status").set_defaults(fn=cmd_status)
+    pstatus = sub.add_parser("status", help="check daemon status")
+    pstatus.add_argument(
+        "--json", action="store_true", help="machine-readable running build"
+    )
+    pstatus.set_defaults(fn=cmd_status)
     pdoc = sub.add_parser(
         "doctor",
         help="check model, runtime, isolation, disk, connectors and remote "
@@ -2350,6 +2369,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from openai4s.security.wsl import is_wsl, linux_path
+
+    if is_wsl():
+        os.environ["PATH"] = linux_path(os.environ.get("PATH", os.defpath))
     args = build_parser().parse_args(argv)
     return args.fn(args)
 

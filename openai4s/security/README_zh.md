@@ -17,6 +17,8 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| [`wsl.py`](wsl.py) | WSL 检测、Windows 挂载边界、Linux 工具 PATH 与 Hyper-V socket 过滤，不修改全局 WSL 设置。 |
+| [`windows_dpapi.py`](windows_dpapi.py) | 仅 Host 使用的 JSON/stdin 桥接，以 Windows 用户 DPAPI 保护密钥，按 WSL 安装、用户及 broker 引用隔离。 |
 | [`__init__.py`](__init__.py) | 说明这套分层模型，并重新导出代码分类、注入扫描和生物安全判定的 API。 |
 | [`audit_hook.py`](audit_hook.py) | 在 worker 内安装 CPython 审计钩子：从可写的工作区、临时目录或 Artifact 根目录 `ctypes.dlopen` 一个动态库会被拒绝，而解释器与包安装前缀下的加载照常放行。它把依赖的函数捕获成定义期的关键字默认值，并在安装完成后删掉指向钩子自身的所有 Python 句柄，因此 Cell 内对模块命名空间的 monkeypatch 无法直接解除这道检查。这是抵抗，不是免疫：目标是让它在 Cell 内难以被绕过，而不是绝无可能。 |
 | [`biosecurity.py`](biosecurity.py) | 存放校准问责式的 prompt 片段和轨迹筛查器。先由一个低成本的相关性触发器判断这次筛查值不值得花一次模型调用；真正的筛查是一次独立调用，返回 ALLOW、ESCALATE 或 BLOCK，解析时对格式松散的回复也留了余地。 |

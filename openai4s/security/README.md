@@ -17,6 +17,8 @@ Six of the layers around Code-as-Action live in this package — code classifica
 
 | File | Responsibility |
 | --- | --- |
+| [`wsl.py`](wsl.py) | WSL detection, Windows mount boundaries, Linux tool PATH and the Hyper-V socket filter; no global WSL changes. |
+| [`windows_dpapi.py`](windows_dpapi.py) | Host-only JSON/stdin bridge to Windows user-scoped DPAPI storage, partitioned by WSL installation/user and broker reference. |
 | [`__init__.py`](__init__.py) | Documents the layered model and re-exports the code-classification, injection, and biosecurity verdict APIs. |
 | [`audit_hook.py`](audit_hook.py) | Installs a CPython audit hook inside the worker: a `ctypes.dlopen` of a shared library under a writable workspace, scratch, or Artifact root is refused, while loads from the interpreter and package prefixes still go through. It captures the functions it depends on as def-time keyword defaults and drops every Python-level handle to itself once installed, so rebinding names in the module namespace from a Cell does not disarm the check. That is resistance, not immunity: the guard is meant to be hard to defeat from inside a Cell, not impossible. |
 | [`biosecurity.py`](biosecurity.py) | Holds the calibrated-accountability prompt and the trajectory screener. A cheap relevance trigger decides whether a screen is worth a model call at all; the call itself is independent, returns ALLOW, ESCALATE, or BLOCK, and is parsed loosely enough to survive a sloppy answer. |

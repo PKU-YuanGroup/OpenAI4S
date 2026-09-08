@@ -517,6 +517,7 @@ def run_confined_probe(
             timeout=timeout,
             env=env,
             start_new_session=True,
+            pass_fds=getattr(sandbox, "popen_pass_fds", lambda: ())(),
         )
     finally:
         if sandbox is not None:

@@ -311,8 +311,12 @@ function Get-WslDistros {
 
 function Select-Distro {
     $distros = Get-WslDistros
+    # These distributions belong to other desktop applications, not the user.
+    $distros = @($distros | Where-Object {
+        $_.Name -notmatch '^(docker-desktop|rancher-desktop|podman-machine)(-|$)'
+    })
     if (-not $distros -or $distros.Count -eq 0) {
-        Stop-WithGuidance 'no WSL distribution is installed.' @(
+        Stop-WithGuidance 'no user-owned WSL distribution is available.' @(
             'Open PowerShell as Administrator and run:',
             '    wsl --install -d Ubuntu-24.04'
         )
@@ -539,8 +543,10 @@ function Assert-WslDataDir([string] $Value) {
     }
 }
 
-function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs) {
-    $wslArgs = @('-d', $Distro, '--exec', 'env')
+function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs, [string] $User = '') {
+    $wslArgs = @('-d', $Distro)
+    if ($User) { $wslArgs += @('-u', $User) }
+    $wslArgs += @('--exec', 'env')
     $wslArgs += "OPENAI4S_HOST=$BindHost"
     $wslArgs += "OPENAI4S_PORT=$AppPort"
     if ($WslDataDir) {
@@ -576,7 +582,7 @@ function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [strin
     return $wslArgs
 }
 
-function Invoke-Bootstrap([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs) {
+function Invoke-Bootstrap([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs, [string] $User = '') {
     # --exec: run without an intervening login shell, so argv reaches the script
     # as-is. Plain `wsl <command>` hands the line to the default shell, which
     # re-splits it and breaks on the spaces an unzipped Downloads path is full
@@ -596,7 +602,7 @@ function Invoke-Bootstrap([string] $Distro, [string] $BootstrapLinux, [string[]]
     # installing it. `exit $code` then fails to convert Object[] to Int32.
     # Out-Host keeps $LASTEXITCODE intact and restores the console message the
     # failure guidance promises the reader.
-    $wslArgs = Get-WslBootstrapArgs $Distro $BootstrapLinux $BootstrapArgs
+    $wslArgs = Get-WslBootstrapArgs $Distro $BootstrapLinux $BootstrapArgs $User
     $previousPreference = $ErrorActionPreference
     $code = 1
     try {
@@ -617,6 +623,38 @@ function Invoke-BootstrapCapture([string] $Distro, [string] $BootstrapLinux, [st
         ExitCode = $result.ExitCode
         Lines    = $lines
     }
+}
+
+function Invoke-AppCli([string] $Distro, [string] $BootstrapLinux, [string] $BundleDir, [string[]] $CliArgs) {
+    $command = @('cli', $BundleDir) + $CliArgs
+    if ($BindHost -eq $ClientHost) {
+        return (Invoke-Bootstrap $Distro $BootstrapLinux $command)
+    }
+    # A wildcard/NAT bind is not the browser's destination. Rewrite only the
+    # authority in CLI output; keep long-running setup commands streamed otherwise.
+    $result = Invoke-BootstrapCapture $Distro $BootstrapLinux $command
+    $loopback = "http://(localhost|127\.0\.0\.1):$AppPort"
+    foreach ($line in $result.Lines) {
+        Write-Host ([regex]::Replace($line, $loopback, "http://${ClientHost}:$AppPort"))
+    }
+    return $result.ExitCode
+}
+
+function ConvertTo-NativeArgument([string] $Value) {
+    # Start-Process joins ArgumentList without quoting. Preserve each Windows
+    # argv boundary, including embedded quotes and trailing backslashes.
+    # WSL parses its switches before unquoting; leave simple values untouched.
+    if ($Value -and $Value -notmatch '[\s"]') { return $Value }
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    return '"' + [regex]::Replace($escaped, '(\\+)$', '$1$1') + '"'
+}
+
+function Start-Bootstrap([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs) {
+    $nativeArgs = Get-WslBootstrapArgs $Distro $BootstrapLinux $BootstrapArgs
+    $commandLine = ($nativeArgs | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+    # A detached Linux daemon alone does not keep a systemd WSL instance alive.
+    # This hidden Windows process lasts exactly as long as the foreground server.
+    return Start-Process -FilePath 'wsl.exe' -ArgumentList $commandLine -WindowStyle Hidden -PassThru
 }
 
 function Get-AppUrl([string] $Distro, [string] $BootstrapLinux, [string] $BundleDir) {
@@ -652,6 +690,29 @@ function Get-AppUrl([string] $Distro, [string] $BootstrapLinux, [string] $Bundle
 function Test-OpenAI4SServing([string] $Distro, [string] $BootstrapLinux, [string] $BundleDir) {
     $result = Invoke-BootstrapCapture $Distro $BootstrapLinux @('cli', $BundleDir, 'status')
     return $result.ExitCode -eq 0
+}
+
+function Assert-AppPage([string] $AppUrl) {
+    try {
+        $page = Invoke-WebRequest -UseBasicParsing -Uri $AppUrl -TimeoutSec 10
+        if ($page.StatusCode -eq 200 -and $page.Content -match '<title>OpenAI4S</title>') { return }
+    } catch { }
+    Stop-WithGuidance 'the daemon is reachable but the OpenAI4S page could not be loaded.' @(
+        'The application is not ready to use. Run OpenAI4S.cmd doctor.',
+        'If an older version is still running, finish your work, run',
+        'OpenAI4S.cmd stop, and open this package again.'
+    )
+}
+
+function Show-RunningBuild([string] $Distro, [string] $BootstrapLinux, [string] $BundleDir, [string] $Expected) {
+    $result = Invoke-BootstrapCapture $Distro $BootstrapLinux @('cli', $BundleDir, 'status', '--json')
+    $running = $null
+    try { $running = ($result.Lines -join "`n") | ConvertFrom-Json } catch { }
+    if (-not $running -or $running.bundle_id -ne $Expected) {
+        $version = if ($running.version) { $running.version } else { 'unknown' }
+        Write-Host "  update installed; your existing session is still running version $version." -ForegroundColor Yellow
+        Write-Host '  Finish your work, run OpenAI4S.cmd stop, then open this package to use the update.' -ForegroundColor Yellow
+    }
 }
 
 function Test-Serving {
@@ -737,13 +798,29 @@ if ((Test-LocalhostForwardingDisabled) -and
         Write-Host "  localhostForwarding=false detected; using WSL NAT address $ClientHost." -ForegroundColor Yellow
     }
 }
-$facts = Get-PackageFacts
 $packageLinux = ConvertTo-WslPath $distro $Here
 $bootstrap = "$packageLinux/wsl/bootstrap.sh"
+
+# Management remains available even when this ZIP's payload is missing or bad.
+if (Test-SandboxIndependentCli $Arguments) {
+    exit (Invoke-AppCli $distro $bootstrap 'current' $Arguments)
+}
+
+$facts = Get-PackageFacts
 $payloadLinux = "$packageLinux/payload/$($facts.PayloadName)"
 
 if (-not (Test-SandboxIndependentCli $Arguments)) {
-    $code = Invoke-Bootstrap $distro $bootstrap @('preflight')
+    $arch = if ($facts.BundleDir -match '-aarch64$') { 'aarch64' } else { 'x86_64' }
+    $code = Invoke-Bootstrap $distro $bootstrap @('preflight', $arch)
+    if ($code -eq 10 -and -not $env:OPENAI4S_NONINTERACTIVE) {
+        $answer = Read-Host "Install the required isolation component in $distro? [y/N]"
+        if ($answer -match '^(y|yes)$') {
+            $prepared = Invoke-Bootstrap $distro $bootstrap @('prepare') 'root'
+            if ($prepared -eq 0) {
+                $code = Invoke-Bootstrap $distro $bootstrap @('preflight', $arch)
+            }
+        }
+    }
     if ($code -ne 0) {
         Stop-WithGuidance 'this WSL distribution cannot provide an isolated kernel.' @(
             'Use WSL2 with Ubuntu 24.04 or newer:',
@@ -761,22 +838,7 @@ if (-not (Test-SandboxIndependentCli $Arguments)) {
 if ($Arguments -and $Arguments.Count -gt 0) {
     $code = Invoke-Bootstrap $distro $bootstrap (@('install', $payloadLinux, $facts.Digest, $facts.BundleDir))
     if ($code -ne 0) { exit $code }
-    if ($BindHost -ne $ClientHost) {
-        # `openai4s url` and `status` can only render the host the daemon was
-        # told to BIND, and a wildcard renders as `localhost` -- the one address
-        # Windows cannot reach with localhostForwarding=false. Those are the
-        # exact commands the docs send the user to when the browser will not
-        # open, so re-authority what they print, the same way the auto-open path
-        # already does. Buffered rather than streamed only on this branch, which
-        # is the branch that is otherwise wrong.
-        $result = Invoke-BootstrapCapture $distro $bootstrap (@('cli', $facts.BundleDir) + $Arguments)
-        $loopback = "http://(localhost|127\.0\.0\.1):$AppPort"
-        foreach ($line in $result.Lines) {
-            Write-Host ([regex]::Replace($line, $loopback, "http://${ClientHost}:$AppPort"))
-        }
-        exit $result.ExitCode
-    }
-    exit (Invoke-Bootstrap $distro $bootstrap (@('cli', $facts.BundleDir) + $Arguments))
+    exit (Invoke-AppCli $distro $bootstrap $facts.BundleDir $Arguments)
 }
 
 Write-Section "OpenAI4S $($facts.Version) -- starting in WSL2 ($distro)"
@@ -792,7 +854,9 @@ if ($code -ne 0) {
 
 if (Test-Serving) {
     if (Test-OpenAI4SServing $distro $bootstrap $facts.BundleDir) {
+        Show-RunningBuild $distro $bootstrap $facts.BundleDir $facts.Digest
         $appUrl = Set-UrlHost (Get-AppUrl $distro $bootstrap $facts.BundleDir) $ClientHost
+        Assert-AppPage $appUrl
         Write-Host "OpenAI4S is already serving at $Url -- opening it." -ForegroundColor Green
         Open-AppUrl $appUrl
         exit 0
@@ -808,8 +872,9 @@ if (Test-Serving) {
 }
 
 Write-Host '  [2/3] starting the daemon...'
-$code = Invoke-Bootstrap $distro $bootstrap (@('serve', $facts.BundleDir, $BindHost, $AppPort))
-if ($code -ne 0) {
+try {
+    $server = Start-Bootstrap $distro $bootstrap (@('serve', $facts.BundleDir, $BindHost, $AppPort))
+} catch {
     Stop-WithGuidance 'the daemon did not start.' @(
         'Read the log from inside WSL:',
         "    $(Get-WslLogCommand $distro)"
@@ -822,12 +887,14 @@ while ((Get-Date) -lt $deadline) {
     if (Test-Serving) {
         if (Test-OpenAI4SServing $distro $bootstrap $facts.BundleDir) {
             $appUrl = Set-UrlHost (Get-AppUrl $distro $bootstrap $facts.BundleDir) $ClientHost
+            Assert-AppPage $appUrl
             Write-Host ''
             Write-Host "  ready: $Url" -ForegroundColor Green
             Open-AppUrl $appUrl
             exit 0
         }
     }
+    if ($server.HasExited) { break }
     Start-Sleep -Milliseconds 500
 }
 

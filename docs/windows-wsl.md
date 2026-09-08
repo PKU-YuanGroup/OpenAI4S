@@ -7,7 +7,7 @@ package runs the same Linux application inside WSL2, then opens the UI in the
 normal Windows browser. This follows the operating model in the
 [Claude Science WSL guide](https://claude.com/docs/claude-science/run-on-windows-wsl):
 WSL2, Ubuntu 24.04, an enforced bubblewrap sandbox, a localhost browser UI, and
-foreground or detached lifecycle commands.
+explicit lifecycle commands.
 
 ## 中文
 
@@ -31,6 +31,24 @@ foreground or detached lifecycle commands.
 Python 科学栈、Skills 和公共数据库连接器已在 payload 中。R 内核仍是可选
 环境，需要 Conda 系工具后运行 `openai4s setup --profile standard`；这点与
 Claude Science 首次启动自动准备 Python/R 环境并不完全相同。
+
+### 密钥、分析环境和升级
+
+新 WSL 安装的模型密钥由当前 Windows 登录账户的 DPAPI 保护；已有可用的 Linux
+钥匙串会继续使用。无需为新安装手动配置 Linux 桌面钥匙串。DPAPI 密钥在 Windows 用户目录中加密保存，按 WSL 安装、Linux 用户和应用
+数据目录隔离；需要保留 Windows 互操作供后台服务使用。分析代码的沙箱会
+阻断该通道，并限制 Windows 磁盘和系统会话 socket 的访问。
+
+Python、pip 和包内科学命令使用随包解释器，Bash 命令按 Bash 语法执行；
+选择额外的分析环境后，以所选环境为准。R 和其他专业工具仍按需准备。
+
+安装会先解包到临时目录，成功后再切换到新版本。失败时旧安装保留；
+`status`、`stop` 和 `doctor` 使用已有安装，不依赖新 ZIP 的 payload 完整。
+更新不会自动结束正在进行的分析。如果旧服务仍在运行，启动器会提示先完成
+工作，再执行 `OpenAI4S.cmd stop` 并重新打开。后台可达但页面不可用时不会报告 ready。
+
+启动器会在后台保留一个与服务同寿命的隐藏 WSL 进程，因此不需要一直开着
+终端。执行 `OpenAI4S.cmd stop` 后，该后台进程也会退出；无需改变全局 WSL 配置。
 
 ### 1. 启用 WSL2
 
@@ -57,8 +75,9 @@ Ubuntu 22.04 自带的 bubblewrap 版本偏旧，因此推荐 24.04 或更新版
 
 ### 2. 安装 bubblewrap
 
-应用本体随 ZIP 离线安装，但 bubblewrap 属于系统安全组件。在 Ubuntu 中先
-确认 APT 已使用国内镜像，然后运行：
+应用本体随 ZIP 离线安装。若缺少 bubblewrap，首次启动会询问是否在所选
+Ubuntu 中安装这个隔离组件；同意后会联网使用该发行版的 APT 源安装。
+也可以自行在 Ubuntu 中运行：
 
 ```bash
 sudo apt update
@@ -109,11 +128,15 @@ OpenAI4S.cmd
 .\OpenAI4S.cmd stop
 ```
 
-在 Ubuntu 中打开新终端，或先执行 `. ~/.profile`：
+在 Ubuntu 中手动启动时，该终端需要保持打开；日常使用 `OpenAI4S.cmd` 即可由启动器维持服务：
 
 ```bash
 openai4s serve --port 8760 --no-browser
-openai4s serve --port 8760 --no-browser --detached
+```
+
+在另一个 Ubuntu 终端中管理服务：
+
+```bash
 openai4s status
 openai4s url
 openai4s stop
@@ -127,11 +150,7 @@ CLI 会按容器语义渲染成 `localhost`——而在关闭 localhost 转发�
 改写成可路由的 WSL IPv4；在 WSL 内部直接调用 `openai4s url` 则仍会得到
 `localhost`，那在 WSL 内部本来就是对的。
 
-也可以从 PowerShell 直接让 WSL 后台启动：
-
-```powershell
-wsl -d Ubuntu-24.04 -- ~/.local/bin/openai4s serve --port 8760 --no-browser --detached
-```
+仅使用 Linux 的 `--detached` 不能保证 WSL 在最后一个终端关闭后继续运行。
 
 ### 5. 国内网络与 7897 代理
 
@@ -228,6 +247,31 @@ $env:OPENAI4S_WSL_PROXY = 'http://172.24.128.1:7897'
 
 ## English
 
+### Credentials, analysis environments and updates
+
+Fresh WSL installations use the current Windows login's DPAPI-protected storage;
+an existing usable Linux keyring remains preferred. No Linux desktop keyring setup
+is required for a new installation. DPAPI-encrypted values are partitioned by WSL
+installation, Linux user and application data directory. Keep Windows interop
+available to the Host; scientific Cells cannot access that bridge, Windows host
+mounts or host session sockets.
+
+Python, pip and bundled scientific commands use the bundled interpreter. Bash
+commands use Bash semantics; explicitly selected analysis environments retain
+precedence. R and other specialist tools are still prepared on demand.
+
+Installation stages a new payload before switching the current pointer. A failed
+install preserves the existing app. Status, stop and doctor use the installed app
+without requiring a complete new payload. Updating does not interrupt active
+analysis: if an older daemon is running, finish your work, run `OpenAI4S.cmd stop`,
+then reopen. A reachable daemon with an unavailable page is not reported ready.
+When bubblewrap is missing, the launcher offers to install it through the selected
+Ubuntu distribution's APT sources; accepting this preparation requires network access.
+
+The launcher retains a hidden WSL process for the lifetime of the server, so no
+terminal needs to stay open. `OpenAI4S.cmd stop` also ends that background process;
+no global WSL configuration change is needed.
+
 ### Requirements and installation
 
 1. From an Administrator PowerShell, install WSL2 and Ubuntu 24.04:
@@ -283,14 +327,22 @@ From PowerShell:
 .\OpenAI4S.cmd stop
 ```
 
-From Ubuntu:
+For a manual launch from Ubuntu, keep that terminal open. Use `OpenAI4S.cmd`
+for the normal Windows launch without a persistent terminal:
 
 ```bash
-openai4s serve --port 8760 --no-browser --detached
+openai4s serve --port 8760 --no-browser
+```
+
+Manage it from another Ubuntu terminal:
+
+```bash
 openai4s status
 openai4s url
 openai4s stop
 ```
+
+Linux `--detached` alone does not keep WSL alive after the last terminal closes.
 
 `status` and `url` read the live endpoint recorded by the daemon, so the WSL
 IPv4 fallback for an explicit `localhostForwarding=false` needs no repeated
