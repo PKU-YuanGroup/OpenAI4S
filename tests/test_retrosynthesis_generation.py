@@ -178,6 +178,52 @@ def test_seatbelt_denies_host_root_and_installed_packages(
     assert '(deny sysctl-read (sysctl-name-prefix "kern.proc"))' in profile
 
 
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "name", ["01_single_step_retrosynthesis", "06_yield_estimation"]
+)
+def test_generation_is_staged_without_the_answers(generator, tmp_path, name):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    staged = generator._stage_generation(ROOT, name, staging)
+
+    skill = staging / "skills" / "retrosynthesis_planning"
+    assert (skill / "scenarios" / "queries" / f"{name}.query.md").is_file()
+    assert (skill / "benchmark_common.py").is_file()
+    # The query tells the model to save here, so the directory must exist.
+    assert staged.parent.is_dir() and not staged.exists()
+    # A public-only workspace: real inputs, no boundary to read across.
+    assert (staging / "workspace" / "public" / "inputs.json").is_file()
+    assert not (staging / "workspace" / "private_evaluator").exists()
+
+    for absent in ("test_cases", "gt_codebases", "pipelines"):
+        assert not (skill / "scenarios" / absent).exists(), absent
+    assert not (skill / "gt_codebase.py").exists()
+
+    # The labels themselves must not be reachable in any staged byte.
+    case = json.loads(
+        (
+            ROOT
+            / "skills"
+            / "retrosynthesis_planning"
+            / "scenarios"
+            / "test_cases"
+            / f"{name}.json"
+        ).read_text(encoding="utf-8")
+    )
+    labels = json.dumps(case["private_evaluator"], sort_keys=True).encode("utf-8")
+    fragments = [labels]
+    for payload in case["private_evaluator"].values():
+        fragments.append(json.dumps(payload, sort_keys=True).encode("utf-8"))
+    for path in staging.rglob("*"):
+        if not path.is_file():
+            continue
+        blob = path.read_bytes()
+        for fragment in fragments:
+            assert fragment not in blob, f"{path} carries the private labels"
+
+
 def _copy_generation_tree(tmp_path):
     target = (
         tmp_path

@@ -349,16 +349,77 @@ def _root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def _command(root: Path, query: Path) -> list[str]:
+#: The Skill path the staged generation tree reproduces, so the query's own
+#: "create a CLI at skills/..." instruction resolves inside the staged root.
+_SKILL_TREE = Path("skills") / "retrosynthesis_planning"
+
+
+def _stage_generation(root: Path, name: str, staging: Path) -> Path:
+    """Give the generation run a workspace that does not contain the answers.
+
+    ``openai4s run`` takes its workspace from the process cwd (the CLI contract
+    noted in ``openai4s/agent/loop.py``), so running it in the repository root
+    put ``scenarios/test_cases/*.json`` -- which embed the private evaluator
+    labels -- and the reviewed GT inside the tree the model may read. The
+    prohibition was prose in the task string, and neither the forbidden-substring
+    scan nor the post-generation sandbox looks at what generation *read*. Stage
+    the public half instead of asking for the rest not to be opened.
+    """
+
+    source = root / _SKILL_TREE
+    skill = staging / _SKILL_TREE
+    queries = skill / "scenarios" / "queries"
+    target = skill / "scenarios" / "openai4s_codebases"
+    queries.mkdir(parents=True)
+    target.mkdir(parents=True)
+    shutil.copyfile(
+        source / "scenarios" / "queries" / f"{name}.query.md",
+        queries / f"{name}.query.md",
+    )
+    for module in PUBLIC_MODULES:
+        shutil.copyfile(source / module, skill / module)
+    # The public half of the bundled case, so the run can still test against
+    # real inputs. Nothing under `private_evaluator` is ever written here.
+    case = json.loads(
+        (source / "scenarios" / "test_cases" / f"{name}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    workspace = staging / "workspace"
+    written: dict[str, str] = {}
+    for file_name, payload in sorted(case["public"].items()):
+        path = workspace / "public" / file_name
+        _write_json(path, payload)
+        written[f"public/{file_name}"] = _sha256(path)
+    (workspace / "results").mkdir(parents=True, exist_ok=True)
+    _write_json(
+        workspace / "installation.json",
+        {
+            "schema_version": 3,
+            "scenario": case["scenario"],
+            "scenario_id": case["scenario_id"],
+            "query_source": case["query_source"],
+            "dataset_profile": case["dataset"].get("profile"),
+            "dataset": dict(case["dataset"]),
+            "file_sha256": written,
+        },
+    )
+    return target / f"{name}.py"
+
+
+def _command(root: Path, name: str) -> list[str]:
     local = root / ".venv" / "bin" / "openai4s"
     executable = str(local) if local.is_file() else (shutil.which("openai4s") or "")
     if not executable:
         raise RuntimeError("openai4s executable not found")
+    query = _SKILL_TREE / "scenarios" / "queries" / f"{name}.query.md"
     task = (
-        f"Read {query.relative_to(root)} completely and implement exactly the "
-        "requested codebase. Do not read private_evaluator, gt_codebase.py, "
-        "scenarios/gt_codebases, or scenarios/pipelines. Run focused public-input "
-        "tests and finish only after saving the requested source file."
+        f"Read {query} completely and implement exactly the requested codebase. "
+        "An installed public-only workspace is at ./workspace. Do not read "
+        "private_evaluator, gt_codebase.py, scenarios/gt_codebases, or "
+        "scenarios/pipelines; this tree contains none of them. Run focused "
+        "public-input tests and finish only after saving the requested source "
+        "file."
     )
     return [executable, "run", task, "--mode", "codebase_change", "--json"]
 
@@ -507,10 +568,13 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
         raise VerificationError(
             "refusing to overwrite existing source; pass --overwrite"
         )
-    command = _command(root, query)
+    command = _command(root, name)
     preserved = generated.read_bytes() if generated.is_file() else None
     try:
-        return _generate(root, name, query, gt, generated, command)
+        with tempfile.TemporaryDirectory(prefix=f"openai4s-generate-{name}-") as tmp:
+            staging = Path(tmp).resolve()
+            staged = _stage_generation(root, name, staging)
+            return _generate(root, name, query, gt, generated, command, staging, staged)
     finally:
         # A run that produced nothing is an attempt, not a replacement: the
         # previously verified source is restored so its provenance still holds.
@@ -521,18 +585,30 @@ def _entry(root: Path, name: str, *, overwrite: bool) -> dict[str, object]:
 
 
 def _generate(
-    root: Path, name: str, query: Path, gt: Path, generated: Path, command: list[str]
+    root: Path,
+    name: str,
+    query: Path,
+    gt: Path,
+    generated: Path,
+    command: list[str],
+    staging: Path,
+    staged: Path,
 ) -> dict[str, object]:
     if generated.exists():
         generated.unlink()
+    # cwd is the staged public-only tree, not the repository: that is what
+    # keeps the private labels and the GT out of the run's workspace.
     completed = subprocess.run(
         command,
-        cwd=root,
+        cwd=staging,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
     )
+    if completed.returncode == 0 and staged.is_file():
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(staged, generated)
     output_sha256 = hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
     record: dict[str, object] = {
         "name": name,
