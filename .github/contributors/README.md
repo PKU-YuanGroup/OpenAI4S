@@ -20,6 +20,7 @@ directory.
 | `Linmj-Judy.png` | Render-ready avatar for contributor `Linmj-Judy`. |
 | `Lyu6PosHao.png` | Render-ready avatar for contributor `Lyu6PosHao`. |
 | `Nobody-Zhang.png` | Render-ready avatar for contributor `Nobody-Zhang`. |
+| `WenyuLiang.png` | Render-ready avatar for contributor `WenyuLiang`. |
 | `YuyangSunshine.png` | Render-ready avatar for contributor `YuyangSunshine`. |
 | `cursoragent.png` | Render-ready avatar for contributor `cursoragent`. |
 | `difficulttopickaname.png` | Render-ready avatar for contributor `difficulttopickaname`. |
