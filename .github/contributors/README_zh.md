@@ -18,6 +18,7 @@
 | `Linmj-Judy.png` | 贡献者 `Linmj-Judy` 的可直接渲染头像。 |
 | `Lyu6PosHao.png` | 贡献者 `Lyu6PosHao` 的可直接渲染头像。 |
 | `Nobody-Zhang.png` | 贡献者 `Nobody-Zhang` 的可直接渲染头像。 |
+| `WenyuLiang.png` | 贡献者 `WenyuLiang` 的可直接渲染头像。 |
 | `YuyangSunshine.png` | 贡献者 `YuyangSunshine` 的可直接渲染头像。 |
 | `cursoragent.png` | 贡献者 `cursoragent` 的可直接渲染头像。 |
 | `difficulttopickaname.png` | 贡献者 `difficulttopickaname` 的可直接渲染头像。 |
