@@ -227,11 +227,19 @@ line-length = 88
 # in the repository where the other two blocks already keep theirs.
 #
 # `profile` restates the hook's `--profile black` so that a bare `isort .` -- the
-# default an editor integration runs -- agrees with the gate instead of emitting
-# a diff the gate then reverts. `py_version` states the union-across-versions
-# default explicitly, which is the correct one for a `requires-python = ">=3.10"`
-# package that CI runs on 3.10 through 3.14; narrowing it to the floor would
-# misfile a module that only became stdlib later.
+# default an editor integration runs -- lays imports out the way the gate does,
+# instead of emitting a diff the gate then reverts. It does not make that run
+# safe, and nothing here can: the byte-exact trees are guarded only by
+# pre-commit's own `exclude:`, so a bare `isort .` still rewrites 318 of the 408
+# pinned files under `skills/bioskills/`. Mirroring those paths into a `skip`
+# here would not reach the gate either -- the hook's `args:` replaces the
+# upstream manifest's `--filter-files`, and without it isort ignores `skip` for
+# files named on the command line, which is the only way pre-commit invokes it.
+#
+# `py_version` states the union-across-versions default explicitly, which is the
+# correct one for a `requires-python = ">=3.10"` package that CI runs on 3.10
+# through 3.14; narrowing it to the floor would misfile `tomllib`, which this
+# repository imports and which only became stdlib in 3.11.
 #
 # Like the black block, this changes no output: the tree is byte-identical with
 # and without it.
