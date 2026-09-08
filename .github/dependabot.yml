@@ -52,6 +52,13 @@ updates:
       # read on its own, not merged as one row of a version table (black
       # 23.3.0 -> 26.5.1 reformatted 234 files).
       #
+      # isort is out for the same reason, learned the same way: 8.0.1 -> 9.0.1
+      # arrived as one row of a two-row version table, reformatted five files --
+      # two of them the `store.py` and `kernel/worker.py` facades CLAUDE.md says
+      # to edit surgically -- and needed a hand-written directive to settle a
+      # disagreement it opened with black. It is the other formatter `setup.sh`
+      # installs on every contributor machine.
+      #
       # `exclude-patterns`, not `update-types`, because this ecosystem cannot
       # evaluate `update-types`. Dependabot resolves pre-commit hooks as git
       # refs and does not semver-classify them: every hook bump it has opened
@@ -63,7 +70,9 @@ updates:
       # it was meant to stop kept arriving and kept being consolidated by hand.
       hook-versions:
         patterns: ["*"]
-        exclude-patterns: ["https://github.com/psf/black"]
+        exclude-patterns:
+          - "https://github.com/psf/black"
+          - "https://github.com/pycqa/isort"
     open-pull-requests-limit: 3
 
   - package-ecosystem: "github-actions"
