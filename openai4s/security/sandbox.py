@@ -602,10 +602,14 @@ def wrap_bwrap_command(
     if not allow_raw_network:
         wrapped.append("--unshare-net")
     wrapped.extend(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
-    # Restore only the workspace and private temp below these masks. Hiding
-    # the host PID namespace also closes /proc/<host>/root mount aliases.
+    # Restore only the workspace, the resolver and private temp below these
+    # masks. Hiding the host PID namespace also closes /proc/<host>/root
+    # mount aliases.
     if wsl_host:
         wrapped.extend(_bwrap_read_masks(wsl_denials))
+        # Before the read-only remounts below: a bind whose destination has to
+        # be created inside an already-immutable tmpfs fails.
+        wrapped.extend(wsl.resolver_rebinds(tuple(path for _, path in wsl_denials)))
     if isolation_roots:
         # Hide every existing and future private path behind fresh mounts. The
         # bubblewrap source of every later bind is resolved through oldroot,
@@ -619,7 +623,7 @@ def wrap_bwrap_command(
         wrapped.extend(["--ro-bind", root, root])
     wrapped.extend(["--bind", temp_s, temp_s])
     for _, path in wsl_denials:
-        if os.path.isdir(path):
+        if path not in wsl.WRITABLE_MASKS and os.path.isdir(path):
             wrapped.extend(["--remount-ro", path])
     if isolation_roots:
         # remount-ro is deliberately non-recursive in bubblewrap: the parent

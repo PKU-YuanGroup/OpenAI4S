@@ -77,6 +77,13 @@ def main() -> int:
         (workspace / "copied-init").chmod(0o755)
         host_pid = os.getpid()
         interop_sockets = [str(path) for path in Path("/run/WSL").glob("*_interop")]
+        if not interop_sockets:
+            # The per-session sockets are the headline claim of this smoke. An
+            # empty glob makes the enumerate() loop below contribute zero
+            # checks, so `all(...)` would still pass having proven nothing.
+            raise RuntimeError(
+                "no live WSL interop socket to test the boundary against"
+            )
         with Kernel(cwd=str(workspace)) as kernel:
             code = f"""
 import errno, json, os, socket, subprocess
@@ -108,6 +115,17 @@ except OSError as exc:
 else:
     connection.close()
     checks['hyperv_socket'] = False
+# seccomp classifies syscalls, not ring submissions: IORING_OP_SOCKET would
+# open AF_VSOCK without the socket rule ever being consulted.
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+params = ctypes.create_string_buffer(256)
+ring = libc.syscall(425, 8, params)
+if ring < 0:
+    checks['io_uring_denied'] = ctypes.get_errno() in (errno.EPERM, errno.ENOSYS)
+else:
+    os.close(ring)
+    checks['io_uring_denied'] = False
 checks['private_pid'] = os.getpid() == 2 and os.getppid() == 1
 marker = 41
 print(json.dumps(checks))

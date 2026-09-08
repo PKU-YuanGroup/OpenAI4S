@@ -561,16 +561,30 @@ class WindowsDPAPIBackend(_Backend):
     secure = True
 
     def available(self) -> bool:
+        # Probe what `request` actually needs, not just the interpreter: a
+        # distribution that ships no machine-id would otherwise be reported
+        # available and then fail on first use, which is the failure mode
+        # `_self_test` exists to move forward in time.
+        from .windows_dpapi import machine_identity
         from .wsl import powershell_path
 
-        return powershell_path() is not None
+        try:
+            if powershell_path() is None:
+                return False
+            machine_identity()
+        except (OSError, RuntimeError):
+            return False
+        return True
 
     def _request(self, action, namespace, scope, name, value=None):
         from .windows_dpapi import request
 
         try:
             return request(action, namespace, scope, name, value)
-        except RuntimeError as exc:
+        except (OSError, RuntimeError) as exc:
+            # OSError too: this backend crosses the WSL interop boundary, and a
+            # bare errno escaping `Store.secrets` sails past every caller's
+            # `except SecretBrokerError`.
             raise SecretBrokerError(str(exc)) from None
 
     def put(self, namespace: str, scope: str, name: str, secret: str) -> None:

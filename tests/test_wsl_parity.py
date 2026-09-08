@@ -78,7 +78,12 @@ def test_dpapi_passes_secret_only_on_stdin_and_namespaces_the_key(monkeypatch):
     first = json.loads(seen[0][1]["input"])
     assert first["value"] == canary
     assert first["key"] != json.loads(seen[1][1]["input"])["key"]
-    assert "env" not in seen[0][1]
+    # The interop child crosses into Windows, and WSLENV is the only thing that
+    # carries a Linux variable across. It must export nothing: the daemon's own
+    # environment holds the credentials this module exists to protect.
+    assert seen[0][1]["env"]["WSLENV"] == ""
+    assert canary not in "\n".join(f"{k}={v}" for k, v in seen[0][1]["env"].items())
+    assert seen[0][1]["start_new_session"] is True
 
 
 @pytest.mark.stubbed_backend
@@ -170,6 +175,80 @@ def test_default_web_page_rejects_a_missing_hashed_asset(tmp_path):
     contract.check_web_assets(tmp_path)
 
 
+def test_a_damaged_same_digest_tree_is_repaired_rather_than_refused(tmp_path):
+    """Every payload lives at its own digest, so a tree already there is the
+    same bytes -- incomplete, or damaged since. Refusing it made the only
+    repair (reinstalling) impossible: the fast path rejects the tree, the
+    re-extract lands, and every later launch refuses again."""
+    if not shutil.which("flock"):
+        pytest.skip("WSL bootstrap requires Linux flock")
+    archive = tmp_path / "payload.tar.gz"
+    bundle = _write_fake_linux_payload(archive, "9.9.9", "x86_64")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert (
+        _run_windows_bootstrap_install(tmp_path, archive, digest, bundle).returncode
+        == 0
+    )
+
+    installed = (tmp_path / "data/app/current").resolve()
+    (installed / ".installed").unlink()
+    (installed / "bin/openai4s").chmod(0o644)
+
+    repaired = _run_windows_bootstrap_install(tmp_path, archive, digest, bundle)
+    assert repaired.returncode == 0, repaired.stderr
+    assert (tmp_path / "data/app/current").resolve() == installed
+    assert os.access(installed / "bin/openai4s", os.X_OK)
+
+
+def test_superseded_payloads_are_reclaimed_but_a_running_one_is_not(tmp_path):
+    """Content-addressed trees are never overwritten, so without pruning each
+    update leaked a full bundle into a WSL VHDX that never shrinks."""
+    if not shutil.which("flock"):
+        pytest.skip("WSL bootstrap requires Linux flock")
+    first = tmp_path / "first.tar.gz"
+    bundle = _write_fake_linux_payload(first, "9.9.9", "x86_64")
+    assert (
+        _run_windows_bootstrap_install(
+            tmp_path, first, hashlib.sha256(first.read_bytes()).hexdigest(), bundle
+        ).returncode
+        == 0
+    )
+    superseded = (tmp_path / "data/app/current").resolve()
+
+    second = tmp_path / "second.tar.gz"
+    _write_fake_linux_payload(second, "9.9.9", "x86_64", marker="rebuilt")
+    assert (
+        _run_windows_bootstrap_install(
+            tmp_path, second, hashlib.sha256(second.read_bytes()).hexdigest(), bundle
+        ).returncode
+        == 0
+    )
+    current = (tmp_path / "data/app/current").resolve()
+    assert current != superseded
+    assert not superseded.exists()
+    assert len(list((tmp_path / "data/app").glob("OpenAI4S-*"))) == 1
+
+
+def test_a_management_command_says_nothing_is_installed_rather_than_guessing(tmp_path):
+    """Exit 11 is what lets the Windows launcher install the payload instead of
+    refusing `doctor` and `--help` on a first-ever run."""
+    if shutil.which("sh") is None:
+        pytest.skip("the bootstrap contract needs a POSIX sh")
+    script = Path(__file__).parents[1] / "scripts/windows/bootstrap.sh"
+    env = {key: value for key, value in os.environ.items()}
+    env.update(
+        {"HOME": str(tmp_path / "home"), "OPENAI4S_DATA_DIR": str(tmp_path / "empty")}
+    )
+    result = subprocess.run(
+        ["sh", str(script), "cli", "current", "status"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 11, result
+    assert "not installed" in result.stderr
+
+
 def test_bad_same_version_payload_preserves_existing_install(tmp_path):
     if not shutil.which("flock"):
         pytest.skip("WSL bootstrap requires Linux flock")
@@ -188,3 +267,91 @@ def test_bad_same_version_payload_preserves_existing_install(tmp_path):
     assert pointer.resolve() == original
     assert (original / "bin/openai4s").is_file()
     assert not list(pointer.parent.glob(".staging-*"))
+
+
+@pytest.mark.stubbed_backend
+def test_a_container_on_a_wsl_kernel_is_not_treated_as_a_wsl_host(monkeypatch):
+    """A Docker/Podman container inherits the host's `-microsoft-standard-WSL2`
+    kernel release but none of WSL's own surfaces, and must not inherit a
+    boundary policy that masks /run and requires a private PID namespace."""
+    monkeypatch.setattr(wsl.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        wsl.platform, "release", lambda: "5.15.167.4-microsoft-standard-WSL2"
+    )
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr(wsl.os.path, "exists", lambda path: False)
+    assert wsl.is_wsl() is False
+    monkeypatch.setattr(wsl.os.path, "exists", lambda path: path == "/run/WSL")
+    assert wsl.is_wsl() is True
+
+
+@pytest.mark.stubbed_backend
+def test_the_wsl_masks_keep_a_resolver_and_a_writable_temp(monkeypatch, tmp_path):
+    """`/etc/resolv.conf` points into `/run` or `/mnt/wsl` on WSL2, and an
+    empty tmpfs over either leaves it dangling; `/tmp` must stay writable
+    because a private tmpfs is already invisible to the host."""
+    resolver = tmp_path / "run/systemd/resolve/stub-resolv.conf"
+    resolver.parent.mkdir(parents=True)
+    resolver.write_text("nameserver 192.0.2.1\n")
+    denials = (("subpath", str(tmp_path / "run")), ("subpath", "/tmp"))
+    monkeypatch.setattr(wsl, "is_wsl", lambda: True)
+    monkeypatch.setattr(wsl, "read_denials", lambda: denials)
+    monkeypatch.setattr(wsl.os.path, "realpath", lambda _: str(resolver))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    command = wrap_bwrap_command(
+        ["python3"], executable="bwrap", workspace=workspace, temp_dir=workspace
+    )
+    assert command[command.index("--ro-bind-try") + 1] == str(resolver)
+    assert command.index("--ro-bind-try") < command.index("--remount-ro")
+    assert "/tmp" not in command[command.index("--remount-ro") :]
+
+
+def test_the_hyperv_filter_also_closes_the_io_uring_door(monkeypatch):
+    """seccomp classifies syscalls, not ring submissions, so a filter that only
+    inspects `socket(2)` is bypassed by IORING_OP_SOCKET on a WSL2 kernel."""
+    monkeypatch.setattr(wsl.platform, "machine", lambda: "x86_64")
+    arch, socket_nr = wsl._SECCOMP_ARCH["x86_64"]
+    program = _decode_bpf(wsl.socket_filter())
+    run = lambda nr, family: _run_bpf(program, arch, nr, family)  # noqa: E731
+    assert run(wsl.IO_URING_SETUP_NR, 0) == "EPERM"
+    assert run(socket_nr, 40) == "EPERM"  # AF_VSOCK
+    assert run(socket_nr, 2) == "ALLOW"  # AF_INET
+    assert run(1, 0) == "ALLOW"  # write(2)
+    assert run(0x40000000 | socket_nr, 40) == "ENOSYS"  # x32
+    assert _run_bpf(program, 0x40000003, 102, 0) == "KILL"  # i386 socketcall
+
+
+def _decode_bpf(blob: bytes) -> list[tuple[int, int, int, int]]:
+    import struct
+
+    assert len(blob) % 8 == 0, "sock_filter is exactly 8 bytes"
+    return [
+        struct.unpack("=HBBI", blob[index : index + 8])
+        for index in range(0, len(blob), 8)
+    ]
+
+
+def _run_bpf(program, arch: int, nr: int, family: int) -> str:
+    """Interpret the classic-BPF program the way the kernel would."""
+    verdicts = {
+        0x80000000: "KILL",
+        0x00050026: "ENOSYS",
+        0x00050001: "EPERM",
+        0x7FFF0000: "ALLOW",
+    }
+    # seccomp_data: nr@0, arch@4, instruction_pointer@8, args[0]@16.
+    data = {0: nr, 4: arch, 16: family}
+    counter = accumulator = 0
+    for _ in range(len(program) + 1):
+        code, jump_true, jump_false, k = program[counter]
+        if code == 0x20:  # BPF_LD | BPF_W | BPF_ABS
+            accumulator = data.get(k, 0)
+            counter += 1
+        elif code == 0x15:  # BPF_JMP | BPF_JEQ | BPF_K
+            counter += 1 + (jump_true if accumulator == k else jump_false)
+        elif code == 0x35:  # BPF_JMP | BPF_JGE | BPF_K
+            counter += 1 + (jump_true if accumulator >= k else jump_false)
+        else:  # BPF_RET | BPF_K
+            return verdicts[k]
+    raise AssertionError("the filter did not return")

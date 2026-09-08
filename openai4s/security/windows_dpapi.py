@@ -15,13 +15,19 @@ from pathlib import Path
 
 from .wsl import powershell_path
 
+# Raw stdin/stdout streams rather than [Console]::InputEncoding/OutputEncoding:
+# those setters call SetConsoleCP/SetConsoleOutputCP, which throw
+# "The handle is invalid" when the process has no console -- the normal case for
+# a daemon-spawned interop child -- and they sat outside the try, so the catch
+# that prints a sanitized message never ran. Reading and writing UTF-8 bytes
+# directly is correct regardless of the host's code page.
 _SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 try {
     Add-Type -AssemblyName System.Security
-    $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $buffer = New-Object System.IO.MemoryStream
+    [Console]::OpenStandardInput().CopyTo($buffer)
+    $request = [Text.Encoding]::UTF8.GetString($buffer.ToArray()) | ConvertFrom-Json
     if ($request.key -notmatch '^[a-f0-9]{64}$') { throw 'Invalid key' }
     $root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'OpenAI4S\secrets'
     $path = Join-Path $root ($request.key + '.dpapi')
@@ -51,10 +57,17 @@ try {
                 $value = [Text.Encoding]::UTF8.GetString($bytes)
             }
         }
-        'delete' { [IO.File]::Delete($path) }
+        # File.Delete is a no-op on a missing file but throws
+        # DirectoryNotFoundException on a missing parent, and $root only exists
+        # once something has been stored. The keychain and secret-service
+        # backends both ignore a delete that matched nothing; this one raised.
+        'delete' { if ([IO.Directory]::Exists($root)) { [IO.File]::Delete($path) } }
         default { throw 'Invalid operation' }
     }
-    @{ value = $value } | ConvertTo-Json -Compress
+    $payload = [Text.Encoding]::UTF8.GetBytes((@{ value = $value } | ConvertTo-Json -Compress))
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($payload, 0, $payload.Length)
+    $stdout.Flush()
 } catch {
     [Console]::Error.WriteLine('Windows secure storage operation failed.')
     exit 1
@@ -62,17 +75,41 @@ try {
 """
 
 
+#: Read in order. D-Bus keeps the second in step with the first and survives on
+#: images that ship no /etc/machine-id at all.
+_IDENTITY_FILES = ("/etc/machine-id", "/var/lib/dbus/machine-id")
+
+
+def machine_identity() -> str:
+    """The per-installation half of the storage key.
+
+    Every OS failure here becomes a ``RuntimeError``: this is reached through a
+    ``_Backend``, whose callers catch ``SecretBrokerError``, and a bare
+    ``FileNotFoundError`` from a distribution that ships no machine-id escaped
+    the broker entirely instead of letting ``auto`` move on to the next store.
+    """
+    for candidate in _IDENTITY_FILES:
+        try:
+            identity = Path(candidate).read_text("ascii").strip()
+        except (OSError, ValueError):
+            continue
+        if identity:
+            return identity
+    raise RuntimeError(
+        "Windows secure storage requires a persistent WSL machine identity"
+    )
+
+
 def request(
     action: str, namespace: str, scope: str, name: str, value: str | None = None
 ) -> str | None:
-    executable = powershell_path()
+    try:
+        executable = powershell_path()
+    except OSError:
+        raise RuntimeError("Windows secure storage could not be reached") from None
     if not executable:
         raise RuntimeError("Windows secure storage requires WSL interoperability")
-    identity = Path("/etc/machine-id").read_text("ascii").strip()
-    if not identity:
-        raise RuntimeError(
-            "Windows secure storage requires a persistent WSL machine identity"
-        )
+    identity = machine_identity()
     key = hashlib.sha256(
         json.dumps([identity, os.getuid(), namespace, scope, name]).encode("utf-8")
     ).hexdigest()
@@ -91,6 +128,15 @@ def request(
             ),
             capture_output=True,
             timeout=20,
+            # WSLENV is the only thing that carries a Linux variable across
+            # into the Windows process. Emptying it keeps the daemon's own
+            # environment -- which holds the very credentials this module
+            # exists to protect -- on the Linux side of the interop boundary.
+            env={**os.environ, "WSLENV": ""},
+            # Same reason `tools/dynamic.py` and the keychain backend's writes
+            # do: an interop child must not inherit the daemon's controlling
+            # terminal, and with it the TIOCSTI escape.
+            start_new_session=True,
         )
     except (OSError, subprocess.SubprocessError):
         raise RuntimeError("Windows secure storage could not be reached") from None
@@ -98,7 +144,7 @@ def request(
         raise RuntimeError("Windows secure storage operation failed")
     try:
         decoded = json.loads(result.stdout.decode("utf-8-sig"))["value"]
-    except (ValueError, KeyError, UnicodeError):
+    except (ValueError, KeyError, TypeError, UnicodeError):
         raise RuntimeError(
             "Windows secure storage returned an invalid response"
         ) from None
