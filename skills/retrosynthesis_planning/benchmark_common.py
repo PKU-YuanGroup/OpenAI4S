@@ -72,7 +72,7 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> None:
+def write_json_atomic(path: str | Path, payload: Any) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

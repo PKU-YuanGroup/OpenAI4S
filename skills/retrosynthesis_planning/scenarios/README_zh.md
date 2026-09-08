@@ -16,4 +16,19 @@
 | [`06_yield_estimation.md`](06_yield_estimation.md) | Buchwald–Hartwig 分布外划分上的收率回归与不确定性。 |
 | [`README.md`](README.md) | 英文目录说明。 |
 
+## Query、GT 与生成 codebase
+
+| 目录 | 范围 |
+| --- | --- |
+| [`queries/`](queries/) | 六份冻结的 OpenAI4S prompt，逐项说明公开输入文件协议。 |
+| [`gt_codebases/`](gt_codebases/) | 六个经过仓库审查的 GT 参考入口。 |
+| [`openai4s_codebases/`](openai4s_codebases/) | 由 OpenAI4S CLI 实际运行产生的同名实现及生成 provenance。 |
+| [`pipelines/`](pipelines/) | GT 入口的废弃兼容别名。 |
+| [`test_cases/`](test_cases/) | 评测 fixture、数据库注册表、一键安装器和私有 evaluator 入口。 |
+
+Pipeline 进程只读取安装后的 `public/` 文件。只有 pipeline 完成并冻结输出后，
+evaluator 才读取 `private_evaluator/`。
+GT 代码不得标成 OpenAI4S 生成结果；缺少 API key 或生成失败时，生成 manifest 必须
+如实记录阻塞状态，不得复制参考实现来填充。
+
 上级 [`../SCENARIO_zh.md`](../SCENARIO_zh.md) 保留为六问题总览和依赖图；本目录文件是 Benchmark 设计的详细草案。每个场景只有在数据快照、划分、许可证、文件校验和以及私有 evaluator 边界全部冻结后，才能从“设计完成”升级为“可发布 Benchmark”。模型输出、论文报告数字或另一个模型的预测不得充当 Ground Truth。

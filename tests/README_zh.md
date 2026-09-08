@@ -290,6 +290,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_renderer_capability_honesty.py`](test_renderer_capability_honesty.py) | renderer 目录被允许宣称什么。没有实现的能力——`sort`、`filter`、`compare_versions`——必须直接删掉，而不是写进文档；没有解析器的列式二进制文件要明确声明为只能下载，而不是先承诺一张画不出来的表。flag 打开时可以声明 `sort`/`filter`/`profile`/`export`，`parquet` 仅在 optional 引擎确实可导入时才出现。 |
 | [`test_renderer_registry.py`](test_renderer_registry.py) | 三个测试：renderer 的选择是确定性的，重复的 renderer ID 会被拒绝，公开 descriptor 里的版本与溯源始终绑在产出它的那个 renderer 上。 |
 | [`test_retrosynthesis_evidence_regressions.py`](test_retrosynthesis_evidence_regressions.py) | 逆合成路线的证据检索。这里每个测试都是为了不让“候选”冒充“已核实”：只有候选来源时，coverage 不能被抬过 30；显式的空记录包装不能摇身变成伪证据；没有真正核实过，verified 就一直是 false。检索里的搜索或抓取失败会被隔离，不能把已经拿回来的来源一起拖没。 |
+| [`test_retrosynthesis_evaluator.py`](test_retrosynthesis_evaluator.py) | 已安装公开及私有数据集的哈希校验、严格映射 fixture 类型，以及可直接运行的 GT 入口。 |
+| [`test_retrosynthesis_generated_programs.py`](test_retrosynthesis_generated_programs.py) | 生成 Scenario CLI 合约：生产化学规范化、唯一映射标识及公开 fixture 兼容性。 |
+| [`test_retrosynthesis_generation.py`](test_retrosynthesis_generation.py) | 生成器进程隔离、不含秘密的诊断，以及各 Scenario 生成 provenance 的保留。 |
 | [`test_retrosynthesis_planning.py`](test_retrosynthesis_planning.py) | 逆合成 Skills，包括六个可独立评测任务的发现/模型身份、六份独立 Scenario 文档合约，以及可执行的 class-unknown 单步协议：隐藏反应字段必须 fail closed、无序前体集合需正确比较、invalid/duplicate beam 必须保留，私有指标必须按 target 汇总。其余重点是两项渲染风险：LLM 标注在返回不可解析内容时必须带告警降级，图谱 payload 必须转义外部输入的分子名。 |
 | [`test_retrosynthesis_scenario_protocols.py`](test_retrosynthesis_scenario_protocols.py) | Scenario 2–6 及外部模型环境边界的可执行协议回归：AND/OR 库存闭合、AiZynthFinder 路线转换、原子映射保密与对称性、正向预测立体诊断、完整 Parrot beam 元组、不裁剪预测的 worst-group 收率评测，以及锁定环境计划、产物快照和绑定 manifest 的 worker 握手。 |
 | [`test_retrosynthesis_scoring_regressions.py`](test_retrosynthesis_scoring_regressions.py) | 路线打分与渲染，麻烦的 bug 都藏在这儿。重排之后，标注不能还指着它原来描述的那条路线。库存标志里的字符串 `"false"` 永远不算“有货”。归一化后的决策权重要精确加到 100。已解出但没有反应步骤的路线，不该因为根本用不上的证据被扣分。 |
