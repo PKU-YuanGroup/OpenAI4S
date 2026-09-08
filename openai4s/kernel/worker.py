@@ -52,13 +52,17 @@ from functools import partial
 _TRUSTED_PACKAGE_PARENT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 )
+# This must run before the protocol import below: those imports are
+# deliberately not at the top of the file, which is what their per-line
+# suppression comments record. Keep those comments short -- isort sizes such a
+# statement without its trailing comment while Black sizes it with, so a long
+# one makes the two rewrap the line forever.
 if (
     os.path.isfile(os.path.join(_TRUSTED_PACKAGE_PARENT, "openai4s", "__init__.py"))
     and _TRUSTED_PACKAGE_PARENT not in sys.path
 ):
     sys.path.insert(0, _TRUSTED_PACKAGE_PARENT)
 
-# The trusted package path must be fixed before importing the protocol.
 from openai4s.kernel.protocol import (  # noqa: E402
     JSON_WORST_BYTES_PER_CHAR as _JSON_WORST_BYTES_PER_CHAR,
 )

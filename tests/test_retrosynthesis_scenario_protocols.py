@@ -75,10 +75,12 @@ from retrosynthesis_planning.reproducibility_bundle import (  # noqa: E402
 )
 from retrosynthesis_planning.route_review import route_similarity  # noqa: E402
 
-# Keep the noqa here: isort 9 and Black otherwise move it back and forth.
-from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402; isort: skip
-    main as scenario_cli_main,
-)
+# This one import carries no trailing suppression comment, unlike its
+# neighbours. isort sizes the collapsed statement at 84 characters because it
+# does not count a trailing comment, while Black sizes the line it emits at 98
+# and wraps it again -- so the pair never reaches a fixed point. None is needed
+# here: ruff exempts imports that follow the sys.path mutation above.
+from retrosynthesis_planning.scenario_benchmark_cli import main as scenario_cli_main
 from retrosynthesis_planning.yield_benchmark import (  # noqa: E402
     SPLITS,
     evaluate_yield_predictions,
