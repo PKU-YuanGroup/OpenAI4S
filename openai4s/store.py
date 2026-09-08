@@ -128,9 +128,7 @@ from openai4s.storage.model_capability_receipts import (
 from openai4s.storage.permissions import (
     DEFAULT_PERMISSION_RULES as _DEFAULT_PERMISSION_RULES,
 )
-from openai4s.storage.permissions import (
-    PermissionRuleRepository,
-)
+from openai4s.storage.permissions import PermissionRuleRepository
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository

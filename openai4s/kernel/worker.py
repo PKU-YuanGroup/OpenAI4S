@@ -58,15 +58,12 @@ if (
 ):
     sys.path.insert(0, _TRUSTED_PACKAGE_PARENT)
 
-from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+# The trusted package path must be fixed before importing the protocol.
+from openai4s.kernel.protocol import (  # noqa: E402
     JSON_WORST_BYTES_PER_CHAR as _JSON_WORST_BYTES_PER_CHAR,
 )
-from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
-    MAX_FRAME_BYTES as _MAX_FRAME_BYTES,
-)
-from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
-    MAX_OUTPUT_CHARS as MAX_OUTPUT,
-)
+from openai4s.kernel.protocol import MAX_FRAME_BYTES as _MAX_FRAME_BYTES  # noqa: E402
+from openai4s.kernel.protocol import MAX_OUTPUT_CHARS as MAX_OUTPUT  # noqa: E402
 
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap

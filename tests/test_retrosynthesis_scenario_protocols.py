@@ -74,7 +74,9 @@ from retrosynthesis_planning.reproducibility_bundle import (  # noqa: E402
     build_reproducibility_bundle,
 )
 from retrosynthesis_planning.route_review import route_similarity  # noqa: E402
-from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402
+
+# Keep the noqa here: isort 9 and Black otherwise move it back and forth.
+from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402; isort: skip
     main as scenario_cli_main,
 )
 from retrosynthesis_planning.yield_benchmark import (  # noqa: E402

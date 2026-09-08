@@ -47,9 +47,7 @@ from openai4s.orchestration.slurm import (
     SubmitSpec,
 )
 from openai4s.orchestration.slurm import broker as broker_mod
-from openai4s.orchestration.slurm import (
-    parse_cluster_config,
-)
+from openai4s.orchestration.slurm import parse_cluster_config
 from openai4s.orchestration.slurm.broker import StepSpec
 from openai4s.orchestration.slurm.profiles import (
     EXAMPLE_CLUSTER_TOML,
