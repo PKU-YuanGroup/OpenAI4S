@@ -125,9 +125,43 @@ def _reset_inherited_signal_dispositions() -> None:
 
 # Linux's parent-death signal follows the creating thread. A request/job thread
 # ends after one Cell, so spawning bubblewrap there silently kills a persistent
-# kernel as soon as the request finishes. This single daemon-lived thread owns
-# process creation only; protocol readers, interrupts and cleanup stay unchanged.
-_PROCESS_SPAWNER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kernel-spawn")
+# kernel as soon as the request finishes. These daemon-lived threads own process
+# creation only; protocol readers, interrupts and cleanup stay unchanged.
+#
+# More than one worker because the identity of the thread does not matter, only
+# that it outlives the child -- and pool threads never retire. With a single
+# worker every kernel spawn in the daemon queued behind every other one, so a
+# `fork`/`execve` stalled on a hung DrvFs or 9p mount blocked every other
+# tenant's kernel start, the R sibling, and the watchdog's own replacement
+# spawn, with no bound. Built on first use so a macOS or Windows daemon, which
+# takes the direct path below, never creates it at all.
+_SPAWNER_LOCK = threading.Lock()
+_PROCESS_SPAWNER: ThreadPoolExecutor | None = None
+
+
+def _process_spawner() -> ThreadPoolExecutor:
+    global _PROCESS_SPAWNER
+    with _SPAWNER_LOCK:
+        if _PROCESS_SPAWNER is None:
+            _PROCESS_SPAWNER = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix="kernel-spawn"
+            )
+        return _PROCESS_SPAWNER
+
+
+def _spawn_process(command: list[str], options: dict[str, Any]) -> subprocess.Popen:
+    if not sys.platform.startswith("linux"):
+        return subprocess.Popen(command, **options)
+    try:
+        future = _process_spawner().submit(subprocess.Popen, command, **options)
+    except RuntimeError:
+        # `concurrent.futures` refuses new work once its atexit hook has run.
+        # A spawn during interpreter teardown is exactly when the parent-death
+        # signal no longer matters, so take the direct path rather than turning
+        # a shutdown race into a spawn failure. Only `submit` is guarded: a
+        # RuntimeError out of `Popen` itself is the caller's to see.
+        return subprocess.Popen(command, **options)
+    return future.result()
 
 
 class PipeTransport:
@@ -185,11 +219,7 @@ class PipeTransport:
             # backgrounded daemon's R kernels silently drop every interrupt.
             # See `_reset_inherited_signal_dispositions` for the full chain.
             options["preexec_fn"] = _reset_inherited_signal_dispositions
-        self._proc = (
-            _PROCESS_SPAWNER.submit(subprocess.Popen, command, **options).result()
-            if sys.platform.startswith("linux")
-            else subprocess.Popen(command, **options)
-        )
+        self._proc = _spawn_process(command, options)
         # Read at spawn, from the pid, not later from `os.getpgid`: once the
         # leader is reaped the lookup fails, which is exactly when a surviving
         # group most needs signalling (`execution/process_group.py` says the
