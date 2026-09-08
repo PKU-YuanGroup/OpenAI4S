@@ -1610,8 +1610,15 @@ def test_the_wsl_bootstrap_never_acquires_carriage_returns():
         assert windows_side in build
 
 
-def _write_fake_linux_payload(path: Path, version: str, arch: str) -> str:
-    """A tarball with the shape the Windows launcher depends on, and nothing else."""
+def _write_fake_linux_payload(
+    path: Path, version: str, arch: str, marker: str = "placeholder"
+) -> str:
+    """A tarball with the shape the Windows launcher depends on, and nothing else.
+
+    ``marker`` changes the payload bytes, and so its digest, without changing
+    the bundle directory name -- which is what an update of the same version
+    looks like to `install`.
+    """
     top = f"OpenAI4S-{version}-linux-{arch}"
     executable = (
         "OpenAI4S",
@@ -1629,7 +1636,7 @@ def _write_fake_linux_payload(path: Path, version: str, arch: str) -> str:
     )
     with tarfile.open(path, "w:gz") as archive:
         for relative in executable + plain:
-            payload = b"placeholder\n"
+            payload = marker.encode("utf-8") + b"\n"
             info = tarfile.TarInfo(f"{top}/{relative}")
             info.size = len(payload)
             info.mode = 0o755 if relative in executable else 0o644
