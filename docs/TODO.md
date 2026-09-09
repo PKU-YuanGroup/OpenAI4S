@@ -53,6 +53,15 @@ is a factual record of the v0.3 plan and is validated by
 
 ## CI and supply chain
 
+- [ ] **Run the final C1–C7 patch on the required Linux/platform gates.** The
+      2026-09-08 implementation is validated locally on macOS; this machine has
+      no Docker executable or Linux bubblewrap runtime. Matching commit-specific
+      CI results are still pending. *Done when:* CI against exactly the reviewed
+      final source passes the affected Python matrix, container smoke, Linux
+      interrupt and sandbox gates, with the commit SHA and CI run links recorded
+      in this item. Local browser and wheel evidence does not establish Linux
+      behavior.
+
 - [ ] **Batch the Monday dependency PRs across ecosystems.** `groups:` is
       per-ecosystem by construction, so the uv, pre-commit and github-actions
       updates arrive as three PRs and have been consolidated onto one branch by

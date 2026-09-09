@@ -96,6 +96,8 @@ bootstrapped by `uv` on a cold machine. Artifact verification, wheel
 installation, and import/CLI smoke use no package index and no application
 credentials.
 
+Existing databases with a schema newer than this program supports are refused before application initialization writes. The CLI reads configuration without creating directories, then performs a normal SQLite read-only preflight (including committed WAL state); Store rechecks its formal connection before hardening, DDL, seeds or migration. Foreground and detached startup report `future_schema` with actual/supported versions. Use a compatible program version; this protection does not downgrade a database or rewrite its version. A corrupt database retains its distinct SQLite failure.
+
 ## macOS app image
 
 The `.dmg` is a third contract, and neither of the checks above can see it. It

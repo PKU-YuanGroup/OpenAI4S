@@ -137,6 +137,14 @@ scripts.
   or continue (quarantined until an explicit fresh restart). See
   [webshare.md](webshare.md).
 
+History reads have separate message, step and run-state outcomes. Failed or malformed reads show a short error and a GET-only retry control; they do not become an empty-session welcome screen. Same-session reloads retain confirmed content. WebSocket gaps clear only after all required reads and message reconciliation complete; anonymous live text stays visible until a stable terminal read can align it safely.
+
+Completed Notebook outputs use confirmed immutable Artifact versions for figures, tables and downloads. Missing historical bindings show an unconfirmed state; unavailable versions show a read failure with a retry for that version. Opening the latest version is a separate explicit action. Fixed and latest tabs can coexist, with fixed content, environment and lineage retaining their version when a new head arrives.
+
+JSON tables use the union of object fields in first-seen order, including keys after the 5000-row display limit; at most 100 columns are shown. Mixed arrays retain their complete original JSON instead of dropping rows. Raw text over 300000 characters starts with a marked preview; expanding uses the already fetched text and the download retains the full version.
+
+Customize Diagnostics opens with a passive status read. Explicit checks show each item's status, detail and remedy, with known model/network/compute settings links. Facts are collapsed and limited to 20 keys and 500 characters per item. Results retain their receipt time across settings tabs; a successful configuration save marks them for rechecking. A failed check keeps prior results visibly marked as previous. Suggestions are never executed automatically.
+
 ## Notebook lifecycle and truthfulness
 
 Python and R are lazy, independent persistent slots. A metadata-only or

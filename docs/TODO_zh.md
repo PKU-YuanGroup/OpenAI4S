@@ -46,6 +46,13 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 ## CI 与供应链
 
+- [ ] **在所需 Linux／平台门禁验证 C1–C7 最终补丁。** 2026-09-08 的实现
+      在本机 macOS 验证；本机没有 Docker 可执行文件或 Linux bubblewrap 运行环境，
+      对应具体提交的 CI 结果仍待取得。*做完的标准：* CI 对精确匹配已复核最终
+      源码的版本运行受影响 Python 矩阵、容器 smoke、Linux 中断及沙箱门禁，全部
+      通过，并在本条目记录提交 SHA 与 CI 运行链接。本机浏览器和 wheel 证据不能
+      证明 Linux 行为。
+
 - [ ] **把周一的依赖 PR 跨 ecosystem 合批。** `groups:` 按设计是 per-ecosystem
       的，所以 uv、pre-commit、github-actions 三路更新会分成三个 PR，至今已被
       手工并到同一分支上至少四次（#75、#97、#131）。Dependabot 支持用配置解决：
