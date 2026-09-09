@@ -73,6 +73,45 @@ class MigrationError(RuntimeError):
     """A migration could not be applied. The database is unchanged."""
 
 
+class FutureSchemaError(MigrationError):
+    """This program cannot safely initialize a newer database schema."""
+
+    code = "future_schema"
+
+    def __init__(self, actual_version: int, supported_version: int):
+        self.actual_version = actual_version
+        self.supported_version = supported_version
+        super().__init__(
+            f"[future_schema] database schema {actual_version} exceeds supported "
+            f"schema {supported_version}; use a compatible OpenAI4S version."
+        )
+
+
+def require_supported_schema(
+    conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION
+) -> int:
+    version = current_version(conn)
+    if version > target:
+        raise FutureSchemaError(version, target)
+    return version
+
+
+def preflight_schema(db_path: Path, *, target: int = SCHEMA_VERSION) -> int | None:
+    """Read committed schema state (including WAL) before application writes.
+
+    A missing database follows the normal new-database path. A corrupt or
+    unreadable database retains SQLite's error; it is not a future version.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return require_supported_schema(conn, target=target)
+    finally:
+        conn.close()
+
+
 def apply_ddl_script(conn: sqlite3.Connection, script: str) -> None:
     """Run a multi-statement DDL script *without* committing the caller's
     transaction.
@@ -217,8 +256,8 @@ def run_migrations(
     database back — the caller gets an unchanged database, not a half-migrated
     one.
     """
-    version = current_version(conn)
-    if version >= target:
+    version = require_supported_schema(conn, target=target)
+    if version == target:
         return {"migrated": False, "from": version, "to": version, "applied": []}
 
     if not integrity_ok(conn):
@@ -286,6 +325,9 @@ def run_migrations(
 
 __all__ = [
     "MigrationError",
+    "FutureSchemaError",
+    "preflight_schema",
+    "require_supported_schema",
     "SCHEMA_VERSION",
     "applied_migrations",
     "backup_database",

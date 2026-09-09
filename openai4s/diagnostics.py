@@ -489,6 +489,7 @@ _REPORT_SCHEMA: dict[str, Any] = {
             "error_type": _v_type_name,
         },
         "schema": {
+            "code": _v_enum({"future_schema"}),
             "version": _v_number,
             "expected": _v_number,
             "current": _v_bool,
@@ -640,6 +641,15 @@ def security_posture(cfg: Any) -> dict:
         # The database never opened, so neither probe below it ran. Both keys
         # record that same failure rather than one of them going missing.
         report["schema"] = _probe_failure(e)
+        from openai4s.storage.migrations import FutureSchemaError
+
+        if isinstance(e, FutureSchemaError):
+            report["schema"].update(
+                code=e.code,
+                version=e.actual_version,
+                expected=e.supported_version,
+                current=False,
+            )
         report["secret_store"] = _probe_failure(e)
     if store is not None:
         # Its own clause, deliberately: `store.secrets` resolves a SecretBroker,

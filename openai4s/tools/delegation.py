@@ -118,7 +118,7 @@ class ListChildrenTool(Tool):
 class CollectChildrenTool(Tool):
     name = "collect_children"
     host_method = "collect"
-    description = "Collect results from asynchronous sub-agent children."
+    description = "Collect child results within one total waiting budget; timeout does not stop children."
     parameters = {
         "properties": {
             "child_ids": {
@@ -135,6 +135,9 @@ class CollectChildrenTool(Tool):
     resource_target_default = "children"
 
     def execute(self, runtime: ControlToolContext, arguments: dict) -> Any:
+        error = self.validation_error(arguments)
+        if error:
+            raise ValueError(error)
         return runtime.invoke(self.host_method, dict(arguments))
 
 

@@ -14,6 +14,7 @@ from openai4s.execution.dependencies import (
     default_visibility,
     normalize_string_list,
 )
+from openai4s.server.execution_sources import output_artifact_bindings
 from openai4s.storage.branch_projection import project_branch_records
 
 
@@ -78,6 +79,16 @@ class ExecutionViewService:
             _with_dependency_defaults(cell)
             for cell in self._branch_cells(root_frame_id, branch_id)
         ]
+        output_bindings = output_artifact_bindings(
+            self.store,
+            root_frame_id,
+            producer_frame_id=root_frame_id,
+            cell_ids={
+                str(cell["producing_cell_id"])
+                for cell in cells
+                if cell.get("producing_cell_id")
+            },
+        )
         stale_projection = compute_stale_cells(cells)
         for ordinal, (cell, stale) in enumerate(zip(cells, stale_projection), 1):
             language = cell.get("language") or "python"
@@ -132,6 +143,7 @@ class ExecutionViewService:
                     "stderr": cell.get("stderr") or "",
                     "error": cell.get("error") or "",
                     "status": cell.get("status") or "ok",
+                    "output_artifacts": output_bindings.get(str(producing_cell_id), []),
                     "figures": cell.get("figures") or [],
                     "files_written": cell.get("files_written") or [],
                     "files_read": cell.get("files_read") or [],
@@ -179,9 +191,13 @@ class ExecutionViewService:
             cursor_key="cell_cursor",
         )
 
-    def artifact_lineage(self, artifact_id: str) -> dict:
+    def artifact_lineage(
+        self, artifact_id: str, *, version_id: str | None = None
+    ) -> dict:
         artifact = self.store.get_artifact(artifact_id)
         if not artifact:
+            if version_id is not None:
+                raise KeyError("artifact version not found")
             return {
                 "artifact_id": artifact_id,
                 "filename": None,
@@ -190,7 +206,17 @@ class ExecutionViewService:
             }
 
         interactions = []
-        version_id = artifact.get("latest_version_id")
+        exact_version = version_id is not None
+        if exact_version:
+            selected = self.store.version_meta(version_id)
+            if not selected or selected.get("artifact_id") != artifact_id:
+                raise KeyError("artifact version not found")
+            artifact = {
+                **artifact,
+                "filename": selected.get("filename") or artifact.get("filename"),
+            }
+        else:
+            version_id = artifact.get("latest_version_id")
         cell = None
         version = None
         edge_inputs: list[str] = []
@@ -368,6 +394,8 @@ class ExecutionViewService:
             "interactions": interactions,
             "dependency_mappings": {"inputs": inputs},
         }
+        if exact_version:
+            result["version_id"] = version_id
         if capture_observations:
             result["capture_observations"] = capture_observations
         if producer:

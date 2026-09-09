@@ -521,3 +521,32 @@ def test_a_credential_in_a_url_path_is_redacted_in_the_bundle(cfg, tmp_path):
     # asserted directly below, where it is the thing under test.
     assert b"api.example.org" not in blob
     assert redact_url(f"https://api.example.org/v1/{key}/records").count(key) == 0
+
+
+@pytest.mark.parametrize("future", [False, True])
+def test_schema_probe_distinguishes_future_and_corrupt_database(cfg, future):
+    import sqlite3
+
+    from openai4s.diagnostics import archive_safe
+    from openai4s.storage.migrations import SCHEMA_VERSION
+
+    if future:
+        with sqlite3.connect(cfg.db_path) as conn:
+            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    else:
+        cfg.db_path.write_bytes(b"invalid SQLite database" * 30)
+    before = cfg.db_path.read_bytes()
+    schema = security_posture(cfg)["schema"]
+    if future:
+        assert schema["code"] == "future_schema"
+        assert schema["version"] == SCHEMA_VERSION + 1
+        assert schema["expected"] == SCHEMA_VERSION
+        assert schema["current"] is False
+        archived = archive_safe({"security": {"schema": schema}})
+        assert archived["security"]["schema"]["code"] == "future_schema"
+    else:
+        assert schema.get("code") != "future_schema"
+        assert schema["error_type"] == "DatabaseError"
+    assert schema["status"] == "unavailable"
+    assert str(cfg.db_path) not in json.dumps(schema)
+    assert cfg.db_path.read_bytes() == before

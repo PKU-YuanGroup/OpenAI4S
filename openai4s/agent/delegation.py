@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import math
 import threading
 import time
 import uuid
@@ -1207,6 +1208,7 @@ class DelegationRunner:
         trusted_capture_lease: Callable[[], Any] | None = None,
         env: KernelEnvSpec | None = None,
         private_scratch: bool | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -1221,6 +1223,7 @@ class DelegationRunner:
         self.parent_frame_id = parent_frame_id
         self.parent_child_id = parent_child_id
         self.store = store
+        self.cancelled = cancelled
         # Children run here instead of in os.getcwd(). The Web gateway passes
         # the parent session's workspace so a delegated child's kernels and
         # relative file writes land where the parent's artifact capture looks,
@@ -1991,8 +1994,20 @@ class DelegationRunner:
         self._tree.trusted_capture_lease = lease
 
     def collect(self, spec: dict[str, Any]) -> list[dict[str, Any]]:
+        """Wait within one call-wide budget, then snapshot every target."""
+
         child_ids = spec.get("child_ids")
         timeout = spec.get("timeout")
+        if timeout is not None and (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 <= timeout <= 3600
+            or not math.isfinite(timeout)
+        ):
+            raise ValueError(
+                "collect timeout must be a finite number between 0 and 3600 seconds"
+            )
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._tree.lock:
             targets = (
                 list(self._children.values())
@@ -2001,15 +2016,39 @@ class DelegationRunner:
                     self._children[item] for item in child_ids if item in self._children
                 ]
             )
+        stop_waiting = False
+        for child in targets:
+            if self.cancelled is not None and self.cancelled():
+                self.cancel_all()
+                break
+            future = child.future
+            while future is not None and not future.done():
+                if self.cancelled is not None and self.cancelled():
+                    self.cancel_all()
+                    stop_waiting = True
+                    break
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    stop_waiting = True
+                    break
+                # Never hold the tree lock while waiting or calling a runtime
+                # cancellation hook. A short wait also makes None cancellable.
+                wait_for = 0.25 if remaining is None else min(0.25, remaining)
+                try:
+                    future.result(timeout=wait_for)
+                except TimeoutError:
+                    pass
+                except BaseException:  # noqa: BLE001 - handled in the final snapshot
+                    break
+            if stop_waiting:
+                break
+
         output: list[dict[str, Any]] = []
         for child in targets:
             future = child.future
-            if future is not None:
+            if future is not None and future.done():
                 try:
-                    future.result(timeout=timeout)
-                except TimeoutError:
-                    # A collect timeout is an observation, not child failure.
-                    pass
+                    future.result(timeout=0)
                 except CancelledError:
                     child.request_stop(child.stop_event_reason())
                 except BaseException as error:  # noqa: BLE001
@@ -2022,6 +2061,8 @@ class DelegationRunner:
                         "error": detail,
                     }
                     child.finish_failed(detail, failed)
+            # Timeout only ends this observation. An unfinished Future keeps
+            # its real state and all request/attempt/Artifact identities.
             output.append(self._enrich_result(child.result or child.snapshot(), child))
         return output
 

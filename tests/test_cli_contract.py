@@ -903,3 +903,117 @@ def test_ctrl_c_exits_even_when_the_cell_cannot_be_interrupted(interrupt_foregro
         with pytest.raises(KeyboardInterrupt):
             handler(signal.SIGINT, None)
     assert signal.getsignal(signal.SIGINT) is before
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_serve_future_schema_fails_before_directories_singleton_or_spawn(
+    tmp_path, monkeypatch, capsys, detached
+):
+    import sqlite3
+
+    import openai4s.config as config_module
+    from openai4s.storage.migrations import SCHEMA_VERSION
+
+    module = _cli_module()
+    monkeypatch.setattr(config_module, "_CONFIG", None)
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path))
+    cfg = config_module.Config()
+    with sqlite3.connect(cfg.db_path) as db:
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    calls = []
+    monkeypatch.setattr(
+        config_module.Config, "ensure_dirs", lambda *_: calls.append("dirs")
+    )
+    monkeypatch.setattr(
+        module, "_acquire_singleton", lambda *_: calls.append("singleton")
+    )
+    monkeypatch.setattr(
+        module.subprocess, "Popen", lambda *_a, **_kw: calls.append("spawn")
+    )
+    assert module.cmd_serve(SimpleNamespace(detached=detached)) == 2
+    assert calls == []
+    assert config_module._CONFIG is None
+    assert "future_schema" in capsys.readouterr().err
+
+
+def test_serve_formal_open_future_schema_error_clears_only_owned_state(
+    tmp_path, monkeypatch, capsys
+):
+    import openai4s.config as config_module
+    import openai4s.server as server
+    from openai4s.storage.migrations import SCHEMA_VERSION, FutureSchemaError
+
+    module = _cli_module()
+    cfg = config_module.Config(data_dir=tmp_path)
+    cfg.ensure_dirs()
+    monkeypatch.setattr(module, "get_config", lambda **_: cfg)
+    monkeypatch.setattr(module, "_acquire_singleton", lambda *_: True)
+    cleared = []
+    monkeypatch.setattr(module, "_clear_state", lambda _cfg, **kw: cleared.append(kw))
+
+    def reject(_cfg):
+        raise FutureSchemaError(SCHEMA_VERSION + 1, SCHEMA_VERSION)
+
+    monkeypatch.setattr(server, "build_server", reject)
+    assert module.cmd_serve(SimpleNamespace(detached=False, host=None, port=None)) == 2
+    assert cleared == [{"only_if_owned_by": os.getpid()}]
+    assert "future_schema" in capsys.readouterr().err
+
+
+def test_detached_child_future_schema_is_reported_without_startup_timeout(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s.config import Config
+    from openai4s.storage.migrations import SCHEMA_VERSION, FutureSchemaError
+
+    module = _cli_module()
+    cfg = Config(data_dir=tmp_path)
+    cfg.ensure_dirs()
+    log = cfg.logs_dir / "app.out"
+    log.write_text("old log text must not be returned\n")
+
+    class Process:
+        pid = 4321
+
+        def poll(self):
+            return 2
+
+    def spawn(_command, **kwargs):
+        diagnostic = FutureSchemaError(SCHEMA_VERSION + 1, SCHEMA_VERSION)
+        kwargs["stdout"].write(
+            f"error: {diagnostic}\nprivate diagnostic tail\n".encode()
+        )
+        return Process()
+
+    monkeypatch.setattr(module.subprocess, "Popen", spawn)
+    assert module._cmd_serve_detached(SimpleNamespace(no_open=True), cfg) == 2
+    error = capsys.readouterr().err
+    assert "future_schema" in error and str(SCHEMA_VERSION + 1) in error
+    assert "did not become ready" not in error
+    assert "private diagnostic" not in error and "old log" not in error
+
+
+@pytest.mark.skipif(os.name != "posix", reason="detached sessions require POSIX")
+def test_real_detached_child_rejects_future_schema_with_explicit_parent_error(
+    tmp_path, monkeypatch, capsys
+):
+    import sqlite3
+
+    from openai4s.config import Config
+    from openai4s.storage.migrations import SCHEMA_VERSION
+
+    module = _cli_module()
+    cfg = Config(data_dir=tmp_path)
+    cfg.ensure_dirs()
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI4S_NO_OPEN", "1")
+    with sqlite3.connect(cfg.db_path) as conn:
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    before = cfg.db_path.read_bytes()
+    # Exercise the actual spawned foreground command. This bypasses only the
+    # parent's already-tested preflight, as a version race would do.
+    assert module._cmd_serve_detached(SimpleNamespace(no_open=True), cfg) == 2
+    error = capsys.readouterr().err
+    assert "future_schema" in error and "did not become ready" not in error
+    assert cfg.db_path.read_bytes() == before
+    assert not cfg.pidfile.exists() and not cfg.statefile.exists()

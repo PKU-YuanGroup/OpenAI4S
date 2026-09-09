@@ -1662,3 +1662,148 @@ def test_storage_readmes_name_the_migration_numbers_the_code_uses(tmp_path):
                 f"{name} says migration {match.group(1)} for {migration}, "
                 f"but the code applies it as {by_name[migration]}"
             )
+
+
+def test_future_schema_is_refused_before_any_store_initialization_write(
+    tmp_path, monkeypatch
+):
+    import openai4s.store as store_module
+    from openai4s.storage import migrations
+
+    path = tmp_path / "future.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE sentinel(value TEXT)")
+        connection.execute("INSERT INTO sentinel VALUES ('keep this row')")
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    before = path.read_bytes()
+    writes = []
+    for name in ("harden_dir", "harden_db"):
+        monkeypatch.setattr(
+            store_module, name, lambda *_args, name=name: writes.append(name)
+        )
+    monkeypatch.setattr(
+        migrations, "backup_database", lambda *_args: writes.append("backup")
+    )
+    with pytest.raises(MigrationError, match="future_schema"):
+        Store(path)
+    assert writes == []
+    assert path.read_bytes() == before
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT value FROM sentinel").fetchall() == [
+            ("keep this row",)
+        ]
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall() == [("sentinel",)]
+    assert not list(tmp_path.glob("*.bak"))
+
+
+def test_run_migrations_independently_refuses_a_future_version(plain_db):
+    connection, path = plain_db
+    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    applied = []
+    with pytest.raises(MigrationError, match="future_schema"):
+        run_migrations(
+            connection, path, {1: ("never", lambda _conn: applied.append(1))}
+        )
+    assert applied == []
+    assert current_version(connection) == SCHEMA_VERSION + 1
+
+
+def test_future_schema_committed_only_in_wal_is_visible_to_preflight(tmp_path):
+    from openai4s.storage.migrations import FutureSchemaError, preflight_schema
+
+    path = tmp_path / "wal-future.db"
+    writer = sqlite3.connect(path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE sentinel(value)")
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+        writer.commit()
+        assert path.with_name(path.name + "-wal").stat().st_size > 0
+        # The main-file header still carries zero: the future marker is WAL-only.
+        assert int.from_bytes(path.read_bytes()[60:64], "big") == 0
+        for open_database in (preflight_schema, Store):
+            with pytest.raises(FutureSchemaError) as rejected:
+                open_database(path)
+            assert rejected.value.actual_version == SCHEMA_VERSION + 1
+            assert rejected.value.supported_version == SCHEMA_VERSION
+        assert (
+            writer.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        writer.close()
+
+
+def test_formal_store_connection_rechecks_version_and_closes_on_failure(
+    tmp_path, monkeypatch
+):
+    import openai4s.store as store_module
+    from openai4s.storage.migrations import FutureSchemaError, preflight_schema
+
+    path = tmp_path / "race.db"
+    store = Store(path)
+    store.close()
+    writes = []
+    monkeypatch.setattr(
+        store_module, "harden_dir", lambda *_: writes.append("harden_dir")
+    )
+    monkeypatch.setattr(
+        store_module, "harden_db", lambda *_: writes.append("harden_db")
+    )
+    real_connect = sqlite3.connect
+    opened = []
+
+    def change_after_preflight(db):
+        preflight_schema(db)
+        with real_connect(db) as writer:
+            writer.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+
+    def record_connection(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store_module, "preflight_schema", change_after_preflight)
+    monkeypatch.setattr(store_module.sqlite3, "connect", record_connection)
+    with pytest.raises(FutureSchemaError):
+        get_store(path)
+    assert writes == []
+    # Both the read-only preflight connection and formal connection are closed.
+    assert len(opened) == 2
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
+    with real_connect(path) as writer:
+        writer.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    monkeypatch.setattr(store_module, "preflight_schema", preflight_schema)
+    reopened = get_store(path)
+    assert reopened.schema_state()["current"] is True
+    reopened.close()
+
+
+def test_corrupt_preflight_is_not_misclassified_as_future_and_does_not_write(tmp_path):
+    from openai4s.storage.migrations import FutureSchemaError, preflight_schema
+
+    path = tmp_path / "corrupt.db"
+    contents = b"this is not a SQLite database" * 10
+    path.write_bytes(contents)
+    for open_database in (preflight_schema, Store):
+        with pytest.raises(sqlite3.DatabaseError) as rejected:
+            open_database(path)
+        assert not isinstance(rejected.value, FutureSchemaError)
+        assert path.read_bytes() == contents
+
+
+def test_schema_state_is_current_only_for_equal_version(tmp_path):
+    store = Store(tmp_path / "current.db")
+    try:
+        for version in (SCHEMA_VERSION - 1, SCHEMA_VERSION, SCHEMA_VERSION + 1):
+            store._conn.execute(f"PRAGMA user_version={version}")
+            assert store.schema_state()["current"] is (version == SCHEMA_VERSION)
+    finally:
+        store.close()

@@ -123,6 +123,7 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
         "error",
         "status",
         "figures",
+        "output_artifacts",
         "files_written",
         "files_read",
         "cpu_seconds",
@@ -158,6 +159,7 @@ def test_execution_log_keeps_order_defaults_and_first_seen_kernels():
         "error": "",
         "status": "ok",
         "figures": [],
+        "output_artifacts": [],
         "files_written": [],
         "files_read": [],
         "cpu_seconds": None,
@@ -609,3 +611,115 @@ def test_view_store_and_formatter_errors_propagate():
     service = ExecutionViewService(store=store, format_timestamp=fail_timestamp)
     with pytest.raises(ValueError, match="bad timestamp"):
         service.artifact_lineage("artifact")
+
+
+def test_execution_outputs_bind_versions_and_observations_once_per_projection():
+    class CaptureStore(_Store):
+        def __init__(self):
+            super().__init__()
+            self.reads = []
+
+        def get_frame(self, frame_id):
+            return {"frame_id": frame_id, "root_frame_id": "root"}
+
+        def list_artifacts(self, filters):
+            self.reads.append(("artifacts", filters))
+            return [{"artifact_id": "a"}, {"artifact_id": "b"}]
+
+        def list_versions(self, artifact_id):
+            self.reads.append(("versions", artifact_id))
+            return (
+                [
+                    {
+                        "version_id": "v1",
+                        "filename": "one/plot.png",
+                        "producing_cell_id": "c1",
+                    },
+                    {
+                        "version_id": "v2",
+                        "filename": "one/plot.png",
+                        "producing_cell_id": "c2",
+                    },
+                    {
+                        "version_id": "hidden",
+                        "filename": "secret.png",
+                        "producing_cell_id": "hidden-cell",
+                    },
+                ]
+                if artifact_id == "a"
+                else [
+                    {
+                        "version_id": "v3",
+                        "filename": "two/plot.png",
+                        "producing_cell_id": "c1",
+                    }
+                ]
+            )
+
+        def list_artifact_capture_observations(self, *, artifact_id):
+            self.reads.append(("observations", artifact_id))
+            return (
+                [
+                    {
+                        "version_id": "v1",
+                        "filename": "one/plot.png",
+                        "producing_cell_id": "c3",
+                    }
+                ]
+                if artifact_id == "a"
+                else []
+            )
+
+    store = CaptureStore()
+    store.cells["child"] = [
+        {"producing_cell_id": cid, "cell_index": i, "code": "print(1)"}
+        for i, cid in enumerate(["c1", "c2", "c3", "legacy"], 1)
+    ]
+    rows = _service(store).execution_log("child")["entries"]
+    assert rows[0]["output_artifacts"] == [
+        {
+            "filename": "one/plot.png",
+            "artifact_id": "a",
+            "version_id": "v1",
+            "url": "/api/v1/artifacts/versions/v1",
+        },
+        {
+            "filename": "two/plot.png",
+            "artifact_id": "b",
+            "version_id": "v3",
+            "url": "/api/v1/artifacts/versions/v3",
+        },
+    ]
+    assert rows[1]["output_artifacts"][0]["version_id"] == "v2"
+    assert rows[2]["output_artifacts"][0]["version_id"] == "v1"
+    assert rows[3]["output_artifacts"] == []
+    assert store.reads[0] == ("artifacts", {"root_frame_id": "root"})
+    assert len(store.reads) == 5
+    store.reads.clear()
+    store.cells["child"].extend(
+        {"producing_cell_id": f"extra-{i}", "cell_index": i + 5, "code": "pass"}
+        for i in range(100)
+    )
+    assert len(_service(store).execution_log("child")["entries"]) == 104
+    assert len(store.reads) == 5
+
+
+def test_exact_lineage_uses_requested_version_and_rejects_foreign_or_missing():
+    store = _Store()
+    store.artifacts["a"] = {
+        "artifact_id": "a",
+        "filename": "plot.png",
+        "latest_version_id": "v2",
+    }
+    store.versions["v1"] = {
+        "artifact_id": "a",
+        "version_id": "v1",
+        "producing_cell_id": "old",
+    }
+    store.versions["foreign"] = {"artifact_id": "b", "version_id": "foreign"}
+    store.cell_details["old"] = {"code": "print('old')", "files_written": ["plot.png"]}
+    result = _service(store).artifact_lineage("a", version_id="v1")
+    assert result["version_id"] == "v1"
+    for version_id in ["missing", "foreign"]:
+        with pytest.raises(KeyError):
+            _service(store).artifact_lineage("a", version_id=version_id)
