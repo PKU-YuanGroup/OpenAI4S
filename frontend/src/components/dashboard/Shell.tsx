@@ -1,4 +1,5 @@
 import { useEffect } from "preact/hooks";
+import { HistoryLoadStatus } from "../../features/messages/components";
 import { finishArtifactsBoot } from "../../features/artifacts/boot";
 import { bindWorkbench } from "../../features/sessions/boot";
 import "./dashboard.css";
@@ -243,6 +244,7 @@ export function Shell() {
                 />
               </div>
             </div>
+            <HistoryLoadStatus />
             <div id="messages" class="messages" />
             <div class="composer-wrap">
               <button

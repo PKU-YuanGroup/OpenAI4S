@@ -21,6 +21,7 @@ import {
 } from "../../stores/customize";
 import {
   _openGen,
+  beginHistorySubmission,
   annotations,
   currentId,
   lastAnnotationReservation,
@@ -375,6 +376,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   if (g) g.remove();
   const es = $(".empty-session");
   if (es) es.remove();
+  const confirmHistorySubmission = beginHistorySubmission();
   const w = el("div", "msg user");
   const b = el("div", "bubble");
   b.textContent = text || t("send.imageAnnotationFallback");
@@ -442,6 +444,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       annotations?: unknown;
       annotation_reservation_id?: unknown;
     };
+    if (accepted?.request_id) confirmHistorySubmission();
     if (accepted && accepted.execution_id) w.dataset.executionId = String(accepted.execution_id);
     if (!acceptTurnTicket(turnTicketToken, accepted)) retireTurnTicket(turnTicketToken);
     if (annIds.length) {
@@ -463,6 +466,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       callLane("updateAnnotBadge");
     }
   } catch (e) {
+    // A transport failure is indeterminate; do not erase its optimistic bubble
+    // with a GET that may have raced the server's admission transaction.
+    if (e && Number.isInteger((e as { status?: number }).status) &&
+      (e as { status: number }).status >= 400) confirmHistorySubmission();
     if (annIds.length) {
       const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
       if (admissionId && refused) forgetAdmission(dispatchFrameId, admissionId);

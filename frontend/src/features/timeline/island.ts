@@ -466,15 +466,17 @@ export function scheduleWorkbenchRefresh(delay = 180): void {
   S._workbenchTimer = setTimeout(() => loadWorkbenchState(S.currentId, true), delay);
 }
 
-export function scheduleConversationResync(fid: string, delay = 120): void {
+export function scheduleConversationResync(fid: string, delay = 120, resetHistory = false): void {
   clearTimeout(S._branchConversationTimer);
   S._branchConversationTimer = setTimeout(() => {
-    if (S.currentId === fid) laneCall("openConversation", fid, S.project);
+    if (S.currentId !== fid) return;
+    if (resetHistory) laneCall("openConversation", fid, S.project, { resetHistory: true });
+    else laneCall("openConversation", fid, S.project);
   }, delay);
 }
 
 export function scheduleBranchConversationResync(fid: string, delay = 120): void {
-  scheduleConversationResync(fid, delay);
+  scheduleConversationResync(fid, delay, true);
 }
 
 function latestCellForLanguage(language: string): any {
@@ -2909,12 +2911,13 @@ async function activateSessionBranch(branchId: string): Promise<void> {
       `/frames/${encodeURIComponent(frameId)}/branches/${encodeURIComponent(branchId)}/activate`,
       { method: "POST", body: "{}" },
     )) as { status?: string };
+    if (S.currentId !== frameId) return;
     invalidateKernelCache();
     S.cells = [];
     S.liveCells = [];
     S._liveCell = null;
     pendingReplIdentity.value = null;
-    await Promise.resolve(laneCall("openConversation", frameId, S.project));
+    await Promise.resolve(laneCall("openConversation", frameId, S.project, { resetHistory: true }));
     if (S.currentId === frameId) {
       const partial = String((result && result.status) || "").toLowerCase() !== "active";
       hint(t(partial ? "branch.activatedPartial" : "branch.activated", shortRuntime(branchId)), partial);
@@ -2982,7 +2985,8 @@ async function applySessionRevert(): Promise<void> {
             revert_checkpoint_id: safe.revert_checkpoint_id,
           }
         : null;
-    await Promise.resolve(laneCall("openConversation", frameId, S.project));
+    if (S.currentId !== frameId) return;
+    await Promise.resolve(laneCall("openConversation", frameId, S.project, { resetHistory: true }));
     if (
       S.currentId === frameId &&
       undo &&
@@ -3024,8 +3028,9 @@ async function undoSessionRevert(): Promise<void> {
         revert_checkpoint_id: undo.revert_checkpoint_id,
       }),
     });
+    if (S.currentId !== frameId) return;
     S.branchUndo = null;
-    await Promise.resolve(laneCall("openConversation", frameId, S.project));
+    await Promise.resolve(laneCall("openConversation", frameId, S.project, { resetHistory: true }));
     if (S.currentId === frameId) hint(t("branch.undone"));
   } catch (error) {
     if (S.currentId === frameId)

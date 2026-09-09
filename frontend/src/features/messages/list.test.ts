@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Shell } from "../../components/dashboard/Shell";
+import * as messageComponents from "./components";
+import { currentId, _openGen, historyLoad } from "../../stores/session";
+import { resetStoreFields } from "../../stores/signal-field";
+
+vi.mock("preact/hooks", async (original) => ({
+  ...await original<typeof import("preact/hooks")>(),
+  useEffect: vi.fn(),
+}));
 import {
   INITIAL_RENDER_BATCH,
   cancelFramedRender,
@@ -92,4 +101,50 @@ describe("insertMessageByTime", () => {
     );
     expect(kids.map((k) => k.id)).toEqual(["msgs-earlier", "a", "b", "c"]);
   });
+});
+
+
+type MessageVNode = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
+function messageVNodes(value: unknown): MessageVNode[] {
+  if (Array.isArray(value)) return value.flatMap(messageVNodes);
+  if (!value || typeof value !== "object") return [];
+  const node = value as MessageVNode;
+  return [node, ...messageVNodes(node.props?.children)];
+}
+
+it("mounts the history status in the real Shell outside its imperative transcript", () => {
+  resetStoreFields();
+  const root = Shell();
+  const nodes = messageVNodes(root);
+  const messages = nodes.filter((node) => node.props?.id === "messages");
+  expect(messages).toHaveLength(1);
+  expect(messages[0]?.props?.class).toBe("messages");
+  expect(messages[0]?.props?.children).toBeUndefined();
+  const status = nodes.find((node) => typeof node.type === "function" && node.type.name === "HistoryLoadStatus");
+  expect(status).toBeDefined();
+  expect(status?.type).toBe((messageComponents as unknown as Record<string, unknown>).HistoryLoadStatus);
+  const column = nodes.find((node) => node.props?.id === "conv-view");
+  expect(column?.props?.children).toEqual(expect.arrayContaining([status, messages[0]]));
+  expect(nodes.filter((node) => node.props?.id === "jump-pill")).toHaveLength(1);
+});
+
+it("shows scoped read errors and a retry button, hiding settled or obsolete history state", () => {
+  resetStoreFields(); currentId.value = "f"; _openGen.value = 3;
+  historyLoad.value = {
+    fid: "f", generation: 3, status: "partial", messagesLoaded: true,
+    stepsLoaded: false, runStateLoaded: true, superseded: false,
+    errors: { steps: "HTTP 503" }, deferred: false,
+  };
+  const Status = (messageComponents as unknown as Record<string, unknown>).HistoryLoadStatus as (() => unknown);
+  expect(Status).toBeTypeOf("function");
+  const visible = messageVNodes(Status());
+  expect(visible[0]?.props).toMatchObject({ role: "status", "aria-live": "polite", "data-history-state": "partial" });
+  expect(visible.filter((node) => node.type === "button")).toHaveLength(1);
+  expect(visible.some((node) => JSON.stringify(node.props?.children).includes("HTTP 503"))).toBe(true);
+  historyLoad.value = { ...historyLoad.value, status: "loaded" };
+  expect(Status()).toBeNull();
+  historyLoad.value = { ...historyLoad.value, status: "error", generation: 2 };
+  expect(Status()).toBeNull();
+  historyLoad.value = { ...historyLoad.value, fid: "g", generation: 3 };
+  expect(Status()).toBeNull();
 });

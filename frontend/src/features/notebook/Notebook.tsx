@@ -7,7 +7,7 @@
 import { render } from "preact";
 import type { ComponentChildren } from "preact";
 import { memo } from "preact/compat";
-import { useLayoutEffect, useRef } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import {
@@ -24,7 +24,7 @@ import { executionQueue } from "../../stores/timeline";
 import { publicText } from "../scrub/scrub";
 import { appendTextNodeDelta, cellOutput, nbCellKey, notebookDisplayEntries } from "./cells";
 import {
-  artUrlByName,
+  notebookArtifactState,
   el,
   highlightCellSource,
   highlightTraceback,
@@ -58,7 +58,9 @@ import {
   nbRender,
   setNotebookRenderImpl,
 } from "./scroll";
-import type { NotebookCell, ScrollBox } from "./types";
+import { filesT } from "../artifacts/copy";
+import { applyArtifactDeepLink } from "../artifacts/ui";
+import type { NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 
 function notebookCellState(cell: NotebookCell): {
   key: string;
@@ -183,20 +185,37 @@ function ErrorBlock({ raw }: { raw: string }) {
   );
 }
 
-function CellFigures({ names }: { names: string[] }) {
-  if (!names.length) return null;
-  return (
-    <>
-      {names.map((f) => (
-        <img
-          key={f}
-          class="nbc-fig"
-          src={artUrlByName(f)}
-          onError={(ev) => (ev.currentTarget as HTMLImageElement).remove()}
-        />
-      ))}
-    </>
-  );
+function OutputLinks({ artifact }: { artifact: NotebookOutputArtifact }) {
+  return <div class="nbc-actions">
+    <a href={artifact.url} download={artifact.filename}>{filesT("nb.artifact.download")}</a>
+    <button class="nbc-action" onClick={() => void applyArtifactDeepLink({ artifactId: artifact.artifact_id, versionId: artifact.version_id })}>
+      {filesT("nb.artifact.open")}
+    </button>
+    <button class="nbc-action" onClick={() => void applyArtifactDeepLink({ artifactId: artifact.artifact_id, versionId: null })}>
+      {filesT("nb.artifact.latest")}
+    </button>
+  </div>;
+}
+
+function ConfirmedFigure({ artifact }: { artifact: NotebookOutputArtifact }) {
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  return <figure>
+    {failed ? <div class="nbc-artifact-error" role="status">
+      {filesT("nb.artifact.failed")}
+      <button class="nbc-action" onClick={() => { setFailed(false); setAttempt(attempt + 1); }}>{filesT("nb.artifact.retry")}</button>
+    </div> : <img key={attempt} class="nbc-fig" src={artifact.url} alt={artifact.filename} onError={() => setFailed(true)} />}
+    <OutputLinks artifact={artifact} />
+  </figure>;
+}
+
+function CellFigures({ cell, names }: { cell: NotebookCell; names: string[] }) {
+  return <>{names.map((filename) => {
+    const result = notebookArtifactState(cell, filename);
+    return result.artifact
+      ? <ConfirmedFigure key={filename + ":" + result.artifact.version_id} artifact={result.artifact} />
+      : <div key={filename} class="nbc-artifact-status" role="status">{filename + " · " + filesT("nb.artifact." + result.state)}</div>;
+  })}</>;
 }
 
 function CellIo({ cell }: { cell: NotebookCell }) {
@@ -205,11 +224,12 @@ function CellIo({ cell }: { cell: NotebookCell }) {
   if (!written.length && !read.length) return null;
   return (
     <div class="nbc-io">
-      {written.map((f) => (
-        <span key={"w:" + f} class="io-w">
-          <span>{f}</span>
-        </span>
-      ))}
+      {written.map((f) => {
+        const result = notebookArtifactState(cell, f);
+        return <span key={"w:" + f} class="io-w">
+          {result.artifact ? <a href={result.artifact.url} download={f}>{f}</a> : <span>{f + " · " + filesT("nb.artifact." + result.state)}</span>}
+        </span>;
+      })}
       {read.map((f) => (
         <span key={"r:" + f} class="io-r">
           <span>{f}</span>
@@ -319,8 +339,8 @@ function LiveCode({ cell }: { cell: NotebookCell }) {
   );
 }
 
-function LiveFigures({ cellKey }: { cellKey: string }) {
-  return <CellFigures names={cellOutput(cellKey).figures.value} />;
+function LiveFigures({ cell }: { cell: NotebookCell }) {
+  return <CellFigures cell={cell} names={cellOutput(nbCellKey(cell)).figures.value} />;
 }
 
 function LiveCell({ cell }: { cell: NotebookCell }) {
@@ -331,7 +351,7 @@ function LiveCell({ cell }: { cell: NotebookCell }) {
       <LiveStdout cellKey={key} />
       <LiveStderr cellKey={key} />
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
-      <LiveFigures cellKey={key} />
+      <LiveFigures cell={cell} />
     </CellShell>
   );
 }
@@ -354,9 +374,9 @@ function CompletedCell({ cell }: { cell: NotebookCell }) {
       <StaticOutput text={cell.stdout || ""} isError={false} />
       <StaticOutput text={cell.stderr || ""} isError={true} />
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
-      <CellFigures names={cell.figures || []} />
+      <CellFigures cell={cell} names={cell.figures || []} />
       {csvs.map((f) => (
-        <TableMount key={f} fname={f} />
+        <TableMount key={f} fname={f} cell={cell} />
       ))}
       <CellIo cell={cell} />
       {cell.draft ? null : <CellActions cell={cell} />}
@@ -364,17 +384,21 @@ function CompletedCell({ cell }: { cell: NotebookCell }) {
   );
 }
 
-function TableMount({ fname }: { fname: string }) {
+function TableMount({ fname, cell }: { fname: string; cell: NotebookCell }) {
   const ref = useRef<HTMLDivElement>(null);
+  const result = notebookArtifactState(cell, fname);
+  const artifact = result.artifact;
   useLayoutEffect(() => {
     const host = ref.current;
     if (!host) return;
     host.replaceChildren();
-    const name = el("div", "nbc-table-name", fname.split("/").pop() || fname);
-    host.appendChild(name);
-    renderTableInto(host, fname);
-  }, [fname]);
-  return <div class="nbc-table-wrap" ref={ref} />;
+    if (artifact) return renderTableInto(host, fname, artifact.url);
+  }, [fname, artifact?.url]);
+  return <div class="nbc-table-wrap">
+    <div class="nbc-table-name">{fname}</div>
+    <div ref={ref} />
+    {artifact ? <OutputLinks artifact={artifact} /> : <div role="status">{filesT("nb.artifact." + result.state)}</div>}
+  </div>;
 }
 
 const MemoCompletedCell = memo(CompletedCell);

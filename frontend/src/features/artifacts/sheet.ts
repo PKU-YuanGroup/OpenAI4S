@@ -11,7 +11,7 @@ export function sheetShape(rows: Record<string, unknown>[]): {
 } {
   const keys = new Set<string>();
   for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
     for (const key of Object.keys(row)) keys.add(key);
   }
   return { rows: rows.length, columns: keys.size, keys: Array.from(keys) };
@@ -29,7 +29,7 @@ export function sheetCap(rows: Record<string, unknown>[]): {
 } {
   const shape = sheetShape(rows);
   const safeRows = rows.slice(0, SHEET_MAX_ROWS);
-  const columns = Object.keys(safeRows[0] || {}).slice(0, SHEET_MAX_COLUMNS);
+  const columns = shape.keys.slice(0, SHEET_MAX_COLUMNS);
   return {
     safeRows,
     columns,
@@ -73,6 +73,10 @@ export function appendSheetShape(
  * Window-exported for `tests/browser_smoke.mjs` (tabular banner).
  */
 export function renderSheet(container: HTMLElement, rows: Record<string, unknown>[]): void {
+  if (!rows.every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) {
+    container.appendChild(el("pre", "renderer-source", JSON.stringify(rows, null, 2)));
+    return;
+  }
   const cap = sheetCap(rows);
   appendSheetShape(container, rows, cap.safeRows.length, cap.columns.length);
   const table = el("table", "sheet");
@@ -81,7 +85,10 @@ export function renderSheet(container: HTMLElement, rows: Record<string, unknown
   table.appendChild(head);
   cap.safeRows.forEach((row) => {
     const tr = el("tr");
-    cap.columns.forEach((key) => tr.appendChild(el("td", null, String(row[key] ?? ""))));
+    cap.columns.forEach((key) => {
+      const value = Object.prototype.hasOwnProperty.call(row, key) ? row[key] : "";
+      tr.appendChild(el("td", null, String(value ?? "")));
+    });
     table.appendChild(tr);
   });
   container.appendChild(table);

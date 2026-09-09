@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
 import { _liveCell, liveCells } from "../../stores/notebook";
-import { currentId, project, sessions } from "../../stores/session";
+import { _openGen, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   _replayGap,
@@ -38,6 +38,7 @@ describe("WS protocol handlers", () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     resetWsHandlers();
+    vi.unstubAllGlobals();
   });
 
   it("replay_begin epoch mismatch drops every cursor", () => {
@@ -75,59 +76,65 @@ describe("WS protocol handlers", () => {
     expect(_replayGap.value).toBe("f");
   });
 
-  it("replay_begin on the open session tears down the live stream", () => {
+  it("replay_begin preserves visible live content until history is confirmed", () => {
     currentId.value = "f";
     const wrap = { remove: vi.fn() };
-    stream.value = { wrap };
+    const live = { wrap };
+    stream.value = live;
     liveCells.value = [{ id: "c1" }];
     _liveCell.value = { id: "c1" };
-    onEvent({ type: "replay_begin", epoch: "epoch-a", root_frame_id: "f" });
-    expect(wrap.remove).toHaveBeenCalledTimes(1);
-    expect(stream.value).toBeNull();
-    expect(liveCells.value).toEqual([]);
-    expect(_liveCell.value).toBeNull();
+    onEvent({ type: "replay_begin", epoch: "epoch-a", root_frame_id: "f", gap: true });
+    expect(wrap.remove).not.toHaveBeenCalled();
+    expect(stream.value).toBe(live);
+    expect(_replayGap.value).toBe("f");
   });
 
-  it("replay_begin wrap.remove throw does not advance the cursor", () => {
+  it("replay_begin commits the cursor without tearing down message nodes", () => {
     currentId.value = "f";
-    stream.value = {
-      wrap: {
-        remove: () => {
-          throw new Error("dom gone");
-        },
-      },
-    };
-    expect(() =>
-      handleIncomingMessage(
-        JSON.stringify({
-          type: "replay_begin",
-          root_frame_id: "f",
-          seq: 4,
-          epoch: "e",
-        }),
-      ),
-    ).toThrow("dom gone");
-    expect(_seqSeen.value.f).toBeUndefined();
+    stream.value = { wrap: { remove: () => { throw new Error("must not erase content"); } } };
+    handleIncomingMessage(JSON.stringify({ type: "replay_begin", root_frame_id: "f", seq: 4, epoch: "e" }));
+    expect(_seqSeen.value.f).toBe(4);
   });
 
-  it("replay_end gap reload clears the flag and calls openConversation", () => {
-    currentId.value = "f";
-    project.value = "p1";
-    _replayGap.value = "f";
-    const opened: unknown[] = [];
-    (globalThis as Record<string, unknown>).openConversation = (
-      id: unknown,
-      proj: unknown,
-    ) => {
-      opened.push([id, proj]);
-    };
-    try {
-      onEvent({ type: "replay_end", root_frame_id: "f" });
-      expect(_replayGap.value).toBeNull();
-      expect(opened).toEqual([["f", "p1"]]);
-    } finally {
-      delete (globalThis as Record<string, unknown>).openConversation;
-    }
+  it("replay_end waits for all three reads and coalesces duplicate recovery", async () => {
+    currentId.value = "f"; project.value = "p1"; _replayGap.value = "f";
+    let resolve!: (value: unknown) => void;
+    const recover = vi.fn(() => new Promise((yes) => { resolve = yes; }));
+    vi.stubGlobal("recoverConversation", recover);
+    onEvent({ type: "replay_end", root_frame_id: "f" });
+    onEvent({ type: "replay_end", root_frame_id: "f" });
+    await Promise.resolve();
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(recover).toHaveBeenCalledWith("f", 0);
+    expect(_replayGap.value).toBe("f");
+    resolve({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true, superseded: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(_replayGap.value).toBeNull();
+  });
+
+  it.each([
+    { messagesLoaded: false, stepsLoaded: true, runStateLoaded: true },
+    { messagesLoaded: true, stepsLoaded: false, runStateLoaded: true },
+    { messagesLoaded: true, stepsLoaded: true, runStateLoaded: false },
+    { messagesLoaded: true, stepsLoaded: true, runStateLoaded: true, superseded: true },
+  ])("replay_end preserves the gap on incomplete recovery: %j", async (result) => {
+    currentId.value = "f"; _replayGap.value = "f";
+    vi.stubGlobal("recoverConversation", vi.fn(async () => result));
+    onEvent({ type: "replay_end", root_frame_id: "f" });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(_replayGap.value).toBe("f");
+  });
+
+  it("late complete recovery cannot clear a newer generation's gap", async () => {
+    currentId.value = "f"; _replayGap.value = "f";
+    let resolve!: (value: unknown) => void;
+    vi.stubGlobal("recoverConversation", () => new Promise((yes) => { resolve = yes; }));
+    onEvent({ type: "replay_end", root_frame_id: "f" });
+    await Promise.resolve();
+    _openGen.value += 1;
+    resolve({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true, superseded: false });
+    await Promise.resolve(); await Promise.resolve();
+    expect(_replayGap.value).toBe("f");
   });
 
   it("mine is the open session only", () => {
@@ -193,7 +200,8 @@ describe("WS protocol handlers", () => {
     const row: Record<string, unknown> = { id: "art1", filename: "old.png" };
     const list = [row];
     artifacts.value = list;
-    _tbl.value = { "old.png:1": "cached", other: "keep" };
+    const exactKey = "/api/v1/artifacts/versions/v1/old.png";
+    _tbl.value = { "old.png:1": "cached", [exactKey]: "fixed v1", other: "keep" };
 
     onEvent({
       type: "artifact_created",
@@ -204,6 +212,7 @@ describe("WS protocol handlers", () => {
     expect(_artBust.value.art1).toBe("v2");
     expect(_tbl.value["old.png:1"]).toBeUndefined();
     expect(_tbl.value.other).toBe("keep");
+    expect(_tbl.value[exactKey]).toBe("fixed v1");
 
     onEvent({
       type: "artifact_created",

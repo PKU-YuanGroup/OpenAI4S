@@ -15,7 +15,7 @@ const loadMock = vi.hoisted(() => ({ loadSessions: vi.fn(async () => {}) }));
 vi.mock("../ws/connect", () => wsMock);
 vi.mock("../sessions/load", () => loadMock);
 
-import { _openGen, currentId, project } from "../../stores/session";
+import { _openGen, currentId, historyUnconfirmed, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { pendingRequestId, running } from "../../stores/stream";
 import { UPLOAD_STATE } from "../chrome/upload";
@@ -142,5 +142,6 @@ describe("send(): first message of a fresh session", () => {
     expect(running.value).toBe(true);
     expect(pendingRequestId.value).toBe("req-1");
     expect(composer.value).toBe("");
+    expect(historyUnconfirmed.value).toBe(0);
   });
 });

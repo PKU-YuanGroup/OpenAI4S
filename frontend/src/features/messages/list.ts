@@ -241,8 +241,10 @@ export function scheduleFramedRender(
     stillCurrent?: () => boolean;
     onDone?: () => void;
     onCancel?: () => void;
+    onError?: (error: unknown) => void;
     batch?: number;
     onBatch?: () => void;
+    renderItem?: (item: HistoryItem, target: ParentNode) => void;
   } = {},
 ): void {
   cancelFramedRender();
@@ -271,10 +273,17 @@ export function scheduleFramedRender(
         return node;
       },
     } as unknown as ParentNode;
-    for (; i < end; i++) {
-      const item = items[i];
-      if (!item) continue;
-      renderHistoryItem(item, sink);
+    try {
+      for (; i < end; i++) {
+        const item = items[i];
+        if (!item) continue;
+        (opts.renderItem || renderHistoryItem)(item, sink);
+      }
+    } catch (error) {
+      framedOnCancel = null;
+      if (opts.onError) opts.onError(error);
+      else throw error;
+      return;
     }
     if (nodes.length) appendBatch(host, nodes);
     if (opts.onBatch) opts.onBatch();

@@ -6,6 +6,7 @@ import { currentId, project, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
 import { isReady } from "../../compat/stub";
 import { bytes, callWindow, el, hostWindow, icon, translate } from "./api";
+import { artifactTabKey } from "./cache";
 import { filesT } from "./copy";
 import {
   artifactDeepLinkHref,
@@ -23,20 +24,20 @@ import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
 export function addOpenTab(a: ArtifactRow): void {
   const tabs = (openTabs.value as ArtifactRow[]) || [];
-  if (!tabs.some((x) => x && x.id === a.id)) {
+  if (!tabs.some((x) => x && artifactTabKey(x) === artifactTabKey(a))) {
     openTabs.value = [...tabs, a];
   }
 }
 
 export function closeTab(id: string): void {
-  const tabs = ((openTabs.value as ArtifactRow[]) || []).filter((x) => x && x.id !== id);
+  const tabs = ((openTabs.value as ArtifactRow[]) || []).filter((x) => x && artifactTabKey(x) !== id);
   openTabs.value = tabs;
   if (activeTab.value === id) {
     const last = tabs[tabs.length - 1];
     if (last) {
       dockArtifact.value = last;
       provMode.value = false;
-      setActiveTab(last.id);
+      setActiveTab(artifactTabKey(last));
     } else setActiveTab("notebook");
   }
 }
@@ -65,20 +66,20 @@ export function renderDockTabs(): void {
   if (!bar) return;
   bar.innerHTML = "";
   ((openTabs.value as ArtifactRow[]) || []).forEach((a) => {
-    const tab = tabBtn("div", artIcon(a), a.filename || "artifact");
-    if (activeTab.value === a.id) tab.classList.add("active");
+    const tab = tabBtn("div", artIcon(a), (a.filename || "artifact") + (a._exactVersion ? " · " + a.version_id : ""));
+    if (activeTab.value === artifactTabKey(a)) tab.classList.add("active");
     const close = el("span", "t-close");
     close.innerHTML = icon("x", 14);
     close.title = translate("common.close");
     close.onclick = (event) => {
       event.stopPropagation();
-      closeTab(a.id);
+      closeTab(artifactTabKey(a));
     };
     tab.appendChild(close);
     tab.onclick = () => {
       dockArtifact.value = a;
       provMode.value = false;
-      setActiveTab(a.id);
+      setActiveTab(artifactTabKey(a));
     };
     bar.appendChild(tab);
   });
@@ -128,8 +129,16 @@ export function dockToggle(): void {
   else setActiveTab(activeTab.value || "notebook");
 }
 
-export function setActiveTab(tab: string): void {
+export function setActiveTab(tab: string, selectArtifact = true): void {
+  viewerRequest += 1;
   activeTab.value = tab;
+  const selected = (openTabs.value as ArtifactRow[]).find((row) => artifactTabKey(row) === tab);
+  if (selected && selectArtifact) {
+    dockArtifact.value = selected;
+    viewerVersionState.value = selected._exactVersion
+      ? { status: "exact", artifact: selected, versionId: String(selected.version_id || "") }
+      : { status: "latest", artifact: selected, versionId: selected.version_id || selected.latest_version_id || null };
+  }
   dockOpen();
   renderDockTabs();
   const pane =
@@ -296,14 +305,17 @@ export function renderViewer(): void {
   renderArtifactBody(body, a);
 }
 
+let viewerRequest = 0;
+
 function presentViewer(a: ArtifactRow): void {
+  viewerRequest += 1;
   viewerVersionState.value = a._exactVersion
     ? { status: "exact", artifact: a, versionId: String(a.version_id || "") }
     : { status: "latest", artifact: a, versionId: a.version_id || a.latest_version_id || null };
   dockArtifact.value = a;
   provMode.value = false;
   addOpenTab(a);
-  setActiveTab(a.id);
+  setActiveTab(artifactTabKey(a));
 }
 
 /**
@@ -347,6 +359,7 @@ export async function openArtifactFromHit(hit: {
 }
 
 export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<void> {
+  const request = ++viewerRequest;
   let result: VersionResolve;
   try {
     result = await resolveArtifactVersion(link);
@@ -357,6 +370,7 @@ export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<voi
       versionId: link.versionId,
     };
   }
+  if (request !== viewerRequest) return;
   rememberViewerVersion(result);
   if (result.status === "exact" || result.status === "latest") {
     presentViewer(result.artifact);
@@ -364,7 +378,7 @@ export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<voi
   }
   // stale / not-found: show the banner and do not substitute latest.
   dockArtifact.value = { id: link.artifactId, artifact_id: link.artifactId };
-  setActiveTab(link.artifactId);
+  setActiveTab(artifactTabKey({ id: link.artifactId, version_id: link.versionId, _exactVersion: !!link.versionId }), false);
   renderViewer();
 }
 

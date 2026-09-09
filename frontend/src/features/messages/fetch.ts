@@ -6,6 +6,8 @@
  */
 
 import { API } from "../ws/connect";
+import { candidateIdentity } from "./identity";
+import { ApiError } from "../sessions/api";
 
 export const MESSAGE_PAGE_SIZE = 300;
 export const MESSAGE_WALK_MAX_PAGES = 200;
@@ -36,21 +38,48 @@ export async function apiGet(p: string): Promise<unknown> {
   } catch {
     body = raw;
   }
-  if (!r.ok) {
-    const err =
-      body && typeof body === "object" && "error" in body
-        ? String((body as { error: unknown }).error)
-        : "HTTP " + r.status;
-    throw new Error(err);
-  }
+  if (!r.ok) throw new ApiError(body, r.status);
   return body;
 }
 
-function sortMessages(
-  rows: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
-  rows.sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+export function messageIdentity(row: Record<string, unknown>): string {
+  const identity = candidateIdentity(row);
+  return identity.messageId ? `id:${identity.messageId}`
+    : typeof row.seq === "number" && Number.isFinite(row.seq) ? `seq:${row.seq}` : "";
+}
+export function uniqueMessages(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = messageIdentity(row);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function recordRows(value: unknown, field: string): Array<Record<string, unknown>> {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+  const rows = record?.[field];
+  if (!Array.isArray(rows) || rows.some((row) => !row || typeof row !== "object" || Array.isArray(row))) {
+    throw new ApiError({ error: `Invalid ${field} response`, code: "invalid_history_response" }, 200);
+  }
   return rows;
+}
+
+function messagePage(value: unknown): MessagePage {
+  const rows = recordRows(value, "messages");
+  const record = value as Record<string, unknown>;
+  if (rows.some((row) => typeof row.role !== "string" || !row.role ||
+      !(typeof row.content === "string" || Array.isArray(row.content) &&
+        row.content.every((block) => block && typeof block === "object" && !Array.isArray(block))))) {
+    throw new ApiError({ error: "Invalid message record", code: "invalid_history_response" }, 200);
+  }
+  if (record.has_earlier != null && typeof record.has_earlier !== "boolean") {
+    throw new ApiError({ error: "Invalid message paging response", code: "invalid_history_response" }, 200);
+  }
+  return { ...value as MessagePage, messages: [...rows].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0)) };
 }
 
 /** Newest page, then sorted back into reading order. app.js:6928-6932. */
@@ -61,8 +90,7 @@ export async function fetchRecentMessages(
   const data = (await apiGet(
     `/frames/${encodeURIComponent(fid)}/messages?newest_first=1&limit=${limit}`,
   )) as MessagePage | null;
-  const rows = (data && data.messages) || [];
-  return { ...(data || {}), messages: sortMessages(rows) };
+  return messagePage(data);
 }
 
 /** One page older than `beforeSeq`. app.js:6939-6943. */
@@ -74,8 +102,7 @@ export async function fetchOlderMessages(
   const data = (await apiGet(
     `/frames/${encodeURIComponent(fid)}/messages?limit=${limit}&before_seq=${encodeURIComponent(String(beforeSeq))}`,
   )) as MessagePage | null;
-  const rows = (data && data.messages) || [];
-  return { ...(data || {}), messages: sortMessages(rows) };
+  return messagePage(data);
 }
 
 /** Whole conversation, newest-page-first walk, oldest-first result. app.js:6952-6961. */

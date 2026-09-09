@@ -11,7 +11,7 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { currentId } from "../../stores/session";
 import { openTabs } from "../../stores/ui";
 import { ApiError, setArtifactsFetch } from "./api";
-import { artifactCacheKey, artUrl, syncArtifactVersion } from "./cache";
+import { artifactCacheKey, artifactMetadataCacheKey, artifactMetadataTarget, artifactMetadataUrl, artUrl, syncArtifactVersion } from "./cache";
 import { jsonResponse } from "./http-stub";
 import { loadArtifacts } from "./load";
 import type { ArtifactRow } from "./types";
@@ -90,6 +90,24 @@ describe("artifact version cache (app.js:8353-8401)", () => {
     expect(artUrl(pinned)).toBe("/api/v1/artifacts/versions/v3");
   });
 
+  it("preserves pinned bytes, lineage and environment while latest advances", () => {
+    const pinned: ArtifactRow = { id: "a1", version_id: "v1", _exactVersion: true };
+    const latest: ArtifactRow = { id: "a1", version_id: "v1" };
+    dockArtifact.value = pinned;
+    openTabs.value = [pinned, latest];
+    _artVer.value.a1 = "v1";
+    lineage.value = { version_id: "v1" };
+    _lineageFor.value = "a1:v1";
+    _envSnapById.value["a1:v1"] = { environment_name: "old" };
+    syncArtifactVersion({ id: "a1", version_id: "v2" }, true);
+    expect(pinned.version_id).toBe("v1");
+    expect(artifactCacheKey(pinned)).toBe("a1:v1");
+    expect(artUrl(pinned)).toBe("/api/v1/artifacts/versions/v1");
+    expect(latest.version_id).toBe("v2");
+    expect(lineage.value).toEqual({ version_id: "v1" });
+    expect(_envSnapById.value["a1:v1"]).toEqual({ environment_name: "old" });
+  });
+
   it("loadArtifacts drops a stale response after the session switches", async () => {
     currentId.value = "f1";
     let resolveFirst: ((body: string) => void) | undefined;
@@ -123,4 +141,36 @@ describe("artifact version cache (app.js:8353-8401)", () => {
     expect(err.code).toBe("invalid_cursor");
     expect(err.requestId).toBe("r1");
   });
+});
+
+
+it("pins metadata requests and refuses a malformed exact identity", () => {
+  const exact: ArtifactRow = { id: "a", version_id: "v/1", _exactVersion: true };
+  expect(artifactMetadataUrl(exact, "lineage")).toBe("/artifacts/a/lineage?version=v%2F1");
+  expect(artifactMetadataUrl(exact, "environment")).toBe("/artifacts/a/environment?version=v%2F1");
+  expect(() => artUrl({ id: "a", _exactVersion: true })).toThrow();
+});
+
+
+it("metadata identity uses the row version even when a global head event is ahead", () => {
+  resetStoreFields();
+  _artVer.value.a = "v2";
+  const latest: ArtifactRow = { id: "a", version_id: "v1" };
+  const target = artifactMetadataTarget(latest);
+  latest.version_id = "v3";
+  expect(artifactMetadataCacheKey(target)).toBe("a:v1");
+  expect(artifactMetadataUrl(target, "environment")).toBe("/artifacts/a/environment?version=v1");
+  expect(artifactMetadataCacheKey(latest)).toBe("a:v3");
+  resetStoreFields();
+});
+
+it("legacy metadata without a known version cannot share an exact cache entry", () => {
+  resetStoreFields();
+  _artVer.value.a = "v2";
+  const legacy: ArtifactRow = { id: "a", checksum: "sum" };
+  const exact: ArtifactRow = { id: "a", version_id: "v2", _exactVersion: true };
+  expect(artifactMetadataUrl(legacy, "environment")).toBe("/artifacts/a/environment");
+  expect(artifactMetadataCacheKey(legacy)).not.toBe(artifactMetadataCacheKey(exact));
+  expect(artifactMetadataTarget(legacy)._exactVersion).toBeUndefined();
+  resetStoreFields();
 });

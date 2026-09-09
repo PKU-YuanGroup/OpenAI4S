@@ -15,6 +15,7 @@ import {
   svgElement,
   translate,
 } from "./api";
+import { filesT } from "./copy";
 import { artUrl } from "./cache";
 import {
   artifactRendererDescriptor,
@@ -82,16 +83,40 @@ export function renderMarkdownArtifact(container: HTMLElement, url: string): voi
     .catch(() => rendererFailure(container, { id: "", filename: "artifact" }, url));
 }
 
+const SOURCE_PREVIEW_CHARACTERS = 300000;
+
+function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
+  const pre = el("pre", "renderer-source");
+  pre.textContent = text.slice(0, SOURCE_PREVIEW_CHARACTERS);
+  container.appendChild(pre);
+  if (text.length <= SOURCE_PREVIEW_CHARACTERS) return;
+  const note = el("div", "renderer-note", filesT("viewer.text.truncated"));
+  note.setAttribute("role", "status");
+  const expand = el("button", "outline-btn small", filesT("viewer.text.expand"));
+  expand.setAttribute("aria-expanded", "false");
+  expand.onclick = () => {
+    pre.textContent = text;
+    note.textContent = filesT("viewer.text.complete");
+    expand.setAttribute("aria-expanded", "true");
+    expand.disabled = true;
+  };
+  const download = el("a", "outline-btn small", translate("common.download"));
+  download.href = url;
+  download.setAttribute("download", a.filename || "artifact");
+  container.appendChild(note);
+  container.appendChild(expand);
+  container.appendChild(download);
+}
+
 export function renderStructuredText(
   container: HTMLElement,
   a: ArtifactRow,
   text: string,
+  url: string = artUrl(a),
 ): void {
   const rows = parseTable(text, a);
   if (!rows || !rows.length) {
-    const pre = el("pre", "renderer-source");
-    pre.textContent = text.slice(0, 300000);
-    container.appendChild(pre);
+    renderRawSource(container, a, text, url);
     return;
   }
   renderSheet(container, rows);
@@ -101,13 +126,12 @@ export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: 
   fetchArtifactText(url)
     .then((text) => {
       if (!container.isConnected) return;
-      if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
       const ct = String(a.content_type || "").toLowerCase();
       const nm = String(a.filename || "").toLowerCase();
-      if (/json/.test(ct) || /\.json$/i.test(nm)) return renderStructuredText(container, a, text);
-      const pre = el("pre", "renderer-source");
-      pre.textContent = text.slice(0, 300000);
-      container.appendChild(pre);
+      // Long string values are valid JSON even when they resemble encoded bytes.
+      if (/json/.test(ct) || /\.json$/i.test(nm)) return renderStructuredText(container, a, text, url);
+      if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
+      renderRawSource(container, a, text, url);
     })
     .catch(() => rendererFailure(container, a, url));
 }

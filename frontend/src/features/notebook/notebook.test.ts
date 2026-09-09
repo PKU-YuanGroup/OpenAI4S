@@ -47,6 +47,8 @@ import {
   highlightCellSource,
   highlightTraceback,
   mountLiveNotebookFigure,
+  notebookArtifactState,
+  renderTableInto,
   notebookExportHref,
   NOTEBOOK_EXPORTS,
   resetHighlightMemo,
@@ -539,3 +541,44 @@ function asLiveHas(id: string): boolean {
 function asSavedHas(id: string): boolean {
   return (cells.value as { producing_cell_id?: string }[]).some((c) => c.producing_cell_id === id);
 }
+
+
+describe("Notebook immutable output selection", () => {
+  const binding = { filename: "one/plot.png", artifact_id: "a", version_id: "v1", url: "/api/v1/artifacts/versions/v1" };
+  it("matches the full filename and distinguishes saving, unknown and ambiguous history", () => {
+    expect(notebookArtifactState({ output_artifacts: [binding] }, "one/plot.png").artifact).toBe(binding);
+    expect(notebookArtifactState({ output_artifacts: [binding] }, "two/plot.png").state).toBe("unconfirmed");
+    expect(notebookArtifactState({ live: true }, "one/plot.png").state).toBe("saving");
+    expect(notebookArtifactState({}, "one/plot.png").state).toBe("unconfirmed");
+    expect(notebookArtifactState({ output_artifacts: [binding, { ...binding, version_id: "v2" }] }, binding.filename).state).toBe("unconfirmed");
+  });
+  it("keeps a failed exact table visible and retries only its version URL", async () => {
+    class Node {
+      children: Node[] = [];
+      textContent = "";
+      className = "";
+      parent: Node | null = null;
+      onclick: (() => void) | null = null;
+      constructor(public tag: string) {}
+      appendChild(child: Node) { this.children.push(child); child.parent = this; return child; }
+      remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); }
+    }
+    const holder = new Node("div");
+    const reads: string[] = [];
+    vi.stubGlobal("document", { createElement: (tag: string) => new Node(tag) });
+    vi.stubGlobal("fetch", async (url: string) => {
+      reads.push(url);
+      return new Response(reads.length === 1 ? "missing" : "a,b\n1,2", { status: reads.length === 1 ? 404 : 200 });
+    });
+    try {
+      const dispose = renderTableInto(holder as unknown as HTMLElement, "table.csv", "/api/v1/artifacts/versions/table-v1");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(holder.children[0]?.className).toBe("nbc-artifact-error");
+      holder.children[0]?.children[0]?.onclick?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(reads).toEqual(["/api/v1/artifacts/versions/table-v1", "/api/v1/artifacts/versions/table-v1"]);
+      expect(holder.children[0]?.className).toBe("nbc-table-scroll");
+      dispose();
+    } finally { vi.unstubAllGlobals(); }
+  });
+});

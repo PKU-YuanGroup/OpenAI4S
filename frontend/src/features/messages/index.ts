@@ -12,7 +12,7 @@ import "./messages.css";
 import { ensureMessageDom } from "./dom";
 import { registerMessageHandlers } from "./handlers";
 import { insertMessageByTime, renderStored } from "./list";
-import { openConversation } from "./open";
+import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
 import { bindMessageScroll, down, updateJumpPill } from "./scroll";
 import { feed, flushRender, startStream, _mdStableCut } from "./stream";
 
@@ -91,6 +91,8 @@ export function installMessages(
   // stall this lane exists to remove. The fetch* names stay with F-13,
   // whose copies also drive the earlier-messages store and its hint.
   target.openConversation = openConversation;
+  target.recoverConversation = recoverConversation;
+  target.alignHistoryAfterTurn = alignHistoryAfterTurn;
   target.down = down;
   target.updateJumpPill = updateJumpPill;
   target.insertMessageByTime = insertMessageByTime;

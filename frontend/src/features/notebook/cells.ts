@@ -7,6 +7,7 @@
  */
 
 import { signal, type Signal } from "@preact/signals";
+import { artUrl } from "../artifacts/cache";
 import { dockArtifact } from "../../stores/artifacts";
 import {
   _executionLoadReq,
@@ -27,7 +28,7 @@ import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
 import { kernelIdFromEnv } from "./labels";
 import { nbRender } from "./scroll";
-import type { KernelStatus, NotebookCell } from "./types";
+import type { KernelStatus, NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function asCells(value: unknown): NotebookCell[] {
   return Array.isArray(value) ? (value as NotebookCell[]) : [];
@@ -77,6 +78,42 @@ export function nbFindCell(producingCellId: unknown): NotebookCell | null {
     asCells(cells.value).find((cell) => nbCellKey(cell) === key) ||
     null
   );
+}
+
+
+/** Only an explicit server producer can attach a persisted output to a Cell. */
+export function bindNotebookArtifact(event: WsMessage): boolean {
+  const art = event.artifact && typeof event.artifact === "object" ? event.artifact : {};
+  const producer = art.producing_cell_id || event.producing_cell_id;
+  const cell = producer ? nbFindCell(producer) : null;
+  if (!cell) return false;
+  const root = art.root_frame_id || event.root_frame_id;
+  if (root && currentId.value && root !== currentId.value) return false;
+  const filename = typeof art.filename === "string" ? art.filename : String(event.filename || "");
+  if (!filename) return false;
+  const id = art.id || art.artifact_id || event.artifact_id;
+  const version = art.version_id;
+  const next = cell.live ? cell : { ...cell };
+  let changed = false;
+  if (typeof id === "string" && id && typeof version === "string" && version) {
+    const url = artUrl({ id, version_id: version, _exactVersion: true });
+    const row: NotebookOutputArtifact = { filename, artifact_id: id, version_id: version, url };
+    const rows = next.output_artifacts || [];
+    if (!rows.some((r) => r.filename === filename && r.artifact_id === id && r.version_id === version)) {
+      next.output_artifacts = [...rows, row];
+      changed = true;
+    }
+  }
+  const image = /^image\//.test(String(art.content_type || "")) || /\.(png|jpe?g|gif|svg|webp|bmp)$/i.test(filename);
+  if (image && !(next.figures || []).includes(filename)) {
+    next.figures = [...(next.figures || []), filename];
+    changed = true;
+  }
+  if (!changed) return false;
+  if (!cell.live) setSaved(mergeNotebookCells([next], asCells(cells.value)));
+  syncCellOutput(next);
+  nbRender();
+  return true;
 }
 
 export type CellOutputSignals = {
@@ -295,6 +332,7 @@ export function nbCellFinished(event: WsMessage): void {
     files_read: (event.files_read as string[] | undefined) || active.files_read || [],
     live: false,
     draft: false,
+    _artifactBindingsPending: true,
   };
   setLive(asCells(liveCells.value).filter((candidate) => nbCellKey(candidate) !== String(id)));
   setSaved(mergeNotebookCells([cell], asCells(cells.value)));
@@ -484,7 +522,10 @@ export async function loadExecutionLog(id: string): Promise<void> {
     d = null;
   }
   if (id !== currentId.value || request !== _executionLoadReq.value) return;
-  const serverCells = (d && (d.entries as NotebookCell[])) || [];
+  const serverCells = ((d && (d.entries as NotebookCell[])) || []).map((cell) => ({
+    ...cell, _artifactBindingsPending: false,
+  }));
+  if (!d) setSaved(asCells(cells.value).map((cell) => ({ ...cell, _artifactBindingsPending: false })));
   setSaved(mergeNotebookCells(serverCells, asCells(cells.value)));
   const nextKernels = ((d && d.kernels) as string[]) || [];
   kernels.value = nextKernels;

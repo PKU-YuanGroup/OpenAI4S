@@ -147,3 +147,19 @@ describe("M-03 default version fetch (no silent latest)", () => {
     }
   });
 });
+
+it("keeps the latest version filename when resolving the default artifact DTO", async () => {
+  setArtifactsFetch(async () => jsonResponse({
+    versions: [{
+      version_id: "v-new", is_latest: true,
+      filename: "nested/result.json", content_type: "application/json",
+    }],
+  }));
+  try {
+    const result = await resolveArtifactVersion({ artifactId: "a", versionId: null });
+    expect(result.status).toBe("latest");
+    if (result.status === "latest") expect(result.artifact.filename).toBe("nested/result.json");
+  } finally {
+    setArtifactsFetch(null);
+  }
+});

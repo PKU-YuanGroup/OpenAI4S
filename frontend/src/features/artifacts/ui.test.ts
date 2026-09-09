@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { activeTab, openTabs } from "../../stores/ui";
+import { artifactTabKey, syncArtifactVersion } from "./cache";
 import { dockArtifact } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
 import { setArtifactsFetch } from "./api";
@@ -6,6 +8,9 @@ import { jsonResponse } from "./http-stub";
 import { viewerVersionState } from "./state";
 import type { ArtifactRow, ArtifactVersionRow } from "./types";
 import {
+  addOpenTab,
+  closeTab,
+  setActiveTab,
   applyArtifactDeepLink,
   consumeArtifactDeepLink,
   copyArtifactDeepLink,
@@ -98,4 +103,48 @@ describe("M-03 deep-link apply / openViewer", () => {
     });
     expect(exact).toContain("version_id=v-old");
   });
+});
+
+
+describe("version-specific tabs", () => {
+  beforeEach(() => resetStoreFields());
+  it("keeps exact and latest side by side and closes only the selected identity", () => {
+    const exact: ArtifactRow = { id: "a", version_id: "v1", _exactVersion: true };
+    const latest: ArtifactRow = { id: "a", version_id: "v1" };
+    addOpenTab(exact);
+    addOpenTab(latest);
+    expect(openTabs.value).toHaveLength(2);
+    setActiveTab(artifactTabKey(exact));
+    syncArtifactVersion({ id: "a", version_id: "v2" }, true);
+    expect(dockArtifact.value).toBe(exact);
+    expect(exact.version_id).toBe("v1");
+    setActiveTab(artifactTabKey(latest));
+    expect(viewerVersionState.value?.status).toBe("latest");
+    expect((dockArtifact.value as ArtifactRow).version_id).toBe("v2");
+    setActiveTab(artifactTabKey(exact));
+    closeTab(artifactTabKey(exact));
+    expect(openTabs.value).toEqual([latest]);
+    expect(activeTab.value).toBe("a");
+  });
+  it("a missing pinned version cannot select an already open latest tab", async () => {
+    const latest: ArtifactRow = { id: "a", version_id: "v-new" };
+    addOpenTab(latest);
+    setArtifactsFetch(async () => jsonResponse({ versions }));
+    await applyArtifactDeepLink({ artifactId: "a", versionId: "missing" });
+    expect(viewerVersionState.value?.status).toBe("stale");
+    expect(dockArtifact.value).not.toBe(latest);
+    setArtifactsFetch(null);
+  });
+});
+
+
+it("fullscreen download keeps the selected immutable version", async () => {
+  const { openArtifact } = await import("../../islands/viewer");
+  const download = { style: { display: "" }, href: "", setAttribute: vi.fn() };
+  vi.stubGlobal("document", { querySelector: (selector: string) => selector === "#modal-download" ? download : null });
+  try {
+    openArtifact({ id: "a", filename: "table.csv", version_id: "v1", _exactVersion: true });
+    expect(download.href).toBe("/api/v1/artifacts/versions/v1");
+    expect(download.setAttribute).toHaveBeenCalledWith("download", "table.csv");
+  } finally { vi.unstubAllGlobals(); }
 });

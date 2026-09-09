@@ -19,7 +19,7 @@ export function artifactCacheKey(a: ArtifactRow | null | undefined): string {
   if (!a || !a.id) return "_live";
   const seen = _artVer.value && _artVer.value[a.id];
   const version =
-    seen || a.version_id || a.latest_version_id || a.checksum || "unknown";
+    (a._exactVersion ? a.version_id : seen || a.version_id || a.latest_version_id || a.checksum) || "unknown";
   return a.id + ":" + version;
 }
 
@@ -34,7 +34,7 @@ export function syncArtifactVersion(patch: ArtifactPatch, force?: boolean): bool
   const version = patch.version_id || patch.latest_version_id || patch.checksum;
   const seen = _artVer.value;
   const dock = rec(dockArtifact.value);
-  const dockMatch = !!(dock && dock.id === id);
+  const dockMatch = !!(dock && dock.id === id && !dock._exactVersion);
   const previous =
     seen[id] ||
     (dockMatch && dock && (dock.version_id || dock.latest_version_id || dock.checksum));
@@ -46,7 +46,7 @@ export function syncArtifactVersion(patch: ArtifactPatch, force?: boolean): bool
   if (Array.isArray(tabs)) {
     tabs.forEach((item) => {
       const row = rec(item);
-      if (row && row.id === id) Object.assign(row, update);
+      if (row && row.id === id && !row._exactVersion) Object.assign(row, update);
     });
   }
   if (dockMatch && dock) Object.assign(dock, update);
@@ -69,7 +69,8 @@ export function syncArtifactVersion(patch: ArtifactPatch, force?: boolean): bool
  * original id URL plus `_artBust` query.
  */
 export function artUrl(a: ArtifactRow): string {
-  if (a._exactVersion && a.version_id) {
+  if (a._exactVersion) {
+    if (!a.version_id) throw new Error("exact artifact version is missing");
     return `${API}/artifacts/versions/${encodeURIComponent(String(a.version_id))}`;
   }
   const b = (_artBust.value || {})[a.id];
@@ -78,4 +79,36 @@ export function artUrl(a: ArtifactRow): string {
 
 export function artifactRendererVersion(a: ArtifactRow): string {
   return (a && (a.version_id || a.latest_version_id)) || "";
+}
+
+/** Latest is a stable tab; each immutable version can coexist beside it. */
+export function artifactTabKey(a: ArtifactRow): string {
+  return a._exactVersion ? `artifact-version:${JSON.stringify([a.id, a.version_id || ""])}` : a.id;
+}
+
+/** Snapshot a known version before an asynchronous metadata read of a latest tab. */
+export function artifactMetadataTarget(a: ArtifactRow): ArtifactRow {
+  if (a._exactVersion) {
+    if (!a.version_id) throw new Error("exact artifact version is missing");
+    return { ...a };
+  }
+  const version = a.version_id || a.latest_version_id;
+  return version ? { ...a, version_id: version, _exactVersion: true } : { ...a };
+}
+
+export function artifactMetadataCacheKey(a: ArtifactRow | null | undefined): string {
+  if (!a || !a.id) return "_live";
+  const target = artifactMetadataTarget(a);
+  // Old rows with no version can still read latest, but their responses can
+  // never occupy an exact version's cache entry (even if _artVer knows a head).
+  return target._exactVersion ? artifactCacheKey(target)
+    : `artifact-metadata-latest:${JSON.stringify([target.id, target.checksum || "unknown"])}`;
+}
+
+export function artifactMetadataUrl(a: ArtifactRow, surface: "lineage" | "environment"): string {
+  const target = artifactMetadataTarget(a);
+  const suffix = target._exactVersion
+    ? `?version=${encodeURIComponent(String(target.version_id))}`
+    : "";
+  return `/artifacts/${encodeURIComponent(target.id)}/${surface}${suffix}`;
 }

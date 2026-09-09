@@ -7,7 +7,7 @@
 
 import { t } from "../../i18n/runtime";
 import { _liveCell, liveCells } from "../../stores/notebook";
-import { currentId } from "../../stores/session";
+import { _openGen, currentId, historyLoad, noteHistoryMutation } from "../../stores/session";
 import {
   _resumeTimer,
   _resumeTok,
@@ -90,6 +90,7 @@ export function failureHint(detail: unknown): string {
 }
 
 export function turnDone(status: string, detail?: unknown): void {
+  noteHistoryMutation();
   running.value = false;
   enableComposer(true);
   setCancelHidden(true);
@@ -111,6 +112,14 @@ export function turnDone(status: string, detail?: unknown): void {
     callLane("loadExecutionLog", currentId.value);
   }
   liveStream.value = null;
+  if (currentId.value && (historyLoad.value?.deferred || historyLoad.value?.status === "loading")) {
+    const fid = currentId.value;
+    const gen = _openGen.value;
+    // Defer past the synchronous WS dispatcher so its cursor is committed.
+    void Promise.resolve().then(() => {
+      if (currentId.value === fid && _openGen.value === gen) callLane("alignHistoryAfterTurn", fid, gen);
+    });
+  }
   liveCells.value = [];
   _liveCell.value = null;
   if (planReady.value && planStatus.value === "executing") {

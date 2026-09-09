@@ -49,7 +49,7 @@ export async function loadArtifacts(id: string): Promise<void> {
     const changed = syncArtifactVersion(x, false);
     if (changed && v) _artBust.value[x.id] = v;
     const docked = dockArtifact.value as ArtifactRow | null;
-    if (changed && provMode.value && docked && docked.id === x.id) refreshProv = true;
+    if (changed && provMode.value && docked && !docked._exactVersion && docked.id === x.id) refreshProv = true;
   });
   artifactsSignal.value = a;
   if (renderConversationArtifactsImpl) renderConversationArtifactsImpl();

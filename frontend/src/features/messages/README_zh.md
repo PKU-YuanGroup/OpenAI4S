@@ -8,7 +8,8 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 
 | 文件 | 职责 |
 | --- | --- |
-| [`components.tsx`](components.tsx) | `MessageList`（`#messages` / `#jump-pill`）和 `StreamingPre`。 |
+| [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复文案；不改自动提取的语言文件。 |
+| [`components.tsx`](components.tsx) | `MessageList`（`#messages` / `#jump-pill`）、消息宿主外的可访问历史状态/重试入口，以及 `StreamingPre`。 |
 | [`cut.ts`](cut.ts) | 增量 `_mdStableCut` / `mdStableCut`（app.js:5378-5402）。 |
 | [`cut.test.ts`](cut.test.ts) | 增量扫描与从零扫描同结果；围栏 / 120 字软尾。 |
 | [`delta.ts`](delta.ts) | `liveOutputDelta`、`bindStreamingPre`（`appendData`）、`toolMetaLabel`。 |
@@ -23,7 +24,8 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`list.ts`](list.ts) | `renderStored`、`insertMessageByTime`、分帧批量绘制。 |
 | [`list.test.ts`](list.test.ts) | 640 条 → 16 帧 × 40；按时间插入跳过 `#msgs-earlier`。 |
 | [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`。 |
-| [`open.ts`](open.ts) | `openConversation`：store 重置 + 分帧历史 + `isReady` 跨车道调用。 |
+| [`open.ts`](open.ts) | `openConversation` / `recoverConversation`：按代次读取、只读重试、保留已确认历史与原子分帧投影。 |
+| [`open.test.ts`](open.test.ts) | 按打开代次保护历史失败、只读重试、REST/WS 交错与已展开旧页保留。 |
 | [`raf.ts`](raf.ts) | 共用 `requestAnimationFrame` / setTimeout 回退。 |
 | [`scroll.ts`](scroll.ts) | `down` / `updateJumpPill` 合并进一个 rAF；节流 scroll 监听。 |
 | [`stream.ts`](stream.ts) | `feed` / `flushRender` / `scheduleRender` / `startStream` / `sealText`。 |

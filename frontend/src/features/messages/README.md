@@ -8,7 +8,8 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 
 | File | Responsibility |
 | --- | --- |
-| [`components.tsx`](components.tsx) | `MessageList` (`#messages` / `#jump-pill`) and `StreamingPre`. |
+| [`copy.ts`](copy.ts) | Source-owned bilingual history-recovery text; generated locale extracts stay unchanged. |
+| [`components.tsx`](components.tsx) | `MessageList` (`#messages` / `#jump-pill`), accessible history status/retry outside the message host, and `StreamingPre`. |
 | [`cut.ts`](cut.ts) | Incremental `_mdStableCut` / `mdStableCut` (app.js:5378-5402). |
 | [`cut.test.ts`](cut.test.ts) | Incremental scan matches the original from-scratch cut; fence / 120-char tail. |
 | [`delta.ts`](delta.ts) | `liveOutputDelta`, `bindStreamingPre` (`appendData`), `toolMetaLabel`. |
@@ -23,7 +24,8 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 | [`list.ts`](list.ts) | `renderStored`, `insertMessageByTime`, framed batch paint. |
 | [`list.test.ts`](list.test.ts) | 640 rows → 16 frames of 40; insert-by-time skips `#msgs-earlier`. |
 | [`messages.css`](messages.css) | `.md-sealed` / `.md-tail { display: contents }`. |
-| [`open.ts`](open.ts) | `openConversation`: store reset + framed history + `isReady` lane calls. |
+| [`open.ts`](open.ts) | `openConversation` / `recoverConversation`: generation-scoped read results, GET-only retries, confirmed-history retention and atomic framed paint. |
+| [`open.test.ts`](open.test.ts) | Generation-scoped history failures, GET-only recovery, REST/WS races and retained older pages. |
 | [`raf.ts`](raf.ts) | Shared `requestAnimationFrame` / setTimeout fallback. |
 | [`scroll.ts`](scroll.ts) | `down` / `updateJumpPill` on one rAF; throttled scroll listener. |
 | [`stream.ts`](stream.ts) | `feed` / `flushRender` / `scheduleRender` / `startStream` / `sealText`. |

@@ -91,6 +91,7 @@ export async function resolveArtifactVersion(
       artifact: {
         ...artifact,
         version_id: exact.version_id,
+        filename: exact.filename ?? artifact.filename,
         _exactVersion: true,
         size_bytes: exact.size_bytes ?? artifact.size_bytes,
         content_type: exact.content_type ?? artifact.content_type,
@@ -136,6 +137,7 @@ async function defaultFetchArtifact(id: string): Promise<ArtifactRow | null> {
       artifact_id: id,
       version_id: latest.version_id,
       latest_version_id: latest.version_id,
+      filename: latest.filename,
       size_bytes: latest.size_bytes,
       content_type: latest.content_type,
       checksum: latest.checksum,

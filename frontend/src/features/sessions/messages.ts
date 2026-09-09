@@ -4,20 +4,16 @@ import { t } from "../../i18n";
 import {
   _msgEarlierLoading,
   _openGen,
+  historyContent,
+  noteHistoryMutation,
   currentId,
   msgCursor,
   msgHasEarlier,
 } from "../../stores/session";
-import { api, apiErrorText } from "./api";
+import { apiErrorText } from "./api";
 import { hint } from "./chrome";
 import { $, el } from "./dom";
-import {
-  MESSAGE_PAGE_SIZE,
-  MESSAGE_WALK_MAX_PAGES,
-  prependOlderMessages,
-  shouldWalkEarlier,
-  sortMessagesBySeq,
-} from "./paging";
+import { fetchOlderMessages, messageIdentity, uniqueMessages, MESSAGE_PAGE_SIZE } from "../messages/fetch";
 import { insertMessageByTime, renderStored } from "./transcript";
 
 export type ChatMessage = {
@@ -31,51 +27,9 @@ export type ChatMessage = {
   artifact_refs?: unknown[];
 };
 
-export type MessagePage = {
-  messages: ChatMessage[];
-  next_before_seq?: unknown;
-  has_earlier?: boolean;
-  complete?: boolean;
-};
-
-export async function fetchRecentMessages(fid: string, limit: number): Promise<MessagePage> {
-  const data = (await api(
-    `/frames/${encodeURIComponent(fid)}/messages?newest_first=1&limit=${limit}`,
-  )) as MessagePage | null;
-  const rows = (data && data.messages) || [];
-  sortMessagesBySeq(rows);
-  return { ...(data || { messages: [] }), messages: rows };
-}
-
-export async function fetchOlderMessages(
-  fid: string,
-  beforeSeq: unknown,
-  limit: number,
-): Promise<MessagePage> {
-  const data = (await api(
-    `/frames/${encodeURIComponent(fid)}/messages?limit=${limit}&before_seq=${encodeURIComponent(String(beforeSeq))}`,
-  )) as MessagePage | null;
-  const rows = (data && data.messages) || [];
-  sortMessagesBySeq(rows);
-  return { ...(data || { messages: [] }), messages: rows };
-}
-
-export async function fetchAllMessages(fid: string): Promise<MessagePage> {
-  const first = await fetchRecentMessages(fid, MESSAGE_PAGE_SIZE);
-  let rows = first.messages || [];
-  let cursor = first.next_before_seq;
-  let earlier = !!first.has_earlier;
-  let pages = 1;
-  while (shouldWalkEarlier(earlier, cursor, pages)) {
-    const older = await fetchOlderMessages(fid, cursor, MESSAGE_PAGE_SIZE);
-    rows = prependOlderMessages(older.messages || [], rows);
-    cursor = older.next_before_seq;
-    earlier = !!older.has_earlier;
-    pages += 1;
-    if (pages >= MESSAGE_WALK_MAX_PAGES) break;
-  }
-  return { messages: rows, complete: !earlier };
-}
+// One validator serves initial history, load-earlier and transcript export.
+export { fetchRecentMessages, fetchOlderMessages, fetchAllMessages } from "../messages/fetch";
+export type { MessagePage } from "../messages/fetch";
 
 export function paintEarlierControl(): void {
   const host = $("#messages");
@@ -117,18 +71,29 @@ export async function loadEarlierMessages(): Promise<void> {
   paintEarlierControl();
   try {
     const data = await fetchOlderMessages(fid, msgCursor.value, MESSAGE_PAGE_SIZE);
-    if (gen !== _openGen.value) return;
+    if (gen !== _openGen.value || currentId.value !== fid) return;
     const beforeHeight = host.scrollHeight;
     const beforeTop = host.scrollTop;
     const holder = document.createDocumentFragment();
-    (data.messages || []).forEach((mm) => insertMessageByTime(renderStored(mm, holder)));
+    const held = historyContent.value?.fid === fid ? historyContent.value : null;
+    const known = new Set((held?.messages || []).map(messageIdentity).filter(Boolean));
+    const incoming = uniqueMessages(data.messages).filter((row) => {
+      const key = messageIdentity(row);
+      return !key || !known.has(key);
+    });
+    incoming.forEach((mm) => insertMessageByTime(renderStored(mm, holder)));
+    if (held) historyContent.value = { ...held, messages: [...incoming, ...held.messages] };
+    noteHistoryMutation();
     host.scrollTop = beforeTop + (host.scrollHeight - beforeHeight);
     msgCursor.value = data.next_before_seq != null ? data.next_before_seq : null;
     msgHasEarlier.value = !!data.has_earlier;
   } catch (e) {
+    if (gen !== _openGen.value || currentId.value !== fid) return;
     hint(t("conv.loadEarlierFailed", apiErrorText(e)), true);
   } finally {
-    _msgEarlierLoading.value = false;
-    paintEarlierControl();
+    if (gen === _openGen.value && currentId.value === fid) {
+      _msgEarlierLoading.value = false;
+      paintEarlierControl();
+    }
   }
 }
