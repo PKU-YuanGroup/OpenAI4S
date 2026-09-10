@@ -524,9 +524,16 @@ jobs:
         run: |
           npm run build --prefix frontend
           git diff --exit-code -- openai4s/server/webui/dist
-      - name: Install the zero-dependency server and browser driver
+      # The C1 workbench scene creates a real unsaved matplotlib figure so
+      # it covers the daemon's figure capture and immutable version binding.
+      - name: Install the server, scientific browser fixtures, and browser driver
         run: |
-          uv sync --locked
+          if [ "${{ matrix.engine }}" = "chromium" ]; then
+            uv sync --locked --extra science
+            uv run python -c "import matplotlib"
+          else
+            uv sync --locked
+          fi
           npm ci --ignore-scripts
           ./node_modules/.bin/playwright install --with-deps ${{ matrix.engine }}
       - name: Start the daemon and open the real workbench
