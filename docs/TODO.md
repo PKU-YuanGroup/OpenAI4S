@@ -53,26 +53,17 @@ is a factual record of the v0.3 plan and is validated by
 
 ## CI and supply chain
 
-- [ ] **Batch the Monday dependency PRs across ecosystems.** `groups:` is
-      per-ecosystem by construction, so the uv, pre-commit and github-actions
-      updates arrive as three PRs and have been consolidated onto one branch by
-      hand at least four times (#75, #97, #131). Dependabot supports doing this
-      in config: a top-level `multi-ecosystem-groups` key plus
-      `multi-ecosystem-group: <name>` on each `updates` entry. Not done here
-      because the entries would have to give up their own `schedule:` blocks
-      and a misconfiguration stops Dependabot opening PRs at all, which is a
-      worse failure than the one it fixes — it wants its own PR and one
-      observed Monday.
-      *Done when:* a single Dependabot PR carries updates from more than one
-      ecosystem, and the following Monday's run still opens PRs normally.
-      Learned on the first attempt (reverted out of
-      [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143) to land alone):
-      `update-types`, `exclude-patterns` and `dependency-type` are `groups:`-only
-      keys and are rejected at the entry level; a second entry for the same
-      ecosystem and directory is a shape only a maintainer's example uses; and
-      the complementary `ignore` such a pair needs also filters *security*
-      updates, which the current `groups:` never do. `tests/test_governance.py`
-      now fails offline on the first two.
+- [ ] **Observe the Monday dependency batch across ecosystems.** Configuration
+      now assigns uv, npm, Docker, pre-commit and GitHub Actions to one
+      `weekly-dependencies` group with a Monday schedule and `patterns: ["*"]`.
+      The group intentionally includes major versions, black and isort; these
+      updates receive review together with the batch. No `allow` or `ignore`
+      filters restrict eligible updates. Offline governance tests check the
+      shared schedule, complete ecosystem coverage and unrestricted patterns.
+      *Done when:* after the configuration reaches the default branch, a real
+      Dependabot PR contains updates from multiple ecosystems and the following
+      Monday's run still opens updates normally. Configuration and passing
+      offline tests do not establish either scheduled result.
 
 ## Closed recently, recorded so it is not re-investigated
 

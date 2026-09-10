@@ -1,95 +1,35 @@
 version: 2
+
+# Batch every dependency, including major versions and formatter hooks.
+# Keep updates eligible without allow/ignore filters that could hide fixes.
+multi-ecosystem-groups:
+  weekly-dependencies:
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
 updates:
   - package-ecosystem: "uv"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    groups:
-      development-dependencies:
-        dependency-type: "development"
-        update-types: ["minor", "patch"]
-    open-pull-requests-limit: 5
+    patterns: ["*"]
+    multi-ecosystem-group: "weekly-dependencies"
 
   - package-ecosystem: "npm"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    groups:
-      # Grouped for the same reason the pre-commit hooks are: the only thing
-      # tracked here is the browser-gate tooling, and one PR per package is
-      # one full CI matrix per package. Majors stay outside the group — a
-      # Playwright major moves the engine builds the browser gates run on.
-      browser-tooling:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-    open-pull-requests-limit: 3
+    patterns: ["*"]
+    multi-ecosystem-group: "weekly-dependencies"
 
   - package-ecosystem: "docker"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    groups:
-      # The base image is digest-pinned and upstream rebuilds it for security
-      # patches roughly weekly, so this would otherwise open a PR per rebuild.
-      base-image:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-    open-pull-requests-limit: 3
+    patterns: ["*"]
+    multi-ecosystem-group: "weekly-dependencies"
 
   - package-ecosystem: "pre-commit"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    groups:
-      # The only pre-commit ecosystem left ungrouped, which is why one Monday
-      # produced two separate hook PRs. Batch the half that is normally inert
-      # against the rule sets pinned in pyproject.toml, and deliberately keep
-      # black out of the group: a black bump is a style change that has to be
-      # read on its own, not merged as one row of a version table (black
-      # 23.3.0 -> 26.5.1 reformatted 234 files).
-      #
-      # isort is out for the same reason, learned the same way: 8.0.1 -> 9.0.1
-      # arrived as one row of a two-row version table, reformatted five files --
-      # two of them the `store.py` and `kernel/worker.py` facades CLAUDE.md says
-      # to edit surgically -- and needed a hand-written directive to settle a
-      # disagreement it opened with black. It is the other formatter `setup.sh`
-      # installs on every contributor machine.
-      #
-      # `exclude-patterns`, not `update-types`, because this ecosystem cannot
-      # evaluate `update-types`. Dependabot resolves pre-commit hooks as git
-      # refs and does not semver-classify them: every hook bump it has opened
-      # carries `dependency-type: direct:production` with NO `update-type:`
-      # trailer, while the uv and github-actions PRs from the same Mondays
-      # carry `update-type: version-update:semver-patch`. A group filtered only
-      # on `update-types` therefore matched nothing, and the group batched zero
-      # updates from the day it was added -- which is why the separate hook PRs
-      # it was meant to stop kept arriving and kept being consolidated by hand.
-      hook-versions:
-        patterns: ["*"]
-        exclude-patterns:
-          - "https://github.com/psf/black"
-          - "https://github.com/pycqa/isort"
-    open-pull-requests-limit: 3
+    patterns: ["*"]
+    multi-ecosystem-group: "weekly-dependencies"
 
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    groups:
-      # Same rule as the hook group above, and here the filter actually works:
-      # github-actions IS semver-classified, so `update-types` matches. It was
-      # missing, and a major went through as one row of a two-row version
-      # table -- setup-uv 9.0.0 -> 10.0.1 batched with a codeql-action patch.
-      # Action majors land in release.yml (`id-token: write`, OIDC PyPI
-      # publish) and scorecard.yml (`security-events: write`), where the only
-      # human-readable content of the diff is a `# vX.Y.Z` comment, so they
-      # have to arrive as their own PR.
-      workflow-actions:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-    open-pull-requests-limit: 5
+    patterns: ["*"]
+    multi-ecosystem-group: "weekly-dependencies"
