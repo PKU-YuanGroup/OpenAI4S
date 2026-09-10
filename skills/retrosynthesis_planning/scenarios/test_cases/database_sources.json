@@ -18,7 +18,7 @@
       "required_artifacts": ["unmapped_reactions", "symmetry_aware_correspondences", "bond_changes"]
     },
     "forward": {
-      "source": "MIT-licensed USPTO reaction split",
+      "source": "MolecularTransformer-linked USPTO_MIT separated test split",
       "release_status": "not_frozen",
       "required_artifacts": ["reactant_reagent_inputs", "product_references", "split_manifest"]
     },

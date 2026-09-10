@@ -33,9 +33,10 @@ it is also the name `uninstall` and `installed` answer to. Installing all 561
 into `~/.claude/skills` puts 561 descriptions into every Claude Code session's
 prompt — the cost the *Discovery and context cost* section below exists to avoid
 — so on that target name the recipes you need, and keep `--collection` for a
-directory an agent searches (`--dir`). Once the package is on npm,
-`npx openai4s-skills install --collection bioskills --target claude` is the
-short form of the same command.
+directory an agent searches (`--dir`). For a collection included in the npm
+release,
+`npx @pku-yuangroup/openai4s-skills install --collection bioskills --target claude`
+installs the published copy. The npm catalog can differ from this repository.
 
 Without Node, take the recipes themselves. They must sit flat —
 `<target>/<recipe>/`, exactly what `--collection` writes — because a

@@ -208,19 +208,26 @@ An official image ships to GitHub Packages with each release — `docker pull gh
 
 ### 🧩 Take the Skills anywhere (`npx`)
 
-The 604 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. One command copies them onto a machine, from this repository:
+The 604 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
+
+```bash
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0: 561 pinned bioinformatics recipes
+npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 boltz --target claude
+npx @pku-yuangroup/openai4s-skills@0.2.0 list
+npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
+```
+
+`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (604 Skills: 43 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
 
 ```bash
 npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned bioinformatics recipes
-npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
-npx github:PKU-YuanGroup/OpenAI4S list
-npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
-Those forms run the CLI straight from this repository, with nothing published in between; `npx openai4s-skills …` is the same CLI under the package's published name, which is not on npm yet. `--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written there, and `--dry-run` stops at that plan. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited or one it did not install, and an uninstall removes only files it wrote. Every curated Skill page and the collection root under [`skills/`](skills/) carry an **Install** section with their own name already filled in, so you can install from whichever page you landed on.
+Both sources use the same target and overwrite rules. `--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written there, and `--dry-run` stops at that plan. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited or one it did not install, and an uninstall removes only files it wrote. Every curated Skill page and the collection root under [`skills/`](skills/) carry an **Install** section with their own name already filled in, so you can install from whichever page you landed on.
 
-If you already run OpenAI4S, you already have all 604 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
+If you already run OpenAI4S from this checkout, you already have all 604 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
 
 ---
 

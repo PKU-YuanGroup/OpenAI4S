@@ -151,10 +151,10 @@ COUNT_SITES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         r"wheel 已经带上了全部 (\d+) 个 Skill",
         ("total",),
     ),
-    ("docs/TODO.md", r"current `main` packs [\d,]+ files /\s+(\d+) Skills", ("total",)),
+    ("docs/TODO.md", r"current source tree has (\d+)\s+Skills", ("total",)),
     (
         "docs/TODO_zh.md",
-        r"当前 `main` 则打出 [\d,]+ 个文件 / (\d+) 个 Skill",
+        r"当前源码树有 (\d+) 个 Skill",
         ("total",),
     ),
 )
@@ -219,8 +219,8 @@ def test_the_installer_can_name_every_bundled_skill():
     The installer addresses a Skill by its directory name and proves it is a
     Skill by `SKILL.md`. A bundled directory that satisfies the loader through
     some other route would be listed by the daemon and unreachable from
-    `npx openai4s-skills install <name>` -- present in one catalogue and absent
-    from the other, with nothing saying so.
+    `npx github:PKU-YuanGroup/OpenAI4S install <name>` -- present in one
+    catalogue and absent from the other, with nothing saying so.
     """
     dirs = _skill_dirs()
     assert len(dirs) >= 500, f"only {len(dirs)} Skills discovered under {SKILLS}"
@@ -261,7 +261,11 @@ def test_the_skill_tree_contains_no_symlinks():
 
 def test_the_npm_manifest_points_at_a_command_that_exists():
     package = _package()
-    assert package["name"] == "openai4s-skills"
+    assert package["name"] == "@pku-yuangroup/openai4s-skills"
+    lock = json.loads((ROOT / "package-lock.json").read_text(encoding="utf-8"))
+    assert lock["name"] == package["name"]
+    assert lock["packages"][""]["name"] == package["name"]
+    assert package["bin"] == {"openai4s-skills": "tools/skills-installer/cli.mjs"}
     binaries = package["bin"]
     assert binaries, "the package declares no command, so `npx` has nothing to run"
     for name, target in binaries.items():
@@ -310,3 +314,16 @@ def test_node_and_python_agree_on_the_supported_node_floor():
     cli = (ROOT / "tools" / "skills-installer" / "cli.mjs").read_text(encoding="utf-8")
     assert "MIN_NODE_MAJOR = 18" in cli
     assert declared == ">=18", declared
+
+
+def test_recipe_added_after_npm_020_uses_github_installation():
+    """A current-only recipe must not advertise a failing published install."""
+    name = "single-cell-rna-analysis"
+    for lang, notice in (
+        ("README.md", "npm 0.2.0 does not include this recipe"),
+        ("README_zh.md", "npm 0.2.0 不包含本配方"),
+    ):
+        text = (SKILLS / name / lang).read_text(encoding="utf-8")
+        assert notice in " ".join(text.split())
+        assert f"npx github:PKU-YuanGroup/OpenAI4S install {name}" in text
+        assert f"npx @pku-yuangroup/openai4s-skills install {name}" not in text

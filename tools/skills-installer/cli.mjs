@@ -2,10 +2,10 @@
 /**
  * `openai4s-skills` -- install OpenAI4S's bundled Skills onto this machine.
  *
- *   npx github:PKU-YuanGroup/OpenAI4S list
+ *   npx @pku-yuangroup/openai4s-skills list                 # latest npm release
+ *   npx @pku-yuangroup/openai4s-skills@0.2.0 install --all    # v0.2.0: 42 curated Skills
  *   npx github:PKU-YuanGroup/OpenAI4S install --all
  *   npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
- *   npx openai4s-skills install --all          # the same CLI once it is on npm
  *
  * A Skill here is a recipe -- prose plus code plus the operational knowledge
  * needed to run it -- so "installing" one is copying a directory. The work this
@@ -37,8 +37,12 @@ const MIN_NODE_MAJOR = 18;
 const USAGE = `openai4s-skills — install the OpenAI4S Skill library locally
 
 USAGE
-  npx github:${DEFAULT_REPO} <command> [options]   # straight from the repository
-  npx openai4s-skills <command> [options]          # the same CLI once it is on npm
+  npx @pku-yuangroup/openai4s-skills <command> [options]         # latest npm release
+  npx @pku-yuangroup/openai4s-skills@0.2.0 <command> [options]   # fixed npm release
+  npx github:${DEFAULT_REPO} <command> [options]   # repository default branch
+
+npm 0.2.0 includes 603 Skills: 42 curated + 561 bioSkills.
+The GitHub form uses the repository catalog, which can differ from the npm release.
 
 COMMANDS
   list                    List available Skills (curated by default)

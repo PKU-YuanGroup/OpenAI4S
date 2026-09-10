@@ -12,62 +12,50 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 ## 发布
 
-- [ ] **把 `openai4s-skills` 发布到 npm。** 包已经完整并有关卡把守
-      （`node tools/skills-installer/selftest.mjs`、
-      `node tools/skills-installer/check_package.mjs`）。在干净 checkout 上，已发布的
-      `v0.2.0` tag 通过全部 16 项 installer 自测，并打出 2,212 个文件 / 603 个
-      Skill / 6.4 MB；当前 `main` 则打出 2,236 个文件 / 604 个 Skill / 6.5 MB。
-      在发布之前，`npx openai4s-skills …` 解析不到；
-      `npx github:PKU-YuanGroup/OpenAI4S install --all` 今天就能用，也是各处文档
-      和 CLI 自己的 `--help` 打头的写法——根 README、`docs/skills.md`、`tools/`，
-      以及每个 Skill 自己的页面（那一节的措辞在发布之后依然成立）。2026-09-01
-      实时执行 `npm view openai4s-skills version` 仍返回 `E404`。
-      *做完的标准：* 在已发布 tag 的干净 checkout 上跑过
-      `npm publish --access public`，在一台没有 checkout 的机器上
-      `npx openai4s-skills list` 可用，并且仍写着"这个名字解析不到"的五个页面都已
-      改掉这句话——`README.md`（同时是 npm 与 PyPI 的首页）、`README_zh.md`、
-      `docs/skills.md`、`tools/skills-installer/README.md` 与 `README_zh.md`；
-      `grep -rlE --exclude='TODO*' 'not on npm yet|name does not resolve|还没有发布到 npm|名字解析不到' README.md README_zh.md docs tools`
-      列出的正是这五个。这需要一个有发布权限的 npm 账号——任何自动化 agent 都不该
-      持有这份凭据。
+- [x] **把 `@pku-yuangroup/openai4s-skills` 发布到 npm。**
+      [0.2.0 已公开](https://www.npmjs.com/package/@pku-yuangroup/openai4s-skills/v/0.2.0)，
+      且 registry 的 `latest` 已指向该版本。发布包采用已发布 `v0.2.0` 源码
+      （`c5e80a38306e`），适配组织包名与 npm 命令文案；603 个 Skill 的内容
+      保持原发布版。16 项安装器自测、打包检查与秘密扫描通过；registry 下载包
+      与已验证候选包的 SHA256 一致：
+      `c4c31b56e34e8d73c1fe73ee8a2c7246f7e9654c1e3ee0cec4138f449be94d47`。
+      在仓库外空目录使用全新 npm 缓存运行
+      `npx @pku-yuangroup/openai4s-skills@0.2.0 list --offline` 成功：42 个精选
+      加 561 个 bioSkills，包内共 2,212 个文件 / 6.4 MiB。组织包安装说明已同步。
+      当前源码树有 604 个 Skill；`single-cell-rna-analysis` 不在 npm 0.2.0 中，
+      其文档保留 GitHub 安装入口。
 
 - [ ] **冻结六个 retrosynthesis 生产数据集。**
       `skills/retrosynthesis_planning/scenarios/test_cases/database_sources.json`
-      里六行全是 `"release_status": "not_frozen"`：USPTO-50K、PaRoutes、精选
-      atom-mapping benchmark、MIT 许可的 USPTO forward split、复核过的 Parrot
-      condition 快照，以及 Buchwald-Hartwig HTE 分布漂移 split。在冻结之前，
-      随包分发的六个样例只是每个一行的确定性协议冒烟测试，不做任何科学准确性
-      声明——这正是"六个 benchmark"与"六个接线检查"之间唯一的区别。阻塞点在代码
-      库之外：获取每个来源、审查其再分发许可、并钉住一个 revision。
-      *完成标志：* 每个 scenario 行都是 `release_status: "frozen"`，并带上
-      `revision`、`license`、`split` 和 `sha256`，且
-      `test_production_database_registry_fails_closed_until_frozen` 在冻结后的
-      行上仍然通过。需要有许可决策权的维护者，不应由自动化 agent 决定。
+      的六项仍为 `not_frozen`；随包单行样例仅验证协议，不作科学准确性声明。
+      [已核实的来源候选](../skills/retrosynthesis_planning/scenarios/test_cases/README_zh.md#正式数据来源核验2026-09-09)
+      现已列出上游版本、文件及许可元数据，包括 PaRoutes CC BY 4.0 与原始
+      USPTO CC0 证据，不把代码许可当作派生数据授权。维护者仍需记录数据准入
+      与署名决定，并选定独立 atom-mapping 真值文件及审核负责人。
+      *做完的标准：* 实际获准数据及派生 split 的 SHA256 完成核验，六项均带
+      revision/license/split/hash 并标记 `frozen`，且 fail-closed 注册测试通过。
+      仅检查字段非空，不能证明许可、文件完整性或独立真值已验证。
 
 ## CI 与供应链
 
-- [ ] **在所需 Linux／平台门禁验证 C1–C7 最终补丁。** 2026-09-08 的实现
-      在本机 macOS 验证；本机没有 Docker 可执行文件或 Linux bubblewrap 运行环境，
-      对应具体提交的 CI 结果仍待取得。*做完的标准：* CI 对精确匹配已复核最终
-      源码的版本运行受影响 Python 矩阵、容器 smoke、Linux 中断及沙箱门禁，全部
-      通过，并在本条目记录提交 SHA 与 CI 运行链接。本机浏览器和 wheel 证据不能
-      证明 Linux 行为。
+- [x] **在所需 Linux／平台门禁验证 C1–C7 最终补丁。** 提交
+      `e4c7621ea644a6da2cc3f85d6fe0a0e934e7cd4b` 已通过
+      [Python 3.10/3.12/3.13/3.14 矩阵](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994)、
+      [容器 smoke](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989615)、
+      [Linux Python/R 中断](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989830)
+      与 [Linux 强制沙箱](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989390)。
+      同一提交的[响应捕获重跑](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102754005517)
+      在未改性能阈值的情况下通过：1,165 个形状、212/212 路由，无破坏性变化。
+      原运行的 Chromium 因真实图形 fixture 缺少 matplotlib 而失败；工作流修正
+      为 Chromium 安装已有锁定 science extra，该修正仍需对应的 CI 结果。
 
-- [ ] **把周一的依赖 PR 跨 ecosystem 合批。** `groups:` 按设计是 per-ecosystem
-      的，所以 uv、pre-commit、github-actions 三路更新会分成三个 PR，至今已被
-      手工并到同一分支上至少四次（#75、#97、#131）。Dependabot 支持用配置解决：
-      顶层加 `multi-ecosystem-groups`，再给每个 `updates` 条目加
-      `multi-ecosystem-group: <名字>`。这次没做，是因为那些条目得交出各自的
-      `schedule:` 块，而配错会让 Dependabot 干脆不再开 PR——那比它要修的问题
-      更糟；这件事该有自己的 PR，并观察一个真实的周一。
-      *做完的标准：* 有一个 Dependabot PR 同时带着不止一个 ecosystem 的更新，
-      且下一个周一的运行照常开 PR。
-      第一次尝试学到的（已从 [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143)
-      中撤出，留待单独落地）：`update-types`、`exclude-patterns`、`dependency-type`
-      是只属于 `groups:` 的键，写在条目级会被拒绝；同一 ecosystem 同一目录写第二个
-      条目只是维护者示例里的写法；而这种成对条目所需的互补 `ignore` 同样会过滤
-      *安全*更新，现有的 `groups:` 从不会。`tests/test_governance.py` 现在会在离线
-      环境下对前两条直接失败。
+- [ ] **观察周一的跨生态依赖合批。**
+      [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) 把 uv、npm、
+      Docker、pre-commit 和 GitHub Actions 归入统一周一组。已选策略包含大版本、
+      black 和 isort，不使用 allow/ignore 过滤；13 项治理测试与完整 pre-commit
+      均通过。*做完的标准：* 经代码所有者审查并合入默认分支后，真实 Dependabot
+      PR 同时包含多个生态，且再下一个周一仍正常产生更新。配置已准备，尚未取得
+      这两次真实调度结果。
 
 ## 最近关掉的，记下来免得再查一遍
 

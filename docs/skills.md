@@ -177,20 +177,29 @@ bundled Skills never expose a rollback action.
 
 A Skill is a recipe, not an OpenAI4S API object, so the library is useful to
 any agent that reads Markdown instructions. `tools/skills-installer/` is a
-zero-dependency Node CLI that copies it out of this repository:
+zero-dependency Node CLI available on npm and directly from GitHub. The fixed
+npm release `@pku-yuangroup/openai4s-skills@0.2.0` includes 603 Skills: 42 curated Skills and
+561 pinned bioSkills recipes.
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S list
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
-npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
-npx github:PKU-YuanGroup/OpenAI4S install alphafold2 --target claude
-npx github:PKU-YuanGroup/OpenAI4S installed
-npx github:PKU-YuanGroup/OpenAI4S uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.2.0 list
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0: 561 pinned recipes
+npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 --target claude
+npx @pku-yuangroup/openai4s-skills@0.2.0 installed
+npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-`npx openai4s-skills <command>` is the same CLI under the package's published
-name. It is not on npm yet, so the `github:` form above is the one that
-resolves today; `docs/TODO.md` tracks the publication. Every curated Skill page
+`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. The GitHub form
+follows the repository's default branch, whose current catalog contains 604
+Skills (43 curated + 561 pinned bioSkills):
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
+```
+
+Every curated Skill page
 and the collection root under `skills/` carry an **Install** section with their
 own name already filled in, rendered and checked by `scripts/render_skill_install_sections.py`, so you can
 install from whichever page you landed on and a new Skill directory cannot land
@@ -224,8 +233,8 @@ write, and will not extract an archive member whose path escapes the target —
 absolute paths, `..`, drive letters and NUL are rejected, and a link member
 aborts the extraction rather than being skipped.
 
-**For an OpenAI4S user this is mostly redundant.** The wheel already ships all
-604 Skills and a bundled Skill takes precedence over a same-named one in
+**For an OpenAI4S user this is mostly redundant.** A wheel built from this
+checkout ships all 604 Skills and a bundled Skill takes precedence over a same-named one in
 `<data_dir>/user-skills`. The command exists to put these recipes in front of
 an agent that is not OpenAI4S.
 

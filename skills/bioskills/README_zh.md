@@ -17,7 +17,7 @@
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
 ```
 
-`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入 `./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写到你指定的任意位置。往目标写任何东西之前，都会先打印解析出的绝对路径；`--dry-run` 到此为止，不再写入。重装时，若目标副本被你改过、或者不是它自己装的，就拒绝覆盖；`uninstall` 也只删除它自己写过的文件。只想要其中一份配方时直接点名即可——`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`——名字取 `MANIFEST.json` 里的 `directory` 字段，`uninstall` 和 `installed` 认的也是它。把全部 561 份装进 `~/.claude/skills`，等于让每个 Claude Code 会话的 prompt 都带上 561 条 description——正是下文“发现机制与上下文成本”一节要避免的开销——所以在这个目标上请只点名你需要的配方，`--collection` 留给 agent 会去搜索的目录（`--dir`）。包发布到 npm 之后，同一条命令的简写是 `npx openai4s-skills install --collection bioskills --target claude`。
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入 `./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写到你指定的任意位置。往目标写任何东西之前，都会先打印解析出的绝对路径；`--dry-run` 到此为止，不再写入。重装时，若目标副本被你改过、或者不是它自己装的，就拒绝覆盖；`uninstall` 也只删除它自己写过的文件。只想要其中一份配方时直接点名即可——`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`——名字取 `MANIFEST.json` 里的 `directory` 字段，`uninstall` 和 `installed` 认的也是它。把全部 561 份装进 `~/.claude/skills`，等于让每个 Claude Code 会话的 prompt 都带上 561 条 description——正是下文“发现机制与上下文成本”一节要避免的开销——所以在这个目标上请只点名你需要的配方，`--collection` 留给 agent 会去搜索的目录（`--dir`）。对于 npm 发布版中包含的集合，可用 `npx @pku-yuangroup/openai4s-skills install --collection bioskills --target claude` 安装发布版本。npm 目录可能与当前仓库不同。
 
 没有 Node 时，直接取配方本身。各份配方要平铺摆放——`<目标>/<配方>/`，也就是 `--collection` 写出来的样子——因为嵌在 skills 目录里的 `bioskills/` 文件夹不会被发现。tarball 是整个仓库（超过 100 MB），下面这条管道是 POSIX shell（macOS、Linux、WSL）写法：
 

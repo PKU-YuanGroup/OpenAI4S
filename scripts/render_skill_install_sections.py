@@ -42,6 +42,9 @@ INDEX_EXAMPLES = ("alphafold2", "boltz")
 #: One real member each collection page names, keyed by collection directory.
 COLLECTION_EXAMPLE_MEMBER = {"bioskills": "bio-differential-expression-deseq2-basics"}
 
+#: Recipes added after npm 0.2.0; do not advertise unavailable npm installs.
+NPM_020_UNAVAILABLE_SKILLS = frozenset({"single-cell-rna-analysis"})
+
 #: English prose wraps here; a code span or a link is never split. Chinese
 #: prose is left as one line per paragraph, like the rest of each page — a
 #: hard wrap inside a CJK word can render as a space.
@@ -175,9 +178,16 @@ def render(
                 "A Skill is a directory of files, so installing one is copying that "
                 "directory somewhere an agent looks. " + _prereq_en(node),
                 f"```bash\nnpx github:{repo} install {name} --target claude\n```",
-                _targets_en() + " Once the package is on npm, "
-                f"`npx openai4s-skills install {name} --target claude` is the short "
-                "form of the same command.",
+                _targets_en()
+                + (
+                    " npm 0.2.0 does not include this recipe. Use the GitHub "
+                    "installation command above."
+                    if name in NPM_020_UNAVAILABLE_SKILLS
+                    else " For a recipe included in the npm release, "
+                    f"`npx @pku-yuangroup/openai4s-skills install {name} --target claude` "
+                    "installs the published copy. The npm catalog can differ from this "
+                    "repository."
+                ),
                 "Without Node, take the directory itself — and turn it into a `.zip` "
                 "if an upload field wants one. The tarball is the whole repository "
                 "(over 100 MB), and the pipe is a POSIX shell recipe (macOS, Linux, "
@@ -199,8 +209,14 @@ def render(
                 "一个 Skill 就是一个文件目录，所谓安装，就是把这个目录复制到 Agent "
                 "会去读的地方。" + _prereq_zh(node),
                 f"```bash\nnpx github:{repo} install {name} --target claude\n```",
-                _targets_zh() + "包发布到 npm 之后，同一条命令的简写是 "
-                f"`npx openai4s-skills install {name} --target claude`。",
+                _targets_zh()
+                + (
+                    "npm 0.2.0 不包含本配方，请使用上面的 GitHub 安装命令。"
+                    if name in NPM_020_UNAVAILABLE_SKILLS
+                    else "对于 npm 发布版中包含的配方，可用 "
+                    f"`npx @pku-yuangroup/openai4s-skills install {name} --target claude` "
+                    "安装发布版本。npm 目录可能与当前仓库不同。"
+                ),
                 "没有 Node 时，直接取这个目录——需要 `.zip` 上传时再打包。tarball "
                 "是整个仓库（超过 100 MB），下面这条管道是 POSIX shell（macOS、Linux、WSL）"
                 "写法，只解出这一个目录：",
@@ -233,9 +249,11 @@ def render(
                 "descriptions into every Claude Code session's prompt — the cost the "
                 "*Discovery and context cost* section below exists to avoid — so on "
                 "that target name the recipes you need, and keep `--collection` for a "
-                "directory an agent searches (`--dir`). Once the package is on npm, "
-                f"`npx openai4s-skills install --collection {name} --target claude` "
-                "is the short form of the same command.",
+                "directory an agent searches (`--dir`). For a collection included in "
+                "the npm release, "
+                f"`npx @pku-yuangroup/openai4s-skills install --collection {name} --target claude` "
+                "installs the published copy. The npm catalog can differ from this "
+                "repository.",
                 "Without Node, take the recipes themselves. They must sit flat — "
                 "`<target>/<recipe>/`, exactly what `--collection` writes — because "
                 f"a `{name}/` folder nested inside a skills directory is not "
@@ -264,8 +282,9 @@ def render(
                 f"prompt 都带上 {count} 条 description——正是下文“发现机制与上下文成本”一节"
                 "要避免的开销——所以在这个目标上请只点名你需要的配方，`--collection` "
                 "留给 agent 会去搜索的目录（`--dir`）。"
-                "包发布到 npm 之后，同一条命令的简写是 "
-                f"`npx openai4s-skills install --collection {name} --target claude`。",
+                "对于 npm 发布版中包含的集合，可用 "
+                f"`npx @pku-yuangroup/openai4s-skills install --collection {name} --target claude` "
+                "安装发布版本。npm 目录可能与当前仓库不同。",
                 "没有 Node 时，直接取配方本身。各份配方要平铺摆放——`<目标>/<配方>/`，"
                 f"也就是 `--collection` 写出来的样子——因为嵌在 skills 目录里的 `{name}/` "
                 "文件夹不会被发现。tarball 是整个仓库（超过 100 MB），下面这条管道是 "
@@ -291,8 +310,10 @@ def render(
                 "These recipes are not OpenAI4S-specific, and every Skill page below "
                 "repeats this section with its own name filled in. " + _prereq_en(node),
                 f"```bash\n{commands}\n```",
-                _targets_en() + " Once the package is on npm, the same commands read "
-                "`npx openai4s-skills …`.",
+                _targets_en() + " To install recipes included in the npm release, use "
+                "`npx @pku-yuangroup/openai4s-skills …`. The npm catalog can differ "
+                "from this repository; use `@pku-yuangroup/openai4s-skills@0.2.0` "
+                "to fix the release at 603 Skills (42 curated + 561 bioSkills).",
                 "Without Node, one directory comes out of the source tarball on its "
                 "own, and `python3 -m zipfile -c <name>.zip <name>` turns it into "
                 "something an upload field will take. The tarball is the whole "
@@ -313,8 +334,10 @@ def render(
                 "这些配方并不依赖 OpenAI4S，下面每个 Skill 页面都会重复这一节，并换上"
                 "它自己的名字。" + _prereq_zh(node),
                 f"```bash\n{commands}\n```",
-                _targets_zh() + "包发布到 npm 之后，同一组命令的简写是 "
-                "`npx openai4s-skills …`。",
+                _targets_zh() + "对于 npm 发布版中包含的配方，可用 "
+                "`npx @pku-yuangroup/openai4s-skills …` 安装。npm 目录可能与当前仓库"
+                "不同；使用 `@pku-yuangroup/openai4s-skills@0.2.0` 可固定安装包含 "
+                "603 个 Skill（42 个精选 + 561 个 bioSkills）的发布版本。",
                 "没有 Node 时，可以只从源码 tarball 里取出一个目录，再用 "
                 "`python3 -m zipfile -c <name>.zip <name>` 打成上传框认的压缩包。"
                 "tarball 是整个仓库（超过 100 MB），下面这条管道是 POSIX shell"

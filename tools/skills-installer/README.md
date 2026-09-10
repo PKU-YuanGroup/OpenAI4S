@@ -5,20 +5,26 @@
 Copies OpenAI4S's bundled Skill library onto a machine — into Claude Code, into
 an OpenAI4S data directory, or into any directory named on the command line.
 
+The npm release `@pku-yuangroup/openai4s-skills@0.2.0` contains 603 Skills: 42 curated +
+561 pinned bioSkills. These commands fix the package version:
+
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S list
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
-npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
-npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
-npx github:PKU-YuanGroup/OpenAI4S installed
-npx github:PKU-YuanGroup/OpenAI4S uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.2.0 list
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0: 561 pinned recipes
+npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 boltz --target claude
+npx @pku-yuangroup/openai4s-skills@0.2.0 installed
+npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-That is the form that works today: it runs the CLI straight from the
-repository, with no npm publication involved. The package's own name is
-`openai4s-skills`, and once it is published `npx openai4s-skills <command>`
-runs the same CLI at its published version (the `github:` form always tracks
-the default branch) — until then that name does not resolve.
+`npx @pku-yuangroup/openai4s-skills <command>` uses the latest npm release. To use the current
+repository catalog instead (604 Skills: 43 curated + 561 bioSkills), run the
+GitHub form, which follows the default branch:
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
+```
 
 ## Files
 
@@ -59,8 +65,8 @@ whose answer nothing here checks against the archive it unpacked. Pass
 
 ## Where this fits
 
-For an OpenAI4S user this command is mostly redundant: the wheel already ships
-all 604 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
+For an OpenAI4S user this command is mostly redundant: a wheel built from this
+checkout ships all 604 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
 precedence over a same-named one in `<data_dir>/user-skills`. Its reason to
 exist is the other direction — putting these recipes in front of an agent that
 is not OpenAI4S.
