@@ -39,21 +39,25 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 ## CI 与供应链
 
 - [x] **在所需 Linux／平台门禁验证 C1–C7 最终补丁。** 提交
-      `e4c7621ea644a6da2cc3f85d6fe0a0e934e7cd4b` 已通过
-      [Python 3.10/3.12/3.13/3.14 矩阵](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994)、
-      [容器 smoke](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989615)、
-      [Linux Python/R 中断](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989830)
-      与 [Linux 强制沙箱](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989390)。
-      同一提交的[响应捕获重跑](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102754005517)
+      `1b56dc100c142f48c5f8d45631720e7eb6592052` 的
+      [完整 CI](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003)
+      首次运行全部通过：Python 3.10/3.12/3.13/3.14、容器 smoke、Linux Python/R
+      中断与强制沙箱、Chromium/Firefox/WebKit、打包、类型、文档和契约。
+      [Chromium](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003/job/102763034866)
+      已通过 C1/C3/C5/C7 产品场景、admission fault、sandbox preview 和 10/10
+      matrix 检查。工作流为上次缺少 matplotlib 的真实图形 fixture 安装已有
+      锁定 science extra，没有删除场景或断言。
+      [响应捕获](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003/job/102763034845)
       在未改性能阈值的情况下通过：1,165 个形状、212/212 路由，无破坏性变化。
-      原运行的 Chromium 因真实图形 fixture 缺少 matplotlib 而失败；工作流修正
-      为 Chromium 安装已有锁定 science extra，该修正仍需对应的 CI 结果。
+      本地最终验证也通过：8,767 项离线测试 / 33 跳过、112 项定向测试、38 项
+      harness 场景、完整 pre-commit，以及隔离 wheel/sdist 安装和导入 smoke。
 
 - [ ] **观察周一的跨生态依赖合批。**
       [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) 把 uv、npm、
       Docker、pre-commit 和 GitHub Actions 归入统一周一组。已选策略包含大版本、
       black 和 isort，不使用 allow/ignore 过滤；13 项治理测试与完整 pre-commit
-      均通过。*做完的标准：* 经代码所有者审查并合入默认分支后，真实 Dependabot
+      均通过，[完整 CI](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34441714995)
+      也已通过。*做完的标准：* 经代码所有者审查并合入默认分支后，真实 Dependabot
       PR 同时包含多个生态，且再下一个周一仍正常产生更新。配置已准备，尚未取得
       这两次真实调度结果。
 

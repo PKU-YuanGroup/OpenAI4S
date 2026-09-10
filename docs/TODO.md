@@ -47,24 +47,29 @@ is a factual record of the v0.3 plan and is validated by
 ## CI and supply chain
 
 - [x] **Run the final C1–C7 patch on the required Linux/platform gates.**
-      Commit `e4c7621ea644a6da2cc3f85d6fe0a0e934e7cd4b` passed the
-      [Python 3.10/3.12/3.13/3.14 matrix](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994),
-      [container smoke](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989615),
-      [Linux Python/R interrupt](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989830)
-      and [enforced Linux sandbox](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102404989390).
-      The same commit's [response capture retry](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34332691994/job/102754005517)
-      passed without changing the performance threshold: 1,165 shapes,
-      212/212 routes, no breaking change. The original run's Chromium job
-      failed because its real figure fixture lacked matplotlib; the workflow
-      correction installs the locked science extra for Chromium and requires
-      its own CI result.
+      Commit `1b56dc100c142f48c5f8d45631720e7eb6592052` passed the
+      [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003)
+      on its first attempt: Python 3.10/3.12/3.13/3.14, container smoke,
+      Linux Python/R interrupt and enforced sandbox, Chromium/Firefox/WebKit,
+      packaging, types, documentation and contracts. The
+      [Chromium job](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003/job/102763034866)
+      passed the C1/C3/C5/C7 product scenes, admission fault, sandbox preview
+      and 10/10 matrix checks. Its workflow now installs the locked science
+      extra for the real matplotlib fixture that was missing in the previous
+      run; no scenario or assertion was removed. The
+      [response capture](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003/job/102763034845)
+      passed with 1,165 shapes, 212/212 routes and no breaking change, without
+      changing the performance threshold. Local final validation also passed:
+      8,767 offline tests / 33 skips, 112 focused tests, 38 harness scenarios,
+      full pre-commit, and isolated wheel/sdist installation and import smoke.
 
 - [ ] **Observe the Monday dependency batch across ecosystems.**
       [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) assigns uv,
       npm, Docker, pre-commit and GitHub Actions to one Monday group. The
       selected policy includes major versions, black and isort, with no
       allow/ignore filters. Its 13 governance tests and full pre-commit checks
-      pass. *Done when:* after code-owner review and default-branch merge, a
+      pass, as does its [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34441714995).
+      *Done when:* after code-owner review and default-branch merge, a
       real Dependabot PR contains multiple ecosystems and the following
       Monday still produces updates normally. The configuration is prepared;
       those scheduled outcomes have not been observed.
