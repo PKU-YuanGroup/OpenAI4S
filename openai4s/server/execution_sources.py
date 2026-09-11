@@ -47,6 +47,7 @@ import time
 import zipfile
 from typing import Any, Mapping
 
+from openai4s.server.urls import artifact_version_url
 from openai4s.storage.branch_projection import project_branch_records
 
 #: Hard bounds so one projection cannot become an unbounded walk: delegation
@@ -103,6 +104,119 @@ _README_ZH = """# 已执行代码源文件
 * 压缩包只包含已执行的源代码与公开的执行元数据——不含对话提示词、host
   载荷、Cell 输出或任何凭据。
 """
+
+
+def output_artifact_bindings(
+    store: Any,
+    frame_id: str,
+    *,
+    cell_ids: set[str] | None = None,
+    producer_frame_id: str | None = None,
+    producer_frames: Mapping[str, str] | None = None,
+    newest_only: bool = False,
+) -> dict[str, list[dict[str, str]]]:
+    """Read capture relationships once, bounded by the owning session and Cells.
+
+    A delegated frame keeps its own execution log but its captures belong to
+    the ancestor session. Exact Cell identities, never names or Artifact heads,
+    join the relationships to the already branch-projected Notebook rows.
+    Compatibility stores without artifact readers have no confirmed bindings;
+    failures of readers that do exist propagate rather than claiming absence.
+
+    ``newest_only`` keeps one row per ``(cell, filename)``: the version the
+    store recorded last (``created_at``, then version ordinal). A cell that
+    calls ``host.save_artifact`` and then keeps writing the same file owns two
+    versions of it, and the file it left behind is the newer one.
+    """
+    artifact_reader = getattr(store, "list_artifacts", None)
+    version_reader = getattr(store, "list_versions", None)
+    if (
+        not callable(artifact_reader)
+        or not callable(version_reader)
+        or cell_ids == set()
+        or producer_frames == {}
+    ):
+        return {}
+    frame_reader = getattr(store, "get_frame", None)
+    frame = frame_reader(frame_id) if callable(frame_reader) else None
+    owning_root = str((frame or {}).get("root_frame_id") or frame_id)
+    observation_reader = getattr(store, "list_artifact_capture_observations", None)
+    bindings: dict[str, dict[tuple[str, str, str], dict[str, str]]] = {}
+    ranks: dict[str, dict[tuple[str, str, str], tuple[int, int]]] = {}
+    for artifact in artifact_reader({"root_frame_id": owning_root}):
+        artifact_id = artifact.get("artifact_id")
+        if not artifact_id or artifact.get("root_frame_id", owning_root) != owning_root:
+            continue
+        versions = version_reader(artifact_id)
+        valid_versions = {row.get("version_id") for row in versions}
+        # Observations point at one of these versions, so a single recency
+        # map (from the version rows, which carry both fields) orders both.
+        recency = {
+            row.get("version_id"): (
+                _int_or_zero(row.get("created_at")),
+                _int_or_zero(row.get("ordinal")),
+            )
+            for row in versions
+        }
+        observations = (
+            observation_reader(artifact_id=artifact_id)
+            if callable(observation_reader)
+            else []
+        )
+        for row in [*versions, *observations]:
+            cell_id = row.get("producing_cell_id")
+            version_id = row.get("version_id")
+            filename = row.get("filename")
+            if (
+                not all(
+                    isinstance(value, str) and value
+                    for value in (cell_id, version_id, filename)
+                )
+                or version_id not in valid_versions
+                or (cell_ids is not None and cell_id not in cell_ids)
+                or (
+                    producer_frames is not None
+                    and (
+                        cell_id not in producer_frames
+                        or row.get("frame_id") not in (None, producer_frames[cell_id])
+                    )
+                )
+                or (
+                    producer_frame_id is not None
+                    and row.get("frame_id") not in (None, producer_frame_id)
+                )
+            ):
+                continue
+            try:
+                url = artifact_version_url(version_id)
+            except ValueError:
+                continue  # An unrepresentable imported ID is not a latest link.
+            key = (filename, str(artifact_id), version_id)
+            bindings.setdefault(cell_id, {})[key] = {
+                "filename": filename,
+                "artifact_id": str(artifact_id),
+                "version_id": version_id,
+                "url": url,
+            }
+            ranks.setdefault(cell_id, {})[key] = recency.get(version_id, (0, 0))
+    if newest_only:
+        for cell_id, rows in bindings.items():
+            newest: dict[str, tuple[str, str, str]] = {}
+            for key in sorted(rows):
+                current = newest.get(key[0])
+                # Deterministic: recency first, then the sorted key itself.
+                if current is None or ranks[cell_id][key] >= ranks[cell_id][current]:
+                    newest[key[0]] = key
+            keep = set(newest.values())
+            bindings[cell_id] = {key: row for key, row in rows.items() if key in keep}
+    return {
+        cell_id: [rows[key] for key in sorted(rows)]
+        for cell_id, rows in bindings.items()
+    }
+
+
+def _int_or_zero(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 class ExecutionSourcesService:
@@ -266,7 +380,6 @@ class ExecutionSourcesService:
         root = self.store.get_frame(root_frame_id)
         if root is None:
             raise KeyError(f"unknown frame {root_frame_id!r}")
-        artifact_links = self._artifact_links(root_frame_id)
         generation_cache: dict[tuple[str, str], tuple[bool, dict[str, Any] | None]] = {}
         source_budget = {
             "used": 0,
@@ -293,7 +406,6 @@ class ExecutionSourcesService:
                 root_frame_id=root_frame_id,
                 branch_id=branch_id,
                 is_root=parent_id is None,
-                artifact_links=artifact_links,
                 generation_cache=generation_cache,
                 source_budget=source_budget,
             )
@@ -343,6 +455,18 @@ class ExecutionSourcesService:
                 )
 
         visit(root, parent_id=None, depth=0, order=0, directory="root")
+        # Join only the already-visible tree, including each delegate's own
+        # execution identity. A display-only legacy fallback ID is not evidence.
+        producer_frames = {
+            cell["_producer_id"]: frame["frame_id"]
+            for frame in frames
+            for cell in frame["cells"]
+            if cell["_producer_id"]
+        }
+        artifact_links = self._artifact_links(root_frame_id, producer_frames)
+        for frame in frames:
+            for cell in frame["cells"]:
+                cell["artifacts"] = artifact_links.get(cell["_producer_id"], [])
         # The archive nests children under root/'s sibling namespace, not
         # inside it: strip the leading "root/" from child paths.
         for frame in frames:
@@ -370,7 +494,6 @@ class ExecutionSourcesService:
         root_frame_id: str,
         branch_id: str | None,
         is_root: bool,
-        artifact_links: Mapping[str, list[str]],
         generation_cache: dict[tuple[str, str], tuple[bool, dict[str, Any] | None]],
         source_budget: dict[str, int | None],
     ) -> tuple[list[dict[str, Any]], bool]:
@@ -407,6 +530,7 @@ class ExecutionSourcesService:
             cells.append(
                 {
                     "id": cell_id,
+                    "_producer_id": row.get("producing_cell_id"),
                     "order": order,
                     "language": "r" if language == "r" else "python",
                     "status": self._status(row),
@@ -418,7 +542,7 @@ class ExecutionSourcesService:
                         else None
                     ),
                     "environment": environment,
-                    "artifacts": sorted(artifact_links.get(cell_id, [])),
+                    "artifacts": [],
                     "interrupted": bool(row.get("interrupted")),
                     "created_at": self._int(row.get("created_at")),
                 }
@@ -436,21 +560,20 @@ class ExecutionSourcesService:
                     raise
                 return self.store.list_cells(root_frame_id)
 
-        try:
-            return project_branch_records(
-                self.store,
-                root_frame_id,
-                branch_id,
-                list_local=local,
-                record_position=lambda cell: int(
-                    cell.get("state_revision") or cell.get("cell_index") or 0
-                ),
-                cursor_key="cell_cursor",
-            )
-        except Exception:  # noqa: BLE001 - degrade to the raw per-frame log
-            return self.store.list_cells(root_frame_id)
+        return project_branch_records(
+            self.store,
+            root_frame_id,
+            branch_id,
+            list_local=local,
+            record_position=lambda cell: int(
+                cell.get("state_revision") or cell.get("cell_index") or 0
+            ),
+            cursor_key="cell_cursor",
+        )
 
-    def _artifact_links(self, root_frame_id: str) -> dict[str, list[str]]:
+    def _artifact_links(
+        self, root_frame_id: str, producer_frames: Mapping[str, str]
+    ) -> dict[str, list[str]]:
         """producing_cell_id -> artifact version ids, versions + observations.
 
         ``artifact_versions.producing_cell_id`` is stamped by the capture
@@ -458,39 +581,12 @@ class ExecutionSourcesService:
         re-observed an existing version's bytes without minting a new one.
         Both are producer attributions the store made itself — never claims.
         """
-        links: dict[str, set[str]] = {}
-
-        def add(cell_id: Any, version_id: Any) -> None:
-            if not cell_id or not version_id:
-                return
-            links.setdefault(str(cell_id), set()).add(str(version_id))
-
-        try:
-            artifacts = self.store.list_artifacts({"root_frame_id": root_frame_id})
-        except Exception:  # noqa: BLE001 - links are optional metadata
-            artifacts = []
-        for artifact in artifacts or []:
-            artifact_id = artifact.get("artifact_id")
-            if not artifact_id:
-                continue
-            try:
-                versions = self.store.list_versions(artifact_id)
-            except Exception:  # noqa: BLE001
-                versions = []
-            for version in versions or []:
-                add(version.get("producing_cell_id"), version.get("version_id"))
-            try:
-                observations = self.store.list_artifact_capture_observations(
-                    artifact_id=artifact_id
-                )
-            except Exception:  # noqa: BLE001
-                observations = []
-            for observation in observations or []:
-                add(
-                    observation.get("producing_cell_id"),
-                    observation.get("version_id"),
-                )
-        return {cell_id: sorted(ids) for cell_id, ids in links.items()}
+        return {
+            cell_id: sorted({row["version_id"] for row in rows})
+            for cell_id, rows in output_artifact_bindings(
+                self.store, root_frame_id, producer_frames=producer_frames
+            ).items()
+        }
 
     def _environment(
         self,

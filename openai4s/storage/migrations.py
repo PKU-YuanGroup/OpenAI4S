@@ -73,6 +73,71 @@ class MigrationError(RuntimeError):
     """A migration could not be applied. The database is unchanged."""
 
 
+class FutureSchemaError(MigrationError):
+    """This program cannot safely initialize a newer database schema."""
+
+    code = "future_schema"
+
+    def __init__(self, actual_version: int, supported_version: int):
+        self.actual_version = actual_version
+        self.supported_version = supported_version
+        super().__init__(
+            f"[future_schema] database schema {actual_version} exceeds supported "
+            f"schema {supported_version}; use a compatible OpenAI4S version."
+        )
+
+
+def require_supported_schema(
+    conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION
+) -> int:
+    version = current_version(conn)
+    if version > target:
+        raise FutureSchemaError(version, target)
+    return version
+
+
+def preflight_schema(db_path: Path, *, target: int = SCHEMA_VERSION) -> int | None:
+    """Read committed schema state (including WAL) before application writes.
+
+    A missing database follows the normal new-database path. A corrupt or
+    unreadable database retains SQLite's error; it is not a future version.
+
+    Returns ``None`` when the version could not be read without writing: the
+    Store keeps its rollback journal, so a process killed mid-commit leaves a
+    hot journal that only a read-write connection may replay
+    (``SQLITE_READONLY_ROLLBACK``). That recovery is SQLite restoring committed
+    state, not an application write, and the formal connection re-runs
+    :func:`require_supported_schema` before any DDL — so deferring is safe,
+    whereas raising here would keep the database unopenable forever.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return require_supported_schema(conn, target=target)
+    except sqlite3.OperationalError as error:
+        if _is_readonly_refusal(error):
+            return None
+        raise
+    finally:
+        conn.close()
+
+
+def _is_readonly_refusal(error: sqlite3.OperationalError) -> bool:
+    """True when SQLite refused because the handle is read-only.
+
+    ``sqlite_errorcode`` exists from Python 3.11; older interpreters only carry
+    the message. Both spellings mean the same thing for a ``mode=ro`` handle:
+    the file needs a write (journal playback) that this connection cannot do.
+    """
+    code = getattr(error, "sqlite_errorcode", None)
+    readonly = getattr(sqlite3, "SQLITE_READONLY", 8)
+    if isinstance(code, int) and (code & 0xFF) == readonly:
+        return True
+    return "readonly" in str(error).lower()
+
+
 def apply_ddl_script(conn: sqlite3.Connection, script: str) -> None:
     """Run a multi-statement DDL script *without* committing the caller's
     transaction.
@@ -217,8 +282,8 @@ def run_migrations(
     database back — the caller gets an unchanged database, not a half-migrated
     one.
     """
-    version = current_version(conn)
-    if version >= target:
+    version = require_supported_schema(conn, target=target)
+    if version == target:
         return {"migrated": False, "from": version, "to": version, "applied": []}
 
     if not integrity_ok(conn):
@@ -286,6 +351,9 @@ def run_migrations(
 
 __all__ = [
     "MigrationError",
+    "FutureSchemaError",
+    "preflight_schema",
+    "require_supported_schema",
     "SCHEMA_VERSION",
     "applied_migrations",
     "backup_database",

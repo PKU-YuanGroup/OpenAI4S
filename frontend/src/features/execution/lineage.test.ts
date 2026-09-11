@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { setExecutionFetch } from "./api";
+import { loadLineage, renderProvenanceInto } from "./provenance";
+import { _artVer, _envSnapById, dockArtifact } from "../../stores/artifacts";
+import { provMode, provSub } from "../../stores/ui";
+import { resetStoreFields } from "../../stores/signal-field";
+import { syncArtifactVersion } from "../artifacts/cache";
+import { filesT } from "../artifacts/copy";
+import { describe, expect, it, vi } from "vitest";
 import {
   asLineage,
   captureInRootNotebook,
@@ -135,4 +142,103 @@ describe("provenance chain transforms (app.js:10631-10833)", () => {
     expect(envPackageCount({ package_count: 0, packages: [] })).toBe(0);
     expect(envPackageCount({ package_count: 4, packages: [] })).toBe(4);
   });
+});
+
+
+it("loadLineage requests the pinned version and propagates its read failure without latest", async () => {
+  const requests: string[] = [];
+  setExecutionFetch(async (url) => {
+    requests.push(url);
+    return new Response(JSON.stringify({ error: "version unavailable" }), { status: 404 });
+  });
+  try {
+    await expect(loadLineage({ id: "a", version_id: "v1", _exactVersion: true })).rejects.toThrow("version unavailable");
+    expect(requests).toEqual(["/api/v1/artifacts/a/lineage?version=v1"]);
+  } finally { setExecutionFetch(null); }
+});
+
+
+class ProvenanceNode {
+  children: ProvenanceNode[] = [];
+  className = "";
+  textContent = "";
+  set innerHTML(_value: string) { this.children = []; }
+  setAttribute() {}
+  appendChild(child: ProvenanceNode) { this.children.push(child); return child; }
+}
+
+it("a delayed latest environment response cannot poison the pinned version cache", async () => {
+  resetStoreFields();
+  vi.stubGlobal("document", { createElement: () => new ProvenanceNode() });
+  const latest = { id: "a", version_id: "v1" };
+  dockArtifact.value = latest; _artVer.value.a = "v1";
+  provMode.value = true; provSub.value = "environment";
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  const requests: string[] = [];
+  let serverHead = "v1";
+  setExecutionFetch(async (url) => {
+    requests.push(url);
+    await delayed;
+    const selected = new URL(url, "http://localhost").searchParams.get("version") || serverHead;
+    return new Response(JSON.stringify({ kind: "python", environment_name: selected, packages: [] }));
+  });
+  try {
+    renderProvenanceInto(new ProvenanceNode() as unknown as HTMLElement, latest);
+    serverHead = "v2";
+    syncArtifactVersion({ id: "a", version_id: "v2" }, true);
+    release();
+    await vi.waitFor(() => expect(_envSnapById.value["a:v1"]).toBeTruthy());
+    const pinned = { id: "a", version_id: "v1", _exactVersion: true };
+    dockArtifact.value = pinned;
+    renderProvenanceInto(new ProvenanceNode() as unknown as HTMLElement, pinned);
+    expect(_envSnapById.value["a:v1"]).toMatchObject({ environment_name: "v1" });
+    expect(requests).toEqual(["/api/v1/artifacts/a/environment?version=v1"]);
+  } finally { setExecutionFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
+});
+
+it("latest lineage reads capture their known version rather than a moving head", async () => {
+  const requests: string[] = [];
+  setExecutionFetch(async (url) => {
+    requests.push(url);
+    return new Response(JSON.stringify({ version_id: new URL(url, "http://localhost").searchParams.get("version") || "v2", interactions: [], dependency_mappings: { inputs: [] } }));
+  });
+  try {
+    const report = await loadLineage({ id: "a", version_id: "v1" });
+    expect(report.version_id).toBe("v1");
+    expect(requests).toEqual(["/api/v1/artifacts/a/lineage?version=v1"]);
+  } finally { setExecutionFetch(null); }
+});
+
+
+it("known latest metadata read failures propagate while unbound legacy keeps its fallback", async () => {
+  const requests: string[] = [];
+  setExecutionFetch(async (url) => {
+    requests.push(url);
+    return new Response(JSON.stringify({ error: "missing snapshot" }), { status: 404 });
+  });
+  try {
+    await expect(loadLineage({ id: "a", version_id: "v1" })).rejects.toThrow("missing snapshot");
+    expect(await loadLineage({ id: "a" })).toEqual(emptyLineage());
+    expect(requests).toEqual(["/api/v1/artifacts/a/lineage?version=v1", "/api/v1/artifacts/a/lineage"]);
+  } finally { setExecutionFetch(null); }
+});
+
+
+it("an exact version without a recorded environment is an expected state, not a failed load", async () => {
+  resetStoreFields();
+  vi.stubGlobal("document", { createElement: () => new ProvenanceNode() });
+  const pinned = { id: "a", version_id: "v1", _exactVersion: true };
+  dockArtifact.value = pinned; provMode.value = true; provSub.value = "environment";
+  setExecutionFetch(async () => new Response(
+    JSON.stringify({ error: "no environment snapshot was recorded for this version", code: "environment_snapshot_unavailable", request_id: "req-9" }),
+    { status: 404 },
+  ));
+  try {
+    const view = new ProvenanceNode();
+    renderProvenanceInto(view as unknown as HTMLElement, pinned);
+    const walk = (node: ProvenanceNode): ProvenanceNode[] => [node, ...node.children.flatMap(walk)];
+    await vi.waitFor(() => expect(walk(view).some((node) => node.textContent === filesT("prov.env.noSnapshot"))).toBe(true));
+    expect(walk(view).some((node) => node.textContent.includes("req-9"))).toBe(false);
+  } finally { setExecutionFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
 });

@@ -794,7 +794,13 @@ class _Host:
     def collect(
         self, child_ids: list[str] | str | None = None, *, timeout: float | None = None
     ) -> Any:
-        """Block for async (wait=False) children's results by id."""
+        """Wait for async children and return their latest status snapshots.
+
+        ``timeout`` is the budget for this entire call, not for each child:
+        a finite number from 0 through 3600 seconds (booleans are invalid).
+        Zero returns immediately. None waits without a deadline, while still
+        responding to parent cancellation. Expiry does not stop children.
+        """
         if isinstance(child_ids, str):
             child_ids = [child_ids]
         return self._call("collect", [{"child_ids": child_ids, "timeout": timeout}])
@@ -1114,24 +1120,29 @@ class _Host:
         sequence: str,
         *,
         name: str = "protein",
-        gpu: int = 0,
-        cycle: int = 10,
-        step: int = 40,
+        gpu: int | str = 0,
+        cycle: int | str = 10,
+        step: int | str = 40,
     ) -> dict:
-        """Predict a REAL 3D structure for a protein sequence on the configured
-        remote GPU host (8×A100), using Protenix (AlphaFold3-class) inference.
+        """Predict a protein structure using the registered remote folding service.
 
-        This is the correct way to build a structural model — do NOT hand-write
-        a synthetic backbone or a geometric spiral. Blocks ~1-2 min while the
-        remote GPU folds, then returns:
-          {ok, pdb, plddt_csv, confidence, mean_plddt, ptm, length, engine,
-           host, remote_dir}
-        Write `result["pdb"]` to a `.pdb` file with host.write_file(...) so it
-        renders in the 3D viewer, and plot per-residue pLDDT from
-        `result["plddt_csv"]` (columns: chain,resid,resname,plddt).
+        The sequence must contain only the 20 standard amino acids, up to
+        1200 residues. Only case and whitespace are normalized; invalid
+        residues and FASTA headers are rejected before contacting the host.
+        GPU is a nonnegative integer; cycle and step are positive integers.
+        Losslessly parsed integer strings are accepted; booleans and
+        fractional or non-finite values are rejected.
 
-        Note: runs single-sequence (no MSA) for speed, so pLDDT is a genuine but
-        conservative estimate — say so in the report rather than overclaiming."""
+        Returns {ok, pdb, plddt_csv, confidence, mean_plddt, ptm, length,
+        engine, host, remote_dir, ...} only after zero remote exit and validated
+        output. Metadata absent from the response or registry remains None.
+        Save result["pdb"] with host.write_file(...) for the structure viewer.
+        The service wrapper's pLDDT CSV uses chain,resid,resname,plddt.
+
+        A service error raises RuntimeError through Host RPC. Report failure
+        honestly; do not replace a failed prediction with synthetic geometry.
+        Structural validation does not establish prediction accuracy.
+        """
         return self._call(
             "fold",
             [
@@ -1150,19 +1161,31 @@ class _Host:
         sequence: str,
         *,
         name: str = "protein",
-        positions: list | None = None,
-        gpu: int = 0,
+        positions: list | tuple | str | None = None,
+        gpu: int | str = 0,
     ) -> dict:
-        """Score single-substitution variant effects with a REAL model (ESM
-        masked-marginal) on the remote GPU host. Returns
-        {ok, scores_csv, summary, mean_score, top5, model, host}; the CSV has
-        columns position,wt,mut,mutation,esm_score (higher = more favorable).
-        `positions` optionally limits scoring to a list of 1-based positions.
+        """Score single substitutions using the registered remote model service.
 
-        This is the ONLY sanctioned way to obtain mutation scores. If it returns
-        an {error} (no scoring service configured, or the host is unreachable),
-        STOP and report that honestly — do NOT fabricate scores with np.random,
-        a BLOSUM proxy dressed up as ESM, or a fake 'method-comparison' figure."""
+        Accepts up to 1024 standard amino acids, normalizing case and whitespace
+        only. Positions may be an integer list, tuple or comma-separated integer
+        string; they are 1-based and must lie within the sequence. None retains
+        the service's all-position behavior. GPU must be a nonnegative integer.
+        Losslessly parsed integer strings are accepted; booleans, fractions
+        and non-finite numeric values are rejected.
+
+        Returns {ok, scores_csv, summary, mean_score, top5, model, host} after
+        validating the remote exit and results. scores_csv preserves either
+        mutation,score or position,wt,mut,mutation,esm_score. Every mutation
+        must match the input wild-type residue and requested position and have
+        a finite score. Every requested position needs at least one row;
+        optional top5 entries must match the CSV. With no declared aggregate
+        statistic rule, mean_score is None; summary.mean_score is None when
+        present and stays omitted when absent. Interpret scores
+        using the actual service method; missing metadata is not inferred.
+
+        Service failures raise RuntimeError through Host RPC. Report them
+        honestly; do not fabricate scores or substitute an unrelated method.
+        """
         return self._call(
             "score_mutations",
             [{"sequence": sequence, "name": name, "positions": positions, "gpu": gpu}],

@@ -18,6 +18,7 @@ import getpass
 import ipaddress
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -30,6 +31,7 @@ from pathlib import Path
 from openai4s import __version__
 from openai4s.config import get_config
 from openai4s.execution.process_group import TERM_GRACE_S
+from openai4s.storage.migrations import FutureSchemaError, preflight_schema
 
 
 def _statefile_payload(cfg) -> str:
@@ -593,6 +595,7 @@ def _cmd_serve_detached(args, cfg) -> int:
         "--no-browser",
     ]
     with log_path.open("ab", buffering=0) as log:
+        log_start = log.tell()
         process = subprocess.Popen(
             command,
             cwd=cfg.data_dir,
@@ -640,6 +643,24 @@ def _cmd_serve_detached(args, cfg) -> int:
         time.sleep(0.25)
 
     _cleanup_failed_detached_child(process)
+    # Only inspect this child's bounded log segment, and only render the
+    # numeric schema diagnostic. Never echo arbitrary startup output.
+    try:
+        with log_path.open("rb") as log:
+            log.seek(log_start)
+            startup = log.read(65536).decode("utf-8", errors="replace")
+        future = re.search(
+            r"\[future_schema\] database schema (\d{1,10}) exceeds supported schema (\d{1,10});",
+            startup,
+        )
+        if future:
+            print(
+                f"error: {FutureSchemaError(int(future[1]), int(future[2]))}",
+                file=sys.stderr,
+            )
+            return 2
+    except OSError:
+        pass
     print(
         f"error: detached daemon did not become ready within {ready_timeout:.0f}s "
         f"(OPENAI4S_DETACHED_READY_TIMEOUT overrides); inspect {log_path}",
@@ -651,6 +672,11 @@ def _cmd_serve_detached(args, cfg) -> int:
 def cmd_serve(args) -> int:
     from openai4s.server import build_server, run_server
 
+    try:
+        preflight_schema(get_config(initialize_dirs=False).db_path)
+    except FutureSchemaError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     cfg = get_config()
     _apply_serve_overrides(args, cfg)
     if getattr(args, "detached", False):
@@ -697,6 +723,11 @@ def cmd_serve(args) -> int:
     # mints the access token, so the URL printed below actually opens.
     try:
         httpd = build_server(cfg)
+    except FutureSchemaError as exc:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        _clear_state(cfg, only_if_owned_by=my_pid)
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except OSError as exc:
         signal.signal(signal.SIGTERM, previous_sigterm)
         _clear_state(cfg, only_if_owned_by=my_pid)
@@ -2388,7 +2419,15 @@ def main(argv: list[str] | None = None) -> int:
     if is_wsl():
         os.environ["PATH"] = linux_path(os.environ.get("PATH", os.defpath))
     args = build_parser().parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except FutureSchemaError as exc:
+        # Every subcommand that opens the Store (run, init, user, …) refuses a
+        # newer database the same way `serve` does: one line, exit 2, no
+        # traceback. `serve` still catches it earlier so it can clear the
+        # singleton state it already claimed.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

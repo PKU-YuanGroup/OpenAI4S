@@ -596,12 +596,50 @@ function eachTokenStream(source, visit) {
   }
 }
 
-function collectFreeIdents(body, locals) {
+function optionalGlobalTokens(tokens) {
+  const optional = new Set();
+  const referenceAt = (i) => {
+    const token = tokens[i];
+    if (!token || token.type !== "ident") return null;
+    if ((token.value === "window" || token.value === "globalThis") && tokens[i + 1]?.value === ".") {
+      const prop = tokens[i + 2];
+      return prop?.type === "ident" ? { name: prop.value, index: i + 2, next: i + 3 } : null;
+    }
+    return { name: token.value, index: i, next: i + 1 };
+  };
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (tokens[i].value !== "typeof") continue;
+    const ref = referenceAt(i + 1);
+    if (!ref || [".", "["].includes(tokens[ref.next]?.value)) continue;
+    optional.add(ref.index);
+    const comparator = tokens[ref.next]?.value;
+    const value = tokens[ref.next + 1]?.value;
+    const operator = tokens[ref.next + 2]?.value;
+    const safe = ["\"undefined\"", "'undefined'"].includes(value)
+      && ((comparator === "===" && operator === "||") || (comparator === "!==" && operator === "&&"));
+    if (!safe) continue;
+    // Only the short-circuit RHS is guarded. Stop at its enclosing delimiter
+    // or a logical alternative that would make the reference unconditional.
+    let depth = 0;
+    for (let j = ref.next + 3; j < tokens.length; j += 1) {
+      const token = tokens[j];
+      if (depth === 0 && [")", "]", "}", ";", ",", "?", operator === "&&" ? "||" : "&&"].includes(token.value)) break;
+      const used = referenceAt(j);
+      if (used?.name === ref.name && !prevNonDot(tokens, j)) optional.add(used.index);
+      if (["(", "[", "{"].includes(token.value)) depth += 1;
+      else if ([")", "]", "}"].includes(token.value)) depth -= 1;
+    }
+  }
+  return optional;
+}
+
+function collectFreeIdents(body, locals, requiredOnly = false) {
   const found = new Map(); // name -> count
   eachTokenStream(body, (tokens) => {
+    const optional = requiredOnly ? optionalGlobalTokens(tokens) : new Set();
     for (let i = 0; i < tokens.length; i += 1) {
       const tok = tokens[i];
-      if (tok.type !== "ident") continue;
+      if (tok.type !== "ident" || optional.has(i)) continue;
       if (prevNonDot(tokens, i)) continue;
       if (nextIsColon(tokens, i)) continue;
       if (KEYWORDS.has(tok.value) || BUILTINS.has(tok.value)) continue;
@@ -616,7 +654,7 @@ function collectFreeIdents(body, locals) {
       const prop = tokens[i + 2];
       if (obj.type !== "ident" || (obj.value !== "window" && obj.value !== "globalThis")) continue;
       if (dot.type !== "punct" || (dot.value !== "." && dot.value !== "?.")) continue;
-      if (prop.type !== "ident") continue;
+      if (prop.type !== "ident" || optional.has(i + 2)) continue;
       if (prop.value.startsWith("__")) continue;
       if (BUILTINS.has(prop.value) || KEYWORDS.has(prop.value)) continue;
       if (locals.has(prop.value)) continue;
@@ -783,7 +821,9 @@ function rel(filePath) {
 function emptyInventory() {
   return {
     files: [],
-    globals: new Map(), // name -> { count, files: Set, lines: [{file,line}] }
+    globals: new Map(), // required main-window names
+    scopedGlobals: new Map(), // optional/legacy/frame uses remain visible in the inventory
+    scopedSFields: new Map(),
     sFields: new Map(), // field -> { read, write, nestedWrite, files, paths: Set, private }
     sStarHits: 0,
     selectors: new Map(), // sel -> { count, files: Set }
@@ -845,7 +885,39 @@ function withoutGeneratedBlock(source) {
   return source.slice(0, begin) + source.slice(end + SMOKE_END.length);
 }
 
-function scanFile(filePath, inv) {
+// These names identify existing harness scopes, not globals to suppress.
+// A call moved outside its guard or onto page.evaluate becomes required.
+const EVALUATE_CONTEXTS = {
+  "browser_p1_controls.mjs": { legacyGuards: ["legacyUploadShell"] },
+  "browser_sandbox_preview.mjs": { frameReceivers: ["editor", "ketcherFrame", "exactFrame", "inertFrame"] },
+};
+
+function evaluationScope(source, index, receiver, contexts) {
+  if ((contexts.frameReceivers || []).includes(receiver)) return `iframe:${receiver}`;
+  for (const guard of contexts.legacyGuards || []) {
+    const pattern = new RegExp(`\\bif\\s*\\(\\s*${guard}\\s*\\)\\s*\\{`, "g");
+    let match;
+    while ((match = pattern.exec(source))) {
+      const open = match.index + match[0].length - 1;
+      const block = readBalanced(source, open + 1, "{", "}");
+      if (index > open && index < block.next) return `legacy:${guard}`;
+    }
+  }
+  return "main";
+}
+
+function addScopedGlobal(inv, scope, name, file, n) {
+  const key = `${scope}:${name}`;
+  let row = inv.scopedGlobals.get(key);
+  if (!row) {
+    row = { scope, name, count: 0, files: new Set() };
+    inv.scopedGlobals.set(key, row);
+  }
+  row.count += n;
+  row.files.add(file);
+}
+
+function scanFile(filePath, inv, contexts = EVALUATE_CONTEXTS[path.basename(filePath)] || {}) {
   const source = withoutGeneratedBlock(fs.readFileSync(filePath, "utf8"));
   const file = path.basename(filePath);
   inv.files.push(file);
@@ -859,9 +931,28 @@ function scanFile(filePath, inv) {
     if (!fn) continue;
     const line = lineAt(source, arg.start);
     const idents = collectFreeIdents(fn.body, fn.locals);
-    for (const [name, count] of idents) addGlobal(inv, name, file, line, count);
+    const receiver = m[0].slice(0, m[0].indexOf("."));
+    const scope = evaluationScope(source, m.index, receiver, contexts);
+    const required = scope === "main" ? collectFreeIdents(fn.body, fn.locals, true) : new Map();
+    for (const [name, count] of required) addGlobal(inv, name, file, line, count);
+    for (const [name, count] of idents) {
+      const scopedCount = count - (required.get(name) || 0);
+      if (scopedCount) addScopedGlobal(inv, scope === "main" ? "optional probe" : scope, name, file, scopedCount);
+    }
     for (const hit of collectSAccesses(fn.body)) {
-      addSField(inv, hit, file, lineAt(source, arg.start + hit.index));
+      if (scope === "main") {
+        addSField(inv, hit, file, lineAt(source, arg.start + hit.index));
+      } else {
+        const key = `${scope}:${hit.field}:${hit.kind}`;
+        let row = inv.scopedSFields.get(key);
+        if (!row) {
+          row = { scope, field: hit.field, kind: hit.kind, count: 0, files: new Set(), paths: new Set() };
+          inv.scopedSFields.set(key, row);
+        }
+        row.count += 1;
+        row.files.add(file);
+        row.paths.add(hit.path);
+      }
     }
   }
 
@@ -913,8 +1004,9 @@ function renderMarkdown(inv) {
   push("## 1. Bare window globals");
   push("");
   push("Free identifiers inside `page.evaluate` / `waitForFunction` callbacks");
-  push("(and sibling `.evaluate` on other Playwright pages), minus locals,");
-  push("keywords, and browser builtins. `window.__*` test hooks are omitted.");
+  push("on the main workbench page, minus locals, keywords, browser builtins,");
+  push("and absence probes. `window.__*` test hooks are omitted. Existing");
+  push("legacy-shell guards and iframe contexts are inventoried separately.");
   push("Sorted by name.");
   push("");
   push("| Name | Files | Occurrences |");
@@ -925,6 +1017,20 @@ function renderMarkdown(inv) {
   }
   push("");
   push(`Total names: ${globals.length}`);
+  push("");
+  push("## 1a. Context-specific and optional globals");
+  push("");
+  push("These uses keep their original harness checks. They are not required");
+  push("on the default workbench window: legacy blocks run only behind their");
+  push("existing shell guard, iframe calls run in that frame, and absence probes");
+  push("explicitly handle missing names. An unguarded main-page use is still required.");
+  push("");
+  push("| Context | Name | Files | Occurrences |");
+  push("| --- | --- | --- | --- |");
+  for (const key of sortedNames(inv.scopedGlobals)) {
+    const row = inv.scopedGlobals.get(key);
+    push(`| ${row.scope} | \`${row.name}\` | ${fileList(row.files)} | ${row.count} |`);
+  }
   push("");
 
   push("## 2. `S` field read/write surface");
@@ -956,6 +1062,18 @@ function renderMarkdown(inv) {
   }
   push("");
 
+  push("### 2c. Context-specific `S` accesses");
+  push("");
+  push("These fields belong to the existing guarded or framed checks above;");
+  push("they do not require a signal on the default workbench `S` Proxy.");
+  push("");
+  push("| Context | Field | Access | Files | Occurrences |");
+  push("| --- | --- | --- | --- | --- |");
+  for (const key of sortedNames(inv.scopedSFields)) {
+    const row = inv.scopedSFields.get(key);
+    push(`| ${row.scope} | \`${row.field}\` | ${row.kind} | ${fileList(row.files)} | ${row.count} |`);
+  }
+  push("");
   push("## 3. DOM selector contract");
   push("");
   push("CSS selectors passed to `locator`, `waitForSelector`, `querySelector`,");
@@ -1137,13 +1255,37 @@ page.locator(".perm-card.resolved");
 page.click("#cancel-btn");
 requireOne('[data-variable-inspector="python"]');
 page.evaluate((fid) => outstandingAdmissions(fid), "f1");
+page.evaluate(() => typeof probeOnly);
+page.evaluate(() => typeof optionalUpload === "undefined" || optionalUpload.pending.size === 0);
+if (legacyUploadShell) {
+  page.evaluate(() => { legacyUpload.pending.clear(); legacySend(); S._legacyOnly = null; });
+}
+editor.evaluate(() => window.ketcher.getMolfile());
+editor.evaluate(() => sharedScope());
+page.evaluate(() => sharedScope());
+page.evaluate(() => window.realMainCall());
+page.evaluate(() => typeof unsafeAlternative !== "undefined" && unsafeAlternative() || unsafeAlternative());
+page.evaluate(() => typeof stillRequired === "undefined" || stillRequired.pending.size === 0);
+page.evaluate(() => stillRequired());
 `;
   const tmp = path.join(TESTS_DIR, ".extract_webui_contract_selftest.mjs");
   fs.writeFileSync(tmp, fixture, "utf8");
   try {
     const inv = emptyInventory();
-    scanFile(tmp, inv);
+    scanFile(tmp, inv, { legacyGuards: ["legacyUploadShell"], frameReceivers: ["editor"] });
     const globals = sortedNames(inv.globals);
+    note(!globals.includes("probeOnly"), "typeof-only probe is not a required export");
+    note(!globals.includes("optionalUpload"), "absence-guarded optional access is not a required export");
+    note(!globals.includes("legacyUpload"), "legacy-shell guarded body is not required on the main shell");
+    note(!globals.includes("legacySend"), "legacy-shell guarded calls retain separate scope");
+    note(!inv.sFields.has("_legacyOnly"), "legacy-only S fields do not require workbench signals");
+    note([...inv.scopedSFields.values()].some((row) => row.field === "_legacyOnly"), "legacy S fields remain inventoried");
+    note(!globals.includes("ketcher"), "iframe globals are not required on the main window");
+    note(globals.includes("realMainCall"), "a real main-page call remains required");
+    note(globals.includes("sharedScope"), "an iframe use cannot hide a main-page requirement");
+    note(globals.includes("unsafeAlternative"), "a guard cannot hide an unguarded logical alternative");
+    note(generateSmokeBlock(globals).includes("realMainCall: typeof realMainCall"), "main-page requirement stays in the failing typeof preamble");
+    note(globals.includes("stillRequired"), "an optional probe cannot hide a separate required call");
     note(globals.includes("renderMd"), "renderMd is a bare global");
     note(globals.includes("t"), "t is a bare global");
     note(globals.includes("S"), "S is a bare global");

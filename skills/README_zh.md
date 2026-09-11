@@ -18,7 +18,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
 npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --dir ./my-skills
 ```
 
-`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入 `./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写到你指定的任意位置。往目标写任何东西之前，都会先打印解析出的绝对路径；`--dry-run` 到此为止，不再写入。重装时，若目标副本被你改过、或者不是它自己装的，就拒绝覆盖；`uninstall` 也只删除它自己写过的文件。包发布到 npm 之后，同一组命令的简写是 `npx openai4s-skills …`。
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入 `./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写到你指定的任意位置。往目标写任何东西之前，都会先打印解析出的绝对路径；`--dry-run` 到此为止，不再写入。重装时，若目标副本被你改过、或者不是它自己装的，就拒绝覆盖；`uninstall` 也只删除它自己写过的文件。对于 npm 发布版中包含的配方，可用 `npx @pku-yuangroup/openai4s-skills …` 安装。npm 目录可能与当前仓库不同；使用 `@pku-yuangroup/openai4s-skills@0.2.0` 可固定安装包含 603 个 Skill（42 个精选 + 561 个 bioSkills）的发布版本。
 
 没有 Node 时，可以只从源码 tarball 里取出一个目录，再用 `python3 -m zipfile -c <name>.zip <name>` 打成上传框认的压缩包。tarball 是整个仓库（超过 100 MB），下面这条管道是 POSIX shell（macOS、Linux、WSL）写法：
 

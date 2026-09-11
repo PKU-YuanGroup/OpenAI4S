@@ -6,3 +6,13 @@
 .md-tail {
   display: contents;
 }
+
+.history-load-status {
+  padding: 12px 16px;
+  overflow-wrap: anywhere;
+  flex-shrink: 0;
+}
+
+.history-load-status p {
+  margin: 6px 0;
+}

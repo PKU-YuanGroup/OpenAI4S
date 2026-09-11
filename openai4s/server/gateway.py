@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse
 
 from openai4s import datapro, execution_principal, memory_budget
 from openai4s.agent.actions import NO_NATIVE_COMPLETION_NUDGE
@@ -7105,6 +7105,7 @@ class SessionRunner:
                     owner_instance_id=self._owner_instance_id,
                     event_sink=child_event_sink,
                     child_step_sink=child_step_sink,
+                    cancelled=st.cancel.is_set,
                     # Without this, a delegated child falls back to
                     # os.getcwd() — the daemon's launch directory — so its
                     # kernels and relative writes pollute the checkout and
@@ -17390,17 +17391,50 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/lineage", sub)
             if m and method == "GET":
-                self._json(self._lineage(m.group(1)))
+                try:
+                    self._json(
+                        self._lineage(
+                            m.group(1), version_id=(q.get("version") or [None])[0]
+                        )
+                    )
+                except KeyError:
+                    self._json(
+                        {
+                            "error": "artifact version not found",
+                            "code": "artifact_version_not_found",
+                        },
+                        404,
+                    )
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/environment", sub)
             if m and method == "GET":
                 # Env snapshot bound to THIS artifact's production run (Provenance
                 # → Environment). Falls back to a live freeze for artifacts with
                 # no recorded snapshot (uploads / produced before this existed).
-                vid = q.get("version", [None])[0]
+                vid = (q.get("version") or [None])[0]
+                if vid is not None:
+                    version = store.version_meta(vid)
+                    if not version or version.get("artifact_id") != m.group(1):
+                        self._json(
+                            {
+                                "error": "artifact version not found",
+                                "code": "artifact_version_not_found",
+                            },
+                            404,
+                        )
+                        return
                 snap = store.env_snapshot_for_artifact(m.group(1), version_id=vid)
                 if snap:
                     snap["source"] = "captured"
+                elif vid is not None:
+                    self._json(
+                        {
+                            "error": "no environment snapshot was recorded for this version",
+                            "code": "environment_snapshot_unavailable",
+                        },
+                        404,
+                    )
+                    return
                 else:
                     snap = _environment_snapshot()
                     snap["source"] = "live"
@@ -17429,6 +17463,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "versions": [
                             {
                                 "version_id": v["version_id"],
+                                "filename": v.get("filename"),
                                 "ordinal": v["ordinal"],
                                 "is_latest": v["is_latest"],
                                 "size_bytes": v["size_bytes"],
@@ -17537,6 +17572,24 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/artifacts/(.+)", sub)
             if m and method == "GET":
+                vid = (q.get("version") or [None])[0]
+                if vid is not None:
+                    # An explicit version on the compatible id route is
+                    # honoured exactly like the metadata routes: it must be
+                    # one of THIS artifact's versions, and it never falls
+                    # back to the head bytes.
+                    version = store.version_meta(vid)
+                    if not version or version.get("artifact_id") != unquote(m.group(1)):
+                        self._json(
+                            {
+                                "error": "artifact version not found",
+                                "code": "artifact_version_not_found",
+                            },
+                            404,
+                        )
+                        return
+                    self._serve_artifact(f"versions/{quote(vid, safe='')}")
+                    return
                 self._serve_artifact(m.group(1))
                 return
             if sub == "/uploads" and method == "POST":
@@ -18776,8 +18829,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 branch_id=runner.store.active_session_branch(root_frame_id),
             )
 
-        def _lineage(self, artifact_id: str) -> dict:
-            return execution_views.artifact_lineage(artifact_id)
+        def _lineage(self, artifact_id: str, version_id: str | None = None) -> dict:
+            return execution_views.artifact_lineage(artifact_id, version_id=version_id)
 
         def _edit_artifact(self, artifact_id: str, content: str) -> dict:
             try:

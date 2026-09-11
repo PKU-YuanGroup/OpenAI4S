@@ -1,5 +1,6 @@
 import { signal } from "@preact/signals";
 import type { CustTab } from "./tabs";
+import type { DiagnosticsChecks } from "./api";
 
 /** Whether the Customize modal is visible (`#cust` without `.hidden`). */
 export const customizeOpen = signal(false);
@@ -39,3 +40,27 @@ export type NestedEditor =
   | null;
 
 export const nestedEditor = signal<NestedEditor>(null);
+
+
+/** Customize-local diagnostic history survives tab remounts. No persisted config. */
+export const diagnosticsConfigRevision = signal(0);
+export const diagnosticsAttempt = signal(0);
+export const diagnosticsResult = signal<{
+  report: DiagnosticsChecks;
+  receivedAt: number;
+  configRevision: number;
+  attempt: number;
+} | null>(null);
+export type DiagnosticsFailure = {
+  message: string;
+  status: number;
+  code: string;
+  requestId: string;
+};
+export const diagnosticsFailure = signal<DiagnosticsFailure | null>(null);
+/** The object identity owns the request, including across an unmount/remount. */
+export const diagnosticsRequest = signal<{ kind: "checks" | "bundle" } | null>(null);
+
+export function invalidateDiagnostics(): void {
+  diagnosticsConfigRevision.value += 1;
+}

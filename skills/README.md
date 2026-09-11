@@ -27,8 +27,10 @@ npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --dir ./my-skills
 to anywhere you name. The resolved absolute path is printed before anything is
 written there, and `--dry-run` stops at that plan. A reinstall refuses to
 overwrite a copy you have edited or one it did not install, and `uninstall`
-removes only the files it wrote. Once the package is on npm, the same commands
-read `npx openai4s-skills …`.
+removes only the files it wrote. To install recipes included in the npm release,
+use `npx @pku-yuangroup/openai4s-skills …`. The npm catalog can differ from this
+repository; use `@pku-yuangroup/openai4s-skills@0.2.0` to fix the release at 603
+Skills (42 curated + 561 bioSkills).
 
 Without Node, one directory comes out of the source tarball on its own, and
 `python3 -m zipfile -c <name>.zip <name>` turns it into something an upload

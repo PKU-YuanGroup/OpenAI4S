@@ -6745,6 +6745,31 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/environment [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/environment [ok]": {
       "schema": {
         "properties": {
@@ -6812,10 +6837,16 @@
             ]
           },
           "platform": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "provenance": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "python_version": {
             "type": [
@@ -6914,6 +6945,31 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/lineage [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/lineage [ok]": {
       "schema": {
         "properties": {
@@ -6943,17 +6999,70 @@
                 "at": {
                   "type": "string"
                 },
+                "cell_index": {
+                  "type": "integer"
+                },
+                "exit_status": {
+                  "type": "string"
+                },
+                "files_read": {
+                  "type": "array"
+                },
+                "files_written": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kernel_id": {
+                  "type": "string"
+                },
                 "kind": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "string"
+                },
+                "source": {
                   "type": "string"
                 }
               },
               "required": [
-                "at",
                 "kind"
               ],
               "type": "object"
             },
             "type": "array"
+          },
+          "producer": {
+            "properties": {
+              "cell_recorded": {
+                "type": "boolean"
+              },
+              "frame_id": {
+                "type": "string"
+              },
+              "frame_kind": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "producing_cell_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "cell_recorded",
+              "frame_id",
+              "frame_kind",
+              "kind",
+              "producing_cell_id"
+            ],
+            "type": "object"
+          },
+          "version_id": {
+            "type": "string"
           }
         },
         "required": [
@@ -7551,6 +7660,9 @@
                 "created_at": {
                   "type": "string"
                 },
+                "filename": {
+                  "type": "string"
+                },
                 "is_latest": {
                   "type": "boolean"
                 },
@@ -7558,7 +7670,10 @@
                   "type": "integer"
                 },
                 "producing_cell_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "retrieval_source": {
                   "properties": {
@@ -7598,6 +7713,7 @@
                 "checksum",
                 "content_type",
                 "created_at",
+                "filename",
                 "is_latest",
                 "ordinal",
                 "producing_cell_id",
@@ -13271,7 +13387,10 @@
                   ]
                 },
                 "generation_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "is_latest_attempt": {
                   "type": "boolean"
@@ -13287,6 +13406,32 @@
                 },
                 "origin": {
                   "type": "string"
+                },
+                "output_artifacts": {
+                  "items": {
+                    "properties": {
+                      "artifact_id": {
+                        "type": "string"
+                      },
+                      "filename": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      },
+                      "version_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifact_id",
+                      "filename",
+                      "url",
+                      "version_id"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
                 },
                 "peak_rss_kb": {
                   "type": [
@@ -13313,6 +13458,9 @@
                   "type": "boolean"
                 },
                 "stale_reasons": {
+                  "items": {
+                    "type": "string"
+                  },
                   "type": "array"
                 },
                 "state_revision": {
@@ -13364,6 +13512,7 @@
                 "language",
                 "mutation_uncertain",
                 "origin",
+                "output_artifacts",
                 "peak_rss_kb",
                 "pin",
                 "producing_cell_id",

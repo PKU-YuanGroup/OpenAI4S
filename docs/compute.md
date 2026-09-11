@@ -143,8 +143,12 @@ The confined helper that stages, runs, and harvests each job is the **worker run
 
 ## 2 · `host.fold` / `host.score_mutations` — purpose-built science services over SSH
 
-- **`host.fold(seq)`** runs **real single-sequence Protenix (AlphaFold3-class) inference** on a GPU host (the in-repo runner is [`scripts/fold_remote.sh`](../scripts/fold_remote.sh)). It is single-sequence (no MSA) and returns a PDB structure with per-residue pLDDT. The reference host is an 8×A100-80GB box; a single fold uses one GPU.
-- **`host.score_mutations(...)`** runs **real ESM masked-marginal** variant scoring.
+- **`host.fold(seq)`** invokes the registered folding service over SSH (the in-repo reference runner is [`scripts/fold_remote.sh`](../scripts/fold_remote.sh)). A successful response contains a validated PDB structure and per-residue pLDDT; method, model and hardware metadata come from the actual response or registry, and remain null when absent.
+- **`host.score_mutations(...)`** invokes the registered mutation-scoring service. Both existing CSV contracts (`mutation,score` and `position,wt,mut,mutation,esm_score`) retain their original names and bytes.
+
+Both calls accept only the 20 canonical ASCII amino-acid letters, normalizing case and whitespace. Empty inputs, FASTA headers and unsupported residues (including X/U/O) fail before SSH; errors identify the normalized 1-based position without echoing the sequence. Folding retains the 1200-residue cap and scoring the 1024-residue cap. GPU indices are nonnegative integers, bounded by a positive registered device count; zero registered devices means the count is unknown. Cycles/steps are positive integers. Position lists, tuples and comma-separated integer strings use 1-based in-sequence indices; booleans, fractions, empty items and nonfinite values are rejected.
+
+Zero SSH exit status is required even when all output markers are present. JSON objects, strict base64/UTF-8, finite coordinates/scores, sequence/modelled-residue counts, mutation identities and CSV column agreement are validated before success provenance is recorded. Invalid or incomplete payloads return the single-key Host error contract, raised as `RuntimeError` in Python Cells. Every requested position must appear in at least one CSV row; no fixed candidate count per position is assumed. Optional `top5` entries must match those validated rows. Because the service does not declare an aggregate statistic rule, the top-level `mean_score` is null; `summary.mean_score` is null when provided and remains omitted when absent. These structural checks do not establish prediction accuracy; failures never automatically rerun the remote job.
 
 Both are governed by a strict **no-fabrication policy** — when no host is configured they *refuse and error* rather than invent a structure or scores — and each result records a reproducibility-provenance snapshot into its artifact.
 

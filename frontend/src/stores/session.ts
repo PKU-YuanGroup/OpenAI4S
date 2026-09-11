@@ -57,6 +57,52 @@ export const feedback = field(() => Object.create(null) as Record<string, unknow
 /** S.lastAnnotationReservation — app.js:8043 */
 export const lastAnnotationReservation = field(() => null as unknown);
 
+/** Read results belong to both a conversation and an opening generation. */
+export type HistoryLoadResult = {
+  messagesLoaded: boolean;
+  stepsLoaded: boolean;
+  runStateLoaded: boolean;
+  superseded: boolean;
+};
+export type HistoryLoadState = HistoryLoadResult & {
+  fid: string;
+  generation: number;
+  status: "loading" | "loaded" | "partial" | "error";
+  errors: Record<string, string>;
+  deferred: boolean;
+};
+export const historyLoad = field(() => null as HistoryLoadState | null);
+export const historyMutation = field(() => 0);
+export const historyUnconfirmed = field(() => 0);
+const historyPendingSubmissions = field(() => new Set<object>());
+export function resetHistorySubmissions(): void {
+  historyPendingSubmissions.value = new Set();
+  historyUnconfirmed.value = 0;
+}
+export function beginHistorySubmission(): () => void {
+  const pending = historyPendingSubmissions.value;
+  const token = {};
+  pending.add(token);
+  historyUnconfirmed.value = pending.size;
+  noteHistoryMutation();
+  return () => {
+    // Navigation can replace this set. A late admission must not settle a
+    // submission belonging to the new visit, even when its frame id matches.
+    if (historyPendingSubmissions.value === pending && pending.delete(token)) {
+      historyUnconfirmed.value = pending.size;
+      noteHistoryMutation();
+    }
+  };
+}
+export const historyContent = field(() => null as {
+  fid: string;
+  messages: Array<Record<string, unknown>>;
+  steps: Array<Record<string, unknown>>;
+} | null);
+export function noteHistoryMutation(): void {
+  historyMutation.value += 1;
+}
+
 export const sessionSignals = {
   projects,
   sessions,

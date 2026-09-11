@@ -1,5 +1,5 @@
 {
-  "name": "openai4s-skills",
+  "name": "@pku-yuangroup/openai4s-skills",
   "version": "0.2.0",
   "description": "Install the OpenAI4S Skill library (604 scientific recipes) into Claude Code, OpenAI4S, or any directory.",
   "keywords": [

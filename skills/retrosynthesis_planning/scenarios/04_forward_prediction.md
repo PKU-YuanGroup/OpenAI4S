@@ -22,7 +22,7 @@ USPTO 派生数据的再发布条款需要独立审计。正式发布只提供�
 
 ### 测试集冻结规则
 
-1. 使用官方 `USPTO_MIT/MIT_separated/test.csv`，不重新随机切分。
+1. 从 Molecular Transformer 官方说明链接的 USPTO_MIT `USPTO/data.zip` 或 tokenized 数据包中确认所选 separated test 文件，保留原测试划分，不重新随机切分。上游示例使用 `src-test.txt` 与 `tgt-test.txt`；选定包内的实际路径和角色分隔规则仍须核验，不能假定已有官方 `test.csv`。若转换为本场景 CSV，记录来源成员文件、转换版本和哈希；候选来源见 [test_cases 来源核验](test_cases/README_zh.md)。
 2. 固定 RDKit 后去除 atom map，分别 canonicalize reactants、reagents 和 product；保留 isomeric 信息。
 3. 排除无产品、多个无法确定主产品、产品解析失败或输入前体为空的记录；所有排除理由进入审计。
 4. 以无 map 的 canonical full-reaction signature 去重；同一 precursor input 对应多个记录产品时保存为多参考答案，或在预注册规则下标为 ambiguous，不随机留一条。

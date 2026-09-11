@@ -75,7 +75,7 @@ export type LineageReviewModel = {
 export type EnvSnapshot = {
   source?: string;
   generation_confidence?: string;
-  provenance?: string;
+  provenance?: string | null;
   python_version?: string | null;
   implementation?: string;
   kind?: string;
@@ -84,7 +84,7 @@ export type EnvSnapshot = {
   packages?: Array<{ name?: string; version?: string }>;
   packages_unavailable?: string;
   interpreter?: string;
-  platform?: string;
+  platform?: string | null;
   remote?: unknown[];
   [key: string]: unknown;
 };

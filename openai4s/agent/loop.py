@@ -1120,6 +1120,7 @@ class Agent:
             read_isolation=self.read_isolation,
             cell_hooks_factory=self.delegated_cell_hooks_factory,
             env=self.env,
+            cancelled=self._cancelled,
         )
         self._delegation_runner = runner
         self.dispatcher._delegate_fn = runner

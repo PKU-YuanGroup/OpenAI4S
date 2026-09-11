@@ -290,6 +290,18 @@ def test_sources_projection_links_artifact_versions(tmp_path):
     assert cells[0]["artifacts"] == [version_id]
     assert cells[1]["artifacts"] == [version_id]
 
+    notebook = ExecutionViewService(store=store, format_timestamp=str).execution_log(
+        child
+    )
+    assert [
+        entry["output_artifacts"][0]["version_id"] for entry in notebook["entries"]
+    ] == [version_id, version_id]
+    assert all(
+        entry["output_artifacts"][0]["url"]
+        == f"/api/v1/artifacts/versions/{version_id}"
+        for entry in notebook["entries"]
+    )
+
 
 def test_interrupted_cells_carry_the_stored_interrupted_flag():
     """The ``interrupted`` field must agree with the stored row, not default.
@@ -639,3 +651,71 @@ def test_execution_sources_routes_serve_json_zip_and_404(tmp_path):
         assert missing_zip["code"] == 404
     finally:
         client.runner.close()
+
+
+def test_notebook_output_projection_respects_fork_prefix_and_producer_frame(tmp_path):
+    from openai4s.server.session_domain import SessionDomainService
+
+    store = _store()
+    root = store.new_frame(kind="turn", status="ready")
+    workspaces = tmp_path / "workspaces"
+
+    def workspace(_root, branch):
+        path = workspaces / branch
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    domain = SessionDomainService(store, data_dir=tmp_path, workspace=workspace)
+    path = workspace(root, root) / "plot.txt"
+
+    def capture(cell_id, text, frame_id=root):
+        path.write_text(text)
+        return store.record_cell_artifact(
+            path=str(path),
+            filename="plot.txt",
+            content_type="text/plain",
+            size_bytes=len(text),
+            checksum=hashlib.sha256(text.encode()).hexdigest(),
+            producing_cell_id=cell_id,
+            frame_id=frame_id,
+            root_frame_id=root,
+        )
+
+    _log_root_cell(store, root, "before-fork", "print(1)", index=1)
+    original = capture("before-fork", "one")
+    checkpoint = domain.create_checkpoint(root, reason="fork boundary")
+    branch = domain.fork_branch(root, from_checkpoint_id=checkpoint["checkpoint_id"])
+    _log_root_cell(store, root, "after-fork", "print(2)", index=2)
+    later = capture("after-fork", "two")
+    # Both reused-byte observations and version producers must own the Cell.
+    capture("before-fork", "two", frame_id="wrong-frame")
+    capture("before-fork", "foreign", frame_id="wrong-frame")
+    view = ExecutionViewService(store=store, format_timestamp=str)
+    rows = view.execution_log(root, branch_id=branch["branch_id"])["entries"]
+    assert [row["producing_cell_id"] for row in rows] == ["before-fork"]
+    assert [item["version_id"] for item in rows[0]["output_artifacts"]] == [
+        original["version_id"]
+    ]
+    assert later["version_id"] not in str(rows)
+
+    sources = ExecutionSourcesService(store).projection(
+        root, branch_id=branch["branch_id"]
+    )
+    source_cells = sources["frames"][0]["cells"]
+    assert [cell["id"] for cell in source_cells] == ["before-fork"]
+    assert source_cells[0]["artifacts"] == [original["version_id"]]
+
+
+def test_sources_branch_read_failure_never_falls_back_to_unfiltered_history(
+    monkeypatch,
+):
+    store = _store()
+    root = store.new_frame(kind="turn", status="ready")
+    _log_root_cell(store, root, "private-cell", "print('hidden')", index=1)
+
+    def broken_branch(_branch_id):
+        raise RuntimeError("checkpoint database read failed")
+
+    monkeypatch.setattr(store, "get_session_branch", broken_branch)
+    with pytest.raises(RuntimeError, match="checkpoint database read failed"):
+        ExecutionSourcesService(store).projection(root)

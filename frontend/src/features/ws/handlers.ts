@@ -3,9 +3,8 @@ import {
   _tbl,
   artifacts as artifactsSignal,
 } from "../../stores/artifacts";
-import { _liveCell, liveCells } from "../../stores/notebook";
-import { currentId, project, sessions as sessionsSignal } from "../../stores/session";
-import { _replayGap, _seqSeen, _streamEpoch, stream as liveStream } from "../../stores/stream";
+import { _openGen, currentId, project, sessions as sessionsSignal, type HistoryLoadResult } from "../../stores/session";
+import { _replayGap, _seqSeen, _streamEpoch } from "../../stores/stream";
 import { eventFrameId, mine, tryLane } from "./guards";
 import { hasWsHandler, registerWsHandler } from "./registry";
 import type { WsHandler, WsMessage } from "./types";
@@ -151,7 +150,9 @@ export function upsertArtifactFromEvent(m: WsMessage): Record<string, unknown> |
   if (tbl && fn) {
     const base = fn.split("/").pop();
     if (base) {
-      for (const k in tbl) if (k.indexOf(base) !== -1) delete tbl[k];
+      for (const k in tbl) {
+        if (!k.includes("/artifacts/versions/") && k.includes(base)) delete tbl[k];
+      }
     }
   }
   return row;
@@ -167,11 +168,8 @@ function handleReplayBegin(m: WsMessage): void {
     _seqSeen.value = {};
   }
   if (mine(fid)) {
-    const live = liveStream.value as { wrap?: { remove: () => void } } | null;
-    if (live && live.wrap) live.wrap.remove();
-    liveStream.value = null;
-    liveCells.value = [];
-    _liveCell.value = null;
+    // A reconnect is not proof that the currently visible stream is invalid.
+    // Preserve it until a complete, quiet REST read can replace the transcript.
     // `gap` means the server could not serve our cursor — the buffer had
     // aged past it, or it belonged to a previous run. Replaying from a hole
     // we cannot see would leave the transcript quietly wrong, so reload it.
@@ -183,15 +181,32 @@ function handleReplayBegin(m: WsMessage): void {
   }
 }
 
+let replayRecovery: { fid: string; gen: number; promise: Promise<unknown> } | null = null;
 function handleReplayEnd(m: WsMessage): void {
   const fid = eventFrameId(m);
-  if (mine(fid)) {
-    if (_replayGap.value === fid) {
-      _replayGap.value = null;
-      tryLane("openConversation", fid, project.value);
+  if (!mine(fid) || typeof fid !== "string") return;
+  if (_replayGap.value === fid) {
+    const gen = _openGen.value;
+    if (replayRecovery?.fid !== fid || replayRecovery.gen !== gen) {
+      const host = globalThis as Record<string, unknown>;
+      const fn = host.recoverConversation || host.openConversation;
+      if (typeof fn === "function") {
+        const promise = Promise.resolve().then(() =>
+          host.recoverConversation === fn ? fn(fid, gen) : fn(fid, project.value),
+        ).then((raw: unknown) => {
+          const result = raw as HistoryLoadResult | undefined;
+          if (currentId.value === fid && _openGen.value === gen && result &&
+            !result.superseded && result.messagesLoaded && result.stepsLoaded && result.runStateLoaded) {
+            _replayGap.value = null;
+          }
+        }).catch(() => { /* preserve the gap and the existing history error */ });
+        const own = { fid, gen, promise };
+        replayRecovery = own;
+        void promise.finally(() => { if (replayRecovery === own) replayRecovery = null; });
+      }
     }
-    tryLane("down");
   }
+  tryLane("down");
 }
 
 function handleFrameUpdate(m: WsMessage): void {

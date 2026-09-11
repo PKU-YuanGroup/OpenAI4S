@@ -15,64 +15,64 @@ is a factual record of the v0.3 plan and is validated by
 
 ## Publishing
 
-- [ ] **Publish `openai4s-skills` to npm.** The package is complete and gated
-      (`node tools/skills-installer/selftest.mjs`,
-      `node tools/skills-installer/check_package.mjs`). From a clean checkout,
-      the released `v0.2.0` tag passes all 16 installer self-tests and packs
-      2,212 files / 603 Skills / 6.4 MB; current `main` packs 2,236 files /
-      604 Skills / 6.5 MB. Until it is published,
-      `npx openai4s-skills …` does not resolve; `npx github:PKU-YuanGroup/OpenAI4S install --all`
-      works today and is what every doc site and the CLI's own `--help` lead
-      with — the root README, `docs/skills.md`, `tools/`, and each Skill's own
-      page, whose Install section is worded to stay true after publication. A
-      live `npm view openai4s-skills version` still returned `E404` on 2026-09-01.
-      *Done when:* `npm publish --access public` has run from a clean checkout
-      of the released tag, `npx openai4s-skills list` works on a machine with
-      no checkout, and the five pages that still say the name does not resolve
-      have stopped saying it — `README.md` (also the npm and PyPI front page),
-      `README_zh.md`, `docs/skills.md`, `tools/skills-installer/README.md` and
-      `README_zh.md`; `grep -rlE --exclude='TODO*' 'not on npm yet|name does not resolve|还没有发布到 npm|名字解析不到' README.md README_zh.md docs tools`
-      lists exactly those five. Needs an npm account with publish rights — no
-      automated agent should hold that credential.
+- [x] **Publish `@pku-yuangroup/openai4s-skills` to npm.**
+      [Version 0.2.0 is public](https://www.npmjs.com/package/@pku-yuangroup/openai4s-skills/v/0.2.0)
+      and is the registry's `latest` tag. It uses released `v0.2.0` source
+      (`c5e80a38306e`) with the organization package name and npm command
+      wording adapted; all 603 Skill payloads remain unchanged. The 16
+      installer self-tests, package check and source secret scan pass.
+      The registry tarball matches the verified candidate: SHA256
+      `c4c31b56e34e8d73c1fe73ee8a2c7246f7e9654c1e3ee0cec4138f449be94d47`.
+      A fresh npm cache in an empty directory outside any checkout ran
+      `npx @pku-yuangroup/openai4s-skills@0.2.0 list --offline` successfully:
+      42 curated + 561 bioSkills, 2,212 packaged files / 6.4 MiB. Organization
+      installation docs are synchronized. The current source tree has 604
+      Skills; `single-cell-rna-analysis` is not part of npm 0.2.0 and its
+      documentation retains the GitHub installation path.
 
-- [ ] **Freeze the six retrosynthesis production datasets.** Every row in
-      `skills/retrosynthesis_planning/scenarios/test_cases/database_sources.json`
-      is `"release_status": "not_frozen"` — USPTO-50K, PaRoutes, the curated
-      atom-mapping benchmark, the MIT-licensed USPTO forward split, the
-      reviewed Parrot condition snapshot, and the Buchwald-Hartwig HTE
-      distribution-shift splits. Until they are frozen the six bundled cases
-      are deterministic protocol smoke tests with one row each and make no
-      scientific-accuracy claim, which is the single fact separating "six
-      benchmarks" from "six wiring checks". The blocker is outside the
-      codebase: acquiring each source, reviewing its redistribution licence,
-      and pinning a revision. *Done when:* each scenario row carries
-      `release_status: "frozen"` with `revision`, `license`, `split` and
-      `sha256`, and `test_production_database_registry_fails_closed_until_frozen`
-      passes against the frozen rows. Needs a maintainer with the licence
-      decision; no automated agent should make it.
+- [ ] **Freeze the six retrosynthesis production datasets.** All six entries
+      in `skills/retrosynthesis_planning/scenarios/test_cases/database_sources.json`
+      remain `not_frozen`; the bundled one-row cases are protocol checks with
+      no scientific-accuracy claim. [Verified source candidates](../skills/retrosynthesis_planning/scenarios/test_cases/README.md#production-source-verification-2026-09-09)
+      now identify upstream revisions, files and license metadata, including
+      PaRoutes CC BY 4.0 and original USPTO CC0 evidence. Code licenses are not
+      treated as permission for a derived dataset. Maintainers must record
+      dataset admission/attribution decisions and select an independent
+      atom-mapping truth file and reviewer. *Done when:* the actual approved
+      data and derived splits have verified SHA256, every row carries the
+      required revision/license/split/hash and is marked `frozen`, and the
+      fail-closed registry test passes. A nonempty-field test alone does not
+      establish licensing, file integrity or independent ground truth.
 
 ## CI and supply chain
 
-- [ ] **Batch the Monday dependency PRs across ecosystems.** `groups:` is
-      per-ecosystem by construction, so the uv, pre-commit and github-actions
-      updates arrive as three PRs and have been consolidated onto one branch by
-      hand at least four times (#75, #97, #131). Dependabot supports doing this
-      in config: a top-level `multi-ecosystem-groups` key plus
-      `multi-ecosystem-group: <name>` on each `updates` entry. Not done here
-      because the entries would have to give up their own `schedule:` blocks
-      and a misconfiguration stops Dependabot opening PRs at all, which is a
-      worse failure than the one it fixes — it wants its own PR and one
-      observed Monday.
-      *Done when:* a single Dependabot PR carries updates from more than one
-      ecosystem, and the following Monday's run still opens PRs normally.
-      Learned on the first attempt (reverted out of
-      [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143) to land alone):
-      `update-types`, `exclude-patterns` and `dependency-type` are `groups:`-only
-      keys and are rejected at the entry level; a second entry for the same
-      ecosystem and directory is a shape only a maintainer's example uses; and
-      the complementary `ignore` such a pair needs also filters *security*
-      updates, which the current `groups:` never do. `tests/test_governance.py`
-      now fails offline on the first two.
+- [x] **Run the final C1–C7 patch on the required Linux/platform gates.**
+      Commit `1b56dc100c142f48c5f8d45631720e7eb6592052` passed the
+      [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003)
+      on its first attempt: Python 3.10/3.12/3.13/3.14, container smoke,
+      Linux Python/R interrupt and enforced sandbox, Chromium/Firefox/WebKit,
+      packaging, types, documentation and contracts. The
+      [Chromium job](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003/job/102763034866)
+      passed the C1/C3/C5/C7 product scenes, admission fault, sandbox preview
+      and 10/10 matrix checks. Its workflow now installs the locked science
+      extra for the real matplotlib fixture that was missing in the previous
+      run; no scenario or assertion was removed. The
+      [response capture](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34443430003/job/102763034845)
+      passed with 1,165 shapes, 212/212 routes and no breaking change, without
+      changing the performance threshold. Local final validation also passed:
+      8,767 offline tests / 33 skips, 112 focused tests, 38 harness scenarios,
+      full pre-commit, and isolated wheel/sdist installation and import smoke.
+
+- [ ] **Observe the Monday dependency batch across ecosystems.**
+      [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) assigns uv,
+      npm, Docker, pre-commit and GitHub Actions to one Monday group. The
+      selected policy includes major versions, black and isort, with no
+      allow/ignore filters. Its 13 governance tests and full pre-commit checks
+      pass, as does its [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34441714995).
+      *Done when:* after code-owner review and default-branch merge, a
+      real Dependabot PR contains multiple ecosystems and the following
+      Monday still produces updates normally. The configuration is prepared;
+      those scheduled outcomes have not been observed.
 
 ## Closed recently, recorded so it is not re-investigated
 

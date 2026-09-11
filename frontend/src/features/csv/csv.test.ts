@@ -59,3 +59,41 @@ describe("delimiterFor", () => {
     expect(delimiterFor("x.dat", "", "a;b;c")).toBe(";");
   });
 });
+
+describe("heterogeneous JSON tables", () => {
+  const wrap = (key: string | null, rows: unknown[]) => JSON.stringify(key ? { [key]: rows } : rows);
+  it("keeps sparse object rows unchanged through every supported wrapper", () => {
+    for (const key of [null, "rows", "data", "candidates", "items"]) {
+      expect(parseTable(wrap(key, [{}, { late: 0, valid: false }]), { filename: "data.json" })).toEqual(
+        [{}, { late: 0, valid: false }],
+      );
+    }
+  });
+  it("refuses a non-object at any row instead of filtering it from the source", () => {
+    for (const key of [null, "rows", "data", "candidates", "items"]) {
+      for (const invalid of [null, [], 0, false, "text"]) {
+        for (const rows of [
+          [invalid, { a: 1 }], [{ a: 1 }, invalid], [{ a: 1 }, invalid, { b: 2 }],
+        ]) {
+          expect(parseTable(wrap(key, rows), { filename: "data.json" })).toBeNull();
+        }
+      }
+    }
+  });
+});
+
+describe("array-of-array JSON tables", () => {
+  it("renders a homogeneous array of arrays as positional columns", () => {
+    expect(parseTable("[[1,2],[3,4]]", { filename: "values.json" })).toEqual([
+      { "0": 1, "1": 2 },
+      { "0": 3, "1": 4 },
+    ]);
+    expect(parseTable(JSON.stringify({ rows: [["a"], ["b", "c"]] }), { filename: "values.json" })).toEqual([
+      { "0": "a" },
+      { "0": "b", "1": "c" },
+    ]);
+  });
+  it("still refuses a mix of array and object rows", () => {
+    expect(parseTable("[[1,2],{\"a\":1}]", { filename: "values.json" })).toBeNull();
+  });
+});

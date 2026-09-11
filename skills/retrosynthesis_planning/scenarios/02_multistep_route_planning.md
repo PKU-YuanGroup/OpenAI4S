@@ -14,7 +14,7 @@ Benchmark 采用 PaRoutes 的 n1/n5 目标、参考路线和库存。PaRoutes �
 
 ### 已验证的数据来源
 
-- **PaRoutes**：MolecularAI 官方仓库以 Apache-2.0 发布评测代码；Zenodo 记录 6275421 发布 n1/n5 targets、stocks、reference routes 和约 150k 训练路线，并提供文件校验信息。
+- **PaRoutes**：MolecularAI 官方仓库以 Apache-2.0 发布评测代码；[Zenodo 记录 6275421](https://zenodo.org/records/6275421) 的版本为 `1.0.0`，[记录 API](https://zenodo.org/api/records/6275421) 明确声明数据许可为 CC BY 4.0，提供 n1/n5 targets、stocks、reference routes、约 150k 训练路线及上游 MD5。文件候选清单见 [test_cases 来源核验](test_cases/README_zh.md)；这不代表维护者已准入或本地 SHA256 已验证。
 - **AiZynthFinder**：MolecularAI 官方开源 planner；公开数据下载器提供可本地部署的 expansion/filter policy 和 stock assets。
 - **RetroChimera / Syntheseus**：可作为替代 expansion policy，但比较搜索器时必须固定同一个 policy，不允许 planner A 和 B 各自使用最有利模型。
 

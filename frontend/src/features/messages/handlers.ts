@@ -5,6 +5,7 @@
  * `step` / `plan_*` / `await_permission` stay F-11; `notebook_cell_*` stay F-14.
  */
 
+import { noteHistoryMutation } from "../../stores/session";
 import { eventFrameId, isStaleTurnEvent, mine } from "../ws/guards";
 import { hasWsHandler, registerWsHandler } from "../ws/registry";
 import type { WsMessage } from "../ws/types";
@@ -13,12 +14,13 @@ import { feed, startStream } from "./stream";
 
 function handleTextReset(m: WsMessage): void {
   const fid = eventFrameId(m);
-  if (mine(fid) && !isStaleTurnEvent(m)) startStream();
+  if (mine(fid) && !isStaleTurnEvent(m)) { noteHistoryMutation(); startStream(); }
 }
 
 function handleTextChunk(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid) || isStaleTurnEvent(m)) return;
+  noteHistoryMutation();
   feed(
     String(m.block_type || "text"),
     String(m.chunk || ""),

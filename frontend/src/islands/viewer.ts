@@ -9,8 +9,8 @@ import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
 import { isReady } from "../compat/stub";
-import { API, api, apiErrorText, artifactsFetch, bytes } from "../features/artifacts/api";
-import { artUrl, syncArtifactVersion } from "../features/artifacts/cache";
+import { api, apiErrorText, bytes, fetchArtifactText } from "../features/artifacts/api";
+import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
 import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
@@ -103,7 +103,7 @@ export function openArtifact(a: ArtifactRow): void {
   const dl = $("#modal-download") as HTMLAnchorElement | null;
   if (dl) {
     dl.style.display = "";
-    dl.href = `${API}/artifacts/${a.id}`;
+    dl.href = artUrl(a);
     dl.setAttribute("download", a.filename || "artifact");
   }
   const body = $("#modal-body");
@@ -136,7 +136,7 @@ async function deleteArtifact(a: ArtifactRow): Promise<void> {
   if (!ok) return;
   try {
     await api(`/artifacts/${a.id}`, { method: "DELETE" });
-    closeTab(a.id);
+    closeTab(artifactTabKey(a));
     if (currentId.value) void loadArtifacts(currentId.value);
     hint(translate("artifact.deleted", a.filename || ""));
   } catch (e) {
@@ -162,16 +162,16 @@ function renderArtifactEditor(body: HTMLElement, a: ArtifactRow): void {
   const pop = el("div", "edit-ac hidden");
   body.appendChild(pop);
   bindEditorAutocomplete(ta, a);
-  artifactsFetch(`${API}/artifacts/${a.id}?_=${Date.now()}`)
-    .then((r) => r.text())
+  fetchArtifactText(artUrl(a))
     .then((text) => {
       ta.value = text;
       ta.disabled = false;
       ta.focus();
     })
     .catch(() => {
-      ta.value = "";
-      ta.disabled = false;
+      ta.value = translate("viewer.renderer.error");
+      ta.disabled = true;
+      save.disabled = true;
     });
   cancel.onclick = () => {
     _editing.value = null;
@@ -207,7 +207,7 @@ async function setArtPriority(a: ArtifactRow, p: number, closeAfter?: boolean): 
     a.priority = p;
     hint(p > 0 ? translate("artifact.starred") : p < 0 ? translate("artifact.hidden") : translate("artifact.unstarred"));
     if (currentId.value) void loadArtifacts(currentId.value);
-    if (closeAfter && dockArtifact.value === a) closeTab(a.id);
+    if (closeAfter && dockArtifact.value === a) closeTab(artifactTabKey(a));
   } catch (e) {
     hint(translate("artifact.priority.err", apiErrorText(e)), true);
   }
@@ -217,11 +217,12 @@ async function exportMetadata(a: ArtifactRow): Promise<void> {
   try {
     const [versions, lineage] = await Promise.all([
       api(`/artifacts/${a.id}/versions`).catch(() => ({ versions: [] })),
-      api(`/artifacts/${a.id}/lineage`).catch(() => ({})),
+      api(artifactMetadataUrl(a, "lineage")).catch((error: unknown) => { if (artifactMetadataTarget(a)._exactVersion) throw error; return {}; }),
     ]);
     const verRec = versions && typeof versions === "object" ? (versions as { versions?: unknown }) : {};
     const meta = {
       id: a.id,
+      version_id: a._exactVersion ? a.version_id : null,
       filename: a.filename,
       content_type: a.content_type,
       size_bytes: a.size_bytes,
@@ -262,7 +263,7 @@ function artifactMenu(anchor: Element, a: ArtifactRow): void {
           const nav = (globalThis as { navigator?: { clipboard?: { writeText?: (s: string) => void } } })
             .navigator;
           if (nav && nav.clipboard && nav.clipboard.writeText)
-            nav.clipboard.writeText(location.origin + API + "/artifacts/" + a.id);
+            nav.clipboard.writeText(artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null));
         } catch {
           /* clipboard denied */
         }
@@ -273,7 +274,8 @@ function artifactMenu(anchor: Element, a: ArtifactRow): void {
       label: translate("common.edit"),
       icon: "pencil",
       onClick: () => {
-        if (isTextEditable(a)) editArtifact(a);
+        if (a._exactVersion) hint(filesT("artifact.editPinned"));
+        else if (isTextEditable(a)) editArtifact(a);
         else hint(translate("artifact.notEditable"));
       },
     },
@@ -362,7 +364,7 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
       row.appendChild(info);
       const acts = el("div", "ver-acts");
       const view = el("a", "outline-btn small", translate("common.view"));
-      view.href = `${API}/artifacts/${v.version_id}`;
+      view.href = artUrl({ id: a.id, version_id: v.version_id, _exactVersion: true });
       view.target = "_blank";
       acts.appendChild(view);
       const previous = isTextEditable(a)
@@ -464,7 +466,9 @@ export function renderViewer(): void {
   menuBtn.onclick = () => artifactMenu(menuBtn, a);
   acts.appendChild(menuBtn);
   acts.appendChild(copy);
-  if (!provMode.value && isTextEditable(a)) {
+  // A pinned tab shows immutable bytes; `/edit` always writes the head, so an
+  // editor seeded from an older version would silently supersede newer ones.
+  if (!provMode.value && !a._exactVersion && isTextEditable(a)) {
     const editBtn = ghostIconBtn("pencil", translate("common.edit"));
     editBtn.onclick = () => editArtifact(a);
     acts.appendChild(editBtn);
@@ -481,7 +485,7 @@ export function renderViewer(): void {
     if (provMode.value) {
       provMode.value = false;
       renderViewer();
-    } else closeTab(a.id);
+    } else closeTab(artifactTabKey(a));
   };
   acts.appendChild(maxBtn);
   acts.appendChild(dl);

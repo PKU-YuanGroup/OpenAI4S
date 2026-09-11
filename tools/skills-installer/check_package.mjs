@@ -3,7 +3,7 @@
  * Assert that `npm pack` would publish a usable package.
  *
  * `package.json`'s `files` list is the whole contract between this repository
- * and what a user gets from `npx openai4s-skills`, and it is a list of globs
+ * and what a user gets from `npx @pku-yuangroup/openai4s-skills`, and it is a list of globs
  * with nothing checking it against the tree. The failure it protects against
  * is not a crash: an entry that stopped matching publishes a CLI that runs,
  * finds no bundled Skills, and silently falls back to downloading 100 MB of

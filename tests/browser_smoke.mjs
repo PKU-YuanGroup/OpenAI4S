@@ -7,6 +7,7 @@ try {
   playwright = await import(fallback);
 }
 const { chromium } = playwright;
+import assert from "node:assert/strict";
 import { authenticate, waitUntil } from "./browser_auth.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
@@ -129,6 +130,294 @@ async function dumpBranchForkState(frameId) {
   return { snapshot, apiBranches };
 }
 
+// C1/C3/C7 correctness cases use real persisted Cells/Artifacts. REST faults
+// and anonymous event interleavings are explicitly injected UI fault fixtures.
+async function correctnessScenes(projectId) {
+  const made = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const fid = made.id || made.frame_id;
+  await page.evaluate(async ({ fid, projectId }) => window.openConversation(fid, projectId), { fid, projectId });
+  await ensureDockOpen();
+  let autoFigureName = "";
+  async function execute(revision) {
+    const code = [
+      "from pathlib import Path", "import struct, zlib",
+      "def png_chunk(kind, data):", "    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)",
+      `rgb = bytes([${revision === 1 ? "255, 0, 0" : "0, 0, 255"}])`,
+      "image_bytes = bytes([137,80,78,71,13,10,26,10]) + png_chunk(b'IHDR', struct.pack('>2I5B', 1,1,8,2,0,0,0)) + png_chunk(b'IDAT', zlib.compress(bytes([0]) + rgb)) + png_chunk(b'IEND', b'')",
+      "Path('history.png').write_bytes(image_bytes)",
+      `Path('history.csv').write_text('revision,value\\n${revision},${revision * 11}\\n'.replace('\\\\n', '\\n'))`,
+      "Path('left').mkdir(exist_ok=True)", "Path('right').mkdir(exist_ok=True)",
+      `Path('left/same.csv').write_text('side,value\\nleft,${revision}\\n'.replace('\\\\n', '\\n'))`,
+      `Path('right/same.csv').write_text('side,value\\nright,${revision}\\n'.replace('\\\\n', '\\n'))`,
+      ...(revision === 1 ? ["import matplotlib; matplotlib.use('Agg')", "import matplotlib.pyplot as plt", "plt.figure(); plt.plot([0, 1], [1, 0])"] : [`Path(${JSON.stringify(autoFigureName)}).write_bytes(image_bytes)`]),
+      `print('correctness revision ${revision}')`,
+    ].join("\n");
+    const result = await api(`/frames/${fid}/kernel/execute`, { method: "POST", data: { language: "python", code, wait: true } });
+    assert.ok(!result.error, JSON.stringify(result));
+    const log = await api(`/frames/${fid}/execution-log`);
+    const entry = log.entries.find((row) => row.source.includes(`correctness revision ${revision}`));
+    assert.ok(entry && !entry.error, JSON.stringify(entry));
+    const outputs = entry.output_artifacts || [];
+    for (const name of ["history.png", "history.csv", "left/same.csv", "right/same.csv"]) {
+      assert.equal(outputs.filter((row) => row.filename === name).length, 1, `exact output binding ${name}`);
+    }
+    return entry;
+  }
+  const first = await execute(1);
+  const v1 = first.output_artifacts.find((row) => row.filename === "history.csv");
+  assert.equal(first.figures.length, 1, "real matplotlib figure captured by the daemon");
+  autoFigureName = first.figures[0];
+  const image1 = first.output_artifacts.find((row) => row.filename === autoFigureName);
+  const originalImage = await (await page.request.get(new URL(image1.url, baseUrl).toString())).body();
+  await page.evaluate(async (a) => {
+    await window.openViewer({ id: a.artifact_id, filename: a.filename, version_id: a.version_id });
+    window.openViewer({ id: a.artifact_id, filename: a.filename, content_type: "text/csv" });
+  }, v1);
+  assert.equal(await page.locator("#dock-tabs .dock-tab").filter({ hasText: "history.csv" }).count(), 2);
+  await page.locator("#dock-tabs .dock-tab").filter({ hasText: v1.version_id }).click();
+  await page.locator("#dock-viewer table.sheet").waitFor();
+  assert.match(await page.locator("#dock-viewer").innerText(), /11/);
+  const metadataRequests = [];
+  const recordMetadata = (request) => { if (/\/(lineage|environment)(?:\?|$)/.test(request.url()) && request.url().includes(v1.artifact_id)) metadataRequests.push(request.url()); };
+  page.on("request", recordMetadata);
+  await page.locator('[data-f16-provenance="1"]').click();
+  await page.locator(".prov-subtab").filter({ hasText: "Environment" }).click();
+  await waitUntil("exact environment read", async () => metadataRequests.some((url) => url.includes("/environment?version=")));
+  assert.ok(metadataRequests.every((url) => new URL(url).searchParams.get("version") === v1.version_id));
+  await page.locator('[data-f16-provenance="back"]').click();
+  const second = await execute(2);
+  const v2 = second.output_artifacts.find((row) => row.filename === "history.csv");
+  assert.equal(v1.artifact_id, v2.artifact_id);
+  assert.notEqual(v1.version_id, v2.version_id);
+  await waitUntil("new persisted Artifact event", async () => workbenchEvents.some((event) =>
+    event.type === "artifact_created" && JSON.stringify(event).includes(v2.version_id)));
+  const pinned = await page.evaluate(() => window.S.dockArtifact);
+  assert.equal(pinned.version_id, v1.version_id);
+  assert.equal(pinned._exactVersion, true);
+  assert.match(await page.locator("#dock-viewer").innerText(), /11/);
+  assert.doesNotMatch(await page.locator("#dock-viewer table.sheet").innerText(), /22/);
+  page.off("request", recordMetadata);
+  const latestTab = page.locator("#dock-tabs .dock-tab").filter({ hasText: "history.csv" }).filter({ hasNotText: v1.version_id });
+  await latestTab.click();
+  await waitUntil("latest sheet v2", async () => (await page.locator("#dock-viewer").innerText()).includes("22"));
+  const latestReads = [];
+  const recordLatest = (request) => { if (new URL(request.url()).pathname === `/api/v1/artifacts/${v1.artifact_id}`) latestReads.push(request.url()); };
+  page.on("request", recordLatest);
+  // Reopening rebuilds the Notebook through the real execution-log projection.
+  await page.reload({ waitUntil: "networkidle" });
+  await ensureDockOpen();
+  await page.evaluate(() => window.setActiveTab("notebook"));
+  const cell1 = page.locator(`.notebook-cell[data-producing-cell="${first.producing_cell_id}"]`).first();
+  await cell1.waitFor();
+  await cell1.locator("img.nbc-fig").waitFor();
+  assert.equal(await cell1.locator("img.nbc-fig").getAttribute("src"), image1.url);
+  assert.ok(await cell1.locator("img.nbc-fig").evaluate((node) => node.complete && node.naturalWidth > 0));
+  assert.match(await cell1.innerText(), /11/);
+  assert.doesNotMatch(await cell1.locator("table.nbc-table").first().innerText(), /22/);
+  for (const out of first.output_artifacts) {
+    const response = await page.request.get(new URL(out.url, baseUrl).toString());
+    assert.equal(response.status(), 200);
+    const link = cell1.locator(`a[download="${out.filename}"]`);
+    assert.ok(await link.count(), `download link ${out.filename}`);
+    assert.equal(await link.first().getAttribute("href"), out.url);
+    if (out.filename === autoFigureName) assert.deepEqual(await response.body(), originalImage);
+    if (out.filename.endsWith("same.csv")) assert.match(await response.text(), new RegExp(out.filename.split("/")[0] + ",1"));
+  }
+  // The conversation's separate latest-file thumbnail also reads the head.
+  // Measure that normal page load so only additional failure fallback fails.
+  const normalLatestReads = latestReads.length;
+  latestReads.length = 0;
+  await page.route(`**${v1.url}*`, (route) => route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"fixture missing version"}' }));
+  try {
+    await page.reload({ waitUntil: "networkidle" }); await ensureDockOpen();
+    await page.evaluate(() => window.setActiveTab("notebook"));
+    const failedCell = page.locator(`.notebook-cell[data-producing-cell="${first.producing_cell_id}"]`).first();
+    await failedCell.locator(".nbc-artifact-error").waitFor();
+    assert.equal(latestReads.length, normalLatestReads, "historical failure adds no latest request beyond normal thumbnails");
+    const failedRead = page.waitForResponse((response) => new URL(response.url()).pathname === v1.url && response.status() === 404);
+    await failedCell.locator(".nbc-artifact-error button").click();
+    await failedRead;
+    assert.equal(latestReads.length, normalLatestReads, "retry requests only the exact failed version");
+  } finally { await page.unroute(`**${v1.url}*`); page.off("request", recordLatest); }
+  console.log("C1 browser: real two-version Cells, reopen, exact figures/tables/downloads, same basename, fixed/latest tabs and 404 without latest passed");
+
+  // C3: failures remain visible; only GETs occur during recovery. Anonymous
+  // chunks intentionally have no message_id/turn_id, matching the legacy wire.
+  let mode = "503", gets = 0, actions = 0, streamRunning = false;
+  const messagesUrl = `**/api/v1/frames/${fid}/messages?*`;
+  const historyFixture = () => ({ messages: [{ role: "assistant", content: "confirmed history", seq: 1 },
+    ...(mode === "terminal" ? [{ role: "assistant", content: "anonymous stream survives", seq: 2 }] : [])], has_earlier: false });
+  await page.route(`**/api/v1/frames/${fid}/status`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: streamRunning, status: streamRunning ? "running" : "done" }) }));
+  const countActions = (request) => { if (!["GET", "HEAD"].includes(request.method())) actions++; };
+  page.on("request", countActions);
+  await page.route(messagesUrl, (route) => {
+    gets++;
+    return route.fulfill({ status: mode === "503" ? 503 : mode === "401" ? 401 : 200,
+      contentType: "application/json", body: JSON.stringify(mode === "503" || mode === "401" ? { error: "injected history fault", code: mode === "401" ? "unauthorized" : "unavailable", request_id: "browser-history" } : mode === "malformed" ? {} : historyFixture()) });
+  });
+  try {
+    for (const failure of ["503", "401", "malformed"]) {
+      mode = failure;
+      await page.evaluate(async ({ fid, projectId }) => window.openConversation(fid, projectId), { fid, projectId });
+      await page.locator('.history-load-status[data-history-state="partial"], .history-load-status[data-history-state="error"]').waitFor();
+      assert.equal(await page.locator("#messages .empty-session").count(), 0);
+      assert.match(await page.locator(".history-load-status").innerText(), failure === "401" ? /access|认证|权限/i : failure === "malformed" ? /Invalid|格式/i : /unavailable|不可用/i);
+    }
+    mode = "ok";
+    await page.locator(".history-load-status button").click();
+    await waitUntil("history retry recovered", async () => (await page.locator("#messages").innerText()).includes("confirmed history") && !(await page.locator(".history-load-status").count()));
+    await page.route(`**/api/v1/frames/${fid}/steps*`, (route) => route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"steps unavailable"}' }));
+    streamRunning = true;
+    await page.evaluate((fid) => {
+      window.onEvent({ type: "text_chunk", root_frame_id: fid, chunk: "anonymous stream survives" });
+      window.onEvent({ type: "replay_begin", root_frame_id: fid, gap: true });
+      window.onEvent({ type: "replay_end", root_frame_id: fid });
+    }, fid);
+    await page.locator('.history-load-status[data-history-state="partial"]').waitFor();
+    assert.match(await page.locator("#messages").innerText(), /confirmed history/);
+    assert.match(await page.locator("#messages").innerText(), /anonymous stream survives/);
+    assert.equal(await page.evaluate(() => window.S._replayGap), fid);
+    await page.unroute(`**/api/v1/frames/${fid}/steps*`);
+    mode = "terminal";
+    streamRunning = false;
+    await page.evaluate((fid) => window.onEvent({ type: "frame_update", root_frame_id: fid, frame_id: fid, status: "done" }), fid);
+    await waitUntil("terminal GET aligns anonymous history", async () => !(await page.locator(".history-load-status").count()));
+    await page.evaluate((fid) => window.onEvent({ type: "replay_end", root_frame_id: fid }), fid);
+    await waitUntil("complete recovery clears gap", async () => !(await page.evaluate(() => window.S._replayGap)));
+    assert.equal((await page.locator("#messages").innerText()).split("anonymous stream survives").length - 1, 1);
+    // A lost terminal event is recoverable from a current stopped status GET.
+    streamRunning = true;
+    await page.evaluate((fid) => {
+      window.onEvent({ type: "text_chunk", root_frame_id: fid, chunk: "anonymous stream survives" });
+      window.onEvent({ type: "replay_begin", root_frame_id: fid, gap: true });
+      window.onEvent({ type: "replay_end", root_frame_id: fid });
+    }, fid);
+    await page.locator('.history-load-status[data-history-state="partial"]').waitFor();
+    streamRunning = false;
+    await page.locator(".history-load-status button").click();
+    await waitUntil("lost terminal restored using GET", async () => !(await page.locator(".history-load-status").count()));
+    assert.equal((await page.locator("#messages").innerText()).split("anonymous stream survives").length - 1, 1);
+    assert.equal(actions, 0, "history retries may not execute or submit work");
+    assert.ok(gets < 20, `recovery GET storm: ${gets}`);
+  } finally { await page.unroute(messagesUrl); await page.unroute(`**/api/v1/frames/${fid}/status`); await page.unroute(`**/api/v1/frames/${fid}/steps*`); page.off("request", countActions); }
+  console.log("C3 browser: 503/401/malformed → visible failure → GET retry; steps gap and anonymous stream terminal alignment; zero execution requests passed");
+
+  async function showJson(filename, raw) {
+    const uploaded = await api("/uploads", { method: "POST", data: { frame_id: fid, project_id: projectId, filename, content_base64: Buffer.from(raw).toString("base64") } });
+    const versions = await api(`/artifacts/${uploaded.artifact_id}/versions`);
+    const row = versions.versions[0];
+    await page.evaluate(async (a) => window.openViewer(a), { id: uploaded.artifact_id, filename, version_id: row.version_id });
+    return `/api/v1/artifacts/versions/${row.version_id}`;
+  }
+  await showJson("sparse.json", JSON.stringify([{ a: 1 }, { a: 2, late: 3, zero: 0, bool: false, unsafe: "<img src=x onerror=window.__jsonXss=1>" }]));
+  await page.locator("#dock-viewer table.sheet").waitFor();
+  assert.deepEqual(await page.locator("#dock-viewer th").allTextContents(), ["a", "late", "zero", "bool", "unsafe"]);
+  assert.deepEqual((await page.locator("#dock-viewer tr").nth(2).locator("td").allTextContents()).slice(0, 4), ["2", "3", "0", "false"]);
+  assert.equal(await page.locator("#dock-viewer td img").count(), 0);
+  const mixed = JSON.stringify({ rows: [{ a: 1 }, null, [2], false, "<script>window.__jsonXss=1</script>"] });
+  await showJson("mixed.json", mixed);
+  await page.locator("#dock-viewer .renderer-source").waitFor();
+  assert.equal(await page.locator("#dock-viewer .renderer-source").textContent(), mixed);
+  const large = JSON.stringify({ items: [{ a: "safe words ".repeat(31000) }, null], tail: "END-OF-FULL-JSON" });
+  const largeUrl = await showJson("large-mixed.json", large);
+  await page.locator('#dock-viewer button[aria-expanded="false"]').waitFor();
+  assert.equal((await page.locator("#dock-viewer .renderer-source").textContent()).length, 300000);
+  let expansionGets = 0;
+  const countExpansion = (request) => { if (request.url().includes(largeUrl)) expansionGets++; };
+  page.on("request", countExpansion);
+  await page.locator('#dock-viewer button[aria-expanded="false"]').press("Enter");
+  assert.equal(await page.locator("#dock-viewer .renderer-source").textContent(), large);
+  assert.equal(expansionGets, 0, "expand uses the text already fetched");
+  page.off("request", countExpansion);
+  const fullUrl = await page.locator("#dock-viewer a[download]").last().getAttribute("href");
+  assert.equal(await (await page.request.get(new URL(fullUrl, baseUrl).toString())).text(), large);
+  assert.equal(await page.evaluate(() => window.__jsonXss), undefined);
+  const rows = Array.from({ length: 5001 }, (_, i) => i === 5000 ? { afterLimit: "late" } : { a: i });
+  await showJson("row-cap.json", JSON.stringify(rows));
+  await page.locator("#dock-viewer table.sheet").waitFor();
+  assert.deepEqual(await page.locator("#dock-viewer th").allTextContents(), ["a", "afterLimit"]);
+  assert.equal(await page.locator("#dock-viewer table.sheet tr").count(), 5001);
+  assert.match(await page.locator("#dock-viewer").innerText(), /5[,.]?001|5001/);
+  console.log("C7 browser: sparse fields, 0/false, HTML as text, mixed raw JSON, 300k preview/full expansion/download and row-5001 schema passed");
+
+  // C5 uses a controlled doctor response to exercise presentation and faults;
+  // the passive GET, settings navigation/save and permission routes stay real.
+  let checks = 0, checkMode = "ok";
+  const checksUrl = "**/api/v1/diagnostics/checks";
+  const checkFixture = { status: "fail", request_id: "browser-checks", checks: [
+    { name: "model", status: "fail", detail: "Model is not configured.", remedy: "Choose a model in existing settings.", facts: Object.fromEntries(Array.from({ length: 22 }, (_, i) => [`key${i}`, "<img src=x onerror=window.__diagXss=1>".repeat(30)])) },
+    { name: "connectors", status: "warn", detail: "Connector fixture unavailable.", remedy: "Review network settings." },
+    { name: "unknown-fixture", status: "fail", detail: "<script>window.__diagXss=1</script>", remedy: "https://example.invalid/do-not-open" },
+    { name: "data", status: "ok", detail: "Legacy optional fields omitted." },
+  ] };
+  await page.route(checksUrl, async (route) => {
+    checks++;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await route.fulfill({ status: checkMode === "403" ? 403 : 200, contentType: "application/json", body: JSON.stringify(checkMode === "403" ? { error: "operator only", code: "forbidden" } : checkFixture) });
+  });
+  try {
+    await page.evaluate(() => window.openCust("general"));
+    await page.locator("[data-diagnostics-run]").waitFor();
+    assert.equal(checks, 0, "opening diagnostics must be passive");
+    await page.locator("[data-diagnostics-run]").press("Enter");
+    assert.ok(await page.locator("[data-diagnostics-run]").isDisabled());
+    await page.locator('[data-diagnostics-results="current"]').waitFor();
+    assert.equal(checks, 1);
+    const model = page.locator('[data-diagnostic-check="model"]');
+    assert.match(await model.locator("[data-diagnostic-remedy]").innerText(), /Choose a model/);
+    await model.locator("summary").press("Enter");
+    assert.equal(await model.locator("dt").count(), 20);
+    assert.ok((await model.locator("dd").allTextContents()).every((text) => text.length <= 500));
+    assert.equal(await page.locator("[data-diagnostics-results] img, [data-diagnostics-results] script").count(), 0);
+    assert.equal(await page.locator('[data-diagnostic-check="unknown-fixture"] button, [data-diagnostic-check="unknown-fixture"] a').count(), 0);
+    const received = await page.locator("[data-diagnostics-results] time").getAttribute("datetime");
+    await model.locator('[data-diagnostic-setting="models"]').click();
+    await page.locator('.cust-tab[data-tab="models"].active').waitFor();
+    await page.locator('.cust-tab[data-tab="general"]').click();
+    assert.equal(await page.locator("[data-diagnostics-results] time").getAttribute("datetime"), received);
+    await page.locator('[data-diagnostic-setting="network"]').click();
+    await page.locator('.cust-tab[data-tab="network"].active').waitFor();
+    const configSaved = page.waitForResponse((response) => response.url().endsWith("/api/v1/network/status") && response.request().method() === "PUT");
+    await page.locator("#cust .toggle").first().click();
+    assert.ok((await configSaved).ok());
+    await page.locator('.cust-tab[data-tab="general"]').click();
+    await page.locator("[data-diagnostics-stale]").waitFor();
+    assert.equal(checks, 1, "configuration changes do not run checks automatically");
+    checkMode = "403";
+    await page.locator("[data-diagnostics-run]").click();
+    await page.locator("[data-diagnostics-error]").waitFor();
+    await page.locator('[data-diagnostics-results="previous"]').waitFor();
+    assert.equal(await page.locator("[data-diagnostics-results] time").getAttribute("datetime"), received);
+    assert.equal(await page.evaluate(() => window.__diagXss), undefined);
+    // Boot the same real settings surface with its persisted Chinese locale.
+    await page.locator("#cust-close").click();
+    const priorLang = await page.evaluate(() => localStorage.getItem("os-lang"));
+    try {
+      await page.evaluate(() => localStorage.setItem("os-lang", "zh"));
+      await page.reload({ waitUntil: "networkidle" });
+      await page.evaluate(() => window.openCust("general"));
+      await page.locator("[data-diagnostics-run]").waitFor();
+      assert.equal(await page.locator("[data-diagnostics-run]").innerText(), "运行检查");
+      assert.equal(checks, 2, "Chinese settings opening is also passive");
+      checkMode = "ok";
+      await page.locator("[data-diagnostics-run]").press("Enter");
+      await page.locator('[data-diagnostics-results="current"]').waitFor();
+      assert.match(await page.locator("[data-diagnostics-results]").innerText(), /本次获取时间|下一步/);
+      assert.equal(checks, 3);
+    } finally {
+      await page.evaluate((lang) => lang === null ? localStorage.removeItem("os-lang") : localStorage.setItem("os-lang", lang), priorLang);
+      await page.reload({ waitUntil: "networkidle" });
+      await page.evaluate(() => window.openCust("general"));
+    }
+  } finally {
+    await page.unroute(checksUrl);
+    await page.locator("#cust-close").click();
+    await api("/network/status", { method: "PUT", data: { enabled: false } });
+  }
+  console.log("C5 browser: passive open, keyboard checks, remedy/settings, facts limits, safe text, retained results, config invalidation and 403 passed");
+
+}
+
 function queueTickets(snapshot) {
   return [snapshot?.owner, ...(snapshot?.queue || [])].filter(Boolean);
 }
@@ -183,7 +472,9 @@ try {
     "openAnnotations",
     "openConversation",
     "openCust",
+    "openKetcher",
     "openPinPop",
+    "openViewer",
     "outstandingAdmissions",
     "parseTable",
     "reconcileLastAdmission",
@@ -241,7 +532,9 @@ try {
       openAnnotations: typeof openAnnotations,
       openConversation: typeof openConversation,
       openCust: typeof openCust,
+      openKetcher: typeof openKetcher,
       openPinPop: typeof openPinPop,
+      openViewer: typeof openViewer,
       outstandingAdmissions: typeof outstandingAdmissions,
       parseTable: typeof parseTable,
       reconcileLastAdmission: typeof reconcileLastAdmission,
@@ -397,6 +690,7 @@ try {
   });
   const projectId = project.project_id || project.id;
   if (!projectId) throw new Error("project creation did not return an id");
+  await correctnessScenes(projectId);
   const frame = await api("/frames", {
     method: "POST",
     data: { project_id: projectId },

@@ -17,9 +17,9 @@ npx github:PKU-YuanGroup/OpenAI4S install scvi-tools --target claude
 to anywhere you name. The resolved absolute path is printed before anything is
 written there, and `--dry-run` stops at that plan. A reinstall refuses to
 overwrite a copy you have edited or one it did not install, and `uninstall`
-removes only the files it wrote. Once the package is on npm,
-`npx openai4s-skills install scvi-tools --target claude` is the short form of
-the same command.
+removes only the files it wrote. For a recipe included in the npm release,
+`npx @pku-yuangroup/openai4s-skills install scvi-tools --target claude` installs
+the published copy. The npm catalog can differ from this repository.
 
 Without Node, take the directory itself — and turn it into a `.zip` if an upload
 field wants one. The tarball is the whole repository (over 100 MB), and the pipe

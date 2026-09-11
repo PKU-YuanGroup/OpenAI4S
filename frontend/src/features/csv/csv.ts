@@ -112,7 +112,17 @@ export function parseTable(
         const obj = j as Record<string, unknown> | null;
         j = (obj && (obj.rows || obj.data || obj.candidates || obj.items)) || [];
       }
-      if (Array.isArray(j) && j.length && typeof j[0] === "object") {
+      // A homogeneous array of arrays (`df.values.tolist()`) is a table whose
+      // columns are positions; only a MIX of shapes is left as raw text.
+      if (Array.isArray(j) && j.length && j.every((row) => Array.isArray(row))) {
+        j = (j as unknown[][]).map((row) =>
+          Object.fromEntries(row.map((value, index) => [String(index), value])),
+        );
+      }
+      if (
+        Array.isArray(j) && j.length &&
+        j.every((row) => row !== null && typeof row === "object" && !Array.isArray(row))
+      ) {
         return j as Record<string, unknown>[];
       }
     } catch {

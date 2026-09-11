@@ -3,19 +3,18 @@
  * inline CSV tables, binary elision. Window contract names assigned in install.ts.
  */
 
+import { fetchArtifactText } from "../artifacts/api";
+import { filesT } from "../artifacts/copy";
 import { isReady } from "../../compat/stub";
 import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
-import { _liveCell, liveCells } from "../../stores/notebook";
-import { running } from "../../stores/stream";
 import { t } from "../../i18n/runtime";
 import { delimiterFor, parseDelimited } from "../csv/csv";
 import { esc } from "../md/esc";
 import { mdHighlight } from "../md/highlight";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { asCells, nbFindCell, resetCellOutputs, syncCellOutput } from "./cells";
-import { nbRender } from "./scroll";
-import type { NotebookCell } from "./types";
+import { bindNotebookArtifact, resetCellOutputs } from "./cells";
+import type { NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function el(tag: string, cls?: string | null, text?: string | null): HTMLElement {
   const node = document.createElement(tag);
@@ -196,15 +195,21 @@ export function artUrlByName(fname: string): string {
   return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 
-export function artUrlBust(fname: string): string {
-  return artUrlByName(fname);
+export function notebookArtifactState(cell: NotebookCell, filename: string): {
+  state: "confirmed" | "saving" | "unconfirmed";
+  artifact?: NotebookOutputArtifact;
+} {
+  const matches = (cell.output_artifacts || []).filter((row) => row.filename === filename);
+  const unique = new Map(matches.map((row) => [JSON.stringify([row.artifact_id, row.version_id]), row]));
+  if (unique.size === 1) return { state: "confirmed", artifact: [...unique.values()][0] };
+  return { state: cell.live || cell._artifactBindingsPending ? "saving" : "unconfirmed" };
 }
 
 /** app.js:9708-9744. `_tbl` lives in the artifacts store (F-06 already busts it). */
-export function renderTableInto(holder: HTMLElement, fname: string): void {
-  const url = artUrlBust(fname);
+export function renderTableInto(holder: HTMLElement, fname: string, url: string): () => void {
+  let disposed = false;
   const build = (rows: string[][]) => {
-    if (!rows || !rows.length) return;
+    if (disposed || !rows || !rows.length) return;
     const view = rows.slice(0, 51);
     const width = rows.reduce((most, r) => Math.max(most, (r || []).length), 0);
     const tbl = el("table", "nbc-table");
@@ -237,18 +242,26 @@ export function renderTableInto(holder: HTMLElement, fname: string): void {
   const hit = cache[url];
   if (hit) {
     build(hit as string[][]);
-    return;
+    return () => { disposed = true; };
   }
-  fetch(url)
-    .then((r) => (r.ok ? r.text() : null))
+  const read = () => fetchArtifactText(url)
     .then((text) => {
-      if (text == null) return;
+      if (disposed) return;
       const firstLine = text.replace(/\r/g, "").split("\n", 1)[0] || "";
       const rows = parseDelimited(text, delimiterFor(fname, "", firstLine));
       cache[url] = rows;
       build(rows);
     })
-    .catch(() => {});
+    .catch(() => {
+      if (disposed) return;
+      const error = el("div", "nbc-artifact-error", filesT("nb.artifact.failed"));
+      const retry = el("button", "nbc-action", filesT("nb.artifact.retry"));
+      retry.onclick = () => { error.remove(); void read(); };
+      error.appendChild(retry);
+      holder.appendChild(error);
+    });
+  void read();
+  return () => { disposed = true; };
 }
 
 /**
@@ -256,23 +269,5 @@ export function renderTableInto(holder: HTMLElement, fname: string): void {
  * app.js:5337-5341. `_tbl` bust is already in F-06 upsertArtifactFromEvent.
  */
 export function mountLiveNotebookFigure(m: WsMessage): void {
-  const art = m.artifact && typeof m.artifact === "object" ? m.artifact : {};
-  const fn = String(art.filename || m.filename || "");
-  const isImg =
-    /^image\//.test(String(art.content_type || "")) ||
-    /\.(png|jpe?g|gif|svg|webp|bmp)$/i.test(fn);
-  if (!(running.value && fn && isImg)) return;
-  const producer = art.producing_cell_id || m.producing_cell_id;
-  const live = asCells(liveCells.value);
-  const cell =
-    (producer && nbFindCell(producer)) ||
-    (_liveCell.value as NotebookCell | null) ||
-    (live.length ? live[live.length - 1] : null);
-  if (cell && !(cell.figures || []).includes(fn)) {
-    cell.figures = cell.figures || [];
-    cell.figures.push(fn);
-    const rec = syncCellOutput(cell);
-    rec.figures.value = cell.figures.slice();
-    nbRender();
-  }
+  bindNotebookArtifact(m);
 }

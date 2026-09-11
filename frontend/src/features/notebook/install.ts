@@ -5,6 +5,7 @@
  */
 
 import { setArtifactCreatedSideEffects } from "../ws/handlers";
+import { currentId } from "../../stores/session";
 import { eventFrameId, mine } from "../ws/guards";
 import { hasWsHandler, registerWsHandler } from "../ws/registry";
 import type { WsHandler, WsMessage } from "../ws/types";
@@ -30,6 +31,7 @@ export function registerNotebookHandlers(): void {
   registerUnless("notebook_cell_finished", (m: WsMessage) => {
     if (mine(eventFrameId(m))) {
       nbCellFinished(m);
+      if (currentId.value) void loadExecutionLog(currentId.value);
       scheduleWorkbenchRefresh();
     }
   });

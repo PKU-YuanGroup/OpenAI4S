@@ -1,3 +1,10 @@
+export type NotebookOutputArtifact = {
+  filename: string;
+  artifact_id: string;
+  version_id: string;
+  url: string;
+};
+
 /** Notebook cell record. Shape matches app.js live/persisted cells. */
 export type NotebookCell = {
   producing_cell_id?: string;
@@ -12,6 +19,8 @@ export type NotebookCell = {
   error?: string;
   status?: string;
   figures?: string[];
+  output_artifacts?: NotebookOutputArtifact[];
+  _artifactBindingsPending?: boolean;
   files_written?: string[];
   files_read?: string[];
   complete?: boolean;

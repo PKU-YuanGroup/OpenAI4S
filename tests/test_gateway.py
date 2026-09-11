@@ -4588,7 +4588,10 @@ def test_execution_log_route_serializer_contract(tmp_path):
     assert body["kernels"] == ["python"]  # deduped, first-seen order
     assert len(body["entries"]) == 2
     e1, e2 = body["entries"]
+    assert e1["output_artifacts"] == []
+    assert e2["output_artifacts"] == []
     assert set(e1) == {
+        "output_artifacts",
         "producing_cell_id",
         "fork_checkpoint_id",
         "cell_index",
@@ -6850,3 +6853,229 @@ def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_p
         and "Stopped repeating actions" in event.get("chunk", "")
     ]
     assert len(notices) == 1, "the notice is streamed exactly once"
+
+
+@pytest.mark.parametrize("surface", ["lineage", "environment"])
+def test_exact_artifact_provenance_routes_keep_the_requested_version(tmp_path, surface):
+    import sys
+
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    replies = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    versions = []
+    generations = []
+    try:
+        for number in (1, 2):
+            cell_id = f"provenance-cell-{number}"
+            generation = store.create_kernel_generation(
+                root_frame_id=fid,
+                branch_id=fid,
+                language="python",
+                environment={
+                    "runtime": "python",
+                    "interpreter": sys.executable,
+                    "environment_name": f"env-{number}",
+                },
+                bootstrap={},
+                state="active",
+            )
+            generations.append(generation)
+            store.log_cell(
+                frame_id=fid,
+                root_frame_id=fid,
+                generation_id=generation["generation_id"],
+                code=f"produce {number}",
+                result={"id": cell_id},
+                cell_index=number,
+                files_written=["result.txt"],
+            )
+            snapshot = runner.artifacts.capture_environment(root_frame_id=fid)
+            assert snapshot is not None
+            assert (
+                store.get_env_snapshot(snapshot)["generation_id"]
+                == generation["generation_id"]
+            )
+            output = st.workspace / "result.txt"
+            output.write_text(f"result {number}")
+            record = runner._register_file(
+                st, output, cell_id, lambda event: None, env_snapshot_id=snapshot
+            )
+            assert record is not None
+            versions.append(record)
+        handler._query = lambda: {}
+        handler._api("GET", f"/artifacts/{versions[0]['artifact_id']}/versions")
+        assert [v["filename"] for v in replies[-1][1]["versions"]] == [
+            "result.txt",
+            "result.txt",
+        ]
+        # Capture the populated projection through the actual route, so the
+        # frozen schema describes each binding rather than an empty array.
+        from openai4s.server.urls import artifact_version_url
+
+        handler._api("GET", f"/frames/{fid}/execution-log")
+        assert replies[-1][0] == 200
+        entries = replies[-1][1]["entries"]
+        assert [entry["output_artifacts"] for entry in entries] == [
+            [
+                {
+                    "filename": "result.txt",
+                    "artifact_id": version["artifact_id"],
+                    "version_id": version["version_id"],
+                    "url": artifact_version_url(version["version_id"]),
+                }
+            ]
+            for version in versions
+        ]
+        assert versions[0]["artifact_id"] == versions[1]["artifact_id"]
+        assert (
+            store.get_artifact(versions[0]["artifact_id"])["latest_version_id"]
+            == versions[1]["version_id"]
+        )
+        handler._query = lambda: {"version": [versions[0]["version_id"]]}
+        handler._api("GET", f"/artifacts/{versions[0]['artifact_id']}/{surface}")
+        code, body = replies[-1]
+        assert code == 200
+        if surface == "lineage":
+            assert body["producer"]["producing_cell_id"] == "provenance-cell-1"
+        else:
+            assert body["generation_id"] == generations[0]["generation_id"]
+            assert body["environment_name"] == "env-1"
+            assert body["platform"]
+            # A recorded generation needs no assumed-environment explanation.
+            assert body["provenance"] is None
+            assert body["source"] == "captured"
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("imported", [False, True], ids=["legacy", "imported"])
+def test_exact_artifact_environment_preserves_missing_historical_metadata(
+    tmp_path, imported
+):
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    replies = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        # Historical snapshots may predate platform and generation metadata.
+        snapshot_fields = {"kind": "python", "packages": []}
+        if imported:
+            mapping = runner.session_domain.packages._import_environment_snapshots(
+                [{"snapshot_id": "historical-environment", **snapshot_fields}],
+                generation_map={},
+            )
+            snapshot = mapping["historical-environment"]
+        else:
+            snapshot = store.upsert_env_snapshot(snapshot_fields)
+        output = st.workspace / "historical.txt"
+        output.write_text("historical result")
+        record = runner._register_file(
+            st, output, None, lambda event: None, env_snapshot_id=snapshot
+        )
+        assert record is not None
+        handler._query = lambda: {"version": [record["version_id"]]}
+        handler._api("GET", f"/artifacts/{record['artifact_id']}/environment")
+        code, body = replies[-1]
+        assert code == 200
+        assert body["source"] == "captured"
+        assert body["platform"] is None
+        assert body["generation_id"] is None
+        assert body["generation_confidence"] is None
+        assert body["provenance"] == (
+            "imported_session_package_untrusted" if imported else None
+        )
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("surface", ["lineage", "environment"])
+@pytest.mark.parametrize("unknown", [True, False])
+def test_exact_artifact_provenance_rejects_unknown_or_wrong_artifact_version(
+    tmp_path,
+    surface,
+    unknown,
+):
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    replies = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        records = [
+            store.save_artifact(
+                path=str(st.workspace / name),
+                filename=name,
+                content_type="text/plain",
+                size_bytes=1,
+                checksum=name,
+                frame_id=fid,
+                root_frame_id=fid,
+            )
+            for name in ("one.txt", "two.txt")
+        ]
+        version = "missing-version" if unknown else records[1]["version_id"]
+        handler._query = lambda: {"version": [version]}
+        handler._api("GET", f"/artifacts/{records[0]['artifact_id']}/{surface}")
+        assert replies[-1][0] == 404
+        assert replies[-1][1]["code"] == "artifact_version_not_found"
+    finally:
+        runner.close()
+
+
+def test_exact_artifact_provenance_missing_environment_never_uses_live(tmp_path):
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    replies = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        record = store.save_artifact(
+            path=str(st.workspace / "old.txt"),
+            filename="old.txt",
+            content_type="text/plain",
+            size_bytes=1,
+            checksum="old",
+            frame_id=fid,
+            root_frame_id=fid,
+        )
+        handler._query = lambda: {"version": [record["version_id"]]}
+        handler._api("GET", f"/artifacts/{record['artifact_id']}/environment")
+        assert replies[-1][0] == 404
+        assert replies[-1][1]["code"] == "environment_snapshot_unavailable"
+    finally:
+        runner.close()
+
+
+def test_bytes_route_honours_an_explicit_version_without_latest_fallback(tmp_path):
+    """`?version=` on the compatible id route selects that version's bytes
+    or 404s; it never quietly serves the head."""
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+    replies = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        f = st.workspace / "table.csv"
+        f.write_text("v1")
+        rec1 = runner._register_file(st, f, "c1", lambda e: None)
+        f.write_text("v2-longer")
+        runner._register_file(st, f, "c2", lambda e: None)
+        other = st.workspace / "other.txt"
+        other.write_text("other")
+        foreign = runner._register_file(st, other, "c3", lambda e: None)
+        aid = rec1["artifact_id"]
+
+        handler._query = lambda: {"version": [rec1["version_id"]]}
+        handler._api("GET", f"/artifacts/{aid}")
+        assert sends[-1][:2] == (200, b"v1")
+
+        for vid in (foreign["version_id"], "no-such-version"):
+            handler._query = lambda vid=vid: {"version": [vid]}
+            handler._api("GET", f"/artifacts/{aid}")
+            assert replies[-1][0] == 404
+            assert replies[-1][1]["code"] == "artifact_version_not_found"
+        assert sends[-1][:2] == (200, b"v1"), "no bytes were served for the 404s"
+
+        handler._query = lambda: {}
+        handler._api("GET", f"/artifacts/{aid}")
+        assert sends[-1][:2] == (200, b"v2-longer")
+    finally:
+        runner.close()

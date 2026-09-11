@@ -33,6 +33,7 @@ export type ArtifactPatch = {
 
 export type ArtifactVersionRow = {
   version_id: string;
+  filename?: string | null;
   ordinal?: number;
   is_latest?: boolean;
   size_bytes?: number;

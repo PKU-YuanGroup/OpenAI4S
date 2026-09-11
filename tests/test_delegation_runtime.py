@@ -1034,3 +1034,451 @@ def test_the_loop_hands_a_wrapped_policy_the_run_providers(monkeypatch):
     schemas = wrapped._base.tool_schema_provider(RunState([]))
     names = {getattr(s, "name", None) or s.get("name") for s in schemas}
     assert "finalize_response" in names
+
+
+def _controlled_collect_children(runner, count, future_factory):
+    """Real tree identities/Futures, without starting model or kernel work."""
+    children = []
+    for index, child_id in enumerate(runner._reserve(count)):
+        child, _ = runner._child_from_reservation(
+            {
+                "child_ids": [child_id],
+                "request_id": f"request-{index}",
+                "attempt_id": f"attempt-{index}",
+            },
+            {"request": f"controlled {index}"},
+        )
+        assert child.begin(1)
+        child.artifact_refs = [
+            {"artifact_id": f"artifact-{index}", "version_id": f"version-{index}"}
+        ]
+        future = future_factory()
+        assert future.set_running_or_notify_cancel()
+        child.set_future(future)
+        children.append(child)
+    return children
+
+
+@pytest.mark.parametrize("count", [3, 10])
+def test_collect_uses_one_deadline_for_all_unfinished_futures(monkeypatch, count):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    waits = []
+
+    class ClockedFuture(Future):
+        def result(self, timeout=None):
+            assert timeout is not None
+            waits.append(timeout)
+            clock[0] += timeout
+            return super().result(timeout=0)
+
+    runner = DelegationRunner(get_config())
+    children = _controlled_collect_children(runner, count, ClockedFuture)
+    monkeypatch.setattr(deleg_mod, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    try:
+        results = runner.collect({"timeout": 1})
+        assert clock[0] <= 1.000001
+        assert all(wait <= 0.25 for wait in waits)
+        assert [item["status"] for item in results] == ["running"] * count
+        assert all(not child.future.done() for child in children)
+    finally:
+        for child in children:
+            child.future.set_result(None)
+        runner.close()
+
+
+def test_collect_none_observes_parent_cancel_without_waiting_for_futures():
+    from concurrent.futures import Future
+
+    entered = threading.Event()
+    cancelled = threading.Event()
+    returned = threading.Event()
+    result = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            entered.set()
+            return super().result(timeout=timeout)
+
+    runner = DelegationRunner(get_config())
+    runner.cancelled = cancelled.is_set
+    children = _controlled_collect_children(runner, 3, ObservedFuture)
+
+    def collect():
+        try:
+            result.extend(runner.collect({"timeout": None}))
+        finally:
+            returned.set()
+
+    collector = threading.Thread(target=collect, daemon=True)
+    collector.start()
+    try:
+        assert entered.wait(_RENDEZVOUS_TIMEOUT)
+        cancelled.set()
+        assert returned.wait(1), "parent cancellation did not end collect(None)"
+        assert len(result) == 3
+        assert all(child.stop_event.is_set() for child in children)
+        # Cancellation is a request, not proof that a running Future exited.
+        assert all(not child.future.done() for child in children)
+    finally:
+        for child in children:
+            if not child.future.done():
+                child.future.set_result(None)
+        collector.join(_RENDEZVOUS_TIMEOUT)
+        runner.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, False, -0.01, 3601, float("inf"), float("-inf"), float("nan"), "1", {}, []],
+)
+def test_collect_rejects_invalid_timeout_before_waiting(value):
+    runner = DelegationRunner(get_config())
+    try:
+        with pytest.raises(ValueError, match="timeout"):
+            runner.collect({"timeout": value})
+    finally:
+        runner.close()
+
+
+def test_collect_zero_is_nonblocking_snapshot_with_all_result_identities():
+    from concurrent.futures import Future
+
+    class NoWaitFuture(Future):
+        def result(self, timeout=None):
+            raise AssertionError("zero timeout waited on an unfinished Future")
+
+    runner = DelegationRunner(get_config())
+    children = _controlled_collect_children(runner, 2, NoWaitFuture)
+    try:
+        results = runner.collect({"timeout": 0})
+        for index, item in enumerate(results):
+            assert item["status"] == "running"
+            assert item["child_id"] == children[index].child_id
+            assert item["request_id"] == f"request-{index}"
+            assert item["attempt_id"] == f"attempt-{index}"
+            assert item["artifact_refs"] == children[index].artifact_refs
+            assert not children[index].stop_event.is_set()
+    finally:
+        for child in children:
+            child.future.set_result(None)
+        runner.close()
+
+
+def test_collect_fast_result_is_not_lost_while_later_child_uses_remaining_budget(
+    monkeypatch,
+):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    children = []
+
+    class CompletingFuture(Future):
+        def result(self, timeout=None):
+            if self.done():
+                return super().result(timeout=0)
+            clock[0] += timeout
+            if clock[0] >= 0.75 and not children[0].future.done():
+                children[0].finish_done(
+                    {"task_status": "completed", "output": "fast result"}
+                )
+                children[0].future.set_result(None)
+            return super().result(timeout=0)
+
+    runner = DelegationRunner(get_config())
+    children.extend(_controlled_collect_children(runner, 2, CompletingFuture))
+    monkeypatch.setattr(deleg_mod, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    try:
+        result = runner.collect({"timeout": 1})
+        assert clock[0] == 1
+        assert result[0]["output"] == "fast result"
+        assert result[0]["request_id"] == "request-0"
+        assert result[0]["artifact_refs"] == children[0].artifact_refs
+        assert result[1]["status"] == "running"
+    finally:
+        for child in children:
+            if not child.future.done():
+                child.future.set_result(None)
+        runner.close()
+
+
+def test_collect_does_not_hold_tree_lock_while_future_waits():
+    from concurrent.futures import Future
+
+    entered = threading.Event()
+    errors = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            entered.set()
+            return super().result(timeout=timeout)
+
+    runner = DelegationRunner(get_config())
+    children = _controlled_collect_children(runner, 1, ObservedFuture)
+
+    def collect():
+        try:
+            runner.collect({})
+        except BaseException as error:
+            errors.append(error)
+
+    collector = threading.Thread(target=collect, daemon=True)
+    collector.start()
+    try:
+        assert entered.wait(_RENDEZVOUS_TIMEOUT)
+        assert runner._tree.lock.acquire(timeout=1), "tree lock blocked by Future wait"
+        runner._tree.lock.release()
+    finally:
+        children[0].future.set_result(None)
+        collector.join(_RENDEZVOUS_TIMEOUT)
+        runner.close()
+    assert not collector.is_alive()
+    assert not errors
+
+
+def test_collect_one_second_budget_wall_clock_smoke():
+    from concurrent.futures import Future
+
+    runner = DelegationRunner(get_config())
+    children = _controlled_collect_children(runner, 3, Future)
+    try:
+        started = time.monotonic()
+        result = runner.collect({"timeout": 1})
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.5
+        assert len(result) == 3
+        assert all(item["status"] == "running" for item in result)
+    finally:
+        for child in children:
+            child.future.set_result(None)
+        runner.close()
+
+
+@pytest.mark.parametrize("entry", ["native", "python"])
+@pytest.mark.stubbed_backend
+def test_agent_cancel_probe_reaches_collect_through_native_and_python(entry):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from openai4s.host_dispatch import HostDispatcher
+    from openai4s.kernel import Kernel
+    from openai4s.tools import execute_tool_call
+
+    entered = threading.Event()
+    cancelled = threading.Event()
+    returned = threading.Event()
+    outputs = []
+    errors = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            entered.set()
+            return super().result(timeout=timeout)
+
+    cfg = get_config()
+    agent = loop_mod.Agent(
+        cfg,
+        dispatcher=HostDispatcher(cfg),
+        cancellation=SimpleNamespace(cancelled=cancelled.is_set),
+    )
+    runner = agent._delegation_runner
+    children = _controlled_collect_children(runner, 2, ObservedFuture)
+    kernel = Kernel(dispatcher=agent.dispatcher) if entry == "python" else None
+
+    def collect():
+        try:
+            if kernel is None:
+                outputs.append(
+                    execute_tool_call(
+                        agent.dispatcher, {"name": "collect_children", "arguments": {}}
+                    )
+                )
+            else:
+                outputs.append(
+                    kernel.execute(
+                        "rows = host.collect()\nprint(len(rows), all(row['stop_reason'] for row in rows))"
+                    )
+                )
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            returned.set()
+
+    collector = threading.Thread(target=collect, daemon=True)
+    collector.start()
+    try:
+        assert entered.wait(_RENDEZVOUS_TIMEOUT)
+        cancelled.set()
+        assert returned.wait(1)
+        assert not errors
+        assert all(child.stop_event.is_set() for child in children)
+        assert all(not child.future.done() for child in children)
+        assert agent.dispatcher.last_output is None
+        if kernel is None:
+            text, ok = outputs[0]
+            assert ok and "stopped" in text
+        else:
+            assert outputs[0]["error"] is None
+            assert outputs[0]["stdout"].strip() == "2 True"
+            assert kernel.is_alive()
+    finally:
+        for child in children:
+            if not child.future.done():
+                child.future.set_result(None)
+        collector.join(_RENDEZVOUS_TIMEOUT)
+        if kernel is not None:
+            kernel.shutdown()
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_collect_invalid_timeout_is_rejected_at_native_and_python_boundaries():
+    from openai4s.host_dispatch import HostDispatcher
+    from openai4s.kernel import Kernel
+    from openai4s.tools import execute_tool_call
+
+    dispatcher = HostDispatcher(get_config())
+    invoked = []
+    dispatcher.steer_fns = {"collect": lambda spec: invoked.append(spec) or []}
+    invalid = [True, False, -1, 3601, float("inf"), float("nan"), "1"]
+    for value in invalid:
+        observation, ok = execute_tool_call(
+            dispatcher, {"name": "collect_children", "arguments": {"timeout": value}}
+        )
+        assert not ok and "timeout" in observation
+    with Kernel(dispatcher=dispatcher) as kernel:
+        result = kernel.execute(
+            "for timeout in (True, False, -1, 3601, float('inf'), float('nan'), '1'):\n"
+            "    try:\n"
+            "        host.collect(timeout=timeout)\n"
+            "    except RuntimeError:\n"
+            "        print('rejected')\n"
+        )
+        assert result["error"] is None
+        assert result["stdout"].strip().splitlines() == ["rejected"] * len(invalid)
+    assert invoked == []
+
+
+def test_parent_cancel_targets_owned_subtree_even_when_collect_selects_one():
+    from concurrent.futures import Future
+
+    cancelled = threading.Event()
+    runner = DelegationRunner(get_config(), cancelled=cancelled.is_set)
+    children = _controlled_collect_children(runner, 2, Future)
+    nested = DelegationRunner(
+        get_config(),
+        depth=1,
+        delegation_tree=runner._tree,
+        parent_child_id=children[0].child_id,
+    )
+    grandchildren = _controlled_collect_children(nested, 1, Future)
+    try:
+        cancelled.set()
+        result = runner.collect({"child_ids": [children[0].child_id], "timeout": 0})
+        assert len(result) == 1
+        assert all(child.stop_event.is_set() for child in children + grandchildren)
+        assert all(not child.future.done() for child in children + grandchildren)
+    finally:
+        for child in children + grandchildren:
+            child.future.set_result(None)
+        nested.close()
+        runner.close()
+
+
+def test_single_child_stop_and_collect_leave_sibling_running():
+    from concurrent.futures import Future
+
+    runner = DelegationRunner(get_config())
+    children = _controlled_collect_children(runner, 2, Future)
+    try:
+        runner.stop_child(children[0].child_id)
+        result = runner.collect({"timeout": 0})
+        assert children[0].stop_event.is_set()
+        assert not children[1].stop_event.is_set()
+        assert result[1]["status"] == "running"
+        assert all(not child.future.done() for child in children)
+    finally:
+        for child in children:
+            child.future.set_result(None)
+        runner.close()
+
+
+@pytest.mark.parametrize(
+    "failure", [ValueError("child failed"), TimeoutError("child operation timed out")]
+)
+def test_collect_completed_future_failure_keeps_real_failed_state(failure):
+    from concurrent.futures import Future
+
+    runner = DelegationRunner(get_config())
+    child = _controlled_collect_children(runner, 1, Future)[0]
+    child.future.set_exception(failure)
+    try:
+        result = runner.collect({"timeout": 0})[0]
+        assert result["task_status"] == "failed"
+        assert result["error"] == str(failure)
+        assert result["request_id"] == child.request_id
+        assert child.snapshot()["status"] == "failed"
+    finally:
+        runner.close()
+
+
+def test_collect_cancelled_pending_future_reports_stopped_without_affecting_sibling():
+    from concurrent.futures import Future
+
+    runner = DelegationRunner(get_config())
+    children = _controlled_collect_children(runner, 2, Future)
+    children[0].future.set_result(None)
+    children[0].set_future(Future())
+    assert children[0].future.cancel()
+    try:
+        result = runner.collect({"timeout": 0})
+        assert children[0].snapshot()["status"] == "stopped"
+        assert result[1]["status"] == "running"
+        assert not children[1].stop_event.is_set()
+    finally:
+        children[1].future.set_result(None)
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_web_session_runner_binds_its_own_cancel_event_to_collect():
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from openai4s.host_dispatch import HostDispatcher
+    from openai4s.server.gateway import SessionRunner, SessionState
+
+    cfg = get_config()
+    session_runner = SessionRunner(
+        cfg,
+        SimpleNamespace(emitter=lambda _: lambda event: None),
+        start_idle_sweeper=False,
+    )
+    root = session_runner.store.new_frame(
+        kind="turn", project_id="default", status="ready"
+    )
+    state = SessionState(root, "default", session_runner.workspace_for(root))
+    dispatcher = HostDispatcher(cfg, frame_id=root)
+    children = []
+    try:
+        session_runner._wire_delegation(state, dispatcher)
+        runner = state.delegation_runner
+        assert runner is not None
+        assert runner.cancelled() is False
+        children = _controlled_collect_children(runner, 1, Future)
+        state.cancel.set()
+        assert runner.cancelled() is True
+        result = dispatcher("collect", [{"timeout": 0}])
+        assert result[0]["child_id"] == children[0].child_id
+        assert children[0].stop_event.is_set()
+        assert not children[0].future.done()
+    finally:
+        for child in children:
+            if not child.future.done():
+                child.future.set_result(None)
+        if state.delegation_runner is not None:
+            state.delegation_runner.close()
+        session_runner.close()

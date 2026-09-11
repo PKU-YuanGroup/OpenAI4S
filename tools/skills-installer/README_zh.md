@@ -5,18 +5,25 @@
 把 OpenAI4S 自带的 Skill 库复制到本机——装进 Claude Code、装进 OpenAI4S 数据
 目录，或装进命令行指定的任意目录。
 
+npm 发布版 `@pku-yuangroup/openai4s-skills@0.2.0` 包含 603 个 Skill：42 个精选 + 561 个固定版本
+bioSkills。以下命令固定使用该包版本：
+
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S list
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # 43 个精选 Skill
-npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定版第三方配方
-npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
-npx github:PKU-YuanGroup/OpenAI4S installed
-npx github:PKU-YuanGroup/OpenAI4S uninstall --all
+npx @pku-yuangroup/openai4s-skills@0.2.0 list
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0：42 个精选 Skill
+npx @pku-yuangroup/openai4s-skills@0.2.0 install --collection bioskills # v0.2.0：561 个固定版第三方配方
+npx @pku-yuangroup/openai4s-skills@0.2.0 install alphafold2 boltz --target claude
+npx @pku-yuangroup/openai4s-skills@0.2.0 installed
+npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-今天能用的就是这种写法：直接从仓库运行 CLI，不需要先发布到 npm。这个包自己的名
-字是 `openai4s-skills`，一旦发布，`npx openai4s-skills <command>` 跑的是发布版
-本里的同一套 CLI（`github:` 写法则始终跟随默认分支）——在那之前这个名字解析不到。
+`npx @pku-yuangroup/openai4s-skills <command>` 使用 npm 的最新发布版。若要使用当前仓库目录
+（604 个 Skill：43 个精选 + 561 个 bioSkills），使用跟随默认分支的 GitHub 写法：
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # 43 个精选 Skill
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定版第三方配方
+```
 
 ## 文件
 
@@ -53,6 +60,6 @@ tarball 的 SHA-256——不是 commit SHA，因为把分支解析成 commit 是
 
 ## 它处在什么位置
 
-对 OpenAI4S 用户来说这个命令基本是多余的：wheel 已经带上了全部 604 个 Skill，
+对 OpenAI4S 用户来说这个命令基本是多余的：本检出源码构建的 wheel 已经带上了全部 604 个 Skill，
 而 `openai4s/skills_loader/loader.py` 让自带 Skill 优先于 `<data_dir>/user-skills`
 中的同名者。它存在的理由是反方向——把这些配方送到不是 OpenAI4S 的 agent 面前。

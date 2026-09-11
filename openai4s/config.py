@@ -1008,9 +1008,17 @@ class Config:
 _CONFIG: Config | None = None
 
 
-def get_config() -> Config:
+def get_config(*, initialize_dirs: bool = True) -> Config:
+    """Resolve configuration, optionally without creating or hardening paths.
+
+    The read-only path does not publish a new singleton: normal callers retain
+    the existing initialized-config contract.
+    """
     global _CONFIG
     if _CONFIG is None:
-        _CONFIG = Config()
-        _CONFIG.ensure_dirs()
+        cfg = Config()
+        if not initialize_dirs:
+            return cfg
+        cfg.ensure_dirs()
+        _CONFIG = cfg
     return _CONFIG
