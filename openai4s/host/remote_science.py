@@ -400,10 +400,13 @@ def _positions(value: Any, length: int) -> list[int] | None:
     if value is None:
         return None
     if isinstance(value, str):
-        value = value.split(",")
+        # "" would otherwise become [""] and report a per-item error; every
+        # empty spelling is the same mistake and gets the same message.
+        value = value.split(",") if value.strip() else []
     if not isinstance(value, (list, tuple)) or not value:
         raise ValueError(
-            "positions must be a non-empty list, tuple or comma-separated integers"
+            "positions must be a non-empty list, tuple or comma-separated "
+            "integers; pass None to score every position"
         )
     positions = [_integer(item, "position", minimum=1) for item in value]
     if any(position > length for position in positions):
@@ -430,8 +433,12 @@ def _decoded_text(value: str | None, field: str) -> str:
         raise ValueError(f"missing {field} block")
     try:
         # base64 from the wrapper can be line-wrapped, but arbitrary bytes and
-        # invalid UTF-8 must not be silently discarded or replaced.
-        text = base64.b64decode("".join(value.split()), validate=True).decode("utf-8")
+        # invalid UTF-8 must not be silently discarded or replaced. A leading
+        # BOM is the one exception: it is an encoding signature, not content,
+        # and a wrapper written on a BOM-emitting toolchain is not malformed.
+        text = base64.b64decode("".join(value.split()), validate=True).decode(
+            "utf-8-sig"
+        )
     except (ValueError, binascii.Error, UnicodeError):
         raise ValueError(f"invalid base64 or UTF-8 in {field}") from None
     if not text.strip():
@@ -439,9 +446,13 @@ def _decoded_text(value: str | None, field: str) -> str:
     return text
 
 
+class _NonFiniteJSON(ValueError):
+    """A NaN/Infinity token inside an otherwise well-formed JSON document."""
+
+
 def _json_object(value: str | None, field: str) -> dict:
     def invalid_number(_: str) -> None:
-        raise ValueError("non-finite JSON number")
+        raise _NonFiniteJSON("non-finite JSON number")
 
     def unique_object(pairs: list[tuple[str, Any]]) -> dict:
         result: dict = {}
@@ -455,6 +466,10 @@ def _json_object(value: str | None, field: str) -> dict:
         result = json.loads(
             value or "", parse_constant=invalid_number, object_pairs_hook=unique_object
         )
+    except _NonFiniteJSON:
+        # json.loads wraps hook errors in its own ValueError family; keep the
+        # diagnosis distinct from "not JSON at all", which it is not.
+        raise ValueError(f"non-finite number in {field}") from None
     except (ValueError, RecursionError):
         raise ValueError(f"invalid {field} JSON") from None
     if not isinstance(result, dict) or not result:
@@ -480,7 +495,16 @@ def _metadata_text(value: Any, field: str) -> str | None:
     return value
 
 
+_ASCII_FLOAT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
 def _finite(value: Any, field: str) -> float:
+    # Text fields (PDB columns, CSV cells) must be plain ASCII decimals:
+    # ``float()`` alone also accepts ``1_0.5`` and Unicode digits, which no
+    # PDB reader or the workbench viewer parse the same way. ``[0-9]`` rather
+    # than ``\d`` because ``\d`` matches those Unicode digits too.
+    if isinstance(value, str) and not _ASCII_FLOAT.fullmatch(value.strip()):
+        raise ValueError(f"invalid numeric {field}")
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -573,6 +597,11 @@ def _csv_rows(text: str, field: str) -> tuple[list[str], list[dict[str, str]]]:
         rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
     except csv.Error:
         raise ValueError(f"malformed {field} CSV") from None
+    # ``csv.reader`` yields ``[]`` for a blank line. Trailing ones are how
+    # ``print(df.to_csv())`` and friends terminate a file, not a short row;
+    # a blank line *between* rows still fails the width check below.
+    while rows and not rows[-1]:
+        rows.pop()
     if len(rows) < 2 or not rows[0] or len(set(rows[0])) != len(rows[0]):
         raise ValueError(f"empty or ambiguous {field} CSV")
     headers = rows[0]
@@ -623,6 +652,9 @@ def _validate_mutations(
         raise ValueError("missing or ambiguous mutation CSV columns")
     seen: dict[str, float] = {}
     covered: set[int] = set()
+    requested = (
+        set(positions) if positions is not None else set(range(1, len(sequence) + 1))
+    )
     for row in rows:
         match = re.fullmatch(
             r"([ACDEFGHIKLMNPQRSTVWY])([1-9][0-9]*)([ACDEFGHIKLMNPQRSTVWY])",
@@ -635,7 +667,7 @@ def _validate_mutations(
         if (
             position > len(sequence)
             or sequence[position - 1] != wt
-            or (positions is not None and position not in positions)
+            or position not in requested
         ):
             raise ValueError("mutation position or wild-type conflicts with input")
         if explicit and (
@@ -648,12 +680,13 @@ def _validate_mutations(
             row["score"] if compact else row["esm_score"], "mutation score"
         )
         covered.add(position)
-    requested = (
-        set(positions) if positions is not None else set(range(1, len(sequence) + 1))
-    )
     if covered != requested:
         raise ValueError("mutation CSV is missing requested positions")
     return seen
+
+
+#: Absolute agreement required between a top5 score and its CSV row.
+_SCORE_TOLERANCE = 1e-4
 
 
 def _validate_mutation_summary(summary: dict, scores: dict[str, float]) -> None:
@@ -673,7 +706,17 @@ def _validate_mutation_summary(summary: dict, scores: dict[str, float]) -> None:
         score_keys = [key for key in ("score", "esm_score") if key in row]
         if len(score_keys) != 1:
             raise ValueError("top5 has missing or ambiguous score fields")
-        if _finite(row[score_keys[0]], "top5 score") != scores[mutation]:
+        # The CSV and the summary are two serializations of one number (a
+        # float32 tensor printed by pandas vs. json.dumps(float(x)) already
+        # differ in the 8th digit). Scores are log-likelihood ratios of order
+        # 0.1–10, so this tolerance cannot hide a substantively different top5
+        # while it stops honest rounding from being reported as fabrication.
+        if not math.isclose(
+            _finite(row[score_keys[0]], "top5 score"),
+            scores[mutation],
+            rel_tol=1e-6,
+            abs_tol=_SCORE_TOLERANCE,
+        ):
             raise ValueError("top5 score conflicts with validated CSV")
         # Optional explicit identities must be complete and agree with the
         # mutation already checked against the input sequence and CSV.

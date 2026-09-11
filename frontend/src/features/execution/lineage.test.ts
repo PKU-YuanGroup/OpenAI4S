@@ -4,6 +4,7 @@ import { _artVer, _envSnapById, dockArtifact } from "../../stores/artifacts";
 import { provMode, provSub } from "../../stores/ui";
 import { resetStoreFields } from "../../stores/signal-field";
 import { syncArtifactVersion } from "../artifacts/cache";
+import { filesT } from "../artifacts/copy";
 import { describe, expect, it, vi } from "vitest";
 import {
   asLineage,
@@ -221,4 +222,23 @@ it("known latest metadata read failures propagate while unbound legacy keeps its
     expect(await loadLineage({ id: "a" })).toEqual(emptyLineage());
     expect(requests).toEqual(["/api/v1/artifacts/a/lineage?version=v1", "/api/v1/artifacts/a/lineage"]);
   } finally { setExecutionFetch(null); }
+});
+
+
+it("an exact version without a recorded environment is an expected state, not a failed load", async () => {
+  resetStoreFields();
+  vi.stubGlobal("document", { createElement: () => new ProvenanceNode() });
+  const pinned = { id: "a", version_id: "v1", _exactVersion: true };
+  dockArtifact.value = pinned; provMode.value = true; provSub.value = "environment";
+  setExecutionFetch(async () => new Response(
+    JSON.stringify({ error: "no environment snapshot was recorded for this version", code: "environment_snapshot_unavailable", request_id: "req-9" }),
+    { status: 404 },
+  ));
+  try {
+    const view = new ProvenanceNode();
+    renderProvenanceInto(view as unknown as HTMLElement, pinned);
+    const walk = (node: ProvenanceNode): ProvenanceNode[] => [node, ...node.children.flatMap(walk)];
+    await vi.waitFor(() => expect(walk(view).some((node) => node.textContent === filesT("prov.env.noSnapshot"))).toBe(true));
+    expect(walk(view).some((node) => node.textContent.includes("req-9"))).toBe(false);
+  } finally { setExecutionFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
 });

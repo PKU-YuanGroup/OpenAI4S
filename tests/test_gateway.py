@@ -7043,3 +7043,39 @@ def test_exact_artifact_provenance_missing_environment_never_uses_live(tmp_path)
         assert replies[-1][1]["code"] == "environment_snapshot_unavailable"
     finally:
         runner.close()
+
+
+def test_bytes_route_honours_an_explicit_version_without_latest_fallback(tmp_path):
+    """`?version=` on the compatible id route selects that version's bytes
+    or 404s; it never quietly serves the head."""
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+    replies = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        f = st.workspace / "table.csv"
+        f.write_text("v1")
+        rec1 = runner._register_file(st, f, "c1", lambda e: None)
+        f.write_text("v2-longer")
+        runner._register_file(st, f, "c2", lambda e: None)
+        other = st.workspace / "other.txt"
+        other.write_text("other")
+        foreign = runner._register_file(st, other, "c3", lambda e: None)
+        aid = rec1["artifact_id"]
+
+        handler._query = lambda: {"version": [rec1["version_id"]]}
+        handler._api("GET", f"/artifacts/{aid}")
+        assert sends[-1][:2] == (200, b"v1")
+
+        for vid in (foreign["version_id"], "no-such-version"):
+            handler._query = lambda vid=vid: {"version": [vid]}
+            handler._api("GET", f"/artifacts/{aid}")
+            assert replies[-1][0] == 404
+            assert replies[-1][1]["code"] == "artifact_version_not_found"
+        assert sends[-1][:2] == (200, b"v1"), "no bytes were served for the 404s"
+
+        handler._query = lambda: {}
+        handler._api("GET", f"/artifacts/{aid}")
+        assert sends[-1][:2] == (200, b"v2-longer")
+    finally:
+        runner.close()

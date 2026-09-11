@@ -10,5 +10,5 @@
 | --- | --- |
 | `en-BiWYNluY.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `index-Ci_ykRji.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-DsLiIq_I.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-hahrNLyU.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `zh-DZtw8kA9.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |

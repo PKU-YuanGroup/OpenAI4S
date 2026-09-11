@@ -150,3 +150,29 @@ it("shows complete mixed source for every supported JSON wrapper", () => {
     }
   }
 });
+
+it("a .json name over binary bytes gets the download tile, not 300k of garbage source", () => {
+  // The tile carries an SVG icon, so this DOM permits innerHTML on the icon span only.
+  class TileNode extends SheetNode {
+    set innerHTML(value: string) {
+      if (this.tag !== "span") throw new Error("only the icon span may use innerHTML");
+      this.textContent = value;
+    }
+  }
+  vi.stubGlobal("document", { createElement: (tag: string) => new TileNode(tag) });
+  const host = new TileNode("div");
+  const bytes = String.fromCharCode(0, 1, 2, 3, 0xff, 0xfe).repeat(200);
+  renderStructuredText(
+    host as unknown as HTMLElement,
+    { id: "a", filename: "payload.json", content_type: "application/json", version_id: "v1", _exactVersion: true },
+    bytes,
+  );
+  expect(childrenByTag(host, "pre")).toHaveLength(0);
+  expect(childrenByTag(host, "button")).toHaveLength(0);
+  expect(childrenByTag(host, "a")[0]?.href).toBe("/api/v1/artifacts/versions/v1");
+  expect(childrenByTag(host, "strong")[0]?.textContent).toBe("payload.json");
+  // A parse failure on ordinary text is still source, never a download tile.
+  const text = setupSheetDom();
+  renderStructuredText(text as unknown as HTMLElement, { id: "a", filename: "notes.json" }, "not json at all");
+  expect(childrenByTag(text, "pre")[0]?.textContent).toBe("not json at all");
+});

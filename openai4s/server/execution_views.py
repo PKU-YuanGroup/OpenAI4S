@@ -79,6 +79,10 @@ class ExecutionViewService:
             _with_dependency_defaults(cell)
             for cell in self._branch_cells(root_frame_id, branch_id)
         ]
+        # The Notebook shows the file a cell left behind. `host.save_artifact`
+        # followed by a later write of the same name mints two versions under
+        # one producer; only the newest is that file, so collapse per filename
+        # here while the sources export keeps every version for its manifest.
         output_bindings = output_artifact_bindings(
             self.store,
             root_frame_id,
@@ -88,6 +92,7 @@ class ExecutionViewService:
                 for cell in cells
                 if cell.get("producing_cell_id")
             },
+            newest_only=True,
         )
         stale_projection = compute_stale_cells(cells)
         for ordinal, (cell, stale) in enumerate(zip(cells, stale_projection), 1):
@@ -216,6 +221,7 @@ class ExecutionViewService:
                 "filename": selected.get("filename") or artifact.get("filename"),
             }
         else:
+            selected = None
             version_id = artifact.get("latest_version_id")
         cell = None
         version = None
@@ -224,7 +230,8 @@ class ExecutionViewService:
         capture_observations: list[dict] = []
         producer: dict | None = None
         if version_id:
-            version = self.store.version_meta(version_id)
+            # The exact-version branch already read (and checked) this row.
+            version = selected or self.store.version_meta(version_id)
             for item in self.store.lineage_inputs(version_id):
                 label = (
                     item.get("filename") or item.get("path") or item.get("version_id")

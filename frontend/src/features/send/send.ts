@@ -185,6 +185,9 @@ function mintAdmissionId(): string {
   return "resv-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** How long an unanswered POST /message keeps its optimistic bubble protected. */
+export const SUBMISSION_GRACE_MS = 5000;
+
 export async function send(text?: string | null, opts?: { execute?: boolean }): Promise<void> {
   text = (text || "").trim();
   opts = opts || {};
@@ -466,12 +469,22 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       callLane("updateAnnotBadge");
     }
   } catch (e) {
-    // A transport failure is indeterminate; do not erase its optimistic bubble
-    // with a GET that may have raced the server's admission transaction.
-    if (e && Number.isInteger((e as { status?: number }).status) &&
-      (e as { status: number }).status >= 400) confirmHistorySubmission();
+    const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
+    // A refusal is a definite answer. A transport failure is indeterminate:
+    // the server may still commit the admission, so hold the optimistic
+    // bubble for one bounded grace rather than for the rest of the visit —
+    // an unreleased token defers every later history read and refuses a
+    // stopped run state (locked composer) until the user navigates away.
+    if (refused) confirmHistorySubmission();
+    else {
+      setTimeout(() => {
+        confirmHistorySubmission();
+        if (currentId.value === dispatchFrameId && (_openGen.value || 0) === dispatchOpenGen) {
+          callLane("alignHistoryAfterTurn", dispatchFrameId, dispatchOpenGen);
+        }
+      }, SUBMISSION_GRACE_MS);
+    }
     if (annIds.length) {
-      const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
       if (admissionId && refused) forgetAdmission(dispatchFrameId, admissionId);
       const reloaded = await loadAnnotationsLocal(dispatchFrameId);
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");

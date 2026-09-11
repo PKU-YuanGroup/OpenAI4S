@@ -113,6 +113,7 @@ def output_artifact_bindings(
     cell_ids: set[str] | None = None,
     producer_frame_id: str | None = None,
     producer_frames: Mapping[str, str] | None = None,
+    newest_only: bool = False,
 ) -> dict[str, list[dict[str, str]]]:
     """Read capture relationships once, bounded by the owning session and Cells.
 
@@ -121,6 +122,11 @@ def output_artifact_bindings(
     join the relationships to the already branch-projected Notebook rows.
     Compatibility stores without artifact readers have no confirmed bindings;
     failures of readers that do exist propagate rather than claiming absence.
+
+    ``newest_only`` keeps one row per ``(cell, filename)``: the version the
+    store recorded last (``created_at``, then version ordinal). A cell that
+    calls ``host.save_artifact`` and then keeps writing the same file owns two
+    versions of it, and the file it left behind is the newer one.
     """
     artifact_reader = getattr(store, "list_artifacts", None)
     version_reader = getattr(store, "list_versions", None)
@@ -136,12 +142,22 @@ def output_artifact_bindings(
     owning_root = str((frame or {}).get("root_frame_id") or frame_id)
     observation_reader = getattr(store, "list_artifact_capture_observations", None)
     bindings: dict[str, dict[tuple[str, str, str], dict[str, str]]] = {}
+    ranks: dict[str, dict[tuple[str, str, str], tuple[int, int]]] = {}
     for artifact in artifact_reader({"root_frame_id": owning_root}):
         artifact_id = artifact.get("artifact_id")
         if not artifact_id or artifact.get("root_frame_id", owning_root) != owning_root:
             continue
         versions = version_reader(artifact_id)
         valid_versions = {row.get("version_id") for row in versions}
+        # Observations point at one of these versions, so a single recency
+        # map (from the version rows, which carry both fields) orders both.
+        recency = {
+            row.get("version_id"): (
+                _int_or_zero(row.get("created_at")),
+                _int_or_zero(row.get("ordinal")),
+            )
+            for row in versions
+        }
         observations = (
             observation_reader(artifact_id=artifact_id)
             if callable(observation_reader)
@@ -175,18 +191,32 @@ def output_artifact_bindings(
                 url = artifact_version_url(version_id)
             except ValueError:
                 continue  # An unrepresentable imported ID is not a latest link.
-            bindings.setdefault(cell_id, {})[
-                (filename, str(artifact_id), version_id)
-            ] = {
+            key = (filename, str(artifact_id), version_id)
+            bindings.setdefault(cell_id, {})[key] = {
                 "filename": filename,
                 "artifact_id": str(artifact_id),
                 "version_id": version_id,
                 "url": url,
             }
+            ranks.setdefault(cell_id, {})[key] = recency.get(version_id, (0, 0))
+    if newest_only:
+        for cell_id, rows in bindings.items():
+            newest: dict[str, tuple[str, str, str]] = {}
+            for key in sorted(rows):
+                current = newest.get(key[0])
+                # Deterministic: recency first, then the sorted key itself.
+                if current is None or ranks[cell_id][key] >= ranks[cell_id][current]:
+                    newest[key[0]] = key
+            keep = set(newest.values())
+            bindings[cell_id] = {key: row for key, row in rows.items() if key in keep}
     return {
         cell_id: [rows[key] for key in sorted(rows)]
         for cell_id, rows in bindings.items()
     }
+
+
+def _int_or_zero(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 class ExecutionSourcesService:

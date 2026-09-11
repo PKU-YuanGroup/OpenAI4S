@@ -12,6 +12,7 @@ import { provMode, provSub } from "../../stores/ui";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { artifactMetadataCacheKey, artifactMetadataTarget, artifactMetadataUrl, artifactTabKey } from "../artifacts/cache";
+import { filesT } from "../artifacts/copy";
 import { addOpenTab, setActiveTab } from "../artifacts/ui";
 import type { ArtifactRow } from "../artifacts/types";
 import { renderMd } from "../md/render";
@@ -178,12 +179,18 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   } catch (e) {
     if (provMode.value && provSub.value === "environment" && artifactMetadataCacheKey(asArtifact(dockArtifact.value)) === key) {
       body.innerHTML = "";
-      body.appendChild(el("div", "dock-empty", t("prov.env.loadFailed", apiErrorText(e))));
+      // Every upload and every pre-snapshot capture has no recorded
+      // environment, and the exact-version read never borrows the daemon's.
+      // That is an expected state with its own copy, not a failed request.
+      const code = e && typeof e === "object" ? (e as { code?: unknown }).code : undefined;
+      body.appendChild(el("div", "dock-empty", code === "environment_snapshot_unavailable"
+        ? filesT("prov.env.noSnapshot")
+        : t("prov.env.loadFailed", apiErrorText(e))));
     }
     return;
   }
   const docked = asArtifact(dockArtifact.value);
-  if (!provMode.value || provSub.value !== "environment" || (a && artifactMetadataCacheKey(docked) !== key))
+  if (!provMode.value || provSub.value !== "environment" || artifactMetadataCacheKey(docked) !== key)
     return;
   body.innerHTML = "";
   const chip = (k: string, val: string) => {

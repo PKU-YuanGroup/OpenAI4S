@@ -62,7 +62,7 @@ independent job (`harness.smoke.linux_sandbox`) that refuses the raw-network
 override; it is attested at the frozen SHA and stays out of the release
 workflow's `platform-checks` matrix until multiple scheduled greens land.
 
-The browser jobs need `npm ci --ignore-scripts && ./node_modules/.bin/playwright install <engine>` plus a daemon already serving on `127.0.0.1:8760`. They need **Node 20+**: `package.json`'s `engines` floor is `>=18` for the published Skill installer, but the pinned Playwright devDependency refuses anything older, and `npm ci` only warns.
+The browser jobs need `npm ci --ignore-scripts && ./node_modules/.bin/playwright install <engine>` plus a daemon already serving on `127.0.0.1:8760`. That daemon's venv must carry the `science` extra (`uv sync --locked --extra science`, which `./setup.sh` already does): `browser_smoke.mjs`'s figure scene executes `import matplotlib` in the kernel and asserts a captured figure, so a lightweight venv fails C1. They need **Node 20+**: `package.json`'s `engines` floor is `>=18` for the published Skill installer, but the pinned Playwright devDependency refuses anything older, and `npm ci` only warns.
 
 Tests are **offline**: `tests/conftest.py` redirects `~/.openai4s` to a tmp dir per test, sets a fake `deepseek` provider + key, and pins the deny-by-default posture (`OPENAI4S_UNATTENDED_APPROVAL=deny`, `OPENAI4S_SECRET_STORE=plaintext`, a loopback telemetry endpoint, share vars cleared). Don't add tests that require live LLM/network calls to the default suite.
 

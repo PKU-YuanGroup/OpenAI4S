@@ -2419,7 +2419,15 @@ def main(argv: list[str] | None = None) -> int:
     if is_wsl():
         os.environ["PATH"] = linux_path(os.environ.get("PATH", os.defpath))
     args = build_parser().parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except FutureSchemaError as exc:
+        # Every subcommand that opens the Store (run, init, user, …) refuses a
+        # newer database the same way `serve` does: one line, exit 2, no
+        # traceback. `serve` still catches it earlier so it can clear the
+        # singleton state it already claimed.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

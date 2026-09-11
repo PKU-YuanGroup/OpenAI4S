@@ -81,3 +81,19 @@ describe("heterogeneous JSON tables", () => {
     }
   });
 });
+
+describe("array-of-array JSON tables", () => {
+  it("renders a homogeneous array of arrays as positional columns", () => {
+    expect(parseTable("[[1,2],[3,4]]", { filename: "values.json" })).toEqual([
+      { "0": 1, "1": 2 },
+      { "0": 3, "1": 4 },
+    ]);
+    expect(parseTable(JSON.stringify({ rows: [["a"], ["b", "c"]] }), { filename: "values.json" })).toEqual([
+      { "0": "a" },
+      { "0": "b", "1": "c" },
+    ]);
+  });
+  it("still refuses a mix of array and object rows", () => {
+    expect(parseTable("[[1,2],{\"a\":1}]", { filename: "values.json" })).toBeNull();
+  });
+});

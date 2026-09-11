@@ -5,8 +5,14 @@ import { _replayGap, running, stream, _seqSeen, _resumeTimer } from "../../store
 import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
 import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
 import { loadEarlierMessages } from "../sessions/messages";
+import { _liveCell, cells, liveCells } from "../../stores/notebook";
 
 const paint = vi.hoisted(() => ({ empty: vi.fn(), batches: vi.fn(), pageRows: vi.fn() }));
+const chrome = vi.hoisted(() => ({ hint: vi.fn() }));
+vi.mock("../sessions/chrome", async (original) => ({
+  ...await original<typeof import("../sessions/chrome")>(),
+  hint: (...args: unknown[]) => chrome.hint(...args),
+}));
 vi.mock("../sessions/transcript", async (original) => ({
   ...await original<typeof import("../sessions/transcript")>(),
   renderStored: (row: unknown) => { paint.pageRows(row); return null; },
@@ -350,17 +356,29 @@ describe("recovery after a missed terminal event", () => {
     expect(session.historyContent.value?.messages.map((row) => row.seq)).toEqual([1, 2]);
     for (const [, init] of fetcher.mock.calls as unknown as Array<[unknown, RequestInit?]>) expect(init?.method ?? "GET").toBe("GET");
   });
-  it.each(["running", "status failure", "messages failure"])("retains its stream after %s", async (mode) => {
+  it.each(["running", "status failure"])("retains its stream after %s", async (mode) => {
     server(); await openConversation("f");
     const live = { text: "still visible" };
     stream.value = live; running.value = true; _replayGap.value = "f";
     server((path) => {
       if (path.endsWith("/status") && mode === "running") return response({ running: true, status: "processing" });
       if (path.endsWith("/status") && mode === "status failure") return response({ error: "status unavailable" }, 503);
-      if (path.includes("/messages?") && mode === "messages failure") return response({ error: "messages unavailable" }, 503);
     });
     expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: false });
     expect(stream.value).toBe(live);
+    expect(_replayGap.value).toBe("f");
+  });
+  it("finalizes an orphaned stream after a stopped status even when messages fail", async () => {
+    // The transcript could not be re-read, but the run is over: the bubble
+    // the stream drew stays in the DOM, gets its final render, and the
+    // composer unlocks; only the replay gap remains until a fresh page lands.
+    server(); await openConversation("f");
+    const live = { text: "still visible" };
+    stream.value = live; running.value = true; _replayGap.value = "f";
+    server((path) => path.includes("/messages?") ? response({ error: "messages unavailable" }, 503) : undefined);
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: false, runStateLoaded: true });
+    expect(stream.value).toBeNull();
+    expect(running.value).toBe(false);
     expect(_replayGap.value).toBe("f");
   });
   it("does not retire a stream changed after a stopped response", async () => {
@@ -447,4 +465,146 @@ it.each(["open", "retry"])("removes only stale welcome decoration when %s histor
   expect(await reading).toMatchObject({ messagesLoaded: false });
   expect(paint.empty).toHaveBeenCalledTimes(1);
   expect(session.historyContent.value).toBe(cached);
+});
+
+
+describe("a stopped read finishes the work of the terminal events it missed", () => {
+  it("retires live cells and refreshes the notebook and files panes", async () => {
+    server(); await openConversation("f");
+    const lanes = { loadExecutionLog: vi.fn(), loadArtifacts: vi.fn() };
+    vi.stubGlobal("loadExecutionLog", lanes.loadExecutionLog);
+    vi.stubGlobal("loadArtifacts", lanes.loadArtifacts);
+    const runningCell = { id: "c1", live: true, status: "running" };
+    liveCells.value = [runningCell]; _liveCell.value = runningCell;
+    stream.value = { text: "unfinished" }; running.value = true; _replayGap.value = "f";
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
+    expect(liveCells.value).toEqual([]);
+    expect(_liveCell.value).toBeNull();
+    expect(lanes.loadExecutionLog).toHaveBeenCalledTimes(1);
+    expect(lanes.loadExecutionLog).toHaveBeenCalledWith("f");
+    expect(lanes.loadArtifacts).toHaveBeenCalledWith("f");
+    expect(_replayGap.value).toBeNull();
+  });
+  it("does not refetch when nothing was live at read time", async () => {
+    server(); await openConversation("f");
+    const lanes = { loadExecutionLog: vi.fn(), loadArtifacts: vi.fn() };
+    vi.stubGlobal("loadExecutionLog", lanes.loadExecutionLog);
+    vi.stubGlobal("loadArtifacts", lanes.loadArtifacts);
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
+    expect(lanes.loadExecutionLog).not.toHaveBeenCalled();
+    expect(lanes.loadArtifacts).not.toHaveBeenCalled();
+  });
+  it("clears the turn spinner the way turnDone does", async () => {
+    server(); await openConversation("f");
+    chrome.hint.mockClear();
+    running.value = true;
+    expect(await recoverConversation("f")).toMatchObject({ runStateLoaded: true });
+    expect(running.value).toBe(false);
+    expect(chrome.hint).toHaveBeenCalledWith("", false);
+  });
+});
+
+it("a branch replacement reopen drops notebook cells the server no longer lists", async () => {
+  server(); await openConversation("f");
+  cells.value = [{ producing_cell_id: "reverted-away" }];
+  liveCells.value = [{ id: "live" }];
+  expect(await openConversation("f", undefined, { resetHistory: true })).toMatchObject({ messagesLoaded: true });
+  expect(cells.value).toEqual([]);
+  expect(liveCells.value).toEqual([]);
+});
+
+it("committing a fresh transcript keeps transcript-hosted UI that history never repaints", async () => {
+  server(); await openConversation("f");
+  const node = (cls: string, id = "") => ({ id, classList: { contains: (c: string) => c === cls } });
+  const message = node("msg"), step = node("step"), earlier = node("", "msgs-earlier");
+  const strip = node("generated"), plan = node("", "plan-card-live");
+  const host = {
+    innerHTML: "", scrollTop: 0, scrollHeight: 0, scrollTo() {},
+    children: [message, step, earlier, strip, plan],
+    replaceChildren: vi.fn(), querySelector: () => null,
+  };
+  const stage = { fragment: true };
+  vi.stubGlobal("document", {
+    querySelector: (selector: string) => selector === "#messages" ? host : null,
+    getElementById: (id: string) => id === "messages" ? host : id === "jump-pill" ? {} : null,
+    createDocumentFragment: () => stage,
+  });
+  expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
+  expect(host.replaceChildren).toHaveBeenCalledTimes(1);
+  expect(host.replaceChildren).toHaveBeenCalledWith(stage, strip, plan);
+});
+
+it("a read deferred behind live content is partial, not an error", async () => {
+  const gate = deferred<Response>();
+  let requested = false;
+  server((path) => path.includes("/messages?") ? (requested = true, gate.promise) : undefined);
+  running.value = true; // a turn is streaming: no idle re-read follows
+  const reading = openConversation("f");
+  await vi.waitFor(() => expect(requested).toBe(true));
+  running.value = true;
+  session.noteHistoryMutation(); // a live chunk raced the read
+  gate.resolve(response({ messages: [{ role: "assistant", content: "streamed", seq: 1 }] }));
+  expect(await reading).toMatchObject({ messagesLoaded: false, stepsLoaded: true, runStateLoaded: true });
+  expect(session.historyLoad.value).toMatchObject({ status: "partial", deferred: true });
+  expect(session.historyLoad.value?.errors).not.toHaveProperty("runState");
+});
+
+it("a read deferred by unrelated frame events on an idle session re-reads itself, boundedly", async () => {
+  server(); await openConversation("f");
+  let disturb = 2;
+  const fetcher = server((path) => {
+    // The first two page reads are disturbed by a seq-stamped event (kernel
+    // status, queue, a background artifact); the third is quiet.
+    if (path.includes("/messages?") && disturb-- > 0) _seqSeen.value = { ..._seqSeen.value, f: (_seqSeen.value.f || 0) + 1 };
+    return undefined;
+  });
+  const pageReads = () => fetcher.mock.calls.filter(([url]) => String(url).includes("/messages?")).length;
+  expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: false });
+  await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("loaded"));
+  expect(pageReads()).toBe(3);
+  // Two automatic re-reads are the budget; a session that keeps moving keeps the banner.
+  disturb = 10;
+  expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: false });
+  await vi.waitFor(() => expect(pageReads()).toBe(6));
+  await vi.waitFor(() => expect(session.historyLoad.value?.status).toBe("partial"));
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(session.historyLoad.value).toMatchObject({ status: "partial", deferred: true });
+  expect(pageReads()).toBe(6);
+});
+
+it("a run-state failure with nothing live commits a previously deferred page", async () => {
+  server(); await openConversation("f");
+  const gate = deferred<Response>();
+  let requested = false;
+  server((path) => path.includes("/messages?") ? (requested = true, gate.promise) : undefined);
+  running.value = true; // a turn was believed to be running: the read defers and does not re-read itself
+  const reading = recoverConversation("f");
+  await vi.waitFor(() => expect(requested).toBe(true));
+  session.noteHistoryMutation();
+  gate.resolve(response({ messages: [{ role: "assistant", content: "confirmed", seq: 1 }] }));
+  expect(await reading).toMatchObject({ messagesLoaded: false });
+  expect(session.historyLoad.value?.deferred).toBe(true);
+  running.value = false; stream.value = null;
+  server((path) => path.endsWith("/status") ? response({ error: "unavailable" }, 503) : undefined);
+  expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: false });
+  expect(session.historyLoad.value?.deferred).toBe(false);
+  expect(session.historyLoad.value?.errors.runState).toMatch(/unavailable/);
+});
+
+it("loaded earlier pages are reused only when they reach the newest page", async () => {
+  const rows = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, n) => ({ role: "assistant", content: `row ${from + n}`, seq: from + n }));
+  server((path) => path.includes("/messages?") ? response({ messages: rows(301, 600), next_before_seq: 301, has_earlier: true }) : undefined);
+  await openConversation("f");
+  expect(session.historyContent.value?.messages).toHaveLength(300);
+  // 400 rows landed while this client was away: the cached window stops 100 short.
+  server((path) => path.includes("/messages?") ? response({ messages: rows(701, 1000), next_before_seq: 701, has_earlier: true }) : undefined);
+  await recoverConversation("f");
+  expect(session.historyContent.value?.messages.map((row) => row.seq)).toEqual(rows(701, 1000).map((row) => row.seq));
+  expect(session.msgCursor.value).toBe(701);
+  expect(session.msgHasEarlier.value).toBe(true);
+  // Exactly abutting pages are contiguous and stay together.
+  server((path) => path.includes("/messages?") ? response({ messages: rows(1001, 1300), next_before_seq: 1001, has_earlier: true }) : undefined);
+  await recoverConversation("f");
+  expect(session.historyContent.value?.messages.map((row) => row.seq)).toEqual(rows(701, 1300).map((row) => row.seq));
+  expect(session.msgCursor.value).toBe(701);
 });

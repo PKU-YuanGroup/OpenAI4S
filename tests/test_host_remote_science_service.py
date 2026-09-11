@@ -1062,3 +1062,119 @@ def test_fold_accepts_a_complete_single_model_with_explicit_boundaries():
     assert result["ok"] is True
     assert result["pdb"] == payload
     assert len(service.pop_remote_provenance()) == 1
+
+
+def _fold_service(output: str) -> RemoteScienceService:
+    registry = FakeRegistry({"fold": ("gpu", {"script": "/fold"})})
+    return RemoteScienceService(
+        registry_factory=lambda: registry, run_command=FakeRunner(process(output))
+    )
+
+
+def _score_service(output: str) -> RemoteScienceService:
+    registry = FakeRegistry(
+        {"score_mutations": ("gpu-b", {"script": "/score", "engine": "ESM"})}
+    )
+    return RemoteScienceService(
+        registry_factory=lambda: registry, run_command=FakeRunner(process(output))
+    )
+
+
+_MUTATION_CSV = "mutation,score\nA1C,1.2\nC2A,-0.4\nD3A,-1.4\n"
+
+
+@pytest.mark.parametrize(
+    "decorate",
+    [
+        pytest.param(lambda text: text + "\n", id="trailing-newline"),
+        pytest.param(lambda text: text + "\r\n", id="trailing-crlf"),
+        pytest.param(lambda text: "﻿" + text, id="utf8-bom"),
+    ],
+)
+def test_csv_trailing_blank_line_or_bom_is_not_a_malformed_result(decorate):
+    """`print(df.to_csv())` ends with a blank line; a BOM is a signature, not
+    content. Neither is a short row or a missing column."""
+    fold = _fold_service(fold_output(plddt_b64=encoded(decorate(plddt_text()))))
+    assert fold.fold({"sequence": "ACDE"})["ok"] is True
+    score = _score_service(mutation_output(csv_b64=encoded(decorate(_MUTATION_CSV))))
+    assert score.score_mutations({"sequence": "ACD"})["ok"] is True
+
+
+def test_blank_line_between_csv_rows_is_still_malformed():
+    torn = plddt_text().replace("A,2,CYS,90\n", "A,2,CYS,90\n\n")
+    result = _fold_service(fold_output(plddt_b64=encoded(torn))).fold(
+        {"sequence": "ACDE"}
+    )
+    assert result["error"] == "fold: invalid_output: malformed pLDDT CSV row"
+
+
+def test_top5_score_tolerates_two_serializations_of_one_number():
+    """A float32 tensor printed by pandas and json.dumps(float(x)) differ in
+    the 8th digit; a 4-dp summary differs in the 5th. Neither is fabrication."""
+    csv_b64 = encoded("mutation,score\nA1C,-1.2345678\nC2A,-0.4\nD3A,-1.4\n")
+    for score in (-1.2345678, -1.2345677614212036, -1.2346):
+        summary = json.dumps(
+            {"top5": [{"mutation": "A1C", "score": score}], "length": 3}
+        )
+        result = _score_service(
+            mutation_output(summary=summary, csv_b64=csv_b64)
+        ).score_mutations({"sequence": "ACD"})
+        assert result["ok"] is True, score
+    wrong = json.dumps({"top5": [{"mutation": "A1C", "score": -1.2}], "length": 3})
+    rejected = _score_service(
+        mutation_output(summary=wrong, csv_b64=csv_b64)
+    ).score_mutations({"sequence": "ACD"})
+    assert rejected["error"] == (
+        "score_mutations: invalid_output: top5 score conflicts with validated CSV"
+    )
+
+
+@pytest.mark.parametrize("value", ["1_0.5", "１.５", "٣", "0x10", "nan", "inf", ""])
+def test_numeric_text_fields_must_be_ascii_decimals(value):
+    """float() alone accepts separators and Unicode digits that no PDB reader
+    or the workbench viewer parse the same way."""
+    from openai4s.host.remote_science import _finite
+
+    with pytest.raises(ValueError):
+        _finite(value, "PDB coordinate")
+
+
+def test_numeric_text_fields_accept_ascii_decimals():
+    from openai4s.host.remote_science import _finite
+
+    assert _finite(" 1.000", "x") == 1.0
+    assert _finite("-2.5e1", "x") == -25.0
+    assert _finite(".5", "x") == 0.5
+    assert _finite(3, "x") == 3.0
+
+
+def test_pdb_coordinate_with_a_digit_separator_is_rejected_not_passed_through():
+    payload = pdb_text().replace(f"{1.0:8.3f}", " 1_0.500", 1)
+    result = _fold_service(fold_output(pdb_b64=encoded(payload))).fold(
+        {"sequence": "ACDE"}
+    )
+    assert result["error"] == "fold: invalid_output: invalid numeric PDB coordinate"
+
+
+def test_non_finite_confidence_is_diagnosed_as_non_finite_not_invalid_json():
+    result = _fold_service(
+        fold_output(confidence_b64=encoded('{"plddt": 80.1, "iptm": NaN}'))
+    ).fold({"sequence": "ACDE"})
+    assert result["error"] == "fold: invalid_output: non-finite number in confidence"
+
+
+def test_every_empty_positions_spelling_shares_one_message():
+    runner = FakeRunner(process(mutation_output()))
+    registry = FakeRegistry(
+        {"score_mutations": ("gpu-b", {"script": "/score", "engine": "ESM"})}
+    )
+    service = RemoteScienceService(
+        registry_factory=lambda: registry, run_command=runner
+    )
+    messages = {
+        service.score_mutations({"sequence": "ACD", "positions": empty})["error"]
+        for empty in ([], (), "", "   ")
+    }
+    assert len(messages) == 1
+    assert "pass None to score every position" in messages.pop()
+    assert runner.calls == [], "rejected before any SSH launch"

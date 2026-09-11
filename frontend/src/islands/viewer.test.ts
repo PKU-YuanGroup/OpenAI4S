@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { isTextEditable, renderViewer } from "./viewer";
+import { hint } from "../features/sessions/chrome";
+import { translate } from "../features/artifacts/api";
+import { filesT } from "../features/artifacts/copy";
 import { dockArtifact } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 const menu = vi.hoisted(() => ({ open: vi.fn() }));
@@ -55,5 +58,32 @@ it.each([true, false])("the Viewer menu copy respects exact=%s", (exact) => {
     expect(copied).toContain("artifact=a");
     if (exact) expect(copied).toContain("version_id=v1");
     else expect(copied).not.toContain("version_id=");
+  } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+});
+
+
+it.each([true, false])("Edit is offered only on the latest tab (exact=%s)", (exact) => {
+  class Node {
+    children: Node[] = [];
+    innerHTML = ""; textContent = ""; className = ""; title = "";
+    onclick?: () => void;
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  resetStoreFields(); menu.open.mockReset();
+  const root = new Node();
+  vi.stubGlobal("document", { getElementById: () => root, createElement: () => new Node() });
+  try {
+    dockArtifact.value = { id: "a", filename: "notes.txt", content_type: "text/plain", version_id: "v1", _exactVersion: exact };
+    renderViewer();
+    const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+    const editButtons = walk(root).filter((node) => node.className === "icon-ghost" && node.title === translate("common.edit"));
+    expect(editButtons).toHaveLength(exact ? 0 : 1);
+    walk(root).find((node) => node.innerHTML.includes('cx="12" cy="5"'))?.onclick?.();
+    const items = menu.open.mock.calls[0]?.[1] as { label?: string; onClick?: () => void }[];
+    vi.mocked(hint).mockClear();
+    items.find((item) => item.label === translate("common.edit"))?.onClick?.();
+    if (exact) expect(hint).toHaveBeenCalledWith(filesT("artifact.editPinned"));
+    else expect(hint).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); resetStoreFields(); }
 });

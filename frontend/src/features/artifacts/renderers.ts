@@ -85,6 +85,21 @@ export function renderMarkdownArtifact(container: HTMLElement, url: string): voi
 
 const SOURCE_PREVIEW_CHARACTERS = 300000;
 
+/**
+ * Control-character density only. `looksBinary` also flags long base64-like
+ * runs, which is exactly what a JSON document with a big string value is.
+ */
+function controlDense(text: string): boolean {
+  const sample = text.slice(0, 4096);
+  let ctrl = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const c = sample.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13) continue;
+    if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
+  }
+  return sample.length > 0 && ctrl / sample.length > 0.12;
+}
+
 function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
   const pre = el("pre", "renderer-source");
   pre.textContent = text.slice(0, SOURCE_PREVIEW_CHARACTERS);
@@ -116,6 +131,12 @@ export function renderStructuredText(
 ): void {
   const rows = parseTable(text, a);
   if (!rows || !rows.length) {
+    // The JSON branch runs before `looksBinary` so long string values are
+    // not mistaken for bytes; a `.json` that failed to parse AND is dense
+    // with control characters is a mislabelled blob, not source to expand.
+    // The tile is built directly: `renderDownloadArtifact` would route a
+    // `.json` name back into the text renderer and fetch forever.
+    if (controlDense(text)) return renderDownloadCard(container, a, url);
     renderRawSource(container, a, text, url);
     return;
   }
@@ -524,6 +545,11 @@ export function renderDownloadArtifact(container: HTMLElement, a: ArtifactRow, u
   if (ct.startsWith("text/") || /json|xml|javascript/.test(ct) || TEXT_EXT.test(nm)) {
     return renderTextArtifact(container, a, url);
   }
+  renderDownloadCard(container, a, url);
+}
+
+/** The download tile itself, for callers that already know the bytes are not text. */
+function renderDownloadCard(container: HTMLElement, a: ArtifactRow, url: string): void {
   const card = el("div", "download-artifact");
   card.appendChild(iconEl("package", 28));
   card.appendChild(el("strong", null, a.filename || "artifact"));

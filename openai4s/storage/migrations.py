@@ -101,6 +101,14 @@ def preflight_schema(db_path: Path, *, target: int = SCHEMA_VERSION) -> int | No
 
     A missing database follows the normal new-database path. A corrupt or
     unreadable database retains SQLite's error; it is not a future version.
+
+    Returns ``None`` when the version could not be read without writing: the
+    Store keeps its rollback journal, so a process killed mid-commit leaves a
+    hot journal that only a read-write connection may replay
+    (``SQLITE_READONLY_ROLLBACK``). That recovery is SQLite restoring committed
+    state, not an application write, and the formal connection re-runs
+    :func:`require_supported_schema` before any DDL — so deferring is safe,
+    whereas raising here would keep the database unopenable forever.
     """
     path = Path(db_path)
     if not path.exists():
@@ -108,8 +116,26 @@ def preflight_schema(db_path: Path, *, target: int = SCHEMA_VERSION) -> int | No
     conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         return require_supported_schema(conn, target=target)
+    except sqlite3.OperationalError as error:
+        if _is_readonly_refusal(error):
+            return None
+        raise
     finally:
         conn.close()
+
+
+def _is_readonly_refusal(error: sqlite3.OperationalError) -> bool:
+    """True when SQLite refused because the handle is read-only.
+
+    ``sqlite_errorcode`` exists from Python 3.11; older interpreters only carry
+    the message. Both spellings mean the same thing for a ``mode=ro`` handle:
+    the file needs a write (journal playback) that this connection cannot do.
+    """
+    code = getattr(error, "sqlite_errorcode", None)
+    readonly = getattr(sqlite3, "SQLITE_READONLY", 8)
+    if isinstance(code, int) and (code & 0xFF) == readonly:
+        return True
+    return "readonly" in str(error).lower()
 
 
 def apply_ddl_script(conn: sqlite3.Connection, script: str) -> None:

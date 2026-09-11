@@ -30,6 +30,8 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     "files.version.stale": "找不到 version {0}（当前 latest 为 {1}）。不会改用 latest。",
     "files.version.notFound": "找不到该 Artifact 或指定 version。",
     "files.index.unavailable": "无法加载文件索引。",
+    "artifact.editPinned": "当前标签页显示的是固定版本；请打开最新版本后再编辑",
+    "prov.env.noSnapshot": "此版本未记录生产时环境（上传文件，或早于环境捕获功能生成）；不会用守护进程的实时环境替代。",
   },
   en: {
     "viewer.text.truncated": "Preview truncated. Expand the complete text already loaded, or download the file.",
@@ -55,6 +57,8 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     "files.version.stale": "Version {0} was not found (latest is {1}). Latest was not substituted.",
     "files.version.notFound": "This artifact or version was not found.",
     "files.index.unavailable": "Could not load the file index.",
+    "artifact.editPinned": "This tab shows a fixed version; open the latest version to edit the file",
+    "prov.env.noSnapshot": "No environment was recorded for this version (uploaded file, or produced before environment capture existed); the live daemon environment is not substituted.",
   },
 };
 

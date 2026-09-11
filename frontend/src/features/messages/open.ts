@@ -241,6 +241,9 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   const unchanged = (): boolean => current(fid, gen) && historyMutation.value === mutation &&
     _seqSeen.value[fid] === seen && _streamEpoch.value === epoch;
   const streamAtRead = liveStream.value;
+  // Live notebook state at read time. A stopped read that still finds any of
+  // it has missed the turn's terminal events, so it must finish their work.
+  const liveAtRead = !!streamAtRead || (liveCells.value as unknown[]).length > 0 || !!_liveCell.value;
   const runStateRead = fetchRunState(fid);
   // A residual stream may have missed its terminal event. Read its status
   // first, then fetch a fresh transcript after the authoritative stopped
@@ -268,16 +271,32 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   const stopped = runState.status === "fulfilled" && runState.value.running === false;
   const orphanedStream = (): boolean => !!streamAtRead && liveStream.value === streamAtRead && stopped;
   const busy = (): boolean => historyUnconfirmed.value > 0 || (!!liveStream.value && !orphanedStream());
-  let deferred = !unchanged() || busy() || (!!wasDeferred && !stopped);
+  // A previously deferred transcript stays deferred while the turn it waited
+  // for is still running. When the run state could not be read at all, the
+  // client's own belief decides: with nothing running, the successful page
+  // is the best evidence there is and must not be discarded.
+  const runUnknown = runState.status !== "fulfilled" && !running.value;
+  let deferred = !unchanged() || busy() || (!!wasDeferred && !stopped && !runUnknown);
+  const retireOrphanedStream = (): void => {
+    if (orphanedStream() && unchanged()) {
+      flushRender(streamAtRead as LiveStream, true);
+      liveStream.value = null;
+    }
+  };
   if (page.status === "fulfilled" && !deferred) {
     const newest = uniqueMessages(page.value.messages);
     const lower = Math.min(...newest.map((row) => typeof row.seq === "number" ? row.seq : Infinity));
-    const prefix = page.value.has_earlier !== false && Number.isFinite(lower)
+    const cachedBelow = page.value.has_earlier !== false && Number.isFinite(lower)
       ? cached?.messages.filter((row) => typeof row.seq === "number" && row.seq < lower) || [] : [];
+    // Reuse loaded earlier pages only when they reach the newest page: they
+    // overlap it, or (seq is dense per frame) end exactly one row below it.
+    // A cached window that stops short would be spliced under a hole.
+    const overlap = cachedBelow.length > 0 && !!cached?.messages.some((row) => typeof row.seq === "number" && row.seq >= lower);
+    const abuts = cachedBelow.length > 0 && Math.max(...cachedBelow.map((row) => row.seq as number)) + 1 === lower;
+    const prefix = overlap || abuts ? cachedBelow : [];
     const messages = [...prefix, ...newest];
-    const overlap = prefix.length > 0 && cached?.messages.some((row) => typeof row.seq === "number" && row.seq >= lower);
-    const earlierCursor = overlap ? msgCursor.value : page.value.next_before_seq ?? null;
-    const hasEarlier = overlap ? msgHasEarlier.value : !!page.value.has_earlier;
+    const earlierCursor = prefix.length ? msgCursor.value : page.value.next_before_seq ?? null;
+    const hasEarlier = prefix.length ? msgHasEarlier.value : !!page.value.has_earlier;
     const stepRows = steps.status === "fulfilled" ? steps.value : cached?.steps || [];
     const stage = typeof document !== "undefined" ? document.createDocumentFragment() : null;
     const host = messagesHost();
@@ -302,11 +321,18 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
     if (!current(fid, gen)) return obsolete();
     deferred = !unchanged() || busy();
     if (!deferred) {
-      if (orphanedStream()) {
-        flushRender(streamAtRead as LiveStream, true);
-        liveStream.value = null;
+      retireOrphanedStream();
+      if (host && stage) {
+        // Only history items and the retired stream are replaced. Artifact
+        // tile strips, plan cards and other transcript-hosted UI keep their
+        // nodes: the GET-only paths (turn end, replay gap, Retry) never
+        // repaint them, unlike a full openConversation.
+        const keep = (host.children ? Array.from(host.children) : []).filter((node) =>
+          !node.classList?.contains("msg") && !node.classList?.contains("step") &&
+          node.id !== "msgs-earlier" && !node.classList?.contains("empty-session") &&
+          node !== (streamAtRead as LiveStream | null)?.wrap);
+        host.replaceChildren(stage, ...keep);
       }
-      if (host && stage) host.replaceChildren(stage);
       stepEls.value = stagedSteps;
       historyContent.value = { fid, messages, steps: stepRows };
       msgCursor.value = earlierCursor;
@@ -320,6 +346,10 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
   if (deferred) {
     result.messagesLoaded = false;
     errors.messages = t(historyUnconfirmed.value > 0 ? "history.submissionPending" : "history.livePending");
+  } else if (page.status !== "fulfilled") {
+    // The transcript could not be re-read, but the run is over: the stream
+    // it belonged to still gets its cursor removed and message actions.
+    retireOrphanedStream();
   }
   if (!current(fid, gen)) return obsolete();
   // Status failure never implies task completion or unlocks a running composer.
@@ -333,15 +363,24 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       resumeWatch(fid, gen);
     } else {
       closeTurnTicket(); hideCancel();
-      if (runState.value.status === "failed") {
-        const last = lastTerminalFailure();
-        if (last) hint(failureHint(last), true);
+      // Mirrors turnDone: the "Stopping…"/"Resuming…" spinner belongs to the
+      // turn this read just found finished, whichever path reached here.
+      const last = runState.value.status === "failed" ? lastTerminalFailure() : null;
+      hint(last ? failureHint(last) : "", !!last);
+      if (liveAtRead) {
+        // The terminal events were missed (replay gap, watchdog): finish
+        // what they would have done for the Notebook and the Files pane.
+        liveCells.value = [];
+        _liveCell.value = null;
+        callLane("loadExecutionLog", fid);
+        callLane("loadArtifacts", fid);
       }
     }
   }
   const complete = result.messagesLoaded && result.stepsLoaded && result.runStateLoaded;
   historyLoad.value = { ...result, fid, generation: gen,
-    status: complete ? "loaded" : result.messagesLoaded || cached ? "partial" : "error",
+    // A deferred read failed nothing; it is waiting, which is "partial".
+    status: complete ? "loaded" : deferred || result.messagesLoaded || cached ? "partial" : "error",
     errors, deferred };
   if (complete && _replayGap.value === fid) _replayGap.value = null;
   updateJumpPill();
@@ -350,6 +389,11 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
 
 let recovery: { fid: string; gen: number; promise: Promise<HistoryLoadResult> } | null = null;
 let terminalAlignment: { fid: string; gen: number } | null = null;
+/** Automatic re-reads left for a conversation deferred while nothing is running. */
+let idleRetries: { fid: string; gen: number; left: number } | null = null;
+const IDLE_RETRIES = 2;
+
+const idle = (): boolean => !liveStream.value && historyUnconfirmed.value === 0 && !running.value;
 
 /** One terminal event can request one fresh read after an in-flight GET settles. */
 export function alignHistoryAfterTurn(fid: string, gen = _openGen.value): void {
@@ -375,10 +419,23 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
   void promise.then(() => {
     if (recovery !== own) return;
     recovery = null;
+    const stillDeferred = current(fid, gen) && !!historyLoad.value?.deferred && idle();
+    if (!historyLoad.value?.deferred) idleRetries = null;
     if (terminalAlignment?.fid === fid && terminalAlignment.gen === gen) {
       terminalAlignment = null;
-      if (current(fid, gen) && historyLoad.value?.deferred && !liveStream.value &&
-          historyUnconfirmed.value === 0 && !running.value) void recoverConversation(fid, gen);
+      if (stillDeferred) void recoverConversation(fid, gen);
+      return;
+    }
+    // Every frame event carries a seq (kernel status, queue, background
+    // artifacts), so a read can be deferred on a session where no turn will
+    // ever end to realign it. Re-read a bounded number of times; the banner
+    // and its Retry button remain for anything that keeps moving.
+    if (stillDeferred) {
+      if (idleRetries?.fid !== fid || idleRetries.gen !== gen) idleRetries = { fid, gen, left: IDLE_RETRIES };
+      if (idleRetries.left > 0) {
+        idleRetries.left -= 1;
+        void recoverConversation(fid, gen);
+      }
     }
   });
   return promise;
@@ -411,16 +468,15 @@ export async function openConversation(
     deferred: !switching && !options?.resetHistory && !!historyLoad.value?.deferred };
   if (options?.resetHistory && !switching) {
     // Branch activation/revert changes which records are visible within the
-    // same frame. Its previous transcript cannot seed the replacement page.
+    // same frame: messages, but also cells, artifacts, plan and dock state.
+    // Its previous transcript cannot seed the replacement page, and the
+    // execution-log merge keeps any local cell the server no longer lists.
     const host = messagesHost();
     if (host) host.innerHTML = "";
     if (liveStream.value) flushRender(liveStream.value as LiveStream, true);
-    liveStream.value = null;
+    resetSessionScoped();
     historyContent.value = null;
     historyMutation.value += 1;
-    msgCursor.value = null;
-    msgHasEarlier.value = false;
-    stepEls.value = Object.create(null);
   }
   if (switching) {
     const host = messagesHost();

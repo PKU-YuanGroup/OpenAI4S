@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse
 
 from openai4s import datapro, execution_principal, memory_budget
 from openai4s.agent.actions import NO_NATIVE_COMPLETION_NUDGE
@@ -17572,6 +17572,24 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/artifacts/(.+)", sub)
             if m and method == "GET":
+                vid = (q.get("version") or [None])[0]
+                if vid is not None:
+                    # An explicit version on the compatible id route is
+                    # honoured exactly like the metadata routes: it must be
+                    # one of THIS artifact's versions, and it never falls
+                    # back to the head bytes.
+                    version = store.version_meta(vid)
+                    if not version or version.get("artifact_id") != unquote(m.group(1)):
+                        self._json(
+                            {
+                                "error": "artifact version not found",
+                                "code": "artifact_version_not_found",
+                            },
+                            404,
+                        )
+                        return
+                    self._serve_artifact(f"versions/{quote(vid, safe='')}")
+                    return
                 self._serve_artifact(m.group(1))
                 return
             if sub == "/uploads" and method == "POST":

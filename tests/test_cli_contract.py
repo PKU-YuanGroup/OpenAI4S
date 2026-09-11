@@ -1017,3 +1017,30 @@ def test_real_detached_child_rejects_future_schema_with_explicit_parent_error(
     assert "future_schema" in error and "did not become ready" not in error
     assert cfg.db_path.read_bytes() == before
     assert not cfg.pidfile.exists() and not cfg.statefile.exists()
+
+
+@pytest.mark.parametrize(
+    "argv", [["user", "list"], ["init", "--non-interactive", "--json"]]
+)
+def test_store_opening_commands_refuse_a_future_schema_without_a_traceback(
+    tmp_path, monkeypatch, capsys, argv
+):
+    """`serve` already rendered the refusal; every other Store opener crashed."""
+    import sqlite3
+
+    import openai4s.config as config_module
+    from openai4s.storage.migrations import SCHEMA_VERSION
+
+    module = _cli_module()
+    monkeypatch.setattr(config_module, "_CONFIG", None)
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path))
+    cfg = config_module.Config()
+    cfg.ensure_dirs()
+    with sqlite3.connect(cfg.db_path) as db:
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    before = cfg.db_path.read_bytes()
+    assert module.main(argv) == 2
+    captured = capsys.readouterr()
+    assert "future_schema" in captured.err
+    assert "Traceback" not in captured.err
+    assert cfg.db_path.read_bytes() == before

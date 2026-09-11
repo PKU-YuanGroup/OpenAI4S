@@ -723,3 +723,57 @@ def test_exact_lineage_uses_requested_version_and_rejects_foreign_or_missing():
     for version_id in ["missing", "foreign"]:
         with pytest.raises(KeyError):
             _service(store).artifact_lineage("a", version_id=version_id)
+
+
+def test_execution_log_shows_the_version_a_cell_left_behind_when_it_minted_two():
+    """`host.save_artifact` then another write of the same name mints two
+    versions under one producer. The Notebook shows the file the cell left
+    behind (the newer one); the sources export still lists both."""
+    from openai4s.server.execution_sources import output_artifact_bindings
+
+    class TwoVersions(_Store):
+        def get_frame(self, frame_id):
+            return {"frame_id": frame_id, "root_frame_id": "root"}
+
+        def list_artifacts(self, filters):
+            return [{"artifact_id": "a"}]
+
+        def list_versions(self, artifact_id):
+            return [
+                {
+                    "version_id": "v-late",
+                    "filename": "out.csv",
+                    "producing_cell_id": "c1",
+                    "created_at": 20,
+                    "ordinal": 2,
+                },
+                {
+                    "version_id": "v-early",
+                    "filename": "out.csv",
+                    "producing_cell_id": "c1",
+                    "created_at": 10,
+                    "ordinal": 1,
+                },
+            ]
+
+        def list_artifact_capture_observations(self, *, artifact_id):
+            return [
+                {
+                    "version_id": "v-early",
+                    "filename": "out.csv",
+                    "producing_cell_id": "c1",
+                }
+            ]
+
+    store = TwoVersions()
+    store.cells["root"] = [
+        {
+            "producing_cell_id": "c1",
+            "cell_index": 1,
+            "code": "host.save_artifact('out.csv')",
+        }
+    ]
+    rows = _service(store).execution_log("root")["entries"]
+    assert [row["version_id"] for row in rows[0]["output_artifacts"]] == ["v-late"]
+    every = output_artifact_bindings(store, "root")["c1"]
+    assert {row["version_id"] for row in every} == {"v-early", "v-late"}

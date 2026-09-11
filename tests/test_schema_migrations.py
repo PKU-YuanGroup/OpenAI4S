@@ -1807,3 +1807,82 @@ def test_schema_state_is_current_only_for_equal_version(tmp_path):
             assert store.schema_state()["current"] is (version == SCHEMA_VERSION)
     finally:
         store.close()
+
+
+def _leave_hot_rollback_journal(path: Path) -> None:
+    """Kill a writer after its journal header is synced and pages are spilled.
+
+    That is the state a daemon SIGKILLed / OOM-killed mid-commit leaves behind
+    in rollback-journal mode: only a read-write open may replay it.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    seed = sqlite3.connect(path)
+    try:
+        seed.execute("CREATE TABLE hot_journal_probe(x)")
+        seed.execute(
+            "INSERT INTO hot_journal_probe WITH RECURSIVE n(i) AS "
+            "(SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50000) SELECT i FROM n"
+        )
+        seed.commit()
+    finally:
+        seed.close()
+    child = textwrap.dedent(f"""
+        import os, sqlite3
+        conn = sqlite3.connect({str(path)!r}, isolation_level=None)
+        # A tiny page cache forces a spill, which finalizes the journal header.
+        conn.execute("PRAGMA cache_size=-8")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("UPDATE hot_journal_probe SET x = x + 1")
+        os._exit(9)
+        """)
+    subprocess.run([sys.executable, "-c", child], check=False)
+    journal = path.with_name(path.name + "-journal")
+    assert journal.exists() and journal.stat().st_size > 0
+    # nRec > 0 in the header is what makes SQLite treat the journal as hot.
+    assert int.from_bytes(journal.read_bytes()[8:12], "big") > 0
+
+
+def test_hot_rollback_journal_is_replayed_by_the_formal_open_not_refused(tmp_path):
+    """A read-only preflight cannot roll back a hot journal; it must defer.
+
+    Before this, every ``Store()`` (serve, run, diagnostics…) raised
+    ``attempt to write a readonly database`` after an unclean shutdown, and
+    nothing ever performed the replay that the read-write open does.
+    """
+    from openai4s.storage.migrations import preflight_schema
+
+    path = tmp_path / "crashed.db"
+    Store(path).close()
+    _leave_hot_rollback_journal(path)
+    journal = path.with_name(path.name + "-journal")
+
+    assert preflight_schema(path) is None
+    assert journal.exists(), "the read-only preflight must not replay or delete it"
+    store = Store(path)
+    try:
+        assert store.schema_state()["version"] == SCHEMA_VERSION
+        assert not journal.exists()
+        row = store._conn.execute(
+            "SELECT count(*), min(x) FROM hot_journal_probe"
+        ).fetchone()
+        assert tuple(row) == (50000, 1), "the interrupted UPDATE was rolled back"
+    finally:
+        store.close()
+
+
+def test_hot_rollback_journal_does_not_bypass_the_future_schema_refusal(tmp_path):
+    from openai4s.storage.migrations import FutureSchemaError, preflight_schema
+
+    path = tmp_path / "crashed-future.db"
+    Store(path).close()
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    _leave_hot_rollback_journal(path)
+
+    assert preflight_schema(path) is None
+    with pytest.raises(FutureSchemaError) as rejected:
+        Store(path)
+    assert rejected.value.actual_version == SCHEMA_VERSION + 1

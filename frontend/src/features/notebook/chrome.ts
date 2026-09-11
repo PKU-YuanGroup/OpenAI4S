@@ -3,6 +3,7 @@
  * inline CSV tables, binary elision. Window contract names assigned in install.ts.
  */
 
+import { fetchArtifactText } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { isReady } from "../../compat/stub";
 import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
@@ -194,10 +195,6 @@ export function artUrlByName(fname: string): string {
   return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 
-export function artUrlBust(fname: string): string {
-  return artUrlByName(fname);
-}
-
 export function notebookArtifactState(cell: NotebookCell, filename: string): {
   state: "confirmed" | "saving" | "unconfirmed";
   artifact?: NotebookOutputArtifact;
@@ -247,8 +244,7 @@ export function renderTableInto(holder: HTMLElement, fname: string, url: string)
     build(hit as string[][]);
     return () => { disposed = true; };
   }
-  const read = () => fetch(url)
-    .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+  const read = () => fetchArtifactText(url)
     .then((text) => {
       if (disposed) return;
       const firstLine = text.replace(/\r/g, "").split("\n", 1)[0] || "";

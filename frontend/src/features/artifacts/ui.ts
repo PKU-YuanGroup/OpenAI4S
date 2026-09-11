@@ -135,9 +135,7 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   const selected = (openTabs.value as ArtifactRow[]).find((row) => artifactTabKey(row) === tab);
   if (selected && selectArtifact) {
     dockArtifact.value = selected;
-    viewerVersionState.value = selected._exactVersion
-      ? { status: "exact", artifact: selected, versionId: String(selected.version_id || "") }
-      : { status: "latest", artifact: selected, versionId: selected.version_id || selected.latest_version_id || null };
+    rememberViewerVersion(viewerVersionFor(selected));
   }
   dockOpen();
   renderDockTabs();
@@ -175,7 +173,10 @@ export function renderConversationArtifacts(): void {
     const fn = el("div", "tfn", a.filename || "artifact");
     if ((a.priority || 0) > 0) fn.textContent = "⭐ " + fn.textContent;
     tile.appendChild(fn);
-    tile.onclick = () => openViewer(a);
+    // Strip rows are `_artifact_json` heads whose `version_id` is the current
+    // latest; like the Files grid they must open the latest tab, not pin the
+    // head-at-click (which the cache would then refuse to advance).
+    tile.onclick = () => presentViewer(a);
     return tile;
   };
   const CAP = 6;
@@ -307,11 +308,16 @@ export function renderViewer(): void {
 
 let viewerRequest = 0;
 
-function presentViewer(a: ArtifactRow): void {
-  viewerRequest += 1;
-  viewerVersionState.value = a._exactVersion
+/** The viewer state a row already carries: pinned rows are exact, others latest. */
+function viewerVersionFor(a: ArtifactRow): VersionResolve {
+  return a._exactVersion
     ? { status: "exact", artifact: a, versionId: String(a.version_id || "") }
     : { status: "latest", artifact: a, versionId: a.version_id || a.latest_version_id || null };
+}
+
+function presentViewer(a: ArtifactRow): void {
+  viewerRequest += 1;
+  rememberViewerVersion(viewerVersionFor(a));
   dockArtifact.value = a;
   provMode.value = false;
   addOpenTab(a);

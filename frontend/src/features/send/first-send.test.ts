@@ -19,7 +19,7 @@ import { _openGen, currentId, historyUnconfirmed, project } from "../../stores/s
 import { resetStoreFields } from "../../stores/signal-field";
 import { pendingRequestId, running } from "../../stores/stream";
 import { UPLOAD_STATE } from "../chrome/upload";
-import { send } from "./send";
+import { SUBMISSION_GRACE_MS, send } from "./send";
 import { closeTurnTicket } from "./ticket";
 
 type FakeEl = Record<string, unknown> & {
@@ -143,5 +143,50 @@ describe("send(): first message of a fresh session", () => {
     expect(pendingRequestId.value).toBe("req-1");
     expect(composer.value).toBe("");
     expect(historyUnconfirmed.value).toBe(0);
+  });
+});
+
+
+describe("send(): an unanswered POST /message", () => {
+  it("releases the history-submission hold after a bounded grace, then realigns", async () => {
+    vi.useFakeTimers();
+    const nodes: Record<string, FakeEl> = {};
+    for (const id of ["messages", "composer-hint", "cancel-btn", "send-btn", "workspace"]) nodes[id] = fakeEl();
+    const composerNode = fakeEl();
+    composerNode.value = "hello";
+    nodes.composer = composerNode;
+    vi.stubGlobal("document", {
+      querySelector: (sel: string) => nodes[sel.replace(/^#/, "")] ?? null,
+      querySelectorAll: () => [],
+      getElementById: (id: string) => nodes[id] ?? null,
+      createElement: () => fakeEl(),
+      createElementNS: () => fakeEl(),
+      createTextNode: (text: string) => ({ text }),
+      documentElement: fakeEl(),
+      body: fakeEl(),
+    });
+    const align = vi.fn();
+    vi.stubGlobal("window", { alignHistoryAfterTurn: align });
+    vi.stubGlobal("alignHistoryAfterTurn", align);
+    vi.stubGlobal("fetch", (url: string) => {
+      if (String(url).endsWith("/message")) return Promise.reject(new TypeError("Failed to fetch"));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    try {
+      resetStoreFields();
+      currentId.value = "frame_1"; project.value = "proj_1";
+      _openGen.value = 4;
+      await send("hello");
+      expect(historyUnconfirmed.value).toBe(1);
+      expect(running.value).toBe(false);
+      await vi.advanceTimersByTimeAsync(SUBMISSION_GRACE_MS - 1);
+      expect(historyUnconfirmed.value).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyUnconfirmed.value).toBe(0);
+      expect(align).toHaveBeenCalledWith("frame_1", 4);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

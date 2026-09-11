@@ -148,3 +148,51 @@ it("fullscreen download keeps the selected immutable version", async () => {
     expect(download.setAttribute).toHaveBeenCalledWith("download", "table.csv");
   } finally { vi.unstubAllGlobals(); }
 });
+
+
+it("conversation strip tiles open the latest tab rather than pinning the head at click time", async () => {
+  const { artifacts } = await import("../../stores/artifacts");
+  const { renderConversationArtifacts } = await import("./ui");
+  class Node {
+    children: Node[] = []; textContent = ""; className = ""; id = ""; src = "";
+    onclick?: () => unknown;
+    appendChild(child: Node) { this.children.push(child); return child; }
+    insertBefore(child: Node) { this.children.push(child); return child; }
+    querySelector() { return null; }
+    remove() {}
+  }
+  resetStoreFields();
+  viewerVersionState.value = null;
+  const requests: string[] = [];
+  const fetcher = vi.fn(async (url: string) => { requests.push(url); return jsonResponse({ versions }); });
+  setArtifactsFetch(fetcher);
+  // The list serializer stamps every row with the head's version_id.
+  artifacts.value = [{ id: "art-1", filename: "notes.txt", content_type: "text/plain", version_id: "v-new", latest_version_id: "v-new" }];
+  const host = new Node();
+  vi.stubGlobal("document", {
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    getElementById: (id: string) => id === "messages" ? host : null,
+    createElement: () => new Node(),
+  });
+  try {
+    renderConversationArtifacts();
+    const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+    const tile = walk(host).find((node) => node.className === "tile");
+    expect(tile).toBeDefined();
+    await tile?.onclick?.();
+    const state = viewerVersionState.value as { status?: string } | null;
+    expect(state?.status).toBe("latest");
+    const tabs = openTabs.value as ArtifactRow[];
+    expect(tabs.map((row) => [row.id, row._exactVersion])).toEqual([["art-1", undefined]]);
+    expect(activeTab.value).toBe("art-1");
+    // openViewer would have resolved the pin through /versions; presentViewer
+    // only lets the viewer read the latest bytes.
+    expect(requests.some((url) => url.includes("/versions"))).toBe(false);
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});

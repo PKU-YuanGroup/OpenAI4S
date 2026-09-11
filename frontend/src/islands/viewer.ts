@@ -9,7 +9,7 @@ import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
 import { isReady } from "../compat/stub";
-import { API, api, apiErrorText, artifactsFetch, bytes } from "../features/artifacts/api";
+import { api, apiErrorText, bytes, fetchArtifactText } from "../features/artifacts/api";
 import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
 import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
@@ -162,8 +162,7 @@ function renderArtifactEditor(body: HTMLElement, a: ArtifactRow): void {
   const pop = el("div", "edit-ac hidden");
   body.appendChild(pop);
   bindEditorAutocomplete(ta, a);
-  artifactsFetch(artUrl(a))
-    .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+  fetchArtifactText(artUrl(a))
     .then((text) => {
       ta.value = text;
       ta.disabled = false;
@@ -275,7 +274,8 @@ function artifactMenu(anchor: Element, a: ArtifactRow): void {
       label: translate("common.edit"),
       icon: "pencil",
       onClick: () => {
-        if (isTextEditable(a)) editArtifact(a);
+        if (a._exactVersion) hint(filesT("artifact.editPinned"));
+        else if (isTextEditable(a)) editArtifact(a);
         else hint(translate("artifact.notEditable"));
       },
     },
@@ -364,7 +364,7 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
       row.appendChild(info);
       const acts = el("div", "ver-acts");
       const view = el("a", "outline-btn small", translate("common.view"));
-      view.href = `${API}/artifacts/versions/${encodeURIComponent(v.version_id)}`;
+      view.href = artUrl({ id: a.id, version_id: v.version_id, _exactVersion: true });
       view.target = "_blank";
       acts.appendChild(view);
       const previous = isTextEditable(a)
@@ -466,7 +466,9 @@ export function renderViewer(): void {
   menuBtn.onclick = () => artifactMenu(menuBtn, a);
   acts.appendChild(menuBtn);
   acts.appendChild(copy);
-  if (!provMode.value && isTextEditable(a)) {
+  // A pinned tab shows immutable bytes; `/edit` always writes the head, so an
+  // editor seeded from an older version would silently supersede newer ones.
+  if (!provMode.value && !a._exactVersion && isTextEditable(a)) {
     const editBtn = ghostIconBtn("pencil", translate("common.edit"));
     editBtn.onclick = () => editArtifact(a);
     acts.appendChild(editBtn);
