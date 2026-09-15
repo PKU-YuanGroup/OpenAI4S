@@ -32,3 +32,8 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`, `SESSION_MAX_PAGES=50`, sort/walk/filter. |
 | [`projects.ts`](projects.ts) | Project menu/modal/research view, `sanitizeProjectLineage`. |
 | [`transcript.ts`](transcript.ts) | `renderStored`, ref chips, empty-session starters, message actions. |
+| [`navigation.ts`](navigation.ts) | Visit identity and synchronous directory resets; independent of read generations. |
+| [`copy.ts`](copy.ts) | Bilingual directory-read failure and retry copy. |
+| [`load.navigation.test.ts`](load.navigation.test.ts) | Out-of-order sessions/folders/pages, ABA navigation, read errors and auto-open ownership. |
+
+- [`actions.export.test.ts`](actions.export.test.ts): Markdown export requires successful validated reads and freezes the session title.

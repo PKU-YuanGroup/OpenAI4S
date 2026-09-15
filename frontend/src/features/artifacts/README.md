@@ -36,3 +36,8 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`types.ts`](types.ts) | Artifact DTO, page size 50/100, TEXT_EXT / MOL_EXT. |
 | [`ui.ts`](ui.ts) | Files grid, Viewer, `openViewer`, ⌘K/deep-link hit. Provided `version_id` never silent-latest. |
 | [`ui.test.ts`](ui.test.ts) | Deep-link apply / `openViewer` exact pin / stale does not open latest. |
+| [`editor.ts`](editor.ts) | Version-bound drafts, bounded UTF-8 storage, checksum reads and conditional saves. |
+| [`editor-view.ts`](editor-view.ts) | Editor controls and read-only conflict/unknown-result recovery. |
+| [`editor.test.ts`](editor.test.ts) | Load, version, save, reconciliation and draft capacity contracts. |
+
+- [`validation.ts`](validation.ts): Validate every required metadata-export version and artifact row without dropping malformed records.

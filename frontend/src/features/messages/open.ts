@@ -1,3 +1,4 @@
+import { beginNavigation, resetSessionDirectory } from "../sessions/navigation";
 /**
  * Generation-scoped history reads. Navigation isolates sessions; background
  * reloads retain confirmed content until an off-DOM, framed render is ready.
@@ -35,6 +36,8 @@ import {
   msgHasEarlier,
   project,
   sessions,
+  sessionsLoading,
+  foldersLoading,
 } from "../../stores/session";
 import {
   permCards,
@@ -450,7 +453,9 @@ export async function openConversation(
   const switching = previousFid !== fid;
   if (previousFid && switching) unsub(previousFid);
   if (switching) resetNotebookCellCaches(previousFid, fid);
-  if (pid && pid !== project.value) { project.value = pid; _projArtFor.value = null; }
+  if (pid && pid !== project.value) {
+    project.value = pid; _projArtFor.value = null; resetSessionDirectory();
+  }
   const found = (sessions.value as Array<{ id?: string; project_id?: string }>).find((x) => x?.id === fid);
   navURL(framePath(fid, pid || project.value || found?.project_id));
   showWorkspace(); showConv(); renderProjMenu();
@@ -458,8 +463,8 @@ export async function openConversation(
   ensureMessageDom();
   currentId.value = fid;
   cancelFramedRender();
-  const gen = (_openGen.value || 0) + 1;
-  _openGen.value = gen;
+  const directoryPending = sessionsLoading.value || foldersLoading.value;
+  const gen = beginNavigation();
   // The previous generation's paging request can no longer publish or clear
   // its loading flag, including a background reopen of this same session.
   _msgEarlierLoading.value = false;
@@ -496,7 +501,7 @@ export async function openConversation(
     callLane("edacTeardown"); callLane("_molTeardown"); renderDockTabs();
   }
   callLane("refreshComputeStatus", fid);
-  if (!sessions.value.length) {
+  if (!sessions.value.length || directoryPending) {
     try { await loadSessions(); } catch { /* history has its own independently reported reads */ }
     if (!current(fid, gen)) return obsolete();
   } else renderSessions();

@@ -133,13 +133,33 @@ class LLMConfig:
     model: str = ""
     # Secret: sourced from the environment (or the git-ignored .env). Empty
     # when unset; llm.chat then raises a clear error.
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     # Deep-thinking models: keep a conservative default output cap.
     max_tokens: int = int(os.environ.get("OPENAI4S_LLM_MAX_TOKENS", "4096"))
     temperature: float = float(os.environ.get("OPENAI4S_LLM_TEMPERATURE", "0.7"))
     timeout_s: float = float(os.environ.get("OPENAI4S_LLM_TIMEOUT", "120"))
+    total_timeout_s: float = field(
+        default_factory=lambda: float(
+            os.environ.get("OPENAI4S_LLM_TOTAL_TIMEOUT", "600")
+        )
+    )
 
     def __post_init__(self) -> None:
+        if isinstance(self.total_timeout_s, bool):
+            raise ValueError(
+                "LLM total timeout must be a finite number from 1 to 3600 seconds"
+            )
+        try:
+            total_timeout = float(self.total_timeout_s)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                "LLM total timeout must be a finite number from 1 to 3600 seconds"
+            ) from error
+        if not math.isfinite(total_timeout) or not 1 <= total_timeout <= 3600:
+            raise ValueError(
+                "LLM total timeout must be a finite number from 1 to 3600 seconds"
+            )
+        self.total_timeout_s = total_timeout
         # Provider ids may be hyphenated; environment-variable names use the
         # shell-safe underscore form (``lab-openai`` -> ``LAB_OPENAI``).
         p = self.provider.strip().upper().replace("-", "_")

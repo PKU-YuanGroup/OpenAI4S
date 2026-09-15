@@ -1368,3 +1368,163 @@ def test_pinned_identity_outranks_the_live_run_on_the_provider_thread(tmp_path):
         store.list_auto_mode_budget_reservations("auto-run-NEXT") == []
     ), "the live (next) run was charged by a call it never made"
     store.close()
+
+
+def test_verified_zero_settles_to_zero_in_storage_and_projection(tmp_path):
+    store = _store(tmp_path)
+    try:
+        _start(store)
+        store.freeze_auto_mode_budget_initial_tokens(
+            "auto-run-1", 100, extra_token_multiplier=1
+        )
+        _reserve(
+            store,
+            admission_id="zero",
+            action_group_id="zero",
+            consumer="token",
+            amount=80,
+            token_upper_bound=80,
+        )
+        store.commit_auto_mode_budget("zero", committed_amount=0)
+        meter = AutoBudgetAdmission(store).project_usage("auto-run-1")["budget_usage"][
+            "extra_token_multiplier"
+        ]
+        assert meter["used"] == 0 and meter["remaining"] == 100
+        _reserve(
+            store,
+            admission_id="next",
+            action_group_id="next",
+            consumer="token",
+            amount=100,
+            token_upper_bound=100,
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.stubbed_backend
+def test_initial_unmeasured_facade_reply_cannot_freeze_a_zero_budget(
+    tmp_path, monkeypatch
+):
+    from openai4s import llm
+    from openai4s.config import LLMConfig
+
+    store = _store(tmp_path)
+    try:
+        _start(store)
+        runner = object.__new__(gateway_mod.SessionRunner)
+        runner.store = store
+        runner.cfg = Config()
+        state = SimpleNamespace(
+            root_frame_id="root-1",
+            active_auto_mode_run_id="auto-run-1",
+            active_action_group_id=None,
+            cell_index=1,
+            auto_budget_terminal_reason=None,
+            cancel=threading.Event(),
+        )
+        monkeypatch.setattr(
+            llm.transport,
+            "post_json",
+            lambda *_args: {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            },
+        )
+        with pytest.raises(AutoBudgetDenied) as caught:
+            runner._invoke_model_with_auto_budget(
+                state,
+                [{"role": "user", "content": "hi"}],
+                LLMConfig(provider="chatgpt", api_key="test-key"),
+                llm.chat,
+                run_id="auto-run-1",
+                action_group_id="initial",
+                extra=False,
+            )
+        assert caught.value.reason == "budget_measurement_unavailable"
+        assert caught.value.llm_not_started is False
+        runner._freeze_auto_budget_tokens(state)
+        rows = store.list_auto_mode_budget_reservations("auto-run-1")
+        assert [row["state"] for row in rows if row["consumer"] == "model"] == [
+            "unknown"
+        ]
+        budget = store.get_auto_mode_budget_state("auto-run-1")
+        assert not any(event["type"] == "freeze" for event in budget.get("events", []))
+    finally:
+        store.close()
+
+
+def test_unsent_reviewer_error_releases_review_and_token_reservations(tmp_path):
+    store = _store(tmp_path)
+    try:
+        _start(store, budgets=_budgets(max_review_rounds=2))
+
+        def refuse(*_args, **_kwargs):
+            error = RuntimeError("local refusal")
+            error.llm_not_started = True
+            raise error
+
+        service = ScientificReviewService(
+            store=store,
+            config=Config(
+                auto_mode=AutoModeConfig(result_review_mode="review_only"),
+                roadmap_features=RoadmapFeatureFlags(
+                    stage3_scientific_review_shadow=True
+                ),
+            ),
+            chat_call=refuse,
+        )
+        service.evaluate(
+            _snapshot(),
+            result_review_mode="review_only",
+            agent_cfg=_llm("agent"),
+            reviewer_cfg=_llm("reviewer"),
+            run_id="auto-run-1",
+        )
+        rows = store.list_auto_mode_budget_reservations("auto-run-1")
+        assert {row["consumer"] for row in rows} == {"review", "token"}
+        assert all(row["state"] == "released" for row in rows)
+    finally:
+        store.close()
+
+
+def test_failed_call_budget_overrun_retains_real_usage(tmp_path):
+    from openai4s.llm.models import LLMError
+
+    store = _store(tmp_path)
+    try:
+        _start(store)
+        store.freeze_auto_mode_budget_initial_tokens(
+            "auto-run-1", 100, extra_token_multiplier=1
+        )
+        runner = object.__new__(gateway_mod.SessionRunner)
+        runner.store = store
+        runner.cfg = Config()
+        state = SimpleNamespace(
+            active_auto_mode_run_id="auto-run-1",
+            active_action_group_id=None,
+            cell_index=1,
+            auto_budget_terminal_reason=None,
+            cancel=threading.Event(),
+        )
+        config = _llm("agent")
+        config.total_token_upper_bound = 80
+
+        def failed(*_args, **_kwargs):
+            error = LLMError("failed after billing")
+            error.usage = {"prompt_tokens": 80, "completion_tokens": 1}
+            raise error
+
+        with pytest.raises(AutoBudgetDenied) as caught:
+            runner._invoke_model_with_auto_budget(
+                state,
+                [],
+                config,
+                failed,
+                run_id="auto-run-1",
+                action_group_id="old-call",
+                extra=True,
+            )
+        assert caught.value.llm_not_started is False
+        assert verifiable_token_usage(caught.value.usage) == 81
+    finally:
+        store.close()

@@ -458,7 +458,11 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     def slow_review(_evidence, _cfg):
         started.set()
         assert release.wait(3)
-        return {"verdict": "pass", "summary": "No issues found", "usage": {}}
+        return {
+            "verdict": "pass",
+            "summary": "No issues found",
+            "usage": {"input_tokens": 11, "output_tokens": 3},
+        }
 
     service, store, state, events, _jobs, _reviews = _service(
         review_box={"call": slow_review}
@@ -487,6 +491,7 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     assert service.call_inflight("frame") is True
     assert store.steps[0]["output"]["provider_call"] == "finishing"
 
+    state.cancel.clear()  # next turn must not erase the old call identity
     release.set()
     deadline = time.time() + 2
     while time.time() < deadline and service.call_inflight("frame"):
@@ -494,6 +499,8 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     assert service.call_inflight("frame") is False
     assert store.steps[0]["output"]["provider_call"] == "finished"
     assert events[-1]["summary"] == "Review cancelled"
+
+    assert store.tokens == [("frame", 11, 3)]
 
 
 def test_submit_manual_review_preserves_status_tail_and_job_pruning():

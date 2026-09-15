@@ -690,6 +690,7 @@ def test_external_artifact_mutations_refuse_active_workspace_writers_without_del
             runner.edit_artifact(
                 artifact_id,
                 "must not replace beta",
+                expected_version_id=source_version_id,
                 broadcast=hub.broadcast,
             )
         elif mutation == "restore":
@@ -833,6 +834,7 @@ def test_external_edit_restore_gate_is_always_on_when_stage1_is_disabled(
             runner.edit_artifact(
                 artifact_id,
                 "must not replace beta",
+                expected_version_id=source_version_id,
                 broadcast=hub.broadcast,
             )
         else:

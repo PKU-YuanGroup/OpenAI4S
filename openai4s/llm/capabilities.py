@@ -1136,7 +1136,60 @@ def normalize_usage(
         "completion_tokens": output_tokens,
         "total_tokens": total,
     }
-    return result
+    from .usage import UsageMetrics, usage_evidence
+
+    if isinstance(raw, UsageMetrics):
+        return UsageMetrics(result, raw.evidence)
+    measured = {}
+    invalid = set()
+    missing = object()
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "reasoning_tokens",
+        "total_tokens",
+    ):
+        for path in getattr(mapping, key):
+            value = raw
+            for part in path.split("."):
+                if value is missing:
+                    break
+                if not isinstance(value, Mapping):
+                    invalid.add(key)
+                    value = None
+                    break
+                value = value.get(part, missing)
+            if value is not missing:
+                if type(value) is int and value >= 0:
+                    measured[key] = value
+                else:
+                    invalid.add(key)
+                break
+    if mapping.input_excludes_cache and "input_tokens" in measured:
+        if invalid & {"cache_read", "cache_write"}:
+            measured.pop("input_tokens")
+            invalid.add("input_tokens")
+        else:
+            measured["input_tokens"] += measured.get("cache_read", 0) + measured.get(
+                "cache_write", 0
+            )
+    if invalid & {"input_tokens", "output_tokens"}:
+        measured.pop("total_tokens", None)
+    for canonical, alias in (
+        ("input_tokens", "prompt_tokens"),
+        ("output_tokens", "completion_tokens"),
+    ):
+        if canonical in measured:
+            measured[alias] = measured[canonical]
+    if (
+        "total_tokens" not in measured
+        and "input_tokens" in measured
+        and "output_tokens" in measured
+    ):
+        measured["total_tokens"] = measured["input_tokens"] + measured["output_tokens"]
+    return UsageMetrics(result, usage_evidence(raw, measured, frozenset(invalid)))
 
 
 def calculate_usage_cost_usd(
@@ -1157,7 +1210,16 @@ def calculate_usage_cost_usd(
         return None
     if cost.input_per_million is None or cost.output_per_million is None:
         return None
-    raw: Mapping[str, Any] = usage if isinstance(usage, Mapping) else {}
+    from .usage import measured_usage
+
+    if getattr(getattr(usage, "evidence", None), "invalid", frozenset()) & {
+        "cache_read",
+        "cache_write",
+    }:
+        return None
+    raw = measured_usage(usage)
+    if "input_tokens" not in raw or "output_tokens" not in raw:
+        return None
 
     def counter(name: str) -> int:
         value = raw.get(name, 0)

@@ -36,3 +36,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
 | [`ui.ts`](ui.ts) | Files 网格、Viewer、`openViewer`、⌘K/深链命中。提供 `version_id` 时绝不静默 latest。 |
 | [`ui.test.ts`](ui.test.ts) | 深链 apply / `openViewer` 精确 pin / stale 不打开 latest。 |
+| [`editor.ts`](editor.ts) | 版本绑定草稿、有界 UTF-8 存储、校验读取与条件保存。 |
+| [`editor-view.ts`](editor-view.ts) | 编辑控件及冲突／未知结果的只读恢复。 |
+| [`editor.test.ts`](editor.test.ts) | 加载、版本、保存、核对和草稿容量合同。 |
+
+- [`validation.ts`](validation.ts): 完整校验元数据导出必需版本与产物行，不静默丢弃畸形记录。

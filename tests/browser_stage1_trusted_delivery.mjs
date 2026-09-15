@@ -473,6 +473,10 @@ async function openArtifactReview(page, filename) {
     await page.locator("#files-btn").click();
     step = "dock-files";
     await page.locator("#dock-files:not(.hidden)").waitFor({ state: "visible", timeout: 30000 });
+    // Files is paged. Find the target through the real filter control instead
+    // of assuming that every artifact in the 100-delivery fixture is visible.
+    step = "files-search";
+    await page.locator(".files-search").fill(filename);
     const name = page.locator("#results-list .a-name").filter({ hasText: filename });
     step = "a-name";
     await name.first().waitFor({ state: "visible", timeout: 30000 });

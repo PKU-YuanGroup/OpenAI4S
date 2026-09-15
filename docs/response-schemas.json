@@ -20490,6 +20490,35 @@
         "type": "object"
       }
     },
+    "PATCH /artifacts/([^/]+)/edit [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "ok",
+          "size_bytes",
+          "unchanged",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /artifacts/([^/]+)/environment [error]": {
       "schema": {
         "properties": {
@@ -40305,6 +40334,35 @@
           "error",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/([^/]+)/edit [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "ok",
+          "size_bytes",
+          "unchanged",
+          "version_id"
         ],
         "type": "object"
       }

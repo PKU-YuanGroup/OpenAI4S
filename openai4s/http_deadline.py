@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import functools
 import http.client
+import math
 import socket
 import threading
 import time
@@ -264,7 +265,7 @@ def read_body_capped(
                 raise_truncated_or_timeout()
             break
         try:
-            remaining = exchange.remaining()
+            remaining = exchange.io_timeout()
         except HTTPExchangeTimeout:
             raise on_timeout() from None
         try:
@@ -332,8 +333,20 @@ class HTTPExchangeDeadline:
     handlers, such as a redirect-refusal policy, retain their normal semantics.
     """
 
-    def __init__(self, timeout: float) -> None:
+    def __init__(
+        self,
+        timeout: float,
+        *,
+        idle_timeout: float | None = None,
+        before_send: Callable[[str], None] | None = None,
+    ) -> None:
+        self.before_send = before_send
         self.timeout = float(timeout)
+        self.idle_timeout = None if idle_timeout is None else float(idle_timeout)
+        if self.idle_timeout is not None and (
+            not math.isfinite(self.idle_timeout) or self.idle_timeout <= 0
+        ):
+            raise ValueError("HTTP idle timeout must be finite and positive")
         self.deadline = time.monotonic() + self.timeout
         self._lock = threading.Lock()
         self._socket: socket.socket | None = None
@@ -415,6 +428,20 @@ class HTTPExchangeDeadline:
             ) from None
         return remaining
 
+    def _limit_idle(self, remaining: float) -> float:
+        return (
+            remaining
+            if self.idle_timeout is None
+            else min(remaining, self.idle_timeout)
+        )
+
+    def io_timeout(self) -> float:
+        """Bound a network phase by both its idle limit and the total deadline.
+
+        The optional idle limit is off for existing MCP/Doubao callers.
+        """
+        return self._limit_idle(self.remaining())
+
     def _register_socket(self, sock: socket.socket) -> None:
         with self._lock:
             expired = self._expired or self._cancelled
@@ -453,14 +480,16 @@ class HTTPExchangeDeadline:
         for family, socktype, proto, _canonname, sockaddr in addresses:
             sock: socket.socket | None = None
             try:
-                remaining = self.remaining()
+                remaining = self.io_timeout()
+                if self.before_send is not None:
+                    self.before_send("connect")
                 sock = socket.socket(family, socktype, proto)
                 self._register_socket(sock)
                 sock.settimeout(remaining)
                 if source_address:
                     sock.bind(source_address)
                 sock.connect(sockaddr)
-                sock.settimeout(self.remaining())
+                sock.settimeout(self.io_timeout())
                 return sock
             except HTTPExchangeTimeout:
                 if sock is not None:
@@ -499,16 +528,18 @@ class HTTPExchangeDeadline:
                     raise HTTPExchangeTimeout(
                         "HTTP exchange exceeded its absolute deadline"
                     )
-                raw_socket.settimeout(max(0.001, self.deadline - time.monotonic()))
+                raw_socket.settimeout(
+                    self._limit_idle(max(0.001, self.deadline - time.monotonic()))
+                )
                 wrapped = context.wrap_socket(
                     raw_socket,
                     server_hostname=server_hostname,
                     do_handshake_on_connect=False,
                 )
                 self._socket = wrapped
-            wrapped.settimeout(self.remaining())
+            wrapped.settimeout(self.io_timeout())
             wrapped.do_handshake()
-            wrapped.settimeout(self.remaining())
+            wrapped.settimeout(self.io_timeout())
             return wrapped
         except Exception:
             if wrapped is not None:
@@ -534,7 +565,7 @@ class HTTPExchangeDeadline:
         sock = _response_socket(response)
         if sock is not None:
             self._register_socket(sock)
-            _arm_read_timeout(sock, self.remaining())
+            _arm_read_timeout(sock, self.io_timeout())
 
     def http_handler(
         self,
@@ -567,7 +598,7 @@ class HTTPExchangeDeadline:
         """Open through urllib while the same budget covers response headers."""
 
         try:
-            response = opener.open(request, timeout=self.remaining())  # noqa: S310
+            response = opener.open(request, timeout=self.io_timeout())  # noqa: S310
         except urllib.error.HTTPError:
             # HTTP status handling is a caller contract (including MCP session
             # expiry) and must not be replaced by a coincident watchdog tick.
@@ -595,7 +626,19 @@ class HTTPExchangeDeadline:
         return response
 
 
-class _DeadlineHTTPConnection(http.client.HTTPConnection):
+class _DeadlineSend:
+    """Optional pre-send guard, inactive for existing HTTP helper callers."""
+
+    def send(self, data: Any) -> None:
+        if self.sock is None and self.auto_open:
+            self.connect()
+        guard = self._absolute_deadline.before_send
+        if guard is not None:
+            guard("send")
+        super().send(data)
+
+
+class _DeadlineHTTPConnection(_DeadlineSend, http.client.HTTPConnection):
     def __init__(self, *args: Any, deadline: HTTPExchangeDeadline, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._absolute_deadline = deadline
@@ -605,10 +648,10 @@ class _DeadlineHTTPConnection(http.client.HTTPConnection):
         super().connect()
         if self.sock is not None:
             self._absolute_deadline._register_socket(self.sock)
-            self.sock.settimeout(self._absolute_deadline.remaining())
+            self.sock.settimeout(self._absolute_deadline.io_timeout())
 
 
-class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
+class _DeadlineHTTPSConnection(_DeadlineSend, http.client.HTTPSConnection):
     def __init__(self, *args: Any, deadline: HTTPExchangeDeadline, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._absolute_deadline = deadline

@@ -572,3 +572,59 @@ def test_the_browse_index_step_rolls_back_when_it_fails_after_creating(tmp_path)
         assert current_version(conn) == 31
     finally:
         conn.close()
+
+
+def test_priority_hidden_rows_are_filtered_before_pagination(server):
+    """A newer block of hidden rows cannot consume visible page slots."""
+    _cfg, runner, client = server
+    pid = _project(runner.store)
+    frame = runner.create_session(pid)
+    visible = []
+    hidden = []
+    for index in range(185):
+        rec = _save(
+            runner.store,
+            root_frame_id=frame,
+            project_id=pid,
+            filename=f"report-{index:03d}.csv",
+            content_type="text/csv",
+            is_user_upload=True,
+        )
+        aid = rec["artifact_id"]
+        _set_created_at(runner.store, aid, 1000 + index)
+        if index >= 125:
+            runner.store.set_priority(aid, -1)
+            hidden.append(aid)
+        else:
+            visible.append(aid)
+    for filters in (
+        {},
+        {"q": "report", "content_type": "text/csv", "origin": "uploaded"},
+    ):
+        cursor = None
+        seen = []
+        for count in (50, 50, 25):
+            params = {"limit": 50, **filters}
+            if cursor:
+                params["cursor"] = cursor
+            status, body = client.get(
+                f"/projects/{pid}/artifact-index?{urlencode(params)}"
+            )
+            assert status == 200
+            assert len(body["artifacts"]) == count
+            seen.extend(row["artifact_id"] for row in body["artifacts"])
+            assert body["has_more"] is (count == 50)
+            cursor = body["next_cursor"]
+        assert cursor is None
+        assert seen == list(reversed(visible))
+        assert set(seen).isdisjoint(hidden)
+    # The compatibility array endpoint still exposes the raw rows, including
+    # priority metadata. Only the paged visible Files index changes.
+    status, raw = client.get(f"/projects/{pid}/artifacts")
+    assert status == 200
+    assert len(raw) == 185
+    for aid in visible:
+        runner.store.set_priority(aid, -1)
+    status, body = client.get(f"/projects/{pid}/artifact-index")
+    assert status == 200
+    assert body == {"artifacts": [], "next_cursor": None, "has_more": False}

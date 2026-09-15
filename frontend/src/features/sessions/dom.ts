@@ -1,3 +1,4 @@
+import { beginNavigation } from "./navigation";
 /** Tiny DOM helpers ported from app.js:3-4, 81, 2678-2706, 12918, 12927-12941. */
 
 import { t } from "../../i18n";
@@ -146,7 +147,7 @@ export function clearConversationChrome(): void {
   // Navigation: a continuation parked on an await for the conversation being
   // cleared (an older history page, a resume tick) must see a stale token
   // rather than paint into the emptied view.
-  _openGen.value = (_openGen.value || 0) + 1;
+  beginNavigation();
   currentId.value = null;
   const messages = $("#messages");
   if (messages) messages.innerHTML = "";

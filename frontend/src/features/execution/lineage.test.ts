@@ -1,5 +1,6 @@
 import { setExecutionFetch } from "./api";
 import { loadLineage, renderProvenanceInto } from "./provenance";
+import { lineage, _lineageFor } from "../../stores/notebook";
 import { _artVer, _envSnapById, dockArtifact } from "../../stores/artifacts";
 import { provMode, provSub } from "../../stores/ui";
 import { resetStoreFields } from "../../stores/signal-field";
@@ -19,7 +20,7 @@ import {
 } from "./lineage";
 
 describe("provenance chain transforms (app.js:10631-10833)", () => {
-  it("emptyLineage is the load-failure fallback, not a fabricated producer", () => {
+  it("emptyLineage represents no recorded evidence, not a fabricated producer", () => {
     const empty = emptyLineage();
     expect(empty.interactions).toEqual([]);
     expect(empty.dependency_mappings).toEqual({ inputs: [] });
@@ -181,19 +182,21 @@ it("a delayed latest environment response cannot poison the pinned version cache
     requests.push(url);
     await delayed;
     const selected = new URL(url, "http://localhost").searchParams.get("version") || serverHead;
-    return new Response(JSON.stringify({ kind: "python", environment_name: selected, packages: [] }));
+    return new Response(JSON.stringify({ source: "captured", kind: "python", environment_name: selected, packages: [] }));
   });
   try {
     renderProvenanceInto(new ProvenanceNode() as unknown as HTMLElement, latest);
     serverHead = "v2";
     syncArtifactVersion({ id: "a", version_id: "v2" }, true);
     release();
-    await vi.waitFor(() => expect(_envSnapById.value["a:v1"]).toBeTruthy());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(_envSnapById.value["a:v1"]).toBeUndefined();
+    expect(_envSnapById.value["a:v2"]).toBeUndefined();
     const pinned = { id: "a", version_id: "v1", _exactVersion: true };
     dockArtifact.value = pinned;
     renderProvenanceInto(new ProvenanceNode() as unknown as HTMLElement, pinned);
-    expect(_envSnapById.value["a:v1"]).toMatchObject({ environment_name: "v1" });
-    expect(requests).toEqual(["/api/v1/artifacts/a/environment?version=v1"]);
+    await vi.waitFor(() => expect(_envSnapById.value["a:v1"]).toMatchObject({ environment_name: "v1" }));
+    expect(requests).toEqual(["/api/v1/artifacts/a/environment?version=v1", "/api/v1/artifacts/a/environment?version=v1"]);
   } finally { setExecutionFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
 });
 
@@ -211,7 +214,7 @@ it("latest lineage reads capture their known version rather than a moving head",
 });
 
 
-it("known latest metadata read failures propagate while unbound legacy keeps its fallback", async () => {
+it("known latest and unbound legacy metadata read failures both propagate", async () => {
   const requests: string[] = [];
   setExecutionFetch(async (url) => {
     requests.push(url);
@@ -219,7 +222,7 @@ it("known latest metadata read failures propagate while unbound legacy keeps its
   });
   try {
     await expect(loadLineage({ id: "a", version_id: "v1" })).rejects.toThrow("missing snapshot");
-    expect(await loadLineage({ id: "a" })).toEqual(emptyLineage());
+    await expect(loadLineage({ id: "a" })).rejects.toThrow("missing snapshot");
     expect(requests).toEqual(["/api/v1/artifacts/a/lineage?version=v1", "/api/v1/artifacts/a/lineage"]);
   } finally { setExecutionFetch(null); }
 });
@@ -241,4 +244,51 @@ it("an exact version without a recorded environment is an expected state, not a 
     await vi.waitFor(() => expect(walk(view).some((node) => node.textContent === filesT("prov.env.noSnapshot"))).toBe(true));
     expect(walk(view).some((node) => node.textContent.includes("req-9"))).toBe(false);
   } finally { setExecutionFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
+});
+
+it.each([
+  null, [], {},
+  { interactions: "bad", dependency_mappings: { inputs: [] } },
+  { interactions: [null], dependency_mappings: { inputs: [] } },
+  { interactions: [], dependency_mappings: { inputs: "bad" } },
+  { interactions: [], dependency_mappings: { inputs: [null] } },
+  { interactions: [], dependency_mappings: { inputs: [] }, capture_observations: {} },
+  { interactions: [], dependency_mappings: { inputs: [] }, capture_observations: [null] },
+  { interactions: [], dependency_mappings: { inputs: [] }, producer: [] },
+])("rejects malformed successful lineage reads instead of normalizing them to empty: %j", async (body) => {
+  setExecutionFetch(async () => new Response(JSON.stringify(body)));
+  try { await expect(loadLineage({ id: "a" })).rejects.toThrow(); }
+  finally { setExecutionFetch(null); }
+});
+
+it.each([404, 500, "network"])("an unbound legacy lineage propagates %s", async (fault) => {
+  setExecutionFetch(async () => {
+    if (fault === "network") throw new Error("network failed");
+    return new Response(JSON.stringify({ error: "read failed" }), { status: Number(fault) });
+  });
+  try { await expect(loadLineage({ id: "a" })).rejects.toThrow(); }
+  finally { setExecutionFetch(null); }
+});
+
+it("rejects an exact lineage response naming another version", async () => {
+  setExecutionFetch(async () => new Response(JSON.stringify({ artifact_id: "a", version_id: "v2", interactions: [], dependency_mappings: { inputs: [] } })));
+  try { await expect(loadLineage({ id: "a", version_id: "v1" })).rejects.toThrow(); }
+  finally { setExecutionFetch(null); }
+});
+
+it("no recorded producing cell is a completed empty state, not reproduction generation", () => {
+  resetStoreFields();
+  vi.stubGlobal("document", { createElement: () => new ProvenanceNode() });
+  const art = { id: "a", version_id: "v1", is_user_upload: true };
+  dockArtifact.value = art; provMode.value = true; provSub.value = "code";
+  // The public stores represent a successful empty server record here.
+  lineage.value = { artifact_id: "a", version_id: "v1", interactions: [], dependency_mappings: { inputs: [] } };
+  _lineageFor.value = "a:v1";
+  try {
+    const view = new ProvenanceNode();
+    renderProvenanceInto(view as unknown as HTMLElement, art);
+    const walk = (node: ProvenanceNode): string => [node.textContent, ...node.children.map(walk)].join(" ");
+    expect(walk(view)).not.toContain("Generating reproduction code");
+    expect(walk(view)).toMatch(/No .*record|未记录|没有.*记录/i);
+  } finally { vi.unstubAllGlobals(); resetStoreFields(); }
 });

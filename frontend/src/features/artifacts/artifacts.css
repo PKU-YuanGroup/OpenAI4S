@@ -58,3 +58,13 @@
   font-size: 12px;
   color: var(--text-300, #6f6d68);
 }
+
+/* Editor recovery actions remain visible without stealing text-area height. */
+.edit-status { padding: 8px 16px; color: var(--ink); font-size: 12px; }
+.edit-recovery { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 8px; }
+.edit-acts { flex-wrap: wrap; }
+.editor-drafts { padding: 8px 16px; }
+.editor-drafts summary { cursor: pointer; }
+.editor-draft { border-top: 1px solid var(--border); padding: 8px 0; }
+.editor-draft p { overflow-wrap: anywhere; }
+.editor-draft textarea { display: block; width: 100%; min-height: 80px; box-sizing: border-box; }

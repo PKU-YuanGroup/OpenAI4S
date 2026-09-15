@@ -6,8 +6,8 @@
  */
 
 import { _envSnapById, dockArtifact } from "../../stores/artifacts";
-import { _lineageFor, _lineageReq, cells, lineage } from "../../stores/notebook";
-import { currentId } from "../../stores/session";
+import { _lineageFor, _lineageReq, cells, kernelFilter, lineage, liveCells } from "../../stores/notebook";
+import { _openGen, currentId } from "../../stores/session";
 import { provMode, provSub } from "../../stores/ui";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
@@ -17,13 +17,15 @@ import { addOpenTab, setActiveTab } from "../artifacts/ui";
 import type { ArtifactRow } from "../artifacts/types";
 import { renderMd } from "../md/render";
 import { iconEl, notebookExportLink } from "../notebook/chrome";
-import { cellNode, scrollToCell } from "../notebook/Notebook";
+import { cellNode, renderNotebook } from "../notebook/Notebook";
 import type { NotebookCell } from "../notebook/types";
 import { publicText } from "../scrub/scrub";
 import { codeBlock } from "../send/step";
 import { ago } from "../sessions/dom";
 import { fetchRecentMessages, type ChatMessage } from "../sessions/messages";
-import { api, apiErrorText } from "./api";
+import { api, apiErrorText, ApiError } from "./api";
+import { provenanceT } from "./copy";
+import { validateEnvironment, validateLineage } from "./validation";
 import {
   captureInRootNotebook,
   emptyLineage,
@@ -54,12 +56,7 @@ function rerenderViewer(): void {
 export async function loadLineage(a: ArtifactRow | null | undefined): Promise<LineagePayload> {
   if (!a) return emptyLineage();
   const target = artifactMetadataTarget(a);
-  try {
-    return (await api(artifactMetadataUrl(target, "lineage"))) as LineagePayload;
-  } catch (error) {
-    if (target._exactVersion) throw error;
-    return emptyLineage();
-  }
+  return validateLineage(await api(artifactMetadataUrl(target, "lineage")), target);
 }
 
 function provRow(label: string, files: string[]): HTMLElement {
@@ -71,38 +68,65 @@ function provRow(label: string, files: string[]): HTMLElement {
   return d;
 }
 
+type ReadOwner = { key: string; request: number; frameId: string | null };
+type LineageRead = ReadOwner & ({ status: "loading" | "ready" } | { status: "error"; error: string });
+let lineageRead: LineageRead | null = null;
+let environmentRequest = 0;
+let messagesRequest = 0;
+type PendingRead<T> = ReadOwner & { promise: Promise<T> };
+let environmentRead: PendingRead<EnvSnapshot> | null = null;
+let messagesRead: PendingRead<{ messages: ChatMessage[] }> | null = null;
+function sameRead(left: ReadOwner | null, right: ReadOwner): boolean {
+  return !!left && left.key === right.key && left.request === right.request && left.frameId === right.frameId;
+}
+
+function readOwner(a: ArtifactRow): ReadOwner {
+  return { key: artifactMetadataCacheKey(a), request: _lineageReq.value, frameId: currentId.value };
+}
+function ownsRead(owner: ReadOwner): boolean {
+  return provMode.value && owner.request === _lineageReq.value && owner.frameId === currentId.value &&
+    artifactMetadataCacheKey(asArtifact(dockArtifact.value)) === owner.key;
+}
+function readFailure(body: HTMLElement, error: unknown, retry: () => void): void {
+  body.innerHTML = "";
+  body.appendChild(el("div", "dock-empty", provenanceT("failed", apiErrorText(error))));
+  const button = el("button", "outline-btn small prov-retry", provenanceT("retry"));
+  button.onclick = retry;
+  body.appendChild(button);
+}
+function startLineageRead(a: ArtifactRow): void {
+  const target = artifactMetadataTarget(a);
+  _lineageReq.value++;
+  const owner = readOwner(target);
+  lineageRead = { ...owner, status: "loading" };
+  lineage.value = null;
+  _lineageFor.value = owner.key;
+  void loadLineage(target).then((value) => {
+    if (!ownsRead(owner)) return;
+    lineageRead = { ...owner, status: "ready" };
+    lineage.value = value;
+    rerenderViewer();
+  }).catch((error: unknown) => {
+    if (!ownsRead(owner)) return;
+    lineageRead = { ...owner, status: "error", error: apiErrorText(error) };
+    rerenderViewer();
+  });
+}
+
 export function showProvenance(a: unknown): void {
   const art = asArtifact(a);
   if (!art) return;
+  // A new visit invalidates even an earlier request for the same artifact.
+  _lineageReq.value++;
+  lineageRead = null;
   dockArtifact.value = art;
   provMode.value = true;
   if (!provSub.value) provSub.value = "code";
+  if ((provSub.value === "code" || provSub.value === "review") && (!lineage.value || _lineageFor.value !== artifactMetadataCacheKey(art))) startLineageRead(art);
   addOpenTab(art);
+  // setActiveTab synchronously renders the Viewer. Its read state must already
+  // exist so this single click cannot launch another identical request.
   setActiveTab(artifactTabKey(art));
-  const key = artifactMetadataCacheKey(art);
-  if (!lineage.value || _lineageFor.value !== key) {
-    const request = (_lineageReq.value = (_lineageReq.value || 0) + 1);
-    void loadLineage(art).then((l) => {
-      const docked = asArtifact(dockArtifact.value);
-      if (
-        request !== _lineageReq.value ||
-        !provMode.value ||
-        !docked ||
-        docked.id !== art.id ||
-        artifactMetadataCacheKey(docked) !== key
-      )
-        return;
-      lineage.value = l;
-      _lineageFor.value = key;
-      rerenderViewer();
-    }).catch((error: unknown) => {
-      const docked = asArtifact(dockArtifact.value);
-      if (request !== _lineageReq.value || !docked || artifactMetadataCacheKey(docked) !== key) return;
-      lineage.value = { ...emptyLineage(), load_error: apiErrorText(error) };
-      _lineageFor.value = key;
-      rerenderViewer();
-    });
-  }
 }
 
 const SUBS: Array<[string, string]> = [
@@ -130,10 +154,18 @@ export function renderProvenanceInto(v: HTMLElement, a: unknown): void {
   v.appendChild(body);
   const lin =
     _lineageFor.value === artifactMetadataCacheKey(art) ? (lineage.value as LineagePayload | null) : null;
-  const readError = lin && (lin as LineagePayload & { load_error?: string }).load_error;
-  if (readError && provSub.value !== "environment") {
-    body.appendChild(el("div", "dock-empty", t("prov.env.loadFailed", readError)));
-    return;
+  if ((provSub.value === "code" || provSub.value === "review") && !lin) {
+    if (!lineageRead || !ownsRead(lineageRead)) startLineageRead(art);
+    const read = lineageRead;
+    if (read?.status === "error") {
+      const target = artifactMetadataTarget(art);
+      readFailure(body, read.error, () => {
+        if (!ownsRead(read)) return;
+        startLineageRead(target);
+        rerenderViewer();
+      });
+      return;
+    }
   }
   const model = lin ? lineageReviewModel(lin) : null;
   const cell = model && model.cell;
@@ -147,16 +179,24 @@ export function renderProvenanceInto(v: HTMLElement, a: unknown): void {
         }),
       );
     } else if (!lin) body.appendChild(el("div", "dock-empty", t("common.loading")));
-    else body.appendChild(el("div", "dock-empty", "Generating reproduction code…"));
+    else {
+      const recorded = model?.producer?.cell_recorded === true || model?.captures.some((capture) => capture.cell_recorded === true);
+      body.appendChild(el("div", "dock-empty", provenanceT(recorded ? "codeElsewhere" : "noCode")));
+      if (recorded) renderProvReview(body, art, lin);
+    }
   } else if (provSub.value === "exec") {
-    if (currentId.value) body.appendChild(notebookExportLink(currentId.value));
+    if (!art.root_frame_id || art.root_frame_id !== currentId.value) {
+      body.appendChild(el("div", "dock-empty", provenanceT(art.root_frame_id ? "otherNotebook" : "unknownSession")));
+      return;
+    }
+    body.appendChild(notebookExportLink(art.root_frame_id));
     const list = (cells.value || []) as NotebookCell[];
     if (!list.length) body.appendChild(el("div", "dock-empty", t("prov.exec.noRecords")));
     list.forEach((e) => body.appendChild(cellNode(e)));
   } else if (provSub.value === "environment") {
     void renderProvEnvironment(body, art);
   } else if (provSub.value === "messages") {
-    void renderProvMessages(body);
+    void renderProvMessages(body, art);
   } else if (provSub.value === "review") {
     renderProvReview(body, art, lin);
   } else {
@@ -168,30 +208,32 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   body.appendChild(el("div", "dock-empty", t("prov.env.loadingSnapshot")));
   const target = artifactMetadataTarget(a);
   const key = artifactMetadataCacheKey(target);
-  const snaps = _envSnapById.value || {};
+  const owner = readOwner(target);
+  const request = ++environmentRequest;
+  const current = () => request === environmentRequest && ownsRead(owner) && provSub.value === "environment";
   let env: EnvSnapshot;
   try {
-    env = (snaps[key] ||
-      (snaps[key] = await (a && a.id
-        ? api(artifactMetadataUrl(target, "environment"))
-        : api("/kernel/environment")))) as EnvSnapshot;
-    _envSnapById.value = snaps;
-  } catch (e) {
-    if (provMode.value && provSub.value === "environment" && artifactMetadataCacheKey(asArtifact(dockArtifact.value)) === key) {
-      body.innerHTML = "";
-      // Every upload and every pre-snapshot capture has no recorded
-      // environment, and the exact-version read never borrows the daemon's.
-      // That is an expected state with its own copy, not a failed request.
-      const code = e && typeof e === "object" ? (e as { code?: unknown }).code : undefined;
-      body.appendChild(el("div", "dock-empty", code === "environment_snapshot_unavailable"
-        ? filesT("prov.env.noSnapshot")
-        : t("prov.env.loadFailed", apiErrorText(e))));
+    const cached = _envSnapById.value[key];
+    if (!cached && !sameRead(environmentRead, owner)) {
+      environmentRead = { ...owner, promise: api(artifactMetadataUrl(target, "environment")).then((value) => validateEnvironment(value, target)) };
     }
+    env = cached ? validateEnvironment(cached, target) : await environmentRead!.promise;
+    // An immutable version may finish after its head advances, but an older
+    // visit/retry must never overwrite the newer visit's cache.
+    if (!cached && request === environmentRequest && owner.request === _lineageReq.value && owner.frameId === currentId.value && provMode.value) {
+      _envSnapById.value = { ..._envSnapById.value, [key]: env };
+    }
+  } catch (e) {
+    if (!current()) return;
+    body.innerHTML = "";
+    if (e instanceof ApiError && e.status === 404 && e.code === "environment_snapshot_unavailable") {
+      body.appendChild(el("div", "dock-empty", filesT("prov.env.noSnapshot")));
+    } else readFailure(body, e, () => {
+      if (current()) { environmentRead = null; body.innerHTML = ""; void renderProvEnvironment(body, target); }
+    });
     return;
   }
-  const docked = asArtifact(dockArtifact.value);
-  if (!provMode.value || provSub.value !== "environment" || artifactMetadataCacheKey(docked) !== key)
-    return;
+  if (!current()) return;
   body.innerHTML = "";
   const chip = (k: string, val: string) => {
     const c = el("span", "env-chip");
@@ -201,11 +243,12 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   };
   const pkgs = env.packages || [];
   const chips = el("div", "env-chips");
-  chips.appendChild(chip("Environment", env.kind || "python"));
+  chips.appendChild(chip("Environment", env.kind || provenanceT("unknownEnvironment")));
   const py = envPythonChip(env);
   if (py) chips.appendChild(chip(py.label, py.value));
   if (env.environment_name) chips.appendChild(chip("Env", publicText(env.environment_name, 48)));
-  chips.appendChild(chip("Packages", String(envPackageCount(env))));
+  chips.appendChild(chip(provenanceT("packages"), env.packages_unavailable || env.package_count === null
+    ? provenanceT("unknownEnvironment") : String(envPackageCount(env))));
   body.appendChild(chips);
   if (env.interpreter) body.appendChild(el("div", "env-plat", publicText(env.interpreter, 160)));
   if (env.platform) body.appendChild(el("div", "env-plat", env.platform));
@@ -241,12 +284,12 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
       push("Engine", r.engine || "");
       push(
         t("prov.env.remoteEnv"),
-        (e.conda_env ? e.conda_env + " · " : "") + "Python " + (e.python || "?"),
+        [e.conda_env, e.python ? "Python " + e.python : ""].filter(Boolean).join(" · "),
       );
       if (e.packages && typeof e.packages === "object")
         push(
           t("prov.env.remotePkgs"),
-          Object.entries(e.packages as Record<string, unknown>)
+          Array.isArray(e.packages) ? e.packages.join(" · ") : Object.entries(e.packages as Record<string, unknown>)
             .map(([k, v]) => k + " " + v)
             .join(" · "),
         );
@@ -309,21 +352,26 @@ async function renderProvEnvironment(body: HTMLElement, a: ArtifactRow): Promise
   body.appendChild(wrap);
 }
 
-async function renderProvMessages(body: HTMLElement): Promise<void> {
+async function renderProvMessages(body: HTMLElement, art: ArtifactRow): Promise<void> {
+  const target = artifactMetadataTarget(art);
+  const owner = readOwner(target);
+  const request = ++messagesRequest;
+  const current = () => request === messagesRequest && ownsRead(owner) && provSub.value === "messages";
+  const frameId = target.root_frame_id;
+  if (!frameId) { body.appendChild(el("div", "dock-empty", provenanceT("unknownSession"))); return; }
   body.appendChild(el("div", "dock-empty", t("prov.msg.loading")));
   let msgs: ChatMessage[] = [];
   try {
-    if (!currentId.value) throw new Error("no session");
-    const d = await fetchRecentMessages(currentId.value, 500);
+    if (!sameRead(messagesRead, owner)) messagesRead = { ...owner, promise: fetchRecentMessages(frameId, 500) };
+    const d = await messagesRead!.promise;
     msgs = (d && d.messages) || [];
   } catch (e) {
-    if (provMode.value && provSub.value === "messages") {
-      body.innerHTML = "";
-      body.appendChild(el("div", "dock-empty", t("prov.msg.loadFailed", apiErrorText(e))));
-    }
+    if (current()) readFailure(body, e, () => {
+      if (current()) { messagesRead = null; body.innerHTML = ""; void renderProvMessages(body, target); }
+    });
     return;
   }
-  if (!provMode.value || provSub.value !== "messages") return;
+  if (!current()) return;
   body.innerHTML = "";
   if (!msgs.length) {
     body.appendChild(el("div", "dock-empty", t("prov.msg.noRecords")));
@@ -359,9 +407,42 @@ function viewCodeLink(onClick: () => void): HTMLElement {
   return link;
 }
 
+function recordedCodeLink(a: ArtifactRow, producer: Record<string, unknown> | null | undefined): HTMLElement | null {
+  const frameId = a.root_frame_id;
+  const id = producer?.producing_cell_id;
+  const entries = () => ([...cells.value, ...liveCells.value] as NotebookCell[]).flatMap((cell) => [cell, ...(cell._revisions || [])]);
+  const valid = () => !!frameId && frameId === currentId.value &&
+    producer?.frame_id === frameId && producer.frame_kind !== "delegate" && producer.cell_recorded !== false &&
+    typeof id === "string" && !!id && entries().some((cell) => (cell.producing_cell_id || cell.cell_id) === id);
+  if (!valid()) return null;
+  return viewCodeLink(() => {
+    if (!valid()) return;
+    const navigation = _openGen.value;
+    provMode.value = false;
+    kernelFilter.value = null;
+    setActiveTab("notebook");
+    renderNotebook();
+    requestAnimationFrame(() => {
+      if (!valid() || navigation !== _openGen.value) return;
+      const root = document.getElementById("dock-notebook");
+      const node = Array.from(root?.querySelectorAll<HTMLElement>(".notebook-cell[data-producing-cell]") || [])
+        .find((cell) => cell.getAttribute("data-producing-cell") === id);
+      if (!node) return;
+      let parent = node.parentElement;
+      while (parent && parent !== root) {
+        if (parent.tagName === "DETAILS") (parent as HTMLDetailsElement).open = true;
+        parent = parent.parentElement;
+      }
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      node.classList.add("flash");
+      setTimeout(() => node.classList.remove("flash"), 1600);
+    });
+  });
+}
+
 export function renderProvReview(
   body: HTMLElement,
-  _a: ArtifactRow,
+  a: ArtifactRow,
   lin: LineagePayload | null,
 ): void {
   if (!lin) {
@@ -375,7 +456,9 @@ export function renderProvReview(
   const captures = model.captures;
   const producer = model.producer;
   if (model.empty) {
-    body.appendChild(el("div", "dock-empty", t("prov.review.noLineage")));
+    body.appendChild(el("div", "dock-empty", provenanceT("noLineage")));
+    body.appendChild(el("div", "prov-meta", provenanceT("noInputs")));
+    if (model.saveAt) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(String(model.saveAt)))));
     return;
   }
   const card = el("div", "prov-card");
@@ -395,20 +478,18 @@ export function renderProvReview(
     );
     const wrote = Array.isArray(cell.files_written) ? cell.files_written.map((f) => publicText(f, 160)).filter(Boolean) : [];
     if (wrote.length) card.appendChild(provRow("wrote", wrote));
-    if (cellInputs.length) card.appendChild(provRow("reads / inputs", cellInputs));
-    card.appendChild(
-      viewCodeLink(() => {
-        provMode.value = false;
-        setActiveTab("notebook");
-        scrollToCell(cell.cell_index as number | string, cell.kernel_id);
-      }),
-    );
-  } else if (inputs.length) card.appendChild(provRow("reads / inputs", inputs));
+    if (cellInputs.length) card.appendChild(provRow(provenanceT("inputs"), cellInputs));
+    const link = recordedCodeLink(a, producer);
+    if (link) card.appendChild(link);
+    if (producer?.frame_id) card.appendChild(el("div", "prov-meta", t("prov.review.producerFrame", producer.frame_kind || "unknown", producer.frame_id)));
+
+  } else if (inputs.length) card.appendChild(provRow(provenanceT("inputs"), inputs));
   if (cell || inputs.length) body.appendChild(card);
   captures.forEach((capture: LineageCapture) => {
     const captureCard = el("div", "prov-card");
     const identity = publicText(capture.producing_cell_id || "unknown Cell", 96);
-    const inRoot = captureInRootNotebook(capture);
+    const link = recordedCodeLink(a, capture);
+    const inRoot = captureInRootNotebook(capture) && !!link;
     captureCard.appendChild(
       el(
         "div",
@@ -434,19 +515,11 @@ export function renderProvReview(
     if (Array.isArray(capture.inputs) && capture.inputs.length)
       captureCard.appendChild(
         provRow(
-          "reads / inputs",
+          provenanceT("inputs"),
           capture.inputs.map((item) => publicText(item, 160)).filter(Boolean),
         ),
       );
-    if (inRoot) {
-      captureCard.appendChild(
-        viewCodeLink(() => {
-          provMode.value = false;
-          setActiveTab("notebook");
-          scrollToCell(capture.cell_index as number | string, capture.kernel_id);
-        }),
-      );
-    }
+    if (link) captureCard.appendChild(link);
     body.appendChild(captureCard);
   });
   if (!cell && !captures.length && producer) {
@@ -470,6 +543,8 @@ export function renderProvReview(
       );
     body.appendChild(producerCard);
   }
+  if (!inputs.length && !cellInputs.length && !captures.some((c) => Array.isArray(c.inputs) && c.inputs.length))
+    body.appendChild(el("div", "prov-meta", provenanceT("noInputs")));
   if (model.saveAt) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(String(model.saveAt)))));
 }
 

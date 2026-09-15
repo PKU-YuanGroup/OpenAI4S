@@ -100,7 +100,11 @@ def test_chat_model_passes_native_schemas_and_is_blocking_by_default():
     result = model.complete(source, lambda delta: None)
 
     assert result == {"content": "done"}
-    assert calls == [(source, cfg, {"tools": (spec,)})]
+    assert len(calls) == 1 and calls[0][:2] == (source, cfg)
+    forwarded = dict(calls[0][2])
+    probe = forwarded.pop("should_cancel")
+    assert not probe() and probe.call_state.remaining() > 0
+    assert forwarded == {"tools": (spec,)}
     assert "on_delta" not in calls[0][2]
 
 

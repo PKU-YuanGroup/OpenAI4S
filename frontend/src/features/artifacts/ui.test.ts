@@ -92,6 +92,33 @@ describe("M-03 deep-link apply / openViewer", () => {
     expect((dockArtifact.value as ArtifactRow).version_id).toBeUndefined();
   });
 
+  it("keeps the selected row's stable owner while resolving an exact version", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    setArtifactsFetch(async () => { await held; return jsonResponse({ versions }); });
+    const row: ArtifactRow = { id: "art-1", version_id: "v-old", root_frame_id: "original-frame", project_id: "original-project", producing_cell_id: "head-cell" };
+    const pending = openViewer(row);
+    row.root_frame_id = "changed-frame"; row.project_id = "changed-project";
+    release(); await pending;
+    expect(dockArtifact.value).toMatchObject({ root_frame_id: "original-frame", project_id: "original-project", version_id: "v-old", _exactVersion: true });
+    expect((dockArtifact.value as ArtifactRow).producing_cell_id).toBeUndefined();
+  });
+
+  it("does not borrow ownership from another artifact or guess it for a bare deep link", async () => {
+    await applyArtifactDeepLink({ artifactId: "art-1", versionId: "v-old" }, { id: "other", root_frame_id: "wrong-frame" });
+    expect((dockArtifact.value as ArtifactRow).root_frame_id).toBeUndefined();
+  });
+
+  it("enriches an already open unknown exact tab and retains ownership after switching tabs", async () => {
+    await applyArtifactDeepLink({ artifactId: "art-1", versionId: "v-old" });
+    expect((dockArtifact.value as ArtifactRow).root_frame_id).toBeUndefined();
+    await openViewer({ id: "art-1", version_id: "v-old", root_frame_id: "real-frame", project_id: "real-project", producing_cell_id: "wrong-head-cell" });
+    openViewer({ id: "other" });
+    setActiveTab(artifactTabKey({ id: "art-1", version_id: "v-old", _exactVersion: true }));
+    expect(dockArtifact.value).toMatchObject({ root_frame_id: "real-frame", project_id: "real-project", version_id: "v-old" });
+    expect((dockArtifact.value as ArtifactRow).producing_cell_id).toBeUndefined();
+  });
+
   it("copyable deep link omits version_id for latest and includes it for exact", async () => {
     const latest = await copyArtifactDeepLink({ id: "art-1", version_id: "v-new" });
     expect(latest).toContain("artifact=art-1");

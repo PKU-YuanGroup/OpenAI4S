@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { currentId, project } from "../../stores/session";
+import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   UPLOAD_STATE,
@@ -99,6 +99,24 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
   it("readUploadFile rejects a data URL with no comma instead of uploading empty bytes", async () => {
     stubReader(() => "not-a-data-url");
     await expect(readUploadFile(file("a.csv"))).rejects.toThrow("file could not be encoded");
+  });
+
+  it("a new visit does not share an older flight or lose its cache to old cleanup", async () => {
+    project.value = "A"; currentId.value = "existing";
+    const answers: Array<(value: unknown) => void> = [];
+    vi.stubGlobal("fetch", () => new Promise((resolve) => { answers.push(resolve); }));
+    const old = createUploadSession("A");
+    _openGen.value += 2;
+    const fresh = createUploadSession("A");
+    expect(fresh).not.toBe(old);
+    const response = (id: string) => ({ ok: true, status: 200, text: async () => JSON.stringify({ id }) });
+    answers[0]!(response("old")); await old.opened;
+    expect(await old).toBe("old"); // Accepted destination remains available to its upload.
+    expect(createUploadSession("A")).toBe(fresh);
+    expect(answers).toHaveLength(2);
+    answers[1]!(response("fresh")); await fresh.opened;
+    expect(await fresh).toBe("fresh");
+    expect(currentId.value).toBe("existing");
   });
 
   it("readUploadFile rejects on reader error", async () => {

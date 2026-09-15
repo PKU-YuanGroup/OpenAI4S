@@ -436,6 +436,29 @@ class ReviewService:
                 except Exception as review_error:  # noqa: BLE001
                     review_box["error"] = review_error
                 finally:
+                    # Account on the captured call before publishing completion.
+                    # Stop may have released its owner; the next review cannot
+                    # inherit this result or bypass its late usage.
+                    try:
+                        from openai4s.llm.usage import measured_usage
+                        from openai4s.storage.governance import record_session_llm_usage
+
+                        result = review_box.get("result") or {}
+                        usage = result.get(
+                            "usage", getattr(review_box.get("error"), "usage", None)
+                        )
+                        if "result" in review_box or not getattr(
+                            review_box.get("error"), "llm_not_started", False
+                        ):
+                            counters = measured_usage(usage)
+                            self.store.add_frame_tokens(
+                                root_frame_id,
+                                input_tokens=counters.get("input_tokens", 0),
+                                output_tokens=counters.get("output_tokens", 0),
+                            )
+                            record_session_llm_usage(self.store, root_frame_id, usage)
+                    except Exception:  # accounting must not replace the result
+                        pass
                     review_done.set()
                     with self.lock:
                         if self.provider_calls.get(root_frame_id) is review_done:
@@ -503,20 +526,6 @@ class ReviewService:
             result["reviewed_artifacts"] = [
                 artifact["artifact_id"] for artifact in changed
             ]
-            usage = result.get("usage") or {}
-            self.store.add_frame_tokens(
-                root_frame_id,
-                input_tokens=usage.get("input_tokens", 0) or 0,
-                output_tokens=usage.get("output_tokens", 0) or 0,
-            )
-            # The governance ledger too (M2-5). The reviewer reaches the
-            # provider through its own port; the pre-call quota check was
-            # wired to it in the M2 hardening, but the *usage* was not, so
-            # the ledger that check reads never advanced -- a member could
-            # review forever against a limit that could not fill.
-            from openai4s.storage.governance import record_session_llm_usage
-
-            record_session_llm_usage(self.store, root_frame_id, usage)
             summary = result.get("summary") or "No issues found"
             self.store.update_step(
                 step_id,

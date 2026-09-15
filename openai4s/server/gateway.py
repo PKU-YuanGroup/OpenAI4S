@@ -4658,12 +4658,14 @@ class SessionRunner:
         artifact_id: str,
         content: str,
         *,
+        expected_version_id: str | None = None,
         broadcast=None,
     ) -> dict:
         with self._external_artifact_mutation(artifact_id=artifact_id):
             return self.artifacts.edit(
                 artifact_id,
                 content,
+                expected_version_id=expected_version_id,
                 broadcast=broadcast,
             )
 
@@ -6247,12 +6249,27 @@ class SessionRunner:
             raise
         try:
             result = provider_call(messages, cfg, **kwargs)
-        except Exception:
-            self._settle_auto_budget(admission, started=True, unknown=True)
-            self._settle_auto_budget(token_admission, started=True, unknown=True)
+        except Exception as error:
+            started = not getattr(error, "llm_not_started", False)
+            known = verifiable_token_usage(getattr(error, "usage", None))
+            try:
+                self._settle_auto_budget(
+                    admission, started=started, unknown=started and known is None
+                )
+                self._settle_auto_budget(
+                    token_admission,
+                    started=started,
+                    unknown=started and known is None,
+                    committed_amount=known,
+                )
+            except AutoBudgetDenied as denied:
+                denied.llm_not_started = not started
+                denied.usage = getattr(error, "usage", None)
+                self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
+                raise
             raise
         usage_total = None
-        if extra and admission is not None and token_admission is not None:
+        if admission is not None:
             usage_total = verifiable_token_usage(
                 result.get("usage") if isinstance(result, Mapping) else None
             )
@@ -6268,6 +6285,10 @@ class SessionRunner:
                     "adapter token usage is not verifiable",
                     field="extra_token_multiplier",
                 )
+                denied.llm_not_started = False
+                denied.usage = (
+                    result.get("usage") if isinstance(result, Mapping) else None
+                )
                 self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
                 raise denied
         try:
@@ -6279,6 +6300,8 @@ class SessionRunner:
                     committed_amount=usage_total,
                 )
         except AutoBudgetDenied as denied:
+            denied.llm_not_started = False
+            denied.usage = result.get("usage") if isinstance(result, Mapping) else None
             self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
             raise
         return result
@@ -6333,6 +6356,16 @@ class SessionRunner:
     def _freeze_auto_budget_tokens(self, st: SessionState) -> None:
         run_id = str(st.active_auto_mode_run_id or "")
         if not run_id:
+            return
+        reservations = self.store.list_auto_mode_budget_reservations(run_id)
+        if any(
+            row.get("consumer") == "model"
+            and row.get("state") in {"unknown", "reserved"}
+            for row in reservations
+        ):
+            # A late or unmeasured call cannot become an apparently known zero
+            # baseline by reading the display counters on the frame.
+            self._auto_budget().fail_measurement(run_id)
             return
         frame = self.store.get_frame(st.root_frame_id) or {}
         tokens = int(frame.get("input_tokens") or 0) + int(
@@ -9026,6 +9059,18 @@ class SessionRunner:
         code = str(getattr(exc, "error_code", "") or "")
         failure_code = llm_failure_code(exc)
         zh = language == "zh"
+        if failure_code == "llm_deadline_exceeded":
+            return (
+                "**模型调用已达到总时限。** 请缩小请求后在当前会话继续。"
+                if zh
+                else "**The model call reached its total time limit.** Continue this session with a smaller request."
+            )
+        if failure_code == "llm_response_too_large":
+            return (
+                "**模型响应超过大小限制。** 请缩小输出或工具参数后继续。"
+                if zh
+                else "**The model response exceeded its size limit.** Continue with smaller output or tool arguments."
+            )
         if failure_code == "llm_request_burst":
             if getattr(exc, "output_committed", False):
                 return (
@@ -10954,6 +10999,9 @@ class SessionRunner:
         llm_cfg = llm_cfg or self._llm_cfg(st)
 
         def add_usage(usage: dict) -> None:
+            from openai4s.llm.usage import measured_usage
+
+            usage = measured_usage(usage)
             self.store.add_frame_tokens(
                 rid,
                 input_tokens=(
@@ -10966,12 +11014,9 @@ class SessionRunner:
 
         def account_abandoned_reply(reply: Mapping[str, Any]) -> None:
             usage = reply.get("usage")
-            if not isinstance(usage, Mapping) or not usage:
-                return
-            canonical = dict(usage)
-            add_usage(canonical)
+            add_usage(usage)
             if action_ledger is not None:
-                action_ledger.record_abandoned_usage(canonical)
+                action_ledger.record_abandoned_usage(usage)
 
         latest_user_text = next(
             (
@@ -17556,8 +17601,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/edit", sub)
             if m and method in ("POST", "PUT", "PATCH"):
+                body = self._body()
+                expected = body.get("expected_version_id")
+                if "expected_version_id" in body and (
+                    not isinstance(expected, str) or not expected.strip()
+                ):
+                    raise GatewayError(
+                        400, "expected_version_id must be a nonempty string"
+                    )
                 self._json(
-                    self._edit_artifact(m.group(1), self._body().get("content", ""))
+                    self._edit_artifact(
+                        m.group(1),
+                        body.get("content", ""),
+                        expected_version_id=expected,
+                    )
                 )
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/rename", sub)
@@ -18832,7 +18889,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         def _lineage(self, artifact_id: str, version_id: str | None = None) -> dict:
             return execution_views.artifact_lineage(artifact_id, version_id=version_id)
 
-        def _edit_artifact(self, artifact_id: str, content: str) -> dict:
+        def _edit_artifact(
+            self,
+            artifact_id: str,
+            content: str,
+            *,
+            expected_version_id: str | None = None,
+        ) -> dict:
             try:
                 artifact = store.get_artifact(artifact_id)
                 if artifact and artifact.get("root_frame_id"):
@@ -18842,12 +18905,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return runner.edit_artifact(
                     artifact_id,
                     content,
+                    expected_version_id=expected_version_id,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
                         root_frame_id, event
                     ),
                 )
             except ArtifactOperationError as error:
-                raise GatewayError(error.code, error.message) from error
+                raise GatewayError(
+                    error.code, error.message, error.error_code
+                ) from error
 
         def _restore_version(self, artifact_id: str, version_id: str) -> dict:
             artifact = store.get_artifact(artifact_id)

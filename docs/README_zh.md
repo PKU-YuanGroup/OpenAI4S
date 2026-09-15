@@ -48,6 +48,9 @@
 | `v020-linux-release-prep_zh.md` | v0.2.0 Linux 桌面发布准备材料的中文对应文件。 |
 | `v03-decisions.md` | v0.3 的所有者签署答复，2026-07-26 冻结，包含推翻 v0.2「每个 Phase 一个大 PR」的那一条，以及本版本据以衡量的验收口径。它还用一张表列出所有无法从工作副本验证的事项——GitHub Actions 的真实执行、Developer ID 证书、公证、PyPI OIDC、实机浏览器、Linux CI——好让它们不出现在「已验证」一栏是有意为之，而不是疏漏。|
 | `next-version-progress.md` | v0.3 的逐项事实记录：什么落地了、在哪个提交、以及那一列真正承重的内容——为证明每个新测试确实会失败，把什么缺陷放了回去。不会失败的测试什么也没测，而存在一个同名的类不构成完成证据。凡是证明所需的那次运行需要本仓库没有的机器，一律标 `Implemented but unverified` 并写明缺的是哪一次运行。|
+| `next-improvements-20260914.md` | 本轮 next 分支 T0–T9 顺序执行记录、验收状态与真实 Ark 请求及用量证据。 |
+| `pre-upgrade-snapshot-design.md` / `pre-upgrade-snapshot-design_zh.md` | P2-01 准备：一份已校验预升级 DB 快照、私有有界发布、独立目录恢复边界及未来故障验收；不改变运行时或迁移。 |
+| `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 准备：HTTP／请求头／上传／WS 分阶段预算、有界准入与状态余量、真实连接释放和本地故障验收；不启用新配额或期限。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 

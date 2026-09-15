@@ -145,11 +145,13 @@ def test_anthropic_stream_error_after_start_does_not_replay(monkeypatch):
     assert blocking_calls == []
 
 
-def test_anthropic_stream_start_failure_falls_back_to_blocking(monkeypatch):
+def test_anthropic_explicit_stream_refusal_falls_back_to_blocking(monkeypatch):
     blocking_calls = []
 
     def post_sse(*_args):
-        raise LLMError("connection refused")
+        raise llm.TransportError(
+            "unsupported stream", status=400, error_code="streaming_not_supported"
+        )
 
     def post_json(_url, payload, _headers, _timeout):
         blocking_calls.append(payload)

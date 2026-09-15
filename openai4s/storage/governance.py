@@ -115,6 +115,8 @@ class QuotaExceeded(Exception):
 
     code = "QUOTA_EXCEEDED"
 
+    llm_not_started = True
+
     def __init__(self, message: str, *, scope: str, kind: str, window: str):
         super().__init__(message)
         self.scope = scope
@@ -509,6 +511,18 @@ class GovernanceRepository:
                     where, param = "user_id=?", user_id
                 else:
                     where, param = "project_id=?", scope_id
+                if kind in (KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS):
+                    unknown = self._connection.execute(
+                        f"SELECT 1 FROM usage_ledger WHERE kind=? AND ts>=? AND {where} LIMIT 1",
+                        (f"{kind}_unknown", since, param),
+                    ).fetchone()
+                    if unknown:
+                        raise QuotaExceeded(
+                            f"{scope} {kind} usage is unknown for this quota window",
+                            scope=str(scope),
+                            kind=str(kind),
+                            window=str(window),
+                        )
                 used = self._connection.execute(
                     f"SELECT COALESCE(SUM(amount), 0) FROM usage_ledger"
                     f" WHERE kind=? AND ts>=? AND {where}",
@@ -552,8 +566,9 @@ def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None
     With no ownership row it reads and never writes (INV-1). Metering must
     never break the call it meters, so every failure here is swallowed.
     """
-    if not usage:
-        return
+    from openai4s.llm.usage import measured_usage
+
+    counters = measured_usage(usage)
     try:
         governance = getattr(store, "governance", None)
         team = getattr(store, "team", None)
@@ -569,8 +584,16 @@ def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None
             ("llm_input_tokens", "input_tokens"),
             ("llm_output_tokens", "output_tokens"),
         ):
-            amount = usage.get(key) or 0
-            if amount:
+            amount = counters.get(key)
+            if amount is None:
+                governance.record_usage(
+                    user_id=owner["user_id"],
+                    kind=f"{kind}_unknown",
+                    amount=1,
+                    project_id=project,
+                    ref=root,
+                )
+            elif amount:
                 governance.record_usage(
                     user_id=owner["user_id"],
                     kind=kind,

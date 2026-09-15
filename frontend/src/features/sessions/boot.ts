@@ -84,7 +84,7 @@ export function bindWorkbench(): Promise<void> {
   applyStaticI18n(document);
   watchActivateKeys(document);
   watchDisconnect();
-  setLoadSessionsImpl(loadSessions);
+  setLoadSessionsImpl(async () => { await loadSessions(); });
 
   document.querySelectorAll(".lang-btn").forEach((b) => {
     (b as HTMLElement).onclick = () => {

@@ -606,7 +606,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_artifact_mutation_service.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c0e68e61454239cb26ab35a68ff1d6fa84858cd9d4dc59f890c73c16ec02ad58"
+      "evidence_digest": "63c00dc48c2496594e815d29326200682d9227ede6598671f8fb355d15507898"
     },
     {
       "source": "R6",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "8d9c4b8a2bc4fbc93d4af853292cc3a882144c9224f3fee1223f3d8569cce37d"
+      "evidence_digest": "f6025f5ef6071809952839581da12cde2596ae7576a74ea56f02880df0fe6563"
     },
     {
       "source": "R7",

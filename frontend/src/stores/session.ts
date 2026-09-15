@@ -36,6 +36,11 @@ export const sessionPages = field(() => 1);
 export const _sessionsLoadingMore = field(() => false);
 /** S.sessionsHasMore — app.js:6997 */
 export const sessionsHasMore = field(() => false);
+/** Directory reads have explicit loading/error states, separate from emptiness. */
+export const sessionsLoading = field(() => false);
+export const sessionsLoadError = field(() => false);
+export const foldersLoading = field(() => false);
+export const foldersLoadError = field(() => false);
 /** Dashboard project-list search box. Not part of the frozen S field set. */
 export const projectsQuery = field(() => "");
 /** Opaque keyset cursor for GET /projects. Not part of the frozen S field set. */

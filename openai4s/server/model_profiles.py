@@ -125,6 +125,10 @@ def _probe_detail(error: Exception, public: dict) -> str:
     from openai4s.llm import llm_failure_code
 
     failure_code = llm_failure_code(error)
+    if failure_code == "llm_deadline_exceeded":
+        return "the model call reached its total time limit; try a smaller request"
+    if failure_code == "llm_response_too_large":
+        return "the model response exceeded its size limit; request smaller output"
     if failure_code == "llm_request_burst":
         return (
             "the provider's burst-traffic protection was triggered; the "

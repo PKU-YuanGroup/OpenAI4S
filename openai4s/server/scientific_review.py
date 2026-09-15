@@ -840,12 +840,23 @@ class ScientificReviewService:
                 error = str(exc)[:500]
                 if budget is not None and admission_id:
                     try:
-                        budget.mark_unknown(admission_id)
+                        if getattr(exc, "llm_not_started", False):
+                            budget.release(admission_id, started=False)
+                        else:
+                            budget.mark_unknown(admission_id)
                     except Exception:  # noqa: BLE001 - unknown is fail-closed
                         pass
                     if token_admission_id:
                         try:
-                            budget.mark_unknown(token_admission_id)
+                            known = verifiable_token_usage(getattr(exc, "usage", None))
+                            if getattr(exc, "llm_not_started", False):
+                                budget.release(token_admission_id, started=False)
+                            elif known is None:
+                                budget.mark_unknown(token_admission_id)
+                            else:
+                                budget.commit(
+                                    token_admission_id, committed_amount=known
+                                )
                         except Exception:  # noqa: BLE001 - unknown is fail-closed
                             pass
         if last_error is not None:

@@ -2,6 +2,8 @@ import {
   _artBust,
   _tbl,
   artifacts as artifactsSignal,
+  artifactsFrameId,
+  artifactsFrameGeneration,
 } from "../../stores/artifacts";
 import { _openGen, currentId, project, sessions as sessionsSignal, type HistoryLoadResult } from "../../stores/session";
 import { _replayGap, _seqSeen, _streamEpoch } from "../../stores/stream";
@@ -121,6 +123,10 @@ function artifactPayload(m: WsMessage): Record<string, unknown> {
  */
 export function upsertArtifactFromEvent(m: WsMessage): Record<string, unknown> | null {
   const nested = artifactPayload(m);
+  // Root identity wins over a producing child frame. Late events from a
+  // previous subscription must not enter the current session snapshot.
+  const root = m.root_frame_id || nested.root_frame_id || m.frame_id;
+  if (root && String(root) !== currentId.value) return null;
   const aid = nested.id || nested.artifact_id || m.artifact_id;
   if (!aid) return null;
   const id = String(aid);
@@ -129,6 +135,11 @@ export function upsertArtifactFromEvent(m: WsMessage): Record<string, unknown> |
   if (row.filename == null && m.filename != null) row.filename = m.filename;
   if (row.producing_cell_id == null && m.producing_cell_id != null) {
     row.producing_cell_id = m.producing_cell_id;
+  }
+  if (artifactsFrameId.value !== currentId.value || artifactsFrameGeneration.value !== _openGen.value) {
+    artifactsSignal.value = [];
+    artifactsFrameId.value = currentId.value;
+    artifactsFrameGeneration.value = _openGen.value;
   }
   const list = artifactsSignal.value;
   const rows: unknown[] = Array.isArray(list) ? list : [];

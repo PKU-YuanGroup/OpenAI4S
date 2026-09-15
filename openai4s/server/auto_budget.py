@@ -155,25 +155,9 @@ def finding_set_digest(fingerprints: Any) -> str:
 def verifiable_token_usage(usage: Any) -> int | None:
     """Return a non-negative token total only when the adapter usage is exact."""
 
-    if not isinstance(usage, Mapping):
-        return None
-    prompt = usage.get("prompt_tokens")
-    if type(prompt) is not int:
-        prompt = usage.get("input_tokens")
-    completion = usage.get("completion_tokens")
-    if type(completion) is not int:
-        completion = usage.get("output_tokens")
-    total = usage.get("total_tokens")
-    if (
-        type(prompt) is int
-        and type(completion) is int
-        and prompt >= 0
-        and completion >= 0
-    ):
-        return prompt + completion
-    if type(total) is int and total >= 0:
-        return total
-    return None
+    from openai4s.llm.usage import measured_total
+
+    return measured_total(usage)
 
 
 def token_upper_bound(
@@ -200,6 +184,17 @@ def token_upper_bound(
             return adapter_cfg.get(name)
         return getattr(adapter_cfg, name, None)
 
+    # The Responses adapter omits max_output_tokens for its configured proxy.
+    # A configured max_tokens therefore cannot certify that wire's ceiling.
+    provider = value("provider")
+    if provider:
+        from openai4s.llm.registry import provider_spec
+
+        try:
+            if provider_spec(provider)["wire"] == "responses":
+                return None
+        except (LookupError, ValueError, RuntimeError):
+            pass  # injected adapters retain their explicit bound contract
     total = value("total_token_upper_bound")
     if type(total) is int and total > 0:
         return total
@@ -566,7 +561,11 @@ class AutoBudgetAdmission:
         elapsed = max(0, (now - started_at) // 1000) if started_at else 0
         token_limit = int(state.get("computed_extra_token_limit") or 0)
         token_used = sum(
-            int(item.get("committed_amount") or item.get("reserved_amount") or 0)
+            (
+                int(item.get("committed_amount") or 0)
+                if item.get("state") == "committed"
+                else int(item.get("reserved_amount") or 0)
+            )
             for item in reservations
             if item.get("consumer") == "token"
             and item.get("state") in {"committed", "consumed", "unknown"}

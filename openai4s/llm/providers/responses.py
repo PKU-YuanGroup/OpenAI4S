@@ -9,6 +9,7 @@ from ..messages import _responses_input
 from ..models import LLMError
 from ..tooling import _apply_responses_tools, _assistant_message, _normalized_tool_call
 from ..transport import _BROWSER_UA
+from ..usage import RawUsage
 
 
 def _chat_responses(
@@ -72,7 +73,7 @@ def _chat_responses(
             key = len(state["output"])
         state["output"][key] = item
 
-    def _on_event(evt: dict) -> None:
+    def _on_event(evt: dict) -> bool | None:
         t = evt.get("type")
         if t == "response.output_text.delta":
             d = evt.get("delta") or ""
@@ -81,6 +82,8 @@ def _chat_responses(
                 if on_delta:
                     try:
                         on_delta(d)
+                    except LLMError:
+                        raise
                     except (
                         Exception
                     ):  # noqa: BLE001 - a UI callback must not kill the stream
@@ -135,28 +138,41 @@ def _chat_responses(
             # client maps them after the wire call.  Flattening at this layer
             # would discard cached/reasoning counters before normalization.
             state["usage"] = dict(u)
+            return True
         elif t == "response.incomplete":
             response = evt.get("response") or {}
             details = response.get("incomplete_details") or {}
             reason = details.get("reason") or "unknown reason"
+            state["usage"] = RawUsage(response.get("usage"), final=True)
             state["error"] = f"response incomplete: {reason}"
+            return True
         elif t in ("response.failed", "response.error", "error"):
             resp = evt.get("response") or evt
+            state["usage"] = RawUsage(
+                resp.get("usage") if isinstance(resp, dict) else None,
+                final=t == "response.failed",
+            )
             err = (resp.get("error") or {}) if isinstance(resp, dict) else {}
             # a flat `error` event carries `message` at the top level, while
             # response.failed nests it under response.error
             state["error"] = err.get("message") or evt.get("message") or str(evt)[:400]
+            return True
 
-    # Idle (no-bytes) timeout for the stream. Respect the configured timeout so a
-    # stalled/hung model finalises the turn promptly instead of "running forever";
-    # keep a 60s floor so a heavy-reasoning model that pauses between events isn't
-    # cut off (raise OPENAI4S_LLM_TIMEOUT for such models).
-    timeout = max(cfg.timeout_s, 60.0)
-    post_sse(url, payload, headers, timeout, _on_event)
-    if state["error"]:
-        raise LLMError(f"responses API error: {state['error']}")
-    if not state["terminal"]:
-        raise LLMError("Responses stream ended before response.completed")
+    # Idle timeout stays distinct from the logical call's shared total deadline.
+    timeout = cfg.timeout_s
+    try:
+        post_sse(url, payload, headers, timeout, _on_event)
+        if state["error"]:
+            raise LLMError(f"responses API error: {state['error']}")
+        if not state["terminal"]:
+            raise LLMError("Responses stream ended before response.completed")
+    except LLMError as error:
+        error.usage = (
+            state["usage"]
+            if isinstance(state["usage"], RawUsage)
+            else RawUsage(state["usage"], final=state["terminal"])
+        )
+        raise
     output = state["completed_output"]
     if not isinstance(output, list):
         output = [state["output"][i] for i in sorted(state["output"])]

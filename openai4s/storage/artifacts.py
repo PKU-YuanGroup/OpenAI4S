@@ -1621,7 +1621,7 @@ class ArtifactRepository:
         what makes the cursor sound: ordering by timestamp alone leaves
         the rest of a tie undefined and a cursor can drop it.
 
-        Team visibility is a WHERE conjunct, not a post-filter. Keyset
+        Priority and team visibility are WHERE conjuncts, not post-filters. Keyset
         ``has_more`` is observed from row counts, so filtering after
         ``LIMIT`` turns a page of hidden rows into a phantom end-of-list.
 
@@ -1629,7 +1629,7 @@ class ArtifactRepository:
         only — never path, checksum, or content type. ``origin`` is
         derived from ``is_user_upload`` (``uploaded`` / ``generated``).
         """
-        clauses: list[str] = ["a.project_id=?"]
+        clauses: list[str] = ["a.project_id=?", "COALESCE(a.priority,0)>=0"]
         params: list[Any] = [project_id]
         query = (filename_query or "").strip()
         if query:

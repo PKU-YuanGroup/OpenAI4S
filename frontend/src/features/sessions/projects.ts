@@ -5,10 +5,10 @@ import { t } from "../../i18n";
 import {
   _openGen,
   editingProject,
+  currentId,
   project,
   projects,
   projectsQuery,
-  sessions,
 } from "../../stores/session";
 import { _modalMode } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
@@ -18,8 +18,8 @@ import { showDashboard, showWorkspace } from "./dashboard";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
 import { callLane, hostFn } from "./lane";
-import { loadProjects, loadSessions } from "./load";
-import type { SessionLike } from "./paging";
+import { loadProjects, loadSessions, loadSessionsForNavigation } from "./load";
+import { beginProjectNavigation, navigation, ownsNavigation } from "./navigation";
 
 type ProjectLike = {
   project_id?: string;
@@ -291,37 +291,27 @@ export function renderProjMenu(): void {
 }
 
 export function selectProject(id: string): void {
-  project.value = id;
+  beginProjectNavigation(id);
+  // The switcher changes the sidebar scope while keeping the open frame.
+  // Its Files snapshot must be read again for this new navigation generation.
+  if (currentId.value) callLane("loadArtifacts", currentId.value);
   $("#proj-menu")?.classList.add("hidden");
   renderProjMenu();
   void loadSessions();
 }
 
 export async function openProject(id: string): Promise<void> {
-  // A project trip is navigation: bump the generation so any continuation still
-  // parked on an await (an upload-created session about to open its
-  // conversation, a resume watchdog) sees a stale token and stands down instead
-  // of yanking the view back to where it started.
-  _openGen.value = (_openGen.value || 0) + 1;
-  await loadProjects();
-  project.value = id;
+  const owner = beginProjectNavigation(id);
   showWorkspace();
-  await loadSessions();
   renderProjMenu();
-  const ss = (sessions.value as SessionLike[]).filter((f) => f.project_id === id);
-  const first = ss[0];
-  // Await the conversation. Fire-and-forget let openProject's callers (routing,
-  // dashboard rows, createProject) return before the session existed, so the
-  // next navigation raced the open this call had not finished.
+  await loadProjects();
+  if (!ownsNavigation(owner)) return;
+  const result = await loadSessionsForNavigation(owner);
+  if (!ownsNavigation(owner) || result.status !== "loaded") return;
+  renderProjMenu();
+  const first = result.rows.find((row) => row.project_id === id);
   if (first?.id) await binds.openConversation(first.id, id);
-  else {
-    // The empty-project path must create its conversation in the project just
-    // opened, not in whatever `project` happens to hold once the shared
-    // creation promise settles.
-    // Read through `binds` at call time: binds.ts holds a no-op placeholder
-    // until conversation.ts installs the real function.
-    await binds.newSession(id);
-  }
+  else await binds.newSession(id);
 }
 
 export async function createProject(
@@ -329,11 +319,14 @@ export async function createProject(
   description: string,
   context: string,
 ): Promise<void> {
+  const owner = navigation();
   const p = (await api("/projects", {
     method: "POST",
     body: JSON.stringify({ name, description, context }),
   })) as ProjectLike;
+  if (!ownsNavigation(owner)) return;
   await loadProjects();
+  if (!ownsNavigation(owner)) return;
   await openProject(p.project_id || p.id || "");
 }
 

@@ -372,11 +372,24 @@ def review_evidence(
         max_tokens=min(cfg.max_tokens, 1800),
         temperature=0.1,
     )
-    normalized = normalize_review(_json_object(result.get("content") or ""))
-    usage = result.get("usage") or {}
-    normalized["usage"] = {
-        "input_tokens": usage.get("prompt_tokens", 0) or 0,
-        "output_tokens": usage.get("completion_tokens", 0) or 0,
-    }
+    from openai4s.llm.usage import copy_usage
+
+    usage = copy_usage(result.get("usage"))
+    try:
+        normalized = normalize_review(_json_object(result.get("content") or ""))
+    except Exception as error:
+        error.usage = usage
+        raise
+    normalized["usage"] = copy_usage(
+        usage,
+        {
+            "input_tokens": usage.get("prompt_tokens", usage.get("input_tokens", 0))
+            or 0,
+            "output_tokens": usage.get(
+                "completion_tokens", usage.get("output_tokens", 0)
+            )
+            or 0,
+        },
+    )
     normalized["model"] = cfg.model or None
     return normalized

@@ -1100,3 +1100,110 @@ def test_nested_structure_db_failure_restores_live_snapshot_and_head(
     assert not list(versions_dir.glob(".upload-v-injectedfault.json"))
     assert not list(versions_dir.glob("v-injectedfault__*"))
     runner.close()
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH"])
+@pytest.mark.parametrize("expected", [None, "", " ", 1, True, [], {}])
+def test_edit_route_rejects_explicit_invalid_expected_version(
+    tmp_path, method, expected
+):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    record = _save_snapshot(
+        runner,
+        fid,
+        runner.workspace_for_branch(fid, fid) / "notes.txt",
+        b"old",
+        content_type="text/plain",
+    )
+    before = runner.store.list_versions(record["artifact_id"])
+    with pytest.raises(gateway_mod.GatewayError) as caught:
+        _call(
+            handler,
+            method,
+            f"/artifacts/{record['artifact_id']}/edit",
+            body={"content": "new", "expected_version_id": expected},
+        )
+    assert caught.value.code == 400
+    assert runner.store.list_versions(record["artifact_id"]) == before
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH"])
+def test_edit_route_conditional_success_then_conflict_and_legacy(tmp_path, method):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    record = _save_snapshot(
+        runner,
+        fid,
+        runner.workspace_for_branch(fid, fid) / "notes.txt",
+        b"old",
+        content_type="text/plain",
+    )
+    route = f"/artifacts/{record['artifact_id']}/edit"
+    code, edited = _call(
+        handler,
+        method,
+        route,
+        body={"content": "new", "expected_version_id": record["version_id"]},
+    )
+    assert code == 200 and edited["unchanged"] is False
+    for content in ("new", "stale change"):
+        with pytest.raises(gateway_mod.GatewayError) as caught:
+            _call(
+                handler,
+                method,
+                route,
+                body={"content": content, "expected_version_id": record["version_id"]},
+            )
+        assert caught.value.code == 409
+        assert caught.value.error_code == "artifact_version_conflict"
+    assert len(runner.store.list_versions(record["artifact_id"])) == 2
+    code, unchanged = _call(handler, method, route, body={"content": "new"})
+    assert code == 200 and unchanged["unchanged"] is True
+
+
+def test_conditional_edit_public_http_errors(tmp_path, monkeypatch):
+    """Capture actual 400/409 envelopes, including the existing JSON projection."""
+    import http.client
+    import json
+    import threading
+
+    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+    cfg = _cfg(tmp_path)
+    cfg.port = 0
+    server = gateway_mod.build_app_server(cfg)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    runner = server.runner
+    fid = runner.store.new_frame(kind="turn", project_id="proj_example", status="ready")
+    seeded = runner.upload_artifact(
+        {"frame_id": fid, "filename": "notes.txt", "content_text": "original"}
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+    try:
+        for method in ("POST", "PUT", "PATCH"):
+            for expected, status in ((None, 400), ("stale-version", 409)):
+                connection.request(
+                    method,
+                    f"/api/v1/artifacts/{seeded['artifact_id']}/edit",
+                    body=json.dumps(
+                        {"content": "must not land", "expected_version_id": expected}
+                    ),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Host": f"127.0.0.1:{cfg.port}",
+                    },
+                )
+                response = connection.getresponse()
+                body = json.loads(response.read())
+                assert response.status == status
+                assert body["error"]
+                if status == 409:
+                    assert body["code"] == "artifact_version_conflict"
+        assert len(runner.store.list_versions(seeded["artifact_id"])) == 1
+        assert (
+            runner.active_workspace_for(fid) / "notes.txt"
+        ).read_text() == "original"
+    finally:
+        connection.close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

@@ -91,20 +91,12 @@ class _FakeKernel:
         }
 
 
-class _JsonResponse:
-    """Minimal urllib response for the second, currently-unreached retry step."""
+class _JsonResponse(io.BytesIO):
+    """Finite, size-readable HTTP body for the successful retry step."""
 
     def __init__(self, body: Mapping[str, Any]) -> None:
-        self._body = json.dumps(body).encode("utf-8")
-
-    def __enter__(self) -> "_JsonResponse":
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self._body
+        super().__init__(json.dumps(body).encode("utf-8"))
+        self.headers: dict[str, str] = {}
 
 
 class _FakeMCPManager:
@@ -221,7 +213,7 @@ def _rate_limit_single_attempt() -> Mapping[str, Any]:
     error_text = None
     content = None
     with (
-        mock.patch("urllib.request.urlopen", urlopen),
+        mock.patch("openai4s.llm.transport._urlopen", urlopen),
         mock.patch("time.sleep", return_value=None),
     ):
         try:

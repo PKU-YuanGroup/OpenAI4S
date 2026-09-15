@@ -660,8 +660,7 @@ class Agent:
                     if action_ledger is None:
                         return
                     usage = reply.get("usage")
-                    if isinstance(usage, Mapping) and usage:
-                        action_ledger.record_abandoned_usage(usage)
+                    action_ledger.record_abandoned_usage(usage)
 
                 model: Any = ChatModel(
                     self.cfg.llm,
