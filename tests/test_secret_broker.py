@@ -628,6 +628,75 @@ def test_set_secret_setting_refuses_to_record_an_unverifiable_write(store):
     assert store.get_setting("llm_api_key") in (None, "")
 
 
+def test_onboarding_status_answers_on_a_host_with_no_secret_store(
+    store, tmp_path, monkeypatch
+):
+    """`status()` must not 500 where the broker fails closed.
+
+    `store.secrets` refuses to resolve on every host without a keychain,
+    libsecret or DPAPI — a headless Linux server, a container — which is the
+    deployment `auto` is *most* likely to meet. `status()` read it unguarded,
+    so `GET /onboarding` answered `internal error`. That is not a degraded
+    read: the wizard keeps its modal up until `status` loads and every route it
+    offers calls the same service, so the 500 was an unclosable window whose
+    own Skip button failed the same way.
+    """
+    from types import SimpleNamespace
+
+    from openai4s.llm import PROVIDERS
+    from openai4s.onboarding import OnboardingService
+    from openai4s.store import Store
+
+    def _unresolvable(self):
+        raise SecretStoreUnavailable("refusing to handle credentials without a store")
+
+    monkeypatch.setattr(Store, "secrets", property(_unresolvable))
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=SimpleNamespace(
+            provider="claude", base_url="https://x/v1", model="m", api_key=""
+        ),
+    )
+    service = OnboardingService(cfg, store, PROVIDERS)
+
+    result = service.status()
+
+    # No key is the honest answer here, and it is one the wizard can act on.
+    assert result.has_api_key is False
+
+
+def test_a_store_less_host_still_reports_a_key_from_the_config(
+    store, tmp_path, monkeypatch
+):
+    """Failing to *read* the broker is not the same as there being no key.
+
+    An operator who supplied the credential through `.env` or the daemon's
+    environment has a working install; answering "not configured" would send
+    them to a wizard that cannot save anything either.
+    """
+    from types import SimpleNamespace
+
+    from openai4s.llm import PROVIDERS
+    from openai4s.onboarding import OnboardingService
+    from openai4s.store import Store
+
+    def _unresolvable(self):
+        raise SecretStoreUnavailable("refusing to handle credentials without a store")
+
+    monkeypatch.setattr(Store, "secrets", property(_unresolvable))
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=SimpleNamespace(
+            provider="claude", base_url="https://x/v1", model="m", api_key=_CANARY
+        ),
+    )
+    service = OnboardingService(cfg, store, PROVIDERS)
+
+    assert service.status().has_api_key is True
+
+
 def test_missing_secret_reads_as_empty_not_as_the_reference(store):
     """If the keychain entry is gone (revoked by hand, different machine), the
     caller must get "" and re-prompt — never the ref as if it were a key."""

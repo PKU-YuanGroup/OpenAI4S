@@ -303,8 +303,21 @@ class OnboardingService:
         return str(self.store.get_setting(key) or "").strip()
 
     def _stored_secret(self, key: str) -> str:
-        """Resolve a credential setting, whether reference or legacy plaintext."""
-        return str(self.store.get_secret_setting(key) or "").strip()
+        """Resolve a credential setting, whether reference or legacy plaintext.
+
+        A host without a secure store is a *read* that has no answer, not a
+        failure of this service. `store.secrets` fails closed there by design —
+        the accepted answer on every headless Linux server and container — and
+        letting it propagate turned `GET /onboarding` into an `internal error`
+        that the wizard could not dismiss, because its Skip button posts to the
+        same service. The `except` mirrors `gateway.effective_api_key` and
+        `llm.resolve.store_overrides`, which read the same setting the same
+        guarded way.
+        """
+        try:
+            return str(self.store.get_secret_setting(key) or "").strip()
+        except Exception:  # noqa: BLE001 - a broker we cannot read holds nothing
+            return ""
 
     def _provider(self, value: str) -> str:
         provider = str(value or "").strip().lower()
