@@ -472,7 +472,11 @@ export function renderViewer(): void {
         _artBust.value = { ..._artBust.value, [artifactId]: Date.now() };
         hint(translate("artifact.saved", a.filename || ""));
         if (sessionId) void loadArtifacts(sessionId);
-        renderViewer();
+        // The lineage cache is keyed on the pre-save row, so renderViewer on
+        // its own repaints the previous version's provenance. Only
+        // showProvenance bumps _lineageReq and starts a fresh read.
+        if (provMode.value) callWindow("showProvenance", dockArtifact.value || a);
+        else renderViewer();
       },
       latest: (row) => { void openViewer(row); },
     });

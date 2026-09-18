@@ -190,6 +190,27 @@ def test_total_timeout_env_validation_and_dataclass_inheritance(monkeypatch):
         cfg()
 
 
+def test_metering_a_hostile_usage_object_cannot_fail_the_call_it_meters(tmp_path):
+    """Every failure in ``record_session_llm_usage`` is swallowed -- including
+    reading the evidence off the caller's usage object, which is metering work
+    like the rest and used to sit above the ``try``."""
+
+    from openai4s.storage.governance import record_session_llm_usage
+    from openai4s.store import Store
+
+    class Hostile(dict):
+        def items(self):
+            raise TypeError("counters are not readable")
+
+    with closing(Store(tmp_path / "hostile.db")) as store:
+        user = store.team.create_user(
+            username="meter", password="fake-password", role="member"
+        )
+        root = store.new_frame(kind="turn", project_id="p")
+        store.team.set_session_owner(root, user["id"], project_id="p")
+        record_session_llm_usage(store, root, Hostile({"input_tokens": 1}))
+
+
 def test_responses_without_wire_output_cap_has_no_budget_ceiling():
     responses = next(
         name for name, spec in llm.PROVIDERS.items() if spec["wire"] == "responses"
@@ -298,6 +319,47 @@ def test_invalid_anthropic_cache_cannot_certify_zero_input(cache):
     )
     assert measured_total(usage) is None
     assert "input_tokens" not in measured_usage(usage)
+
+
+def test_renormalizing_a_cache_folding_wire_does_not_fold_twice():
+    """``input_excludes_cache`` folds cache tokens into ``input_tokens``. The
+    idempotence guard has to return before ``result`` is derived, or a second
+    pass folds them again and the public dict stops agreeing with its own
+    evidence (and with its own ``total_tokens``)."""
+
+    first = llm.normalize_usage(
+        {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cache_read_input_tokens": 500,
+            "cache_creation_input_tokens": 7,
+        },
+        "claude",
+    )
+    assert first["input_tokens"] == 607 and first["total_tokens"] == 617
+    second = llm.normalize_usage(first, "claude")
+    assert dict(second) == dict(first)
+    assert measured_usage(second) == measured_usage(first)
+
+
+def test_a_later_alias_still_measures_a_counter_its_first_path_could_not():
+    """``_token_value`` falls through an unusable path to the next alias; the
+    metering loop must too, or the public dict and the counters disagree about
+    one payload."""
+
+    usage = llm.normalize_usage(
+        {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_input_tokens": None,
+            "cache_read_tokens": 42,
+            "cache_creation_input_tokens": 0,
+        },
+        "claude",
+    )
+    assert usage["cache_read"] == 42
+    assert measured_usage(usage)["cache_read"] == 42
+    assert measured_total(usage) == 162
 
 
 def test_raw_total_includes_provider_reasoning_and_renormalizing_retains_unknown():

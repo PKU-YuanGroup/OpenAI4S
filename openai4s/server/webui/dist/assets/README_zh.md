@@ -9,6 +9,6 @@
 | 文件 | 职责 |
 | --- | --- |
 | `en-BiWYNluY.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-B_BLyqU5.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `index-CdyLHhek.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-Db1sxMps.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `zh-DZtw8kA9.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |

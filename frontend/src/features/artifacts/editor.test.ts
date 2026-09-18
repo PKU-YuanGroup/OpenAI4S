@@ -164,6 +164,21 @@ describe("draft capacity", () => {
     expect(io.text).not.toHaveBeenCalled();
     expect(editor.canSave).toBe(false);
   });
+  it("a load that never produced a draft releases its reservation", async () => {
+    // open() registers the editor before load() runs. A capacity failure has
+    // no draft to protect, and the view offers no retry for it, so keeping the
+    // reservation held one of ten slots and made open() hand back the same
+    // dead object for that artifact for the rest of the session.
+    const { store, io, artifact } = fixture();
+    vi.mocked(io.head).mockResolvedValue({ versionId: "v1", sizeBytes: EDITOR_MAX_BYTES, checksum: "a".repeat(64) });
+    const first = store.open("s", { ...artifact, size_bytes: EDITOR_MAX_BYTES });
+    await vi.waitFor(() => expect(first.problem).toBe("capacity"));
+    expect(store.drafts.size).toBe(0);
+    vi.mocked(io.head).mockResolvedValue({ versionId: "v1", sizeBytes: 3, checksum: "a".repeat(64) });
+    const second = await ready(store, artifact);
+    expect(second).not.toBe(first);
+    expect(second.canSave).toBe(true);
+  });
 });
 
 it.each([null, {}, { versions: [] }, { versions: [{ version_id: "v1" }] },

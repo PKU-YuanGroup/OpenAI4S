@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
 vi.mock("./dashboard", () => ({ showWorkspace: vi.fn(), showDashboard: vi.fn() }));
 
-import { _openGen, _foldersFor, _sessionsLoadingMore, folders, foldersLoading, foldersLoadError, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError } from "../../stores/session";
+import { _msgEarlierLoading, _openGen, _foldersFor, _sessionsLoadingMore, folders, foldersLoading, foldersLoadError, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { api } from "./api";
 import { binds } from "./binds";
@@ -35,6 +35,19 @@ beforeEach(() => {
 });
 
 describe("session navigation owns every response", () => {
+  it("a sidebar-only project switch releases the earlier-history loading latch", () => {
+    // selectProject is the one caller that bumps the generation while keeping
+    // the conversation open, so nothing else ever resets this flag: the
+    // superseded paging request skips its own finally on a stale generation
+    // and "Load earlier" stayed disabled for the rest of the session.
+    _msgEarlierLoading.value = true;
+    selectProject("p2");
+    expect(_msgEarlierLoading.value).toBe(false);
+    _msgEarlierLoading.value = true;
+    beginNavigation();
+    expect(_msgEarlierLoading.value).toBe(false);
+  });
+
   it("opening a loaded session keeps a folder-read failure visible for retry", async () => {
     vi.mocked(api).mockImplementation(async (path) => {
       if (path.includes("/folders")) throw new Error("folders unavailable");

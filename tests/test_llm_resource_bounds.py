@@ -339,6 +339,32 @@ def test_total_timeout_configuration_rejects_invalid_values(seconds):
         LLMConfig(total_timeout_s=seconds)
 
 
+@pytest.mark.parametrize("raw", ["", "abc", "0", "4000"])
+def test_total_timeout_environment_value_reports_its_own_range(monkeypatch, raw):
+    """The factory must not parse: a ``float()`` there runs inside ``__init__``
+    and raises before ``__post_init__`` can name the range, so a blank or
+    non-numeric env var used to abort the daemon's boot with a bare
+    "could not convert string to float"."""
+
+    monkeypatch.setenv("OPENAI4S_LLM_TOTAL_TIMEOUT", raw)
+    with pytest.raises(ValueError, match="finite number from 1 to 3600 seconds"):
+        LLMConfig()
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf"), True, "x"])
+def test_request_timeout_is_refused_before_it_reaches_the_exchange(seconds):
+    """``timeout_s`` becomes ``HTTPExchangeDeadline(idle_timeout=...)``, which
+    refuses a non-positive value with a bare ``ValueError`` that no transport
+    handler catches and ``llm_failure_code`` cannot classify."""
+
+    with pytest.raises(ValueError, match="greater than 0 seconds"):
+        LLMConfig(timeout_s=seconds)
+
+
+def test_valid_request_timeout_is_normalized_to_a_float():
+    assert LLMConfig(timeout_s=30).timeout_s == 30.0
+
+
 def test_text_backpressure_preserves_unicode_and_bounds_pending_bytes():
     import queue
 

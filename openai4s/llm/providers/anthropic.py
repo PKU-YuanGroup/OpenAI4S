@@ -213,7 +213,10 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
             if delta.get("stop_reason") is not None:
                 state["finish"] = delta["stop_reason"]
             state["usage"].update(evt.get("usage") or {})
-            state["usage_final"] = (
+            # Latched, like every other flag here: `message_delta` repeats, and
+            # a later one without `usage` used to clear a measurement an
+            # earlier one had legitimately established.
+            state["usage_final"] |= (
                 bool(evt.get("usage")) and delta.get("stop_reason") is not None
             )
             return

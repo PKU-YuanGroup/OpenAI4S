@@ -1,5 +1,5 @@
 /** Navigation identity is independent of each directory request's generation. */
-import { _openGen, _foldersFor, _sessionScope, _sessionsLoadingMore, folders, foldersLoadError, foldersLoading, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError, sessionsLoading } from "../../stores/session";
+import { _msgEarlierLoading, _openGen, _foldersFor, _sessionScope, _sessionsLoadingMore, folders, foldersLoadError, foldersLoading, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError, sessionsLoading } from "../../stores/session";
 
 export type Navigation = { projectId: string | null; generation: number };
 export function navigation(): Navigation {
@@ -23,6 +23,10 @@ export function beginNavigation(): number {
   sessionsLoading.value = false;
   foldersLoading.value = false;
   _sessionsLoadingMore.value = false;
+  // The superseded paging request can no longer clear this itself. Callers
+  // that follow with openConversation reset it again; selectProject keeps the
+  // open frame and would otherwise leave "Load earlier" disabled for good.
+  _msgEarlierLoading.value = false;
   return _openGen.value;
 }
 export function beginProjectNavigation(id: string): Navigation {

@@ -145,6 +145,33 @@ def test_anthropic_stream_error_after_start_does_not_replay(monkeypatch):
     assert blocking_calls == []
 
 
+def test_anthropic_usage_survives_a_later_message_delta(monkeypatch):
+    """``message_delta`` repeats. ``usage_final`` is a latch, so a later delta
+    that carries no ``usage`` must not withdraw a measurement an earlier one
+    established -- withdrawing it makes the whole reply unmeasured, which the
+    ledger records as unknown and the quota gate then refuses."""
+
+    from openai4s.llm.usage import measured_total
+
+    _install_stream(
+        monkeypatch,
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 9}}},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 4},
+            },
+            {"type": "message_delta", "delta": {"stop_sequence": None}},
+            {"type": "message_stop"},
+        ],
+    )
+    reply = llm.chat(
+        [{"role": "user", "content": "hello"}], _cfg(), on_delta=lambda _piece: None
+    )
+    assert measured_total(reply["usage"]) == 13
+
+
 def test_anthropic_explicit_stream_refusal_falls_back_to_blocking(monkeypatch):
     blocking_calls = []
 

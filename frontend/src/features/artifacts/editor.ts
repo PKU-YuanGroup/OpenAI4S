@@ -142,6 +142,13 @@ export class ArtifactEditor {
     } catch (error) {
       this.phase = "error";
       this.problem = error instanceof EditorCapacityError ? "capacity" : "load";
+      if (this.problem === "capacity" && !this.baseline && this.store.drafts.get(this.key) === this) {
+        // Nothing was read, so there is no draft to protect, and the view
+        // offers no retry for "capacity". Leaving the reservation registered
+        // would hold one of EDITOR_MAX_DRAFTS for the session and make open()
+        // hand back this same dead object on every later attempt.
+        this.store.drafts.delete(this.key);
+      }
     }
     this.emit();
   }

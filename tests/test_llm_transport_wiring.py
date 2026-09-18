@@ -407,6 +407,67 @@ def test_only_structured_stream_refusal_allows_one_json_attempt(
 
 
 @pytest.mark.parametrize("provider", ["chatgpt", "claude"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        # OpenAI's canonical unsupported-parameter body leaves `code` null.
+        {
+            "message": "Unsupported parameter: 'stream'",
+            "type": "invalid_request_error",
+            "param": "stream",
+            "code": None,
+        },
+        # Anthropic reports only `type`, so an allowlist of `code` values made
+        # this adapter's whole `_StreamStartError` branch unreachable.
+        {"type": "invalid_request_error", "param": "stream"},
+    ],
+)
+def test_param_named_stream_is_a_structured_refusal_whatever_the_code(
+    monkeypatch, provider, error
+):
+    sends = []
+
+    def urlopen(req, **kwargs):
+        sends.append(json.loads(req.data).get("stream", False))
+        if len(sends) == 1:
+            raise _http_error(400, body=json.dumps({"error": error}).encode())
+        raise _http_error(503, {"x-request-id": "fallback-failed", "retry-after": "0"})
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    with pytest.raises(TransportError) as raised:
+        chat(
+            [{"role": "user", "content": "hi"}],
+            _cfg(provider),
+            on_delta=lambda _piece: None,
+        )
+    assert sends == [True, False]
+    assert raised.value.request_id == "fallback-failed"
+
+
+@pytest.mark.parametrize("provider", ["chatgpt", "claude"])
+@pytest.mark.parametrize("error", [{"param": "tools"}, {"message": "stream is bad"}])
+def test_a_body_that_does_not_name_stream_still_refuses_compatibility(
+    monkeypatch, provider, error
+):
+    sends = []
+
+    def urlopen(req, **kwargs):
+        sends.append(json.loads(req.data).get("stream", False))
+        raise _http_error(400, body=json.dumps({"error": error}).encode())
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    with pytest.raises(TransportError):
+        chat(
+            [{"role": "user", "content": "hi"}],
+            _cfg(provider),
+            on_delta=lambda _piece: None,
+        )
+    assert sends == [True]
+
+
+@pytest.mark.parametrize("provider", ["chatgpt", "claude"])
 @pytest.mark.parametrize("refusal_attempt", [2, 3])
 def test_stream_and_fallback_share_the_three_send_budget(
     monkeypatch, provider, refusal_attempt

@@ -566,10 +566,13 @@ def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None
     With no ownership row it reads and never writes (INV-1). Metering must
     never break the call it meters, so every failure here is swallowed.
     """
-    from openai4s.llm.usage import measured_usage
-
-    counters = measured_usage(usage)
     try:
+        # Inside the try, not above it: reading the evidence off a
+        # caller-supplied usage object is metering work like the rest, and the
+        # contract above is that none of it may fail the call it meters.
+        from openai4s.llm.usage import measured_usage
+
+        counters = measured_usage(usage)
         governance = getattr(store, "governance", None)
         team = getattr(store, "team", None)
         if governance is None or team is None:

@@ -452,7 +452,16 @@ class ChatModel:
                 finally:
                     detached_call.settle()
 
-            _LATE_ACCOUNTING.submit(account_and_release, reply)
+            try:
+                _LATE_ACCOUNTING.submit(account_and_release, reply)
+            except BaseException:  # noqa: BLE001 - accounting is fail-soft
+                # ``reported`` is already latched, so neither ``settle_unreported``
+                # call site can return this slot any more. A submit that never
+                # started its sink (``Thread.start`` under process pressure is
+                # the realistic one) must not hold one for the process lifetime
+                # -- nor fail the turn: this also runs on the owning thread.
+                detached_call.settle()
+                _LOG.exception("failed to queue an abandoned model reply")
 
         def settle_unreported() -> None:
             with report_lock:

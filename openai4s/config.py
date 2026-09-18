@@ -138,13 +138,34 @@ class LLMConfig:
     max_tokens: int = int(os.environ.get("OPENAI4S_LLM_MAX_TOKENS", "4096"))
     temperature: float = float(os.environ.get("OPENAI4S_LLM_TEMPERATURE", "0.7"))
     timeout_s: float = float(os.environ.get("OPENAI4S_LLM_TIMEOUT", "120"))
+    # Left unparsed on purpose: a ``float()`` here runs inside ``__init__``,
+    # before ``__post_init__`` can turn a bad environment value into the
+    # message below, so ``OPENAI4S_LLM_TOTAL_TIMEOUT=`` died with a raw
+    # "could not convert string to float" from the daemon's boot path.
     total_timeout_s: float = field(
-        default_factory=lambda: float(
-            os.environ.get("OPENAI4S_LLM_TOTAL_TIMEOUT", "600")
-        )
+        default_factory=lambda: os.environ.get("OPENAI4S_LLM_TOTAL_TIMEOUT", "600")
     )
 
     def __post_init__(self) -> None:
+        # ``timeout_s`` reaches ``HTTPExchangeDeadline(idle_timeout=...)``,
+        # which refuses a non-positive value with a bare ``ValueError`` that
+        # no transport handler catches and ``llm_failure_code`` cannot
+        # classify. Refuse it here, once, with the same shape as its sibling.
+        if isinstance(self.timeout_s, bool):
+            raise ValueError(
+                "LLM request timeout must be a finite number greater than 0 seconds"
+            )
+        try:
+            request_timeout = float(self.timeout_s)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                "LLM request timeout must be a finite number greater than 0 seconds"
+            ) from error
+        if not math.isfinite(request_timeout) or request_timeout <= 0:
+            raise ValueError(
+                "LLM request timeout must be a finite number greater than 0 seconds"
+            )
+        self.timeout_s = request_timeout
         if isinstance(self.total_timeout_s, bool):
             raise ValueError(
                 "LLM total timeout must be a finite number from 1 to 3600 seconds"

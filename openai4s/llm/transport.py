@@ -181,13 +181,19 @@ def streaming_refused(error: TransportError) -> bool:
     except (ValueError, TypeError):
         body = None
     detail = body.get("error", body) if isinstance(body, dict) else None
-    if isinstance(detail, dict) and "param" in detail and detail["param"] != "stream":
+    named = detail.get("param") if isinstance(detail, dict) else None
+    if isinstance(detail, dict) and "param" in detail and named != "stream":
         return False
     if error.error_code == "streaming_not_supported":
         return True
-    if error.error_code not in ("unsupported_parameter", "unknown_parameter"):
-        return False
-    return isinstance(detail, dict) and detail.get("param") == "stream"
+    # The `code` vocabulary is not a protocol. OpenAI leaves `code` null on its
+    # canonical unsupported-parameter body and Anthropic reports only
+    # `invalid_request_error` through `type`, so keying on an allowlist of
+    # codes made this gate unreachable for both -- including the whole
+    # `_StreamStartError` branch in the Anthropic adapter. A body that names
+    # `stream` as the offending parameter *is* the explicit structured refusal
+    # this function exists to recognise, whatever it calls the code.
+    return named == "stream"
 
 
 def _header_dict(e: urllib.error.HTTPError) -> dict[str, str]:
