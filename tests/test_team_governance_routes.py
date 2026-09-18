@@ -826,6 +826,62 @@ def test_an_unknown_marker_can_be_cleared_without_deleting_the_quota(daemon):
     assert "usage_unknown_cleared" in actions
 
 
+def test_clearing_unknown_usage_rolls_back_when_audit_cannot_commit(daemon):
+    """An unsuccessful audit cannot reopen a quota or erase its evidence."""
+    from openai4s.storage.governance import record_session_llm_usage
+
+    admin_cookie = _login(daemon, "root", "fake-pw-r")
+    member_cookie = _login(daemon, "alice", "fake-pw-a")
+    frame_id = _create_session(daemon, member_cookie)
+    user_id = _uid(daemon, "alice")
+    body = {
+        "scope": "user",
+        "scope_id": user_id,
+        "kind": "llm_input_tokens",
+        "window": "day",
+    }
+    daemon.store.governance.set_quota(**body, limit_amount=100)
+    record_session_llm_usage(daemon.store, frame_id, None)
+    with daemon.store._lock:
+        daemon.store._conn.execute(
+            "CREATE TRIGGER reject_usage_clear_audit BEFORE INSERT ON team_audit_log "
+            "WHEN NEW.action='usage_unknown_cleared' BEGIN "
+            "SELECT RAISE(ABORT, 'fixture audit unavailable'); END"
+        )
+        daemon.store._conn.commit()
+
+    status, _ = _post(
+        daemon.port,
+        "/api/v1/team/quotas/unknown/clear",
+        body,
+        cookie=admin_cookie,
+    )
+    assert status == 500
+    with pytest.raises(QuotaExceeded, match="usage is unknown"):
+        daemon.store.governance.check_quota(
+            user_id=user_id, project_id=_pid(daemon), kind="llm_input_tokens"
+        )
+    assert daemon.store.team.list_audit(action="usage_unknown_cleared") == []
+
+    with daemon.store._lock:
+        daemon.store._conn.execute("DROP TRIGGER reject_usage_clear_audit")
+        daemon.store._conn.commit()
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/team/quotas/unknown/clear",
+        body,
+        cookie=admin_cookie,
+    )
+    assert status == 200, raw[:300]
+    assert _body(raw)["cleared"] == 1
+    rows = daemon.store.team.list_audit(action="usage_unknown_cleared")
+    assert len(rows) == 1
+    assert rows[0]["actor"] == "root"
+    daemon.store.governance.check_quota(
+        user_id=user_id, project_id=_pid(daemon), kind="llm_input_tokens"
+    )
+
+
 @pytest.mark.parametrize(
     "bad",
     [

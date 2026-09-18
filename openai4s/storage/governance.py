@@ -467,7 +467,13 @@ class GovernanceRepository:
             self._connection.commit()
 
     def clear_unknown_usage(
-        self, *, scope: str, scope_id: str, kind: str, window: str
+        self,
+        *,
+        scope: str,
+        scope_id: str,
+        kind: str,
+        window: str,
+        actor: str = "system",
     ) -> int:
         """Retire the ``*_unknown`` rows that are refusing one quota window.
 
@@ -481,9 +487,10 @@ class GovernanceRepository:
 
         This does not forgive spend. It deletes only the ``_unknown`` markers
         inside the window; every measured row stays, so the numeric limit still
-        applies immediately afterwards. The caller is expected to write an
-        audit row — the operator is asserting "I looked at why this went
-        unmeasured", and that assertion is the thing worth keeping.
+        applies immediately afterwards. The audit row commits with the clear:
+        an audit failure must leave the unknown-spend evidence and its quota
+        refusal intact. The operator's assertion that they investigated the
+        unmeasured spend is the durable evidence that replaces the markers.
         """
         if scope not in ("user", "project"):
             raise ValueError("scope must be 'user' or 'project'")
@@ -499,13 +506,32 @@ class GovernanceRepository:
         # row the gate would still see.
         column = "user_id" if scope == "user" else "project_id"
         with self._lock:
-            since = self._clock_ms() - _QUOTA_WINDOWS_MS[window]
-            cur = self._connection.execute(
-                f"DELETE FROM usage_ledger WHERE kind=? AND ts>=? AND {column}=?",
-                (f"{kind}_unknown", since, scope_id),
-            )
-            self._connection.commit()
-        return int(cur.rowcount or 0)
+            now = self._clock_ms()
+            since = now - _QUOTA_WINDOWS_MS[window]
+            # Only roll back a transaction this operation successfully began.
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self._connection.execute(
+                    f"DELETE FROM usage_ledger WHERE kind=? AND ts>=? AND {column}=?",
+                    (f"{kind}_unknown", since, scope_id),
+                )
+                cleared = int(cur.rowcount or 0)
+                self._connection.execute(
+                    "INSERT INTO team_audit_log(ts, actor, action, target, detail)"
+                    " VALUES(?,?,?,?,?)",
+                    (
+                        now,
+                        actor,
+                        "usage_unknown_cleared",
+                        f"{scope}:{scope_id}",
+                        f"{kind}/{window} cleared={cleared}",
+                    ),
+                )
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+        return cleared
 
     def delete_quota(
         self, *, scope: str, scope_id: str, kind: str, window: str

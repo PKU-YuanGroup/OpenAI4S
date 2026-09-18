@@ -339,18 +339,11 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
                 scope_id=str(body.get("scope_id") or ""),
                 kind=str(body.get("kind") or ""),
                 window=str(body.get("window") or ""),
+                actor=_actor(self),
             )
         except (ValueError, TypeError) as e:
             self._json({"error": str(e), "code": "invalid_quota"}, 400)
             return True
-        # The audit row is the point: the operator is asserting they looked at
-        # why the spend went unmeasured, and that assertion outlives the rows.
-        store.team.audit(
-            actor=_actor(self),
-            action="usage_unknown_cleared",
-            target=f"{body.get('scope')}:{body.get('scope_id')}",
-            detail=f"{body.get('kind')}/{body.get('window')} cleared={cleared}",
-        )
         self._json({"ok": True, "cleared": cleared})
         return True
     if _QUOTA_DELETE.match(method, sub):

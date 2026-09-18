@@ -4,7 +4,9 @@ import contextlib
 import json
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -26,6 +28,12 @@ def peer(respond):
 
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.respond()
+
+        def do_CONNECT(self):
+            self.respond()
+
+        def respond(self):
             requests.append(self.path)
             try:
                 respond(self, stopped)
@@ -78,6 +86,48 @@ def test_idle_slow_headers_are_typed_and_never_replayed(stream):
         assert not caught.value.retryable
         assert llm_failure_code(caught.value) is None
         assert len(requests) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("proxy_status", [200, 502])
+def test_failed_https_proxy_setup_does_not_mark_the_model_request_sent(
+    monkeypatch, stream, proxy_status
+):
+    from openai4s.llm import client
+
+    def respond(handler, _stopped):
+        # A refusal, or an accepted tunnel closed before TLS can complete.
+        # Neither permits an HTTP request to reach the model endpoint.
+        handler.send_response(proxy_status)
+        handler.end_headers()
+
+    with peer(respond) as (proxy_url, requests):
+
+        def through_proxy(request, *, timeout, exchange):
+            request.set_proxy(urlsplit(proxy_url).netloc, "http")
+            return exchange.open(
+                exchange.build_opener(urllib.request.ProxyHandler({})), request
+            )
+
+        monkeypatch.setattr(transport, "_urlopen", through_proxy)
+        state = transport.CallState()
+        with pytest.raises(TransportError) as caught:
+            client.chat(
+                [{"role": "user", "content": "hi"}],
+                LLMConfig(
+                    provider="chatgpt",
+                    base_url="https://model.invalid/v1",
+                    model="test-model",
+                    api_key="test-key",
+                ),
+                on_delta=(lambda _text: None) if stream else None,
+                post_json=transport.post_json,
+                post_sse=transport.post_sse,
+                call_state=state,
+            )
+        assert requests == ["model.invalid:443"]
+        assert not state.sent
+        assert caught.value.llm_not_started is True
 
 
 def test_cancellation_interrupts_a_dripping_unterminated_sse_line():

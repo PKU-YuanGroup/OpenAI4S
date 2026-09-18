@@ -19,6 +19,7 @@ import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
 import { callLane, hostFn } from "./lane";
 import { loadProjects, loadSessions, loadSessionsForScope, sessionListScope } from "./load";
+import { beginNavigation } from "./navigation";
 
 type ProjectLike = {
   project_id?: string;
@@ -328,9 +329,8 @@ export async function openProject(id: string): Promise<void> {
   // parked on an await (an upload-created session about to open its
   // conversation, a resume watchdog) sees a stale token and stands down instead
   // of yanking the view back to where it started.
-  const gen = (_openGen.value || 0) + 1;
+  const gen = beginNavigation();
   const filterVersion = projectFilterVersion;
-  _openGen.value = gen;
   await loadProjects();
   if (_openGen.value !== gen || projectFilterVersion !== filterVersion) return reclaimView(gen, filterVersion, false);
   project.value = id;
@@ -341,8 +341,24 @@ export async function openProject(id: string): Promise<void> {
   // project got a stray empty session.
   const result = await loadSessionsForScope(sessionListScope());
   if (_openGen.value !== gen || projectFilterVersion !== filterVersion || project.value !== id) return reclaimView(gen, filterVersion, true);
-  if (result.status !== "loaded") return;
   renderProjMenu();
+  if (result.status !== "loaded") {
+    // This navigation already retired the visible frame's history and
+    // watchdog reads. A failed directory cannot leave that frame ownerless,
+    // and reopening it would rewrite its address with the sidebar's project.
+    const retained = currentId.value;
+    if (retained) {
+      const { recoverConversation } = await import("../messages/open");
+      if (_openGen.value !== gen || currentId.value !== retained) return;
+      await Promise.allSettled([
+        recoverConversation(retained, gen),
+        Promise.resolve(callLane("loadArtifacts", retained)),
+        Promise.resolve(callLane("loadExecutionLog", retained)),
+        Promise.resolve(callLane("loadWorkbenchState", retained)),
+      ]);
+    }
+    return;
+  }
   const first = result.rows.find((row) => row.project_id === id);
   // Await the conversation. Fire-and-forget let openProject's callers (routing,
   // dashboard rows, createProject) return before the session existed, so the

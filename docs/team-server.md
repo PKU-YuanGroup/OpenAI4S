@@ -80,10 +80,11 @@ consults is worse than no limit, because somebody will plan around it.
 
 A reply the daemon could not measure is recorded as an `llm_*_unknown`
 marker, and the quota check refuses the window while one is present: spend
-it cannot count is not spend it may ignore. Because the ledger is
-append-only, clear the markers once you know why they appeared — this
-forgives no measured spend, so the numeric limit applies again immediately,
-and the clear itself is audited as `usage_unknown_cleared`:
+it cannot count is not spend it may ignore. An administrator may clear the
+markers after investigating why they appeared. Measured usage remains
+append-only, so the numeric limit applies again immediately. Clearing the
+markers and recording `usage_unknown_cleared` commit in one transaction;
+an audit failure leaves the markers and quota refusal intact:
 
 ```bash
 curl -X POST .../api/v1/team/quotas/unknown/clear -d '{"scope":"user",

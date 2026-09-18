@@ -2222,6 +2222,9 @@ class HostDispatcher:
             return
         try:
             store = get_store(self.cfg.db_path)
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            return
+        try:
             from openai4s.llm.usage import measured_usage
 
             counters = measured_usage(usage)
@@ -2232,7 +2235,7 @@ class HostDispatcher:
             )
         except Exception:  # noqa: BLE001 - metering never breaks the call
             pass
-        record_session_llm_usage(get_store(self.cfg.db_path), str(frame_id), usage)
+        record_session_llm_usage(store, str(frame_id), usage)
 
     def _record_screening_usage(self, usage: Any) -> None:
         """Charge a pre-execution screener's tokens to this frame.

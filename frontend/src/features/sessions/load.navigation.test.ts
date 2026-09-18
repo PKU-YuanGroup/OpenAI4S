@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
 vi.mock("./dashboard", () => ({ showWorkspace: vi.fn(), showDashboard: vi.fn() }));
+const recovery = vi.hoisted(() => ({ recoverConversation: vi.fn(async () => {}) }));
+vi.mock("../messages/open", () => recovery);
 
 import { _msgEarlierLoading, _openGen, currentId, _foldersFor, _sessionsLoadingMore, folders, foldersLoading, foldersLoadError, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
@@ -32,6 +34,7 @@ beforeEach(() => {
   });
   binds.openConversation = vi.fn();
   binds.newSession = vi.fn();
+  recovery.recoverConversation.mockReset().mockResolvedValue(undefined);
 });
 
 describe("session navigation owns every response", () => {
@@ -243,6 +246,28 @@ describe("session navigation owns every response", () => {
       return path.includes("/folders") ? { folders: [] } : { projects: [] };
     });
     await openProject("A");
+    expect(binds.newSession).not.toHaveBeenCalled();
+    expect(binds.openConversation).not.toHaveBeenCalled();
+  });
+
+  it.each(["failure", "malformed"])("recovers the retained conversation after a %s project directory read", async (outcome) => {
+    currentId.value = "retained-frame";
+    project.value = "old-project";
+    _msgEarlierLoading.value = true;
+    const generation = _openGen.value;
+    vi.mocked(api).mockImplementation(async (path) => {
+      if (path.startsWith("/frames?")) {
+        if (outcome === "failure") throw new Error("directory unavailable");
+        return { unexpected: [] };
+      }
+      return path.includes("/folders") ? { folders: [] } : { projects: [] };
+    });
+    await openProject("new-project");
+    expect(currentId.value).toBe("retained-frame");
+    expect(project.value).toBe("new-project");
+    expect(_msgEarlierLoading.value).toBe(false);
+    expect(sessionsLoadError.value).toBe(true);
+    expect(recovery.recoverConversation).toHaveBeenCalledExactlyOnceWith("retained-frame", generation + 1);
     expect(binds.newSession).not.toHaveBeenCalled();
     expect(binds.openConversation).not.toHaveBeenCalled();
   });

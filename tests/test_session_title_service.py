@@ -125,6 +125,49 @@ def test_summarize_skips_empty_input_without_chat_and_cleans_balanced_wrappers()
     assert service.summarize("three", object()) == "x" * 80
 
 
+@pytest.mark.stubbed_backend
+def test_title_meter_failure_preserves_reply_and_provider_exception():
+    def failed_sink(_frame_id, _usage):
+        raise RuntimeError("usage store unavailable")
+
+    service = SessionTitleService(
+        store=FakeStore(None),
+        broadcast=lambda *_args: None,
+        chat_call=lambda *_args, **_kwargs: {"content": "Generated title"},
+        usage_sink=failed_sink,
+    )
+    assert service.summarize("first message", object(), "frame-1") == "Generated title"
+
+    error = TimeoutError("provider deadline")
+    error.usage = llm.normalize_usage({}, "chatgpt")
+
+    def failed_chat(*_args, **_kwargs):
+        raise error
+
+    service._chat_call = failed_chat
+    with pytest.raises(TimeoutError) as caught:
+        service.summarize("first message", object(), "frame-1")
+    assert caught.value is error
+
+
+@pytest.mark.stubbed_backend
+def test_title_meter_skips_failure_before_provider_start():
+    charges = []
+
+    def failed_chat(*_args, **_kwargs):
+        raise TypeError("request assembly failed")
+
+    service = SessionTitleService(
+        store=FakeStore(None),
+        broadcast=lambda *_args: None,
+        chat_call=failed_chat,
+        usage_sink=lambda frame_id, usage: charges.append((frame_id, usage)),
+    )
+    with pytest.raises(TypeError, match="request assembly failed"):
+        service.summarize("first message", object(), "frame-1")
+    assert charges == []
+
+
 def test_spawn_reads_placeholder_before_write_and_broadcasts_bare_event():
     events = []
     store = FakeStore(

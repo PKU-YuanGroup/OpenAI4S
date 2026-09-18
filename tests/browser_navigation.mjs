@@ -180,6 +180,45 @@ export async function navigationChecks(page, api) {
       } finally { await held.finish(); }
     }
     assert.equal(framePosts, 0);
+    // Browser history can open a project while a conversation is still on
+    // screen. A failed directory read must give that retained frame fresh
+    // history and Files reads under the new navigation generation.
+    await page.evaluate(({ fid, pid }) => window.openConversation(fid, pid), { fid: a.frames[0], pid: a.pid });
+    await page.locator("#files-btn").click();
+    await page.locator('.files-scope [data-scope="frame"]').click();
+    await page.locator(".files-search").fill("navigation-evidence.txt");
+    await page.locator(`.art[data-artifact-id="${upload.body.artifact_id}"]`).waitFor();
+    const oldHistory = await holdResponse(page, (url) => url.pathname === `/api/v1/frames/${a.frames[0]}/messages`);
+    await page.evaluate(({ fid, pid }) => { void window.openConversation(fid, pid); }, { fid: a.frames[0], pid: a.pid });
+    await waitUntil("retained conversation history pending", oldHistory.waiting);
+    const failedProject = await holdResponse(page, sessionRead(b));
+    const recoveredReads = new Set();
+    const observeRetained = (response) => {
+      const path = new URL(response.url()).pathname;
+      if (response.status() === 200 && path.startsWith(`/api/v1/frames/${a.frames[0]}/`)) recoveredReads.add(path.split("/").at(-1));
+    };
+    page.on("response", observeRetained);
+    try {
+      await page.evaluate((pid) => {
+        history.pushState(null, "", `/projects/${pid}`);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }, b.pid);
+      await waitUntil("history navigation directory pending", failedProject.waiting);
+      recoveredReads.clear();
+      await failedProject.finish({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "retained project directory failed" }) });
+      await page.locator('[data-read-error="sessions"]').waitFor();
+      await waitUntil("failed project open recovers retained history and Files", () => recoveredReads.has("messages") && recoveredReads.has("artifacts"));
+      await page.locator(`.art[data-artifact-id="${upload.body.artifact_id}"]`).waitFor();
+      await oldHistory.finish();
+      assert.equal(await page.evaluate(() => S.currentId), a.frames[0]);
+      assert.equal(await page.evaluate(() => S.project), b.pid);
+      assert.equal(new URL(page.url()).pathname, `/projects/${b.pid}`);
+      assert.equal(framePosts, 0);
+    } finally {
+      await failedProject.finish();
+      await oldHistory.finish();
+      page.off("response", observeRetained);
+    }
     // A second deliberate New click must win even while the first accepted
     // frame is published but its directory read is still pending. Hold real
     // response bytes and exercise both completion orders through actual buttons.
@@ -248,7 +287,7 @@ export async function navigationChecks(page, api) {
       page.off("response", observeRecovery);
     }
     assert.equal(cancels, 0);
-    return { projects: projects.map((p) => p.pid), pages: [100, 101], framePosts, cancels, faults: 4, creationOrders: 2 };
+    return { projects: projects.map((p) => p.pid), pages: [100, 101], framePosts, cancels, faults: 5, creationOrders: 2 };
   } finally {
     page.off("request", monitor);
     await page.evaluate(() => { window.fetch = window.__navigationReadObserver.fetch; delete window.__navigationReadObserver; });

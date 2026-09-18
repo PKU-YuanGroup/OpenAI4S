@@ -629,12 +629,22 @@ class HTTPExchangeDeadline:
 class _DeadlineSend:
     """Optional pre-send guard, inactive for existing HTTP helper callers."""
 
+    def _tunnel(self) -> None:
+        # CONNECT only establishes the HTTPS proxy tunnel. It does not send
+        # the application request, and a refused tunnel or failed subsequent
+        # TLS handshake must remain provably unbilled to LLM callers.
+        self._sending_tunnel = True
+        try:
+            super()._tunnel()
+        finally:
+            self._sending_tunnel = False
+
     def send(self, data: Any) -> None:
         if self.sock is None and self.auto_open:
             self.connect()
         guard = self._absolute_deadline.before_send
         if guard is not None:
-            guard("send")
+            guard("connect" if getattr(self, "_sending_tunnel", False) else "send")
         super().send(data)
 
 

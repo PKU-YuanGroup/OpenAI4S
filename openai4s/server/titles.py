@@ -75,6 +75,13 @@ class SessionTitleService:
             },
             {"role": "user", "content": source},
         ]
+        from openai4s.llm.usage import charge_call
+
+        sink = (
+            (lambda usage: self._usage_sink(root_frame_id, usage))
+            if self._usage_sink is not None
+            else None
+        )
         try:
             result = self._chat(
                 messages,
@@ -83,13 +90,9 @@ class SessionTitleService:
                 temperature=0.3,
             )
         except BaseException as error:
-            if self._usage_sink is not None and not getattr(
-                error, "llm_not_started", False
-            ):
-                self._usage_sink(root_frame_id, getattr(error, "usage", None))
+            charge_call(sink, error)
             raise
-        if self._usage_sink is not None:
-            self._usage_sink(root_frame_id, result.get("usage"))
+        charge_call(sink, result)
         if str(result.get("finish_reason") or "").lower() in (
             "length",
             "max_tokens",
