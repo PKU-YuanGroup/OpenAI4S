@@ -172,13 +172,22 @@ def chat(
             **transport_args,
         )
     except Exception as error:
-        error.llm_not_started = getattr(error, "llm_not_started", False) or bool(
-            state.attempts and not state.sent
-        )
+        # Not started means: no bytes left this process AND nothing came back.
+        # The old `state.attempts and not state.sent` reported a failure raised
+        # BEFORE the first attempt was counted -- `check_send` finding the total
+        # deadline already spent, which `deadline_error` does not flag itself --
+        # as *started*. A failed call's usage is attested-but-empty, so that
+        # answer becomes two `llm_*_unknown` rows, and `check_quota` refuses the
+        # whole window on their mere presence with nothing able to clear them.
+        # `not state.sent` alone is the opposite error: an injected transport
+        # never sets `sent`, so a reply that demonstrably arrived (it carries
+        # counters) would read as free. Observed usage is that evidence.
         evidence = getattr(error, "usage", None)
-        error.usage = normalize_usage(
-            evidence if evidence is not None else raw_usage, capabilities.usage_mapping
+        observed = evidence if evidence is not None else raw_usage
+        error.llm_not_started = getattr(error, "llm_not_started", False) or (
+            not state.sent and not observed
         )
+        error.usage = normalize_usage(observed, capabilities.usage_mapping)
         raise
     reply["usage"] = normalize_usage(reply.get("usage"), capabilities.usage_mapping)
     return reply

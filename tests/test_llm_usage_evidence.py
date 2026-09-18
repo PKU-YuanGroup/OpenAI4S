@@ -647,3 +647,40 @@ def test_measuring_a_verdict_twice_is_the_identity():
     once = measured_usage(measured)
     assert measured_usage(once) is once
     assert measured_total(once) == 10
+
+
+def test_a_call_that_never_left_the_process_is_not_billable():
+    """`client.py` reads `state.attempts and not state.sent` while the transport
+    itself uses the honest `not self.sent`. A failure raised BEFORE the first
+    attempt is counted -- `check_send` finds the total deadline already spent,
+    and `deadline_error` does not set the flag itself -- therefore reported as
+    *started*. Since a failed call's `error.usage` is attested-but-empty,
+    `record_session_llm_usage` turns that into two `llm_*_unknown` rows, which
+    `check_quota` converts into a hard refusal for the whole window -- and
+    nothing anywhere can clear them. A request that never reached the wire
+    must not be able to do that."""
+
+    import time as time_mod
+
+    from openai4s.llm.transport import CallState
+
+    state = CallState(total_timeout_s=600.0)
+    state.deadline = time_mod.monotonic() - 1.0  # already spent
+    assert state.attempts == 0 and state.sent is False
+
+    class _Probe:
+        call_state = state
+
+        def __call__(self) -> bool:
+            return False
+
+    state.should_cancel = _Probe()
+    with pytest.raises(LLMDeadlineExceeded) as caught:
+        llm.chat(
+            [{"role": "user", "content": "hi"}],
+            cfg(),
+            should_cancel=state.should_cancel,
+        )
+    assert caught.value.llm_not_started is True
+    # The attested-but-empty usage is what would otherwise have been charged.
+    assert measured_usage(caught.value.usage) == {}
