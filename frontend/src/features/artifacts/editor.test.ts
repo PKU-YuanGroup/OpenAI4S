@@ -100,7 +100,10 @@ describe("conditional editor lifecycle", () => {
     await editor.save();
     await editor.check();
     expect(io.save).toHaveBeenCalledTimes(1);
-    expect(io.text).toHaveBeenLastCalledWith("v2", EDITOR_MAX_BYTES, "a".repeat(64));
+    // The reconciliation read is bounded by the draft it compares against, not
+    // by the store's whole budget: its result is never retained, so the old
+    // EDITOR_MAX_BYTES let ten drafts issue 80 MiB of pure-overhead reads.
+    expect(io.text).toHaveBeenLastCalledWith("v2", 3, "a".repeat(64));
   });
 
   it("keeps conflict bytes when reconciliation differs or fails; discard creates a new baseline", async () => {
@@ -156,6 +159,46 @@ describe("draft capacity", () => {
     expect(second.problem).toBe("capacity");
     expect(first.text.length).toBe(EDITOR_MAX_BYTES / 2);
   });
+  it("bounds the reconciliation read by the declared length, and never answers from it", async () => {
+    // The read is pure overhead — nothing it returns is kept — and its limit
+    // used to be the whole budget, per editor, on top of the drafts already
+    // counted in `bytes`. The ceiling is now the declared length.
+    //
+    // Only the ceiling. Answering `matchesDraft` from `head.sizeBytes` would
+    // be cheaper and wrong: nothing cross-checks that field against the
+    // checksum, so the view would claim "read version X, its content differs"
+    // and enable the button that opens X, about bytes nobody fetched.
+    const { store, io, artifact } = fixture();
+    vi.mocked(io.head).mockResolvedValue({ versionId: "v2", sizeBytes: 6, checksum: "a".repeat(64) });
+    vi.mocked(io.text).mockResolvedValue("中文");
+    const editor = await ready(store, artifact);
+    editor.change("中文");
+    await editor.check();
+    expect(io.text).toHaveBeenLastCalledWith("v2", 6, "a".repeat(64));
+    expect(editor.observed).toEqual({ versionId: "v2", matchesDraft: true });
+
+    // A head whose declared length differs is still READ, not assumed: the
+    // answer comes from the bytes, and its checksum was verified to get here.
+    vi.mocked(io.head).mockResolvedValue({ versionId: "v3", sizeBytes: 9, checksum: "b".repeat(64) });
+    vi.mocked(io.text).mockResolvedValue("different");
+    await editor.check();
+    expect(io.text).toHaveBeenLastCalledWith("v3", 9, "b".repeat(64));
+    expect(editor.observed).toEqual({ versionId: "v3", matchesDraft: false });
+  });
+
+  it("a reconciliation read that cannot be verified stays unconfirmed", async () => {
+    // The safe direction: no `observed` means the view keeps "whether the file
+    // was saved remains unconfirmed" and leaves its version button disabled,
+    // rather than naming a version it could not read.
+    const { store, io, artifact } = fixture();
+    const editor = await ready(store, artifact);
+    editor.change("mine");
+    vi.mocked(io.text).mockRejectedValue(new Error("over the ceiling"));
+    await editor.check();
+    expect(editor.observed).toBeNull();
+    expect(editor.checkFailed).toBe(true);
+  });
+
   it("keeps oversized files read-only without reading their body", async () => {
     const { store, io, artifact } = fixture();
     vi.mocked(io.head).mockResolvedValue({ versionId: "v1", sizeBytes: EDITOR_MAX_BYTES, checksum: "a".repeat(64) });

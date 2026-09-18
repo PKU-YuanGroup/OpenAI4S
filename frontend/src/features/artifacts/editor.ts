@@ -206,7 +206,23 @@ export class ArtifactEditor {
     this.checking = true; this.checkFailed = false; this.emit();
     try {
       const head = await this.store.io.head(this.artifact.id);
-      const text = await this.store.io.text(head.versionId, EDITOR_MAX_BYTES, head.checksum);
+      // The ceiling is the declared length, not the whole budget. `limit` is a
+      // ceiling rather than an allocation — it caps a server that streams more
+      // than it said it would, which is the only way this read can grow — and
+      // EDITOR_MAX_BYTES let every editor's reconciliation read grow to the
+      // entire cap on its own, on top of the drafts already counted in `bytes`.
+      //
+      // `head.sizeBytes` is used ONLY as that ceiling, never as the answer.
+      // Deciding `matchesDraft` from it would have been cheaper still, and
+      // wrong: `readEditorHead` validates the field's shape and never
+      // cross-checks it against the checksum, so the UI would have claimed
+      // "read version X, its content differs" — and enabled the button that
+      // opens X — about bytes nobody fetched and a checksum nobody verified.
+      // A wrong ceiling only aborts the read, which `checkFailed` reports
+      // honestly; a wrong oracle is a confident false statement about a user's
+      // unsaved work.
+      const limit = Math.min(EDITOR_MAX_BYTES, head.sizeBytes);
+      const text = await this.store.io.text(head.versionId, limit, head.checksum);
       this.observed = { versionId: head.versionId, matchesDraft: text === this.text };
     } catch {
       this.observed = null; this.checkFailed = true;
