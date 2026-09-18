@@ -485,3 +485,42 @@ def test_ledger_cost_keeps_invalid_cache_evidence(monkeypatch, details):
 def test_config_repr_never_prints_credentials():
     config = LLMConfig(provider="ark", api_key="test-private-value")
     assert "test-private-value" not in repr(config)
+
+
+def test_cli_frame_meter_charges_what_the_web_frame_meter_charges():
+    """``Agent._record_frame_usage``'s docstring says it charges "as the Web
+    loop does". It did not: the Web sibling (``gateway.add_usage``) calls
+    ``measured_usage`` first, while this one read the public display keys --
+    so one non-final streamed reply charged the frame 1200/340 on the CLI and
+    0/0 on the Web, and this same run's Action Ledger recorded it as
+    ``llm_*_tokens_unknown`` two lines later."""
+
+    from types import SimpleNamespace
+
+    from openai4s.agent.loop import Agent
+
+    charged = []
+
+    class _Store:
+        def add_frame_tokens(self, frame_id, *, input_tokens, output_tokens):
+            charged.append((frame_id, input_tokens, output_tokens))
+
+    agent = object.__new__(Agent)
+    agent._owns_frame = True
+    agent.frame_id = "frame-1"
+    agent.dispatcher = SimpleNamespace(store=_Store())
+
+    unmeasured = llm.normalize_usage(
+        RawUsage({"prompt_tokens": 1200, "completion_tokens": 340}, final=False),
+        "chatgpt",
+    )
+    assert unmeasured["prompt_tokens"] == 1200  # the display still says so
+    agent._record_frame_usage(unmeasured)
+
+    measured = llm.normalize_usage(
+        RawUsage({"prompt_tokens": 7, "completion_tokens": 3}, final=True),
+        "chatgpt",
+    )
+    agent._record_frame_usage(measured)
+
+    assert charged == [("frame-1", 0, 0), ("frame-1", 7, 3)]

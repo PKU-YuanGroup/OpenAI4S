@@ -798,15 +798,21 @@ class Agent:
         store = getattr(self.dispatcher, "store", None)
         if store is None:
             return
+        from openai4s.llm.usage import measured_usage
+
+        # "As the Web loop does" is the whole contract, and it was not kept:
+        # ``gateway.add_usage`` measures first, this read the public *display*
+        # keys. So one non-final streamed reply charged this frame 1200/340
+        # while the identical object charged 0/0 on the Web -- and while this
+        # same run recorded it as ``llm_*_tokens_unknown`` in the governance
+        # ledger. The display dict is what a user should see; only the
+        # evidence may be charged.
+        counters = measured_usage(usage)
         try:
             store.add_frame_tokens(
                 str(self.frame_id),
-                input_tokens=int(
-                    usage.get("prompt_tokens") or usage.get("input_tokens", 0) or 0
-                ),
-                output_tokens=int(
-                    usage.get("completion_tokens") or usage.get("output_tokens", 0) or 0
-                ),
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
             )
         except Exception:  # noqa: BLE001 - metering cannot break the run
             pass
