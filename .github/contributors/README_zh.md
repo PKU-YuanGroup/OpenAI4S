@@ -20,6 +20,7 @@ README；单次替换是原子的，但整批替换不是全部成功或全部�
 | --- | --- |
 | `ChampionZhong.png` | 贡献者 `ChampionZhong` 的可直接渲染头像。 |
 | `ClarenceYC.png` | 贡献者 `ClarenceYC` 的可直接渲染头像。 |
+| `CyrusAuyeung.png` | 贡献者 `CyrusAuyeung` 的可直接渲染头像。 |
 | `Devin-jun.png` | 贡献者 `Devin-jun` 的可直接渲染头像。 |
 | `EQSTLab.png` | 贡献者 `EQSTLab` 的可直接渲染头像。 |
 | `Grace-xyx.png` | 贡献者 `Grace-xyx` 的可直接渲染头像。 |
@@ -32,6 +33,7 @@ README；单次替换是原子的，但整批替换不是全部成功或全部�
 | `cursoragent.png` | 贡献者 `cursoragent` 的可直接渲染头像。 |
 | `difficulttopickaname.png` | 贡献者 `difficulttopickaname` 的可直接渲染头像。 |
 | `jiangzx25.png` | 贡献者 `jiangzx25` 的可直接渲染头像。 |
+| `muzimu217.png` | 贡献者 `muzimu217` 的可直接渲染头像。 |
 | `riiiiiiin.png` | 贡献者 `riiiiiiin` 的可直接渲染头像。 |
 | `stau-7001.png` | 贡献者 `stau-7001` 的可直接渲染头像。 |
 | `wangyu-sd.png` | 贡献者 `wangyu-sd` 的可直接渲染头像。 |

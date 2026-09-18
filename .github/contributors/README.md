@@ -23,6 +23,7 @@ each replacement is atomic, but the batch is not an all-or-nothing transaction.
 | --- | --- |
 | `ChampionZhong.png` | Render-ready avatar for contributor `ChampionZhong`. |
 | `ClarenceYC.png` | Render-ready avatar for contributor `ClarenceYC`. |
+| `CyrusAuyeung.png` | Render-ready avatar for contributor `CyrusAuyeung`. |
 | `Devin-jun.png` | Render-ready avatar for contributor `Devin-jun`. |
 | `EQSTLab.png` | Render-ready avatar for contributor `EQSTLab`. |
 | `Grace-xyx.png` | Render-ready avatar for contributor `Grace-xyx`. |
@@ -35,6 +36,7 @@ each replacement is atomic, but the batch is not an all-or-nothing transaction.
 | `cursoragent.png` | Render-ready avatar for contributor `cursoragent`. |
 | `difficulttopickaname.png` | Render-ready avatar for contributor `difficulttopickaname`. |
 | `jiangzx25.png` | Render-ready avatar for contributor `jiangzx25`. |
+| `muzimu217.png` | Render-ready avatar for contributor `muzimu217`. |
 | `riiiiiiin.png` | Render-ready avatar for contributor `riiiiiiin`. |
 | `stau-7001.png` | Render-ready avatar for contributor `stau-7001`. |
 | `wangyu-sd.png` | Render-ready avatar for contributor `wangyu-sd`. |
