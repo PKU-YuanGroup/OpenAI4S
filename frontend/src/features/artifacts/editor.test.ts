@@ -164,6 +164,38 @@ describe("draft capacity", () => {
     expect(io.text).not.toHaveBeenCalled();
     expect(editor.canSave).toBe(false);
   });
+  it("a read that cannot be kept is not streamed", async () => {
+    // `bytes` counts committed drafts only, so a load opened against a full
+    // store downloaded its whole allowance and was refused afterwards. The
+    // limit is the remaining budget, so the read stops at the first byte.
+    //
+    // Deliberately bounded by COMMITTED bytes and not by a reservation held
+    // across the read: a promise that outlives a read which never settles
+    // refuses every other editor with a capacity error the view offers no
+    // retry for, which is worse than the over-read it would prevent.
+    const { store, io, artifact } = fixture();
+    const half = EDITOR_MAX_BYTES / 2;
+    vi.mocked(io.head).mockResolvedValue({ versionId: "v1", sizeBytes: half, checksum: "a".repeat(64) });
+    vi.mocked(io.text).mockResolvedValue("a".repeat(half));
+    const first = await ready(store, { ...artifact, id: "first" });
+    expect(first.phase).toBe("ready");
+    expect(store.bytes).toBe(EDITOR_MAX_BYTES);
+    expect(store.readLimit).toBe(0);
+
+    vi.mocked(io.head).mockResolvedValue({ versionId: "v1", sizeBytes: 3, checksum: "a".repeat(64) });
+    const second = await ready(store, { ...artifact, id: "second" });
+    expect(second.problem).toBe("capacity");
+    expect(io.text).toHaveBeenLastCalledWith("v1", 0, "a".repeat(64));
+  });
+
+  it("an empty store still offers a whole draft's worth of read", async () => {
+    // The limit must not become a second, tighter cap on the common case.
+    const { store, io, artifact } = fixture();
+    store.open("s", artifact);
+    await vi.waitFor(() => expect(io.text).toHaveBeenCalledWith("v1", EDITOR_MAX_BYTES / 2, "a".repeat(64)));
+    expect(store.readLimit).toBeLessThanOrEqual(EDITOR_MAX_BYTES / 2);
+  });
+
   it("a load that never produced a draft releases its reservation", async () => {
     // open() registers the editor before load() runs. A capacity failure has
     // no draft to protect, and the view offers no retry for it, so keeping the

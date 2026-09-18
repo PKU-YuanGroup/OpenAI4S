@@ -79,6 +79,21 @@ export class ArtifactEditorStore {
   get bytes(): number {
     return [...this.drafts.values()].reduce((sum, draft) => sum + draft.bytes, 0);
   }
+  /**
+   * What a load may still stream, halved because a draft costs its original
+   * plus its edited copy.
+   *
+   * `bytes` counts committed drafts only, so a load opened against an already
+   * full store used to download its whole 4 MiB allowance and only then be
+   * refused. This is deliberately NOT a reservation: a promise held across the
+   * read would have to survive a read that never settles, and a claim that
+   * outlives its load refuses every other editor with a `capacity` error the
+   * view offers no retry for. That trades a bounded, transient over-read for
+   * an outage, so the budget stays a fact about committed drafts.
+   */
+  get readLimit(): number {
+    return Math.max(0, EDITOR_MAX_BYTES - this.bytes) / 2;
+  }
   get needsLeaveConfirmation(): boolean {
     return [...this.drafts.values()].some((draft) => draft.dirty || draft.phase === "saving" || draft.problem === "unknown");
   }
@@ -131,7 +146,7 @@ export class ArtifactEditor {
       const version = this.artifact.version_id || this.artifact.latest_version_id;
       const head = await this.store.io.head(this.artifact.id, version || undefined);
       if (head.sizeBytes * 2 > EDITOR_MAX_BYTES) throw new EditorCapacityError();
-      const text = await this.store.io.text(head.versionId, EDITOR_MAX_BYTES / 2, head.checksum);
+      const text = await this.store.io.text(head.versionId, this.store.readLimit, head.checksum);
       if (this.store.drafts.get(this.key) !== this) return;
       if (this.store.bytes + 2 * utf8(text) > EDITOR_MAX_BYTES) throw new EditorCapacityError();
       this.store.drafts.delete(this.key);
