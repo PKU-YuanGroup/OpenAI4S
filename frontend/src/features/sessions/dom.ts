@@ -37,6 +37,14 @@ export function framePath(fid: string, pid?: string | null): string {
   return `/projects/${encodeURIComponent(pid || "default")}/frames/${encodeURIComponent(fid)}`;
 }
 
+/** The two paths `routeInitialView` opens in the workspace rather than on the dashboard. */
+export const FRAME_ROUTE = /^\/projects\/([^/]+)\/frames\/([^/]+)/;
+export const PROJECT_ROUTE = /^\/projects\/([^/]+)\/?$/;
+
+export function routesToWorkspace(pathname: string): boolean {
+  return FRAME_ROUTE.test(pathname) || PROJECT_ROUTE.test(pathname);
+}
+
 export function navURL(path: string, replace?: boolean): void {
   try {
     if (typeof location !== "undefined" && path === location.pathname) return;
@@ -49,6 +57,11 @@ export function navURL(path: string, replace?: boolean): void {
 export function setTitle(name: string | null | undefined): void {
   const ct = $("#conv-title") as HTMLInputElement | null;
   if (!ct) return;
+  // From here on the value is the session's name, not a static label. Left in
+  // place, data-i18n-val let every static repaint (the locale chunks landing,
+  // a language switch) put "Session" back -- and the input commits on blur,
+  // so clicking in and out renamed the session on the server.
+  ct.removeAttribute("data-i18n-val");
   const value = name || t("conv.title.default");
   ct.value = value;
   ct.size = Math.max(6, Math.min(40, value.length + 1));

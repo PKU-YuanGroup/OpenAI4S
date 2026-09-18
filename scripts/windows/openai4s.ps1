@@ -41,6 +41,7 @@
     OPENAI4S_WSL_CONDA_MIRROR  Conda mirror root used by environment setup
     OPENAI4S_WSL_FAKE_IP_DNS  auto (default), on, or off for Clash-style DNS
     OPENAI4S_WSL_DATA_DIR  optional absolute Linux data path (default ~/.openai4s)
+    OPENAI4S_ARKCLI_PATH  optional Windows executable or absolute WSL CLI path
     OPENAI4S_HOST         default 127.0.0.1
     OPENAI4S_PORT         default 8760
     OPENAI4S_NO_OPEN      set to 1 to print readiness without opening a browser
@@ -71,6 +72,8 @@ $AppHost = $ClientHost
 $AppPort = if ($env:OPENAI4S_PORT) { $env:OPENAI4S_PORT } else { '8760' }
 $WslProxy = $env:OPENAI4S_WSL_PROXY
 $WslDataDir = $env:OPENAI4S_WSL_DATA_DIR
+# Resolved after distribution selection, and only for non-management commands.
+$WslArkCli = ''
 $FakeIpDnsMode = if ($env:OPENAI4S_WSL_FAKE_IP_DNS) {
     $env:OPENAI4S_WSL_FAKE_IP_DNS.Trim().ToLowerInvariant()
 } else {
@@ -182,6 +185,26 @@ function Stop-WithGuidance([string] $Problem, [string[]] $Steps) {
     exit 1
 }
 
+function Enter-Utf8NativeOutput {
+    # WSL_UTF8 selects the bytes WSL writes; PowerShell 5.1 separately
+    # decodes native stdout with Console.OutputEncoding (often OEM). Returns
+    # the encoding to restore, or $null when nothing changed: a host with no
+    # console (the ISE, a CREATE_NO_WINDOW parent) refuses SetConsoleOutputCP,
+    # and failing to change a decoder must not abort the launcher.
+    try {
+        $previous = [Console]::OutputEncoding
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        return $previous
+    } catch {
+        return $null
+    }
+}
+
+function Exit-Utf8NativeOutput($Previous) {
+    if ($null -eq $Previous) { return }
+    try { [Console]::OutputEncoding = $Previous } catch { }
+}
+
 function Invoke-WslCaptureNative([string[]] $WslArgs) {
     # Windows PowerShell 5.1 converts native stderr into ErrorRecord objects.
     # With this script's fail-fast ErrorActionPreference, a harmless WSL
@@ -190,13 +213,16 @@ function Invoke-WslCaptureNative([string[]] $WslArgs) {
     # through LASTEXITCODE; capture both streams while that one call is allowed
     # to continue, then restore the script-wide fail-fast policy.
     $previousPreference = $ErrorActionPreference
+    $previousEncoding = $null
     $output = @()
     $code = 1
     try {
         $ErrorActionPreference = 'Continue'
+        $previousEncoding = Enter-Utf8NativeOutput
         $output = @(& wsl.exe @WslArgs 2>&1)
         $code = $LASTEXITCODE
     } finally {
+        Exit-Utf8NativeOutput $previousEncoding
         $ErrorActionPreference = $previousPreference
     }
     return [pscustomobject]@{
@@ -485,12 +511,15 @@ function Get-WslIpv4([string] $Distro) {
     return $null
 }
 
-function ConvertTo-WslPath([string] $Distro, [string] $WindowsPath) {
+function ConvertTo-WslPath([string] $Distro, [string] $WindowsPath, [switch] $Optional) {
+    # -Optional returns '' instead of refusing: the guidance below is about
+    # this package's own folder, not about an optional tool found elsewhere.
     $result = Invoke-WslCaptureNative -WslArgs @(
         '-d', $Distro, '--exec', 'wslpath', '-a', $WindowsPath
     )
     $translated = $result.Output
     if ($result.ExitCode -ne 0) {
+        if ($Optional) { return '' }
         Stop-WithGuidance "WSL could not reach this folder: $WindowsPath" @(
             'Unzip the package onto a local drive (for example C:\OpenAI4S).',
             'A network share or a OneDrive placeholder folder is not always',
@@ -505,6 +534,7 @@ function ConvertTo-WslPath([string] $Distro, [string] $WindowsPath) {
         } | Where-Object { $_.StartsWith('/') }
     )
     if (-not $paths) {
+        if ($Optional) { return '' }
         Stop-WithGuidance "WSL returned no Linux path for: $WindowsPath" @(
             'Unzip the package onto a local drive and try again.'
         )
@@ -543,6 +573,51 @@ function Assert-WslDataDir([string] $Value) {
     }
 }
 
+function Get-WslArkCliPath([string] $Distro) {
+    # Ark CLI is optional. Only an explicit OPENAI4S_ARKCLI_PATH may refuse a
+    # launch; an arkcli.exe that merely happens to be on PATH is skipped when
+    # WSL cannot reach it (a UNC share it does not mount, for example).
+    $configured = $env:OPENAI4S_ARKCLI_PATH
+    if ($configured -and $configured.StartsWith('/')) { return $configured }
+    $source = ''
+    if ($configured -and $configured.IndexOfAny([char[]] @('\', '/', ':')) -ge 0) {
+        # A path is checked literally: Get-Command reads `[` and `]` as
+        # wildcards, and both are legal in a Windows folder name.
+        try {
+            if (Test-Path -LiteralPath $configured -PathType Leaf) { $source = $configured }
+        } catch { }
+    } elseif (-not $configured -or $configured.IndexOfAny([char[]] @('*', '?', '[', ']')) -lt 0) {
+        # The first arkcli.exe in PATH order, not the first Application: an
+        # npm arkcli.cmd earlier on PATH would otherwise hide it. A configured
+        # name with wildcard characters is refused below instead: Get-Command
+        # would expand `*` into whatever .exe comes first, such as cmd.exe.
+        $name = if ($configured) { $configured } else { 'arkcli.exe' }
+        $command = Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase) } |
+            Select-Object -First 1
+        if ($command) { $source = $command.Source }
+    }
+    if ($source -and $source.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        $translated = ConvertTo-WslPath $Distro $source -Optional
+        if ($translated) { return $translated }
+        if (-not $configured) {
+            Write-Host "  note: $source is not reachable from WSL; not using it for Volcengine login." -ForegroundColor DarkGray
+            return ''
+        }
+        Stop-WithGuidance "WSL cannot reach OPENAI4S_ARKCLI_PATH: $source" @(
+            'Copy arkcli.exe to a local drive, or install the CLI inside WSL',
+            'and set OPENAI4S_ARKCLI_PATH to its absolute Linux path.'
+        )
+    }
+    if ($configured) {
+        Stop-WithGuidance "OPENAI4S_ARKCLI_PATH does not name an installed executable: $configured" @(
+            'Use the full Windows path to arkcli.exe, or an absolute Linux',
+            'path to a CLI installed inside the selected WSL distribution.'
+        )
+    }
+    return ''
+}
+
 function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs, [string] $User = '') {
     $wslArgs = @('-d', $Distro)
     if ($User) { $wslArgs += @('-u', $User) }
@@ -551,6 +626,12 @@ function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [strin
     $wslArgs += "OPENAI4S_PORT=$AppPort"
     if ($WslDataDir) {
         $wslArgs += "OPENAI4S_DATA_DIR=$WslDataDir"
+    }
+    if ($WslArkCli) {
+        # Only an explicit choice overrides a CLI installed inside WSL; one the
+        # launcher merely found on the Windows PATH is the daemon's fallback.
+        $arkVariable = if ($env:OPENAI4S_ARKCLI_PATH) { 'OPENAI4S_ARKCLI_PATH' } else { 'OPENAI4S_ARKCLI_FALLBACK_PATH' }
+        $wslArgs += "$arkVariable=$WslArkCli"
     }
     $wslArgs += "OPENAI4S_FAKE_IP_DNS_MODE=$FakeIpDnsMode"
     if ($PypiIndexOff) {
@@ -604,12 +685,17 @@ function Invoke-Bootstrap([string] $Distro, [string] $BootstrapLinux, [string[]]
     # failure guidance promises the reader.
     $wslArgs = Get-WslBootstrapArgs $Distro $BootstrapLinux $BootstrapArgs $User
     $previousPreference = $ErrorActionPreference
+    $previousEncoding = $null
     $code = 1
     try {
         $ErrorActionPreference = 'Continue'
+        # The same decoding as Invoke-WslCaptureNative, or localized wsl.exe
+        # diagnostics and Unicode paths stream to the console as mojibake.
+        $previousEncoding = Enter-Utf8NativeOutput
         & wsl.exe @wslArgs 2>&1 | ForEach-Object { Write-Host ([string] $_) }
         $code = $LASTEXITCODE
     } finally {
+        Exit-Utf8NativeOutput $previousEncoding
         $ErrorActionPreference = $previousPreference
     }
     return $code
@@ -677,10 +763,9 @@ function Get-AppUrl([string] $Distro, [string] $BootstrapLinux, [string] $Bundle
     }
     if ([string]::IsNullOrWhiteSpace($parsed.Query)) {
         # `openai4s url` returns the URL a person can open. No query means the
-        # daemon's sign-in gate was explicitly turned off (OPENAI4S_REQUIRE_TOKEN
-        # set to 0, where the bare URL works) or its credential file could not
-        # be read. Opening it is still the right next step, so warn instead of
-        # refusing.
+        # daemon's credential file could not be read (the sign-in gate itself
+        # cannot be turned off since 0.3.0). Opening it is still the right next
+        # step, so warn instead of refusing.
         Write-Host '  note: the URL carries no sign-in token. If the browser shows 401,' -ForegroundColor Yellow
         Write-Host "  read the daemon log: $(Get-WslLogCommand $Distro)" -ForegroundColor Yellow
     }
@@ -835,6 +920,14 @@ if (Test-SandboxIndependentCli $Arguments) {
 
 $facts = Get-PackageFacts
 $payloadLinux = "$packageLinux/payload/$($facts.PayloadName)"
+
+# Ark CLI only matters to a process that can run the Volcengine bridge. A
+# management command must neither pay a wsl.exe round trip for it nor be
+# refused by an optional tool's configuration: `stop` and `doctor` have to
+# work when something else is wrong.
+if (-not (Test-SandboxIndependentCli $Arguments)) {
+    $WslArkCli = Get-WslArkCliPath $distro
+}
 
 # Reached by a management command only when nothing is installed yet, and by
 # every ordinary launch. Preflight still does not gate the management commands:

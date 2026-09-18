@@ -159,7 +159,7 @@
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
       "status": "open",
-      "status_note": "The original three first-party research skills moved to guarded Host APIs, but the newly imported pinned bioSkills collection contains raw-network Python, shell, R, and recipe-code paths that are not covered by the Host allowlist/SSRF boundary. The merge review broadened the detection gate from two urllib files to a fingerprinted inventory of common clients including requests, Bio.Entrez, curl, and wget, but detection is not enforcement. The unified-boundary proposal remains open until those recipes are runtime-confined.",
+      "status_note": "The original three first-party research skills moved to guarded Host APIs, but the newly imported pinned bioSkills collection contains raw-network Python, shell, R, and recipe-code paths that are not covered by the Host allowlist/SSRF boundary. The merge review broadened the detection gate from two urllib files to a fingerprinted inventory of common clients including requests, Bio.Entrez, curl, and wget, but detection is not enforcement. The unified-boundary proposal remains open until those recipes are runtime-confined. Reopened at e20bd966 (2026-08-21), after this file's declared audit at audited_at. Waived for v0.3.0 only, as a declared known limitation (docs/v03-decisions.md, D12-W1, recorded 2026-09-14); the waiver does not change this status.",
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
       "external_evidence": ""
@@ -204,7 +204,7 @@
       "tests": "tests/test_producer_output_budgets.py,tests/test_workspace_streaming_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "020fd1b58b536b66fac30623caf19609c3916e2826c379a21b82706151ab2fb2"
+      "evidence_digest": "afd518e4ca3d6029fd4ff9acc79749bf40a8f92cf0e7d220048ef0f4e3570ba7"
     },
     {
       "source": "R2",
@@ -241,11 +241,11 @@
       "integrated": "P0-1",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "local auth required on loopback; the DNS-rebinding Host allowlist verified on the wire against a real server, ahead of both the Origin guard and the token gate. The exit matrix itself was added later: an unauthenticated WebSocket upgrade, a sweep of every routable path from contract.http_routes(), and a cookie replayed against a handler that did not issue it -- three legs this row previously claimed without evidence.",
+      "status_note": "local auth required on loopback, and on every bind with no opt-out since 0.3.0 (the loopback-only OPENAI4S_REQUIRE_TOKEN=0 hatch granted for one minor release by D1 is removed, and a daemon started with it is driven over the wire and still refuses an anonymous caller); the DNS-rebinding Host allowlist verified on the wire against a real server, ahead of both the Origin guard and the token gate. The exit matrix itself was added later: an unauthenticated WebSocket upgrade, a sweep of every routable path from contract.http_routes(), and a cookie replayed against a handler that did not issue it -- three legs this row previously claimed without evidence.",
       "tests": "tests/test_auth_exit_matrix.py,tests/test_gateway_host_allowlist.py,tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "ad0077f1e614e75ab80285555d9a81619f1a076815825b33efcd6be33a06df6a"
+      "evidence_digest": "88903e3fec7ebba0629469e230ddb888435121d7a97a3ab7a66b596fb083badc"
     },
     {
       "source": "R3",
@@ -383,7 +383,7 @@
       "tests": "tests/test_producer_output_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "11d513a8c00d5b22e574fe9e25f51c268756ba9ed2988d34b0a70dde35ea3ae2"
+      "evidence_digest": "b9dcd59d0446d14a5f5222fe20102b54cff48d4ade6a9a195c62739173b4e282"
     },
     {
       "source": "R4",
@@ -439,7 +439,7 @@
       "tests": "tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "027f42a082e7e4e9796cf50562ea3a0f01688ddec565d541914163c82fdb7753"
+      "evidence_digest": "6f2484d2b4cc42bc48163f1f016ce66feac50d74d0153ceff7a7a59de75f050e"
     },
     {
       "source": "R4",
@@ -537,7 +537,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "940f4fa61d20d32bec7a07a385f456439c3aa0fb363dcbb4ea8b9ce6f08ca854"
+      "evidence_digest": "66e7b87b38fb579362ed511fef09cfe4eb4b9d030d01506d1876881812aaabf6"
     },
     {
       "source": "R5",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "f6025f5ef6071809952839581da12cde2596ae7576a74ea56f02880df0fe6563"
+      "evidence_digest": "9808ada4a5e835b29f474b9810a702131015458753151136450b2cf51262c22d"
     },
     {
       "source": "R7",

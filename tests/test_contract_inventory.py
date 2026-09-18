@@ -267,6 +267,125 @@ def test_the_document_records_the_versioned_root(doc):
     assert "no legacy alias" in doc or "legacy alias" in doc
 
 
+def test_the_document_spells_no_route_under_the_removed_unversioned_root(doc):
+    """UPG3-05. §1 says any path under `/api/` that is not `/api/v1/` is a 404,
+    while the raw-bytes table and several notes still spelled routes as
+    `GET /api/frames/{fid}/artifacts.zip` and §2 said its paths were "under
+    `/api`". A script written from the table got a 404 on 0.3.0.
+
+    Prose that names the removed root in order to say it is gone does not
+    spell a method, so a method-qualified path is the thing to forbid."""
+    import re
+
+    unversioned = sorted(
+        set(
+            re.findall(
+                r"`(?:GET|POST|PUT|PATCH|DELETE) /api/(?!v1/)[^`]*`",
+                doc,
+            )
+        )
+    )
+    assert not unversioned, f"routes spelled under the removed root: {unversioned}"
+    # "not under `/api`" (/health, /preview) is true and stays.
+    assert not re.search(
+        r"(?<!not )under `/api`(?!/v1)", doc, re.IGNORECASE
+    ), "a section still says its paths are under the un-versioned root"
+
+
+#: Historical plans record what was proposed before the API was versioned.
+_HISTORICAL_DOCS = frozenset({"refactor-plan.md", "team-server-plan.md"})
+
+
+def _unversioned_route_spellings(text: str) -> list[tuple[int, str]]:
+    """Gateway paths under the removed root, with their line.
+
+    A backticked path is allowed only inside a block (a paragraph, list item
+    or table row) that says that form is gone -- "un-versioned", or a `404`
+    beside the `/api/v1` route that replaced it -- which is how the upgrade
+    guide and the web app notes name the links 0.2.0 stored. A bare `404` is
+    not such a note: a route table lists it as an ordinary response status. A
+    path in a fenced code block is an example someone copies, so nothing
+    exempts it.
+    """
+    import re
+
+    spelling = re.compile(r"`(?:(?:GET|POST|PUT|PATCH|DELETE) )?/api/(?!v1[/`?])[^`]*`")
+    fenced = re.compile(r"/api/(?!v1(?:[/?#\s\"'`)]|$))[^\s\"'`)]*")
+    offenders: list[tuple[int, str]] = []
+    block: list[tuple[int, str]] = []
+
+    def flush() -> None:
+        joined = " ".join(line for _, line in block)
+        if "un-versioned" in joined or ("404" in joined and "/api/v1" in joined):
+            return
+        for number, line in block:
+            offenders.extend((number, match) for match in spelling.findall(line))
+
+    in_fence = False
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            flush()
+            block = []
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            offenders.extend((number, match) for match in fenced.findall(line))
+            continue
+        if not stripped or stripped.startswith(("* ", "- ", "| ", "#")):
+            flush()
+            block = []
+        if stripped:
+            block.append((number, line))
+    flush()
+    return offenders
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(
+        path.name
+        for path in _DOC.parent.glob("*.md")
+        if path.name not in _HISTORICAL_DOCS
+    ),
+)
+def test_no_user_doc_spells_a_route_under_the_removed_unversioned_root(name):
+    """RFD-4. b1b90ea0 moved docs/webapp-api.md to /api/v1, but
+    docs/configuration.md still sent readers to `GET /api/kernel/packages` and
+    docs/skills.md to `/api/skills/<name>/versions` -- both a JSON 404 on 0.3.0.
+    The guard above reads one document and only method-qualified paths."""
+    offenders = _unversioned_route_spellings((_DOC.parent / name).read_text("utf-8"))
+    assert not offenders, f"docs/{name} spells un-versioned routes: {offenders}"
+
+
+def test_the_unversioned_route_scan_keeps_notes_that_say_the_form_is_gone():
+    """The rule has to tell a stale path from a note about one, or it forbids
+    the upgrade guide's explanation of the links 0.2.0 stored."""
+    stale = "Probe `GET /api/kernel/packages` for the phase.\n"
+    note = (
+        "\n* Links (`/api/artifacts/<id>`) are rewritten to `/api/v1`; the server\n"
+        "  answers 404.\n"
+    )
+    table = "| `GET /api/v1/x` | bytes | The `/api/x` form is un-versioned. |\n"
+    assert _unversioned_route_spellings(stale) == [(1, "`GET /api/kernel/packages`")]
+    assert _unversioned_route_spellings(note) == []
+    assert _unversioned_route_spellings(table) == []
+    assert _unversioned_route_spellings(stale + note) == [
+        (1, "`GET /api/kernel/packages`")
+    ]
+    # A `404` alone is an ordinary response status in a route table, not a
+    # note that the form is gone.
+    status_row = "| `GET /api/x` | bytes | `404` when the id is unknown. |\n"
+    assert _unversioned_route_spellings(status_row) == [(1, "`GET /api/x`")]
+    # A fenced example is what gets copied; no note exempts it.
+    fence = "```bash\n# 404 on 0.3.0, un-versioned\ncurl http://h:1/api/kernel/packages\n```\n"
+    assert _unversioned_route_spellings(fence) == [(3, "/api/kernel/packages")]
+    current = (
+        "```bash\ncurl http://h:1/api/v1/kernel/packages\ncurl http://h:1/api/v1\n```\n"
+    )
+    assert _unversioned_route_spellings(current) == []
+
+
 def test_the_resume_cursor_is_documented(doc):
     """A client cannot implement resume from the code; it has to be written
     down or the contract is only nominally versioned."""
@@ -546,3 +665,54 @@ def test_an_alternation_is_sampled_rather_than_stripped():
     route = "/frames/([^/]+)/(?:action-timeline|context|recovery(?:/actions)?)"
     assert concrete_path(route) == "/frames/probe-id/action-timeline"
     assert re.fullmatch(route, concrete_path(route))
+
+
+def _doc_row(doc: str, route: str) -> str:
+    return next(line for line in doc.splitlines() if line.startswith(f"| `{route}` |"))
+
+
+def test_identity_rows_describe_the_token_gate_the_handler_serves(doc, tmp_path):
+    """§2's `/me` and `/auth/status` rows must describe the default daemon.
+
+    They still described the pre-gate handlers -- `/me` with a hardcoded
+    `"auth_mode":"none"` and `/auth/status` as `{"authenticated":true,
+    "auth_mode":"none"}` "(always)" -- while §1 and the live daemon said
+    `token`. A client author reading the table would conclude the default
+    daemon has no gate. Pinned against the real handler over a socket, so the
+    row and the response cannot drift apart again.
+    """
+    import json as _json
+
+    from tests.test_team_auth_routes import _body_json, _get, _TeamDaemon
+
+    me_row = _doc_row(doc, "GET /me")
+    status_row = _doc_row(doc, "GET /auth/status")
+    for row in (me_row, status_row):
+        assert '"auth_mode":"none"}' not in row
+        assert "(always)" not in row
+        assert '"token"' in row
+    assert "token_header" in status_row
+
+    node = _TeamDaemon(tmp_path / "home", team_mode=False)
+    try:
+        status, raw = _get(node.port, "/api/v1/auth/status")
+        assert status == 200
+        anonymous = _body_json(raw)
+        assert anonymous["authenticated"] is False
+        assert anonymous["auth_mode"] == "token"
+        status, raw = _get(node.port, "/api/v1/auth/status", token=node.token)
+        signed_in = _body_json(raw)
+        assert signed_in["authenticated"] is True
+        for key in signed_in:
+            assert key in status_row, (key, status_row)
+        assert node.token not in _json.dumps(signed_in)
+
+        assert _get(node.port, "/api/v1/me")[0] == 401
+        status, raw = _get(node.port, "/api/v1/me", token=node.token)
+        assert status == 200
+        me = _body_json(raw)
+        assert me["auth_mode"] == "token"
+        for key in me:
+            assert key in me_row, (key, me_row)
+    finally:
+        node.close()

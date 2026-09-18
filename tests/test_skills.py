@@ -106,6 +106,142 @@ def test_search_no_match_returns_empty():
     assert SkillLoader().search("zzqvorth blenxari ptuum") == []
 
 
+def _write_search_corpus(root: Path, skills: dict[str, tuple[str, str]]) -> None:
+    for directory, (description, body) in skills.items():
+        skill = root / directory
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {directory}\ndescription: {description}\n---\n{body}\n",
+            "utf-8",
+        )
+
+
+def test_search_weights_rare_query_tokens_over_ubiquitous_ones(tmp_path):
+    """A token every recipe contains is not evidence that one recipe matches.
+
+    Scoring counted each shared token as 1.0 (and each name/description hit as
+    a flat 1.5) whether it appeared in one recipe or in all of them. A recipe
+    that merely mentioned the common words then outranked the only recipe
+    carrying the rare, discriminating one.
+    """
+
+    from openai4s.config import Config
+
+    skills_dir = tmp_path / "skills"
+    common = "analysis pipeline sample statistics comparison"
+    corpus = {f"filler-{letter}": ("routine recipe", common) for letter in "abcd"}
+    corpus["generic-overview"] = ("analysis pipeline", common)
+    corpus["unequal-variance"] = ("routine recipe", "analysis pipeline welch")
+    _write_search_corpus(skills_dir, corpus)
+    loader = SkillLoader(cfg=Config(data_dir=tmp_path / "data", skills_dir=skills_dir))
+
+    # Body evidence: one rare token outweighs three that every other recipe has.
+    hits = loader.search("welch sample statistics comparison", limit=6)
+    assert hits[0]["name"] == "unequal-variance", [
+        (hit["name"], hit["score"]) for hit in hits
+    ]
+
+    # The name/description boost is weighted the same way: repeating two
+    # corpus-wide words in a description is not a relevance signal.
+    hits = loader.search("analysis pipeline welch", limit=6)
+    assert hits[0]["name"] == "unequal-variance", [
+        (hit["name"], hit["score"]) for hit in hits
+    ]
+
+    # The document frequencies belong to the discovered corpus, so a
+    # rediscovery that makes the token common must lower its weight.
+    before = loader.search("welch", limit=1)[0]["score"]
+    _write_search_corpus(
+        skills_dir,
+        {f"welch-note-{index}": ("routine recipe", "welch") for index in range(6)},
+    )
+    loader.discover()
+    after = {hit["name"]: hit["score"] for hit in loader.search("welch", limit=20)}
+    assert after["unequal-variance"] < before
+
+
+def test_search_breaks_score_ties_deterministically_curated_first(tmp_path):
+    """Equal scores used to keep discovery (dict) order.
+
+    That order is bundled directories, then collection members, then user
+    Skills, each sorted by *directory* name -- so a tie was decided by where a
+    file happened to live rather than by anything a caller could predict.
+    Ties now rank non-collection Skills first, then by declared name.
+    """
+
+    import json
+
+    from openai4s.config import Config
+
+    skills_dir = tmp_path / "skills"
+    data_dir = tmp_path / "data"
+    body = ("shared tie phrase", "shared tie phrase")
+    _write_search_corpus(skills_dir, {"b-dir": body, "c-dir": body})
+    # Declared names deliberately sort opposite to their directory names.
+    for directory, declared in (("b-dir", "zulu-curated"), ("c-dir", "alpha-curated")):
+        md = skills_dir / directory / "SKILL.md"
+        md.write_text(
+            md.read_text("utf-8").replace(f"name: {directory}", f"name: {declared}"),
+            "utf-8",
+        )
+    collection = skills_dir / "coll"
+    _write_search_corpus(collection, {"aaa-member": body})
+    (collection / "COLLECTION.json").write_text(
+        json.dumps({"id": "coll", "prompt_line": "coll: {count}"}), "utf-8"
+    )
+    _write_search_corpus(data_dir / "user-skills", {"mid-user": body})
+
+    def ranked() -> list[str]:
+        loader = SkillLoader(cfg=Config(data_dir=data_dir, skills_dir=skills_dir))
+        hits = loader.search("shared tie phrase", limit=10)
+        assert len({hit["score"] for hit in hits}) == 1, hits
+        return [hit["name"] for hit in hits]
+
+    expected = ["alpha-curated", "mid-user", "zulu-curated", "aaa-member"]
+    assert ranked() == expected
+    assert ranked() == expected
+
+
+def test_search_ignores_single_character_query_tokens():
+    """``t-test`` tokenizes to ``t`` + ``test``; the bare ``t`` is in 479 of
+    604 bundled Skills (``don't``, ``-t`` flags, loop variables) and carried
+    the same weight as ``test``. A one-character token is dropped whenever the
+    query has anything longer -- and kept when it is all there is, so a bare
+    ``R`` still retrieves something rather than nothing.
+    """
+
+    loader = SkillLoader()
+    loader.discover()
+    assert loader.search("t-test", limit=10) == loader.search("test", limit=10)
+    assert loader.search("R", limit=3)
+
+
+def test_search_does_not_rank_on_ubiquitous_bundled_tokens():
+    """The reproduced release finding, over the pinned bundled corpus.
+
+    ``bio-causal-genomics-colocalization-analysis`` -- a 35k-character recipe
+    that happens to contain every common word of the query -- ranked first for
+    a two-sample t-test query, while the recipes about statistical testing
+    ranked 10th and 13th.
+    """
+
+    loader = SkillLoader()
+    query = "two-sample hypothesis test t-test statistics comparison"
+    names = [hit["name"] for hit in loader.search(query, limit=5)]
+    assert names[0] != "bio-causal-genomics-colocalization-analysis", names
+    assert {
+        "bio-data-visualization-statistical-annotation",
+        "bio-metabolomics-statistical-analysis",
+    } & set(names), names
+
+    # A tie on the curated recipe's own vocabulary resolves to the curated
+    # recipe, the same way on every fresh loader.
+    first = [hit["name"] for hit in SkillLoader().search("statistics", limit=5)]
+    second = [hit["name"] for hit in SkillLoader().search("statistics", limit=5)]
+    assert first[0] == "example_stats"
+    assert first == second
+
+
 def test_sidecar_gate_ok_for_example():
     s = SkillLoader().discover()["example_stats"]
     assert s.sidecar_gate() == {"ok": True, "error": None}

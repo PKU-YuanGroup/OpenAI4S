@@ -15,14 +15,14 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 | [`types.ts`](types.ts) | Executed-code / lineage / 环境快照记录。 |
 | [`api.ts`](api.ts) | 同源 fetch，失败时 `ApiError` 保留 HTTP status（409 与其它错误可区分）。 |
 | [`conflict.ts`](conflict.ts) | Fork 409 呈现：不重试，保留服务端原句。 |
-| [`lineage.ts`](lineage.ts) | Provenance 链变换（cell / captures / 环境诚实性三态）。 |
+| [`lineage.ts`](lineage.ts) | Provenance 链变换（cell / captures / 环境诚实性三态）。记录中的包列表从未读取（有 `packages_unavailable` 且无包）时，`envPackageCount` 返回 null。 |
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView`（app.js:10148-10229）。 |
 | [`inspector.ts`](inspector.ts) | 变量检查器（app.js:10265-10332）。 |
-| [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。 |
+| [`provenance.ts`](provenance.ts) | Provenance tab（app.js:10631-10833）。未读取的包列表显示为"Packages 未知"（非 Python kernel 为"不适用"），不显示"没有可报告的包"；原因仍作为警告说明保留。 |
 | [`branch.ts`](branch.ts) | Fork / recovery REST 与 409 呈现。 |
 | [`boot.ts`](boot.ts) | window 名 + notebook/viewer 组合。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
-| [`lineage.test.ts`](lineage.test.ts) | Provenance 链数据变换。 |
+| [`lineage.test.ts`](lineage.test.ts) | Provenance 链数据变换；针对 0.2.x 遗留快照、确实为空的 Python 列表和 R kernel 渲染 Environment 面板。 |
 | [`conflict.test.ts`](conflict.test.ts) | 409 呈现；`forkOnce` 只打一次。 |
 
 - [`copy.ts`](copy.ts): 溯源读取状态与证据边界的双语文案。

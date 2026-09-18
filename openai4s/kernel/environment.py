@@ -183,6 +183,7 @@ def build_kernel_environment(
     env_name: str | None = None,
     kernel_generation: str | None = None,
     repo_root: str | None = None,
+    interpreter: str | None = None,
 ) -> dict[str, str]:
     """Build the complete environment for a Python or R kernel child.
 
@@ -191,6 +192,12 @@ def build_kernel_environment(
     host environment.  Selected-environment metadata and all Host-owned values
     are synthesized after filtering, so hostile source values cannot override
     them.
+
+    ``interpreter`` is the absolute Python a worker runs under. With no
+    selected ``env_root`` its directory leads ``PATH``, so a shell the Cell
+    starts (``host.bash("python -m pytest -q")``) resolves ``python`` to the
+    Cell's own interpreter even when the daemon or CLI was launched by absolute
+    path from a venv nobody activated.
     """
     host_env: Mapping[str, str] = os.environ if source is None else source
     env = _copy_allowed(host_env, _RUNTIME_ALLOWLIST)
@@ -205,11 +212,18 @@ def build_kernel_environment(
         env["CONDA_PREFIX"] = str(env_root)
         env["CONDA_DEFAULT_ENV"] = str(env_name or Path(env_root).name)
         env["CONDA_SHLVL"] = "1"
-    elif host_env.get("VIRTUAL_ENV") and not _forbidden_name("VIRTUAL_ENV"):
-        # The base kernel may be the daemon's uv/venv interpreter.  This path
-        # carries no credential and helps its pip/CLI subprocesses stay bound
-        # to that same environment.
-        env["VIRTUAL_ENV"] = str(host_env["VIRTUAL_ENV"])
+    else:
+        if interpreter and os.path.isabs(interpreter):
+            # Unresolved on purpose: a venv's `bin/python` is usually a symlink
+            # to a base interpreter whose directory has none of the venv's
+            # packages. A bare or relative name is never expanded, which would
+            # put the workspace itself on PATH.
+            path = str(Path(interpreter).parent) + os.pathsep + path
+        if host_env.get("VIRTUAL_ENV") and not _forbidden_name("VIRTUAL_ENV"):
+            # The base kernel may be the daemon's uv/venv interpreter.  This
+            # path carries no credential and helps its pip/CLI subprocesses
+            # stay bound to that same environment.
+            env["VIRTUAL_ENV"] = str(host_env["VIRTUAL_ENV"])
     # On WSL the inherited PATH ends in the whole Windows PATH, so `which
     # python`/`which git` inside a Cell can resolve to a Windows .exe reached
     # over the interop bridge the sandbox exists to close. Doing it here rather

@@ -252,7 +252,15 @@ class FileArea:
     # --- listing ---------------------------------------------------------
 
     def list_roots(self) -> dict:
-        self._require_configured()
+        """Which roots are there -- answered even when the answer is none.
+
+        Unlike every addressed read below, this is not refused on an
+        unconfigured area: the workbench asks it on every load to decide
+        whether to show Team files at all, and a 404 there was a console
+        error on each page load of every install without data roots.
+        """
+        if not self.configured:
+            return {"roots": [], "configured": False}
         roots = []
         for root in self.roots:
             try:
@@ -260,7 +268,7 @@ class FileArea:
             except OSError:
                 exists = False
             roots.append({"path": str(root), "exists": exists})
-        return {"roots": roots}
+        return {"roots": roots, "configured": True}
 
     def list_dir(
         self, raw: str, *, limit: int = 2000, reader: str | None = None

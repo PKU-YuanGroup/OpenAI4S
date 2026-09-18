@@ -49,6 +49,29 @@ def response_language(text: Any) -> str:
     return "zh" if _CJK.search(str(text or "")) else "en"
 
 
+#: Why a turn ended ``cancelled``. ``user`` covers an explicit Stop over REST
+#: or the socket; ``auto_budget`` is an Auto Mode budget denial, which ends the
+#: turn through the same cancel signal but was nobody's Stop.
+CANCEL_REASONS = ("user", "auto_budget")
+
+
+def cancellation_marker(reason: str, language: str = "en") -> str:
+    """The durable, user-visible line that closes a cancelled turn.
+
+    A turn stopped mid-Cell otherwise reopens with nothing after the
+    in-progress narration ("... am running it now"), which is a claim that
+    the stopped cell is still running.
+    """
+    zh = language == "zh"
+    if reason == "auto_budget":
+        return (
+            "_已停止：已达到自动模式预算。_"
+            if zh
+            else "_Stopped: the Auto Mode budget was reached._"
+        )
+    return "_已由用户停止。_" if zh else "_Stopped by user._"
+
+
 def action_narration(action: Action | None, language: str = "en") -> str:
     """Describe an action without inventing reasoning or scientific results."""
     zh = language == "zh"
@@ -378,7 +401,9 @@ def _normalized(value: str) -> str:
 
 
 __all__ = [
+    "CANCEL_REASONS",
     "action_narration",
+    "cancellation_marker",
     "completion_message",
     "outcome_narration",
     "response_language",

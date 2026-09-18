@@ -205,3 +205,139 @@ def test_catalog_candidates_are_listed_without_opening_sockets():
     assert payload["background_refresh"] is False
     assert payload["mutated_settings"] is False
     assert len(payload["endpoints"]) == len(service.endpoints)
+
+
+# --- an upgraded install is not a first run ---------------------------------
+#
+# The wizard decides whether to open from one stored flag, `onboarding_complete`.
+# 0.2.0 had the same flag but only `openai4s init` wrote it: its Web UI had no
+# wizard and no `/onboarding` route. So every 0.2.0 install configured through
+# `.env` or Customize -> Models -- and used for real work -- reopened after the
+# upgrade behind a modal saying "No profile yet". The flag is not the only
+# evidence of an install that is already set up; the database it opens is.
+
+
+def _first_boot(tmp_path):
+    """A daemon's first boot on this data dir, as `build_app_server` seeds it."""
+    runner, call = _api(tmp_path)
+    gateway_mod._seed_example_project(runner.cfg)
+    gateway_mod._seed_example_connector(runner.cfg)
+    return runner, call
+
+
+def test_a_fresh_install_still_gets_the_first_run_wizard(tmp_path):
+    """The negative control. The suite's fake provider key is in the
+    environment here, exactly as an `.env` key is on a real fresh install: an
+    environment key with no history and no stored configuration is what a
+    first run looks like, so it must not count."""
+    runner, call = _first_boot(tmp_path)
+    body = call("GET", "/onboarding")["body"]
+    assert body["complete"] is False, body
+    assert runner.store.get_setting("onboarding_complete") in (None, "")
+
+
+def test_an_upgraded_install_with_session_history_is_not_a_first_run(tmp_path):
+    """0.2.0, configured through the environment, used through the Web UI."""
+    runner, call = _first_boot(tmp_path)
+    project = runner.store.create_project(name="Work", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    frame = runner.store.new_frame(kind="turn", project_id=project, status="done")
+    runner.store.add_message(root_frame_id=frame, role="user", content="17 * 23?")
+    runner.store.add_message(root_frame_id=frame, role="assistant", content="391")
+    assert runner.store.get_setting("onboarding_complete") in (None, "")
+
+    body = call("GET", "/onboarding")["body"]
+    assert body["complete"] is True, body
+    # Answered from what is there. A GET that wrote the flag would be a read
+    # path mutating instance configuration, which team mode reserves to admins.
+    assert runner.store.get_setting("onboarding_complete") in (None, "")
+
+
+def test_an_upgraded_install_used_only_through_the_notebook_is_not_a_first_run(
+    tmp_path,
+):
+    """UPG3-02. 0.2.0, configured through the environment, used only through
+    the Notebook REPL (`OPENAI4S_NOTEBOOK_REPL=1`).
+
+    A REPL cell writes a frame, an execution record and its artifacts, and
+    never a message -- so this install matched none of the evidence and got
+    the blocking wizard over its own cells. The execution record is written
+    through the same Store call the REPL execute route uses."""
+    runner, call = _first_boot(tmp_path)
+    project = runner.store.create_project(name="Work", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    frame = runner.store.new_frame(kind="turn", project_id=project, status="ready")
+    runner.store.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        project_id=project,
+        code="with open('mine.txt', 'w') as f:\n    f.write('upg3-02')",
+        result={"id": "cell-repl-only", "stdout": "", "files_written": ["mine.txt"]},
+        language="python",
+        origin="user",
+        cell_index=1,
+    )
+    assert not runner.store.has_message_history()
+    for key in OnboardingService._CONFIGURATION_SETTINGS:
+        assert runner.store.get_setting(key) in (None, ""), key
+    assert runner.store.get_setting("onboarding_complete") in (None, "")
+
+    body = call("GET", "/onboarding")["body"]
+    assert body["complete"] is True, body
+    assert runner.store.get_setting("onboarding_complete") in (None, "")
+
+
+def test_a_session_created_but_never_run_is_still_a_first_run(tmp_path):
+    """The negative control for the notebook evidence: opening a session is not
+    using the install. Only an executed cell counts, so a fresh install whose
+    user clicked "new session" before configuring a model keeps the wizard."""
+    runner, call = _first_boot(tmp_path)
+    project = runner.store.create_project(name="Work", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    runner.store.new_frame(kind="turn", project_id=project, status="ready")
+
+    body = call("GET", "/onboarding")["body"]
+    assert body["complete"] is False, body
+
+
+def test_an_upgraded_install_configured_in_customize_is_not_a_first_run(tmp_path):
+    """0.2.0, configured through Customize -> Models, before any session ran."""
+    runner, call = _first_boot(tmp_path)
+    saved = call(
+        "PUT",
+        "/config/llm",
+        {"provider": "chatgpt", "model": "gpt-4o", "api_key": "sk-configured-in-ui"},
+    )
+    assert saved["code"] == 200, saved
+
+    body = call("GET", "/onboarding")["body"]
+    assert body["complete"] is True, body
+
+
+def test_an_install_with_only_a_saved_profile_is_not_a_first_run(tmp_path):
+    """0.2.0, with a profile saved in Customize -> Models and never activated:
+    no `llm_*` row, no active profile and no message, so the profile is the only
+    evidence -- and it is enough. A deleted profile is not: it configures
+    nothing."""
+    runner, call = _first_boot(tmp_path)
+    created = call(
+        "POST",
+        "/model-profiles",
+        {"name": "saved", "provider": "claude", "model": "claude-sonnet-4-5"},
+    )
+    assert created["code"] == 201, created
+    for key in OnboardingService._CONFIGURATION_SETTINGS:
+        assert runner.store.get_setting(key) in (None, ""), key
+    assert not runner.store.has_message_history()
+    assert call("GET", "/onboarding")["body"]["complete"] is True
+
+    assert call("DELETE", f"/model-profiles/{created['body']['id']}")["code"] in (
+        200,
+        204,
+    )
+    for key in OnboardingService._CONFIGURATION_SETTINGS:
+        assert runner.store.get_setting(key) in (None, ""), key
+    assert call("GET", "/onboarding")["body"]["complete"] is False

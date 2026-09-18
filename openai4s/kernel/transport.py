@@ -212,6 +212,18 @@ class PipeTransport:
             # SIGINT handler that calls `Agent.interrupt_foreground()` to
             # replace it, and `kill()` below gains the group ladder every other
             # long-lived child in this repository already has.
+            #
+            # On macOS this flag is also part of the Seatbelt boundary. Seatbelt
+            # enforces its gate on reading another process's argument and
+            # environment block (`sysctl(KERN_PROCARGS2)`) only between
+            # *different* sessions. A Cell left in the daemon's session read
+            # the daemon's exec-time environment, and any LLM key configured
+            # there, with the profile's process-info denies in place. That is
+            # true however the daemon was launched, because only
+            # `serve --detached` calls setsid. Dropping this flag silently
+            # reopens that read;
+            # `test_an_enforced_kernel_cannot_read_its_daemons_environ` is the
+            # test that notices.
             options["start_new_session"] = True
             # And it starts with foreground signal dispositions, whatever the
             # daemon's own launch mode left behind: an inherited SIG_IGN on

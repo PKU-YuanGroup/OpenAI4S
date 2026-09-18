@@ -46,7 +46,7 @@ product's own verifier, not a second implementation that could drift from it
 and disagree about what "verified" means.
 
 ```bash
-uv run openai4s verify-package dist/openai4s-0.3.0-evidence.zip
+uv run openai4s verify-package dist/openai4s-X.Y.Z-evidence.zip
 ```
 
 It establishes internal consistency: the manifest vouches for itself, every
@@ -73,7 +73,7 @@ filesystem fallback for unpacked source archives.
 
 ```bash
 python scripts/source_secret_scan.py
-python scripts/verify_release_tag.py v0.1.0
+python scripts/verify_release_tag.py vX.Y.Z   # the tag you are about to create
 uv build --no-sources --out-dir dist --clear
 python scripts/verify_release_artifacts.py dist
 ```
@@ -97,6 +97,8 @@ installation, and import/CLI smoke use no package index and no application
 credentials.
 
 Existing databases with a schema newer than this program supports are refused before application initialization writes. The CLI reads configuration without creating directories, then performs a normal SQLite read-only preflight (including committed WAL state); Store rechecks its formal connection before hardening, DDL, seeds or migration. Foreground and detached startup report `future_schema` with actual/supported versions. Use a compatible program version; this protection does not downgrade a database or rewrite its version. A corrupt database retains its distinct SQLite failure.
+
+That refusal exists from 0.3.0 on. It does not protect a downgrade to a release that predates it: 0.2.0 and earlier do not check the schema version, so 0.2.0 opens a database that 0.3.0 has migrated to schema 32 without a warning and writes to it. The migration's own pre-upgrade copy (`openai4s.db.v27.bak`) is deleted once the migration succeeds. Users who may roll back must therefore back up `<data_dir>/openai4s.db` before the first 0.3.0 start; [`upgrading.md`](upgrading.md) gives the procedure. Keep every migration additive while 0.2.x installs can still reach an upgraded database, since nothing on the 0.2.x side would refuse a table or column change it does not understand.
 
 The [pre-upgrade snapshot design](pre-upgrade-snapshot-design.md) fixes a future
 one-copy retention and independent-directory restore acceptance contract. It is
@@ -182,6 +184,19 @@ integration. `Exec=` and `Icon=` in a `.desktop` entry are absolute paths, and a
 tarball does not know where it will be unpacked, so the entry ships as a
 template and `install.sh` substitutes the real location at install time.
 Shipping a pre-baked path would produce a menu entry that launches nothing.
+The installer encodes the executable path using the desktop-entry quoting and
+escaping rules. Installation paths containing spaces or shell punctuation must
+still launch the same bundled executable. A literal percent sign is doubled as
+the specification requires, but that is where escaping ends: GLib (2.36 and
+later, so GNOME and anything on `GDesktopAppInfo`) and KIO both check that the
+`Exec` program exists *before* they expand `%%`, so a bundle unpacked under a
+path containing `%` gets an entry those desktops drop. `install.sh` warns about
+such a path rather than implying it works; the CLI link is unaffected. The
+renderer also fails, without writing an entry, if the template no longer
+carries exactly the `Exec` and `Icon` lines it replaces. Because the installer
+now depends on the bundled interpreter, `verify_linux_bundle.py` runs the
+shipped `install.sh` and `uninstall.sh` against the unpacked bundle on a
+matching Linux host, rather than only reading them.
 
 ```bash
 bash scripts/build_linux_bundle.sh                               # native
@@ -287,35 +302,97 @@ Old schema-1 receipts remain readable JSON and cannot satisfy this gate.
 
 ## Trusted publication
 
-Publishing is isolated in `.github/workflows/release.yml`. A non-prerelease
-GitHub Release whose tag starts with `v` builds from that immutable tag. The
-build job requires an exact `vMAJOR.MINOR.PATCH` match in both `pyproject.toml`
-and `openai4s.__version__`, scans the sources, builds and verifies the wheel and
-sdist, then uploads those exact files as a short-lived Actions artifact. A
-separate `publish` job can only download that artifact and invoke PyPA's
-publisher. Only this final job receives `id-token: write`.
+Publishing is isolated in `.github/workflows/release.yml`, and only a
+maintainer's dispatch starts it. No release event triggers it. A maintainer
+creates a **draft** release for an annotated tag, then dispatches the workflow
+against that tag ([Draft-first](#draft-first-from-v02) below explains why).
+A `publish=true` run builds from the immutable commit the tag peels to. It
+re-runs the offline gates into a quality receipt, builds and verifies every
+asset, stages the assets onto the draft, publishes the wheel and sdist to PyPI,
+and only then makes the GitHub Release public. The build job requires an exact
+`vMAJOR.MINOR.PATCH` match in both `pyproject.toml` and `openai4s.__version__`,
+and it scans the sources before building. The PyPI job can only download the
+verified distributions artifact and invoke PyPA's publisher. It is the only job
+that receives `id-token: write`.
 
 Before the first publication, a repository administrator must:
 
-1. create the protected GitHub environment `pypi` and require a maintainer
-   review;
-2. configure a PyPI pending/trusted publisher for repository
-   `PKU-YuanGroup/OpenAI4S`, workflow `release.yml`, environment `pypi`;
-3. protect `v*` tags and the release workflow through repository rules;
-4. create an annotated tag from a green `main` commit, then publish the GitHub
-   Release for that tag.
+1. create the GitHub environment `pypi`, require a maintainer review on it, and
+   restrict its deployment refs to `main` and `v*` tags. Without that
+   restriction, a workflow dispatched from any branch can request the
+   environment's OIDC token, and PyPI's trusted publisher checks the workflow
+   file name and the environment, not the branch;
+2. configure a PyPI trusted publisher for repository `PKU-YuanGroup/OpenAI4S`,
+   workflow `release.yml`, environment `pypi`;
+3. protect `v*` tags with a tag ruleset that restricts creation and blocks
+   update and deletion;
+4. give the `ghcr` environment the same review and ref restriction, because
+   `publish-image.yml` pushes the container image from it.
+
+To publish `vX.Y.Z` from a green `main` commit `S`:
+
+1. Confirm that CI is green at `S`. The quality job attests the latest attempt
+   of every required check recorded against `S`. A failed scheduled run at that
+   commit therefore blocks the release until that job is re-run.
+2. Create and push an annotated tag. Both `publish` and `pypi_only` refuse a
+   lightweight tag.
+
+   ```bash
+   git tag -a vX.Y.Z S -m "OpenAI4S vX.Y.Z"
+   python scripts/verify_release_tag.py vX.Y.Z
+   git push origin refs/tags/vX.Y.Z
+   ```
+
+3. Create the draft. Do not mark it as a prerelease; the guard refuses one.
+
+   ```bash
+   gh release create vX.Y.Z --draft --verify-tag --title "OpenAI4S vX.Y.Z" --notes-file notes.md
+   ```
+
+4. Optionally, rehearse. `gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`
+   builds and verifies everything and publishes nothing.
+5. Publish, then approve the `pypi` deployment when the run asks for it:
+
+   ```bash
+   gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish=true
+   ```
+
+   Add `-f macos_asset=notarized` only when the complete Developer ID and
+   notary credential set exists. The default, `omit`, publishes no DMG.
+6. Confirm the container image. Check that `publish-image.yml` ran for
+   `vX.Y.Z`, and if it did not, dispatch it:
+   `gh workflow run publish-image.yml --ref vX.Y.Z -f ref=vX.Y.Z`.
+
+**Never publish the GitHub Release by hand.** A release that is already public
+cannot be staged. The guard refuses it, and the only mode left, `pypi_only`,
+uploads the wheel and sdist to PyPI and attaches nothing to the release. That
+is how v0.2.0 shipped: its GitHub Release carries the Linux tarball, the DMG
+and `SHA256SUMS`, and no wheel, sdist, SBOM, provenance or evidence bundle.
+`pypi_only` exists only to recover from that state.
+
+A version number can be uploaded to PyPI only once. If `finalize` fails after
+the PyPI job has succeeded, re-run the failed job instead of dispatching a new
+build. A new `publish=true` dispatch is refused by the guard once PyPI has the
+version: the rebuild is not byte-identical, and staging it would overwrite the
+draft's assets with files PyPI does not have.
+
+The guard job holds `contents: write` although it only reads. GitHub shows a
+draft release only to a caller with push access, so with the workflow's
+read-only token the guard reported an existing draft as missing. That is how
+v0.3.0's first publish dispatch stopped.
 
 The workflow uses GitHub/PyPI OIDC and does not accept a long-lived PyPI token.
-Its publish job also creates PyPI's default provenance attestations through the
+Its PyPI job also creates PyPI's default provenance attestations through the
 official PyPA action.
 
 ## Deliberate remaining external gates
 
 Pull-request CI does not publish packages, sign/notarize native executables, or
 perform live-provider, GPU, SSH, and laboratory validation. Publication needs
-an approved GitHub Release and the separately protected OIDC environment above;
-the other operations require an explicit identity, network service, or
-hardware and remain outside the secret-free default gate.
+a non-prerelease draft release, a maintainer's `publish=true` dispatch, and the
+separately protected OIDC environment above. The other operations require an
+explicit identity, network service, or hardware and remain outside the
+secret-free default gate.
 
 
 ## Draft-first (from v0.2)
@@ -341,12 +418,38 @@ notarization facts are part of the evidence and every resulting artifact is
 covered before staging. `re-verify` reads the assets back *after* upload,
 because a local checksum cannot see a transfer that dropped bytes.
 
+Before upload and again after downloading the draft for publication, the
+pipeline checks the relationships between assets: provenance and SBOM hashes,
+the sealed evidence's artifact inventory and build receipts, and the Windows
+package's embedded Linux payload must agree with the exact distributions being
+released. This check also applies to a hand-run `--only publish` without a stage
+attestation. Updating `SHA256SUMS` after replacing a ZIP cannot make its older
+build receipt valid. These checks establish consistency; the out-of-band stage
+attestation remains the protection against replacing an entire draft and its
+evidence together. When `--source-sha` or `--workflow-run-id` is supplied, the
+sealed report and the sealed build receipts must also name that commit and that
+run, as they must at staging.
+
+Run a hand-run `--only publish` from a checkout of the release tag. The sealed
+quality receipt is verified against the gate manifest of the checkout running
+the script, so a later `main` whose gate list has moved refuses an intact draft
+— after PyPI has already taken the version. The refusal names the release
+commit to check out. A staging retry in the same `--assets-dir` is supported:
+the previous attempt's `-evidence.zip` and `-evidence-stopped.zip` are this
+pipeline's own outputs and are never collected as distributions.
+
+If a draft asset was replaced, restore the original verified bytes and their
+matching evidence. If the replacement changes the release source, merge the
+fixes and build a new immutable tag through CI. Do not edit an old receipt to
+claim the replacement was the build it originally recorded, move a release tag,
+or rebuild wheel/sdist files already published under the same PyPI version.
+
 All of it lives in [`scripts/release_pipeline.py`](../scripts/release_pipeline.py),
 not in the workflow YAML, so it can be exercised without cutting a release:
 
 ```bash
-uv run python scripts/release_pipeline.py --version 0.2.0 --dry-run
-uv run python scripts/release_pipeline.py --version 0.2.0 --mode local
+uv run python scripts/release_pipeline.py --version X.Y.Z --dry-run
+uv run python scripts/release_pipeline.py --version X.Y.Z --mode local
 ```
 
 `--dry-run` performs no external call and is how the *ordering* is tested.

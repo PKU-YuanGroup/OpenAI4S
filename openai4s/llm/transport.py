@@ -25,6 +25,7 @@ import http.client
 import inspect
 import json
 import random
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -348,16 +349,25 @@ def _http_error(
     )
 
 
+#: Structured reasons that can only come from the connect phase. Prose is not
+#: one of them: a `URLError("connection refused")` is a string, not evidence.
+_CONNECT_PHASE_REASONS = (ConnectionRefusedError, socket.gaierror, TimeoutError)
+
+
 def _url_error(
-    e: urllib.error.URLError, *, provider: str | None, operation: str
+    e: urllib.error.URLError, *, provider: str | None, operation: str, sent: bool
 ) -> TransportError:
     return TransportError(
         f"LLM connection error: {e.reason}",
         provider=provider,
         operation=operation,
-        # URLError can also wrap a timeout/reset after the POST was written.
-        # Only a structured connection refusal proves no request reached it.
-        retryable=isinstance(e.reason, ConnectionRefusedError),
+        # `URLError` wraps both "never left this machine" and "timed out or was
+        # reset after the POST was written". `state.sent` is the discriminator
+        # the transport already tracks (`_DeadlineSend.send` latches it at the
+        # byte boundary), so a refused connection, an unresolved host and a
+        # *connect* timeout stay replayable while anything after the write, and
+        # any reason that is only prose, does not.
+        retryable=not sent and isinstance(e.reason, _CONNECT_PHASE_REASONS),
     )
 
 
@@ -540,7 +550,9 @@ def post_json(
             raise state.deadline_error(provider, "post_json") from e
         except urllib.error.URLError as e:
             state.remaining(provider, "post_json")
-            raise _url_error(e, provider=provider, operation="post_json") from e
+            raise _url_error(
+                e, provider=provider, operation="post_json", sent=state.sent
+            ) from e
         except (OSError, http.client.HTTPException) as error:
             state.remaining(provider, "post_json")
             raise TransportError(
@@ -632,7 +644,9 @@ def post_sse(
             raise state.deadline_error(provider, "post_sse") from e
         except urllib.error.URLError as e:
             state.remaining(provider, "post_sse")
-            raise _url_error(e, provider=provider, operation="post_sse") from e
+            raise _url_error(
+                e, provider=provider, operation="post_sse", sent=state.sent
+            ) from e
         except (OSError, http.client.HTTPException) as error:
             state.remaining(provider, "post_sse")
             raise TransportError(

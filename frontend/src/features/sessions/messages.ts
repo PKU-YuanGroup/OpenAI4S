@@ -22,6 +22,7 @@ export type ChatMessage = {
   created_at?: string;
   seq?: number;
   failure?: { request_id?: string } | null;
+  cancelled?: { request_id?: string; execution_id?: string; reason?: string } | null;
   review_status?: unknown;
   metadata?: Record<string, unknown>;
   artifact_refs?: unknown[];

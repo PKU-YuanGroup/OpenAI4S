@@ -26,7 +26,7 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 | [`artifacts.py`](./artifacts.py) | Artifact 相关工具：列出 Artifact、把已有文件注册进来、查询精确的元数据或精确的版本。恢复历史版本需要审批。 |
 | [`background.py`](./background.py) | 对独立的后台 Python Cell worker 做 submit/list/peek/interrupt。这里只是任务编排，不是 shell runtime。 |
 | [`base.py`](./base.py) | 不可变的类式 `Tool` 契约：元数据、Host 调用边界、schema 校验、审批目标、资源 key 和 provider-strict 兼容性。如果一个工具的写入、只读或副作用声明取决于运行时的特性开关，就通过 `writes_files_for()`、`read_only_for()`、`side_effect_class_for()` 作答，它们默认回退到静态属性；这样 Artifact 捕获、冲突调度和审计读到的，才是这次调用真正会产生的结果。 |
-| [`capabilities.py`](./capabilities.py) | 声明 `search_capabilities`：搜索隐藏的工具组，并为当前 session 激活命中的那些。激活只增不减。 |
+| [`capabilities.py`](./capabilities.py) | 声明 `search_capabilities`：搜索隐藏的工具组，并为当前 session 激活命中的那些。激活只增不减。dispatcher 带着面向模型的工具投影时（CLI 或委派出来的 Agent 会设置），它报告为可见的只有投影真正提供的工具，其余的放在 `unavailable_tools` 下返回。 |
 | [`catalog.py`](./catalog.py) | 把内置工具和生效的动态代理组合成一份 session catalog，将工具划入渐进披露分组，并产出当前活动的 native spec 与 prompt 元数据。 |
 | [`content_search.py`](./content_search.py) | 在受限工作区内做有界的正则内容搜索。`include` 与不加过滤的默认行为一样是递归的：`Path.glob("*.py")` 只匹配直属子项，于是照着 schema 自己给的例子传参，反而让搜索比不过滤时更**窄**，而且它一声不吭。有四条界限可能让它提前停下——命中数上限、候选文件数上限、目录遍历本身，以及一个大到读不完的文件——是哪一条生效会写进返回结果，因为一个不加说明的空结果读起来就是「这棵树里没有」。 |
 | [`contexts.py`](./contexts.py) | 定义具体工具依赖的几类狭窄运行时 protocol：工作区、环境、单一用途的科学检索结果写入器，以及通用控制。工具只有在 Host 的策略检查通过之后才拿得到它们。实时适配器上还挂着主搜索入口和那个结果写入器，它们只是普通方法，没有对应的 `_m_*` dispatcher handler，因此在内核 Host 线路上根本寻址不到，也就绕不开 `web_search`/`science_search` 自身的权限、审计与不可信输出信封。 |

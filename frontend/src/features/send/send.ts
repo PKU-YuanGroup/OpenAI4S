@@ -13,7 +13,7 @@
  * pinned dispatch id, never whatever `currentId` happens to hold.
  */
 
-import { planModePayload, t } from "../../i18n/runtime";
+import { LANG, planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
   skillsCatalog,
@@ -497,40 +497,51 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         standardProfileReadiness.value = unavailableReadinessSnapshot();
         renderEnvironmentReadinessBanner();
       }
-      const box = $("#composer") as HTMLTextAreaElement | null;
-      if (box && !box.value.trim()) box.value = text;
-      if (box) {
-        grow();
-        renderComposerRefChips();
-      }
-      w.remove();
+      settleRefusedBubble(w, text);
       if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
       callLane("openCust", "compute");
       hint(t("environment.readiness.sendBlocked"), true);
       void loadSessions();
       return;
     }
-    const err = e as { code?: string };
+    const err = e as { code?: string; status?: number };
+    // A 4xx is the server refusing this message before admission -- a model
+    // profile with no key, a pin that cannot be honoured, nothing active to
+    // rebind to. No user row and no job exist for it, so a reload would not
+    // show the text: it goes back into the composer and the optimistic bubble
+    // goes -- unless the composer already holds something new, in which case
+    // the bubble is the only copy left and stays, marked not sent. A 5xx may
+    // still have been admitted, and keeps both as before.
+    const notAdmitted = refused && Number(err.status) < 500;
+    if (notAdmitted) settleRefusedBubble(w, text);
+    let lasting = t("toast.sendFailed", apiErrorText(e));
+    let settingsCode = err?.code;
     if (err && (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")) {
       const ask =
-        typeof globalThis.confirm === "function" ? globalThis.confirm(t("model.rebind.confirm")) : false;
+        typeof globalThis.confirm === "function" ? globalThis.confirm(rebindConfirmText(err)) : false;
       if (ask) {
         try {
-          await api(`/frames/${encodeURIComponent(dispatchFrameId)}/model-binding`, {
+          const rebound = await api(`/frames/${encodeURIComponent(dispatchFrameId)}/model-binding`, {
             method: "POST",
           });
-          hint(t("model.rebind.done"));
           if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
+          hint(rebindDoneText(rebound));
           void loadSessions();
           return;
         } catch (rebindError) {
-          hint(apiErrorText(rebindError), true);
+          lasting = apiErrorText(rebindError);
+          settingsCode = (rebindError as { code?: string } | null)?.code;
         }
       }
     }
-    hint(t("toast.sendFailed", apiErrorText(e)), true);
+    // turnDone paints its generic "This turn failed" hint in the same tick, so
+    // it goes first: the server's reason is the hint that has to stay.
     if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
-    else w.classList.add("cancelled");
+    else if (!notAdmitted) w.classList.add("cancelled");
+    hint(lasting, true);
+    if (settingsCode === "model_profile_needs_key" || settingsCode === "model_profile_needs_active") {
+      callLane("openCust", "models");
+    }
     void loadSessions();
     return;
   }
@@ -541,6 +552,119 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     resumeWatch(dispatchFrameId, dispatchOpenGen);
   }
   void loadSessions();
+}
+
+/** Feature-local copy: `i18n/en.ts` / `zh.ts` are generated extracts of app.js. */
+const REBIND_COPY: Record<"en" | "zh", Record<"unbound" | "backfilled", string>> = {
+  en: {
+    unbound: "No model profile is active: this session now runs on the daemon's global configuration",
+    backfilled: "Re-bound to the saved model profile this session's model matches",
+  },
+  zh: {
+    unbound: "当前没有启用的模型配置：该会话改为使用守护进程的全局配置运行",
+    backfilled: "已改绑到与该会话模型匹配的已保存模型配置",
+  },
+};
+
+type RebindReason = "moved" | "keyless" | "unreadable" | "ambiguous" | "unusable";
+
+/** Feature-local copy: every refusal a re-bind answers, in its own words. */
+const REBIND_CONFIRM_COPY: Record<"en" | "zh", Record<RebindReason, string>> = {
+  en: {
+    moved:
+      "The model profile this session was pinned to now names a different provider or endpoint, so its key is not sent to the earlier configuration. Re-bind the session to the active configuration and continue?",
+    keyless:
+      "The model profile this session was pinned to has no usable API key. Re-bind the session to the active configuration and continue? (Cancel to add the key in Customize → Models instead.)",
+    unreadable:
+      "The model configuration this session was pinned to could not be read. Re-bind it to the active configuration and continue?",
+    ambiguous:
+      "More than one saved model profile matches the model this session used, so which one it ran under is unknown. Re-bind it to the active configuration and continue?",
+    unusable:
+      "The model configuration this session was pinned to is no longer usable. Re-bind it to the active configuration and continue?",
+  },
+  zh: {
+    moved:
+      "该会话固定的模型配置现在指向不同的提供商或端点，因此其密钥不会发往原先的配置。是否将该会话改绑到当前启用的配置以继续？",
+    keyless:
+      "该会话固定的模型配置没有可用的 API 密钥。是否将该会话改绑到当前启用的配置以继续？（取消后可在 自定义 → 模型 中添加密钥。）",
+    unreadable: "无法读取该会话固定的模型配置。是否改绑到当前启用的配置以继续？",
+    ambiguous:
+      "有多个已保存的模型配置与该会话使用的模型匹配，无法确定它当时使用的是哪一个。是否改绑到当前启用的配置以继续？",
+    unusable: "该会话固定的模型配置已不可用。是否改绑到当前启用的配置以继续？",
+  },
+};
+
+/**
+ * The re-bind prompt for a `model_revision_unavailable` /
+ * `model_revision_ambiguous` refusal. One sentence -- "no longer exists" --
+ * was shown for all of them, including a profile that still exists and only
+ * moved to another provider or endpoint (the SEC-2 scope mismatch). The codes
+ * are shared, so the server's message picks the reason; "no longer exists"
+ * is kept for the refusal that says exactly that.
+ */
+export function rebindConfirmText(error: unknown): string {
+  const rec = error && typeof error === "object" ? (error as { code?: unknown; message?: unknown }) : null;
+  const code = String((rec && rec.code) || "");
+  const message = String((rec && rec.message) || "").toLowerCase();
+  const copy = REBIND_CONFIRM_COPY[LANG === "zh" ? "zh" : "en"];
+  if (code === "model_revision_ambiguous") return copy.ambiguous;
+  if (message.includes("different provider or endpoint")) return copy.moved;
+  if (message.includes("credential is not available")) return copy.keyless;
+  if (message.includes("could not be read")) return copy.unreadable;
+  if (message.includes("no longer exists")) return t("model.rebind.confirm");
+  return copy.unusable;
+}
+
+/**
+ * What `POST /frames/{id}/model-binding` actually did. "Re-bound to the active
+ * model configuration" was shown for every 200, including `{bound: false}`
+ * from a daemon with no active profile -- a re-bind that bound nothing.
+ */
+export function rebindDoneText(answer: unknown): string {
+  const raw = answer && typeof answer === "object" ? (answer as { binding?: unknown }).binding : null;
+  const binding = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  const copy = REBIND_COPY[LANG === "zh" ? "zh" : "en"];
+  if (binding?.bound === false) return copy.unbound;
+  if (binding?.backfilled === true) return copy.backfilled;
+  return t("model.rebind.done");
+}
+
+/** Feature-local copy for a refused message the composer could not take back. */
+const NOT_SENT_COPY: Record<"en" | "zh", string> = {
+  en: "Not sent: the server refused this message and the composer already held new text, so it stays here to copy",
+  zh: "未发送：服务器拒绝了这条消息，而输入框里已有新内容，因此原文保留在这里以便复制",
+};
+
+/**
+ * Put a refused message's text back, unless something new was typed since.
+ * True when nothing of the refused text is lost: it went back into an empty
+ * composer, or there was no text to keep (an annotation-only send).
+ */
+function restoreDraft(text: string): boolean {
+  if (!text) return true;
+  const box = $("#composer") as HTMLTextAreaElement | null;
+  if (!box) return false;
+  const restored = !box.value.trim();
+  if (restored) box.value = text;
+  grow();
+  renderComposerRefChips();
+  return restored;
+}
+
+/**
+ * A refusal stores nothing, so the refused text must survive somewhere the
+ * user can reach. Only a text that went back into the composer lets the
+ * optimistic bubble go; otherwise the bubble is the last copy and stays,
+ * marked not sent (the pre-existing `.msg.user.cancelled` style).
+ */
+function settleRefusedBubble(w: HTMLElement, text: string): void {
+  if (restoreDraft(text)) {
+    w.remove();
+    return;
+  }
+  w.classList.add("cancelled");
+  w.dataset.sendState = "not-sent";
+  w.title = NOT_SENT_COPY[LANG === "zh" ? "zh" : "en"];
 }
 
 type ComposerDispatch = (text: string) => unknown;

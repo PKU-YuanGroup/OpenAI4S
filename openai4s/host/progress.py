@@ -7,6 +7,9 @@ from typing import Callable, Protocol
 PLAN_STEP_STATUSES = frozenset(
     {"pending", "in_progress", "completed", "failed", "skipped"}
 )
+#: The step statuses that record a decision (done, cannot be done, deliberately
+#: not done). `PlanService._SETTLED_STEP_STATUSES` is this set, not a copy.
+SETTLED_STEP_STATUSES = frozenset({"completed", "failed", "skipped"})
 PlanSink = Callable[[dict], None]
 
 
@@ -81,6 +84,16 @@ class ProgressService:
             return {"error": "no active plan for this session"}
         if not step_id:
             return {"error": "plan_update requires step_id"}
+        if plan.get("status") == "completed" and status not in SETTLED_STEP_STATUSES:
+            # A completed plan with an open step is a contradiction nothing
+            # can clear: no turn is running the plan and only a paused plan
+            # can resume, so the step would stay open for good.
+            return {
+                "error": (
+                    f"plan {plan['plan_id']} is completed; its step {step_id} "
+                    f"cannot be set back to {status}"
+                )
+            }
 
         self.store.set_plan_step_status(plan["plan_id"], step_id, status, note)
         sink = self.get_plan_sink()

@@ -16,7 +16,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`cache.ts`](cache.ts) | `artifactCacheKey` / `syncArtifactVersion` / `artUrl` (exact version never uses latest). |
 | [`catalog.test.ts`](catalog.test.ts) | UMD null defense, compatibility renderer ids, PDB CA points. |
 | [`catalog.ts`](catalog.ts) | `scientificRenderers()` empty-value defense, catalog + descriptor fetch. |
-| [`copy.ts`](copy.ts) | M-03 search/filter/deep-link copy (does not rewrite generated i18n). |
+| [`copy.ts`](copy.ts) | M-03 search/filter/deep-link copy, plus the provenance Environment panel's no-snapshot and unknown/not-applicable package-count strings (does not rewrite generated i18n). |
 | [`deeplink.test.ts`](deeplink.test.ts) | Query parse; exact version; no silent latest fallback. |
 | [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` parse/serialize/resolve. Empty versions → not-found. |
 | [`events.test.ts`](events.test.ts) | `artifact_created` version sync + live figure; stub `nbRender` is skipped. |

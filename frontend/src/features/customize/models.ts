@@ -6,6 +6,8 @@
  */
 import { publicText } from "../scrub/scrub";
 import { t, tOptional } from "../../i18n";
+import { defaultModel, defaultModelName, models } from "../../stores/customize";
+import { api } from "./api";
 
 export const LOCAL_MODEL_KINDS = new Set([
   "ollama",
@@ -152,6 +154,106 @@ export function protocolLabelOf(
   const id = typeof provider === "string" ? provider : "";
   const match = protocols.find((item) => item.value === id);
   return match ? match.label : id;
+}
+
+/** One `#model-select` entry, as `GET /models` lists it. */
+export type ComposerModel = {
+  id: string;
+  name: string;
+  description: string;
+  model: string;
+};
+
+/**
+ * Not `publicText`: these values go back to the server as `model_id` and into
+ * `frames.model`, and its credential-shape redaction rewrites legitimate model
+ * ids -- `ark-code-latest` matches its `ark-<8+ chars>` pattern and would be
+ * sent as "[redacted]". `GET /models` carries no credential to redact.
+ */
+function entryText(value: unknown): string {
+  return typeof value === "string" ? value.trim().slice(0, 512) : "";
+}
+
+function readComposerModels(payload: Record<string, unknown>): ComposerModel[] {
+  const groups =
+    payload.models && typeof payload.models === "object"
+      ? Object.values(payload.models as Record<string, unknown>)
+      : [];
+  const list: ComposerModel[] = [];
+  groups.forEach((group) => {
+    (Array.isArray(group) ? group : []).forEach((raw) => {
+      if (!raw || typeof raw !== "object") return;
+      const row = raw as Record<string, unknown>;
+      const id = entryText(row.id);
+      if (!id || list.some((entry) => entry.id === id)) return;
+      list.push({
+        id,
+        name: entryText(row.name) || id,
+        description: entryText(row.description),
+        model: entryText(row.model),
+      });
+    });
+  });
+  return list;
+}
+
+/**
+ * The model name for an entry. The option value is a `profile_id` for saved
+ * profiles, and session creation sends this display-only name as `model`:
+ * sending the id there would store a profile id in `frames.model`.
+ */
+export function composerModelName(id: unknown): string {
+  const key = typeof id === "string" ? id : "";
+  const entry = (models.value as ComposerModel[]).find((item) => item.id === key);
+  return (entry && (entry.model || entry.name)) || key;
+}
+
+/**
+ * Port of app.js `loadModels`: fill the composer selector's stores from
+ * `GET /models`. It was bridged to a `window.loadModels` nothing assigned, so
+ * the selector stayed empty, every new frame recorded `model: null`, and the
+ * post-profile-change refreshes in Customize did nothing.
+ */
+export async function loadModels(): Promise<void> {
+  try {
+    const payload = await api("/models");
+    const list = readComposerModels(payload);
+    models.value = list;
+    const wanted = entryText(payload.default_model_id);
+    // An unlisted default (e.g. the id of a since-deleted profile) falls back
+    // to the first entry, and that is not an arbitrary pick: `models_payload`
+    // always lists the daemon's live model (`llm_model`, else `cfg.llm.model`)
+    // first, which is the model `resolve_llm_config` runs an unpinned session
+    // on. A `model` sent from it (session creation, plan approve/resume/revise)
+    // restates the server's default rather than overriding it. app.js kept the
+    // unlisted id instead, and so sent a deleted profile's id as `model`.
+    const chosen = list.some((entry) => entry.id === wanted) ? wanted : list[0]?.id || null;
+    defaultModel.value = chosen;
+    defaultModelName.value = chosen ? composerModelName(chosen) : null;
+  } catch {
+    models.value = [];
+  }
+}
+
+/**
+ * Choose an entry: the stores move at once, `PUT /models/default` makes it the
+ * server's default (a profile id activates that profile). A refused write puts
+ * the previous choice back rather than showing a selection the server did not
+ * take.
+ */
+export async function chooseComposerModel(id: string): Promise<boolean> {
+  const previous = defaultModel.value;
+  const previousName = defaultModelName.value;
+  defaultModel.value = id;
+  defaultModelName.value = composerModelName(id);
+  try {
+    await api("/models/default", { method: "PUT", body: JSON.stringify({ model_id: id }) });
+    return true;
+  } catch {
+    defaultModel.value = previous;
+    defaultModelName.value = previousName;
+    return false;
+  }
 }
 
 export { t };

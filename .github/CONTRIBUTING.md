@@ -193,10 +193,15 @@ instead of silently weakening the review rule.
   `uv run pre-commit run --all-files`, green source/artifact/install gates
   described in [`docs/release-validation.md`](../docs/release-validation.md), and
   docs that match behavior.
-- PyPI publication is performed only by `.github/workflows/release.yml` from a
-  non-prerelease GitHub Release. The protected `pypi` environment and PyPI
-  Trusted Publisher must match that workflow; long-lived upload tokens are not
-  accepted.
+- PyPI publication is performed only by `.github/workflows/release.yml`,
+  dispatched by a maintainer with `publish=true` against a non-prerelease
+  **draft** release of the annotated tag. The workflow stages the assets, then
+  publishes to PyPI, and only then makes the release public. Never publish the
+  GitHub Release by hand: a public release can no longer be staged, and
+  `pypi_only` is a recovery mode that attaches nothing. The protected `pypi`
+  environment and PyPI Trusted Publisher must match that workflow; long-lived
+  upload tokens are not accepted. The step-by-step procedure is in
+  [`docs/release-validation.md`](../docs/release-validation.md#trusted-publication).
 - Tags are immutable. A bad release is followed by a new patch release, never
   a force-pushed tag.
 - Compatibility promises (e.g. `openai4s_compute_provider` import paths during
@@ -216,3 +221,8 @@ GitHub settings by an admin:
   enable "Require review from Code Owners".
 - Ensure repository/organization secrets are **not** exposed to workflows
   triggered by external PRs.
+- Protect the `pypi` and `ghcr` environments with required reviewers, and
+  restrict their deployment refs to `main` and `v*` tags. The release docs
+  treat both as prerequisites for publishing.
+- Add a tag ruleset for `refs/tags/v*` that restricts tag creation and blocks
+  update and deletion, so a release tag stays immutable.

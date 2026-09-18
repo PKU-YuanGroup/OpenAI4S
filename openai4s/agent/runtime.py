@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from openai4s.execution.attempts import (
+    attempt_state_for_exception,
+    attempt_state_for_result,
+)
 from openai4s.llm.models import LLMDeadlineExceeded
 from openai4s.llm.transport import CallState, bind_call_context
 from openai4s.observability import carry_context
@@ -1083,18 +1087,18 @@ class LocalActionExecutor:
     def _execute_native(
         self, batch: NativeToolBatch, state: RunState
     ) -> ExecutionOutcome:
-        # Evidence counts dispatched calls, not declared ones: the batch
-        # answers parse/validation/limit refusals without invoking anything,
-        # and an unknown tool name reaches invoke but is refused before the
-        # dispatcher — none executed work. Count only calls that actually reach
-        # the dispatcher, so a refused/hallucinated call cannot back a later
-        # execution-shaped finalize claim. list.append is atomic under the GIL,
-        # so parallel read waves count safely.
-        invoked: list[Any] = []
+        # Evidence counts executed calls, not declared or merely dispatched
+        # ones: the batch answers parse/validation/limit refusals without
+        # invoking anything, an unknown tool name is refused before the
+        # dispatcher, and a static precheck, the dispatcher's permission gate,
+        # a soft-fail result or a raised dispatch all end without the work a
+        # later bullet may claim. Count a call only once its dispatch reports
+        # ok, so none of those can back an execution-shaped finalize claim.
+        # list.append is atomic under the GIL, so parallel read waves count
+        # safely.
+        executed: list[Any] = []
 
-        def invoke(call):
-            if call_reaches_dispatcher(call.name, self.tool_catalog, call.arguments):
-                invoked.append(call)
+        def dispatch(call):
             payload = {"name": call.name, "arguments": call.arguments}
             binder = getattr(self.dispatcher, "bind_action_context", None)
 
@@ -1166,6 +1170,14 @@ class LocalActionExecutor:
             ):
                 return execute_with_capture()
 
+        def invoke(call):
+            result = dispatch(call)
+            if result[1] is True and call_reaches_dispatcher(
+                call.name, self.tool_catalog, call.arguments
+            ):
+                executed.append(call)
+            return result
+
         metadata_resolver = getattr(
             self.dispatcher, "control_tool_execution_metadata", None
         )
@@ -1195,8 +1207,8 @@ class LocalActionExecutor:
                     ),
                 ),
             )
-        if invoked:
-            note_execution_evidence(state.metadata, tool_calls=len(invoked))
+        if executed:
+            note_execution_evidence(state.metadata, tool_calls=len(executed))
         return outcome
 
     def _execute_code(
@@ -1256,11 +1268,7 @@ class LocalActionExecutor:
                 if attempt is not None:
                     assert result is not None
                     result["id"] = attempt[2]
-                    durable_generation = (
-                        state.metadata.get("durable_kernel_generation_id")
-                        if action.language != "r"
-                        else None
-                    )
+                    durable_generation = self._attempt_generation(action, result, state)
                     if durable_generation:
                         attempt[0].bind_execution_attempt_generation(
                             attempt[1], str(durable_generation)
@@ -1268,7 +1276,7 @@ class LocalActionExecutor:
                     attempt[0].mark_execution_attempt_response(attempt[1])
             if result is not None and artifact_receipts:
                 result["_openai4s_artifact_receipts"] = list(artifact_receipts)
-        except BaseException:
+        except BaseException as exc:
             try:
                 if hooks is not None:
                     failed_result = (
@@ -1279,17 +1287,16 @@ class LocalActionExecutor:
                     hooks.after(action, token, failed_result)
             finally:
                 if attempt is not None:
-                    self._finish_code_attempt(attempt, "failed")
+                    self._finish_code_attempt(
+                        attempt, attempt_state_for_exception(exc, otherwise="failed")
+                    )
             raise
         try:
             if hooks is not None:
                 hooks.after(action, token, result)
             if attempt is not None:
                 attempt[0].mark_execution_attempt_capture(attempt[1])
-                self._finish_code_attempt(
-                    attempt,
-                    self._attempt_terminal_state(result),
-                )
+                self._finish_code_attempt(attempt, attempt_state_for_result(result))
         except BaseException:
             if attempt is not None:
                 self._finish_code_attempt(attempt, "record_failed")
@@ -1306,7 +1313,12 @@ class LocalActionExecutor:
         # while those synthesized dicts carry only "error".
         if isinstance(result, dict) and "stdout" in result:
             note_execution_evidence(state.metadata, cells=1)
-        observation = format_observation(result)
+        observation = format_observation(
+            result,
+            cell_id=evidence_cell_id(
+                self.dispatcher, attempt[2] if attempt is not None else None
+            ),
+        )
         if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
             reply.content
         ):
@@ -1367,16 +1379,22 @@ class LocalActionExecutor:
             terminal_state=state,
         )
 
-    @staticmethod
-    def _attempt_terminal_state(result: dict | None) -> str:
-        if not isinstance(result, dict):
-            return "failed"
-        if result.get("interrupted"):
-            return "interrupted"
-        error = str(result.get("error") or "")
-        if "timed out" in error.lower() or "timeout" in error.lower():
-            return "timed_out"
-        return "failed" if error else "completed"
+    def _attempt_generation(
+        self, action: CodeCell, result: dict, state: RunState
+    ) -> str | None:
+        """The durable generation that produced this Cell's result, if known."""
+        if action.language != "r":
+            python_generation = state.metadata.get("durable_kernel_generation_id")
+            return str(python_generation) if python_generation else None
+        # ``execute_r`` registers the R worker it is about to run on with this
+        # recorder, so the open R row names that worker — but only when a
+        # kernel produced the result. A spawn failure, a dead worker or a
+        # cancellation synthesizes a dict without "stdout" (the same line the
+        # evidence ledger draws below), and the recorder's R row may then still
+        # name the previous, dead worker: absent beats wrong.
+        if self.generation_recorder is None or "stdout" not in result:
+            return None
+        return self.generation_recorder.current("r")
 
     def _record_kernel_generation(self, state: RunState) -> None:
         """Publish generation continuity without inventing missing identity."""
@@ -1401,31 +1419,36 @@ class LocalActionExecutor:
         else:
             calls, errors = parse_tool_calls(reply.content, self.tool_catalog)
         if calls or errors:
+            # ``run_tool_calls`` dispatches only the first
+            # MAX_TOOL_CALLS_PER_TURN parsed calls and reports how each ended.
+            # Count only calls that ran ok: an unknown name or invalid
+            # arguments are refused before the dispatcher, and a precheck
+            # block, a permission denial or a soft-fail result executed none of
+            # the work a later execution-shaped finalize claim may name.
+            executed: list[Any] = []
+
+            def count_executed(call: Any, ok: bool) -> None:
+                if ok is True and call_reaches_dispatcher(
+                    (call or {}).get("name"),
+                    self.tool_catalog,
+                    (call or {}).get("arguments"),
+                ):
+                    executed.append(call)
+
             if self.tool_catalog is None:
-                observation = run_tool_calls(self.dispatcher, calls, errors)
+                observation = run_tool_calls(
+                    self.dispatcher, calls, errors, on_result=count_executed
+                )
             else:
                 observation = run_tool_calls(
                     self.dispatcher,
                     calls,
                     errors,
                     self.tool_catalog,
+                    on_result=count_executed,
                 )
-            # ``run_tool_calls`` dispatches only the first
-            # MAX_TOOL_CALLS_PER_TURN parsed calls; the remainder never ran.
-            # Of those, count only calls naming a known tool: an unknown name
-            # is refused before the dispatcher and executed nothing, so it must
-            # not back a later execution-shaped finalize claim.
-            executed = sum(
-                1
-                for call in calls[:MAX_TOOL_CALLS_PER_TURN]
-                if call_reaches_dispatcher(
-                    (call or {}).get("name"),
-                    self.tool_catalog,
-                    (call or {}).get("arguments"),
-                )
-            )
             if executed:
-                note_execution_evidence(state.metadata, tool_calls=executed)
+                note_execution_evidence(state.metadata, tool_calls=len(executed))
         elif has_incomplete_code_block(reply.content):
             observation = INCOMPLETE_CELL_NUDGE
         else:
@@ -1529,13 +1552,34 @@ def _budgeted(text: str, kind: str, workspace: str | None) -> str:
     return text[:_PREVIEW_HEAD] + marker + text[-_PREVIEW_TAIL:]
 
 
-def format_observation(result: dict) -> str:
+def evidence_cell_id(dispatcher: Any, cell_id: Any) -> str | None:
+    """The durable cell id to show the model, or ``None`` to show nothing.
+
+    Only while an explicit code mode arms the completion contract: its
+    ``test_evidence`` must name the producing cell, and that id is minted by
+    the Host, so the Observation is the one place the model can learn it.
+    Every other run keeps its Observation byte for byte.
+    """
+
+    from openai4s.host.code_evidence import requires_code_evidence
+
+    mode = getattr(dispatcher, "binding_task_mode", None)
+    if not requires_code_evidence(mode) or not cell_id:
+        return None
+    return str(cell_id)
+
+
+def format_observation(result: dict, *, cell_id: str | None = None) -> str:
     """Format one kernel result as the stable observation protocol.
 
     Oversized stdout/stderr are previewed and their full bytes spilled to a
-    workspace-relative content reference the agent can open.
+    workspace-relative content reference the agent can open. ``cell_id`` adds
+    a ``[cell id: …]`` line directly under the header; callers pass it only
+    when a completion contract needs the model to cite the cell.
     """
     parts = ["[Observation]"]
+    if cell_id:
+        parts.append(f"[cell id: {cell_id}]")
     out = result.get("stdout") or ""
     err = result.get("stderr") or ""
     error = result.get("error")
@@ -1582,5 +1626,6 @@ __all__ = [
     "LocalActionExecutor",
     "TranscriptEventSink",
     "TranscriptTurn",
+    "evidence_cell_id",
     "format_observation",
 ]

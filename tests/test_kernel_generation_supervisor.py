@@ -124,6 +124,33 @@ def test_r_generation_records_actual_rscript_instead_of_manager_python(tmp_path)
     assert row["environment"]["interpreter"] == "/opt/r/bin/Rscript"
 
 
+def test_python_generation_runtime_is_the_language_not_the_protocol_mode(tmp_path):
+    """Every Web Python kernel is `Kernel(mode="repl")`.
+
+    The supervisor stored that protocol mode as the environment *runtime*, so
+    each Web Python generation read `runtime: "repl"` and the artifact
+    snapshot took its non-Python branch: no packages and a false "repl kernel:
+    Python distribution metadata does not apply". The fakes above never set a
+    Python mode, so none of them could see it. The mode is still recorded, as
+    `kernel_mode`, where it cannot be mistaken for a language.
+    """
+    store = Store(tmp_path / "repl-generation.db")
+    supervisor = KernelSupervisor(
+        root_frame_id="root-repl",
+        generations=store,
+        owner_instance_id="daemon-a",
+        clock_ms=lambda: 1000,
+    )
+    kernel = _Kernel("base")
+    kernel.mode = "repl"
+    lease = supervisor.ensure("python", "base", lambda: kernel)
+
+    environment = store.get_kernel_generation(lease.generation_id)["environment"]
+    assert environment["runtime"] == "python"
+    assert environment["kernel_mode"] == "repl"
+    assert environment["interpreter"] == "/env/base/bin/python"
+
+
 def test_recovery_candidate_generation_is_created_only_when_published(tmp_path):
     store = Store(tmp_path / "recover-publish.db")
     supervisor = KernelSupervisor(

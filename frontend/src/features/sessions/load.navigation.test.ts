@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
 vi.mock("./dashboard", () => ({ showWorkspace: vi.fn(), showDashboard: vi.fn() }));
 
-import { _msgEarlierLoading, _openGen, _foldersFor, _sessionsLoadingMore, folders, foldersLoading, foldersLoadError, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError } from "../../stores/session";
+import { _msgEarlierLoading, _openGen, currentId, _foldersFor, _sessionsLoadingMore, folders, foldersLoading, foldersLoadError, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { api } from "./api";
 import { binds } from "./binds";
@@ -35,15 +35,16 @@ beforeEach(() => {
 });
 
 describe("session navigation owns every response", () => {
-  it("a sidebar-only project switch releases the earlier-history loading latch", () => {
-    // selectProject is the one caller that bumps the generation while keeping
-    // the conversation open, so nothing else ever resets this flag: the
-    // superseded paging request skips its own finally on a stale generation
-    // and "Load earlier" stayed disabled for the rest of the session.
+  it("a sidebar-only project switch keeps the open conversation's reads, and beginNavigation releases the latch", () => {
+    // The menu filters the sidebar; it must not retire the view. A paging
+    // request superseded by a real navigation does skip its own finally, so
+    // beginNavigation is what clears the latch it can no longer clear itself.
+    currentId.value = "open-frame";
     _msgEarlierLoading.value = true;
+    const before = _openGen.value;
     selectProject("p2");
-    expect(_msgEarlierLoading.value).toBe(false);
-    _msgEarlierLoading.value = true;
+    expect(_openGen.value).toBe(before);
+    expect(_msgEarlierLoading.value).toBe(true);
     beginNavigation();
     expect(_msgEarlierLoading.value).toBe(false);
   });

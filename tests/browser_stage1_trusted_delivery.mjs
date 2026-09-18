@@ -592,7 +592,6 @@ async function runAcceptance() {
       OPENAI4S_DATA_DIR: owned.dataDir,
       OPENAI4S_HOST: "127.0.0.1",
       OPENAI4S_PORT: String(port),
-      OPENAI4S_REQUIRE_TOKEN: "1",
       OPENAI4S_STAGE1_TRUSTED_DELIVERY: "1",
       OPENAI4S_ENV_ROOTS: envRoot,
       OPENAI4S_ENV_GENERATIONS_ROOT: path.join(owned.dataDir, ".no-generations"),

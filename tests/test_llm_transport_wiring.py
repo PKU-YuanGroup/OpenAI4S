@@ -19,12 +19,13 @@ production was unwired — proving the seam, not the plumbing, is the point.
 
 import io
 import json
+import socket
 import urllib.error
 
 import pytest
 
 from openai4s.config import LLMConfig
-from openai4s.llm import chat
+from openai4s.llm import chat, transport
 from openai4s.llm.models import TransportError
 
 
@@ -529,15 +530,7 @@ def test_cancel_between_stream_refusal_and_fallback_preserves_metadata(
     assert raised.value.retry_after == 2
 
 
-@pytest.mark.parametrize(
-    "reason",
-    [
-        "connection refused",
-        ConnectionResetError("uncertain write"),
-        TimeoutError("uncertain response"),
-    ],
-)
-def test_uncertain_url_error_is_not_replayed(monkeypatch, reason):
+def _sends_for(monkeypatch, reason):
     sends = []
 
     def urlopen(req, **kwargs):
@@ -548,7 +541,41 @@ def test_uncertain_url_error_is_not_replayed(monkeypatch, reason):
     monkeypatch.setattr("time.sleep", lambda _s: None)
     with pytest.raises(TransportError):
         chat([{"role": "user", "content": "hi"}], _cfg(), on_delta=lambda _piece: None)
-    assert len(sends) == 1
+    return sends
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # Prose is not evidence: a provider that *says* "connection refused"
+        # has not proved the request never left this machine.
+        "connection refused",
+        # A reset can land after the write, so a replay could duplicate it.
+        ConnectionResetError("uncertain write"),
+        OSError("uncertain write"),
+    ],
+)
+def test_uncertain_url_error_is_not_replayed(monkeypatch, reason):
+    assert len(_sends_for(monkeypatch, reason)) == 1
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        ConnectionRefusedError(61, "Connection refused"),
+        socket.gaierror(8, "nodename nor servname provided, or not known"),
+        # A *connect* timeout. `state.sent` is what separates it from a read
+        # timeout: nothing was written, so the request is replayable.
+        TimeoutError(60, "Operation timed out"),
+    ],
+)
+def test_a_connect_phase_failure_is_still_replayed(monkeypatch, reason):
+    """The whole point of the retry policy: a request that provably never
+    reached the provider is the one case where "no response" is safe to
+    replay. Narrowing this to `ConnectionRefusedError` alone made a DNS blip
+    or a connect timeout fail a turn on its first attempt."""
+
+    assert len(_sends_for(monkeypatch, reason)) == transport.DEFAULT_MAX_ATTEMPTS
 
 
 def test_separate_logical_calls_do_not_share_consumed_attempts(monkeypatch):

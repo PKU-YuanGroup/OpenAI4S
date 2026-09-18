@@ -678,8 +678,11 @@ def test_code_observation_notes_an_incomplete_tail_after_the_executed_cell():
 def test_none_action_keeps_legacy_tool_fallback_as_user_history(monkeypatch):
     calls = []
 
-    def fake_run(dispatcher, parsed_calls, errors):
+    def fake_run(dispatcher, parsed_calls, errors, *, on_result=None):
         calls.append((dispatcher, parsed_calls, errors))
+        for parsed in parsed_calls:
+            if on_result is not None:
+                on_result(parsed, True)
         return "[Tool Results]\nlegacy result"
 
     monkeypatch.setattr(runtime, "run_tool_calls", fake_run)
@@ -1098,3 +1101,207 @@ def test_a_delegated_child_of_a_metered_session_drains_too():
     assert child._session_is_metered() is False
     child.dispatcher = None  # no Store at all: unmetered, never an error
     assert child._session_is_metered() is False
+
+
+# --- R Cell attempts name the R kernel generation ---------------------------
+#
+# The CLI bound a durable generation only to Python Cell attempts, although
+# ``Agent._execute_r`` registers the R worker with the same recorder right
+# before running the Cell. An R attempt therefore named no generation. It must
+# name the R row, but only when a kernel produced the result: a spawn failure,
+# a dead worker or a cancellation returns a synthesized dict without
+# ``stdout``, and the recorder's R row may then still name the previous, dead
+# worker — binding it would be provenance that is wrong rather than absent.
+
+
+class _GenerationAttemptStore:
+    def __init__(self) -> None:
+        self.allocated = 0
+        self.bound: list[tuple[str, str]] = []
+        self.finished: list[tuple[str, str]] = []
+
+    def allocate_execution_attempt(self, *, group_id, producing_cell_id):
+        self.allocated += 1
+        return {"attempt_id": f"attempt-{self.allocated}"}
+
+    def mark_execution_attempt_started(self, attempt_id):
+        pass
+
+    def mark_execution_attempt_response(self, attempt_id):
+        pass
+
+    def mark_execution_attempt_capture(self, attempt_id):
+        pass
+
+    def bind_execution_attempt_generation(self, attempt_id, generation_id):
+        self.bound.append((attempt_id, generation_id))
+
+    def finish_execution_attempt(self, attempt_id, *, terminal_state):
+        self.finished.append((attempt_id, terminal_state))
+
+
+class _Recorder:
+    """The KernelGenerationRecorder surface the executor reads."""
+
+    def __init__(self, open_rows: dict[str, str]) -> None:
+        self.open_rows = dict(open_rows)
+
+    def observe(self, kernel, *, language="python"):
+        return self.open_rows.get(language)
+
+    def current(self, language="python"):
+        return self.open_rows.get(language)
+
+
+def _generation_executor(execute_r, recorder, kernel=None):
+    store = _GenerationAttemptStore()
+    executor = LocalActionExecutor(
+        kernel or FakeKernel(),
+        FakeDispatcher(),
+        lambda code, messages: None,
+        execute_r,
+        action_ledger=SimpleNamespace(current_group_id="group-1", store=store),
+        generation_recorder=recorder,
+    )
+    return executor, store
+
+
+def _run_r(executor, state=None):
+    executor.execute(
+        CodeCell("r", "print(1 + 1)\n"),
+        ModelReply(content="```r\nprint(1 + 1)\n```"),
+        state if state is not None else RunState([]),
+    )
+
+
+def test_cli_r_cell_attempt_binds_the_r_kernel_generation():
+    executor, store = _generation_executor(
+        lambda code, **kwargs: {"stdout": "[1] 2\n", "stderr": "", "error": None},
+        _Recorder({"r": "gen-r-live", "python": "gen-py"}),
+    )
+
+    _run_r(executor)
+
+    assert store.bound == [("attempt-1", "gen-r-live")]
+    assert store.finished == [("attempt-1", "completed")]
+
+
+def test_cli_r_cell_error_result_from_the_kernel_still_names_its_generation():
+    executor, store = _generation_executor(
+        lambda code, **kwargs: {
+            "stdout": "",
+            "stderr": "",
+            "error": "Error in stop('boom'): boom",
+        },
+        _Recorder({"r": "gen-r-live"}),
+    )
+
+    _run_r(executor)
+
+    assert store.bound == [("attempt-1", "gen-r-live")]
+    assert store.finished == [("attempt-1", "failed")]
+
+
+@pytest.mark.parametrize(
+    "synthesized",
+    [
+        {"error": "R kernel unavailable: Rscript not found"},
+        {"error": "R kernel failed: kernel worker exited unexpectedly"},
+        {"error": "Interrupted", "interrupted": True},
+    ],
+    ids=["spawn-failed", "worker-died", "cancelled-before-run"],
+)
+def test_cli_r_soft_error_never_binds_a_stale_generation(synthesized):
+    executor, store = _generation_executor(
+        lambda code, **kwargs: dict(synthesized),
+        # The recorder's open R row still names the worker that died before.
+        _Recorder({"r": "gen-r-dead"}),
+    )
+
+    _run_r(executor)
+
+    assert store.bound == []
+    assert len(store.finished) == 1
+
+
+def test_cli_r_and_python_attempts_name_their_own_generations():
+    class GenerationKernel(FakeKernel):
+        generation = 3
+
+        def execute(self, code, origin=None, cell_id=None):
+            return super().execute(code, origin)
+
+    executor, store = _generation_executor(
+        lambda code, **kwargs: {"stdout": "[1] 2\n", "error": None},
+        _Recorder({"r": "gen-r", "python": "gen-py"}),
+        kernel=GenerationKernel(),
+    )
+    state = RunState([])
+
+    _run_r(executor, state)
+    executor.execute(
+        CodeCell("python", "print(2 + 2)\n"),
+        ModelReply(content="```python\nprint(2 + 2)\n```"),
+        state,
+    )
+
+    assert [generation for _attempt, generation in store.bound] == ["gen-r", "gen-py"]
+
+
+def test_cli_r_attempt_without_a_recorder_binds_nothing():
+    executor, store = _generation_executor(
+        lambda code, **kwargs: {"stdout": "[1] 2\n", "error": None},
+        None,
+    )
+
+    _run_r(executor)
+
+    assert store.bound == []
+
+
+def _real_r_available() -> bool:
+    from openai4s.kernel.r_kernel import resolve_r_interpreter
+
+    return resolve_r_interpreter() is not None
+
+
+@pytest.mark.skipif(
+    not _real_r_available(), reason="no Rscript resolvable on this machine"
+)
+def test_cli_run_r_cell_attempt_names_the_durable_r_generation(monkeypatch, tmp_path):
+    """End to end: a real R worker and a real Python worker in one CLI run."""
+    import openai4s.agent.loop as loop_mod
+    from openai4s.agent import Agent
+    from openai4s.config import get_config
+    from openai4s.store import get_store
+
+    replies = [
+        "```r\nprint(1 + 1)\n```",
+        "```python\nprint(2 + 2)\n```",
+        "```python\nhost.submit_output({'summary': 'ok'}, ['Printed 2 and 4'])\n```",
+    ]
+
+    def chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        return {"content": replies.pop(0), "usage": {}}
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    monkeypatch.chdir(tmp_path)
+    agent = Agent(cfg=get_config(), use_skills=False, allow_delegate=False)
+    result = agent.run("Run one R cell, then one Python cell")
+    assert result["stop_reason"] == "submitted"
+
+    store = get_store(get_config().db_path)
+    r_generation = store.latest_kernel_generation(agent.frame_id, "r")
+    py_generation = store.latest_kernel_generation(agent.frame_id, "python")
+    assert r_generation is not None and py_generation is not None
+    attempts = sorted(
+        store.list_execution_attempts(root_frame_id=agent.frame_id),
+        key=lambda attempt: attempt["allocated_at"],
+    )
+    assert len(attempts) == 3
+    assert (
+        attempts[0]["generation_id"] == r_generation["generation_id"]
+    ), "the R cell's execution attempt names no kernel generation"
+    assert attempts[1]["generation_id"] == py_generation["generation_id"]
+    assert r_generation["generation_id"] != py_generation["generation_id"]

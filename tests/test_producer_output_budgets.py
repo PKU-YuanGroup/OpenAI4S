@@ -815,6 +815,22 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
         kernel.shutdown()
 
 
+#: R, run inside a cell: bind ``worker_private`` to the worker's private
+#: environment, found through the worker functions on the cell's own call stack.
+#: The worker keeps nothing in ``.GlobalEnv`` (a cell clearing it must not
+#: delete the kernel), so this is how a test reaches a helper to replace it.
+_R_FIND_WORKER_ENV = """
+worker_private <- (function() {
+  for (k in rev(seq_len(sys.nframe()))) {
+    env <- environment(sys.function(k))
+    if (is.environment(env) &&
+        exists('.oai4s_handle_line', envir = env, inherits = FALSE)) return(env)
+  }
+  stop('no worker environment on the call stack')
+})()
+"""
+
+
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
 @pytest.mark.parametrize(
     ("raise_condition", "expected_error", "interrupted"),
@@ -842,14 +858,20 @@ def test_r_top_level_fallback_preserves_host_capture(
     response. Replace the dispatcher for one frame instead: it writes known
     bytes to the real host FIFOs, restores itself, then raises outside the
     cell handler so the top-level interrupt/error fallback must respond.
+
+    The dispatcher is not a ``.GlobalEnv`` binding -- the worker keeps its
+    state in a private environment so a cell clearing the user namespace
+    cannot delete it -- so the patch reaches that environment through the
+    worker functions on this cell's own call stack.
     """
     from openai4s.kernel.r_kernel import spawn_r_kernel
 
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
         setup = f"""
-.oai4s_saved_handle_line <- .oai4s_handle_line
-.oai4s_handle_line <- function(line) {{
+{_R_FIND_WORKER_ENV}
+.oai4s_saved_handle_line <- get('.oai4s_handle_line', envir = worker_private)
+assign('.oai4s_handle_line', function(line) {{
   frame <- jsonlite::fromJSON(line, simplifyVector = TRUE)
   if (is.null(frame$sink_out)) {{
     # Only an execute frame carries sinks. Hand anything else back rather than
@@ -859,7 +881,7 @@ def test_r_top_level_fallback_preserves_host_capture(
     # whole 5 s budget before SIGKILLing a worker that never saw the request.
     return(.oai4s_saved_handle_line(line))
   }}
-  assign('.oai4s_handle_line', .oai4s_saved_handle_line, envir = globalenv())
+  assign('.oai4s_handle_line', .oai4s_saved_handle_line, envir = worker_private)
   out_con <- fifo(as.character(frame$sink_out), open = 'wb', blocking = TRUE)
   err_con <- fifo(as.character(frame$sink_err), open = 'wb', blocking = TRUE)
   writeBin(charToRaw('fallback stdout\\n'), out_con)
@@ -867,7 +889,7 @@ def test_r_top_level_fallback_preserves_host_capture(
   flush(out_con); flush(err_con)
   close(out_con); close(err_con)
   {raise_condition}
-}}
+}}, envir = worker_private)
 """
         primed = kernel.execute(setup)
         assert primed["error"] is None, primed
@@ -897,6 +919,82 @@ def test_r_top_level_fallback_preserves_host_capture(
         after = kernel.execute("cat('still here\\n')")
         assert after["stdout"] == "still here\n"
         assert after["usage"]["stdout_truncated"] is False
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+@pytest.mark.parametrize("failing_helper", (".oai4s_unwind_sinks", ".oai4s_respond"))
+def test_r_top_level_fallback_cannot_halt_rscript_or_hang_the_host(
+    tmp_path, failing_helper
+):
+    """The fallback's own helpers failing is a reported outcome, never a halt.
+
+    The fallback runs at the read loop's top level, where nothing else catches
+    a condition. Its sink unwind and its response were called bare, so when
+    either raised -- as both did once a cell had deleted them -- Rscript halted
+    and the session's state went with it.
+
+    - The unwind failing costs nothing: the frame is still answered and the
+      same process serves the next cell.
+    - The response itself failing leaves nothing that can answer the frame.
+      Swallowing that and reading on would leave the manager blocked on an id
+      that never arrives, which is a hang; the worker exits instead, and the
+      host reports a dead worker promptly.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        setup = f"""
+{_R_FIND_WORKER_ENV}
+saved_handle_line <- get('.oai4s_handle_line', envir = worker_private)
+saved_helper <- get('{failing_helper}', envir = worker_private)
+assign('.oai4s_handle_line', function(line) {{
+  frame <- jsonlite::fromJSON(line, simplifyVector = TRUE)
+  if (is.null(frame$sink_out)) return(saved_handle_line(line))
+  assign('.oai4s_handle_line', saved_handle_line, envir = worker_private)
+  out_con <- fifo(as.character(frame$sink_out), open = 'wb', blocking = TRUE)
+  err_con <- fifo(as.character(frame$sink_err), open = 'wb', blocking = TRUE)
+  close(out_con); close(err_con)
+  assign('{failing_helper}', function(...) {{
+    assign('{failing_helper}', saved_helper, envir = worker_private)
+    stop('helper failed')
+  }}, envir = worker_private)
+  stop('forced')
+}}, envir = worker_private)
+"""
+        primed = kernel.execute(setup)
+        assert primed["error"] is None, primed
+        pid = kernel.pid
+
+        outcome: dict = {}
+
+        def run() -> None:
+            try:
+                outcome["result"] = kernel.execute("ignored")
+            except RuntimeError as error:
+                outcome["error"] = str(error)
+
+        runner = threading.Thread(target=run, daemon=True)
+        runner.start()
+        runner.join(60)
+        if runner.is_alive():
+            os.kill(pid, 9)
+            runner.join(10)
+            pytest.fail("the worker neither answered the frame nor exited")
+
+        if failing_helper == ".oai4s_unwind_sinks":
+            assert "error" not in outcome, outcome
+            assert outcome["result"]["error"] == (
+                "openai4s r_worker internal error: forced"
+            )
+            assert kernel.is_alive() and kernel.pid == pid
+            after = kernel.execute("cat('still here\\n')")
+            assert after["stdout"] == "still here\n"
+        else:
+            assert "exited unexpectedly" in outcome.get("error", ""), outcome
+            assert not kernel.is_alive()
     finally:
         kernel.shutdown()
 

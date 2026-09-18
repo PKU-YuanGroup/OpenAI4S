@@ -11,6 +11,7 @@
 
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
+import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
 import { liveCells, _liveCell } from "../../stores/notebook";
 import { stream as liveStream, stepEls } from "../../stores/stream";
@@ -28,8 +29,10 @@ import {
   rememberCandidateIdentity,
   setLiveReviewBadge,
 } from "./identity";
+import { markCardRunning } from "./cardState";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { down } from "./scroll";
+import { appendLiveStoppedMarker, cancelledIdentity } from "./stopped";
 
 export const TOOL_LABELS: Record<string, string> = {
   run_python: "toolLabel.runPython",
@@ -258,21 +261,21 @@ export function feed(
       const card = el("div", "activity" + (suba ? " subagent" : ""));
       const h = el("div", "a-head");
       const ic = el("span", "ic");
-      ic.setAttribute("data-icon", "check");
-      ic.setAttribute("data-icon-size", "16");
+      paintIcon(ic, "check", 16);
       h.appendChild(ic);
       h.appendChild(el("span", "lbl", label));
       const meta = el("span", "meta", "");
       h.appendChild(meta);
       const chev = el("span", "chev-t");
-      chev.setAttribute("data-icon", "chevron-down");
-      chev.setAttribute("data-icon-size", "14");
+      paintIcon(chev, "chevron-down", 14);
       h.appendChild(chev);
       const { pre, handle } = newToolPre();
       handle.append(raw + "\n");
       card.appendChild(h);
       card.appendChild(pre);
       h.onclick = () => card.classList.toggle("open");
+      // Not a success check until the cell says so (cardState.ts).
+      if (!suba) markCardRunning(card, event);
       sealText(st);
       st.wrap.appendChild(card);
       st.toolPre = pre;
@@ -317,6 +320,14 @@ export function feed(
       }
     }
   } else {
+    // The stopped marker is rendered as a marker, not appended as prose, so
+    // live matches the reopened transcript and follows the UI language.
+    const stopped = event ? cancelledIdentity(event.cancelled) : null;
+    if (stopped) {
+      appendLiveStoppedMarker(st, stopped);
+      down();
+      return;
+    }
     st.text += chunk;
     st.full += chunk;
     st.md.classList.add("cursor");

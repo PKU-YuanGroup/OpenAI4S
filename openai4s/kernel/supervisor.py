@@ -698,7 +698,7 @@ class KernelSupervisor:
     ) -> dict[str, Any]:
         now = self._clock_ms()
         generation_id = generation_id or str(uuid.uuid4())
-        environment = self._environment_metadata(kernel, key)
+        environment = self._environment_metadata(kernel, key, language=language)
         if self._generations is None or self._root_frame_id is None:
             return {
                 "generation_id": generation_id,
@@ -776,22 +776,43 @@ class KernelSupervisor:
             return None
 
     @classmethod
-    def _environment_metadata(cls, kernel: Any, key: Hashable | None) -> dict[str, Any]:
+    def _environment_metadata(
+        cls, kernel: Any, key: Hashable | None, *, language: str | None = None
+    ) -> dict[str, Any]:
         mode = getattr(kernel, "mode", None)
         argv = getattr(kernel, "argv", None)
         interpreter = getattr(kernel, "python", None)
-        if mode == "r" and isinstance(argv, (list, tuple)) and len(argv) >= 2:
+        # The runtime is the slot's *language*. ``Kernel.mode`` is the worker's
+        # host-facade/protocol mode ("repl" for every Web Python kernel), and
+        # storing it here made each Web Python generation read as a non-Python
+        # runtime, so its artifacts recorded no packages and a false "does not
+        # apply". The mode is kept, under its own name.
+        if language:
+            runtime = str(language).lower()
+        else:
+            runtime = "r" if str(mode or "").lower() == "r" else "python"
+        if runtime == "r" and isinstance(argv, (list, tuple)) and len(argv) >= 2:
             # r_kernel.r_argv ends with ``<Rscript> <r_worker.R>``.
             interpreter = argv[-2]
+        remote = getattr(kernel, "transport_factory", None) is not None
+        if remote:
+            # A remote worker runs on another machine. ``Kernel.python``
+            # defaults to this daemon's own ``sys.executable``, which is not
+            # the worker's interpreter; recording it would let a capture
+            # freeze the daemon's packages and attribute them to the worker.
+            interpreter = None
         metadata: dict[str, Any] = {
             "key": cls._json_safe(key),
-            "runtime": mode or "python",
+            "runtime": runtime,
+            "kernel_mode": mode if isinstance(mode, str) else None,
             "interpreter": interpreter,
             "worker_argv": cls._json_safe(argv),
             "environment_root": getattr(kernel, "env_root", None),
             "environment_name": getattr(kernel, "env_name", None),
             "working_directory": getattr(kernel, "cwd", None),
         }
+        if remote:
+            metadata["execution_plane"] = "remote"
         try:
             sandbox = getattr(kernel, "sandbox_status", None)
             if sandbox is not None:

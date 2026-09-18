@@ -715,3 +715,271 @@ def test_legacy_unknown_or_invalid_tool_calls_never_count_as_evidence():
         state = RunState([])
         local.execute(None, ModelReply(content=content), state)
         assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 0}
+
+
+# --- a dispatched-but-refused call is not execution evidence ---------------
+#
+# ``call_reaches_dispatcher`` only proves a call *would* be dispatched. The
+# dispatcher's own permission gate, the tool's static precheck, a soft-fail
+# ``{"error": ...}`` result and a raised dispatch all come after it, and none of
+# them executed the work a later bullet may claim. Evidence therefore counts a
+# native call only once its dispatch reports ``ok``.
+
+_DENIAL = "Permission denied: approval required but no interactive channel is attached"
+_ZERO_EVIDENCE = {"cells": 0, "tool_calls": 0}
+
+
+def _native(name, arguments, *, call_id="t-1"):
+    return NativeToolCall(
+        id=call_id,
+        wire_id=f"wire-{call_id}",
+        name=name,
+        ordinal=0,
+        raw_arguments=json.dumps(arguments),
+        arguments=arguments,
+        parse_error=None,
+    )
+
+
+class _ScriptedHost:
+    """A HostDispatcher double answering each method with a fixed result."""
+
+    last_output = None
+
+    def __init__(self, result):
+        self.result = result
+        self.methods: list[str] = []
+
+    def __call__(self, method, args):
+        self.methods.append(method)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
+def _local_with(dispatcher):
+    return LocalActionExecutor(
+        _NeverKernel(),
+        dispatcher,
+        lambda code, messages: None,
+        lambda code: {"error": "R must not start"},
+    )
+
+
+def _web_with(dispatcher):
+    sent = []
+    return WebActionExecutor(
+        dispatcher=lambda: dispatcher,
+        apply_pending=lambda: None,
+        execute_cell=lambda action: (_ for _ in ()).throw(
+            AssertionError("a native-tool turn ran a cell")
+        ),
+        events=WebEventSink(sent.append, "frame-1", [], lambda usage: None),
+        prose_nudge="nudge",
+        explore_nudge="explore",
+    )
+
+
+def _assert_claim_refused(executor, state):
+    call = _call(_prose_arguments(completion_bullets=["Wrote out.csv"]))
+    outcome = executor.execute(
+        FinalizeAction(call), ModelReply(tool_calls=(call,)), state
+    )
+    assert outcome.history_messages[0]["is_error"] is True
+    assert "ledger" in outcome.history_messages[0]["content"]
+    assert outcome.completion is None
+
+
+@pytest.mark.parametrize("make_executor", [_local_with, _web_with], ids=["cli", "web"])
+def test_permission_denied_native_call_never_counts_as_execution_evidence(
+    make_executor,
+):
+    host = _ScriptedHost({"error": _DENIAL})
+    executor = make_executor(host)
+    denied = _native("write_file", {"path": "out.csv", "content": "x,y\n"})
+    state = RunState([])
+
+    outcome = executor.execute(
+        NativeToolBatch((denied,)), ModelReply(tool_calls=(denied,)), state
+    )
+
+    # The call really reached the dispatcher, whose gate refused it.
+    assert host.methods == ["write_file"]
+    assert outcome.history_messages[0]["is_error"] is True
+    assert "Permission denied" in outcome.history_messages[0]["content"]
+    assert execution_evidence(state.metadata) == _ZERO_EVIDENCE
+    _assert_claim_refused(executor, state)
+
+
+@pytest.mark.parametrize("make_executor", [_local_with, _web_with], ids=["cli", "web"])
+def test_raised_native_dispatch_never_counts_as_execution_evidence(make_executor):
+    host = _ScriptedHost(RuntimeError("dispatcher exploded"))
+    executor = make_executor(host)
+    call = _native("list_dir", {"path": "."})
+    state = RunState([])
+
+    outcome = executor.execute(
+        NativeToolBatch((call,)), ModelReply(tool_calls=(call,)), state
+    )
+
+    assert host.methods == ["list_dir"]
+    assert outcome.history_messages[0]["is_error"] is True
+    assert execution_evidence(state.metadata) == _ZERO_EVIDENCE
+
+
+@pytest.mark.parametrize("make_executor", [_local_with, _web_with], ids=["cli", "web"])
+def test_precheck_refused_native_call_never_counts_as_execution_evidence(
+    make_executor,
+):
+    host = _ScriptedHost({"ok": True})
+    executor = make_executor(host)
+    noop = _native(
+        "edit_file", {"path": "a.txt", "old_string": "same", "new_string": "same"}
+    )
+    state = RunState([])
+
+    outcome = executor.execute(
+        NativeToolBatch((noop,)), ModelReply(tool_calls=(noop,)), state
+    )
+
+    assert host.methods == []
+    assert "no-op edit" in outcome.history_messages[0]["content"]
+    assert execution_evidence(state.metadata) == _ZERO_EVIDENCE
+    _assert_claim_refused(executor, state)
+
+
+@pytest.mark.parametrize("make_executor", [_local_with, _web_with], ids=["cli", "web"])
+def test_only_the_succeeded_calls_of_a_mixed_native_batch_count(make_executor):
+    class PerMethodHost(_ScriptedHost):
+        def __call__(self, method, args):
+            self.methods.append(method)
+            if method == "write_file":
+                return {"error": _DENIAL}
+            return {"entries": ["a.txt"]}
+
+    host = PerMethodHost(None)
+    executor = make_executor(host)
+    batch = NativeToolBatch(
+        (
+            _native("list_dir", {"path": "."}, call_id="t-1"),
+            _native("write_file", {"path": "b.txt", "content": "b"}, call_id="t-2"),
+        )
+    )
+    state = RunState([])
+
+    executor.execute(batch, ModelReply(tool_calls=batch.calls), state)
+
+    assert host.methods == ["list_dir", "write_file"]
+    # The successful read is still evidence: counting stays conservative.
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 1}
+
+
+@pytest.mark.parametrize("make_executor", [_local_with, _web_with], ids=["cli", "web"])
+def test_legacy_permission_denied_tool_call_never_counts_as_evidence(make_executor):
+    host = _ScriptedHost({"error": _DENIAL})
+    executor = make_executor(host)
+    content = (
+        '```tool\n{"name": "write_file", "arguments": '
+        '{"path": "out.csv", "content": "x"}}\n```'
+    )
+    state = RunState([])
+
+    outcome = executor.execute(None, ModelReply(content=content), state)
+
+    assert host.methods == ["write_file"]
+    assert "Permission denied" in str(outcome.observation)
+    assert execution_evidence(state.metadata) == _ZERO_EVIDENCE
+    _assert_claim_refused(executor, state)
+
+    succeeded = _ScriptedHost({"entries": []})
+    control = make_executor(succeeded)
+    state = RunState([])
+    control.execute(
+        None,
+        ModelReply(
+            content='```tool\n{"name": "list_dir", "arguments": {"path": "."}}\n```'
+        ),
+        state,
+    )
+    assert succeeded.methods == ["list_dir"]
+    assert execution_evidence(state.metadata) == {"cells": 0, "tool_calls": 1}
+
+
+def test_cli_run_denied_native_tool_cannot_back_a_wrote_claim(monkeypatch, tmp_path):
+    """End to end through the CLI composition under the unattended deny posture.
+
+    A model that issues one approval-gated call, is denied, and then finalizes
+    with an execution claim must be refused; the honest restatement is what
+    the run submits.
+    """
+    import openai4s.agent.loop as loop_mod
+    from openai4s.agent import Agent
+
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "deny")
+    scripted = [
+        (
+            # The live pattern: a no-op dynamic tool right before finalizing.
+            "define_dynamic_tool",
+            {
+                "name": "noop",
+                "description": "noop",
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "object"},
+                "implementation": "def execute(args):\n    return {}\n",
+            },
+        ),
+        (
+            "finalize_response",
+            {
+                "summary": "Done.",
+                "completion_bullets": ["Wrote the classification cell"],
+            },
+        ),
+        (
+            "finalize_response",
+            {
+                "summary": "The file could not be written.",
+                "completion_bullets": ["Explained the permission limitation"],
+            },
+        ),
+    ]
+    observations: list[str] = []
+
+    def chat(messages, cfg, **kwargs):
+        del cfg, kwargs
+        observations.extend(
+            str(message.get("content") or "")
+            for message in messages
+            if message.get("role") == "tool"
+        )
+        name, arguments = scripted.pop(0)
+        call = {
+            "id": f"call-{len(scripted)}",
+            "wire_id": f"wire-{len(scripted)}",
+            "name": name,
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+        }
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    result = Agent(
+        use_skills=False, allow_delegate=False, max_turns=5, workspace=tmp_path
+    ).run("Write the classification cell")
+
+    assert any("Permission denied" in text for text in observations)
+    assert any("not backed by this run's ledger" in text for text in observations)
+    assert result["stop_reason"] == "submitted"
+    assert result["submitted_output"]["completion_bullets"] == [
+        "Explained the permission limitation"
+    ]

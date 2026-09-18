@@ -402,3 +402,20 @@ def test_only_closed_rows_carry_an_evidence_digest():
             f"{item['source']}/{item['original_id']} is {item['status']} and "
             f"{'carries' if has_digest else 'lacks'} an evidence digest"
         )
+
+
+def test_an_open_p0_row_is_named_by_a_recorded_decision(crosswalk):
+    """D12 accepts only `Completed` or named-unverified items, so an open P0 row
+    means the acceptance criterion is not met. That can be a deliberate,
+    recorded waiver; it cannot be something nobody wrote down. R2/P0-03 was
+    reopened and neither the decisions file nor anything else said so."""
+    decisions = (ROOT / "docs" / "v03-decisions.md").read_text("utf-8")
+    unrecorded = [
+        f"{item['source']}/{item['original_id']}"
+        for item in crosswalk["items"]
+        if item["status"] == "open" and item["original_priority"] == "P0"
+        if f"{item['source']}/{item['original_id']}" not in decisions
+    ]
+    assert (
+        not unrecorded
+    ), f"open P0 rows with no decision in docs/v03-decisions.md: {unrecorded}"

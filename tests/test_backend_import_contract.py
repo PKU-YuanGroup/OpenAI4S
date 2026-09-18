@@ -93,11 +93,18 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "scan_command",
         }
     ),
-    # `--auto`'s two composition entry points. Public surface of the CLI
-    # composition module, not internals reached across a boundary, so they
+    # `--auto`'s two composition entry points, and the `--allow-test-command`
+    # validator `cmd_run` applies before a rule exists. Public surface of the
+    # CLI composition module, not internals reached across a boundary, so they
     # belong here rather than in the private-debt allowlist below.
     "openai4s.agent.loop": frozenset(
-        {"Agent", "run_task", "enable_auto_run_environment", "review_cli_result"}
+        {
+            "Agent",
+            "run_task",
+            "allowed_test_command_error",
+            "enable_auto_run_environment",
+            "review_cli_result",
+        }
     ),
     "openai4s.server.gateway": frozenset(
         {"build_app_server", "run_server", "serve_app"}

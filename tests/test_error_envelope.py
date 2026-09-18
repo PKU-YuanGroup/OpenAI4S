@@ -311,3 +311,108 @@ def test_the_decision_route_answers_a_refusal_with_its_mapped_status(tmp_path):
             assert seen["body"].get("ok") is False
     finally:
         perms._BROKER = original
+
+
+def test_create_session_without_project_id_is_a_400_not_a_missing_project(tmp_path):
+    """`POST /frames` needs a project; say so instead of "project not found".
+
+    The route used to substitute `project_id="default"` for a missing one, and
+    nothing on any installation creates a project by that name -- so `{}` (and
+    an empty or null id) answered 404 "project not found" while
+    docs/webapp-api.md marked the field optional. A REST client following the
+    docs could not create a session and was told about a project it never
+    named. Over a real socket, because a GatewayError asserted from a direct
+    method call can still reach HTTP as some other status.
+    """
+    import socket
+
+    from tests.test_team_auth_routes import _body_json, _TeamDaemon
+
+    node = _TeamDaemon(tmp_path / "home", team_mode=False)
+
+    def post_frames(payload: bytes) -> tuple[int, dict]:
+        lines = [
+            "POST /api/v1/frames HTTP/1.1",
+            f"Host: 127.0.0.1:{node.port}",
+            f"X-OpenAI4S-Token: {node.token}",
+            "Content-Type: application/json",
+            f"Content-Length: {len(payload)}",
+            "Connection: close",
+        ]
+        conn = socket.create_connection(("127.0.0.1", node.port), timeout=10)
+        try:
+            conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + payload)
+            chunks = []
+            while True:
+                block = conn.recv(65536)
+                if not block:
+                    break
+                chunks.append(block)
+        finally:
+            conn.close()
+        raw = b"".join(chunks)
+        return int(raw.split(b" ", 2)[1]), _body_json(raw)
+
+    try:
+        for body in (b"{}", b'{"project_id": ""}', b'{"project_id": null}', b""):
+            status, reply = post_frames(body)
+            assert status == 400, (body, status, reply)
+            assert reply["code"] == "project_id_required", (body, reply)
+            assert "POST /projects" in reply["error"]
+
+        # A named project that does not exist is still a 404.
+        status, reply = post_frames(b'{"project_id": "proj_does_not_exist"}')
+        assert status == 404, reply
+        assert reply["code"] == "not_found"
+
+        # And a real project still works.
+        pid = node.store.create_project(name="Real project")["project_id"]
+        status, reply = post_frames(json.dumps({"project_id": pid}).encode())
+        assert status == 200, reply
+        assert reply.get("project_id") == pid
+    finally:
+        node.close()
+
+
+def test_create_session_docs_row_requires_project_id():
+    """The docs row must not advertise the field as optional again."""
+    from pathlib import Path
+
+    doc = Path(__file__).resolve().parents[1] / "docs" / "webapp-api.md"
+    row = next(
+        line
+        for line in doc.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `POST /frames` |")
+    )
+    assert "project_id?" not in row
+    assert "project_id_required" in row
+
+
+@pytest.mark.parametrize(
+    "error", [ConnectionResetError(54, "reset"), BrokenPipeError(32, "pipe")]
+)
+def test_client_disconnect_is_not_logged_as_a_server_traceback(error, capfd):
+    """A browser closing a keep-alive socket is not a server error.
+
+    The stdlib `handle_error` printed "Exception occurred during processing of
+    request" plus a full ConnectionResetError traceback for each one, which an
+    operator reading an upgrade or CI log takes for a crash.
+    """
+    server = object.__new__(gateway_mod._GatewayHTTPServer)
+    try:
+        raise error
+    except OSError:
+        server.handle_error(None, ("127.0.0.1", 50000))
+    err = capfd.readouterr().err
+    assert "Traceback" not in err
+    assert "Exception occurred" not in err
+
+
+def test_a_real_handler_crash_still_gets_the_stdlib_traceback(capfd):
+    server = object.__new__(gateway_mod._GatewayHTTPServer)
+    try:
+        raise ValueError("a real bug")
+    except ValueError:
+        server.handle_error(None, ("127.0.0.1", 50000))
+    err = capfd.readouterr().err
+    assert "Traceback" in err and "ValueError" in err

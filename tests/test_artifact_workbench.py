@@ -1166,10 +1166,14 @@ def test_conditional_edit_public_http_errors(tmp_path, monkeypatch):
     import json
     import threading
 
-    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+    from openai4s.server import local_auth
+
+    # The `OPENAI4S_REQUIRE_TOKEN=0` loopback opt-out was granted for exactly
+    # one minor release and is ignored from 0.3.0, so present the real token.
     cfg = _cfg(tmp_path)
     cfg.port = 0
     server = gateway_mod.build_app_server(cfg)
+    token = local_auth.read_token(cfg.data_dir) or local_auth.load_or_mint(cfg.data_dir)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     runner = server.runner
@@ -1190,6 +1194,7 @@ def test_conditional_edit_public_http_errors(tmp_path, monkeypatch):
                     headers={
                         "Content-Type": "application/json",
                         "Host": f"127.0.0.1:{cfg.port}",
+                        local_auth.TOKEN_HEADER: token,
                     },
                 )
                 response = connection.getresponse()

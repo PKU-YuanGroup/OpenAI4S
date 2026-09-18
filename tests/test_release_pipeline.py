@@ -20,9 +20,12 @@ What these pin, in order of how much they would cost to get wrong:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -249,7 +252,7 @@ def _matching_pypi(assets: Path):
         return {
             path.name: sha256_file(path)
             for path in assets.glob("*")
-            if path.name.endswith((".whl", ".tar.gz"))
+            if path.name.endswith(".whl") or path.name == "openai4s-0.2.0.tar.gz"
         }
 
     return digests
@@ -283,7 +286,12 @@ _LOCAL_ONLY_SIDECARS = (
     # to reach the finalize job through a channel the draft cannot rewrite.
     "build-receipt-dist.json",
     "build-receipt-macos.json",
+    "build-receipt-linux.json",
+    "build-receipt-windows.json",
     "stage-attestation.json",
+    # The record of a run that stopped. `step_assets` never collects it, so it
+    # is never uploaded, however long it sits beside the artifacts.
+    "-evidence-stopped.zip",
 )
 
 
@@ -380,6 +388,97 @@ def test_a_dry_run_touches_nothing_and_still_reports_every_step(assets):
 # --------------------------------------------------------------------------
 
 
+class _Hub:
+    """The WebSocket hub the gateway handler needs; no route below streams."""
+
+    def emitter(self, root_frame_id):
+        return lambda event: None
+
+    def broadcast(self, root_frame_id, event):
+        return None
+
+
+@contextlib.contextmanager
+def _real_gateway(tmp_path, *, webui=None, monkeypatch=None):
+    """The real gateway handler on loopback, with the default token gate on.
+
+    The smoke used to be tested against a hand-written legacy page, so when the
+    daemon's default shell changed the test kept passing and the real smoke
+    failed on every build. Serving through `make_handler` means the probe is
+    judged against whatever `/` actually serves -- change the shell and this
+    goes red here, not in the release job.
+    """
+    import threading
+
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+    from openai4s.server import local_auth
+    from tests._ports import bound_gateway_server
+
+    if webui is not None:
+        monkeypatch.setattr(gateway_mod, "WEBUI_DIR", webui)
+    httpd, port = bound_gateway_server()
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        host="127.0.0.1",
+        port=port,
+    )
+    cfg.ensure_dirs()
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    observed: list[tuple[str, str]] = []
+
+    class Recording(handler_cls):
+        def do_GET(self):
+            observed.append((self.path, self.headers.get("Cookie", "") or ""))
+            return super().do_GET()
+
+    httpd.RequestHandlerClass = Recording
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(
+            base_url=f"http://127.0.0.1:{port}/",
+            token=local_auth.load_or_mint(cfg.data_dir),
+            observed=observed,
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+        try:
+            runner.close()
+        except Exception:  # noqa: BLE001 - teardown must not mask a failure
+            pass
+
+
+def _installed_cli_reports(monkeypatch, url):
+    """`openai4s url` as the installed CLI answers it: one bootstrap line."""
+
+    def installed_cli(argv, **_kwargs):
+        assert argv[-4:] == ["-I", "-m", "openai4s", "url"]
+        return _completed(0, f"{url}\n".encode())
+
+    monkeypatch.setattr(subprocess, "run", installed_cli)
+
+
+def _shipped_entrypoints():
+    """The dist assets the committed default shell names, read from its bytes."""
+    import re
+
+    shell = (ROOT / "openai4s" / "server" / "webui" / "dist" / "index.html").read_text(
+        "utf-8"
+    )
+    scripts = re.findall(
+        r'<script[^>]*type="module"[^>]*src="(/static/dist/assets/[^"]+\.js)"', shell
+    )
+    styles = re.findall(r'href="(/static/dist/assets/[^"]+\.css)"', shell)
+    assert scripts, "the committed default shell names no module entrypoint"
+    return scripts, styles
+
+
 def test_installed_daemon_smoke_bootstraps_and_loads_the_real_webui(
     monkeypatch, tmp_path
 ):
@@ -388,99 +487,257 @@ def test_installed_daemon_smoke_bootstraps_and_loads_the_real_webui(
     The release smoke requested bare ``/`` after token auth became the default,
     received 401 forever, and reported that the installed daemon never served a
     page. Switching only to ``/health`` would hide the packaging failure this
-    smoke exists to catch. Model both sides: unauthenticated root is genuinely
-    refused, then the installed CLI's bootstrap URL must load the HTML shell and
-    its JavaScript through the issued cookie.
+    smoke exists to catch. So: unauthenticated root is genuinely refused, then
+    the installed CLI's bootstrap URL must load the HTML shell the daemon
+    serves *by default* and the entrypoint that shell names, through the cookie.
+
+    This test used to serve a hand-written legacy page (`id="dashboard"` +
+    `/static/app.js`). The default shell became the Vite dist tree and the real
+    smoke failed on every build while this stayed green, because it never
+    looked at what the daemon ships. It now drives the real gateway handler
+    over the real `webui/` tree.
     """
-    import threading
     import urllib.error
-    import urllib.parse
     import urllib.request
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    token = "release-smoke-token"
-    observed: list[tuple[str, str]] = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, _format, *_args):
-            return
-
-        def _reply(self, code, body=b"", content_type="text/plain", headers=()):
-            self.send_response(code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            for name, value in headers:
-                self.send_header(name, value)
-            self.end_headers()
-            if body:
-                self.wfile.write(body)
-
-        def do_GET(self):
-            parsed = urllib.parse.urlsplit(self.path)
-            cookie = self.headers.get("Cookie", "")
-            observed.append((self.path, cookie))
-            if parsed.path == "/health":
-                self._reply(200, b'{"status":"ok"}', "application/json")
-                return
-            if parsed.path == "/" and urllib.parse.parse_qs(parsed.query).get(
-                "token"
-            ) == [token]:
-                self._reply(
-                    303,
-                    headers=(
-                        ("Location", "/"),
-                        ("Set-Cookie", f"os_token={token}; Path=/; HttpOnly"),
-                    ),
-                )
-                return
-            authenticated = f"os_token={token}" in cookie
-            if parsed.path == "/" and authenticated:
-                self._reply(
-                    200,
-                    b'<title>OpenAI4S</title><div id="dashboard"></div>'
-                    b'<script src="/static/app.js"></script>',
-                    "text/html; charset=utf-8",
-                )
-                return
-            if parsed.path == "/static/app.js" and authenticated:
-                # Deliberately shares no source text with the real app.js: the
-                # probe must judge the entrypoint by serving facts, and this
-                # body fails the smoke if source-literal coupling comes back.
-                self._reply(
-                    200,
-                    b"(() => { window.addEventListener('load', boot); })();",
-                    "text/javascript; charset=utf-8",
-                )
-                return
-            self._reply(401, b"unauthorized", "application/json")
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    base_url = f"http://127.0.0.1:{server.server_port}/"
-
-    def installed_cli(argv, **_kwargs):
-        assert argv[-4:] == ["-I", "-m", "openai4s", "url"]
-        return _completed(0, f"{base_url}?token={token}\n".encode())
-
-    monkeypatch.setattr(subprocess, "run", installed_cli)
-    pipeline = Pipeline("0.2.0", assets_dir=tmp_path)
-    try:
+    monkeypatch.delenv("OPENAI4S_WEBUI", raising=False)
+    scripts, styles = _shipped_entrypoints()
+    with _real_gateway(tmp_path) as daemon:
+        _installed_cli_reports(monkeypatch, f"{daemon.base_url}?token={daemon.token}")
         with pytest.raises(urllib.error.HTTPError) as denied:
-            urllib.request.urlopen(base_url, timeout=2)
+            urllib.request.urlopen(daemon.base_url, timeout=5)
         assert denied.value.code == 401, "the regression needs a real token gate"
 
-        pipeline._probe_installed_daemon(
-            Path("/installed/bin/python"), tmp_path, {}, base_url
+        Pipeline("0.2.0", assets_dir=tmp_path)._probe_installed_daemon(
+            Path("/installed/bin/python"), tmp_path, {}, daemon.base_url
         )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        observed = list(daemon.observed)
 
+    cookie = f"os_token={daemon.token}"
     assert any(path == "/health" for path, _cookie in observed)
-    assert any(path == "/" and cookie for path, cookie in observed)
-    assert any(path == "/static/app.js" and cookie for path, cookie in observed)
+    assert any(path == "/" and cookie in c for path, c in observed)
+    for asset in (*scripts, *styles):
+        assert any(
+            path == asset and cookie in c for path, c in observed
+        ), f"the probe never loaded {asset} with the issued cookie"
+
+
+def test_installed_daemon_smoke_refuses_a_shell_whose_entrypoint_is_not_shipped(
+    monkeypatch, tmp_path
+):
+    """The shell alone is not the workbench: its named entrypoint must serve.
+
+    A wheel that packages `dist/index.html` but drops `dist/assets/` serves a
+    blank page. The probe fetches the exact script the shell names, so that
+    packaging fault is a smoke failure rather than a green release.
+    """
+    import shutil
+
+    webui = tmp_path / "webui"
+    (webui / "dist").mkdir(parents=True)
+    shutil.copyfile(
+        ROOT / "openai4s" / "server" / "webui" / "dist" / "index.html",
+        webui / "dist" / "index.html",
+    )
+    monkeypatch.delenv("OPENAI4S_WEBUI", raising=False)
+    with _real_gateway(tmp_path, webui=webui, monkeypatch=monkeypatch) as daemon:
+        _installed_cli_reports(monkeypatch, f"{daemon.base_url}?token={daemon.token}")
+        with pytest.raises(ReleaseError, match="Web UI application"):
+            Pipeline("0.2.0", assets_dir=tmp_path)._probe_installed_daemon(
+                Path("/installed/bin/python"), tmp_path, {}, daemon.base_url
+            )
+
+
+def test_installed_daemon_smoke_judges_the_default_shell_not_the_escape_hatch(
+    monkeypatch, tmp_path
+):
+    """The frozen legacy shell is not what a user gets, so it cannot pass smoke.
+
+    Accepting it would let a release go green on `OPENAI4S_WEBUI=legacy` while
+    the default workbench was broken -- a gate that tests a page nobody sees.
+    """
+    monkeypatch.setenv("OPENAI4S_WEBUI", "legacy")
+    with _real_gateway(tmp_path) as daemon:
+        _installed_cli_reports(monkeypatch, f"{daemon.base_url}?token={daemon.token}")
+        with pytest.raises(ReleaseError, match="Web UI shell"):
+            Pipeline("0.2.0", assets_dir=tmp_path)._probe_installed_daemon(
+                Path("/installed/bin/python"), tmp_path, {}, daemon.base_url
+            )
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        # classic (non-module) scripts are the shell's helpers, not its bundle
+        b'<script src="/static/dist/assets/index-a.js"></script>',
+        # another origin is not what this wheel ships
+        b'<script type="module" src="https://cdn.invalid/static/dist/assets/i.js">',
+        b'<script type="module" src="//cdn.invalid/static/dist/assets/i.js">',
+        # a traversal that merely starts with the prefix
+        b'<script type="module" src="/static/dist/assets/../../app.js">',
+        # the legacy escape hatch's entrypoint
+        b'<script type="module" src="/static/app.js"></script>',
+    ],
+)
+def test_the_smoke_counts_only_same_origin_dist_module_entrypoints(markup):
+    from scripts.release_pipeline import default_shell_assets
+
+    assert default_shell_assets(b"<title>OpenAI4S</title>" + markup) == ([], [])
+
+
+def test_the_smoke_reads_entrypoints_from_the_committed_default_shell():
+    from scripts.release_pipeline import default_shell_assets
+
+    shell = ROOT / "openai4s" / "server" / "webui" / "dist" / "index.html"
+    assert default_shell_assets(shell.read_bytes()) == _shipped_entrypoints()
+
+
+def test_the_daemon_smoke_never_inherits_the_legacy_shell_switch(monkeypatch, tmp_path):
+    """An operator's `OPENAI4S_WEBUI=legacy` must not change what smoke judges.
+
+    `_install_and_exercise` copies the caller's environment into the daemon it
+    starts, so a release machine with the escape hatch exported would smoke the
+    legacy page -- and, with the probe judging the default shell, fail for a
+    reason that has nothing to do with the wheel.
+    """
+    started: list[dict[str, str]] = []
+
+    class ExitedDaemon:
+        stdout = None
+
+        def __init__(self, argv, **kwargs):
+            started.append(dict(kwargs["env"]))
+
+        def poll(self):
+            return 1
+
+        def terminate(self):  # pragma: no cover - poll() already reports exit
+            return None
+
+        def wait(self, timeout=None):
+            return 1
+
+    monkeypatch.setattr(subprocess, "Popen", ExitedDaemon)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed())
+    pipeline = Pipeline("0.2.0", assets_dir=tmp_path)
+    with pytest.raises(ReleaseError, match="exited before serving"):
+        pipeline._smoke_daemon(
+            Path("/installed/bin/python"),
+            tmp_path,
+            {"OPENAI4S_WEBUI": "legacy", "OPENAI4S_DATA_DIR": str(tmp_path)},
+        )
+    assert started and "OPENAI4S_WEBUI" not in started[0]
+    assert started[0]["OPENAI4S_DATA_DIR"] == str(tmp_path)
+
+
+#: A stand-in for the installed interpreter. `serve` behaves like the daemon
+#: (a foreground process that exits promptly on SIGTERM); `stop` behaves like
+#: any stop that decides "gone" by pid existence alone, so a zombie reads as
+#: alive. That makes the pipeline's own reaping the only thing under test —
+#: the real CLI now reads zombies as exited, which would hide its absence.
+_FAKE_INSTALLED_CLI = r"""
+import json, os, signal, sys, time
+from pathlib import Path
+
+command = sys.argv[4]
+data = Path(os.environ["OPENAI4S_DATA_DIR"])
+pidfile = data / "fake-daemon.pid"
+if command == "serve":
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    staged = data / "fake-daemon.pid.tmp"
+    staged.write_text(str(os.getpid()))
+    os.replace(staged, pidfile)
+    time.sleep(120)
+    sys.exit(0)
+if command == "stop":
+    pid = int(pidfile.read_text())
+    rc = 2
+    if os.environ["FAKE_STOP"] == "pid-existence":
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + float(os.environ["FAKE_STOP_PATIENCE"])
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                rc = 0
+                break
+            time.sleep(0.05)
+    (data / "fake-stop.json").write_text(json.dumps({"rc": rc}))
+    print("daemon stopped" if rc == 0 else "error: daemon is still shutting down")
+    sys.exit(rc)
+sys.exit(64)
+"""
+
+
+def _fake_installed_python(tmp_path, monkeypatch, stop_mode, patience=20.0):
+    """Wire `_smoke_daemon` to real local processes, with no network probe."""
+    script = tmp_path / "fake_installed_cli.py"
+    script.write_text(_FAKE_INSTALLED_CLI, encoding="utf-8")
+    python = tmp_path / "python"
+    python.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n', encoding="utf-8"
+    )
+    python.chmod(0o755)
+    data = tmp_path / "data"
+    data.mkdir()
+
+    def served_once_the_daemon_is_up(python, root, env, base_url):
+        deadline = time.monotonic() + 30
+        while not (data / "fake-daemon.pid").exists():
+            if time.monotonic() > deadline:  # pragma: no cover - diagnostic
+                raise ReleaseError("the fake daemon never wrote its pidfile")
+            time.sleep(0.02)
+
+    monkeypatch.setattr(
+        Pipeline,
+        "_probe_installed_daemon",
+        staticmethod(served_once_the_daemon_is_up),
+    )
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "OPENAI4S_DATA_DIR": str(data),
+        "FAKE_STOP": stop_mode,
+        "FAKE_STOP_PATIENCE": str(patience),
+    }
+    return python, data, env
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell wrapper")
+def test_the_daemon_smoke_reaps_its_daemon_while_the_cli_stops_it(
+    monkeypatch, tmp_path
+):
+    """The daemon is the pipeline's own child; only the pipeline can reap it.
+
+    The smoke used to block in `subprocess.run(stop)`, so the exited daemon sat
+    as a zombie for as long as `stop` polled. A stop that judges exit by pid
+    existence then waited out its whole timeout and returned 2 — about 30s of
+    every release smoke, CI's included — and the exit status was discarded.
+    """
+    python, data, env = _fake_installed_python(tmp_path, monkeypatch, "pid-existence")
+
+    started = time.monotonic()
+    outcome = Pipeline("0.2.0", assets_dir=tmp_path)._smoke_daemon(
+        python, tmp_path, env
+    )
+    elapsed = time.monotonic() - started
+
+    assert outcome.startswith("served authenticated Web UI")
+    assert json.loads((data / "fake-stop.json").read_text()) == {"rc": 0}
+    assert elapsed < 12, f"the smoke's stop took {elapsed:.1f}s"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell wrapper")
+def test_the_daemon_smoke_fails_when_the_cli_stop_fails(monkeypatch, tmp_path):
+    """Stopping through the CLI's own pidfile is a claim the smoke must check.
+
+    A stop that exits non-zero and leaves the daemon running is a broken
+    installed CLI, not a detail for the fallback `terminate()` to paper over.
+    """
+    python, data, env = _fake_installed_python(tmp_path, monkeypatch, "refuse")
+
+    with pytest.raises(ReleaseError, match=r"openai4s stop.*exited 2"):
+        Pipeline("0.2.0", assets_dir=tmp_path)._smoke_daemon(python, tmp_path, env)
+    assert json.loads((data / "fake-stop.json").read_text()) == {"rc": 2}
 
 
 # --------------------------------------------------------------------------
@@ -867,10 +1124,46 @@ def test_a_build_receipt_from_another_workflow_run_is_refused(assets):
     assert "workflow run 7100" in report["steps"][-1]["detail"]
     assert "7101" in report["steps"][-1]["detail"]
 
+    # The stopped run left its diagnostic bundle beside the artifacts. It is
+    # this pipeline's own output, not a receipted distribution: the retry must
+    # neither stage it nor be refused because of it.
+    stopped = assets / "openai4s-0.2.0-evidence-stopped.zip"
+    assert stopped.is_file()
     same = _pipeline(
         assets, mode="release", gh=_gh_for(assets), workflow_run_id="7100"
     ).run()
     assert same["ok"], same
+    collected = next(s for s in same["steps"] if s["step"] == "assets")
+    assert stopped.name not in collected["facts"]["assets"]
+
+
+def test_a_staging_retry_is_not_refused_over_the_previous_runs_own_evidence(assets):
+    """The consistency gate before upload must survive an in-place retry.
+
+    `gh release upload` fails once. That run has already sealed
+    `openai4s-<v>-evidence.zip` and leaves a `-evidence-stopped.zip` behind.
+    Both are `.zip` files carrying this version, so `step_assets` collected them
+    on the retry: provenance and the SBOM then named them as subjects, no build
+    receipt covered them, and the gate refused the retry with "restore the
+    verified assets" -- over files nobody had replaced.
+    """
+    _signed_dmg(assets, notarized=True)
+    healthy = _gh_for(assets)
+
+    def flaky(argv):
+        if argv[1] == "upload":
+            return _completed(1, b"", b"HTTP 502")
+        return healthy(argv)
+
+    first = _pipeline(assets, mode="release", gh=flaky).run()
+    assert first["ok"] is False and first["stopped_at"] == "upload", first
+    assert (assets / "openai4s-0.2.0-evidence.zip").is_file()
+    assert (assets / "openai4s-0.2.0-evidence-stopped.zip").is_file()
+
+    retry = _pipeline(assets, mode="release", gh=healthy).run()
+    assert retry["ok"], retry
+    collected = next(s for s in retry["steps"] if s["step"] == "assets")
+    assert not [name for name in collected["facts"]["assets"] if "evidence" in name]
 
 
 def test_a_receipt_built_under_publish_true_cannot_serve_a_rehearsal(assets):
@@ -1483,18 +1776,639 @@ def test_a_complete_release_publishes_last(assets):
     assert calls[-1][-1] == "--draft=false", "publishing is the final act"
 
 
+def test_the_sealed_report_is_a_snapshot_not_a_verdict(assets):
+    """`evidence` runs before `checksums`, `draft`, `upload` and `publish`.
+
+    The staging job's bundle recorded the end-of-run verdict anyway, with
+    `ok: true` and `published: true` and all thirteen steps planned, for a run
+    that had uploaded nothing yet. That record is attached to the release and
+    kept for 90 days even when the run later fails at PyPI. The stdout
+    report was right all along, so this reads the zip.
+    """
+    import zipfile
+
+    _signed_dmg(assets)
+    staged = _pipeline(
+        assets, mode="release", stop_after="reverify", gh=_gh_for(assets)
+    ).run()
+    assert staged["ok"] is True and staged["published"] is False, staged
+
+    with zipfile.ZipFile(assets / "openai4s-0.2.0-evidence.zip") as archive:
+        sealed = json.loads(archive.read("release-report.json"))
+    assert sealed["ok"] is None
+    assert sealed["published"] is False
+    assert sealed["sealed_at"] == "evidence"
+    assert sealed["stopped_at"] is None
+    assert sealed["planned"] == list(STEPS[: STEPS.index("reverify") + 1])
+    assert [step["step"] for step in sealed["steps"]] == list(
+        STEPS[: STEPS.index("evidence")]
+    )
+
+
 def _write_checksums(assets: Path) -> None:
     """A SHA256SUMS covering the uploaded assets, as step_checksums writes it.
 
     Excludes the local-only sidecars (they are never uploaded), so the manifest
     matches the release listing `_gh_for` serves.
     """
+    # Finalize fixtures must carry the same sealed evidence as a real staged
+    # draft. Do not regenerate it after a mutation: those tests must preserve
+    # the original build's claims while only refreshing the mutable checksum.
+    if not (assets / "openai4s-0.2.0-evidence.zip").exists():
+        sealed = _pipeline(assets, mode="release", stop_after="evidence").run()
+        assert sealed["ok"], sealed
     lines = []
     for path in sorted(assets.glob("*")):
         if path.name == "SHA256SUMS" or path.name.endswith(_LOCAL_ONLY_SIDECARS):
             continue
         lines.append(f"{sha256_file(path)}  {path.name}\n")
     (assets / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+
+
+def _desktop_release_assets(assets, *, payload=b"linux-bundle"):
+    import zipfile
+
+    linux = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    linux.write_bytes(b"linux-bundle")
+    windows = assets / "OpenAI4S-0.2.0-windows-x86_64.zip"
+    with zipfile.ZipFile(windows, "w") as archive:
+        archive.writestr(f"{windows.stem}/payload/{linux.name}", payload)
+    _write_build_receipt(assets, "linux", [linux])
+    _write_build_receipt(assets, "windows", [windows])
+    return linux, windows
+
+
+@pytest.mark.stubbed_backend
+def test_finalize_rejects_replaced_windows_even_after_checksum_refresh(assets):
+    """A replacement ZIP must not inherit the original sealed build evidence."""
+    import zipfile
+
+    _linux, windows = _desktop_release_assets(assets)
+    staged = _pipeline(
+        assets, mode="release", stop_after="reverify", gh=_gh_for(assets)
+    ).run()
+    assert staged["ok"], staged
+    with zipfile.ZipFile(windows, "a") as archive:
+        archive.writestr("repacked.txt", "another build")
+    _write_checksums(assets)
+    calls = []
+    original = _gh_for(assets)
+
+    def gh(argv):
+        calls.append(argv)
+        return original(argv)
+
+    # Deliberately no --attestation: the documented manual recovery path has
+    # to compare the complete evidence chain too.
+    report = _pipeline(assets, mode="release", only="publish", gh=gh).run()
+    assert not report["ok"], report
+    assert report["stopped_at"] == "publish"
+    assert windows.name in report["steps"][-1]["detail"]
+    assert not any(call[1] == "edit" for call in calls)
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("payload", "refusal"),
+    [
+        (b"other-linux-build", "payload size differs"),
+        # Same length as the released tarball: only the digest can tell them
+        # apart, and a fixture of another size never reached that comparison.
+        (b"LINUX-BUNDLE", "payload does not match release asset"),
+    ],
+)
+def test_staging_rejects_a_windows_payload_from_another_linux_build(
+    assets, payload, refusal
+):
+    """Individually receipted files still have to be the same shared payload."""
+    _desktop_release_assets(assets, payload=payload)
+    calls = []
+    original = _gh_for(assets)
+
+    def gh(argv):
+        calls.append(argv)
+        return original(argv)
+
+    report = _pipeline(assets, mode="release", gh=gh).run()
+    assert not report["ok"], report
+    assert refusal in report["steps"][-1]["detail"]
+    assert not any(call[1] in {"upload", "edit"} for call in calls)
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "stray",
+    [
+        # What the launcher's `-Filter '*.tar.gz' | Select-Object -First 1`
+        # would pick on NTFS: matched ignoring case, sorted before the real one.
+        "payload/OpenAI4S-0.0.TAR.GZ",
+        # A case twin overwrites the verified payload when the zip is extracted.
+        "payload/openai4s-0.2.0-LINUX-x86_64.tar.gz",
+        "PAYLOAD/other.tar.gz",
+        # Python keeps these names as written; Windows folds every one of them
+        # into `payload\`: a backslash separates, `.` and `..` collapse, and a
+        # trailing dot is stripped from a component.
+        "payload\\0.tar.gz",
+        "./payload/0.tar.gz",
+        "wsl/../payload/0.tar.gz",
+        "payload./0.tar.gz",
+        # Not a tarball, so only the folding sees it: a sidecar that extraction
+        # writes over the verified one.
+        "payload\\OpenAI4S-0.2.0-linux-x86_64.tar.gz.sha256",
+        # ...and a second tarball anywhere else in the package was refused
+        # before there was a payload directory rule at all.
+        "wsl/other.tar.gz",
+    ],
+)
+def test_staging_rejects_a_second_payload_the_launcher_would_install(assets, stray):
+    """Exactly one payload, as Windows reads the directory -- not as `endswith` does."""
+    import zipfile
+
+    _linux, windows = _desktop_release_assets(assets)
+    with zipfile.ZipFile(windows, "a") as archive:
+        archive.writestr(f"{windows.stem}/{stray}", b"another bundle")
+    _write_build_receipt(assets, "windows", [windows])
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert not report["ok"], report
+    assert report["stopped_at"] == "upload"
+    detail = report["steps"][-1]["detail"]
+    assert "must contain exactly the payload" in detail
+    assert repr(f"{windows.stem}/{stray}") in detail
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("recorded", "accepted"),
+    [
+        # The shape `build_windows_zip.sh` ships: lowercase hex, two spaces, name.
+        (lambda digest: digest, True),
+        (lambda digest: "0" * 64, False),
+        # bootstrap.sh takes the token verbatim and accepts lowercase hex only,
+        # so a gate that folded case would pass a package no install accepts.
+        (lambda digest: digest.upper(), False),
+    ],
+)
+def test_staging_holds_the_payload_checksum_to_the_released_bytes(
+    assets, recorded, accepted
+):
+    """The launcher verifies the install against the sidecar beside the payload."""
+    import zipfile
+
+    linux, windows = _desktop_release_assets(assets)
+    with zipfile.ZipFile(windows, "a") as archive:
+        # Directory entries too, as the real `zip -r` writes them.
+        archive.writestr(f"{windows.stem}/payload/", b"")
+        archive.writestr(
+            f"{windows.stem}/payload/{linux.name}.sha256",
+            f"{recorded(sha256_file(linux))}  {linux.name}\n",
+        )
+    _write_build_receipt(assets, "windows", [windows])
+    report = _pipeline(
+        assets, mode="release", stop_after="reverify", gh=_gh_for(assets)
+    ).run()
+    if accepted:
+        assert report["ok"], report
+    else:
+        assert not report["ok"], report
+        assert "payload checksum does not name" in report["steps"][-1]["detail"]
+
+
+@pytest.mark.stubbed_backend
+def test_a_corrupt_archive_is_a_refusal_not_a_traceback(assets):
+    """`zlib.error` is none of OSError, ValueError or BadZipFile.
+
+    An intact central directory over a damaged deflate stream raised straight
+    through the gate and through `Pipeline.run`, which handles `ReleaseError`
+    only: no report, no `stopped_at`, no sealed record of the stopped run.
+    """
+    import zipfile
+
+    linux = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    linux.write_bytes(bytes(range(256)) * 64)
+    windows = assets / "OpenAI4S-0.2.0-windows-x86_64.zip"
+    member = f"{windows.stem}/payload/{linux.name}"
+    with zipfile.ZipFile(windows, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member, linux.read_bytes())
+    with zipfile.ZipFile(windows) as archive:
+        info = archive.getinfo(member)
+        start = info.header_offset + 30 + len(info.filename.encode()) + len(info.extra)
+    blob = bytearray(windows.read_bytes())
+    blob[start : start + 8] = b"\xff" * 8
+    windows.write_bytes(bytes(blob))
+    _write_build_receipt(assets, "linux", [linux])
+    _write_build_receipt(assets, "windows", [windows])
+
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "upload"
+    assert "release consistency verification failed" in report["steps"][-1]["detail"]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("document", ["provenance.intoto.json", "sbom.cdx.json"])
+def test_finalize_checks_distribution_documents_after_checksum_refresh(
+    assets, document
+):
+    _write_checksums(assets)
+    path = assets / document
+    payload = json.loads(path.read_text())
+    if document == "provenance.intoto.json":
+        payload["subject"][0]["digest"]["sha256"] = "0" * 64
+    else:
+        payload["externalReferences"][0]["hashes"][0]["content"] = "0" * 64
+    path.write_text(json.dumps(payload))
+    _write_checksums(assets)
+    report = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+    assert not report["ok"] and not report["published"]
+    # The document's *own* comparison. The bare file name also appears in the
+    # later "sealed release report ... changed [...]" refusal, so asserting only
+    # the name stayed green with both of these checks deleted.
+    assert (
+        f"{document} disagrees with the release assets" in report["steps"][-1]["detail"]
+    )
+
+
+@pytest.mark.stubbed_backend
+def test_resealing_current_documents_cannot_replace_the_old_build_receipt(
+    assets, tmp_path
+):
+    import zipfile
+
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    _linux, windows = _desktop_release_assets(assets)
+    _write_checksums(assets)
+    evidence = assets / "openai4s-0.2.0-evidence.zip"
+    with zipfile.ZipFile(evidence) as archive:
+        sealed_report = json.loads(archive.read("release-report.json"))
+        carried = {
+            Path(name).name: archive.read(name)
+            for name in archive.namelist()
+            if name.startswith("artifacts/")
+        }
+    with zipfile.ZipFile(windows, "a") as archive:
+        archive.writestr("repacked.txt", "replacement build")
+    new_digest = sha256_file(windows)
+    for name in ("provenance.intoto.json", "sbom.cdx.json"):
+        path = assets / name
+        document = json.loads(path.read_text())
+        if name == "provenance.intoto.json":
+            for row in document["subject"]:
+                if row["name"] == windows.name:
+                    row["digest"]["sha256"] = new_digest
+        else:
+            for row in document["externalReferences"]:
+                if row["url"] == windows.name:
+                    row["hashes"][0]["content"] = new_digest
+        path.write_text(json.dumps(document))
+        carried[name] = path.read_bytes()
+        sealed_report["artifacts"][name] = sha256_file(path)
+    sealed_report["artifacts"][windows.name] = new_digest
+    sources = []
+    for name, payload in carried.items():
+        path = tmp_path / name
+        path.write_bytes(payload)
+        sources.append(path)
+    seal_evidence_bundle(evidence, sealed_report, files=sources)
+    _write_checksums(assets)
+    report = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+    assert not report["ok"] and not report["published"]
+    assert "sealed build receipts" in report["steps"][-1]["detail"]
+    assert windows.name in report["steps"][-1]["detail"]
+
+
+def _reseal_evidence(assets, tmp_path, *, report=None, carried=None):
+    """Seal the evidence again, as anyone able to rewrite the draft can.
+
+    The chain is unsigned. A tamper that stops at the published documents is
+    caught by the seal; one that re-seals has to be caught by the comparison
+    *between* the seal and the bytes, which is what these callers exercise.
+    """
+    import zipfile
+
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    evidence = assets / "openai4s-0.2.0-evidence.zip"
+    with zipfile.ZipFile(evidence) as archive:
+        sealed_report = json.loads(archive.read("release-report.json"))
+        files = {
+            Path(name).name: archive.read(name)
+            for name in archive.namelist()
+            if name.startswith("artifacts/")
+        }
+    if report is not None:
+        report(sealed_report)
+    if carried is not None:
+        carried(files)
+    sources = []
+    for name, payload in files.items():
+        path = tmp_path / name
+        path.write_bytes(payload)
+        sources.append(path)
+    seal_evidence_bundle(evidence, sealed_report, files=sources)
+
+
+def _edit_json(path, change):
+    document = json.loads(path.read_text())
+    change(document)
+    path.write_text(json.dumps(document))
+
+
+def _edit_carried(name, change):
+    def apply(files):
+        document = json.loads(files[name])
+        change(document)
+        files[name] = json.dumps(document).encode()
+
+    return apply
+
+
+def _unvouched_asset(assets, tmp_path):
+    (assets / "OpenAI4S-0.2.0-extra-tool.zip").write_bytes(b"nobody built this")
+
+
+def _dropped_sbom(assets, tmp_path):
+    (assets / "sbom.cdx.json").unlink()
+
+
+def _provenance_for_another_version(assets, tmp_path):
+    def change(document):
+        parameters = document["predicate"]["buildDefinition"]["externalParameters"]
+        parameters["version"] = "9.9.9"
+
+    _edit_json(assets / "provenance.intoto.json", change)
+
+
+def _sbom_for_another_version(assets, tmp_path):
+    def change(document):
+        document["metadata"]["component"]["version"] = "9.9.9"
+
+    _edit_json(assets / "sbom.cdx.json", change)
+
+
+def _provenance_names_a_subject_twice(assets, tmp_path):
+    _edit_json(
+        assets / "provenance.intoto.json",
+        lambda document: document["subject"].append(dict(document["subject"][0])),
+    )
+
+
+def _sbom_gives_a_distribution_two_digests(assets, tmp_path):
+    def change(document):
+        row = next(
+            ref
+            for ref in document["externalReferences"]
+            if ref.get("type") == "distribution"
+        )
+        row["hashes"].append({"alg": "SHA-256", "content": "0" * 64})
+
+    _edit_json(assets / "sbom.cdx.json", change)
+
+
+def _evidence_rewritten_under_its_manifest(assets, tmp_path):
+    import zipfile
+
+    evidence = assets / "openai4s-0.2.0-evidence.zip"
+    with zipfile.ZipFile(evidence) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    report = json.loads(members["release-report.json"])
+    report["builder"] = {"os": "somewhere else"}
+    members["release-report.json"] = json.dumps(report).encode()
+    with zipfile.ZipFile(evidence, "w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+
+
+def _sealed_for_another_version(assets, tmp_path):
+    _reseal_evidence(
+        assets, tmp_path, report=lambda sealed: sealed.update(version="9.9.9")
+    )
+
+
+def _sealed_without_a_frozen_sha(assets, tmp_path):
+    _reseal_evidence(
+        assets, tmp_path, report=lambda sealed: sealed.update(source_sha="not-a-sha")
+    )
+
+
+def _sealed_inventory_names_other_bytes(assets, tmp_path):
+    def change(sealed):
+        sealed["artifacts"]["openai4s-0.2.0-py3-none-any.whl"] = "0" * 64
+
+    _reseal_evidence(assets, tmp_path, report=change)
+
+
+def _sealed_sbom_is_not_the_published_one(assets, tmp_path):
+    _reseal_evidence(
+        assets,
+        tmp_path,
+        carried=lambda files: files.update({"sbom.cdx.json": b"{}"}),
+    )
+
+
+def _sealed_receipt_names_a_ghost(assets, tmp_path):
+    _reseal_evidence(
+        assets,
+        tmp_path,
+        carried=_edit_carried(
+            "build-receipt-dist.json",
+            lambda receipt: receipt["artifacts"].append(
+                {"name": "ghost-0.2.0.whl", "sha256": "0" * 64}
+            ),
+        ),
+    )
+
+
+def _sealed_receipt_is_for_another_commit(assets, tmp_path):
+    _reseal_evidence(
+        assets,
+        tmp_path,
+        carried=_edit_carried(
+            "build-receipt-dist.json",
+            lambda receipt: receipt.update(source_sha="b" * 40, candidate_sha="b" * 40),
+        ),
+    )
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("tamper", "refusal"),
+    [
+        # The direction that publishes something: an asset nothing vouches for.
+        # Dropped and replaced assets were tested; an *added* one was not, and
+        # deleting the `missing` half of `_match` left the whole file green.
+        (_unvouched_asset, "missing ['OpenAI4S-0.2.0-extra-tool.zip']"),
+        (_dropped_sbom, "release is missing evidence assets: ['sbom.cdx.json']"),
+        (_provenance_for_another_version, "provenance names another release version"),
+        (_sbom_for_another_version, "SBOM names another release version"),
+        (_provenance_names_a_subject_twice, "missing or duplicate distribution name"),
+        (_sbom_gives_a_distribution_two_digests, "no unique SHA-256"),
+        (_evidence_rewritten_under_its_manifest, "evidence.zip failed verification"),
+        (_sealed_for_another_version, "sealed release report names another version"),
+        (_sealed_without_a_frozen_sha, "has no frozen source SHA"),
+        (_sealed_inventory_names_other_bytes, "sealed release report disagrees"),
+        (_sealed_sbom_is_not_the_published_one, "sealed sbom.cdx.json differs"),
+        (_sealed_receipt_names_a_ghost, "unexpected or duplicate artifact 'ghost"),
+        (_sealed_receipt_is_for_another_commit, "is for bbbbbbbbbbbb but this release"),
+    ],
+)
+def test_finalize_refuses_each_break_in_the_evidence_chain(
+    assets, tmp_path, tamper, refusal
+):
+    """One tamper per check, each asserting that check's own refusal.
+
+    The gate is a sequence of comparisons, and a test that only asserts "it
+    refused" is satisfied by whichever comparison happens to fire first. Most of
+    them could be deleted one at a time with the suite green; each row here goes
+    red when -- and only when -- its own line is removed.
+    """
+    _write_checksums(assets)  # stage: seal the evidence over the real bytes
+    tamper(assets, tmp_path)
+    _write_checksums(assets)  # ...then refresh the mutable manifest to match
+    calls = []
+    original = _gh_for(assets)
+
+    def gh(argv):
+        calls.append(argv)
+        return original(argv)
+
+    report = _pipeline(assets, mode="release", only="publish", gh=gh).run()
+    assert not report["ok"] and not report["published"], report
+    assert refusal in report["steps"][-1]["detail"]
+    assert not any(call[1] == "edit" for call in calls)
+
+
+@pytest.mark.stubbed_backend
+def test_staging_rejects_a_windows_package_released_without_its_linux_payload(assets):
+    """The payload is compared with a release asset, so there has to be one."""
+    linux, _windows = _desktop_release_assets(assets)
+    linux.unlink()
+    (assets / "build-receipt-linux.json").unlink()
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert not report["ok"], report
+    assert "payload has no matching release asset" in report["steps"][-1]["detail"]
+
+
+@pytest.mark.stubbed_backend
+def test_finalize_requires_provenance_to_name_the_sealed_source_sha(assets):
+    _write_checksums(assets)
+    path = assets / "provenance.intoto.json"
+    document = json.loads(path.read_text())
+    document["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"][
+        "sha1"
+    ] = ("b" * 40)
+    path.write_text(json.dumps(document))
+    _write_checksums(assets)
+    report = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+    assert not report["ok"] and not report["published"]
+    assert "source SHA" in report["steps"][-1]["detail"]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    ("anchor", "refusal"),
+    [
+        ({"source_sha": "b" * 40}, "was frozen at bbbbbbbbbbbb"),
+        ({"workflow_run_id": "666"}, "this is run 666"),
+    ],
+)
+def test_finalize_holds_the_sealed_chain_to_the_sha_and_run_it_was_given(
+    assets, anchor, refusal
+):
+    """A flag the finalizer accepts is a flag it has to compare.
+
+    The SHA the sealed receipts are verified against is read out of the evidence
+    archive itself, so on its own the chain can only agree with itself. Staging
+    holds the same receipts to `--source-sha` and `--workflow-run-id`; finalize
+    took both flags -- the hosted job passes the run id -- and compared neither,
+    so a draft sealed for another commit and another run was made public.
+    """
+    _write_checksums(assets)
+    calls = []
+    original = _gh_for(assets)
+
+    def gh(argv):
+        calls.append(argv)
+        return original(argv)
+
+    report = _pipeline(assets, mode="release", only="publish", gh=gh, **anchor).run()
+    assert not report["ok"] and not report["published"], report
+    assert refusal in report["steps"][-1]["detail"]
+    assert not any(call[1] == "edit" for call in calls)
+
+    # The same draft, given the anchors it was actually sealed under, publishes.
+    agreed = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        source_sha=FAKE_HEAD,
+        workflow_run_id="7100",
+    ).run()
+    assert agreed["ok"] and agreed["published"], agreed
+
+
+@pytest.mark.stubbed_backend
+def test_a_hand_run_finalize_from_another_checkout_is_told_to_use_the_tag(
+    assets, monkeypatch
+):
+    """The quality receipt is held to the *running checkout's* gate manifest.
+
+    Staging runs at the frozen SHA, so there the two are one list. The documented
+    recovery -- `--only publish` by hand, after PyPI has taken the version -- is
+    run from wherever the maintainer is, and a gate list that moved since the tag
+    refuses an intact draft. That refusal is correct; leaving the operator to
+    work out that the *checkout* is what differs was not.
+    """
+    from scripts import release_gates
+
+    _write_checksums(assets)
+    monkeypatch.setattr(release_gates, "manifest_digest", lambda: "f" * 64)
+    report = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+    assert not report["ok"] and not report["published"]
+    detail = report["steps"][-1]["detail"]
+    assert "different gate manifest" in detail
+    assert "checkout of the release commit" in detail
+    assert "v0.2.0 tag" in detail
+
+
+@pytest.mark.stubbed_backend
+def test_a_failed_gate_is_not_blamed_on_the_checkout(assets, tmp_path):
+    """The tag-checkout advice is for a manifest that differs, and only that.
+
+    A sealed receipt recording a gate that failed fails identically from every
+    checkout. Sending the operator to re-run from the tag for it costs them a
+    round trip to the same refusal.
+    """
+    import zipfile
+
+    from scripts.release_pipeline import seal_evidence_bundle
+
+    _write_checksums(assets)
+    evidence = assets / "openai4s-0.2.0-evidence.zip"
+    with zipfile.ZipFile(evidence) as archive:
+        sealed_report = json.loads(archive.read("release-report.json"))
+        carried = {
+            Path(name).name: archive.read(name)
+            for name in archive.namelist()
+            if name.startswith("artifacts/")
+        }
+    quality = json.loads(carried["quality-receipt.json"])
+    quality["gates"][0]["returncode"] = 1
+    carried["quality-receipt.json"] = json.dumps(quality).encode()
+    sources = []
+    for name, payload in carried.items():
+        path = tmp_path / name
+        path.write_bytes(payload)
+        sources.append(path)
+    seal_evidence_bundle(evidence, sealed_report, files=sources)
+    _write_checksums(assets)
+
+    report = _pipeline(assets, mode="release", only="publish", gh=_gh_for(assets)).run()
+    assert not report["ok"] and not report["published"]
+    detail = report["steps"][-1]["detail"]
+    assert "failed with exit code 1" in detail
+    assert "checkout of the release commit" not in detail
 
 
 def test_the_finalize_step_revalidates_the_draft_before_the_flip(assets):
@@ -1634,12 +2548,18 @@ def test_finalize_refuses_a_draft_rewritten_to_drop_its_distributions(assets):
     empty, so with a valid immutable PyPI version the finalizer published a
     GitHub release whose distributions are simply absent, while PyPI says
     exactly what should have been there.
+
+    With the evidence sealed over the complete set, as here, the consistency
+    gate now refuses this first -- the chain still names the dropped files. The
+    PyPI anchor itself is pinned by
+    `test_finalize_anchors_a_consistently_resealed_draft_to_pypi`.
     """
     _signed_dmg(assets)
     wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
     sdist = assets / "openai4s-0.2.0.tar.gz"
     # PyPI is immutable and still holds both.
     immutable = {wheel.name: sha256_file(wheel), sdist.name: sha256_file(sdist)}
+    _write_checksums(assets)
     wheel.unlink()
     sdist.unlink()
     _write_checksums(assets)  # the manifest is rewritten to cover the rest
@@ -1656,9 +2576,46 @@ def test_finalize_refuses_a_draft_rewritten_to_drop_its_distributions(assets):
     assert report["stopped_at"] == "publish"
     assert report["published"] is False
     detail = report["steps"][-1]["detail"]
+    assert "disagrees with the release assets" in detail
+    assert wheel.name in detail and sdist.name in detail
+
+
+def test_finalize_anchors_a_consistently_resealed_draft_to_pypi(assets):
+    """The reverse anchor, reached with the consistency gate fully satisfied.
+
+    The two tests around this one now stop earlier: their evidence was sealed
+    over the complete set, so the chain names distributions the draft no longer
+    has and `_verify_consistency` refuses first. That is a good refusal and it
+    proves nothing about the anchor -- `absent_from_draft` could be deleted with
+    both still green. The evidence chain is unsigned, so whoever can rewrite the
+    draft can re-receipt and re-seal the reduced set too; then every document
+    agrees with every other, and immutable PyPI is the only thing left that
+    knows what the release was.
+    """
+    _signed_dmg(assets)
+    wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
+    sdist = assets / "openai4s-0.2.0.tar.gz"
+    # PyPI is immutable and still holds both.
+    immutable = {wheel.name: sha256_file(wheel), sdist.name: sha256_file(sdist)}
+    sdist.unlink()
+    _receipt_dist(assets)  # re-receipted for the reduced set...
+    _write_checksums(assets)  # ...then sealed and manifested over it
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        gh=_gh_for(assets),
+        pypi_digests=lambda project, version: immutable,
+    ).run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "publish"
+    assert report["published"] is False
+    detail = report["steps"][-1]["detail"]
     assert "do not carry the same" in detail
     assert "the draft is missing" in detail
-    assert wheel.name in detail and sdist.name in detail
+    assert sdist.name in detail
 
 
 def test_finalize_refuses_a_draft_that_dropped_only_the_wheel(assets):
@@ -1668,6 +2625,7 @@ def test_finalize_refuses_a_draft_that_dropped_only_the_wheel(assets):
     wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
     sdist = assets / "openai4s-0.2.0.tar.gz"
     immutable = {wheel.name: sha256_file(wheel), sdist.name: sha256_file(sdist)}
+    _write_checksums(assets)
     wheel.unlink()
     _write_checksums(assets)
 
@@ -1704,8 +2662,7 @@ def test_finalize_anchors_only_python_distributions_not_every_tarball(assets):
     sdist name exactly instead of case-folding a prefix.
     """
     _signed_dmg(assets)
-    (assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz").write_bytes(b"linux-bundle")
-    (assets / "OpenAI4S-0.2.0-windows-x86_64.zip").write_bytes(b"windows-zip")
+    _desktop_release_assets(assets)
     _write_checksums(assets)
     wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
     sdist = assets / "openai4s-0.2.0.tar.gz"
@@ -1733,7 +2690,9 @@ def test_finalize_still_refuses_when_the_sdist_itself_is_missing_from_pypi(asset
     sdist is still anchored. A bundle beside it must not make the check lenient.
     """
     _signed_dmg(assets)
-    (assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz").write_bytes(b"linux-bundle")
+    linux = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    linux.write_bytes(b"linux-bundle")
+    _write_build_receipt(assets, "linux", [linux])
     _write_checksums(assets)
     wheel = assets / "openai4s-0.2.0-py3-none-any.whl"
 

@@ -133,7 +133,15 @@ def freeze_evidence_snapshot(parts: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(item, Mapping)
     ]
     truncation = dict(parts.get("truncation") or {})
-    omissions: list[dict[str, Any]] = []
+    # Gaps only the collector can see -- an execution record it could not read,
+    # cells that ran but were never recorded. Carried as their own field so a
+    # re-freeze of this snapshot reproduces them instead of dropping them.
+    collection_omissions = [
+        dict(item)
+        for item in (parts.get("collection_omissions") or [])
+        if isinstance(item, Mapping)
+    ]
+    omissions: list[dict[str, Any]] = list(collection_omissions)
     refs: list[dict[str, Any]] = [
         _ref("source:user_request", "user_request"),
         _ref("source:candidate_answer", "completion"),
@@ -294,6 +302,8 @@ def freeze_evidence_snapshot(parts: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_refs": refs,
         "complete": not omissions,
     }
+    if collection_omissions:
+        snapshot["collection_omissions"] = collection_omissions
     snapshot["snapshot_sha256"] = snapshot_digest(snapshot)
     return snapshot
 
@@ -326,8 +336,18 @@ def collect_turn_evidence(
     produced_artifacts: Sequence[Mapping[str, Any]] | None = None,
     cell_count_before: int = 0,
     step_count_before: int = 0,
+    tool_ledger: Sequence[Mapping[str, Any]] | None = None,
+    environment_defaults: Mapping[str, Any] | None = None,
+    collection_omissions: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Gather one turn's evidence from Store and freeze it."""
+    """Gather one turn's evidence from Store and freeze it.
+
+    A runtime that projects no activity steps (the CLI records its native
+    tool calls only in the action ledger) passes that ledger as
+    ``tool_ledger`` in the same ``kind/title/status/summary`` shape;
+    ``environment_defaults`` names the runtime where no kernel generation
+    does, and ``collection_omissions`` declares gaps the caller found.
+    """
 
     prior = dict(artifact_versions_before or {})
     artifacts: list[dict[str, Any]] = []
@@ -437,22 +457,36 @@ def collect_turn_evidence(
             }
         )
 
-    tool_start = max(int(step_count_before), store.step_count(root_frame_id) - 200)
     tools = []
-    steps = store.list_steps(root_frame_id, start=tool_start, limit=200)
-    for step in list(steps)[-32:]:
-        if not isinstance(step, Mapping) or step.get("kind") == "review":
-            continue
-        tools.append(
-            {
-                "kind": step.get("kind"),
-                "title": step.get("title"),
-                "status": step.get("status"),
-                "summary": step.get("summary"),
-            }
-        )
-    if len(steps) > 32:
-        truncation["tools"] = True
+    if tool_ledger is not None:
+        entries = [item for item in tool_ledger if isinstance(item, Mapping)]
+        for entry in entries[-32:]:
+            tools.append(
+                {
+                    "kind": entry.get("kind"),
+                    "title": entry.get("title"),
+                    "status": entry.get("status"),
+                    "summary": entry.get("summary"),
+                }
+            )
+        if len(entries) > 32:
+            truncation["tools"] = True
+    else:
+        tool_start = max(int(step_count_before), store.step_count(root_frame_id) - 200)
+        steps = store.list_steps(root_frame_id, start=tool_start, limit=200)
+        for step in list(steps)[-32:]:
+            if not isinstance(step, Mapping) or step.get("kind") == "review":
+                continue
+            tools.append(
+                {
+                    "kind": step.get("kind"),
+                    "title": step.get("title"),
+                    "status": step.get("status"),
+                    "summary": step.get("summary"),
+                }
+            )
+        if len(steps) > 32:
+            truncation["tools"] = True
 
     lineage = []
     for artifact in artifacts:
@@ -477,13 +511,14 @@ def collect_turn_evidence(
                 }
             )
 
-    environment: dict[str, Any] = {}
+    environment: dict[str, Any] = dict(environment_defaults or {})
     try:
         latest = store.latest_kernel_generation(
             root_frame_id, "python", branch_id=branch_id
         )
         if isinstance(latest, Mapping):
             environment = {
+                **environment,
                 "language": latest.get("language") or "python",
                 "environment_name": latest.get("environment_name")
                 or latest.get("env_name"),
@@ -491,7 +526,7 @@ def collect_turn_evidence(
                 "interpreter": latest.get("interpreter"),
             }
     except Exception:  # noqa: BLE001
-        environment = {}
+        environment = dict(environment_defaults or {})
 
     plan = None
     try:
@@ -534,5 +569,6 @@ def collect_turn_evidence(
             "source_metadata": source_metadata,
             "adapters": adapters,
             "truncation": truncation,
+            "collection_omissions": list(collection_omissions or ()),
         }
     )

@@ -15,14 +15,14 @@ Does not edit `stores/` or `compat/window-exports.ts` above the lane-additions m
 | [`types.ts`](types.ts) | Executed-code / lineage / env snapshot records. |
 | [`api.ts`](api.ts) | Same-origin fetch that keeps HTTP status on `ApiError` (409 vs other). |
 | [`conflict.ts`](conflict.ts) | Fork 409 presentation: no retry, server sentence intact. |
-| [`lineage.ts`](lineage.ts) | Provenance chain transforms (cell / captures / env honesty). |
+| [`lineage.ts`](lineage.ts) | Provenance chain transforms (cell / captures / env honesty). `envPackageCount` is null when the record's list was never read (`packages_unavailable` with no packages). |
 | [`exec.ts`](exec.ts) | `execSourcesState` / `toggleExecutedCode` / `buildExecutedCodeView` (app.js:10148-10229). |
 | [`inspector.ts`](inspector.ts) | Variable inspector (app.js:10265-10332). |
-| [`provenance.ts`](provenance.ts) | Provenance tab (app.js:10631-10833). |
+| [`provenance.ts`](provenance.ts) | Provenance tab (app.js:10631-10833). An unread package list shows "Packages unknown" ("n/a" for a non-Python kernel) and no "No packages to report."; the reason stays as the warn note. |
 | [`branch.ts`](branch.ts) | Fork / recovery REST with 409 presentation. |
 | [`boot.ts`](boot.ts) | Window names + notebook/viewer composition. |
 | [`index.ts`](index.ts) | Public re-exports. |
-| [`lineage.test.ts`](lineage.test.ts) | Provenance chain data transforms. |
+| [`lineage.test.ts`](lineage.test.ts) | Provenance chain data transforms; the Environment panel rendered for a legacy 0.2.x snapshot, a really empty Python list and an R kernel. |
 | [`conflict.test.ts`](conflict.test.ts) | 409 presentation; `forkOnce` is single-shot. |
 
 - [`copy.ts`](copy.ts): Bilingual provenance read-state and evidence copy.

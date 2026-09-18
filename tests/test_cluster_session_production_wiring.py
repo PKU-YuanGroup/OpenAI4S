@@ -707,6 +707,44 @@ def test_a_cluster_session_gets_a_kernel_over_its_workers_transport(daemon):
     assert manager.readiness(session_id).ready is True
 
 
+def test_a_cluster_kernel_generation_never_names_the_daemon_s_interpreter(daemon):
+    """The remote Kernel defaults `python` to the daemon's `sys.executable`.
+
+    While a Web Python generation recorded the protocol mode as its runtime,
+    that path was inert: nothing froze a "repl" runtime. Recording the language
+    instead makes the snapshot freeze whatever interpreter the generation
+    names, so a remote worker's generation must not name this process's --
+    otherwise the daemon's venv packages are attributed to a worker on another
+    machine, which is wrong provenance rather than absent provenance.
+    """
+    import sys
+
+    session_id, project_id = _session(daemon)
+    workload = _request_cluster(daemon, session_id)
+    allocation = _grant(daemon, workload.id)
+    transport = _FakeTransport()
+    manager = daemon.runner.compute_sessions
+    manager._gateway._arrived[(allocation.id, 0)] = [_Registration(transport)]
+    st = daemon.runner._state(session_id, project_id)
+
+    daemon.runner._spawn_kernel(st)
+
+    generation = daemon.runner.store.latest_kernel_generation(session_id, "python")
+    environment = generation["environment"]
+    assert environment["runtime"] == "python"
+    assert environment["execution_plane"] == "remote"
+    assert environment["interpreter"] is None
+
+    snapshot = daemon.runner.store.get_env_snapshot(
+        daemon.runner.artifacts.capture_environment(root_frame_id=session_id)
+    )
+    assert snapshot["generation_id"] == generation["generation_id"]
+    assert snapshot["interpreter"] != sys.executable
+    assert snapshot["packages"] == []
+    assert snapshot["package_count"] == 0
+    assert "remote" in (snapshot["packages_unavailable"] or "")
+
+
 def test_a_remote_candidate_is_not_published_before_generation_commit(
     daemon, monkeypatch
 ):

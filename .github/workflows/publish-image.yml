@@ -1,7 +1,11 @@
 # Publish the daemon container image to GitHub Packages (ghcr.io).
 #
-# Two triggers: automatically when a release is published, and manually for an
-# existing tag (the first publication for a release that predates this
+# Two triggers. `workflow_dispatch` is the normal path: release.yml's `finalize`
+# job dispatches it for the tag right after making the release public, because
+# that job publishes with its GITHUB_TOKEN and GitHub starts no workflow run for
+# a `release` event that token raised. `release: published` still covers a
+# release a maintainer publishes by hand. A manual dispatch against an existing
+# tag works too (the first publication for a release that predates this
 # workflow). Either way `scripts/verify_release_tag.py` refuses a tree whose
 # declared versions do not match the tag — so an image can never carry a tag
 # its own `__version__` disagrees with.

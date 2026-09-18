@@ -45,6 +45,24 @@ export function mdCodeBlock(code: string, lang: string): string {
   );
 }
 
+/**
+ * 0.2.0 stored every default completion link as `/api/artifacts/<id>`, a path
+ * the contract-v1 gateway answers with 404 (it deliberately has no
+ * un-versioned alias), so a reopened session's "Artifacts:" list was dead.
+ * Exactly that one-segment form is rewritten onto the versioned reader; any
+ * other href -- deeper paths, a query or fragment, dot segments -- is left as
+ * written.
+ */
+const LEGACY_ARTIFACT_HREF = /^\/api\/artifacts\/([^/?#]+)$/;
+const ARTIFACT_READER = "/api/v1/artifacts/";
+
+function mdHref(href: string): string {
+  const m = LEGACY_ARTIFACT_HREF.exec(href);
+  const segment = m ? m[1] || "" : "";
+  if (!segment || segment === "." || segment === "..") return href;
+  return ARTIFACT_READER + segment;
+}
+
 const MDC0 = String.fromCharCode(0xe000);
 const MDC1 = String.fromCharCode(0xe001);
 const mdCodeRestore = new RegExp(MDC0 + "(\\d+)" + MDC1, "g");
@@ -73,7 +91,7 @@ export function mdInline(t: string | null | undefined): string {
   t = t.replace(
     /\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g,
     (_m, text: string, href: string) =>
-      '<a href="' + escQuote(href) + '" target="_blank" rel="noopener">' + text + "</a>",
+      '<a href="' + escQuote(mdHref(href)) + '" target="_blank" rel="noopener">' + text + "</a>",
   );
   t = t.replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   t = t.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");

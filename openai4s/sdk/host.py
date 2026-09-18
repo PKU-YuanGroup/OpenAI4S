@@ -838,8 +838,9 @@ class _Host:
         validated against it. task_status optionally declares an honest
         machine-readable status (completed|partial|blocked|failed; omitted
         means completed) — a delegated parent reads it instead of parsing
-        prose. A validation failure returns {"error":...} so the model can
-        retry.
+        prose. A validation failure raises RuntimeError inside the cell —
+        after any earlier statements in that cell have already run — so the
+        model can repair the submission and retry.
 
         source_files ([{path, sha256?}]), entry_points ([path]),
         architecture_summary (str) and test_evidence ([{command,

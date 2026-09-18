@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from openai4s.kernel.environment import build_kernel_environment
 from openai4s.kernel.errors import KernelBusyError, KernelInterruptUnavailable
+from openai4s.kernel.font_cache import seed_kernel_font_cache
 from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
 from openai4s.kernel.transport import KernelTransport, PipeTransport
@@ -190,17 +191,17 @@ def _signal_worker_main_thread(pid: int, signum: int) -> bool:
     """Deliver ``signum`` to the worker's MAIN thread on Linux, via tgkill(2).
 
     A process-directed signal may be handed to ANY thread that has it
-    unblocked. The worker is not single-threaded in practice: the guard
-    phase's ``import matplotlib`` pulls in OpenBLAS, whose pool threads
-    inherit the main thread's empty signal mask. When one of those consumes
-    the SIGINT, CPython's C trampoline only sets a flag -- the Python-level
-    handler runs on the main thread alone -- and a main thread blocked in
-    ``clock_nanosleep`` (``time.sleep``) is never woken by a flag another
-    thread set. Observed on a CI runner as a cell that slept its remaining
-    30 s with ``SigPnd: 0`` on every thread and the main thread parked in
-    ``hrtimer_nanosleep``, then reported ``interrupted=True`` at wall=30.0005
-    -- the stop arrived, was consumed by a BLAS thread, and did nothing until
-    the sleep expired on its own.
+    unblocked. The worker is not single-threaded in practice: a Cell's own
+    ``import numpy`` or ``import matplotlib`` pulls in OpenBLAS, whose pool
+    threads inherit the main thread's empty signal mask and outlive that
+    Cell. When one of those consumes the SIGINT, CPython's C trampoline only
+    sets a flag -- the Python-level handler runs on the main thread alone --
+    and a main thread blocked in ``clock_nanosleep`` (``time.sleep``) is never
+    woken by a flag another thread set. Observed on a CI runner as a cell
+    that slept its remaining 30 s with ``SigPnd: 0`` on every thread and the
+    main thread parked in ``hrtimer_nanosleep``, then reported
+    ``interrupted=True`` at wall=30.0005 -- the stop arrived, was consumed by
+    a BLAS thread, and did nothing until the sleep expired on its own.
 
     tgkill directs the signal at one thread; the main thread's tid equals the
     pid, so it is addressable without reading /proc. R workers ride the same
@@ -314,6 +315,12 @@ class Kernel:
         if capture_sinks:
             self._sinks = SinkDirectory(self._sandbox.status.temp_dir)
         try:
+            if self.transport_factory is None and self.argv is None:
+                # Once per sandbox, before its first worker: an enforced
+                # sandbox starts matplotlib with an empty private cache, so
+                # copy in the font list the host built -- never one a kernel
+                # wrote. Best effort; a miss only costs the old font scan.
+                seed_kernel_font_cache(self._sandbox, interpreter=self.python)
             self._proc = self._spawn()
         except Exception:
             if self._sinks is not None:
@@ -493,6 +500,9 @@ class Kernel:
             env_name=self.env_name,
             kernel_generation=self.authorization_generation,
             repo_root=repo_root,
+            # A Python worker's shell resolves `python` to this worker's own
+            # interpreter. An R worker (its own argv) keeps the host PATH.
+            interpreter=self.python if self.argv is None else None,
         )
 
     def _send(self, obj: dict) -> None:

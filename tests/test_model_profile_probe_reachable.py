@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 from pathlib import Path
 
 import pytest
@@ -316,3 +317,169 @@ def test_every_new_string_is_in_both_languages():
         "cust.models.unreachable",
     ):
         assert APP_JS.count(f'"{key}":') == 2, key
+
+
+# --------------------------------------------------------------------------
+# failures the real transport produces
+# --------------------------------------------------------------------------
+#
+# These go through `openai4s.llm.transport` unstubbed: loopback servers for
+# the answers, `urlopen` itself for the no-answer cases. Stubbing `chat` is
+# how the network case slipped. The transport wraps a refused connection in a
+# status-less `TransportError`, which is not an `OSError`, so the probe
+# answered "internal error" to a wrong base URL and then sent its second
+# request anyway. A stub that raised `OSError` would have passed.
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    """Retries still happen; only the sleeps between them are skipped.
+
+    ``monotonic`` is the real clock: the transport reads it for the logical
+    call's total deadline, so a namespace carrying only ``sleep`` turned every
+    connect failure into an ``AttributeError`` the probe reported as "internal
+    error" -- the exact misreport these tests exist to catch.
+    """
+    import time as real_time
+    import types
+
+    from openai4s.llm import transport
+
+    slept: list[float] = []
+    monkeypatch.setattr(
+        transport,
+        "time",
+        types.SimpleNamespace(sleep=slept.append, monotonic=real_time.monotonic),
+    )
+    return slept
+
+
+def _profile_at(call, base_url):
+    created = call(
+        "POST",
+        "/model-profiles",
+        {
+            "name": "loopback",
+            "provider": "chatgpt",
+            "api_key": "sk-test",
+            "model": "gpt-test",
+            "base_url": base_url,
+        },
+    )
+    assert created["code"] == 201, created
+    return created["body"]["id"]
+
+
+def _answering(status, body, content_type):
+    import threading
+    from http.server import BaseHTTPRequestHandler
+
+    from tests._ports import bound_gateway_server
+
+    hits: list[str] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server naming
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            hits.append(self.path)
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            return None
+
+    server, port = bound_gateway_server()
+    server.RequestHandlerClass = _Handler
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, port, hits
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        ConnectionRefusedError(61, "Connection refused"),
+        socket.gaierror(8, "nodename nor servname provided, or not known"),
+        TimeoutError(60, "Operation timed out"),
+    ],
+    ids=["refused", "unknown-host", "connect-timeout"],
+)
+def test_an_unreachable_endpoint_is_named_and_not_probed_twice(
+    api, no_backoff, monkeypatch, reason
+):
+    """What `urlopen` raises when no HTTP answer comes back at all.
+
+    Raised from `urlopen` itself so the transport's own wrapping runs; a real
+    socket cannot stand in portably, because macOS lets a connect to a bound,
+    non-listening port time out instead of refusing it.
+    """
+    import urllib.error
+
+    from openai4s.llm import transport
+
+    attempts: list[str] = []
+
+    def _unreachable(request, **_kwargs):
+        attempts.append(request.full_url)
+        raise urllib.error.URLError(reason)
+
+    # `_urlopen` is the transport's documented injectable open seam; the real
+    # path goes through the shared deadline watchdog rather than
+    # `urllib.request.urlopen`, so patching that module function stopped
+    # intercepting anything.
+    monkeypatch.setattr(transport, "_urlopen", _unreachable)
+    runner, call = api
+    profile_id = _profile_at(call, "http://127.0.0.1:9/v1")
+    result = call("POST", f"/model-profiles/{profile_id}/probe")
+    body = result["body"]
+    assert result["code"] == 200
+    assert body["reachable"] is False
+    assert body["code"] == "probe_failed"
+    assert "could not be reached" in body["detail"]
+    assert "internal error" not in body["detail"]
+    # The tool-call request never got an answer, so the streaming one is not
+    # sent: each of them can wait out a full connect timeout and its retries.
+    assert body["outbound"] == 1
+    assert all("/chat/completions" in url for url in attempts), attempts
+    # The transport still retried that one request.
+    assert len(attempts) == transport.DEFAULT_MAX_ATTEMPTS
+
+
+def test_a_rejected_request_names_its_status(api, no_backoff):
+    runner, call = api
+    server, port, hits = _answering(
+        400,
+        json.dumps({"error": {"message": "/Users/someone/secret", "code": "bad"}}),
+        "application/json",
+    )
+    try:
+        profile_id = _profile_at(call, f"http://127.0.0.1:{port}/v1")
+        body = call("POST", f"/model-profiles/{profile_id}/probe")["body"]
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert hits, "the probe never reached the loopback endpoint"
+    assert body["reachable"] is False
+    assert "rejected the probe request (HTTP 400)" in body["detail"]
+    # The provider's own text stays out of the answer.
+    assert "/Users/someone" not in json.dumps(body)
+
+
+def test_a_web_page_is_not_mistaken_for_a_model_api(api, no_backoff):
+    runner, call = api
+    server, port, hits = _answering(
+        200, "<html><body>welcome</body></html>", "text/html"
+    )
+    try:
+        profile_id = _profile_at(call, f"http://127.0.0.1:{port}")
+        body = call("POST", f"/model-profiles/{profile_id}/probe")["body"]
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert hits, "the probe never reached the loopback endpoint"
+    assert body["reachable"] is False
+    assert "not like a model API" in body["detail"]
+    assert "internal error" not in body["detail"]

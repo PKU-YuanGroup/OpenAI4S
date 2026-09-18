@@ -16,7 +16,10 @@ who embeds a document rather than by what the document contains.
 
 from __future__ import annotations
 
+import os
+import unicodedata
 from collections.abc import Sequence
+from urllib.parse import quote
 
 
 def artifact_content_security_policy() -> str:
@@ -144,6 +147,58 @@ def artifact_security_headers() -> dict[str, str]:
     # removes the preview document's active capabilities.
     headers["X-Frame-Options"] = "SAMEORIGIN"
     return headers
+
+
+#: Unicode categories dropped from a served filename: controls (CR/LF split a
+#: header), format characters (a right-to-left override disguises the
+#: extension), surrogates (not encodable) and private use, plus the line and
+#: paragraph separators.
+_DISPOSITION_DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
+#: What the legacy ``filename`` quoted-string keeps; anything else becomes
+#: ``_``. No quote or backslash (they end or escape the string), no ``;`` or
+#: ``%`` (parsers that split or percent-decode naively), no path separator.
+_DISPOSITION_ASCII_KEPT = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !#$&'()+,-.=@[]^_`{}~"
+)
+_DISPOSITION_NAME_MAX = 180
+
+
+def artifact_content_disposition(filename: object, fallback: str = "artifact") -> str:
+    """``Content-Disposition`` for Artifact bytes: shown in place, saved by name.
+
+    Without it a browser that downloads rather than renders a type (``text/csv``)
+    names the file after the URL's last path segment, so a completion link to
+    ``group_summary.csv`` saved ``a-7b61bc5806b9.csv``. ``inline``, never
+    ``attachment``: PNG, HTML and the Workbench's preview iframe still render
+    in place.
+
+    The stored name is agent- or user-authored, which makes it the one header
+    value on the route an Artifact controls. Only its last path component is
+    used, the categories above and double quotes are removed, and it is sent
+    twice: an ASCII ``filename`` for old clients and an RFC 5987 ``filename*``
+    carrying the exact UTF-8 name, which current browsers prefer.
+    """
+    raw = str(filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(
+        ch
+        for ch in raw
+        if ch != '"' and unicodedata.category(ch) not in _DISPOSITION_DROPPED_CATEGORIES
+    ).strip()
+    if name in {"", ".", ".."}:
+        name = fallback
+    if len(name) > _DISPOSITION_NAME_MAX:
+        stem, extension = os.path.splitext(name)
+        if 0 < len(extension) <= 16:
+            name = stem[: _DISPOSITION_NAME_MAX - len(extension)] + extension
+        else:
+            name = name[:_DISPOSITION_NAME_MAX]
+    decomposed = unicodedata.normalize("NFKD", name)
+    ascii_name = "".join(
+        ch if ch in _DISPOSITION_ASCII_KEPT else "_"
+        for ch in decomposed
+        if not unicodedata.combining(ch)
+    )
+    return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 def embeddable_security_headers(*, allow_eval: bool = False) -> dict[str, str]:

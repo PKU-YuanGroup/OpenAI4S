@@ -8,6 +8,7 @@ import { h, render } from "preact";
 import { onLanguageChange } from "../../i18n";
 import { Customize } from "../../components/customize/Customize";
 import { custTab, openCust } from "./actions";
+import { loadModels } from "./models";
 import { customizeOpen, customizeTab } from "./state";
 import { telemetryRow } from "./telemetry";
 
@@ -80,6 +81,9 @@ export function bootCustomize(target: WindowBag = globalThis as unknown as Windo
   installCustomize(target);
   mountCustomize();
   bindShellButtons();
+  // Stores only: `#model-select` renders from them once the shell mounts, so
+  // this does not have to wait for the composer to exist.
+  void loadModels();
   onLanguageChange(() => {
     if (customizeOpen.value) custTab(customizeTab.value);
   });

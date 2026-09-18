@@ -55,11 +55,65 @@ def _head_sha() -> str:
     return completed.stdout.decode().strip()
 
 
+def _merge_check_run_pages(text: str) -> dict:
+    """One `{"check_runs": [...]}` listing from every page `gh api` wrote.
+
+    `gh api --paginate` on an object endpoint writes each page as its own JSON
+    document, back to back; `--slurp` wraps the pages in one array instead. A
+    single `json.loads` accepted neither once a commit had more than 100 check
+    runs -- it raised "Extra data" on the second page, after every local gate
+    had run -- so a release SHA that had collected a few nightly schedules and
+    Dependabot runs could not produce a receipt at all.
+
+    Every page is kept, in order, and `attest_check_runs` still picks the latest
+    attempt per name across all of them. Anything that is not a sequence of page
+    objects each carrying a `check_runs` list is refused rather than guessed at.
+    """
+    decoder = json.JSONDecoder()
+    documents: list[object] = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            document, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError as error:
+            raise GateManifestError(
+                f"the check-run listing is not JSON: {error}"
+            ) from None
+        documents.append(document)
+
+    pages: list[object] = []
+    for document in documents:
+        # `--slurp` is one array of pages; `--paginate` alone is a page per
+        # document. Both reduce to the same ordered list of page objects.
+        pages.extend(document if isinstance(document, list) else [document])
+    if not pages:
+        raise GateManifestError("the check-run listing is empty")
+
+    runs: list[object] = []
+    for number, page in enumerate(pages, start=1):
+        if not isinstance(page, dict):
+            raise GateManifestError(
+                f"the check-run listing's page {number} is not an object"
+            )
+        page_runs = page.get("check_runs")
+        if not isinstance(page_runs, list):
+            raise GateManifestError(
+                f"the check-run listing's page {number} carries no check_runs"
+            )
+        runs.extend(page_runs)
+    return {"check_runs": runs}
+
+
 def _attest(path: Path | None, source_sha: str) -> list[dict]:
     """Turn a saved `check-runs` listing into receipt rows.
 
-    The workflow writes the listing with `gh api`; the parsing and every refusal
-    is `release_gates.attest_check_runs`, which is pure and therefore testable
+    The workflow writes the listing with `gh api --paginate`; the page merge is
+    `_merge_check_run_pages`, and every refusal about the checks themselves is
+    `release_gates.attest_check_runs`. Both are pure and therefore testable
     without a network.
     """
     if path is None:
@@ -67,9 +121,9 @@ def _attest(path: Path | None, source_sha: str) -> list[dict]:
             "no check-run listing was supplied, so the browser and Python "
             "support matrices cannot be attested for this commit. Pass "
             "--check-runs with the output of "
-            "`gh api repos/{owner}/{repo}/commits/<sha>/check-runs`."
+            "`gh api --paginate --slurp repos/{owner}/{repo}/commits/<sha>/check-runs`."
         )
-    payload = json.loads(path.read_text("utf-8"))
+    payload = _merge_check_run_pages(path.read_text("utf-8"))
     return release_gates.attest_check_runs(payload, expected_sha=source_sha)
 
 

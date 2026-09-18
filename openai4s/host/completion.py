@@ -16,34 +16,117 @@ from openai4s.host.code_evidence import (
     validate_code_evidence,
 )
 
-PAST_TENSE_STARTERS = frozenset(
+#: Irregular past forms spelled differently from their base verb. Besides being
+#: accepted as they stand, these are the only stems a re-/over-/un-/mis-/out-/
+#: up-/pre- prefix may attach to ("overwrote", "rebuilt", "undid", "upheld").
+_MARKED_IRREGULAR_PAST = frozenset(
     {
-        "built",
-        "found",
-        "made",
-        "ran",
-        "reran",
-        "wrote",
-        "read",
-        "sent",
-        "set",
-        "got",
+        "became",
         "began",
+        "bound",
+        "bought",
+        "broke",
+        "brought",
+        "built",
+        "came",
+        "caught",
         "chose",
+        "dealt",
+        "did",
         "drew",
-        "fit",
+        "drove",
+        "dug",
+        "felt",
+        "flew",
+        "fought",
+        "forgave",
+        "forgot",
+        "found",
+        "froze",
+        "gave",
+        "got",
+        "grew",
+        "heard",
         "held",
+        "hid",
+        "hung",
         "kept",
+        "knew",
+        "laid",
         "led",
         "left",
-        "put",
+        "lent",
+        "lit",
+        "lost",
+        "made",
+        "meant",
+        "met",
+        "paid",
+        "ran",
+        "reran",
+        "rode",
+        "rose",
+        "said",
+        "sat",
         "saw",
+        "sent",
+        "shook",
         "shown",
-        "showed",
-        "split",
+        "slept",
+        "slid",
+        "sold",
+        "sought",
+        "spent",
+        "spun",
+        "stood",
+        "struck",
+        "stuck",
+        "swept",
         "taught",
+        "thought",
+        "threw",
         "told",
+        "took",
+        "tore",
         "understood",
+        "withdrew",
+        "withheld",
+        "woke",
+        "won",
+        "wore",
+        "wound",
+        "wrote",
+    }
+)
+
+#: Past forms spelled exactly like the base verb. They are accepted as whole
+#: words, as "set" and "put" always were, but never as the stem of a prefixed
+#: word: "output", "outlet", "outfit" and "upset" are nouns and adjectives far
+#: more often than past tenses. The prefixed forms that are common completion
+#: verbs ("reset", "unset", "reread") are listed whole instead.
+_UNMARKED_IRREGULAR_PAST = frozenset(
+    {
+        "cast",
+        "cut",
+        "fit",
+        "hit",
+        "let",
+        "put",
+        "quit",
+        "read",
+        "reread",
+        "reset",
+        "set",
+        "shut",
+        "split",
+        "spread",
+        "unset",
+    }
+)
+
+PAST_TENSE_STARTERS = frozenset(
+    {
+        "showed",
         "computed",
         "created",
         "generated",
@@ -51,7 +134,17 @@ PAST_TENSE_STARTERS = frozenset(
         "analyzed",
         "identified",
     }
+    | _MARKED_IRREGULAR_PAST
+    | _UNMARKED_IRREGULAR_PAST
 )
+
+#: Tried longest first, and only after the raw word failed, so a word such as
+#: "read" or "reran" is never mangled into a stem.
+_PAST_TENSE_PREFIXES = ("over", "out", "mis", "pre", "re", "un", "up")
+
+#: Words that split into a prefix plus a marked past form but are not past
+#: tenses themselves ("pre" + "sent", "re" + "lent").
+_PREFIXED_NON_PAST = frozenset({"present", "relent"})
 _CJK_START = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
 #: The machine-readable completion vocabulary shared by ``host.submit_output``,
@@ -74,6 +167,25 @@ def first_english_word(bullet: Any) -> str | None:
     return None if _CJK_START.match(first) else first
 
 
+def _is_past_tense_starter(word: str) -> bool:
+    """Whether a lowercased first word reads as an English past tense.
+
+    The raw word is tried first — a regular "-ed" form or a listed irregular
+    one. Only then is one prefix stripped, and the remainder must be a marked
+    irregular past form, so "overwrote" and "undid" pass while "output" and
+    "present" do not. Future ("will"), progressive ("computing") and base
+    forms ("compute", "rerun") never match either rule.
+    """
+    if word.endswith("ed") or word in PAST_TENSE_STARTERS:
+        return True
+    if word in _PREFIXED_NON_PAST:
+        return False
+    return any(
+        word.startswith(prefix) and word[len(prefix) :] in _MARKED_IRREGULAR_PAST
+        for prefix in _PAST_TENSE_PREFIXES
+    )
+
+
 def validate_completion_bullets(bullets: list) -> str | None:
     """Require 1-4 non-empty completed-action bullets.
 
@@ -89,7 +201,7 @@ def validate_completion_bullets(bullets: list) -> str | None:
         first = first_english_word(bullet)
         if first is None:
             continue
-        if not (first.endswith("ed") or first in PAST_TENSE_STARTERS):
+        if not _is_past_tense_starter(first):
             return (
                 f"completion bullet {bullet!r} must start with a past-tense verb "
                 f"(e.g. 'Computed...', 'Saved...')"

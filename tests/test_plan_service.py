@@ -212,7 +212,9 @@ def test_execution_uses_normal_turn_and_preserves_status_semantics(
     plan = store.create_plan(
         frame_id=session.root_frame_id,
         project_id=session.project_id,
-        title="Protein plan",
+        # A Chinese plan: this test pins the zh seed. The English one is
+        # `test_an_english_plan_executes_and_resumes_under_english_seeds`.
+        title="蛋白质设计计划",
         rationale="",
         confidence="high",
         steps=[
@@ -280,14 +282,14 @@ def test_execution_guards_and_revision_prompt(tmp_path):
     revision = service.run_revision(
         session.root_frame_id,
         "science",
-        "add a validation step",
+        "增加一个验证步骤",
         "test-model",
     )
     args, kwargs = calls.pop()
     assert revision == {"status": "completed"}
     assert args[:2] == (session.root_frame_id, "science")
     assert args[3] == "test-model"
-    assert "add a validation step" in args[2]
+    assert "增加一个验证步骤" in args[2]
     assert "不要执行、不要调用任何工具" in args[2]
     assert (
         "{title, rationale, confidence, steps:[{id,title,detail,deliverables}]}"
@@ -324,7 +326,7 @@ def test_execution_guards_and_revision_prompt(tmp_path):
     assert calls == []
 
 
-def _plan_with_steps(store, frame_id, statuses):
+def _plan_with_steps(store, frame_id, statuses, title="resumable"):
     """A plan whose steps carry `statuses` (index -> status, None = untouched)."""
     steps = [
         {
@@ -338,7 +340,7 @@ def _plan_with_steps(store, frame_id, statuses):
     plan = store.create_plan(
         frame_id=frame_id,
         project_id="science",
-        title="resumable",
+        title=title,
         rationale="r",
         confidence="high",
         steps=steps,
@@ -375,7 +377,7 @@ def test_the_resume_seed_names_the_finished_work_so_it_is_not_redone(tmp_path):
     from the top" quietly overwrites them."""
     store, _events, service = _service(tmp_path)
     frame_id = store.new_frame(kind="turn", project_id="science")
-    plan = _plan_with_steps(store, frame_id, ["completed", None])
+    plan = _plan_with_steps(store, frame_id, ["completed", None], title="可恢复计划")
 
     seed = service.resume_seed(plan, service.unfinished_steps(plan))
     assert "s1" in seed and "不要重做" in seed
@@ -481,7 +483,7 @@ def test_the_resume_seed_names_a_skipped_step_among_the_settled(tmp_path):
     """Settled means "do not redo", and the seed is where that is said."""
     store, _events, service = _service(tmp_path)
     frame_id = store.new_frame(kind="turn", project_id="science")
-    plan = _plan_with_steps(store, frame_id, ["skipped", None])
+    plan = _plan_with_steps(store, frame_id, ["skipped", None], title="可恢复计划")
 
     seed = service.resume_seed(plan, service.unfinished_steps(plan))
     assert "s1" in seed and "不要重做" in seed
@@ -502,3 +504,263 @@ def test_every_step_status_is_either_settled_or_deliberately_not(tmp_path):
 
     assert settled | unsettled == frozenset(PLAN_STEP_STATUSES)
     assert settled & unsettled == frozenset()
+
+
+# ------------------ seeds follow the plan's language (en / zh) -------------- #
+def _english_plan(store, frame_id, status="draft"):
+    return store.create_plan(
+        frame_id=frame_id,
+        project_id="science",
+        title="Two-group synthetic data comparison",
+        rationale="compare means",
+        confidence="high",
+        steps=[
+            {
+                "id": "s1",
+                "title": "Generate data",
+                "detail": "seed 7, 40 values",
+                "deliverables": ["means.json"],
+            },
+            {"id": "s2", "title": "Compare", "detail": "t-test", "deliverables": []},
+        ],
+        status=status,
+    )
+
+
+def test_an_english_plan_executes_and_resumes_under_english_seeds(tmp_path):
+    """The seeds were hard-coded Chinese, and every localised projection of the
+    turn takes its language from the seed -- so an English session's plan ran
+    with Chinese narrations and `指标：/完成内容：` completion headings."""
+    from openai4s.server.completions import completion_message, response_language
+
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _english_plan(store, frame_id)
+
+    seed = service.execution_seed(plan)
+    assert response_language(seed) == "en", seed
+    assert "[s1] Generate data: seed 7, 40 values" in seed
+    assert "means.json" in seed and "(no files specified)" in seed
+    assert seed.index("[s1]") < seed.index("[s2]")
+    for rule in (
+        'host.plan_update("<step_id>", "in_progress")',
+        'host.plan_update("<step_id>", "completed")',
+        'host.plan_update("<step_id>", "failed", note=',
+        "host.submit_output(...)",
+    ):
+        assert rule in seed
+
+    store.set_plan_step_status(plan["plan_id"], "s1", "completed")
+    plan = store.get_plan(plan["plan_id"])
+    resume = service.resume_seed(plan, service.unfinished_steps(plan))
+    assert response_language(resume) == "en", resume
+    assert "[s1] Generate data (completed)" in resume
+    assert "do not redo" in resume.lower()
+    assert "[s2] Compare" in resume
+    assert 'host.plan_update("<step_id>", "in_progress")' in resume
+
+    headings = completion_message(
+        {
+            "output": {"summary": "Done.", "metrics": {"n": 40}},
+            "completion_bullets": ["wrote means.json"],
+        },
+        language=response_language(seed),
+    )
+    assert "Metrics:" in headings
+    assert "指标" not in headings and "完成内容" not in headings
+
+
+def test_a_chinese_plan_still_gets_chinese_seeds(tmp_path):
+    from openai4s.server.completions import response_language
+
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = store.create_plan(
+        frame_id=frame_id,
+        project_id="science",
+        title="两组合成数据比较",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "生成数据", "detail": "40 个值"}],
+    )
+    seed = service.execution_seed(plan)
+    assert response_language(seed) == "zh"
+    assert seed.startswith("已批准计划「两组合成数据比较」")
+    assert "执行规则" in seed and "（无指定文件）" in seed
+
+
+def test_the_plan_language_is_carried_from_the_drafting_request(tmp_path):
+    """A plan the model happened to write in English for a Chinese request
+    executes in the request's language: the draft turn spoke Chinese, so the
+    execution turn does too. Read from the stored request, so it survives a
+    daemon restart."""
+    from openai4s.server.completions import response_language
+
+    store, _events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    store.add_message(
+        root_frame_id=frame_id,
+        role="user",
+        content="比较两组合成数据的均值",
+        frame_id=frame_id,
+    )
+    plan = _english_plan(store, frame_id)
+    assert response_language(service.execution_seed(plan)) == "zh"
+    assert response_language(
+        service.resume_seed(plan, service.unfinished_steps(plan))
+    ) == ("zh")
+
+    # A request stored *after* the plan was drafted is not its drafting
+    # request (an execution seed, a follow-up): it does not relabel the plan.
+    other = store.new_frame(kind="turn", project_id="science")
+    english = _english_plan(store, other)
+    store.add_message(
+        root_frame_id=other,
+        role="user",
+        content="后来的消息",
+        frame_id=other,
+        created_at=int(english["created_at"]) + 1000,
+    )
+    assert response_language(service.execution_seed(english)) == "en"
+
+
+def test_the_revision_seed_follows_the_plan_and_is_not_instructed_twice(tmp_path):
+    """The revise turn runs with plan=True, and a plan turn now appends the
+    plan-draft instruction unless the request already carries one -- so the
+    revision seed must open with the plan-mode marker in either language."""
+    from openai4s.server.completions import response_language
+    from openai4s.server.plans import plan_draft_instruction
+
+    calls = []
+
+    def run_message(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"status": "completed"}
+
+    store, _events, service = _service(tmp_path, run_message)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    _english_plan(store, frame_id)
+    service.run_revision(frame_id, "science", "add a validation step")
+    args, kwargs = calls.pop()
+    seed = args[2]
+    assert kwargs == {"plan": True}
+    assert response_language(seed) == "en", seed
+    assert seed.startswith("[Plan Mode]")
+    assert "add a validation step" in seed
+    assert "```json" in seed and "Do not execute" in seed
+    assert plan_draft_instruction(seed) is None
+
+    zh_frame = store.new_frame(kind="turn", project_id="science")
+    store.create_plan(
+        frame_id=zh_frame,
+        project_id="science",
+        title="中文计划",
+        rationale="",
+        confidence="high",
+        steps=[{"id": "s1", "title": "步骤"}],
+    )
+    service.run_revision(zh_frame, "science", "add a validation step")
+    args, _kwargs = calls.pop()
+    assert args[2].startswith("[计划模式]")
+    assert "不要执行、不要调用任何工具" in args[2]
+    assert plan_draft_instruction(args[2]) is None
+
+
+def _draft_with_two_steps(store, frame_id):
+    return store.create_plan(
+        frame_id=frame_id,
+        project_id="science",
+        title="Mean and standard deviation",
+        rationale="",
+        confidence="high",
+        steps=[
+            {"id": "s1", "title": "Compute", "detail": "numbers", "deliverables": []},
+            {"id": "s2", "title": "Report results", "detail": "", "deliverables": []},
+        ],
+    )
+
+
+def _assert_not_complete_with_a_step_in_progress(store, events, plan_id):
+    row = store.get_plan(plan_id)
+    in_progress = [
+        step_id
+        for step_id, entry in (row["step_status"] or {}).items()
+        if (entry or {}).get("status") == "in_progress"
+    ]
+    assert in_progress == ["s2"], row["step_status"]
+    assert row["status"] == "paused", row
+    last = [event for event in events if event.get("type") == "plan_ready"][-1]
+    assert last["status"] == "paused"
+    assert [step["status"] for step in last["plan"]["steps"]] == [
+        "completed",
+        "in_progress",
+    ]
+
+
+def test_a_completed_turn_that_left_a_step_in_progress_does_not_complete_the_plan(
+    tmp_path,
+):
+    """The plan card read PLAN COMPLETE next to an in-progress step, and the row
+    said the same: status completed, s2 in_progress, for good -- only a paused
+    plan can resume. The model marked the last step in progress and called
+    host.submit_output in the same Cell, which ended the turn, and a completed
+    turn was mapped to a completed plan without looking at the steps.
+
+    Nothing records that the step's work landed, so it is not settled on the
+    agent's behalf. The plan pauses instead: the step stays in progress, the
+    card says a step remains, and Resume can finish it."""
+    store, events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _draft_with_two_steps(store, frame_id)
+    plan_id = plan["plan_id"]
+
+    def run_message(root_frame_id, project_id, seed, model, plan=False):
+        # The host.plan_update sequence recorded for the Chromium frame.
+        store.set_plan_step_status(plan_id, "s1", "in_progress")
+        store.set_plan_step_status(plan_id, "s1", "completed")
+        store.set_plan_step_status(plan_id, "s2", "in_progress")
+        return {"status": "completed", "frame_id": root_frame_id}
+
+    service.run_message = run_message
+    result = service.run_execution(frame_id, "science")
+
+    assert result["status"] == "completed"
+    assert result["plan_status"] == "paused"
+    _assert_not_complete_with_a_step_in_progress(store, events, plan_id)
+    assert service.claim_resume(frame_id)["ok"] is True
+
+
+def test_a_completed_resume_that_left_a_step_in_progress_pauses_again(tmp_path):
+    store, events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan = _draft_with_two_steps(store, frame_id)
+    plan_id = plan["plan_id"]
+    store.set_plan_step_status(plan_id, "s1", "completed")
+    store.update_plan(plan_id, status="paused")
+
+    def run_message(root_frame_id, project_id, seed, model, plan=False):
+        store.set_plan_step_status(plan_id, "s2", "in_progress")
+        return {"status": "completed", "frame_id": root_frame_id}
+
+    service.run_message = run_message
+    result = service.resume_execution(frame_id, "science")
+
+    assert result["plan_status"] == "paused"
+    _assert_not_complete_with_a_step_in_progress(store, events, plan_id)
+
+
+def test_a_completed_turn_that_settled_every_step_still_completes_the_plan(tmp_path):
+    store, events, service = _service(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science")
+    plan_id = _draft_with_two_steps(store, frame_id)["plan_id"]
+
+    def run_message(root_frame_id, project_id, seed, model, plan=False):
+        store.set_plan_step_status(plan_id, "s1", "completed")
+        store.set_plan_step_status(plan_id, "s2", "in_progress")
+        store.set_plan_step_status(plan_id, "s2", "completed")
+        return {"status": "completed", "frame_id": root_frame_id}
+
+    service.run_message = run_message
+    assert service.run_execution(frame_id, "science")["plan_status"] == "completed"
+    assert store.get_plan(plan_id)["status"] == "completed"
+    assert events[-1]["status"] == "completed"

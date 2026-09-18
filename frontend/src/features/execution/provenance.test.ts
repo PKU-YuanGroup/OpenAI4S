@@ -4,6 +4,7 @@ import { cells, lineage, _lineageFor } from "../../stores/notebook";
 import { currentId, _openGen } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { provMode, provSub } from "../../stores/ui";
+import { filesT } from "../artifacts/copy";
 import type { ArtifactRow } from "../artifacts/types";
 import { renderNotebook } from "../notebook/Notebook";
 import { fetchRecentMessages } from "../sessions/messages";
@@ -149,7 +150,7 @@ describe("provenance reads keep failure, absence, and ownership distinct", () =>
     setExecutionFetch(async () => response({ source: "captured", kind: null, packages: [], package_count: null }));
     open({ id: "a" }, "environment"); const root = view(); await settle();
     const chips = walk(root).filter((node) => node.className === "env-chip");
-    expect(text(chips.find((node) => text(node).includes(provenanceT("packages")))!)).toContain(provenanceT("unknownEnvironment"));
+    expect(text(chips.find((node) => text(node).includes("Packages"))!)).toContain(filesT("prov.env.packagesUnknown"));
     expect(text(root)).not.toContain("Python");
   });
 

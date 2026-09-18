@@ -25,6 +25,8 @@ type FakeButton = {
   dataset: Record<string, string>;
   title: string;
   attrs: Map<string, string>;
+  innerHTML?: string;
+  _painted?: boolean;
   setAttribute: (name: string, value: string) => void;
 };
 
@@ -275,29 +277,71 @@ describe("F-09 theme", () => {
       expect(h.mol.setBackgroundColor).toHaveBeenLastCalledWith("white");
     });
 
-    it("paints #dash-theme / #ws-theme data-icon without touching innerHTML", async () => {
+    it("repaints #dash-theme / #ws-theme with the sun/moon drawing, not just data-icon", async () => {
       const h = installHarness({ theme: "dark" });
-      const makeButton = (): FakeButton => {
+      const makeButton = (size: string): FakeButton => {
         const attrs = new Map<string, string>();
         return {
-          dataset: {},
+          // paintIcons already filled it at boot; that must not freeze the glyph.
+          dataset: { icon: "moon", iconSize: size },
           title: "",
           attrs,
+          innerHTML: '<svg class="ic-svg"><path d="stale"/></svg>',
+          _painted: true,
           setAttribute(name: string, value: string) {
             attrs.set(name, value);
           },
         };
       };
-      const dash = makeButton();
-      const ws = makeButton();
+      const dash = makeButton("20");
+      const ws = makeButton("18");
       h.buttons.set("#dash-theme", dash);
       h.buttons.set("#ws-theme", ws);
+      const { iconSvg } = await import("../icons/paths");
       const api = await loadTheme();
       api.applyTheme("dark");
       expect(dash.dataset.icon).toBe("sun");
       expect(ws.dataset.icon).toBe("sun");
+      expect(dash.innerHTML).toBe(iconSvg("sun", 20));
+      expect(ws.innerHTML).toBe(iconSvg("sun", 18));
+      expect(dash.innerHTML).toMatch(/<circle cx="12" cy="12" r="4"\/>/);
+      expect(dash._painted).toBe(true);
       api.applyTheme("light");
       expect(dash.dataset.icon).toBe("moon");
+      expect(dash.innerHTML).toBe(iconSvg("moon", 20));
+      expect(dash.innerHTML).toMatch(/<path d="M12 3a6 6 0 0 0 9 9/);
+    });
+  });
+
+  describe("toggle title before the dictionaries load", () => {
+    it("does not write the bare key as the toggle's title or aria-label", async () => {
+      const h = installHarness({ theme: "light" });
+      const attrs = new Map<string, string>([["aria-label", "Theme"]]);
+      const button: FakeButton = {
+        dataset: { icon: "moon", iconSize: "20" },
+        title: "主题",
+        attrs,
+        setAttribute(name: string, value: string) {
+          attrs.set(name, value);
+        },
+      };
+      h.buttons.set("#ws-theme", button);
+      // What i18n/index.ts installs while I18N is still empty.
+      const dictionary: Record<string, string> = {};
+      vi.stubGlobal("window", {
+        matchMedia: () => ({ matches: false, addEventListener() {} }),
+        t: (key: string) => dictionary[key] ?? key,
+        tOptional: (key: string) => dictionary[key] ?? null,
+      });
+      const api = await loadTheme();
+      api.refreshThemeToggle();
+      expect(button.title).toBe("主题");
+      expect(attrs.get("aria-label")).toBe("Theme");
+
+      dictionary["theme.toggle"] = "Toggle theme";
+      api.refreshThemeToggle();
+      expect(button.title).toBe("Toggle theme");
+      expect(attrs.get("aria-label")).toBe("Toggle theme");
     });
   });
 

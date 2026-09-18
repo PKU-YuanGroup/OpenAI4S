@@ -70,6 +70,35 @@ describe("renderMd esc-then-markup chain", () => {
     expect(renderMd("[x](#frag)")).toContain('href="#frag"');
   });
 
+  it("rewrites a stored 0.2.0 completion link onto the versioned Artifact reader", () => {
+    // 0.2.0 wrote default completion links as `/api/artifacts/<id>`; the
+    // contract-v1 gateway answers that path with a 404 and has no alias, so a
+    // reopened session's "Artifacts:" list was dead. Exactly the one-segment
+    // form is rewritten.
+    expect(renderMd("- [stats.json](/api/artifacts/a-c7c20745a417)")).toBe(
+      '<ul><li><a href="/api/v1/artifacts/a-c7c20745a417" target="_blank" rel="noopener">stats.json</a></li></ul>',
+    );
+    expect(mdInline("[x](/api/artifacts/artifact%2Flegacy)")).toContain(
+      'href="/api/v1/artifacts/artifact%2Flegacy"',
+    );
+    // Current links and every other shape are left exactly as written.
+    expect(mdInline("[x](/api/v1/artifacts/a-1)")).toContain('href="/api/v1/artifacts/a-1"');
+    expect(mdInline("[x](/api/v1/artifacts/versions/v-1)")).toContain(
+      'href="/api/v1/artifacts/versions/v-1"',
+    );
+    expect(mdInline("[x](/api/artifacts/a-1/versions)")).toContain(
+      'href="/api/artifacts/a-1/versions"',
+    );
+    expect(mdInline("[x](/api/artifacts/a-1?x=1)")).toContain('href="/api/artifacts/a-1?x=1"');
+    expect(mdInline("[x](/api/artifacts/..)")).toContain('href="/api/artifacts/.."');
+    expect(mdInline("[x](https://ex.com/api/artifacts/a-1)")).toContain(
+      'href="https://ex.com/api/artifacts/a-1"',
+    );
+    expect(mdInline("[x](/static/api/artifacts/a-1)")).toContain(
+      'href="/static/api/artifacts/a-1"',
+    );
+  });
+
   it("keeps the scheme whitelist (https / http / mailto / / / # only)", () => {
     expect(mdInline("[x](javascript:alert(1))")).toBe("[x](javascript:alert(1))");
     expect(mdInline("[x](data:text/html,hi)")).toBe("[x](data:text/html,hi)");

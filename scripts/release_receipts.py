@@ -284,12 +284,16 @@ def verify_build_receipts(
     expected_sha: str,
     assets_dir: Path,
     required_kinds: Sequence[str] = (),
+    digests: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Every receipt must name the frozen SHA, and describe bytes that are here.
 
     The two halves matter separately. Checking only the SHA would accept a
     receipt for the right commit listing digests nothing on disk has; checking
     only the digests would accept an artifact built from a different commit.
+
+    ``digests`` are SHA-256s the caller has already taken of the files in
+    ``assets_dir``; a name found there is not read a second time.
     """
     if not expected_sha:
         raise ReceiptError("cannot verify build receipts without the frozen source SHA")
@@ -365,7 +369,7 @@ def verify_build_receipts(
                     f"build receipt {path.name} describes {name}, which is not "
                     f"among the assets being staged"
                 )
-            actual = _digest(candidate)
+            actual = (digests or {}).get(name) or _digest(candidate)
             if actual != str(row.get("sha256") or ""):
                 raise ReceiptError(
                     f"{name} does not match its build receipt "

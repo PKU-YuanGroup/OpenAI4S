@@ -1,13 +1,15 @@
-/** Navigation identity is independent of each directory request's generation. */
-import { _msgEarlierLoading, _openGen, _foldersFor, _sessionScope, _sessionsLoadingMore, folders, foldersLoadError, foldersLoading, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError, sessionsLoading } from "../../stores/session";
+/**
+ * The view generation and the synchronous directory reset that goes with it.
+ *
+ * Deliberately *not* a list-read owner. `_openGen` says who owns the view:
+ * every conversation open and every trip Home bumps it, and neither makes
+ * project P's session rows wrong. List reads are scoped to their project
+ * instead (`load.ts: listScope`), and the project menu cancels a pending
+ * project open through its own counter (`projects.ts: projectFilterVersion`)
+ * rather than by retiring the open conversation's reads.
+ */
+import { _foldersFor, _msgEarlierLoading, _openGen, _sessionScope, _sessionsLoadingMore, folders, foldersLoadError, foldersLoading, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError, sessionsLoading } from "../../stores/session";
 
-export type Navigation = { projectId: string | null; generation: number };
-export function navigation(): Navigation {
-  return { projectId: project.value, generation: _openGen.value };
-}
-export function ownsNavigation(owner: Navigation): boolean {
-  return project.value === owner.projectId && _openGen.value === owner.generation;
-}
 export function resetSessionDirectory(): void {
   _sessionScope.value = project.value || "";
   sessions.value = [];
@@ -18,20 +20,16 @@ export function resetSessionDirectory(): void {
   sessionsLoadError.value = false;
   foldersLoadError.value = false;
 }
+
 export function beginNavigation(): number {
   _openGen.value++;
   sessionsLoading.value = false;
   foldersLoading.value = false;
   _sessionsLoadingMore.value = false;
-  // The superseded paging request can no longer clear this itself. Callers
-  // that follow with openConversation reset it again; selectProject keeps the
-  // open frame and would otherwise leave "Load earlier" disabled for good.
+  // A paging request superseded by this navigation skips its own `finally`,
+  // so it can no longer clear this latch. Every caller that keeps a
+  // conversation on screen resets it again through `openConversation`; this is
+  // what covers the callers that do not.
   _msgEarlierLoading.value = false;
   return _openGen.value;
-}
-export function beginProjectNavigation(id: string): Navigation {
-  beginNavigation();
-  project.value = id;
-  resetSessionDirectory();
-  return navigation();
 }

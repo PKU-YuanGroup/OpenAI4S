@@ -500,7 +500,11 @@ def test_the_cli_and_delegation_cell_sink_has_full_network_admission():
 
     loop_src = inspect.getsource(Agent._admit_cell)
     assert "raw_required_binding(" in loop_src
+    # `run` owns the frame's terminal status and delegates the turn itself to
+    # `_run_task`, which is where the lazy Python worker is spawned and admitted.
     run_src = inspect.getsource(Agent.run)
+    assert "self._run_task(task)" in run_src
+    run_src += inspect.getsource(Agent._run_task)
     r_src = inspect.getsource(Agent._execute_r)
     assert "self._admit_spawned_cell_kernel(kernel)" in run_src
     assert "self._admit_spawned_cell_kernel(k)" in r_src

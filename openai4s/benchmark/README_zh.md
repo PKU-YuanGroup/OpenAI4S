@@ -1,7 +1,7 @@
 # `openai4s/benchmark/`
 
 带版本的科学工作流基准 runner，清单放在
-[`workflows/`](../../workflows/README_zh.md)：十一个 workflow、三十四个真的会
+[`workflows/`](../../workflows/README_zh.md)：十三个 workflow、四十六个真的会
 执行的用例，另有一份独立、严格的 Stage 0 现场/安全验收包。
 
 提出这套基准的方案对「什么会让它一文不值」讲得很明确——一个没人执行的 fixture 目录，或者因为被测对象是 mock 所以能过的用例。所以这里每一步都驱动真实子系统：真实的 Store、真实的 kernel manager、真实的 host dispatcher、真实的 compute manager、真实的 connector service、真实的环境事务。被注入的只有离线跑不了的那些——LLM（测试套件本来就 mock 了它）、网络（connector 抓取喂的是录制下来的 body）、包管理器（单元测试里的环境构建不可能去下载一个 solver）——而且每一样都是注入**进**生产代码，而不是把生产代码替换掉。一个自己造答案的 step，衡量的是这个 step 自己。

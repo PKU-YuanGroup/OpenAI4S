@@ -345,6 +345,66 @@ def _check_desktop_entry(app: Path) -> None:
             )
 
 
+def _check_installer_runs(app: Path) -> None:
+    """install.sh has to *run* against the shipped runtime, not merely parse.
+
+    It renders the menu entry with the bundled interpreter
+    (`runtime/bin/python3 -I -`), and nothing static can see that: an
+    interpreter that will not start isolated, a `.pth` in the science stack that
+    prints or fails at startup, a template line that drifted from the keys the
+    renderer replaces. The pytest for the installer runs it over a hand-built
+    directory with the *test* interpreter symlinked in, so this is the only
+    place the shipped installer meets the shipped runtime and template.
+
+    Installs into a scratch HOME, reads back what a desktop would read, then
+    runs uninstall.sh, which is otherwise never executed by anything either.
+    """
+    with tempfile.TemporaryDirectory(prefix="openai4s-install-check-") as scratch:
+        home = Path(scratch)
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(home),
+            "XDG_BIN_HOME": str(home / "bin"),
+            "XDG_DATA_HOME": str(home / "share"),
+        }
+        installed = _run(["bash", str(app / "install.sh")], cwd=scratch, env=env)
+        if installed.returncode != 0:
+            raise BundleCheckError(
+                "install.sh did not run against the bundled runtime: "
+                + (installed.stderr.strip() or installed.stdout.strip())[-400:]
+            )
+        entry = home / "share" / "applications" / "openai4s.desktop"
+        if not entry.is_file():
+            raise BundleCheckError("install.sh ran but wrote no menu entry")
+        lines = entry.read_text("utf-8", errors="surrogateescape").splitlines()
+        launch = [line for line in lines if line.startswith("Exec=")]
+        if len(launch) != 1 or any(
+            "@APPDIR@" in line or "@ICON@" in line for line in lines
+        ):
+            raise BundleCheckError(
+                f"the installed menu entry was not rendered: {launch or lines}"
+            )
+        # The two escaping layers change only these characters, so for any
+        # other path the entry can be held to the exact line without restating
+        # the encoder. install.sh locates itself, which may spell it either way.
+        spellings = {str(app), str(app.resolve())}
+        if not any(re.search(r'[\\"`$%\n\r\t]', path) for path in spellings):
+            expected = {f'Exec="{path}/OpenAI4S"' for path in spellings}
+            if launch[0] not in expected:
+                raise BundleCheckError(
+                    f"the installed menu entry launches {launch[0]!r}, not this bundle"
+                )
+        cli = home / "bin" / "openai4s"
+        if cli.resolve() != (app / "bin" / "openai4s").resolve():
+            raise BundleCheckError("install.sh did not link the bundled CLI")
+        removed = _run(["bash", str(app / "uninstall.sh")], cwd=scratch, env=env)
+        if removed.returncode != 0 or entry.exists() or cli.is_symlink():
+            raise BundleCheckError(
+                "uninstall.sh did not undo install.sh: "
+                + (removed.stderr.strip() or "the menu entry or the CLI link remains")
+            )
+
+
 def _check_pip_redirect(app: Path) -> None:
     """pip must be redirected out of the bundle before anything installs.
 
@@ -403,6 +463,7 @@ def verify(target: Path) -> None:
         if _can_execute(arch):
             python_version = _check_runtime_executes(runtime, app, imports)
             _check_cli_executes(runtime, src)
+            _check_installer_runs(app)
             runtime_note = (
                 f"embedded CPython {python_version}, {present} science packages "
                 "imported from inside the bundle; `python -m openai4s --help` runs"
@@ -422,7 +483,14 @@ def verify(target: Path) -> None:
         print(
             f"bytecode  : {compiled} precompiled .pyc, hash-based (never rewritten in place)"
         )
-        print("desktop   : relocatable entry template + install.sh substitution")
+        print(
+            "desktop   : relocatable entry template; install.sh "
+            + (
+                "rendered and removed the entry with the bundled runtime"
+                if _can_execute(arch)
+                else "substitution (not run on this host)"
+            )
+        )
         print("secrets   : none; no build-machine paths in the entry points")
         print(f"depth     : {depth}")
 

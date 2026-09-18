@@ -1,39 +1,70 @@
 <a id="en"></a>
 
-# Startup guide — macOS app (`.dmg`)
+# Startup guide — macOS
 
 **English** · [简体中文](#zh)
 
-This walks a brand-new macOS user from the downloaded disk image to a first
-answer: install the app, get past Gatekeeper, point it at a model, and (so the
-agent can read the live literature and databases) point it at web search. No
-command line and no Python toolchain are required for any of it.
+This walks a new macOS user to a first answer: install OpenAI4S, point it at a
+model, and (so the agent can read the live literature and databases) point it
+at web search.
 
-> The `.dmg` is **Apple Silicon only**. On an Intel Mac or on Linux, install
-> from PyPI instead — `pip install openai4s` — then run `openai4s serve`. The
-> in-app steps below (model + search configuration) are identical once the
-> workbench is open.
+> **v0.3.0 ships a preview macOS image, not a notarized one.** It is Apple
+> Silicon only, ad-hoc signed and not notarized, so Gatekeeper blocks its first
+> launch (§2). It was built and attached outside the release workflow, which
+> uploads a `.dmg` only when it is Developer-ID-signed and notarized; the
+> credentials for that do not exist yet. On an Intel Mac, or if you would
+> rather not run an un-notarized app, install from PyPI (§1).
 
 ---
 
-## 1. Install — drag to Applications
+## 1. Install
 
-1. Download `OpenAI4S-<version>-macos-arm64.dmg` from the
-   [latest release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest).
+### From PyPI (Intel Macs, or your own Python)
+
+You need Python 3.10 or newer, for example from python.org or Homebrew. Install
+into a virtual environment of its own, then start the daemon:
+
+```bash
+python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
+pip install "openai4s[science]"
+openai4s serve
+```
+
+The `science` extra adds numpy, pandas, matplotlib and scikit-learn to the
+environment the Python kernel runs in. Use `"openai4s[science,chemistry]"` if
+you also want RDKit. `openai4s serve` starts the local daemon and opens the
+workbench in your browser with its access token. All data (SQLite database,
+artifacts, logs) lives under `~/.openai4s`. Next time, run
+`source ~/.venvs/openai4s/bin/activate && openai4s serve` again.
+
+### The v0.3.0 preview image (Apple Silicon)
+
+1. Download `OpenAI4S-0.3.0-macos-arm64.dmg` from the
+   [v0.3.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0).
+   Use that pinned page rather than the newest release: a release the workflow
+   produces carries no macOS image. To check the download, fetch `SHA256SUMS`
+   from the same page and run `shasum -a 256 --ignore-missing -c SHA256SUMS`.
 2. Double-click the `.dmg` to mount it.
 3. **Drag `OpenAI4S` onto the `Applications` folder** in the same window.
 4. Eject the disk image and launch **OpenAI4S** from Applications (or Spotlight).
 
-The image already embeds its own Python plus the default kernel science stack —
+The image embeds its own Python plus the default kernel science stack —
 numpy · pandas · scipy · matplotlib · seaborn · plotly · **rdkit**
 (cheminformatics) · **scanpy** and the single-cell stack (anndata · leidenalg ·
 igraph) · umap · numba · scikit-learn · statsmodels · biopython · h5py · zarr ·
-pyarrow — so the first launch needs **no network and no `pip`**. All data
-(SQLite database, artifacts, logs) lives under `~/.openai4s`.
+pyarrow — so the first launch needs **no network and no `pip`**.
 
-## 2. First launch — get past Gatekeeper
+If you used the v0.2.0 app before, read [Upgrading from 0.2.x](upgrading.md)
+before the first launch: 0.3.0 upgrades `~/.openai4s`, and the 0.2.0 app must
+not open it afterwards. The older v0.2.0 image stays on the
+[v0.2.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0);
+it runs 0.2.0, and its settings screens differ from the ones described below.
 
-The build is **ad-hoc signed but not notarized** (notarization needs a paid
+## 2. The preview image only — get past Gatekeeper
+
+Skip this section if you installed from PyPI.
+
+The image is **ad-hoc signed but not notarized** (notarization needs a paid
 Apple Developer identity), so Gatekeeper refuses it the *first* time only. Pick
 the path for your macOS version:
 
@@ -44,14 +75,15 @@ the path for your macOS version:
 | **Any version, from Terminal** | `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app`, then open normally. |
 
 Once it opens, the app starts a local daemon and opens the workbench in your
-browser at **`http://127.0.0.1:8760/`**. Everything below happens in that UI.
+browser. Everything below happens in that UI.
 
 ## 3. Configure your model API
 
-The app boots **without any API key** — a *"configure your API key"* banner
+OpenAI4S boots **without any API key** — a *"configure your API key"* banner
 links straight to the right screen.
 
-**Recommended Volcengine flow:** install the official connector once with
+**Recommended Volcengine flow** (new in 0.3.0; the v0.2.0 preview image has only
+the manual form further down): install the official connector once with
 `npm i -g @volcengine/ark-cli@latest`, then open **Settings → Models** and click
 **Continue with Volcengine**. OpenAI4S opens the official Volcengine
 authorization page in your browser. Finish authorization, copy the complete
@@ -125,32 +157,43 @@ results never make the dedicated Doubao check claim success.
 
 ## 5. (Optional) Add the R kernel
 
-The `.dmg` bundles **Python only** — the R kernel needs a Conda environment
-that is too large to ship inside an image, so the R channel reports itself
-unavailable rather than silently falling back to Python. To add it, expose the
-bundled CLI and run the setup command:
+Neither install route ships R. Without an R interpreter the R channel reports
+itself unavailable rather than silently falling back to Python. The documented
+way to add one is a Conda environment built by `openai4s setup`, which needs a
+Conda-family manager (`micromamba`, `mamba` or `conda`).
+
+With a PyPI install, run the setup command from the same virtual environment:
+
+```bash
+openai4s setup
+```
+
+With the preview image, expose its bundled CLI first:
 
 ```bash
 sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
-openai4s setup        # needs a Conda-family manager: micromamba / mamba / conda
+openai4s setup
 ```
 
-The same CLI also gives you `openai4s status`, `openai4s stop`, and
-`openai4s url` outside the app.
+Either way the same CLI also gives you `openai4s status`, `openai4s stop`, and
+`openai4s url`.
 
 ## 6. You're set
 
 Open a new chat and ask a real question — for example *"Fetch human insulin
 (UniProt P01308), summarize its chains, and plot residue hydrophobicity."* The
-bundled stack runs cheminformatics, single-cell, and dataframe workflows
-offline; with Doubao Search authorized by your Agent Plan Key, the agent can
-also reach current sources across the wider web. Tavily and keyless engines
-remain available as backups.
+kernel runs dataframe and plotting workflows with the `science` extra, and
+cheminformatics with `chemistry` (the preview image bundles both plus the
+single-cell stack). With Doubao Search authorized by your Agent Plan Key, the
+agent can also reach current sources across the wider web. Tavily and keyless
+engines remain available as backups.
 
 **Troubleshooting**
 
-- **Nothing opened in the browser** — visit `http://127.0.0.1:8760/` manually.
-- **Logs** — `~/.openai4s/logs/app.out`.
+- **Nothing opened in the browser** — run `openai4s url` and open the URL it
+  prints. The bare `http://127.0.0.1:8760/` asks for the access token.
+- **Logs** — a PyPI install logs to the terminal running `openai4s serve`; the
+  preview app writes `~/.openai4s/logs/app.out`.
 - **Port already in use** — another instance may be running; quit it, or use the
   CLI `openai4s stop`.
 - **Model calls fail** — re-check the active profile under **Settings → Models**
@@ -161,38 +204,46 @@ remain available as backups.
 
 <a id="zh"></a>
 
-# 上手指南 — macOS 应用（`.dmg`）
+# 上手指南 — macOS
 
 [English](#en) · **简体中文**
 
-本指南带一位全新的 macOS 用户从下载的磁盘镜像走到第一个结果：装好应用、通过
-Gatekeeper、配好模型，再配好联网搜索（让智能体能读实时文献与数据库）。整个过程
-**不需要命令行、也不需要任何 Python 工具链**。
+本指南带一位全新的 macOS 用户走到第一个结果：装好 OpenAI4S、配好模型，再配好联网搜索（让智能体能读实时文献与数据库）。
 
-> `.dmg` **仅支持 Apple Silicon**。Intel Mac 或 Linux 请改用 PyPI 安装——
-> `pip install openai4s`，然后 `openai4s serve`。工作台打开之后，下面的应用内步骤
-> （配模型 + 配搜索）完全一致。
+> **v0.3.0 附带的是 macOS 预览镜像，不是经过公证的镜像。** 它仅支持 Apple Silicon，只做了 ad-hoc 签名、未经公证，所以第一次打开会被 Gatekeeper 拦下（第 2 节）。它是在发布流程之外构建并挂上去的：发布流程只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它，而这些凭据目前还不存在。Intel Mac，或不想运行未公证的应用时，请从 PyPI 安装（第 1 节）。
 
 ---
 
-## 1. 安装 —— 拖进「应用程序」
+## 1. 安装
 
-1. 从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest)
-   下载 `OpenAI4S-<version>-macos-arm64.dmg`。
+### 从 PyPI 安装（Intel Mac，或使用自己的 Python）
+
+需要 Python 3.10 或更新版本，例如来自 python.org 或 Homebrew。请安装到一个单独的虚拟环境中，然后启动守护进程：
+
+```bash
+python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
+pip install "openai4s[science]"
+openai4s serve
+```
+
+`science` extra 会把 numpy、pandas、matplotlib 和 scikit-learn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
+
+### v0.3.0 预览镜像（Apple Silicon）
+
+1. 从 [v0.3.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0)下载 `OpenAI4S-0.3.0-macos-arm64.dmg`。请使用这个固定页面，不要去最新 Release 里找：由发布流程产出的 release 不带 macOS 镜像。想校验下载，可从同一页面取 `SHA256SUMS`，然后运行 `shasum -a 256 --ignore-missing -c SHA256SUMS`。
 2. 双击 `.dmg` 挂载。
 3. 在弹出的窗口里，**把 `OpenAI4S` 拖到 `Applications`（应用程序）文件夹**。
 4. 推出磁盘镜像，从「应用程序」（或聚焦搜索 Spotlight）启动 **OpenAI4S**。
 
-镜像已内嵌自带的 Python 以及默认内核科学栈——numpy · pandas · scipy · matplotlib ·
-seaborn · plotly · **rdkit**（化学信息学）· **scanpy** 及单细胞栈（anndata ·
-leidenalg · igraph）· umap · numba · scikit-learn · statsmodels · biopython ·
-h5py · zarr · pyarrow——所以首次启动**不联网、不 `pip`**。所有数据（SQLite 数据库、
-Artifact、日志）都写在 `~/.openai4s`。
+镜像已内嵌自带的 Python 以及默认内核科学栈——numpy · pandas · scipy · matplotlib · seaborn · plotly · **rdkit**（化学信息学）· **scanpy** 及单细胞栈（anndata · leidenalg · igraph）· umap · numba · scikit-learn · statsmodels · biopython · h5py · zarr · pyarrow——所以首次启动**不联网、不 `pip`**。
 
-## 2. 首次启动 —— 通过 Gatekeeper
+如果之前用过 v0.2.0 应用，首次启动前请先阅读[从 0.2.x 升级](upgrading_zh.md)：0.3.0 会升级 `~/.openai4s`，之后 0.2.0 应用不能再打开它。旧的 v0.2.0 镜像仍在 [v0.2.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0)；它运行的是 0.2.0，设置页面也与下文描述的不同。
 
-该构建**仅做 ad-hoc 签名、未做公证（notarization）**（公证需要付费的 Apple 开发者
-身份），所以**只有第一次**打开会被 Gatekeeper 拦下。按你的 macOS 版本选一种方式：
+## 2. 仅适用于预览镜像 —— 通过 Gatekeeper
+
+如果你是从 PyPI 安装的，请跳过本节。
+
+该镜像**仅做 ad-hoc 签名、未做公证（notarization）**（公证需要付费的 Apple 开发者身份），所以**只有第一次**打开会被 Gatekeeper 拦下。按你的 macOS 版本选一种方式：
 
 | macOS 版本 | 首次打开方式 |
 |---|---|
@@ -200,15 +251,14 @@ Artifact、日志）都写在 `~/.openai4s`。
 | **12–14（Monterey–Sonoma）** | **右键**（或按住 Control 点按）`OpenAI4S.app` → **打开** → **打开**。 |
 | **任意版本，用终端** | `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app`，之后正常打开。 |
 
-打开后，应用会启动本地守护进程，并在浏览器里打开工作台
-**`http://127.0.0.1:8760/`**。下面的操作都在这个界面里完成。
+打开后，应用会启动本地守护进程，并在浏览器里打开工作台。下面的操作都在这个界面里完成。
 
 ## 3. 配置模型 API
 
-应用启动时**不带任何 API Key**——界面上会有一条 *「configure your API key」*
+OpenAI4S 启动时**不带任何 API Key**——界面上会有一条 *「configure your API key」*
 横幅，直接跳到对应页面。
 
-**推荐的火山流程：**先用 `npm i -g @volcengine/ark-cli@latest` 一次性安装官方
+**推荐的火山流程**（0.3.0 新增；v0.2.0 预览镜像只有下文的手动表单）：先用 `npm i -g @volcengine/ark-cli@latest` 一次性安装官方
 连接器，然后打开 **设置 → 模型**，点击 **使用火山引擎登录**。OpenAI4S 会在浏览器中打开
 火山官方授权页。完成授权后，复制页面显示的完整授权字符串（通常是一段包含 `code` 和 `state`
 的 Base64 文本），再粘贴回 OpenAI4S；不要只复制其中的 `code`。不需要打开系统终端。
@@ -267,28 +317,31 @@ DuckDuckGo 等免密钥抓取则是独立通用搜索路径的最后备用；它
 
 ## 5.（可选）加装 R 内核
 
-`.dmg` 只打包了 **Python**——R 内核需要一个 Conda 环境，体量太大无法塞进镜像，所以
-R 通道会直接报告「解释器不可用」，而不会悄悄退回 Python。要加装它，先把内置 CLI 暴露
-出来，再跑 setup：
+两种安装方式都不带 R。没有 R 解释器时，R 通道会直接报告「解释器不可用」，而不会悄悄退回 Python。文档给出的加装方式是用 `openai4s setup` 构建一个 Conda 环境，这需要一个 Conda 家族管理器（`micromamba`、`mamba` 或 `conda`）。
+
+如果是 PyPI 安装，在同一个虚拟环境里运行 setup：
+
+```bash
+openai4s setup
+```
+
+如果用的是预览镜像，先把它内置的 CLI 暴露出来：
 
 ```bash
 sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
-openai4s setup        # 需要一个 Conda 家族管理器：micromamba / mamba / conda
+openai4s setup
 ```
 
-这个 CLI 同时提供 `openai4s status`、`openai4s stop`、`openai4s url`，可在应用之外使用。
+无论哪种方式，这个 CLI 都同时提供 `openai4s status`、`openai4s stop`、`openai4s url`。
 
 ## 6. 大功告成
 
-开一个新对话，问个真实问题——比如 *「拉取人胰岛素（UniProt P01308），概括它的各条链，
-并画出残基疏水性。」* 内置科学栈可离线跑化学信息学、单细胞和 DataFrame 工作流；配好
-Agent Plan Key 授权豆包搜索之后，智能体还能检索更广的实时互联网；Tavily 与免密钥引擎
-继续作为备用。
+开一个新对话，问个真实问题——比如 *「拉取人胰岛素（UniProt P01308），概括它的各条链，并画出残基疏水性。」* 装了 `science` extra 的内核可以跑 DataFrame 与绘图工作流，装了 `chemistry` 可以跑化学信息学（预览镜像两者都内置，另有单细胞栈）。配好 Agent Plan Key 授权豆包搜索之后，智能体还能检索更广的实时互联网；Tavily 与免密钥引擎继续作为备用。
 
 **排障**
 
-- **浏览器没自动打开** —— 手动访问 `http://127.0.0.1:8760/`。
-- **日志** —— `~/.openai4s/logs/app.out`。
+- **浏览器没自动打开** —— 运行 `openai4s url`，打开它打印出的 URL。直接访问 `http://127.0.0.1:8760/` 会要求访问令牌。
+- **日志** —— PyPI 安装的日志输出在运行 `openai4s serve` 的终端里；预览应用写入 `~/.openai4s/logs/app.out`。
 - **端口被占用** —— 可能已有一个实例在跑；退出它，或用 CLI `openai4s stop`。
 - **模型调用失败** —— 到 **设置 → 模型** 复查当前激活的配置，确认 Key 以及（若填过）
   Base URL 是否正确。

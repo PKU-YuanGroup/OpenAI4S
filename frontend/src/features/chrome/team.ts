@@ -7,6 +7,7 @@
  * `classList.remove("hidden")`.
  */
 
+import { paintIcon } from "../icons/paths";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
@@ -61,8 +62,7 @@ export function ensureTeamDom(): void {
     const btn = el("button", "outline-btn hidden");
     btn.id = "team-admin";
     const ic = el("span", "ic");
-    ic.setAttribute("data-icon", "users");
-    ic.setAttribute("data-icon-size", "16");
+    paintIcon(ic, "users", 16);
     btn.appendChild(ic);
     btn.appendChild(el("span", null, "Team admin"));
     document.body.appendChild(btn);

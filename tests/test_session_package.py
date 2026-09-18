@@ -3078,16 +3078,25 @@ def test_a_real_export_carries_reproduction_notes_and_still_verifies(tmp_path):
         runner.close()
 
 
-def test_the_verify_route_answers_without_importing(tmp_path):
+def test_the_verify_route_answers_without_importing(tmp_path, monkeypatch):
     """Verification has to be reachable before import, not only after: the
     recipient's question is whether to admit this archive to their database at
     all, and answering it afterwards is too late.
 
     It was CLI-only, so anyone working in the browser had no way to check what
     they had been handed.
+
+    The route stages the upload in a temporary file, and it used to hand back
+    `verify_package`'s CLI report unfiltered -- including `path`, the daemon's
+    (already deleted) staging path under TMPDIR -- and a no-manifest refusal
+    named the staged file. Neither is part of the documented response.
     """
+    import tempfile as _tempfile
     import zipfile as _zipfile
 
+    staging = tmp_path / "staging-home-alice"
+    staging.mkdir()
+    monkeypatch.setattr(_tempfile, "tempdir", str(staging))
     config = Config(
         data_dir=tmp_path,
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
@@ -3119,6 +3128,32 @@ def test_the_verify_route_answers_without_importing(tmp_path):
         assert report["files_verified"]
         # The route must be honest about the limit of what it proves.
         assert "does not establish" in report["verifies"]
+        # Exactly the documented keys: no host staging path.
+        assert set(report) == {
+            "ok",
+            "format",
+            "schema_version",
+            "archive_sha256",
+            "files_verified",
+            "problems",
+            "verifies",
+        }
+        assert str(staging) not in json.dumps(report)
+        assert ".openai4s-session.zip" not in json.dumps(report)
+
+        # A zip with no manifest is refused without naming the staged file.
+        no_manifest = io.BytesIO()
+        with _zipfile.ZipFile(no_manifest, "w") as archive:
+            archive.writestr("notes.txt", b"not a package")
+        handler._body_bytes = lambda **_kwargs: no_manifest.getvalue()
+        with pytest.raises(gateway_mod.GatewayError) as refused:
+            handler._api("POST", "/sessions/verify")
+        assert refused.value.code == 400
+        message = str(refused.value)
+        assert "manifest.json" in message
+        assert ".openai4s-session.zip" not in message
+        assert str(staging) not in message
+        assert not list(staging.iterdir()), "the staged upload was not removed"
 
         # Nothing was admitted: verification is a read, not an import.
         assert len(runner.store.list_projects()) == 1

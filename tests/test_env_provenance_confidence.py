@@ -161,6 +161,141 @@ def test_a_generation_backed_snapshot_is_marked_verified(api):
 
 
 # --------------------------------------------------------------------------
+# rows 0.2.x already stored: a Python kernel recorded under its protocol mode
+# --------------------------------------------------------------------------
+
+
+def _stored_by_0_2_x(runner, *, language, runtime, kind):
+    """An artifact whose snapshot row has the shape 0.2.0 stored.
+
+    0.2.0's supervisor persisted the kernel's protocol mode (`repl`) as a Web
+    Python generation's runtime, and its capture path then wrote the row below
+    (read back from a data directory a real 0.2.0 daemon produced). Rows are
+    frozen at capture, so an upgrade reads them as written -- no current writer
+    produces one, which is why it is hand-built here.
+    """
+    store = runner.store
+    project_id = store.create_project(name="p", description="", context="")
+    if isinstance(project_id, dict):
+        project_id = project_id["project_id"]
+    frame = runner.create_session(project_id)
+    interpreter = "/home/u/.venv/bin/python" if language == "python" else "Rscript"
+    generation = store.create_kernel_generation(
+        root_frame_id=frame,
+        branch_id=frame,
+        language=language,
+        environment={
+            "key": ["base", interpreter, None],
+            "runtime": runtime,
+            "interpreter": interpreter,
+            "environment_name": "base",
+        },
+        bootstrap={"status": "ok"},
+        state="active",
+    )
+    snapshot_id = store.upsert_env_snapshot(
+        {
+            "kind": kind,
+            "interpreter": interpreter,
+            "environment_name": "base",
+            "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+            "generation_id": generation["generation_id"],
+            "packages": [],
+            "package_count": 0,
+            "packages_unavailable": (
+                f"{kind} kernel: Python distribution metadata does not apply"
+            ),
+        }
+    )
+    path = Path(runner.cfg.data_dir) / "h04.txt"
+    path.write_text("h04 upgrade probe", encoding="utf-8")
+    rec = store.save_artifact(
+        path=str(path),
+        filename="h04.txt",
+        content_type="text/plain",
+        size_bytes=17,
+        checksum="deadbeef",
+        root_frame_id=frame,
+        env_snapshot_id=snapshot_id,
+    )
+    return rec, snapshot_id
+
+
+def test_a_0_2_x_repl_snapshot_is_read_as_a_python_kernel_with_packages_unknown(api):
+    """UPG3-01. The capture-time fix only reaches new captures; every artifact
+    0.2.x produced kept serving `kind: "repl"`, zero packages and "Python
+    distribution metadata does not apply" -- about a Python kernel, labelled
+    captured and verified. That is provenance that is wrong rather than absent.
+
+    The honest reading names the runtime and says the package list is unknown.
+    It must not invent one: nothing measured that interpreter at the time."""
+    runner, get = api
+    rec, snapshot_id = _stored_by_0_2_x(
+        runner, language="python", runtime="repl", kind="repl"
+    )
+
+    sent = get(
+        f"/artifacts/{rec['artifact_id']}/environment?version={rec['version_id']}"
+    )
+
+    assert sent["code"] == 200, sent
+    env = sent["body"]
+    assert env["kind"] == "python"
+    assert "does not apply" not in (env["packages_unavailable"] or "")
+    assert "0.2" in env["packages_unavailable"]
+    assert "unknown" in env["packages_unavailable"]
+    # Not fabricated: the row still says nothing was recorded.
+    assert env["packages"] == [] and env["package_count"] == 0
+    assert env["python_version"] is None
+    # The row itself is untouched: same address, same generation attribution.
+    assert env["snapshot_id"] == snapshot_id
+    assert env["generation_confidence"] == "verified"
+    stored = runner.store._conn.execute(
+        "SELECT kind, packages_unavailable FROM env_snapshots WHERE snapshot_id=?",
+        (snapshot_id,),
+    ).fetchone()
+    assert tuple(stored) == (
+        "repl",
+        "repl kernel: Python distribution metadata does not apply",
+    )
+    # The session package and share projections read through the same Store
+    # call, so an export does not carry the stale label to another install.
+    projected = runner.store.env_snapshot_for_artifact(
+        rec["artifact_id"], rec["version_id"]
+    )
+    assert projected["kind"] == "python"
+    assert projected["packages_unavailable"] == env["packages_unavailable"]
+
+
+def test_an_r_kernel_s_snapshot_still_says_python_metadata_does_not_apply(api):
+    """The companion guard. For an R kernel the sentence is true, and a fix that
+    relabelled every "does not apply" row would turn it into a false claim."""
+    runner, get = api
+    rec, _snapshot_id = _stored_by_0_2_x(runner, language="r", runtime="r", kind="r")
+
+    env = get(f"/artifacts/{rec['artifact_id']}/environment")["body"]
+
+    assert env["kind"] == "r"
+    assert env["packages_unavailable"] == (
+        "r kernel: Python distribution metadata does not apply"
+    )
+
+
+def test_a_mode_named_row_whose_generation_is_not_python_is_left_alone(api):
+    """The mode names only ever came from Python kernels, but the generation is
+    the authority: the reading is corrected only when it agrees."""
+    runner, get = api
+    rec, _snapshot_id = _stored_by_0_2_x(
+        runner, language="r", runtime="repl", kind="repl"
+    )
+
+    env = get(f"/artifacts/{rec['artifact_id']}/environment")["body"]
+
+    assert env["kind"] == "repl"
+    assert "does not apply" in env["packages_unavailable"]
+
+
+# --------------------------------------------------------------------------
 # the panel: the real branch, run
 # --------------------------------------------------------------------------
 

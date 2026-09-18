@@ -1413,6 +1413,114 @@ def test_python_capture_uses_one_environment_and_orders_figure_first(tmp_path):
     assert snapshot["remote"] == [{"provider": "gpu-test", "job_id": "job-1"}]
 
 
+def _require_matplotlib_in_the_kernel() -> None:
+    # `find_spec`, not `importorskip`: importing matplotlib into the test
+    # process is the cost these tests are about, and not theirs to pay.
+    import importlib.util
+
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is not installed")
+
+
+# A first `import matplotlib.pyplot` stopped part-way: the parent package is
+# already in sys.modules, pyplot is not. A finder that raises
+# KeyboardInterrupt for pyplot reaches that state without a timing race.
+_INTERRUPTED_PYPLOT_IMPORT = (
+    "import sys\n"
+    "class _StopAtPyplot:\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name == 'matplotlib.pyplot':\n"
+    "            raise KeyboardInterrupt\n"
+    "        return None\n"
+    "_stop = _StopAtPyplot()\n"
+    "sys.meta_path.insert(0, _stop)\n"
+    "try:\n"
+    "    import matplotlib.pyplot\n"
+    "finally:\n"
+    "    sys.meta_path.remove(_stop)\n"
+)
+
+_PYPLOT_STATE_PROBE = (
+    "import sys\n"
+    "print(sorted(name for name in ('matplotlib', 'matplotlib.font_manager',"
+    " 'matplotlib.pyplot') if name in sys.modules))"
+)
+
+
+@pytest.mark.parametrize(
+    "cell",
+    ["import matplotlib\n", _INTERRUPTED_PYPLOT_IMPORT],
+    ids=["imported-matplotlib-only", "interrupted-pyplot-import"],
+)
+def test_figure_capture_never_imports_pyplot_for_a_cell_that_did_not(tmp_path, cell):
+    """The post-Cell figure probe imported pyplot whenever `matplotlib` was
+    loaded. Importing pyplot builds matplotlib's font list, and an enforced
+    sandbox gives each kernel an empty private MPLCONFIGDIR, so a Cell that
+    only imported `matplotlib` -- or a first pyplot import the user stopped --
+    was followed by a font scan (8-48 seconds on macOS) that the Stop and the
+    daemon shutdown then waited out. A process that has not imported pyplot
+    has no pyplot figures, so the probe has nothing to find there."""
+
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        before = harness.manager.snapshot(harness.workspace)
+        kernel.execute(cell, cell_id="cell-mpl")
+        precondition = kernel.execute(_PYPLOT_STATE_PROBE)
+        captured = harness.manager.capture(
+            harness.session,
+            1,
+            "cell-mpl",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+        )
+        probe = kernel.execute(_PYPLOT_STATE_PROBE)
+
+    assert precondition["stdout"].strip() == "['matplotlib']"
+    assert captured.figures == []
+    assert probe["error"] is None
+    assert probe["stdout"].strip() == "['matplotlib']"
+
+
+def test_figure_capture_still_saves_and_closes_a_pyplot_figure(tmp_path):
+    _require_matplotlib_in_the_kernel()
+    harness = ArtifactHarness(tmp_path)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        before = harness.manager.snapshot(harness.workspace)
+        plotted = kernel.execute(
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.figure()\n"
+            "plt.plot([1, 2])\n",
+            cell_id="cell-plot",
+        )
+        captured = harness.manager.capture(
+            harness.session,
+            3,
+            "cell-plot",
+            before,
+            lambda event: None,
+            language="python",
+            run_system_cell=kernel.execute,
+        )
+        open_figures = kernel.execute(
+            "import matplotlib.pyplot as plt\nprint(plt.get_fignums())"
+        )
+
+    assert plotted["error"] is None
+    assert captured.figures == ["figure_cell3_1.png"]
+    assert (harness.workspace / "figure_cell3_1.png").is_file()
+    assert [item["filename"] for item in captured.artifacts] == ["figure_cell3_1.png"]
+    assert open_figures["stdout"].strip() == "[]"
+
+
 def test_r_capture_never_runs_python_figure_probe(tmp_path):
     harness = ArtifactHarness(tmp_path)
     before = harness.manager.snapshot(harness.workspace)

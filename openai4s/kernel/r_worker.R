@@ -29,6 +29,23 @@
 #
 # Inbound JSON is parsed with jsonlite (pinned in envs/r.yml). Outbound JSON is
 # hand-escaped so a jsonlite-less R still reports a clean, structured error.
+#
+# Nothing below is a .GlobalEnv binding. Cells evaluate in .GlobalEnv, and this
+# worker used to keep its read loop, its helpers, its protocol connections and
+# its lineage controller there too -- so `rm(list = ls(all.names = TRUE))`, an
+# ordinary R idiom, deleted the worker out from under the cell that ran it
+# (`lockBinding` does not stop `rm`), and the Variable Inspector listed the
+# loop's own `line` and `outcome` as user variables. The whole file therefore
+# runs inside ONE private environment, the R counterpart of worker.py keeping
+# user code in `_NS` rather than in its own module globals. Its parent is
+# .GlobalEnv on purpose: a helper that prints a cell's value or reads a
+# condition's message dispatches S3 methods from its calling environment, and
+# a user's own `print.myclass` must keep being found exactly as it was when
+# these helpers were globals. The quit()/q() guards are the one thing a cell
+# must resolve by name, and they sit on the search path (see below), not in
+# .GlobalEnv either. The body is deliberately not re-indented.
+local({
+.oai4s_private <- environment()
 
 # 1MB head cap (worker.py parity). The two captured streams are now bounded by
 # the host at the same number (kernel/sink_drain.CAP_BYTES); what is left for
@@ -240,7 +257,11 @@
 # a path in ``if (FALSE) read.csv(...)`` was never read.  Instead, trace the
 # small base I/O boundary that the common readers cross and record only while a
 # Cell is actually evaluating.  No user binding in .GlobalEnv is shadowed or
-# replaced; the private controller is locked before the first request.
+# replaced; the private controller is locked before the first request.  Each
+# tracer embeds the locked controller object itself (bquote) instead of
+# naming it: the traced readers live in base/utils, and a tracer that looked
+# the controller up through .GlobalEnv made every later read.csv() raise once
+# a cell had cleared that environment.
 .oai4s_lineage <- evalq({
   state <- new.env(parent = emptyenv())
   state$active <- FALSE
@@ -296,7 +317,7 @@
     if (isTRUE(state$fread_installed) || !("data.table" %in% loadedNamespaces())) {
       return(invisible(FALSE))
     }
-    tracer <- quote(.GlobalEnv$.oai4s_lineage$record(
+    tracer <- bquote(.(api)$record(
       if (!missing(file) && !is.null(file)) file else input
     ))
     namespace <- asNamespace("data.table")
@@ -331,26 +352,18 @@
     # Trace actual reader invocation, not source strings.  Do not wrap
     # base::file itself: that constructor owns the private /dev/fd protocol
     # recovery path, and provenance must never perturb transport semantics.
-    trace_one("readLines", quote(
-      .GlobalEnv$.oai4s_lineage$record(con)
-    ))
-    trace_one("readRDS", quote(
-      .GlobalEnv$.oai4s_lineage$record(file)
-    ))
-    trace_one("load", quote(
-      .GlobalEnv$.oai4s_lineage$record(file)
-    ))
-    trace_one("scan", quote(
-      .GlobalEnv$.oai4s_lineage$record(file)
-    ))
+    trace_one("readLines", bquote(.(api)$record(con)))
+    trace_one("readRDS", bquote(.(api)$record(file)))
+    trace_one("load", bquote(.(api)$record(file)))
+    trace_one("scan", bquote(.(api)$record(file)))
     utils_namespace <- asNamespace("utils")
     utils_attached <- tryCatch(
       as.environment("package:utils"), error = function(e) NULL
     )
     for (name in c("read.table", "read.csv", "read.csv2",
                    "read.delim", "read.delim2")) {
-      tracer <- quote({
-        if (!missing(file)) .GlobalEnv$.oai4s_lineage$record(file)
+      tracer <- bquote({
+        if (!missing(file)) .(api)$record(file)
       })
       trace_one(name, tracer, where = utils_namespace)
       if (!is.null(utils_attached)) trace_one(name, tracer, where = utils_attached)
@@ -361,7 +374,7 @@
   lockEnvironment(api, bindings = TRUE)
   api
 }, envir = new.env(parent = baseenv()))
-lockBinding(".oai4s_lineage", globalenv())
+lockBinding(".oai4s_lineage", .oai4s_private)
 
 # --- one cell ----------------------------------------------------------------
 
@@ -488,7 +501,6 @@ lockBinding(".oai4s_lineage", globalenv())
 .oai4s_inspector <- new.env(parent = baseenv())
 .oai4s_inspector$write_frame <- .oai4s_write_frame
 evalq({
-  hidden <- c("quit", "q")
   sample_items <- 12L
 
   esc <- function(s) {
@@ -649,8 +661,11 @@ evalq({
   }
 
   inspect <- function(limit) {
+    # No filter: this worker keeps nothing of its own in .GlobalEnv any more,
+    # so every binding there is the user's. The old filter hid `.oai4s_*` and
+    # quit/q -- and with them any user variable called `q` -- while the read
+    # loop's `line` and `outcome`, which it did not know about, showed through.
     names <- ls(envir = globalenv(), all.names = TRUE, sorted = TRUE)
-    names <- names[!startsWith(names, ".oai4s_") & !(names %in% hidden)]
     selected <- names[seq_len(min(length(names), limit))]
     list(
       variables = lapply(selected, inspect_one),
@@ -673,7 +688,7 @@ evalq({
   }
 }, .oai4s_inspector)
 lockEnvironment(.oai4s_inspector, bindings = TRUE)
-lockBinding(".oai4s_inspector", globalenv())
+lockBinding(".oai4s_inspector", .oai4s_private)
 
 # --- protocol channels + main loop -------------------------------------------
 
@@ -704,11 +719,18 @@ if (is.null(.oai4s_in)) {
 # Print warnings as they happen so they land in the cell's message sink instead
 # of accumulating for a top-level that never returns; shadow quit()/q() so an R
 # cell cannot silently kill the worker (worker.py traps SystemExit the same way).
+# The shadows live in an attached environment ahead of package:base rather than
+# in .GlobalEnv: a cell still resolves `quit` to the guard, but `rm(list=ls())`
+# no longer removes it (after which quit() really exited the worker), and a user
+# variable called `q` is no longer hidden from the Variable Inspector.
 options(warn = 1)
+.oai4s_guards <- attach(NULL, pos = 2L, name = "openai4s:guards",
+                        warn.conflicts = FALSE)
 assign("quit", function(...) stop("quit() is disabled inside openai4s R cells; the kernel stays alive"),
-       envir = globalenv())
+       envir = .oai4s_guards)
 assign("q", function(...) stop("q() is disabled inside openai4s R cells; the kernel stays alive"),
-       envir = globalenv())
+       envir = .oai4s_guards)
+lockEnvironment(.oai4s_guards, bindings = TRUE)
 
 # parse one line and dispatch it; returns "shutdown" | "ok"
 .oai4s_handle_line <- function(line) {
@@ -781,6 +803,10 @@ assign("q", function(...) stop("q() is disabled inside openai4s R cells; the ker
   "ok"
 }
 
+# A function, so `line` and `outcome` are locals of its frame rather than
+# bindings anyone can list; the connection and the one-response flag it
+# reassigns are the private environment's, hence `<<-`.
+.oai4s_main <- function() {
 repeat {
   line <- tryCatch(
     readLines(.oai4s_in, n = 1L, warn = FALSE),
@@ -790,8 +816,8 @@ repeat {
   if (is.null(line)) {
     # read failed (user closeAllConnections()): the raw process fd 4 is still
     # open — reopen once; a second failure means the host is really gone
-    .oai4s_in <- tryCatch(file("/dev/fd/4", open = "rt", blocking = TRUE),
-                          error = function(e) NULL)
+    .oai4s_in <<- tryCatch(file("/dev/fd/4", open = "rt", blocking = TRUE),
+                           error = function(e) NULL)
     if (is.null(.oai4s_in)) break
     line <- tryCatch(readLines(.oai4s_in, n = 1L, warn = FALSE),
                      interrupt = function(e) "",
@@ -805,7 +831,7 @@ repeat {
   # .oai4s_run's own handlers arm) and internal errors in parse/respond. One
   # frame may fail; the worker itself must survive it, and each execute frame
   # gets exactly ONE response (.oai4s_responded guards the fallback).
-  .oai4s_responded <- FALSE
+  .oai4s_responded <<- FALSE
   outcome <- tryCatch(
     .oai4s_handle_line(line),
     interrupt = function(e) "interrupted",
@@ -813,7 +839,13 @@ repeat {
   )
   if (identical(outcome, "shutdown")) break
   if (!identical(outcome, "ok")) {
-    .oai4s_unwind_sinks()
+    # The fallback runs at the loop's top level, where nothing else would
+    # catch a condition: when its own helpers raised, Rscript halted -- which
+    # is how a cell that had deleted them turned one failed frame into a dead
+    # kernel. Guarded here so the fallback can fail without taking the worker
+    # with it.
+    tryCatch(.oai4s_unwind_sinks(),
+             error = function(e) NULL, interrupt = function(e) NULL)
     if (!.oai4s_responded) {
       # rss is NULL, not 0L, for the reason .oai4s_rss_kb() gives at the top of
       # this file: 0 is a measurement this worker cannot make. It matters more
@@ -822,14 +854,25 @@ repeat {
       # sitting beside real numbers reads as measured, and reaches
       # execution_log.peak_rss_kb as one. The refusal at the top of
       # .oai4s_handle_line already passes NULL; these now agree with it.
-      if (identical(outcome, "interrupted")) {
-        .oai4s_respond(.oai4s_regex_id(line), "", "", "Interrupted", TRUE,
-                       NULL, NULL, 0, 0, NULL, sink_capture = TRUE)
-      } else {
-        .oai4s_respond(.oai4s_regex_id(line), "", "",
-                       paste0("openai4s r_worker ", outcome), FALSE,
-                       NULL, NULL, 0, 0, NULL, sink_capture = TRUE)
-      }
+      reported <- tryCatch({
+        if (identical(outcome, "interrupted")) {
+          .oai4s_respond(.oai4s_regex_id(line), "", "", "Interrupted", TRUE,
+                         NULL, NULL, 0, 0, NULL, sink_capture = TRUE)
+        } else {
+          .oai4s_respond(.oai4s_regex_id(line), "", "",
+                         paste0("openai4s r_worker ", outcome), FALSE,
+                         NULL, NULL, 0, 0, NULL, sink_capture = TRUE)
+        }
+        TRUE
+      }, error = function(e) FALSE, interrupt = function(e) FALSE)
+      # A frame nobody answers leaves the manager waiting on an id that never
+      # arrives, which reads as a hang. If even the fallback could not write
+      # one, exit instead: the host then sees a dead worker, which it reports.
+      if (!isTRUE(reported) && !.oai4s_responded) break
     }
   }
 }
+}
+
+.oai4s_main()
+}, envir = new.env(parent = globalenv()))

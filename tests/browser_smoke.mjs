@@ -8,6 +8,7 @@ try {
 }
 const { chromium } = playwright;
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { authenticate, waitUntil } from "./browser_auth.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
@@ -435,6 +436,41 @@ async function correctnessScenes(projectId) {
 
 }
 
+// UI5-F1: New session publishes the created id before it opens the frame, and
+// the open treated the new frame as its own predecessor -- the dock kept the
+// previous session's cells and merged the new session's in beside them.
+async function newSessionNotebookScene(projectId) {
+  const made = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const fromId = made.id || made.frame_id;
+  for (const code of ["print('new-session scene A1')", "print('new-session scene A2')"]) {
+    const result = await api(`/frames/${fromId}/kernel/execute`, { method: "POST", data: { language: "python", code, wait: true } });
+    assert.ok(!result.error, JSON.stringify(result));
+  }
+  await page.evaluate(async ({ fid, projectId }) => window.openConversation(fid, projectId), { fid: fromId, projectId });
+  await ensureDockOpen();
+  await page.evaluate(() => window.setActiveTab("notebook"));
+  const dockCells = page.locator("#dock-notebook .notebook-cell");
+  await waitUntil("the previous session's two cells", async () => (await dockCells.count()) === 2);
+  await page.locator("#new-session").click();
+  let newId = "";
+  await waitUntil("New session opened", async () => {
+    newId = (new URL(page.url()).pathname.match(/\/frames\/([^/]+)/) || [])[1] || "";
+    return !!newId && newId !== fromId;
+  });
+  await waitWorkbenchIdle();
+  await page.waitForTimeout(1500);
+  assert.equal((await api(`/frames/${newId}/execution-log`)).entries.length, 0);
+  assert.equal(await dockCells.count(), 0, "a new session's Notebook shows no cells of the previous one");
+  const own = await api(`/frames/${newId}/kernel/execute`, { method: "POST", data: { language: "python", code: "print('new-session scene B1')", wait: true } });
+  assert.ok(!own.error, JSON.stringify(own));
+  await waitUntil("the new session's own cell", async () => (await dockCells.count()) >= 1);
+  await page.waitForTimeout(1000);
+  const texts = await dockCells.allInnerTexts();
+  assert.equal(texts.length, 1, `exactly the new session's cell, got ${JSON.stringify(texts)}`);
+  assert.match(texts[0], /new-session scene B1/);
+  console.log("UI5-F1 browser: New session starts with an empty Notebook and shows only its own cell");
+}
+
 function queueTickets(snapshot) {
   return [snapshot?.owner, ...(snapshot?.queue || [])].filter(Boolean);
 }
@@ -708,6 +744,7 @@ try {
   const projectId = project.project_id || project.id;
   if (!projectId) throw new Error("project creation did not return an id");
   await correctnessScenes(projectId);
+  await newSessionNotebookScene(projectId);
   const frame = await api("/frames", {
     method: "POST",
     data: { project_id: projectId },
@@ -2353,8 +2390,26 @@ try {
     throw new Error(`expected html data-theme dark|light, got ${themeBefore}`);
   }
   const themeAfter = themeBefore === "dark" ? "light" : "dark";
+  // icon() answers an unknown name with an empty <svg>: a missing table entry
+  // leaves a blank button that still takes space and clicks. The theme toggle
+  // must also repaint its drawing, not only swap data-icon.
+  const iconFor = (theme) => (theme === "dark" ? "sun" : "moon");
+  async function requireDrawnIcon(selector) {
+    if ((await page.locator(`${selector} svg > *`).count()) === 0) {
+      throw new Error(`${selector} renders an empty icon (data-icon=${await page.locator(selector).getAttribute("data-icon")})`);
+    }
+  }
+  for (const selector of ["#ws-theme", "#sidebar-collapse", "#dock-toggle", "#settings-gear"]) {
+    await requireDrawnIcon(selector);
+  }
+  const themeDrawingBefore = await page.locator("#ws-theme svg").innerHTML();
   await themeBtn.click();
   await waitUntil("data-theme flip", async () => (await htmlAttr("data-theme")) === themeAfter);
+  await waitUntil(`#ws-theme data-icon=${iconFor(themeAfter)}`, async () => (await themeBtn.getAttribute("data-icon")) === iconFor(themeAfter));
+  await requireDrawnIcon("#ws-theme");
+  if ((await page.locator("#ws-theme svg").innerHTML()) === themeDrawingBefore) {
+    throw new Error("#ws-theme kept its old drawing after the theme flipped");
+  }
   const storedTheme = await page.evaluate(() => localStorage.getItem("os-theme"));
   if (storedTheme !== themeAfter) {
     throw new Error(`os-theme localStorage is ${JSON.stringify(storedTheme)}, expected ${themeAfter}`);
@@ -2366,6 +2421,10 @@ try {
   if (storedThemeAfterReload !== themeAfter) {
     throw new Error(`os-theme did not survive reload: ${JSON.stringify(storedThemeAfterReload)}`);
   }
+  // installTheme() runs before the Shell exists; the reloaded toggle must still
+  // show the glyph for the applied theme, not the markup's default.
+  await waitUntil(`reloaded #ws-theme data-icon=${iconFor(themeAfter)}`, async () => (await page.locator("#ws-theme").getAttribute("data-icon")) === iconFor(themeAfter));
+  await requireDrawnIcon("#ws-theme");
 
   await page.locator("#ws-theme").waitFor({ state: "visible" });
   const filesLabel = page.locator('#workspace:not(.hidden) [data-i18n="ws.nav.files"]');
@@ -2456,6 +2515,9 @@ try {
   await page.setViewportSize({ width: 375, height: 812 });
   await page.locator("body.sidebar-collapsed").waitFor({ state: "attached" });
   await page.locator("#sidebar-reopen").waitFor({ state: "visible" });
+  // At phone width the sidebar is off-canvas and this is the only way back to
+  // it; an empty drawing makes the whole side navigation undiscoverable.
+  await requireDrawnIcon("#sidebar-reopen");
 
   async function bodyOverflowX() {
     // Compare against innerWidth so a vertical scrollbar shrinking
@@ -2476,6 +2538,15 @@ try {
       `body overflows horizontally at 375x812 (drawer closed): body=${overflowCollapsed.body} root=${overflowCollapsed.root}`,
     );
   }
+  // The tabs shrink (the session title first, then "New session" ellipsizes)
+  // instead of scrolling the tab bar and cutting a label mid-word.
+  const tabbarOverflow = await page.evaluate(() => {
+    const bar = document.getElementById("tabbar");
+    return bar ? bar.scrollWidth - bar.clientWidth : 0;
+  });
+  if (tabbarOverflow > 1) {
+    throw new Error(`the tab bar scrolls horizontally at 375x812 (${tabbarOverflow}px) instead of shrinking its tabs`);
+  }
 
   await page.locator("#sidebar-reopen").click();
   await waitUntil("mobile drawer open", async () => (await page.locator("body.sidebar-collapsed").count()) === 0);
@@ -2489,6 +2560,256 @@ try {
   await page.locator("#mobile-scrim:not(.hidden)").click();
   await page.locator("body.sidebar-collapsed").waitFor({ state: "attached" });
   await page.locator("#sidebar-reopen").waitFor({ state: "visible" });
+
+  // The dashboard header at 375px: its action row did not wrap, so the page
+  // was 521px wide and New project sat off-screen, clipped by overflow-x:hidden
+  // where no swipe could reach it. Measured in both languages (zh labels are a
+  // different width).
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator("#dash-new-project").waitFor({ state: "visible" });
+  async function dashboardHeaderFits(label) {
+    const overflow = await bodyOverflowX();
+    if (overflow.body > 0 || overflow.root > 0) {
+      throw new Error(`dashboard overflows horizontally at 375x812 (${label}): body=${overflow.body} root=${overflow.root}`);
+    }
+    const view = await page.evaluate(() => window.innerWidth);
+    for (const selector of ["#dash-import-session", "#dash-new-project"]) {
+      const box = await page.locator(selector).boundingBox();
+      if (!box || box.x < 0 || box.x + box.width > view + 0.5) {
+        throw new Error(`${selector} is not fully on screen at 375x812 (${label}): ${JSON.stringify(box)} in ${view}px`);
+      }
+    }
+  }
+  const dashLang = (await htmlAttr("lang")) === "en" ? "en" : "zh";
+  const dashOtherLang = dashLang === "en" ? "zh" : "en";
+  await dashboardHeaderFits(dashLang);
+  await page.locator(`#dashboard .lang-btn[data-lang="${dashOtherLang}"]`).click();
+  await waitUntil(`dashboard html lang=${dashOtherLang}`, async () => (await htmlAttr("lang")) === dashOtherLang);
+  await dashboardHeaderFits(dashOtherLang);
+  await page.locator(`#dashboard .lang-btn[data-lang="${dashLang}"]`).click();
+  await waitUntil(`dashboard html lang=${dashLang}`, async () => (await htmlAttr("lang")) === dashLang);
+  const searchBorder = await page.evaluate(() => getComputedStyle(document.getElementById("dash-project-search")).borderTopStyle);
+  if (searchBorder === "inset") {
+    throw new Error("#dash-project-search still wears the browser's default inset border");
+  }
+
+  // Cold load with the locale chunks held back. The Shell mounts before the
+  // dictionaries arrive; static labels applied then must keep their readable
+  // fallback, and must be repainted once the chunks land -- before this, they
+  // showed "dash.col.projects" / "palette.action.search" until a language
+  // switch. Views rendered from data (the dashboard lists, the session sidebar,
+  // an opened session) go through t() and are never repainted, so they must
+  // not render before the dictionaries exist: "dash.meta.sessions" and
+  // "session.empty.label" stayed on screen for good. And a label code owns must
+  // survive the late repaint: #conv-title was rewritten to "Session", and its
+  // blur commit then renamed the session on the server. A fresh context (same
+  // auth cookie) so nothing is cached.
+  //
+  // Every dictionary key, so the scan below can tell a key painted as text
+  // from a file name that merely has a dot in it.
+  const i18nKeys = [
+    ...new Set(
+      ["en", "zh"].flatMap((lang) =>
+        [...readFileSync(new URL(`../frontend/src/i18n/${lang}.ts`, import.meta.url), "utf8").matchAll(/^\s*"([^"\\]+)":/gm)]
+          .map((match) => match[1])
+          .filter((key) => key.includes(".")),
+      ),
+    ),
+  ];
+  if (i18nKeys.length < 500) throw new Error(`read only ${i18nKeys.length} i18n keys; the cold-load scan would measure nothing`);
+  const coldTitleName = "Cold load title probe";
+  const coldTitleFrame = await apiRetryWhileCaptureBusy("/frames", { method: "POST", data: { project_id: projectId } });
+  const coldTitleFrameId = coldTitleFrame.id || coldTitleFrame.frame_id;
+  if (!coldTitleFrameId) throw new Error("cold-load title frame creation did not return an id");
+  await apiRetryWhileCaptureBusy(`/frames/${encodeURIComponent(coldTitleFrameId)}`, { method: "PATCH", data: { name: coldTitleName } });
+  const coldTitleLink = new URL(
+    `projects/${encodeURIComponent(projectId)}/frames/${encodeURIComponent(coldTitleFrameId)}`,
+    baseUrl,
+  ).toString();
+  const serverFrameName = async () => {
+    const listed = await api(`/frames?project_id=${encodeURIComponent(projectId)}&limit=200`);
+    const row = (listed.frames || []).find((item) => item.id === coldTitleFrameId);
+    if (!row) throw new Error(`cold-load title frame ${coldTitleFrameId} is missing from GET /frames`);
+    return row.name;
+  };
+  for (const locale of ["en-US", "zh-CN"]) {
+    const coldContext = await browser.newContext({ locale, viewport: { width: 1440, height: 1000 } });
+    try {
+      await coldContext.addCookies(await page.context().cookies());
+      const coldPage = await coldContext.newPage();
+      const coldErrors = [];
+      coldPage.on("pageerror", (error) => coldErrors.push(String(error)));
+      // One hold per navigation: routing disables the HTTP cache, so each
+      // page load requests the chunks again and waits on the current hold.
+      let localesHeld = Promise.resolve();
+      const holdLocales = () => {
+        let release = () => {};
+        localesHeld = new Promise((resolve) => {
+          release = resolve;
+        });
+        return release;
+      };
+      const heldLocaleRequests = [];
+      await coldPage.route(/\/static\/dist\/assets\/(en|zh)-[\w-]+\.js(\?.*)?$/, async (route) => {
+        heldLocaleRequests.push(route.request().url());
+        await localesHeld;
+        await route.continue();
+      });
+      // Static labels only: a [data-i18n*] node whose text is still its key.
+      // visibleOnly: before the dictionaries arrive, components that render
+      // through t() (a closed Customize modal, the collapsed Files dock) hold
+      // keys nobody can see yet; what must never show is a key on screen.
+      const rawKeys = (visibleOnly) =>
+        coldPage.evaluate((onlyVisible) => {
+          const raw = [];
+          const seen = (node) =>
+            !onlyVisible ||
+            (typeof node.checkVisibility === "function" ? node.checkVisibility() : node.getClientRects().length > 0);
+          for (const [attr, read] of [
+            ["data-i18n", (node) => node.textContent],
+            ["data-i18n-title", (node) => node.title],
+            ["data-i18n-ph", (node) => node.placeholder],
+            ["data-i18n-val", (node) => node.value],
+          ]) {
+            document.querySelectorAll(`[${attr}]`).forEach((node) => {
+              const key = node.getAttribute(attr);
+              if (key && seen(node) && String(read(node) || "").trim() === key) raw.push(`${attr}=${key}`);
+            });
+          }
+          return raw;
+        }, visibleOnly);
+      // Everything on screen, however it was rendered: any visible text node,
+      // title, placeholder, aria-label or input value that is a dictionary key.
+      const visibleKeys = () =>
+        coldPage.evaluate((keys) => {
+          const known = new Set(keys);
+          const hits = [];
+          const shown = (node) =>
+            !!node && (typeof node.checkVisibility === "function" ? node.checkVisibility() : node.getClientRects().length > 0);
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = (node.nodeValue || "").trim();
+            if (known.has(text) && shown(node.parentElement)) hits.push(`text:${text}`);
+          }
+          document.querySelectorAll("[title], [placeholder], [aria-label], input, textarea").forEach((node) => {
+            if (!shown(node)) return;
+            const where = node.id ? `#${node.id}` : String(node.className || node.tagName);
+            for (const [label, value] of [
+              ["title", node.getAttribute("title")],
+              ["placeholder", node.getAttribute("placeholder")],
+              ["aria-label", node.getAttribute("aria-label")],
+              ["value", "value" in node ? node.value : null],
+            ]) {
+              const text = String(value || "").trim();
+              if (known.has(text)) hits.push(`${label}:${text}@${where}`);
+            }
+          });
+          return [...new Set(hits)];
+        }, i18nKeys);
+      // While the chunks are held, give the API time to answer: a view that
+      // renders before the dictionaries would be on screen by then.
+      const whileHeld = async (label, renderedSelector) => {
+        const deadline = Date.now() + 1500;
+        while (Date.now() < deadline && (await coldPage.locator(renderedSelector).count()) === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+        const heldRaw = [...(await rawKeys(true)), ...(await visibleKeys())];
+        if (heldRaw.length) {
+          throw new Error(`${locale} ${label} painted bare i18n keys before the dictionaries arrived: ${heldRaw.join(", ")}`);
+        }
+      };
+      const expected =
+        locale === "en-US"
+          ? { projects: "Projects", jump: "Latest" }
+          : { projects: "项目", jump: "最新" };
+      const repainted = async () =>
+        ((await coldPage.locator('[data-i18n="conv.jumpLastLabel"]').textContent()) || "").trim() === expected.jump;
+
+      // 1. The dashboard.
+      const releaseDashboard = holdLocales();
+      await coldPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await coldPage.locator("#dash-new-project").waitFor({ state: "visible" });
+      // paintIcons() and the first applyStaticI18n() run in the same
+      // bindWorkbench() call, so a drawn icon means the early pass has run.
+      await waitUntil(`${locale} cold load bound the workbench`, async () => (await coldPage.locator("#dash-new-project svg > *").count()) > 0);
+      const viteShell = (await coldPage.locator('script[src*="/static/dist/"]').count()) > 0;
+      if (viteShell && heldLocaleRequests.length === 0) {
+        throw new Error(`${locale} cold load: no locale chunk request matched the hold pattern, so this check measures nothing`);
+      }
+      await whileHeld("cold load", "#dash-projects .d-row:not(.skeleton-row)");
+      releaseDashboard();
+      await waitUntil(`${locale} cold load repainted static labels`, async () => {
+        const projects = ((await coldPage.locator('#dashboard [data-i18n="dash.col.projects"]').textContent()) || "").trim();
+        return projects === expected.projects && (await repainted());
+      });
+      await waitUntil(
+        `${locale} cold load rendered the project and session lists`,
+        async () =>
+          (await coldPage.locator("#dash-projects .d-row:not(.skeleton-row)").count()) > 0 &&
+          (await coldPage.locator("#dash-sessions .d-row:not(.skeleton-row), #dash-sessions .dash-empty").count()) > 0,
+      );
+      const repaintedRaw = await rawKeys(false);
+      if (repaintedRaw.length) {
+        throw new Error(`${locale} cold load left bare i18n keys after the dictionaries arrived: ${repaintedRaw.join(", ")}`);
+      }
+      const dashboardKeys = await visibleKeys();
+      if (dashboardKeys.length) {
+        throw new Error(`${locale} cold load shows bare i18n keys on the dashboard: ${dashboardKeys.join(", ")}`);
+      }
+
+      // 2. A deep link to a named session.
+      const requestsBeforeDeepLink = heldLocaleRequests.length;
+      const releaseDeepLink = holdLocales();
+      await coldPage.goto(coldTitleLink, { waitUntil: "domcontentloaded" });
+      await waitUntil(`${locale} cold deep link bound the workbench`, async () => (await coldPage.locator("#sidebar-collapse svg > *").count()) > 0);
+      if (viteShell && heldLocaleRequests.length === requestsBeforeDeepLink) {
+        throw new Error(`${locale} cold deep link: no locale chunk request was held, so this check measures nothing`);
+      }
+      await whileHeld("cold deep link", "#session-list .session");
+      releaseDeepLink();
+      await waitUntil(`${locale} cold deep link repainted static labels`, repainted);
+      let shownTitle = "";
+      try {
+        await waitUntil(`${locale} cold deep link opened the session`, async () => {
+          shownTitle = await coldPage.locator("#conv-title").inputValue();
+          return shownTitle === coldTitleName && (await coldPage.locator("#session-list .session").count()) > 0;
+        });
+      } catch {
+        throw new Error(`${locale} cold deep link shows #conv-title=${JSON.stringify(shownTitle)}, expected the session's name ${JSON.stringify(coldTitleName)}`);
+      }
+      const deepLinkKeys = await visibleKeys();
+      if (deepLinkKeys.length) {
+        throw new Error(`${locale} cold deep link shows bare i18n keys: ${deepLinkKeys.join(", ")}`);
+      }
+      // Clicking into the title and away commits it; nothing may be renamed.
+      const titleSurvives = async (stage) => {
+        const shown = await coldPage.locator("#conv-title").inputValue();
+        if (shown !== coldTitleName) {
+          throw new Error(`${locale} ${stage}: #conv-title=${JSON.stringify(shown)}, expected the session's name ${JSON.stringify(coldTitleName)}`);
+        }
+        await coldPage.locator("#conv-title").focus();
+        await coldPage.locator("#conv-title").blur();
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const serverName = await serverFrameName();
+        if (serverName !== coldTitleName) {
+          throw new Error(`${locale} ${stage}: blurring the title renamed the session on the server to ${JSON.stringify(serverName)}`);
+        }
+      };
+      await titleSurvives("cold deep link");
+      // A language switch repaints every static label again, with the session open.
+      const otherLang = locale === "en-US" ? { lang: "zh", label: "中文" } : { lang: "en", label: "English" };
+      await coldPage.locator("#customize-btn").click();
+      await coldPage.locator("#cust .seg-btn", { hasText: otherLang.label }).click();
+      await waitUntil(`${locale} switched the workbench to ${otherLang.lang}`, async () => (await coldPage.locator("html").getAttribute("lang")) === otherLang.lang);
+      await coldPage.locator("#cust-close").click();
+      await titleSurvives(`language switch to ${otherLang.lang}`);
+      if (coldErrors.length) {
+        throw new Error(`${locale} cold load page errors: ${coldErrors.join(" | ")}`);
+      }
+    } finally {
+      await coldContext.close();
+    }
+  }
 
   if (pageErrors.length) {
     throw new Error(`browser page errors: ${pageErrors.join(" | ")}`);

@@ -1,5 +1,7 @@
 """Public progress and completion projections never depend on hidden reasoning."""
 
+import re
+
 from openai4s.agent.actions import CodeCell, NativeToolBatch, NativeToolCall
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import ExecutionOutcome
@@ -9,6 +11,7 @@ from openai4s.server.completions import (
     outcome_narration,
     response_language,
 )
+from openai4s.server.contract import API_ROOT
 from openai4s.server.gateway import _GATEWAY_PROMPT_EXTRA
 
 
@@ -48,9 +51,14 @@ def test_completion_message_projects_summary_bullets_and_real_artifacts():
 
     assert text.startswith("已完成真实数据分析。")
     assert "- 生成了结果表" in text
-    assert "[results.csv](/api/artifacts/a-1)" in text
+    assert f"[results.csv]({API_ROOT}/artifacts/a-1)" in text
     assert "%E6%8A%A5%E5%91%8A.md" not in text
-    assert "](/api/artifacts/a-2)" in text
+    assert f"]({API_ROOT}/artifacts/a-2)" in text
+    # Every link the projection emits lives under the versioned root: the
+    # gateway answers any other `/api/...` path with a 404.
+    targets = re.findall(r"\]\(([^)\s]+)\)", text)
+    assert len(targets) == 2
+    assert all(target.startswith(API_ROOT + "/") for target in targets), targets
 
 
 def test_trusted_completion_links_exact_encoded_versions_and_skips_mutable_heads():

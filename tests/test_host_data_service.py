@@ -21,6 +21,24 @@ from openai4s.host.data import (
 from openai4s.store import get_store
 
 
+@pytest.fixture(autouse=True)
+def _ample_free_disk(monkeypatch):
+    """Stage against a volume with room to spare, whatever the host has.
+
+    ``HostDataService`` refuses to stage when free space would drop below a
+    reserve of up to 8GiB, and it checks that before the checksum, size and
+    swap verification these tests assert. Read from the real volume, a crowded
+    developer disk or CI runner turned those contracts into "exhaust reserved
+    disk space". The reserve contract itself re-patches the probe to a low
+    value inside its own test.
+    """
+    monkeypatch.setattr(
+        data_mod.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=1 << 40, used=0, free=1 << 40),
+    )
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.calls = []
@@ -485,6 +503,30 @@ def test_team_artifact_path_preserves_disk_free_reserve(tmp_path, monkeypatch):
         service.artifact_path("v-owned")
 
     assert list(kernel_artifact_input_dir(config.data_dir, "frame-1").iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "statvfs"), reason="POSIX free-space probe")
+def test_staging_contracts_do_not_depend_on_the_hosts_free_disk(tmp_path, monkeypatch):
+    """A nearly full developer disk must not change which error a test sees.
+
+    The reserve check runs before checksum, size and swap verification and
+    reads the real volume: below about 8GiB free, eleven tests here failed on
+    "exhaust reserved disk space" instead of the error they assert. The host
+    probe underneath ``shutil.disk_usage`` reports an almost full volume here,
+    and the tampering contract must still be the one that fires.
+    """
+    monkeypatch.setattr(
+        os,
+        "statvfs",
+        lambda _path: SimpleNamespace(
+            f_frsize=4096, f_blocks=1 << 28, f_bfree=1, f_bavail=1
+        ),
+    )
+    service, _store, _workspace, _config, source = _team_artifact_source(tmp_path)
+    source.write_bytes(b"other-version-bytes")  # same size, different digest
+
+    with pytest.raises(OSError, match="checksum verification failed"):
+        service.artifact_path("v-owned")
 
 
 def test_team_artifact_path_denies_foreign_version_before_staging(tmp_path):

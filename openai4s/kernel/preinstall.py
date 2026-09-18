@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -496,8 +497,139 @@ def _confined_probe(
     return argv, env, sandbox
 
 
+class ProbeStopped(RuntimeError):
+    """``run_confined_probe`` was asked to stop (its ``stop`` event was set)."""
+
+
+#: How often a stoppable probe's wait checks its ``stop`` event.
+_PROBE_STOP_POLL_S = 0.05
+#: How long a stopped probe gets after SIGTERM to remove what it made.
+_PROBE_TERM_GRACE_S = 2.0
+#: Where Linux lists processes; elsewhere (macOS) `ps` is asked instead.
+_PROC_ROOT = "/proc"
+
+
+def _descendant_pids(root: int) -> list[int]:
+    """Every process below ``root`` by parent link, best effort; [] if unknown.
+
+    A probe's process group is not all of it: macOS ``system_profiler``, which
+    matplotlib's font search runs, re-spawns itself as a ``-nospawn`` helper in
+    a process group of its own, and that helper does the scan while holding
+    the probe's stderr open. Read while the tree is still intact -- once a
+    parent dies, its children belong to PID 1.
+    """
+    parents: dict[int, int] = {}
+    try:
+        if os.path.isfile(os.path.join(_PROC_ROOT, "self", "stat")):
+            with os.scandir(_PROC_ROOT) as entries:
+                for entry in entries:
+                    if not entry.name.isdigit():
+                        continue
+                    try:
+                        with open(os.path.join(entry.path, "stat"), "rb") as handle:
+                            # `pid (comm) state ppid ...`; comm may hold spaces.
+                            fields = handle.read().rsplit(b")", 1)[-1].split()
+                        parents[int(entry.name)] = int(fields[1])
+                    except (OSError, IndexError, ValueError):
+                        continue
+        else:
+            listing = subprocess.run(
+                [
+                    "/bin/ps" if os.path.exists("/bin/ps") else "ps",
+                    "-axo",
+                    "pid=,ppid=",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=2,
+                check=False,
+            )
+            for line in listing.stdout.decode("ascii", "replace").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    parents[int(parts[0])] = int(parts[1])
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parents.items():
+        children.setdefault(ppid, []).append(pid)
+    found: list[int] = []
+    pending = [root]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in found and child != root:
+                found.append(child)
+                pending.append(child)
+    return found
+
+
+def _signal_probe(proc: subprocess.Popen, signum: int) -> None:
+    # Skipped once the leader has been reaped: its pid may name another process.
+    if proc.returncode is not None:
+        return
+    try:
+        if hasattr(os, "killpg"):
+            # The group it leads (`start_new_session`).
+            os.killpg(proc.pid, signum)
+        else:  # pragma: no cover - no process groups on this platform
+            proc.send_signal(signum)
+    except OSError:
+        pass
+
+
+def _kill_pids(pids: list[int]) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
+
+
+def _stop_probe_tree(proc: subprocess.Popen, *, graceful: bool) -> None:
+    """End a probe and everything it started, never waiting on its pipes.
+
+    ``subprocess.run`` killed only the leader on a timeout, leaving the work it
+    had started running. The descendants are read first and killed outright
+    (nothing of theirs is worth saving); a ``graceful`` stop gives the leader's
+    group SIGTERM and a short grace to remove its own scratch files first.
+    """
+    below = _descendant_pids(proc.pid)
+    if graceful:
+        _signal_probe(proc, signal.SIGTERM)
+        _kill_pids(below)
+        try:
+            proc.wait(timeout=_PROBE_TERM_GRACE_S)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    _signal_probe(proc, getattr(signal, "SIGKILL", signal.SIGTERM))
+    _kill_pids(below)
+
+
+def _communicate(
+    proc: subprocess.Popen, timeout: float, stop: threading.Event | None
+) -> tuple[bytes, bytes]:
+    if stop is None:
+        return proc.communicate(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    while not stop.is_set():
+        remaining = deadline - time.monotonic()
+        try:
+            return proc.communicate(
+                timeout=max(0.0, min(remaining, _PROBE_STOP_POLL_S))
+            )
+        except subprocess.TimeoutExpired as expired:
+            if time.monotonic() >= deadline:
+                expired.timeout = timeout
+                raise
+    raise ProbeStopped("the probe was stopped")
+
+
 def run_confined_probe(
-    base_argv: list[str], *, timeout: float
+    base_argv: list[str],
+    *,
+    timeout: float,
+    stop: threading.Event | None = None,
 ) -> "subprocess.CompletedProcess":
     """Run a short probe against a foreign interpreter, confined.
 
@@ -507,7 +639,19 @@ def run_confined_probe(
     child environment and the OS boundary a kernel cell gets. Raises under
     ``OPENAI4S_KERNEL_SANDBOX=enforce`` when the boundary cannot be built,
     rather than degrading to an unconfined launch.
+
+    The child runs in its own empty temp workspace, not the caller's working
+    directory, which ``python -c`` would otherwise put first on ``sys.path``.
+
+    A timeout, or any other way out of the wait, kills the probe and what it
+    started, and the workspace is removed on every path. ``stop`` lets another
+    thread end a probe early (the daemon's background font-list build, at
+    shutdown): once it is set the probe is not started, or is sent SIGTERM and
+    then killed with its descendants, and ``ProbeStopped`` is raised -- without
+    waiting for a pipe some escaped descendant still holds open.
     """
+    if stop is not None and stop.is_set():
+        raise ProbeStopped("the probe was stopped before it started")
     workspace = tempfile.mkdtemp(prefix="openai4s-probe-")
     sandbox = None
     # `_confined_probe` is inside the try: under `enforce` with no working
@@ -521,15 +665,32 @@ def run_confined_probe(
         # A foreign interpreter runs its own `.pth` files and `sitecustomize`
         # before the probe code, and `stdin` here is the daemon's, so without
         # this it would hold the operator's controlling terminal.
-        return subprocess.run(
+        #
+        # `cwd` is the probe's own empty workspace, never the daemon's launch
+        # directory. `python -c` without `-I` puts the working directory first
+        # on `sys.path`, and the launch directory can be a CLI kernel's
+        # writable workspace: a `json.py` or `platform.py` there answered for
+        # the stdlib inside the probe. Bubblewrap already `--chdir`s into the
+        # workspace; Seatbelt and the degraded `auto` launch did not.
+        with subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env,
+            cwd=workspace,
             start_new_session=True,
             pass_fds=getattr(sandbox, "popen_pass_fds", lambda: ())(),
-        )
+        ) as proc:
+            try:
+                stdout, stderr = _communicate(proc, timeout, stop)
+            except ProbeStopped:
+                _stop_probe_tree(proc, graceful=True)
+                raise
+            except BaseException:
+                _stop_probe_tree(proc, graceful=False)
+                raise
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
     finally:
         if sandbox is not None:
             try:

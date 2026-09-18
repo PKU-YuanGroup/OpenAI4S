@@ -37,6 +37,21 @@ import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
 
+// One mapping from a saved profile row to the path it selects. The reducer keys
+// receipt invalidation on these identity fields, so two hand-written copies that
+// drift (one trims `base_url`, one does not) read as a model change.
+function pathFromProfile(profile: Profile): PathChoice {
+  const id = asString(profile.id);
+  return {
+    kind: "existing",
+    profileId: id,
+    provider: asString(profile.provider),
+    model: asString(profile.model),
+    baseUrl: asString(profile.base_url),
+    name: asString(profile.name || id),
+  };
+}
+
 function stepLabel(step: RequiredStep): string {
   return ot("onboarding.step." + step);
 }
@@ -106,16 +121,7 @@ function PathStep({
                   name="onb-profile"
                   checked={selected}
                   disabled={busy}
-                  onChange={() =>
-                    onChoose({
-                      kind: "existing",
-                      profileId: id,
-                      provider: asString(p.provider),
-                      model: asString(p.model),
-                      baseUrl: asString(p.base_url),
-                      name: asString(p.name || p.id),
-                    })
-                  }
+                  onChange={() => onChoose(pathFromProfile(p))}
                 />
                 <span>
                   {asString(p.name || p.id)}
@@ -213,8 +219,13 @@ function PathStep({
             class="cust-input"
             value={state.path.model}
             onInput={(e) =>
+              // An edited model is no longer the profile that was saved: Next
+              // saves a new one. Keeping the saved id let Test (reached through
+              // the checklist) probe the *old* model and file its receipt under
+              // the new name.
               onChoose({
                 ...state.path!,
+                profileId: "",
                 model: (e.currentTarget as HTMLInputElement).value,
               })
             }
@@ -294,6 +305,11 @@ export function WizardHost() {
   const [state, dispatch] = useReducer(reduceWizard, INITIAL_WIZARD);
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  // A probe is not `busy`: it can wait out a connect timeout and its retries
+  // for minutes, and `busy` disables Skip. The run counter lets the wizard
+  // walk away from a probe that is still waiting; a late answer is dropped.
+  const [testing, setTesting] = useState(false);
+  const probeRun = useRef(0);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -336,7 +352,18 @@ export function WizardHost() {
     dispatch({ type: "fail", message: next.message, requestId: next.requestId });
   };
 
+  const leaveTest = () => {
+    probeRun.current += 1;
+    setTesting(false);
+  };
+
+  const choosePath = (path: PathChoice) => {
+    leaveTest();
+    dispatch({ type: "choosePath", path });
+  };
+
   const onSkip = async () => {
+    leaveTest();
     setBusy(true);
     try {
       await completeOnboarding({ skip: true });
@@ -349,6 +376,7 @@ export function WizardHost() {
   };
 
   const onFinish = async () => {
+    leaveTest();
     setBusy(true);
     try {
       await completeOnboarding({ skip: true });
@@ -378,8 +406,9 @@ export function WizardHost() {
       const created = await saveModelProfile(body);
       const id = asString(created.id);
       if (id) await activateModelProfile(id);
+      if (!alive.current) return;
       const chosen = { ...path, profileId: id };
-      dispatch({ type: "choosePath", path: chosen });
+      choosePath(chosen);
       const refreshed = await fetchOnboarding();
       if (!alive.current) return;
       setStatus(refreshed);
@@ -392,22 +421,38 @@ export function WizardHost() {
   };
 
   const onTest = async () => {
-    const id = state.path?.profileId || status?.active_id || "";
+    // The receipt is filed under `state.path`, so that is the profile to probe.
+    // Falling back to the active profile whenever the path had no id measured
+    // some *other* model -- an unsaved local choice reached through the
+    // checklist showed a cloud profile's capabilities as its own, and spent a
+    // provider request on a profile nobody picked on this screen. With no path
+    // at all, the active profile becomes the path first, then is probed.
+    let id = state.path?.profileId || "";
+    if (!state.path && status?.active_id) {
+      const active = status.profiles.find((profile) => asString(profile.id) === status.active_id);
+      if (active) {
+        choosePath(pathFromProfile(active));
+        id = status.active_id;
+      }
+    }
     if (!id) {
       dispatch({ type: "fail", message: ot("onboarding.test.needProfile"), requestId: "" });
       return;
     }
+    const run = (probeRun.current += 1);
+    const current = () => alive.current && probeRun.current === run;
     dispatch({ type: "startTest" });
-    setBusy(true);
+    setTesting(true);
     try {
       const result = await probeModelProfile(id);
-      if (!alive.current) return;
+      if (!current()) return;
       const detail = publicText(result.detail, 240);
       dispatch({
         type: "testResult",
         receipt: readCapabilityReceipt(result.capability_receipt),
         detail: result.reachable === true ? "" : detail,
         reachable: result.reachable === true,
+        profileId: id,
       });
       if (result.reachable !== true) {
         dispatch({
@@ -417,7 +462,7 @@ export function WizardHost() {
         });
       }
     } catch (error) {
-      if (!alive.current) return;
+      if (!current()) return;
       const next = wizardErrorFromUnknown(error);
       dispatch({ type: "fail", message: next.message, requestId: next.requestId });
       dispatch({
@@ -425,9 +470,10 @@ export function WizardHost() {
         receipt: state.receipt,
         detail: next.message,
         reachable: false,
+        profileId: id,
       });
     } finally {
-      if (alive.current) setBusy(false);
+      if (current()) setTesting(false);
     }
   };
 
@@ -441,6 +487,10 @@ export function WizardHost() {
     try {
       const refreshed = await activateExistingModelProfile(id);
       if (!alive.current) return;
+      // The saved profile may have been edited since the wizard listed it.
+      // Refresh the identity too, so the old model's receipt cannot survive.
+      const selected = refreshed.profiles.find((profile) => asString(profile.id) === id);
+      if (selected) choosePath(pathFromProfile(selected));
       setStatus(refreshed);
       dispatch({ type: "next" });
     } catch (error) {
@@ -543,7 +593,7 @@ export function WizardHost() {
                 status={status}
                 state={state}
                 busy={busy}
-                onChoose={(path) => dispatch({ type: "choosePath", path })}
+                onChoose={choosePath}
                 onSaveNew={onSaveNew}
               />
             ) : null}
@@ -557,10 +607,10 @@ export function WizardHost() {
                   <button
                     type="button"
                     class="solid-btn"
-                    disabled={busy}
+                    disabled={busy || testing}
                     onClick={() => void onTest()}
                   >
-                    {busy && state.testClicked ? t("cust.models.testing") : t("cust.models.test")}
+                    {testing ? t("cust.models.testing") : t("cust.models.test")}
                   </button>
                 </div>
                 <CapabilityBadges receipt={state.receipt} unknownReason={state.probeDetail} />
@@ -585,7 +635,10 @@ export function WizardHost() {
               type="button"
               class="outline-btn"
               disabled={busy}
-              onClick={() => dispatch({ type: "showChecklist" })}
+              onClick={() => {
+                leaveTest();
+                dispatch({ type: "showChecklist" });
+              }}
             >
               {ot("onboarding.checklist")}
             </button>
@@ -605,6 +658,7 @@ export function WizardHost() {
               class="solid-btn"
               disabled={busy}
               onClick={() => {
+                if (state.step === "test") leaveTest();
                 if (state.step === "readiness") dispatch({ type: "markReadinessSeen" });
                 dispatch({ type: "next" });
               }}

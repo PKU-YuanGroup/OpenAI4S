@@ -223,6 +223,261 @@ def test_an_unusable_data_path_is_reported_rather_than_raised(
     assert as_file.read_text() == "not a directory"
 
 
+def test_a_database_from_a_newer_release_fails_the_data_check(
+    monkeypatch, capsys, tmp_path
+):
+    """UPG3-06. `serve` and `run` refuse a data directory whose database schema
+    is newer than this release (`future_schema`, exit 2). `doctor` only checked
+    that the directory was writable, so the command a user runs after that
+    refusal printed "[ok] data usable" and exited 0 -- naming nothing. The
+    check must fail the same way, and like the refusal it must not touch the
+    database it is diagnosing."""
+    import sqlite3
+
+    import openai4s.config as config_mod
+    from openai4s.storage.migrations import SCHEMA_VERSION
+
+    cli = importlib.import_module("openai4s.cli.main")
+    data_dir = tmp_path / "from-a-newer-release"
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(config_mod, "_CONFIG", None, raising=False)
+    cfg = Config(data_dir=data_dir)
+    cfg.ensure_dirs()
+    with sqlite3.connect(cfg.db_path) as db:
+        db.execute("CREATE TABLE sentinel(value TEXT)")
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    before = cfg.db_path.read_bytes()
+
+    assert cli.main(["doctor", "--json"]) == 2
+    data = _by_name(json.loads(capsys.readouterr().out))["data"]
+    assert data["status"] == doctor.FAIL
+    assert "future_schema" in data["detail"]
+    assert str(SCHEMA_VERSION + 1) in data["detail"]
+    assert data["remedy"], "a failed check must say what to do"
+    assert cfg.db_path.read_bytes() == before
+
+
+def _older_database(db_path, *, conflicting: bool = False) -> None:
+    """A real database one schema behind this release. With ``conflicting`` its
+    upgrade fails in any process: the name the last step's index needs is
+    taken by a table, so the Store rolls back and keeps its backup."""
+    import sqlite3
+
+    from openai4s.storage.migrations import SCHEMA_VERSION
+    from openai4s.store import Store
+
+    Store(db_path).close()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("DROP INDEX IF EXISTS ix_artifacts_project_created")
+        if conflicting:
+            conn.execute("CREATE TABLE ix_artifacts_project_created(x)")
+        conn.execute(f"DELETE FROM schema_migrations WHERE version>={SCHEMA_VERSION}")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
+
+
+def _user_version(db_path) -> int:
+    import sqlite3
+
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_doctor_does_not_upgrade_a_database_from_an_older_release(
+    monkeypatch, capsys, tmp_path, conflicting
+):
+    """UPG5-01 / RB-1. doctor opened the Store read-write, which *is* the
+    upgrade: a healthy older database was migrated in place by a command
+    documented as a diagnosis, and one whose upgrade fails was migrated,
+    rolled back and reported `[ok] data` and "All checks passed" -- the error
+    only in `connectors` facts -- while `serve` and `run` refused it with exit
+    2. doctor now reads the schema the read-only way and says the upgrade is
+    pending; it never performs it."""
+    import openai4s.config as config_mod
+    from openai4s.storage.migrations import SCHEMA_VERSION
+
+    cli = importlib.import_module("openai4s.cli.main")
+    data_dir = tmp_path / "from-an-older-release"
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(config_mod, "_CONFIG", None, raising=False)
+    cfg = Config(data_dir=data_dir)
+    cfg.ensure_dirs()
+    _older_database(cfg.db_path, conflicting=conflicting)
+    before = cfg.db_path.read_bytes()
+    backup = cfg.db_path.with_name(f"openai4s.db.v{SCHEMA_VERSION - 1}.bak")
+
+    assert cli.main(["doctor", "--json"]) != 0
+    result = json.loads(capsys.readouterr().out)
+    checks = _by_name(result)
+    data = checks["data"]
+    assert data["status"] == doctor.WARN
+    assert f"schema {SCHEMA_VERSION - 1}" in data["detail"]
+    assert f"schema {SCHEMA_VERSION}" in data["detail"]
+    assert "migrat" in data["detail"]
+    assert data["remedy"]
+    assert data["facts"]["upgrade_pending"] is True
+    assert data["facts"]["schema_version"] == SCHEMA_VERSION - 1
+    # No probe opened it and hid what opening it did.
+    assert all("connector_store_error" not in c["facts"] for c in result["checks"])
+
+    assert cli.main(["doctor"]) != 0
+    assert "All checks passed" not in capsys.readouterr().out
+
+    assert cfg.db_path.read_bytes() == before
+    assert _user_version(cfg.db_path) == SCHEMA_VERSION - 1
+    assert not backup.exists()
+
+
+def test_doctor_fails_the_data_check_after_an_upgrade_that_did_not_complete(
+    monkeypatch, capsys, tmp_path
+):
+    """The operator who runs doctor right after `serve` refused a failed
+    upgrade: the kept pre-upgrade backup is the evidence that the attempt did
+    not complete, and doctor reports it rather than a usable directory."""
+    import os
+
+    import openai4s.config as config_mod
+    from openai4s.storage.migrations import SCHEMA_VERSION, MigrationError
+    from openai4s.store import Store
+
+    cli = importlib.import_module("openai4s.cli.main")
+    data_dir = tmp_path / "failed-upgrade"
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(config_mod, "_CONFIG", None, raising=False)
+    cfg = Config(data_dir=data_dir)
+    cfg.ensure_dirs()
+    _older_database(cfg.db_path, conflicting=True)
+    with pytest.raises(MigrationError):
+        Store(cfg.db_path)  # what `serve` / `run` did before exiting 2
+    backup = cfg.db_path.with_name(f"openai4s.db.v{SCHEMA_VERSION - 1}.bak")
+    assert backup.exists()
+    os.utime(backup, (1_000_000_000, 1_000_000_000))
+    before = cfg.db_path.read_bytes()
+
+    assert cli.main(["doctor", "--json"]) == 2
+    data = _by_name(json.loads(capsys.readouterr().out))["data"]
+    assert data["status"] == doctor.FAIL
+    assert str(backup) in data["detail"]
+    assert "did not complete" in data["detail"]
+    assert data["remedy"]
+    assert data["facts"]["kept_backup"] == str(backup)
+    assert cfg.db_path.read_bytes() == before
+    assert _user_version(cfg.db_path) == SCHEMA_VERSION - 1
+    # Not re-attempted: the kept backup was not rewritten.
+    assert backup.stat().st_mtime == 1_000_000_000
+
+
+def test_a_pending_upgrade_leaves_the_saved_model_settings_unread_not_failed(
+    cfg, monkeypatch
+):
+    """The Customize -> Models key lives in the database doctor no longer
+    opens, so "no key configured" would be a guess stated as a failure."""
+    _no_ambient_key(monkeypatch)
+    cfg.llm.api_key = ""
+    _older_database(cfg.db_path)
+
+    checks = _by_name(doctor.report(cfg))
+    assert checks["model"]["status"] == doctor.WARN
+    assert "did not open" in checks["model"]["detail"]
+    assert checks["model"]["facts"]["database_settings_read"] is False
+    connectors = checks["connectors"]
+    assert connectors["facts"]["connector_store_not_read"] == "upgrade_pending"
+    assert "configured_connectors" not in connectors["facts"]
+
+
+def test_a_store_that_cannot_be_opened_is_not_reported_ok_by_connectors(
+    cfg, monkeypatch
+):
+    """RB-1's other half: an open failure was kept in facts under an `ok`."""
+    from openai4s.storage.migrations import MigrationError
+    from openai4s.store import get_store
+
+    get_store(cfg.db_path)  # a current database: doctor may open it
+
+    def refuse(_path):
+        raise MigrationError("the store refused to open")
+
+    monkeypatch.setattr("openai4s.store.get_store", refuse)
+    check = _by_name(doctor.report(cfg))["connectors"]
+    assert check["status"] == doctor.WARN
+    assert "the store refused to open" in check["detail"]
+
+
+def test_a_database_that_needs_recovery_is_not_opened_by_doctor(cfg, monkeypatch):
+    """A hot journal hides the schema version from a read-only handle, and the
+    read-write open that recovers it would also upgrade an older database."""
+    import openai4s.storage.migrations as migrations
+    from openai4s.store import Store
+
+    Store(cfg.db_path).close()
+    monkeypatch.setattr(migrations, "preflight_schema", lambda *_a, **_k: None)
+    opened = []
+    monkeypatch.setattr(
+        "openai4s.store.get_store", lambda path: opened.append(path) or None
+    )
+
+    checks = _by_name(doctor.report(cfg))
+    assert checks["data"]["status"] == doctor.WARN
+    assert "interrupted write" in checks["data"]["detail"]
+    assert opened == []
+
+
+def test_a_database_whose_version_could_not_be_read_is_not_opened_by_doctor(
+    cfg, monkeypatch
+):
+    """The guard failed open on everything but a newer schema or a read-only
+    refusal. SQLITE_BUSY past the timeout -- an older daemon mid-commit -- is
+    an OperationalError, and the model and connectors checks then opened the
+    database read-write, which upgrades an older one once it gets the lock."""
+    import sqlite3
+
+    import openai4s.storage.migrations as migrations
+    from openai4s.store import Store
+
+    Store(cfg.db_path).close()
+
+    def busy(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(migrations, "preflight_schema", busy)
+    opened = []
+    monkeypatch.setattr(
+        "openai4s.store.get_store", lambda path: opened.append(path) or None
+    )
+
+    result = doctor.report(cfg)
+    checks = _by_name(result)
+    assert opened == []
+    assert checks["data"]["status"] == doctor.FAIL
+    assert "database is locked" in checks["data"]["detail"]
+    connectors = checks["connectors"]
+    assert connectors["facts"]["connector_store_not_read"] == "unreadable"
+    assert connectors["status"] == doctor.WARN
+    assert "database is locked" in connectors["detail"]
+    assert result["status"] == doctor.FAIL
+
+
+def test_the_upgrade_guide_says_doctor_does_not_migrate_and_fails_after_a_failed_one():
+    """The guide says which commands upgrade the database. Both halves must
+    keep doctor out of that list and say what it reports instead."""
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    english = " ".join((docs / "upgrading.md").read_text("utf-8").split())
+    chinese = " ".join((docs / "upgrading_zh.md").read_text("utf-8").split())
+    assert "`openai4s doctor` does not: it reads the schema version" in english
+    assert "`openai4s doctor` fails its data check (exit 2)" in english
+    assert "`openai4s doctor` 不会" in chinese
+    assert "`openai4s doctor` 的 data 检查会失败（退出码 2）" in chinese
+    # The support bundle is the other diagnosis command, and it does not
+    # migrate either.
+    assert "`openai4s diagnostics` does not either" in english
+    assert "`openai4s diagnostics` 也不会" in chinese
+
+
 def test_an_unwritable_data_directory_is_reported_as_fail(cfg, tmp_path):
     """The other half: the path is a directory, and nothing may write to it."""
     locked = tmp_path / "locked"

@@ -15,6 +15,7 @@ import pytest
 from openai4s.config import AutoModeConfig, Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.artifacts import ArtifactOperationError
+from openai4s.server.contract import API_ROOT
 from openai4s.server.urls import artifact_version_url
 from openai4s.store import get_store
 
@@ -65,7 +66,6 @@ def test_a_fresh_boot_starts_no_kernel_and_executes_no_cell(tmp_path, monkeypatc
     because the defect was in the wiring, not in `_seed_demo_session`.
     """
     monkeypatch.delenv("OPENAI4S_SEED_DEMO", raising=False)
-    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
     cfg = _cfg(tmp_path)
     cfg.port = 0  # ask the OS for a free port; do not fight a live daemon
 
@@ -570,7 +570,6 @@ def test_server_close_drops_datapro_connection_bound_to_old_secret_store(
     shared = mcp_client.MCPManager()
     monkeypatch.setattr(shared, "_connect", lambda config: _Connection(config))
     monkeypatch.setattr(mcp_client, "_MANAGER", shared)
-    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
 
     monkeypatch.setattr(
         gateway_mod.ThreadingHTTPServer, "server_close", lambda _server: None
@@ -2248,6 +2247,137 @@ def test_stop_after_review_wins_the_gateway_terminal_proposal(monkeypatch, tmp_p
         runner.close()
 
 
+def _content_disposition_names(value: str) -> tuple[str, str, str]:
+    """(disposition type, ASCII ``filename``, decoded RFC 5987 ``filename*``)."""
+    from urllib.parse import unquote as _unquote
+
+    kind = value.split(";", 1)[0].strip()
+    plain = re.search(r'(?:^|;)\s*filename="([^"]*)"', value)
+    extended = re.search(r"(?:^|;)\s*filename\*=UTF-8''([^;\s]+)", value)
+    return (
+        kind,
+        plain.group(1) if plain else "",
+        _unquote(extended.group(1), errors="strict") if extended else "",
+    )
+
+
+def test_artifact_bytes_carry_an_inline_disposition_with_the_artifact_filename(
+    tmp_path,
+):
+    """A browser that downloads rather than renders names the file from this.
+
+    Completion links point at ``/api/v1/artifacts/<artifact_id>`` (and, with
+    Stage 1 trusted delivery, ``versions/<version_id>``). Neither response
+    named the file, so Chromium saved ``group_summary.csv`` as
+    ``a-7b61bc5806b9.csv`` -- the URL's last segment. The name is agent- or
+    user-authored, so it is also the one header value on this route an
+    Artifact controls: quotes, CR/LF, path separators and non-ASCII must not
+    split the response or escape the quoted-string. Driven through the real
+    handler on a real socket, because the header is what reaches a browser.
+    """
+    import http.client
+
+    from openai4s.server import local_auth
+    from tests._ports import bound_gateway_server
+
+    httpd, port = bound_gateway_server()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        host="127.0.0.1",
+        port=port,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    cfg.ensure_dirs()
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, _Hub(), runner)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+
+    def fetch(path):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            conn.request("GET", path, headers={local_auth.TOKEN_HEADER: token})
+            response = conn.getresponse()
+            return response.status, response.msg, response.read()
+        finally:
+            conn.close()
+
+    try:
+        assert runner.stage1_trusted_delivery is True
+        fid = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+        st = gateway_mod.SessionState(fid, "default", runner.workspace_for(fid))
+        table = st.workspace / "group_summary.csv"
+        table.write_bytes(b"group,n\na,3\nb,4\n")
+        plain = runner._register_file(st, table, "cell-1", lambda e: None)
+        nested = st.workspace / "out" / 'r\u00e9sum\u00e9 "x".csv'
+        nested.parent.mkdir()
+        nested.write_bytes(b"k,v\n1,2\n")
+        hostile = runner._register_file(st, nested, "cell-2", lambda e: None)
+        # The worst a stored name can hold, including what no filesystem path
+        # carries: a CR/LF header injection, a backslash path, a stray quote.
+        hostile_name = '..\\evil/r\u00e9sum\u00e9 "x";\r\nX-Injected: 1.csv'
+        runner.store._conn.execute(  # noqa: SLF001 - adversarial stored row
+            "UPDATE artifacts SET filename=? WHERE artifact_id=?",
+            (hostile_name, hostile["artifact_id"]),
+        )
+        runner.store._conn.execute(  # noqa: SLF001 - adversarial stored row
+            "UPDATE artifact_versions SET filename=? WHERE version_id=?",
+            (hostile_name, hostile["version_id"]),
+        )
+        runner.store._conn.commit()  # noqa: SLF001
+
+        paths = [
+            # mutable head (the flag-off completion link) and the compat
+            # version-id form of the same route
+            f"{API_ROOT}/artifacts/{quote(plain['artifact_id'], safe='')}",
+            f"{API_ROOT}/artifacts/{quote(plain['version_id'], safe='')}",
+            # Stage 1 exact-version link
+            f"{API_ROOT}/artifacts/versions/{quote(plain['version_id'], safe='')}",
+        ]
+        for path in paths:
+            status, headers, body = fetch(path)
+            assert status == 200, (path, status, body[:200])
+            assert body == b"group,n\na,3\nb,4\n"
+            values = headers.get_all("Content-Disposition") or []
+            assert len(values) == 1, (path, values)
+            kind, ascii_name, utf8_name = _content_disposition_names(values[0])
+            # inline, so a PNG or HTML preview still renders in place
+            assert kind == "inline", (path, values[0])
+            assert ascii_name == "group_summary.csv", (path, values[0])
+            assert utf8_name == "group_summary.csv", (path, values[0])
+
+        expected = "r\u00e9sum\u00e9 x;X-Injected: 1.csv"
+        for path in (
+            f"{API_ROOT}/artifacts/{quote(hostile['artifact_id'], safe='')}",
+            f"{API_ROOT}/artifacts/versions/{quote(hostile['version_id'], safe='')}",
+        ):
+            status, headers, body = fetch(path)
+            assert status == 200, (path, status, body[:200])
+            assert body == b"k,v\n1,2\n"
+            assert headers.get_all("X-Injected") is None, path
+            values = headers.get_all("Content-Disposition") or []
+            assert len(values) == 1, (path, values)
+            raw = values[0]
+            assert "\r" not in raw and "\n" not in raw, raw
+            kind, ascii_name, utf8_name = _content_disposition_names(raw)
+            assert kind == "inline", raw
+            # One quoted-string: no quote, backslash, separator or non-ASCII
+            # left in the legacy parameter.
+            assert raw.count('"') == 2, raw
+            assert ascii_name and ascii_name.isascii(), raw
+            assert not set(ascii_name) & set('"\\/;:%'), raw
+            assert ascii_name.endswith(".csv"), raw
+            assert utf8_name == expected, raw
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+        runner.close()
+
+
 def _install_artifact_submission(
     monkeypatch,
     runner,
@@ -2303,8 +2433,11 @@ def test_stage1_flag_off_keeps_legacy_completion_and_skips_delivery_ledger(
         assert runner.stage1_trusted_delivery is False
         assert runner.artifacts.trusted_delivery is False
         assert runner.completion_delivery is None
-        legacy = "/api/artifacts/" + captured["record"]["artifact_id"].replace(
-            "/", "%2F"
+        # Flag-off keeps the mutable Artifact-head link, under the versioned
+        # root the gateway serves (the un-versioned `/api/artifacts/` form it
+        # used to emit is a 404 on every contract-v1 daemon).
+        legacy = f"{API_ROOT}/artifacts/" + quote(
+            captured["record"]["artifact_id"], safe=""
         )
         chunks = "".join(
             str(event.get("chunk") or "")
@@ -2312,12 +2445,109 @@ def test_stage1_flag_off_keeps_legacy_completion_and_skips_delivery_ledger(
             if event.get("type") == "text_chunk"
         )
         assert legacy in chunks
-        assert "/api/v1/artifacts/" not in chunks
+        assert "](/api/artifacts/" not in chunks
+        # ...and never the Stage 1 exact-version namespace.
+        assert f"{API_ROOT}/artifacts/versions/" not in chunks
         count = runner.store._conn.execute(  # noqa: SLF001 - integration proof
             "SELECT COUNT(*) FROM completion_deliveries"
         ).fetchone()[0]
         assert count == 0
     finally:
+        runner.close()
+
+
+def test_default_completion_artifact_links_are_served_over_the_real_socket(
+    tmp_path, monkeypatch
+):
+    """Every link a default (flag-off) completion message carries must fetch.
+
+    The helper built `/api/artifacts/<id>` and every unit test compared that
+    string with itself, while the gateway answers any un-versioned `/api/...`
+    path with a 404 — so each "Artifacts:" link a user clicked was dead. A
+    string assertion cannot see that; only sending the link through the real
+    handler (routing, the versioned-404 catch-all, the token gate) can. The
+    links come from the stored assistant message and the streamed text, i.e.
+    exactly what the workbench renders.
+    """
+    import http.client
+
+    from openai4s.server import local_auth
+    from openai4s.server.completions import completion_message
+    from tests._ports import bound_gateway_server
+
+    httpd, port = bound_gateway_server()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        host="127.0.0.1",
+        port=port,
+    )
+    cfg.ensure_dirs()
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    content = b"sample,score\nA,1\nB,2\n"
+    captured = _install_artifact_submission(monkeypatch, runner, content=content)
+    httpd.RequestHandlerClass = gateway_mod.make_handler(cfg, hub, runner)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    token = local_auth.load_or_mint(cfg.data_dir)
+
+    def fetch(path):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            conn.request("GET", path, headers={local_auth.TOKEN_HEADER: token})
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
+
+    link_re = re.compile(r"\]\((/[^)\s]+)\)")
+    try:
+        frame_id = runner.store.new_frame(
+            kind="turn", project_id="default", status="ready"
+        )
+        result = runner.run_message(frame_id, "default", "analyze the table")
+        assert result["status"] == "completed"
+        assert runner.stage1_trusted_delivery is False
+
+        stored = [
+            row
+            for row in runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            if row["role"] == "assistant"
+        ]
+        stored_links = link_re.findall(stored[-1]["content"])
+        streamed_links = link_re.findall(
+            "".join(
+                str(event.get("chunk") or "")
+                for event in hub.events
+                if event.get("type") == "text_chunk"
+            )
+        )
+        assert stored_links, "the completion message carries no Artifact link"
+        assert stored_links == streamed_links
+
+        # The filename fallback (a record without an artifact id) is the
+        # other flag-off shape; it must reach the same served bytes.
+        fallback_links = link_re.findall(
+            completion_message(
+                {"output": {"summary": "x"}},
+                [{"filename": captured["record"]["filename"]}],
+                require_fallback=False,
+            )
+        )
+        assert fallback_links
+
+        for link in stored_links + fallback_links:
+            status, body = fetch(link)
+            assert status == 200, (link, status, body[:200])
+            assert body == content, link
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
         runner.close()
 
 
@@ -4150,11 +4380,12 @@ def test_plan_restore_and_delete_artifact_created_shapes(tmp_path):
 def test_frame_update_status_literal_vocabulary(tmp_path):
     """Source-level lock on the frame_update status vocabulary documented in
     docs/webapp-api.md §3. Literal statuses in gateway.py emit sites are
-    exactly {processing, titled, failed, success, updated}; the
-    run_message terminal site emits a VARIABLE status ∈ {completed, failed,
-    cancelled} (asserted behaviorally by the structured-submit and max-turn
-    tests above). If this fails, a status was added/removed — update
-    docs/webapp-api.md.
+    exactly {processing, titled, failed, success, cancelled, updated} --
+    `cancelled` is the REPL site's interrupted cell, which used to report
+    `success`; the run_message terminal site emits a VARIABLE status ∈
+    {completed, failed, cancelled} (asserted behaviorally by the
+    structured-submit and max-turn tests above). If this fails, a status was
+    added/removed — update docs/webapp-api.md.
 
     The *vocabulary* is what docs/webapp-api.md promises, so the vocabulary is
     what is locked. This used to also require at least seven emit sites, which
@@ -4181,6 +4412,7 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
         "titled",
         "failed",
         "success",
+        "cancelled",
         "updated",
     }
 
@@ -4247,7 +4479,6 @@ def test_token_gate_401_and_cookie_redirect(monkeypatch, tmp_path, capsys):
     timing. And the redirect went to "/" unconditionally, so a bookmarked deep
     link carrying a token landed on the dashboard instead of its target.
     """
-    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "1")
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -5330,14 +5561,10 @@ def test_a_sandbox_grant_is_minted_scoped_and_spendable(
         runner.close()
 
 
-@pytest.mark.parametrize(
-    "reason", ["blank_scope", "unsupported_host", "wildcard_bind", "no_secret"]
-)
+@pytest.mark.parametrize("reason", ["blank_scope", "unsupported_host", "wildcard_bind"])
 def test_sandbox_grant_unavailable_is_an_honest_inert_fallback(
     tmp_path, monkeypatch, reason
 ):
-    if reason == "no_secret":
-        monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
     cfg, runner, store, fid, st = _runner_frame(tmp_path)
     if reason == "wildcard_bind":
         cfg.host = "0.0.0.0"
@@ -6496,9 +6723,10 @@ def test_the_loopback_gate_is_required_by_default(tmp_path, monkeypatch):
     the machine. The Host and Origin guards cover the browser; they do not
     cover a local process.
 
-    `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives for one minor
-    release. Same variable that used to opt *in*, sense reversed, so a script
-    setting it to 1 keeps working and simply asks for what is now the default.
+    `OPENAI4S_REQUIRE_TOKEN=0` was the escape hatch, granted for exactly one
+    minor release (D1). v0.2.0 was that release; from 0.3.0 the variable is
+    ignored, so a daemon started with it still mints its token. Setting it to 1
+    keeps working and simply asks for what is the only behaviour.
     """
     from openai4s.server import local_auth
 
@@ -6508,15 +6736,17 @@ def test_the_loopback_gate_is_required_by_default(tmp_path, monkeypatch):
     gateway_mod.make_handler(cfg, _Hub(), runner)
     assert local_auth.read_token(cfg.data_dir), "loopback did not require a token"
 
-    # The legacy opt-out, honoured on loopback.
+    # The retired opt-out, ignored on loopback...
     monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
     relaxed = _cfg(tmp_path / "relaxed")
     relaxed_runner = gateway_mod.SessionRunner(relaxed, _Hub())
     gateway_mod.make_handler(relaxed, _Hub(), relaxed_runner)
-    assert local_auth.read_token(relaxed.data_dir) is None
+    assert local_auth.read_token(
+        relaxed.data_dir
+    ), "OPENAI4S_REQUIRE_TOKEN=0 still turned the loopback gate off"
 
-    # ...and ignored off loopback. A bind anything can route to has no
-    # configuration under which it should answer without a credential.
+    # ...and off loopback. A bind anything can route to has no configuration
+    # under which it should answer without a credential.
     exposed = Config(
         data_dir=tmp_path / "exposed",
         host="0.0.0.0",

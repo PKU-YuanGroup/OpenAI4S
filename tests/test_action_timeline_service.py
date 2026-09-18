@@ -328,3 +328,34 @@ def test_timeline_scopes_attempts_to_the_requested_branch(tmp_path):
         "cell-fork"
     ]
     store.close()
+
+
+def test_a_plan_mode_user_group_is_titled_by_the_task(tmp_path):
+    """UI5-F2. A workbench plan turn's model input opens with the plan-mode
+    prompt, and the user group's one-line title was its first 120 characters:
+    "[Plan Mode] Do not execute or call any tools yet. Devise a structured ..."
+    for every plan session. The title names the task; the payload is the audit
+    record and stays whole."""
+    store = Store(tmp_path / "openai4s.db")
+    prompts = {
+        "en": "[Plan Mode] Do not execute or call any tools yet. Devise a structured "
+        "execution plan for the task below, and output only two parts:\n1) ...\n"
+        "Wait for user approval before executing.\n\nTask: ",
+        "zh": "[计划模式] 请先不要执行、不要调用任何工具。为下面的任务制定一个结构化执行计划"
+        "，并只输出两部分：\n等待用户批准后再执行。\n\n任务：",
+    }
+    tasks = {"en": "Fold BRCA1 and plot pLDDT", "zh": "折叠 BRCA1 并画出 pLDDT"}
+    for index, lang in enumerate(("en", "zh")):
+        store.append_action_group(
+            group_id=f"group-{lang}",
+            root_frame_id="root",
+            turn_id=f"turn-{lang}",
+            kind="user",
+            assistant_message={"role": "user", "content": prompts[lang] + tasks[lang]},
+            created_at=index + 1,
+        )
+
+    groups = ActionTimelineService(store).get("root")["groups"]
+
+    assert [group["title"] for group in groups] == [tasks["en"], tasks["zh"]]
+    store.close()

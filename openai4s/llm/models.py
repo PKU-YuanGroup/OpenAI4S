@@ -12,6 +12,15 @@ class LLMError(RuntimeError):
     usage: object = None
 
 
+class MissingCredentialError(LLMError):
+    """No API key is configured for a provider that needs one.
+
+    Raised before any request is built. A subclass so every ``except
+    LLMError`` keeps working; its own type so a daemon can tell this expected,
+    user-fixable refusal from a real failure without matching on prose.
+    """
+
+
 class TransportError(LLMError):
     """An HTTP/transport failure with its evidence intact.
 

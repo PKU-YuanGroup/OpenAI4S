@@ -8,8 +8,9 @@ name: Publish release
 # non-draft creation does emit it, and then the draft conditions skipped
 # attachment and publication. The pipeline was unreachable by construction.
 #
-# The entry point is now explicit: a maintainer creates the draft release (or
-# lets the tag push create it), then runs this workflow against that tag. With
+# The entry point is now explicit: a maintainer creates the draft release
+# (`gh release create vX.Y.Z --draft --verify-tag`; a tag push creates nothing),
+# then runs this workflow against that tag. With
 # `publish` unset it is a dry run — everything is built and verified, nothing
 # leaves. With `publish` set the run must name an existing *draft*, which the
 # guard job proves before anything else starts.
@@ -116,6 +117,14 @@ jobs:
     if: inputs.publish || inputs.pypi_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # GitHub shows a draft release only to a caller with push access. With the
+    # workflow-level `contents: read` token, `gh release view` answered
+    # "release not found" for the very draft this job exists to find: the
+    # first publish dispatch (v0.3.0, run 35087359578) stopped here. The job
+    # checks out nothing and runs only the gh/jq calls below, so the write
+    # scope reaches no repository code.
+    permissions:
+      contents: write
     steps:
       - name: The named tag must exist, in the state the chosen mode requires
         env:
@@ -153,6 +162,20 @@ jobs:
               echo "::error::$TAG is already public; staging assets onto it is the half-published state this pipeline exists to prevent"
               exit 1
             fi
+            # Once PyPI has the version, staging again can only do harm. The
+            # build is not byte-reproducible, and `attach` uploads with
+            # --clobber, so a second dispatch would replace the draft's assets
+            # with bytes PyPI does not have. Then the pypi job fails on the
+            # reused filename and `--only publish` refuses the mismatch, which
+            # leaves the release stuck. Only a definite 404 lets staging start.
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/openai4s/${TAG#v}/json") || code=unreachable
+            if [ "$code" = "200" ]; then
+              echo "::error::openai4s ${TAG#v} is already on PyPI; do not dispatch again. Re-run the failed finalize job of the run that published it, or run release_pipeline.py --mode release --only publish against the untouched draft"
+              exit 1
+            elif [ "$code" != "404" ]; then
+              echo "::error::could not tell whether PyPI already has openai4s ${TAG#v} (HTTP $code); refusing to stage"
+              exit 1
+            fi
           fi
           if [ "$(jq -r .isPrerelease release.json)" = "true" ]; then
             echo "::error::$TAG is marked as a prerelease; stable publication requires a non-prerelease draft"
@@ -163,7 +186,9 @@ jobs:
     name: Quality gates at the release SHA
     needs: [freeze]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The suite runs twice here, serially and then under the schema capture:
+    # ~44 minutes projected at 0.3.0, and busy runners have been 1.3-2.8x slower.
+    timeout-minutes: 90
     steps:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -190,9 +215,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+        # `--slurp` wraps every page in one JSON array. Without it gh writes a
+        # document per page back to back, which is not one JSON value; the
+        # reader accepts both, so a SHA with more than 100 check runs (nightly
+        # schedules, CodeQL, Dependabot) stays releasable either way.
         run: |
           set -euo pipefail
-          gh api --paginate \
+          gh api --paginate --slurp \
             "repos/${GH_REPO}/commits/${SHA}/check-runs?per_page=100" \
             > check-runs.json
       - name: Run every offline gate and record what happened
@@ -821,15 +850,22 @@ jobs:
     # a public release with no matching package version.
     #
     # If this job fails after PyPI succeeded, the release stays a draft and
-    # nothing needs rebuilding: re-run this workflow with the same tag, or run
-    # `release_pipeline.py --only publish` by hand. Do not bump the version and
-    # do not rebuild — the artifacts on the draft are the ones PyPI has.
+    # nothing needs rebuilding: use "Re-run failed jobs" on this same run (not
+    # "Re-run all jobs", which rebuilds), or run
+    # `release_pipeline.py --mode release --only publish` by hand. Never
+    # dispatch this tag again: the guard refuses once PyPI has the version,
+    # because a new build would clobber the draft with bytes PyPI does not
+    # have. Do not bump the version and do not rebuild -- the artifacts on the
+    # draft are the ones PyPI has.
     if: inputs.publish
     needs: [freeze, attach, pypi]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
+      # Only to dispatch publish-image.yml for the tag once it is public; see
+      # the last step.
+      actions: write
     steps:
       - name: Check out the pipeline at the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -867,3 +903,23 @@ jobs:
             --attestation attestation/stage-attestation.json \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --json
+      # publish-image.yml listens for `release: published`, but the step above
+      # makes the release public with this job's GITHUB_TOKEN, and GitHub starts
+      # no workflow run for an event that token raised -- workflow_dispatch is
+      # the documented exception. Without this the image never built and
+      # `:latest` stayed on the previous version. `--ref` is the tag so the
+      # image job's `github.sha` is the tagged commit its tag revalidation
+      # compares against; `-f ref=` is the tag it builds and pushes. Unconditional
+      # on purpose: steps stop at the first failure, so this runs only after a
+      # successful publish. If this step alone fails, the release is already
+      # public: run the same `gh workflow run` line by hand rather than
+      # re-running the job. A duplicate dispatch only rebuilds the same tag
+      # under publish-image's non-cancelling per-tag concurrency group.
+      - name: Dispatch the container image for the published tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish-image.yml --repo "$GH_REPO" --ref "$TAG" -f ref="$TAG"

@@ -24,7 +24,10 @@ scripts.
   images, CSV/TSV tables, Markdown/text, HTML/PDF previews, and 3D molecular
   structures through vendored 3Dmol. Restore verifies a trusted immutable
   snapshot and appends a fresh version plus source→restored lineage; it never
-  moves the Artifact head back onto an old row. With
+  moves the Artifact head back onto an old row. By default, completion links
+  name the Artifact's current head under `/api/v1/artifacts/{artifact_id}`
+  (links stored by 0.2.0 with the un-versioned `/api/artifacts/{id}` form are
+  rewritten to that route when the workbench renders them). With
   `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, completion links name the exact
   immutable version under `/api/v1/artifacts/versions/{version_id}`. Clicking, reloading,
   and reopening therefore resolves the same checksummed bytes even after a

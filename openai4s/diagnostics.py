@@ -489,7 +489,7 @@ _REPORT_SCHEMA: dict[str, Any] = {
             "error_type": _v_type_name,
         },
         "schema": {
-            "code": _v_enum({"future_schema"}),
+            "code": _v_enum({"future_schema", "upgrade_pending", "interrupted_write"}),
             "version": _v_number,
             "expected": _v_number,
             "current": _v_bool,
@@ -633,10 +633,33 @@ def security_posture(cfg: Any) -> dict:
     report: dict[str, Any] = passive_security_posture(cfg)
     store = None
     try:
-        from openai4s.store import get_store
+        from openai4s.doctor import unopened_database
+        from openai4s.storage.migrations import SCHEMA_VERSION
 
-        store = get_store(cfg.db_path)
-        report["schema"] = store.schema_state()
+        # Opening the Store is not a read: on a database older than this
+        # release it is the upgrade, and this bundle is what someone whose
+        # upgrade is pending or failed attaches to a report. The version is
+        # read the read-only way, and a database the open would upgrade (or
+        # whose version cannot be read without that open) is left closed.
+        unopened = unopened_database(cfg)
+        if unopened is not None and unopened.get("error") is not None:
+            # The refusal the open would have raised, recorded without it.
+            raise unopened["error"]
+        if unopened is not None:
+            report["schema"] = {
+                "status": "skipped",
+                "code": unopened["reason"],
+                "expected": unopened.get("supported_schema_version", SCHEMA_VERSION),
+                "current": False,
+            }
+            if "schema_version" in unopened:
+                report["schema"]["version"] = unopened["schema_version"]
+            report["secret_store"] = {"status": "skipped"}
+        else:
+            from openai4s.store import get_store
+
+            store = get_store(cfg.db_path)
+            report["schema"] = store.schema_state()
     except Exception as e:  # noqa: BLE001
         # The database never opened, so neither probe below it ran. Both keys
         # record that same failure rather than one of them going missing.

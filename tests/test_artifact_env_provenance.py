@@ -123,6 +123,116 @@ def test_the_snapshot_names_the_generation_that_produced_it(env):
 
 
 # --------------------------------------------------------------------------
+# the production writer: a Web kernel's generation, not a hand-written dict
+# --------------------------------------------------------------------------
+
+
+def test_a_web_repl_kernel_generation_records_a_python_package_list(env):
+    """Through the real writer: a spawned `Kernel(mode="repl")` -- the exact
+    shape `gateway._spawn_kernel` builds for every Web Python session --
+    registered by `KernelSupervisor`, then captured.
+
+    Every test above hand-writes `runtime: "python"`. The supervisor actually
+    wrote the protocol mode, `"repl"`, so each Web Python artifact got kind
+    `repl`, no packages, and a false "Python distribution metadata does not
+    apply", while the interpreter was a readable venv.
+    """
+    from openai4s.kernel.manager import Kernel
+    from openai4s.kernel.supervisor import KernelSupervisor
+
+    manager, store, root = env
+    supervisor = KernelSupervisor(
+        root_frame_id=root,
+        branch_id=root,
+        generations=store,
+        owner_instance_id="daemon-test",
+    )
+    workspace = str(manager.workspace_for(root))
+    kernel = Kernel(
+        dispatcher=None,
+        cwd=workspace,
+        mode="repl",
+        python=sys.executable,
+        env_name="base",
+    )
+    try:
+        lease = supervisor.ensure(
+            "python", ("base", sys.executable, None), lambda: kernel
+        )
+
+        snapshot = _snapshot(manager, store, root, "python")
+
+        assert snapshot["generation_id"] == lease.generation_id
+        assert snapshot["kind"] == "python"
+        assert snapshot["interpreter"] == sys.executable
+        assert snapshot["packages_unavailable"] is None
+        assert snapshot["package_count"] > 0
+    finally:
+        kernel.shutdown()
+
+
+def _legacy_web_generation(store, root, *, key, interpreter):
+    """A generation row exactly as 0.2.0's supervisor persisted a Web kernel.
+
+    Hand-written on purpose: this is historical data that no current writer
+    produces any more, and reopening an old session reads it as-is.
+    """
+    return store.create_kernel_generation(
+        root_frame_id=root,
+        branch_id=root,
+        language="python",
+        environment={
+            "key": key,
+            "runtime": "repl",
+            "interpreter": interpreter,
+            "worker_argv": None,
+            "environment_root": None,
+            "environment_name": "base",
+            "working_directory": "/workspace",
+        },
+        bootstrap={"status": "ok"},
+        state="active",
+    )
+
+
+def test_a_legacy_repl_generation_is_read_as_python(env):
+    """Generations already stored with the mode as their runtime still name a
+    local Python interpreter; a new capture from one must freeze it."""
+    manager, store, root = env
+    _legacy_web_generation(
+        store, root, key=["base", sys.executable, None], interpreter=sys.executable
+    )
+
+    snapshot = _snapshot(manager, store, root, "python")
+
+    assert snapshot["kind"] == "python"
+    assert snapshot["packages_unavailable"] is None
+    assert snapshot["package_count"] > 0
+
+
+def test_a_legacy_remote_generation_never_borrows_the_daemon_s_packages(env):
+    """A cluster worker's Kernel defaulted `python` to the *daemon's*
+    `sys.executable`, and 0.2.0 stored that path. Reading the legacy row as
+    Python must not freeze this process and attribute its packages to a
+    worker on another machine -- that would turn absent provenance into wrong
+    provenance."""
+    manager, store, root = env
+    _legacy_web_generation(
+        store, root, key=["cluster", "wl-1", "0"], interpreter=sys.executable
+    )
+
+    snapshot = _snapshot(manager, store, root, "python")
+
+    assert snapshot["kind"] == "python"
+    assert snapshot["packages"] == []
+    assert snapshot["package_count"] == 0
+    assert snapshot["interpreter"] is None
+    assert snapshot["python_version"] is None
+    assert "does not apply" not in (snapshot["packages_unavailable"] or "")
+    assert "remote" in (snapshot["packages_unavailable"] or "")
+
+
+# --------------------------------------------------------------------------
 # honesty when the environment cannot be read
 # --------------------------------------------------------------------------
 

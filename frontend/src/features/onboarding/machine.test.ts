@@ -112,6 +112,62 @@ describe("M-01 wizard state machine", () => {
     expect(next.path).toEqual(PATH);
   });
 
+
+  it.each([
+    { profileId: "p2" },
+    { provider: "claude" },
+    { model: "different-model" },
+    { baseUrl: "http://127.0.0.1:9/v1" },
+  ])("clears capability evidence when the selected model identity changes: %j", (changed) => {
+    const state = run([
+      { type: "hydrate", complete: false },
+      { type: "choosePath", path: PATH },
+      { type: "next" },
+      { type: "startTest" },
+      { type: "testResult", receipt: { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true }, detail: "model A receipt", reachable: true },
+      { type: "showChecklist" },
+      { type: "goto", step: "path" },
+      { type: "choosePath", path: { ...PATH, ...changed } },
+    ]);
+    expect(state.receipt).toBeNull();
+    expect(state.probeDetail).toBe("");
+    expect(state.testClicked).toBe(false);
+    expect(checklistItems(state).find((item) => item.step === "test")?.done).toBe(false);
+    // This counts requests actually sent during the wizard, across profiles.
+    expect(state.providerRequests).toBe(1);
+  });
+
+  it("keeps the receipt when only the same model's display name or path kind changes", () => {
+    const receipt = { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true } as const;
+    const state = run([
+      { type: "choosePath", path: PATH },
+      { type: "startTest" },
+      { type: "testResult", receipt, detail: "", reachable: true },
+      { type: "choosePath", path: { ...PATH, name: "Renamed", kind: "existing" } },
+    ]);
+    expect(state.receipt).toEqual(receipt);
+    expect(state.testClicked).toBe(true);
+    expect(state.decided).toContain("test");
+  });
+
+  it("files a probe result only under the profile it was measured for", () => {
+    const receipt = { native_tool_call: "true", streaming: "true", stale: false, native_completion: true, reachable: true } as const;
+    const waiting = run([
+      { type: "choosePath", path: PATH },
+      { type: "startTest" },
+    ]);
+    // A result for some other profile -- a superseded probe, or one that fell
+    // back to the active profile -- is not this selection's capability.
+    const foreign = reduceWizard(waiting, { type: "testResult", receipt, detail: "", reachable: true, profileId: "someone-else" });
+    expect(foreign).toBe(waiting);
+    expect(foreign.receipt).toBeNull();
+    const own = reduceWizard(waiting, { type: "testResult", receipt, detail: "", reachable: true, profileId: PATH.profileId });
+    expect(own.receipt).toEqual(receipt);
+    // With no selection there is no profile a result could belong to.
+    const unselected = reduceWizard(INITIAL_WIZARD, { type: "testResult", receipt, detail: "", reachable: true, profileId: "p1" });
+    expect(unselected.receipt).toBeNull();
+  });
+
   it("will not grow decided past the four required steps", () => {
     let state = INITIAL_WIZARD;
     for (const step of REQUIRED_STEPS) {

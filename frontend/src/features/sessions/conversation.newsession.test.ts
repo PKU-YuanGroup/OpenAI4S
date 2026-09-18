@@ -20,7 +20,10 @@ const openMock = vi.hoisted(() => ({
 const loadMock = vi.hoisted(() => ({
   loadSessions: vi.fn(async () => {}),
   loadProjects: vi.fn(async () => {}),
-  loadSessionsForNavigation: vi.fn(async () => ({ status: "loaded" })),
+  loadSessionsForScope: vi.fn(async () => ({ status: "loaded" })),
+  // A list read is scoped to its project, not to the view generation, so the
+  // scope is an opaque predicate rather than a navigation token.
+  sessionListScope: vi.fn(() => () => true),
 }));
 
 vi.mock("../ws/connect", () => wsMock);
@@ -67,7 +70,7 @@ describe("newSession", () => {
     notebookMock.resetNotebookCellCaches.mockClear();
     loadMock.loadProjects.mockReset().mockResolvedValue(undefined);
     loadMock.loadSessions.mockReset().mockResolvedValue(undefined);
-    loadMock.loadSessionsForNavigation.mockReset().mockResolvedValue({ status: "loaded" });
+    loadMock.loadSessionsForScope.mockReset().mockResolvedValue({ status: "loaded" });
     recoveryMock.recoverConversation.mockReset().mockResolvedValue(undefined);
     recoveryMock.callLane.mockReset();
     recoveryMock.hint.mockReset();
@@ -185,7 +188,7 @@ describe("newSession", () => {
     expect(currentId.value).toBe("previous");
     expect(_openGen.value).toBeGreaterThan(before);
     expect(_msgEarlierLoading.value).toBe(false);
-    expect(loadMock.loadSessionsForNavigation).toHaveBeenCalledWith({ projectId: "B", generation: before + 1 });
+    expect(loadMock.loadSessionsForScope).toHaveBeenCalledOnce();
     expect(recoveryMock.recoverConversation).toHaveBeenCalledWith("previous", before + 1);
     expect(recoveryMock.callLane).toHaveBeenCalledWith("loadArtifacts", "previous");
     expect(recoveryMock.hint).toHaveBeenLastCalledWith(expect.stringContaining("unavailable"), true);

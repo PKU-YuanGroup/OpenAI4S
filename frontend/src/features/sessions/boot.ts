@@ -1,8 +1,8 @@
 /** Window exports, F-06 loadSessions hook, and workbench event wiring. */
 
-import { applyStaticI18n, setLang, t } from "../../i18n";
+import { applyStaticI18n, i18nReady, onLanguageChange, setLang, t } from "../../i18n";
 import { _titleName, currentId, editingProject } from "../../stores/session";
-import { cycleTheme } from "../theme/theme";
+import { cycleTheme, refreshThemeToggle } from "../theme/theme";
 import { setLoadSessionsImpl } from "../ws/handlers";
 import {
   addToMessageMenu,
@@ -17,11 +17,12 @@ import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { newSession, routeInitialView } from "./conversation";
 import { setScopedExecutionRequest } from "../notebook/kernel";
 import { scopedExecutionRequest } from "../timeline/execution-request";
-import { showDashboard } from "./dashboard";
+import { loadDashboard, showDashboard } from "./dashboard";
 import { $, down, grow, setSidebar, setTitle, syncMobileChrome, updateJumpPill } from "./dom";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
-import { loadSessions } from "./load";
+import { loadSessions, renderSessions } from "./load";
+import { renderEmptySession } from "../messages/list";
 import {
   fetchAllMessages,
   fetchOlderMessages,
@@ -76,11 +77,65 @@ export function installSessionExports(
 let bound = false;
 let initialViewReady: Promise<void> | null = null;
 
+/**
+ * How long the first view waits for the locale chunks. They are a fraction of
+ * the main bundle this page has already loaded, so this is only reached by a
+ * stalled request -- and a workbench that never shows its projects is worse
+ * than one that shows keys in its lists.
+ */
+export const I18N_ROUTE_WAIT_MS = 8000;
+
+/**
+ * Resolves when the dictionaries load, fail to load, or the wait runs out --
+ * with `true` only in the last case, when the first view renders without them.
+ */
+function dictionariesSettled(): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const done = (timedOut: boolean) => {
+      clearTimeout(timer);
+      resolve(timedOut);
+    };
+    const timer = setTimeout(() => done(true), I18N_ROUTE_WAIT_MS);
+    i18nReady().then(
+      () => done(false),
+      () => done(false),
+    );
+  });
+}
+
+/**
+ * The dictionaries landed after the first view gave up waiting for them.
+ * The boot repaint reaches static labels only, so the lists that first view
+ * rendered through `t()` kept their bare keys -- "dash.meta.sessions" on the
+ * dashboard, "date.bucket.today" and the empty session's starters in the
+ * workspace -- until something else happened to re-render them. Once only:
+ * a later language switch is not this path.
+ */
+function repaintListsRenderedWithoutDictionaries(): void {
+  const dash = $("#dashboard");
+  if (dash && !dash.classList.contains("hidden")) void loadDashboard();
+  renderSessions();
+  // Only an empty session has this node, and it is all that session shows.
+  const host = $("#messages");
+  const empty = host?.querySelector(":scope > .empty-session");
+  if (host && empty) {
+    empty.remove();
+    renderEmptySession(host);
+  }
+}
+
 export function bindWorkbench(): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
   if (bound) return initialViewReady || Promise.resolve();
   bound = true;
   paintIcons();
+  // installTheme() ran before the Shell existed, so the theme buttons still
+  // carry the markup's "moon"; show the glyph for the theme actually applied.
+  refreshThemeToggle();
+  // app.js re-ran it on every language change (and so for the toggle's
+  // aria-label, which no data-i18n attribute covers); that includes the
+  // first dictionary load.
+  onLanguageChange(refreshThemeToggle);
   applyStaticI18n(document);
   watchActivateKeys(document);
   watchDisconnect();
@@ -217,8 +272,30 @@ export function bindWorkbench(): Promise<void> {
       (mq as { addListener: (fn: () => void) => void }).addListener(onMq);
     }
   }
-  initialViewReady = routeInitialView().catch(() => {
-    showDashboard();
-  });
+  // The first data-driven view waits for the dictionaries. The dashboard
+  // lists, the session sidebar and an opened session render through t(), and
+  // nothing re-renders them when the locale chunks land: routing first left
+  // "dash.meta.sessions" / "dash.sessions.empty" on screen whenever the chunk
+  // was slower than the API. The handlers above are bound already; only this
+  // render waits.
+  let routedWithoutDictionaries = false;
+  initialViewReady = dictionariesSettled()
+    .then((timedOut) => {
+      routedWithoutDictionaries = timedOut;
+      return routeInitialView();
+    })
+    .catch(() => {
+      showDashboard();
+    })
+    .finally(() => {
+      // The Shell's deep-link indicator (dashboard.css retires it as soon as a
+      // view is shown); the first route has settled either way.
+      const pending = $("#route-loading");
+      if (pending) pending.hidden = true;
+      // After the route, so the repaint cannot run ahead of the lists it fixes.
+      if (routedWithoutDictionaries) {
+        void i18nReady().then(repaintListsRenderedWithoutDictionaries, () => undefined);
+      }
+    });
   return initialViewReady;
 }

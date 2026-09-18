@@ -17,6 +17,7 @@ import errno
 import getpass
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -31,7 +32,11 @@ from pathlib import Path
 from openai4s import __version__
 from openai4s.config import get_config
 from openai4s.execution.process_group import TERM_GRACE_S
-from openai4s.storage.migrations import FutureSchemaError, preflight_schema
+from openai4s.storage.migrations import (
+    FutureSchemaError,
+    MigrationError,
+    preflight_schema,
+)
 
 
 def _statefile_payload(cfg) -> str:
@@ -128,11 +133,119 @@ def _read_pid(cfg) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` names a process that has not exited yet.
+
+    ``os.kill(pid, 0)`` only says the pid is still allocated, and an exited
+    process keeps its pid as a zombie until its parent reaps it. A detached
+    daemon is reparented to init/launchd, which reaps at once, but a
+    supervisor that runs ``serve`` as its own child and then ``openai4s stop``
+    holds the corpse for as long as it waits on ``stop``. The release smoke
+    did exactly that: ``stop`` polled the zombie for its whole timeout, called
+    a finished shutdown "still shutting down" and returned 2 — and ``--force``
+    would have reported that the corpse "ignored SIGKILL".
+    """
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+    return not _is_zombie(pid)
+
+
+#: ``p_stat`` of an exited, unreaped process in XNU's ``<sys/proc.h>``.
+_DARWIN_SZOMB = 5
+#: ``sizeof(struct kinfo_proc)`` on LP64 macOS (arm64 and x86_64 alike), and
+#: the offset of ``kp_proc.p_stat`` inside it — the record ``ps`` reads.
+_DARWIN_KINFO_PROC_SIZE = 648
+_DARWIN_P_STAT_OFFSET = 36
+#: ``kp_proc.p_starttime`` opens the record: a ``struct timeval`` whose
+#: ``tv_sec`` is a little-endian int64 and ``tv_usec`` the int32 after it.
+_DARWIN_P_STARTTIME_FORMAT = "<qi"
+
+
+def _is_zombie(pid: int) -> bool:
+    """True only when the platform positively reports ``pid`` as a zombie.
+
+    Where the state cannot be read the answer is False, so the caller keeps
+    the older pid-existence answer instead of guessing that a live daemon is
+    gone.
+    """
+    fields = _proc_stat_fields(pid)
+    if fields:
+        # Field 3: Z is a zombie; X (dead) is never meant to be visible.
+        return fields[0] in (b"Z", b"X", b"x")
+    if sys.platform == "darwin":
+        return _darwin_process_stat(pid) == _DARWIN_SZOMB
+    return False
+
+
+def _darwin_process_stat(pid: int) -> int | None:
+    """``kp_proc.p_stat`` from ``sysctl kern.proc.pid.<pid>``, or None."""
+    record = _darwin_kinfo_proc(pid)
+    return None if record is None else record[_DARWIN_P_STAT_OFFSET]
+
+
+def _darwin_process_start(pid: int) -> str | None:
+    """``kp_proc.p_starttime`` from ``sysctl kern.proc.pid.<pid>``, or None.
+
+    The kernel stamps it when the process is created and never changes it, so
+    it tells two processes that shared a pid apart the way Linux's field 22
+    does -- at microsecond rather than clock-tick resolution.
+    """
+    import struct
+
+    record = _darwin_kinfo_proc(pid)
+    if record is None:
+        return None
+    seconds, micros = struct.unpack_from(_DARWIN_P_STARTTIME_FORMAT, record, 0)
+    if seconds <= 0 or not 0 <= micros < 1_000_000:
+        return None
+    return f"{seconds}.{micros:06d}"
+
+
+def _darwin_kinfo_proc(pid: int) -> bytes | None:
+    """The raw ``struct kinfo_proc`` for ``pid`` on macOS, or None."""
+    try:
+        import ctypes
+
+        sysctl = ctypes.CDLL(None, use_errno=True).sysctl
+    except (ImportError, OSError, AttributeError):
+        return None
+    sysctl.argtypes = [
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    ]
+    sysctl.restype = ctypes.c_int
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    record = ctypes.create_string_buffer(_DARWIN_KINFO_PROC_SIZE)
+    size = ctypes.c_size_t(_DARWIN_KINFO_PROC_SIZE)
+    if sysctl(mib, 4, record, ctypes.byref(size), None, 0) != 0:
+        return None
+    # Zero bytes means no such process; any other size is a layout this code
+    # was not written against, and reading an offset into it would be a guess.
+    if size.value != _DARWIN_KINFO_PROC_SIZE:
+        return None
+    return record.raw
+
+
+def _proc_stat_fields(pid: int) -> list[bytes] | None:
+    """Fields 3 onward of Linux ``/proc/<pid>/stat``, or None where unreadable."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    # comm (field 2) is the one field that may contain spaces and parentheses,
+    # and it is always parenthesised — so split after its *last* ')' rather
+    # than on whitespace, which a process named "(x) 1 2 3" would otherwise
+    # shift by four fields.
+    close = raw.rfind(b")")
+    if close == -1:
+        return None
+    return raw[close + 2 :].split()
 
 
 def _process_start_token(pid: int) -> str | None:
@@ -151,27 +264,23 @@ def _process_start_token(pid: int) -> str | None:
     Linux exposes the distinguishing fact: field 22 of ``/proc/<pid>/stat`` is
     the process's start time in clock ticks since boot. Two processes may share
     a pid, but a process that started at a different moment is a different
-    process. Elsewhere — macOS has no procfs — there is nothing cheap and
-    correct to read, so this returns None and the caller keeps the older,
-    weaker answer instead of guessing.
+    process. macOS has no procfs, but the same fact is ``kp_proc.p_starttime``
+    in the ``sysctl`` record ``ps`` reads. Without it a daemon recorded
+    ``pid_start: null``, `_recorded_endpoint` rightly refused that record, and
+    `url` and `status` fell back to the default port for a daemon started with
+    ``--port``. Elsewhere there is nothing cheap and correct to read, so this
+    returns None and the caller keeps the older, weaker answer instead of
+    guessing.
     """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as handle:
-            raw = handle.read()
-    except OSError:
-        return None
-    # comm (field 2) is the one field that may contain spaces and parentheses,
-    # and it is always parenthesised — so split after its *last* ')' rather
-    # than on whitespace, which a process named "(x) 1 2 3" would otherwise
-    # shift by four fields.
-    close = raw.rfind(b")")
-    if close == -1:
-        return None
-    fields = raw[close + 2 :].split()
-    # Field 22 overall. Fields 1 and 2 are behind us, so it is index 19 here.
-    if len(fields) < 20:
-        return None
-    return fields[19].decode("ascii", "replace")
+    fields = _proc_stat_fields(pid)
+    if fields is not None:
+        # Field 22 overall. Fields 1 and 2 are behind us, so it is index 19.
+        if len(fields) < 20:
+            return None
+        return fields[19].decode("ascii", "replace")
+    if sys.platform == "darwin":
+        return _darwin_process_start(pid)
+    return None
 
 
 def _recorded_state(cfg) -> dict[str, object] | None:
@@ -256,9 +365,10 @@ def _recorded_endpoint(cfg, expected_pid: int) -> tuple[str, int] | None:
     to the caller's current config rather than steering a local control request.
     A pid alone is not an identity: after reuse, a stale sidecar could otherwise
     redirect the local access-token URL to an unrelated host that happens to
-    hold the same pid.  Linux provides the process start token needed to bind
-    the endpoint to one generation.  On platforms where that token is
-    unavailable, callers safely fall back to their current configuration.
+    hold the same pid.  Linux (procfs) and macOS (sysctl ``p_starttime``)
+    provide the process start token needed to bind the endpoint to one
+    generation.  On platforms where that token is unavailable, callers safely
+    fall back to their current configuration.
     """
     payload = _recorded_state(cfg)
     if payload is None:
@@ -289,9 +399,9 @@ def _daemon_alive(cfg, pid: int) -> bool:
     """Is the daemon that wrote the pidfile still the process holding ``pid``?
 
     Liveness first, because it is the cheap half and the only half available
-    off Linux. When the statefile corroborates the pidfile — same pid, and a
-    start token to compare — a mismatched token means the pid was reused and
-    the pidfile is stale.
+    where no start token can be read (off Linux and macOS). When the statefile
+    corroborates the pidfile — same pid, and a start token to compare — a
+    mismatched token means the pid was reused and the pidfile is stale.
 
     A statefile naming a *different* pid is deliberately treated as no
     information rather than as evidence of staleness. It is written just after
@@ -618,14 +728,17 @@ def _cmd_serve_detached(args, cfg) -> int:
         except ValueError:
             pass
     deadline = time.monotonic() + ready_timeout
+    exited: int | None = None
     while time.monotonic() < deadline:
-        if process.poll() is not None:
+        exited = process.poll()
+        if exited is not None:
             break
         if _read_pid(cfg) == process.pid and _health_ready(cfg):
             # Re-check both identities after the request.  Another daemon on
             # the same address can answer /health, and a child that loses the
             # bind race can exit while that request is in flight.
-            if process.poll() is not None or _read_pid(cfg) != process.pid:
+            exited = process.poll()
+            if exited is not None or _read_pid(cfg) != process.pid:
                 break
             app_url = _url(cfg)
             print(f"daemon started (pid {process.pid}) at {app_url}")
@@ -643,30 +756,86 @@ def _cmd_serve_detached(args, cfg) -> int:
         time.sleep(0.25)
 
     _cleanup_failed_detached_child(process)
-    # Only inspect this child's bounded log segment, and only render the
-    # numeric schema diagnostic. Never echo arbitrary startup output.
+    # Only inspect this child's bounded log segment, and only render lines
+    # rebuilt from values this process owns (numbers, its config, its paths).
+    # Never echo arbitrary startup output.
     try:
         with log_path.open("rb") as log:
             log.seek(log_start)
             startup = log.read(65536).decode("utf-8", errors="replace")
-        future = re.search(
-            r"\[future_schema\] database schema (\d{1,10}) exceeds supported schema (\d{1,10});",
-            startup,
-        )
-        if future:
-            print(
-                f"error: {FutureSchemaError(int(future[1]), int(future[2]))}",
-                file=sys.stderr,
-            )
-            return 2
     except OSError:
-        pass
+        startup = ""
+    refusal = _detached_startup_refusal(startup, cfg, log_path)
+    if refusal is not None:
+        message, status = refusal
+        print(message, file=sys.stderr)
+        return status
+    if exited is not None:
+        # The child is gone, so no wait ran out: say that, and keep a refusal's
+        # status. Anything else a failed start exits with maps to 1.
+        how = (
+            f"was terminated by signal {-exited}"
+            if exited < 0
+            else f"exited with status {exited}"
+        )
+        print(
+            f"error: detached daemon {how} before it became ready; "
+            f"inspect {log_path}",
+            file=sys.stderr,
+        )
+        return 2 if exited == 2 else 1
     print(
         f"error: detached daemon did not become ready within {ready_timeout:.0f}s "
         f"(OPENAI4S_DETACHED_READY_TIMEOUT overrides); inspect {log_path}",
         file=sys.stderr,
     )
     return 1
+
+
+def _detached_startup_refusal(
+    startup: str, cfg, log_path: Path
+) -> tuple[str, int] | None:
+    """The one-line diagnosis a detached child printed, rebuilt, or None.
+
+    The foreground `serve` ends a refused start with one `error:` line and its
+    exit status; the detached parent's caller should get the same line rather
+    than a pointer to a log. Each shape is matched on its fixed words and
+    re-rendered from what it carries that is safe to repeat -- version numbers,
+    and paths this process computes itself -- so no free text from the log (a
+    SQLite message, a path the log claims) reaches the terminal.
+    """
+    future = re.search(
+        r"\[future_schema\] database schema (\d{1,10}) exceeds supported schema (\d{1,10});",
+        startup,
+    )
+    if future:
+        return (f"error: {FutureSchemaError(int(future[1]), int(future[2]))}", 2)
+    failed = re.search(
+        r"^error: migration to version (\d{1,10}) failed at step (\d{1,10}): "
+        r"[^\n]{0,4096}?\. The database was rolled back and remains at version "
+        r"(\d{1,10}); re-running is safe\.",
+        startup,
+        re.MULTILINE,
+    )
+    if failed:
+        target, step, kept = (int(value) for value in failed.groups())
+        db_path = Path(cfg.db_path)
+        # The name `backup_database` gives the copy; named only if it is there.
+        backup = db_path.with_name(f"{db_path.name}.v{kept}.bak")
+        return (
+            f"error: migration to version {target} failed at step {step}. The "
+            f"database was rolled back and remains at version {kept}; re-running "
+            f"is safe."
+            + (f" A pre-upgrade backup is at {backup}." if backup.exists() else "")
+            + f" The reason is in {log_path}.",
+            2,
+        )
+    lines = set(startup.splitlines())
+    for code in (errno.EADDRINUSE, errno.EACCES, errno.EADDRNOTAVAIL):
+        bind = _bind_failure_message(OSError(code, os.strerror(code)), cfg)
+        if bind is not None and bind in lines:
+            return (bind, 1)
+    return None
 
 
 def cmd_serve(args) -> int:
@@ -723,7 +892,11 @@ def cmd_serve(args) -> int:
     # mints the access token, so the URL printed below actually opens.
     try:
         httpd = build_server(cfg)
-    except FutureSchemaError as exc:
+    except MigrationError as exc:
+        # A newer database (FutureSchemaError) or an upgrade that failed and
+        # was rolled back. Either way the message is the whole diagnosis --
+        # the versions, and for a failed upgrade where the kept backup is --
+        # so it is the one line printed, not the last line of a traceback.
         signal.signal(signal.SIGTERM, previous_sigterm)
         _clear_state(cfg, only_if_owned_by=my_pid)
         print(f"error: {exc}", file=sys.stderr)
@@ -878,11 +1051,12 @@ def cmd_status(args) -> int:
         if getattr(args, "json", False):
             # Keyed on the sidecar describing *this* pid, not on
             # `_recorded_endpoint`: that answers a stricter question (is the
-            # recorded generation still the live one, which needs a Linux
-            # process start token) and has nothing to do with which build is
-            # running. Gating on it reported `version: null, bundle_id: null`
-            # for a healthy current daemon, and the Windows launcher renders
-            # that as "your session is still running an older version".
+            # recorded generation still the live one, which needs a process
+            # start token from Linux procfs or macOS sysctl) and has nothing to
+            # do with which build is running. Gating on it reported
+            # `version: null, bundle_id: null` for a healthy current daemon,
+            # and the Windows launcher renders that as "your session is still
+            # running an older version".
             state = _recorded_state(cfg)
             recorded = (state or {}).get("pid")
             if (
@@ -902,7 +1076,15 @@ def cmd_status(args) -> int:
                 )
             )
             return 0
-        print(f"daemon: running (pid {pid}) at {_url(cfg, endpoint=endpoint)}")
+        # The plain origin, never the `?token=` bootstrap URL: `status` is a
+        # health check whose output ends up in CI and support logs, and the
+        # release pipeline itself treats that URL as a credential. The URL a
+        # person opens is one explicit command away.
+        print(
+            f"daemon: running (pid {pid}) at "
+            f"{_url(cfg, with_token=False, endpoint=endpoint)}"
+        )
+        print("  open     : run `openai4s url` for the sign-in URL")
         print(f"  model    : {health.get('model')}")
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
@@ -939,6 +1121,30 @@ def _wait_pid_exit(
     return not _pid_alive(pid)
 
 
+#: How long `openai4s stop` waits, in total, for the daemon to exit before it
+#: reports failure (or, with ``--force``, escalates to SIGKILL). The first
+#: stretch is the shared SIGTERM grace, ``TERM_GRACE_S``; a daemon tearing down
+#: a first-kernel bootstrap or several live kernels was measured at 8-9s, and
+#: returning 2 at the 5s grace sent scripts toward ``--force`` for a shutdown
+#: that was about to finish by itself.
+STOP_TIMEOUT_S = 30.0
+_STOP_POLL_INTERVAL_S = 0.1
+
+
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = math.nan
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number of seconds")
+    return seconds
+
+
+def _poll_attempts(seconds: float) -> int:
+    return max(1, round(seconds / _STOP_POLL_INTERVAL_S))
+
+
 def cmd_stop(args) -> int:
     cfg = get_config()
     pid = _read_pid(cfg)
@@ -946,29 +1152,50 @@ def cmd_stop(args) -> int:
         print("daemon: not running")
         _clear_state(cfg)
         return 1
+    timeout = getattr(args, "timeout", None) or STOP_TIMEOUT_S
+    force = getattr(args, "force", False)
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass  # exited between the aliveness check and the signal
-    stopped = _wait_pid_exit(pid)
-    if not stopped and getattr(args, "force", False):
+    grace = min(timeout, TERM_GRACE_S)
+    stopped = _wait_pid_exit(
+        pid, attempts=_poll_attempts(grace), interval=_STOP_POLL_INTERVAL_S
+    )
+    remaining = timeout - grace
+    if not stopped and remaining > 0:
+        # Past the SIGTERM grace a live daemon is usually still tearing down
+        # (a cell's interrupt, kernel workers, the store). Say so and keep
+        # polling instead of calling a shutdown in progress a failure.
+        print(
+            f"daemon (pid {pid}) is shutting down… waiting up to "
+            f"{remaining:g}s more",
+            file=sys.stderr,
+            flush=True,
+        )
+        stopped = _wait_pid_exit(
+            pid, attempts=_poll_attempts(remaining), interval=_STOP_POLL_INTERVAL_S
+        )
+    if not stopped and force:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         stopped = _wait_pid_exit(pid)
     if not stopped:
-        # An in-flight cell can hold shutdown past the grace period. The state
+        # An in-flight cell can hold shutdown past the timeout. The state
         # files must outlive the process they describe: clearing them here left
         # a live daemon on a bound port that `status` and a second `stop` both
         # called "not running", and the next `serve` crashed into.
         hint = (
             "it ignored SIGKILL"
-            if getattr(args, "force", False)
-            else "retry `openai4s stop`, or `openai4s stop --force` to SIGKILL it"
+            if force
+            else "retry `openai4s stop`, `openai4s stop --timeout <seconds>` to "
+            "wait longer, or `openai4s stop --force` to SIGKILL it"
         )
         print(
-            f"error: daemon (pid {pid}) is still shutting down — {hint}",
+            f"error: daemon (pid {pid}) is still shutting down after "
+            f"{timeout:g}s — {hint}",
             file=sys.stderr,
         )
         return 2
@@ -982,17 +1209,126 @@ def cmd_url(args) -> int:
     return 0
 
 
+#: `openai4s run` exit status for a run that ended without a completion.
+#: Only ``stop_reason == "submitted"`` is a completion; ``max_turns``,
+#: ``no_progress``, ``cancelled`` and any reason the CLI does not know all map
+#: here, so an unknown terminal fails closed. Not 2, which already means a
+#: refusal (a usage error, a code mode whose test runner nothing can
+#: authorize, environment readiness, a newer database schema, an upgrade
+#: migration that failed and was rolled back).
+RUN_NOT_COMPLETED_EXIT = 3
+
+#: The `--json` code for a Store refusal that is not a newer schema: an upgrade
+#: migration that failed and was rolled back, or one refused before it began.
+MIGRATION_FAILED_CODE = "migration_failed"
+
+_RUN_EXIT_STATUS_HELP = """\
+exit status:
+  0  the run completed (stop_reason "submitted")
+  1  an unhandled error (a Python traceback on stderr)
+  2  refused: a usage error (an empty task: empty_task; an invalid
+     --allow-test-command: invalid_allow_test_command), an explicit --mode
+     reusable_pipeline|codebase_change whose test command nothing can
+     authorize (code_mode_test_runner_unauthorized), the standard environment
+     is not ready, the database schema is newer than this build
+     (future_schema), or an upgrade of an older database failed and was
+     rolled back (migration_failed; the error line names the kept backup);
+     --json prints the error and its code on stdout, and the two database
+     refusals still print their error line on stderr
+  3  the run ended without completing: stop_reason max_turns, no_progress,
+     cancelled, or any other value
+
+--json prints the full result, stop_reason included, for exit 0 and 3 alike.
+With --auto the status still follows stop_reason alone; read
+auto_mode.terminal for the review verdict.
+"""
+
+
+def _run_refusal(args, payload: dict) -> int:
+    """Print a pre-run refusal in the same JSON/text contract as a run error."""
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"error: {payload['error']}", file=sys.stderr)
+    return 2
+
+
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
-    from openai4s.agent.loop import enable_auto_run_environment, review_cli_result
+    from openai4s.agent.loop import (
+        allowed_test_command_error,
+        enable_auto_run_environment,
+        review_cli_result,
+    )
+    from openai4s.host.code_evidence import EVIDENCE_REQUIRED_MODES
     from openai4s.kernel.readiness import EnvironmentReadinessError
+
+    if not str(getattr(args, "task", "") or "").strip():
+        # A blank task is a usage error, refused before any config, store or
+        # provider call: otherwise the model is paid to answer nothing, and
+        # the run can even finalize with exit 0.
+        return _run_refusal(
+            args,
+            {"error": "the task must not be empty or whitespace", "code": "empty_task"},
+        )
+    mode = getattr(args, "mode", None)
+    allowed_tests = [
+        str(item) for item in getattr(args, "allow_test_command", None) or []
+    ]
+    if allowed_tests:
+        # Validated before anything else happens: the flag widens what a
+        # headless run may execute, so a flag that cannot mean exactly one
+        # command must not reach a rule.
+        problem = None
+        if mode not in EVIDENCE_REQUIRED_MODES:
+            problem = (
+                "--allow-test-command applies only with --mode reusable_pipeline "
+                "or --mode codebase_change, whose completion cites test commands"
+            )
+        else:
+            for command in allowed_tests:
+                reason = allowed_test_command_error(command)
+                if reason is not None:
+                    problem = f"--allow-test-command {command!r}: {reason}"
+                    break
+        if problem is not None:
+            return _run_refusal(
+                args, {"error": problem, "code": "invalid_allow_test_command"}
+            )
 
     auto_applied: dict[str, str] = {}
     if getattr(args, "auto", False):
         # Before get_config(), which reads these at construction.
         auto_applied = enable_auto_run_environment()
     cfg = get_config()
-    agent = Agent(cfg=cfg, verbose=args.verbose, task_mode=getattr(args, "mode", None))
+    agent_options: dict = {}
+    if allowed_tests:
+        agent_options["allowed_test_commands"] = tuple(allowed_tests)
+    if getattr(args, "auto", False):
+        # The post-run review judges what the run recorded; without its cells
+        # the reviewer sees an answer and no executed code or output at all.
+        agent_options["record_cells"] = True
+    agent = Agent(cfg=cfg, verbose=args.verbose, task_mode=mode, **agent_options)
+    if mode in EVIDENCE_REQUIRED_MODES:
+        # Before the first model call: an explicit code mode that can never
+        # obtain its test receipt would otherwise spend every turn it has.
+        # The Agent has already opened its turn frame and only `run` closes
+        # it, so a refusal here closes it too -- or it stays `processing`.
+        try:
+            refusal = agent.code_mode_preflight_refusal()
+        except KeyboardInterrupt:
+            agent.close_unrun_frame("cancelled")
+            raise
+        except BaseException:
+            agent.close_unrun_frame("failed")
+            raise
+        if refusal is not None:
+            agent.close_unrun_frame("failed")
+            return _run_refusal(
+                args,
+                {"error": refusal, "code": "code_mode_test_runner_unauthorized"},
+            )
     try:
         with _foreground_cell_interrupt(agent):
             result = agent.run(args.task)
@@ -1014,7 +1350,13 @@ def cmd_run(args) -> int:
     if getattr(args, "auto", False):
         # A machine-readable terminal is the point of --auto: CI needs to tell
         # "ran and was verified" from "ran and nobody checked".
-        review = review_cli_result(args.task, result, cfg=cfg)
+        review = review_cli_result(
+            args.task,
+            result,
+            cfg=cfg,
+            store=getattr(getattr(agent, "dispatcher", None), "store", None),
+            root_frame_id=getattr(agent, "frame_id", None),
+        )
         result = dict(result)
         result["auto_mode"] = {
             "preset": "autonomous",
@@ -1040,7 +1382,12 @@ def cmd_run(args) -> int:
                     f"  - {item.get('severity')} {item.get('category')}: "
                     f"{str(item.get('claim_ref'))[:80]}"
                 )
-    return 0
+    # The result above is printed for every terminal; the status is the verdict.
+    # A wrapper checking `$?` read max_turns and no_progress as success while
+    # the Action Ledger recorded the same run as failed.
+    if result.get("stop_reason") == "submitted":
+        return 0
+    return RUN_NOT_COMPLETED_EXIT
 
 
 # --------------------------------------------------------------------------- #
@@ -2128,12 +2475,27 @@ def build_parser() -> argparse.ArgumentParser:
     pstop.add_argument(
         "--force",
         action="store_true",
-        help="escalate to SIGKILL if the daemon does not exit in time",
+        help="escalate to SIGKILL if the daemon does not exit within --timeout",
+    )
+    pstop.add_argument(
+        "--timeout",
+        type=_positive_seconds,
+        default=STOP_TIMEOUT_S,
+        metavar="SECONDS",
+        help=(
+            "how long to wait for the daemon to exit before reporting failure "
+            "(exit 2) or, with --force, sending SIGKILL (default: %(default)gs)"
+        ),
     )
     pstop.set_defaults(fn=cmd_stop)
     sub.add_parser("url", help="print the web UI url").set_defaults(fn=cmd_url)
 
-    pr = sub.add_parser("run", help="run one Code-as-Action task in-process")
+    pr = sub.add_parser(
+        "run",
+        help="run one Code-as-Action task in-process",
+        epilog=_RUN_EXIT_STATUS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
@@ -2149,7 +2511,25 @@ def build_parser() -> argparse.ArgumentParser:
             "defaults to analysis_run. Selecting reusable_pipeline or "
             "codebase_change explicitly requires the run to save source "
             "files, keep a thin entry point, and back its completion with "
-            "verified source/entry-point/test evidence"
+            "verified source/entry-point/test evidence, including a "
+            "Host-authorized host.bash receipt for each test command"
+        ),
+    )
+    pr.add_argument(
+        "--allow-test-command",
+        action="append",
+        metavar="CMD",
+        default=None,
+        help=(
+            "pre-authorize host.bash for this exact command string in this run "
+            "(repeatable; requires --mode reusable_pipeline or codebase_change). "
+            "A headless run has nobody to approve the shell command its test "
+            "evidence must come from; this installs a conversation-scoped "
+            "exact-command allow rule and nothing broader. The receipt that "
+            "backs test_evidence is the kernel worker's report of that string's "
+            "exit status, run with the Cell's environment (PATH, cwd): it catches "
+            "a test that was not run, only printed, or failed, and is not proof "
+            "against a Cell that fakes the runner"
         ),
     )
     pr.add_argument(
@@ -2421,11 +2801,22 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.fn(args)
-    except FutureSchemaError as exc:
+    except MigrationError as exc:
         # Every subcommand that opens the Store (run, init, user, …) refuses a
-        # newer database the same way `serve` does: one line, exit 2, no
-        # traceback. `serve` still catches it earlier so it can clear the
-        # singleton state it already claimed.
+        # newer database, and reports an upgrade that failed and was rolled
+        # back, the same way `serve` does: one line, exit 2, no traceback. The
+        # message already names the versions and the kept backup. `serve`
+        # still catches it earlier so it can clear the singleton state it
+        # already claimed.
+        if getattr(args, "json", False):
+            # The exit-2 contract every other refusal keeps: with --json the
+            # code is on stdout. The stderr line stays -- it is the one line
+            # the upgrade guide tells an operator to look for.
+            payload = {
+                "error": str(exc),
+                "code": getattr(exc, "code", None) or MIGRATION_FAILED_CODE,
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

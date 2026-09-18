@@ -65,18 +65,45 @@ export function loadLocale(lang: Lang): Promise<I18nDict> {
 }
 
 let boot: Promise<void> | undefined;
+// Declared before the import-time i18nReady() below, whose repaint reads it.
+const languageHooks: Array<() => void> = [];
 
 function applyDocumentLang(lang: Lang): void {
   if (typeof document === "undefined" || !document.documentElement) return;
   document.documentElement.lang = lang === "en" ? "en" : "zh";
 }
 
+/**
+ * Load what `t()` reads for `lang`: that dictionary and, for en, the zh one
+ * it falls back to.
+ *
+ * Both requests start together. Awaiting them one after the other made an
+ * English reader wait for two chunk round trips, and the first view waits for
+ * this -- so a deep link showed the wrong screen for twice the chunk latency.
+ *
+ * Only the active dictionary decides the outcome. A zh fallback that fails to
+ * load leaves `t()` answering from the active language (a missing entry shows
+ * its key, as before), and is retried by the next load; letting it reject
+ * skipped the repaint, so an English reader kept the markup's Chinese
+ * tooltips even though the English dictionary had arrived.
+ */
+async function loadDictionaries(lang: Lang): Promise<void> {
+  const active = loadLocale(lang);
+  if (lang !== "zh") {
+    const fallback = loadLocale("zh").then(
+      () => undefined,
+      () => undefined,
+    );
+    await Promise.all([active, fallback]);
+    return;
+  }
+  await active;
+}
+
 export function i18nReady(): Promise<void> {
   if (!boot) {
     boot = (async () => {
-      await loadLocale(LANG);
-      // t() falls back to zh when the active (en) entry is missing.
-      if (LANG !== "zh") await loadLocale("zh");
+      await loadDictionaries(LANG);
       const inactive: Lang = LANG === "zh" ? "en" : "zh";
       // Prefetch only, and deliberately not awaited: the page is already
       // usable in the active language. Left unhandled, a chunk request the
@@ -85,6 +112,18 @@ export function i18nReady(): Promise<void> {
       // the fetch in time and said nothing. The cost of losing it is one
       // fetch at the next language switch.
       void loadLocale(inactive).catch(() => undefined);
+      // The Shell renders synchronously and bindWorkbench() applies the
+      // static labels on its first effect -- usually before these chunks
+      // arrive, when there is nothing to translate with. Repaint once they
+      // land, the same way a language switch does; otherwise every static
+      // label keeps its pre-load text until the user changes language.
+      // The dictionaries are loaded either way: a repaint that throws must
+      // not turn i18nReady() into a rejection for the life of the page.
+      try {
+        repaintLanguage();
+      } catch {
+        /* partial or torn-down document */
+      }
     })();
   }
   return boot.then(() => {
@@ -93,7 +132,9 @@ export function i18nReady(): Promise<void> {
 }
 
 applyDocumentLang(LANG);
-void i18nReady();
+// The callers that depend on the outcome ask for it themselves; this one only
+// starts the load, and must not report a failed chunk as an uncaught rejection.
+void i18nReady().catch(() => undefined);
 
 // t("key", ...args) — current-language string with {0},{1}… positional interpolation; falls back to zh, then the key.
 // `t` falls back to the key itself, which is right for a missing translation
@@ -126,21 +167,30 @@ type QueryRoot = {
 };
 
 // Apply translations to static HTML carrying data-i18n / data-i18n-title / data-i18n-ph / data-i18n-val.
+// A node with no translation (yet) keeps what it has: the markup carries a
+// readable fallback, and t()'s key fallback would replace "Projects" with
+// "dash.col.projects" whenever this runs before the dictionaries load.
 export function applyStaticI18n(root?: QueryRoot): void {
   const r: QueryRoot | undefined =
     root ?? (typeof document !== "undefined" ? document : undefined);
   if (r === undefined) return;
-  Array.from(r.querySelectorAll("[data-i18n]")).forEach((e) => {
-    e.textContent = t(String(e.getAttribute("data-i18n")));
+  const each = (attr: string, write: (e: Element, value: string) => void) => {
+    Array.from(r.querySelectorAll(`[${attr}]`)).forEach((e) => {
+      const value = tOptional(String(e.getAttribute(attr)));
+      if (value != null) write(e, value);
+    });
+  };
+  each("data-i18n", (e, value) => {
+    e.textContent = value;
   });
-  Array.from(r.querySelectorAll("[data-i18n-title]")).forEach((e) => {
-    (e as HTMLElement).title = t(String(e.getAttribute("data-i18n-title")));
+  each("data-i18n-title", (e, value) => {
+    (e as HTMLElement).title = value;
   });
-  Array.from(r.querySelectorAll("[data-i18n-ph]")).forEach((e) => {
-    (e as HTMLInputElement).placeholder = t(String(e.getAttribute("data-i18n-ph")));
+  each("data-i18n-ph", (e, value) => {
+    (e as HTMLInputElement).placeholder = value;
   });
-  Array.from(r.querySelectorAll("[data-i18n-val]")).forEach((e) => {
-    (e as HTMLInputElement).value = t(String(e.getAttribute("data-i18n-val")));
+  each("data-i18n-val", (e, value) => {
+    (e as HTMLInputElement).value = value;
   });
 }
 
@@ -150,8 +200,6 @@ export function refreshLangToggle(): void {
     b.classList.toggle("active", (b as HTMLElement).dataset.lang === LANG);
   });
 }
-
-const languageHooks: Array<() => void> = [];
 
 /**
  * Later lanes (theme toggle titles, dashboard/session rerenders) register
@@ -174,8 +222,12 @@ export async function setLang(lang: string): Promise<void> {
   } catch {
     /* ignore quota / missing storage */
   }
-  await loadLocale(LANG);
-  if (LANG !== "zh") await loadLocale("zh");
+  await loadDictionaries(LANG);
+  repaintLanguage();
+}
+
+/** Everything that shows the active language: static labels, toggle, hooks. */
+function repaintLanguage(): void {
   if (typeof document !== "undefined") {
     applyDocumentLang(LANG);
     applyStaticI18n(document);

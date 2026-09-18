@@ -96,7 +96,7 @@ def test_r_variable_inspector_source_fails_closed_on_dynamic_bindings():
     assert "bindingIsActive" in inspector
     assert "substitute" in inspector
     assert "lockEnvironment(.oai4s_inspector, bindings = TRUE)" in inspector
-    assert 'lockBinding(".oai4s_inspector", globalenv())' in inspector
+    assert 'lockBinding(".oai4s_inspector", .oai4s_private)' in inspector
     for forbidden in (
         "serialize(",
         "saveRDS(",
@@ -106,6 +106,31 @@ def test_r_variable_inspector_source_fails_closed_on_dynamic_bindings():
         " get(",
     ):
         assert forbidden not in inspector
+
+
+def test_r_worker_source_binds_nothing_in_the_user_namespace():
+    """A tripwire for the environment the real-R tests below exercise.
+
+    Those tests need an Rscript with jsonlite, which the default CI job does
+    not install, so the shape they depend on is also pinned here: the worker
+    runs inside one private environment, its tracers never name `.GlobalEnv`,
+    and nothing is assigned into it. Every one of these held the other way
+    when `rm(list = ls(all.names = TRUE))` killed the worker.
+    """
+    source = _R_WORKER.read_text("utf-8")
+
+    assert "\nlocal({\n.oai4s_private <- environment()\n" in source
+    assert source.endswith(
+        "\n.oai4s_main()\n}, envir = new.env(parent = globalenv()))\n"
+    )
+    assert ".GlobalEnv$" not in source
+    # Cells evaluate in .GlobalEnv and the inspector reads it; binding into it
+    # -- `assign(..., envir = globalenv())`, `lockBinding("...", globalenv())`
+    # -- is what must not come back.
+    assert "envir = globalenv())" not in source
+    assert '", globalenv())' not in source
+    assert 'lockBinding(".oai4s_lineage", .oai4s_private)' in source
+    assert 'attach(NULL, pos = 2L, name = "openai4s:guards"' in source
 
 
 def test_r_kernel_cannot_inherit_host_api_keys_or_loader_injection(
@@ -297,27 +322,38 @@ def test_real_r_file_reads_are_executed_observations_without_global_masks(tmp_pa
     This exercises the observer without the fd-3/fd-4 transport because some
     macOS R builds refuse to reopen a pipe through ``/dev/fd``.  The ordinary
     real-worker tests below cover that transport independently.
+
+    The controller is lifted into a private environment, as the worker keeps
+    it, and ``.GlobalEnv`` is cleared before the read: a tracer that reached
+    the controller through a global name raised inside ``read.csv`` instead of
+    recording it.
     """
 
     source_literal = str(_R_WORKER).replace("\\", "\\\\").replace('"', '\\"')
     tmp_literal = str(tmp_path).replace("\\", "\\\\").replace('"', '\\"')
     script = f"""
+local({{
 source_lines <- readLines("{source_literal}", warn = FALSE)
+start <- grep(".oai4s_private <- environment()", source_lines, fixed = TRUE)[1]
 cut <- grep("# --- one cell", source_lines, fixed = TRUE)[1] - 1L
 setwd("{tmp_literal}")
-eval(parse(text = source_lines[seq_len(cut)]), envir = .GlobalEnv)
-.oai4s_lineage$install()
+worker <- new.env(parent = .GlobalEnv)
+eval(parse(text = source_lines[start:cut]), envir = worker)
+lineage <- worker$.oai4s_lineage
+lineage$install()
 dir.create("nested")
 writeLines(c("value", "7"), "nested/live.csv")
 writeLines(c("value", "99"), "dead.csv")
-.oai4s_lineage$begin()
+rm(list = ls(.GlobalEnv, all.names = TRUE), envir = .GlobalEnv)
+lineage$begin()
 if (FALSE) read.csv("dead.csv")
 table_value <- utils::read.csv(file.path("nested", "live.csv"))
 write.csv(table_value, "write-only.csv", row.names = FALSE)
-observed <- .oai4s_lineage$finish()
+observed <- lineage$finish()
 cat(paste(observed, collapse = "|"), "\\n", sep = "")
 cat(table_value$value[[1]], "\\n", sep = "")
 cat(exists("read.csv", envir = .GlobalEnv, inherits = FALSE), "\\n", sep = "")
+}})
 """
     completed = subprocess.run(
         [_REAL_R, "--vanilla", "-e", script],
@@ -421,6 +457,85 @@ def test_real_r_variable_inspector_reports_values_without_invoking_bindings(tmp_
         # And one raising promise does not take the rest of the list with it:
         # every variable above was still reported.
         assert {"score", "samples", "custom", "active_trap"} <= set(variables)
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_clearing_the_global_env_leaves_the_worker_and_its_observers(
+    tmp_path,
+):
+    """`rm(list=ls(all.names=TRUE))` is a user's idiom, not a kernel kill.
+
+    The worker kept its protocol loop, its helpers, its connections and its
+    lineage controller in `.GlobalEnv` -- the environment every cell runs in.
+    `lockBinding` does not stop `rm()`, so this cell deleted the worker out
+    from under itself: the next helper lookup raised, the fallback's own
+    helpers were gone too, and Rscript halted, taking every variable in the
+    session with it. The host recorded a crashed generation and the next cell
+    ran on a fresh one with no notice.
+
+    What must survive is everything the worker needs, and nothing of the
+    user's: the pid is the same process, the cleared binding is gone, the
+    readers still record what a cell read (the tracers resolved the controller
+    by its global name, so they would raise inside every `readLines`), and
+    the Variable Inspector lists exactly the user's own binding.
+    """
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        assert kernel.execute("rr <- 55")["error"] is None
+        pid = kernel.pid
+
+        cleared = kernel.execute("rm(list = ls(all.names = TRUE))")
+
+        assert cleared["error"] is None, cleared
+        assert kernel.is_alive()
+        assert kernel.pid == pid
+
+        after = kernel.execute("x <- 1; cat(exists('rr'), exists('x'))")
+        assert after["error"] is None, after
+        assert after["stdout"] == "FALSE TRUE"
+
+        read = kernel.execute(
+            "writeLines(c('v', '1'), 'f.csv'); invisible(read.csv('f.csv'))"
+        )
+        assert read["error"] is None, read
+        assert read["files_read"] == ["f.csv"]
+
+        # Exact, not a name-keyed lookup: a dict built from the list is what
+        # let the worker's own loop variables sit beside the user's unnoticed.
+        names = [item["name"] for item in kernel.inspect_variables()["variables"]]
+        assert names == ["x"]
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_inspector_and_quit_guard_do_not_live_in_the_user_namespace(
+    tmp_path,
+):
+    """Nothing the worker owns is a `.GlobalEnv` binding a cell can see or drop.
+
+    The read loop ran at top level, so `line` -- whose preview was the raw
+    `inspect_variables` protocol frame -- and `outcome` were listed as user
+    variables. The quit()/q() guards were `.GlobalEnv` bindings too: plain
+    `rm(list=ls())` removed them, after which `quit()` exited the worker; and
+    the inspector hid any user variable that happened to be called `q`.
+    """
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        assert kernel.execute("rr <- 55")["error"] is None
+        names = [item["name"] for item in kernel.inspect_variables()["variables"]]
+        assert names == ["rr"]
+
+        assert kernel.execute("rm(list = ls())")["error"] is None
+        stopped = kernel.execute("quit()")
+        assert "disabled" in (stopped["error"] or ""), stopped
+        assert kernel.is_alive()
+
+        assert kernel.execute("q <- 3")["error"] is None
+        names = [item["name"] for item in kernel.inspect_variables()["variables"]]
+        assert names == ["q"]
     finally:
         kernel.shutdown()
 

@@ -733,7 +733,7 @@ def test_installed_release_smoke_exercises_real_skill_discovery(tmp_path):
         smoke._check_discoverable_catalog(cfg, 2)
 
 
-def test_installed_release_smoke_requires_eleven_workflows():
+def test_installed_release_smoke_requires_the_frozen_workflow_count():
     smoke = _load_script("release_import_smoke")
     workflows = [SimpleNamespace(id="tool-bringup")]
     workflows.extend(
@@ -741,8 +741,25 @@ def test_installed_release_smoke_requires_eleven_workflows():
         for index in range(smoke.MIN_BENCHMARK_WORKFLOWS - 2)
     )
 
-    with pytest.raises(RuntimeError, match="at least 11 required"):
+    with pytest.raises(
+        RuntimeError, match=f"at least {smoke.MIN_BENCHMARK_WORKFLOWS} required"
+    ):
         smoke._check_workflow_catalog(workflows)
+
+
+def test_installed_release_smoke_floor_follows_the_frozen_catalog():
+    """The floor is a commitment about the tree, not a number of its own.
+
+    `MIN_BENCHMARK_WORKFLOWS` was set when the suite had eleven workflows and
+    stayed there when `codebase-mode` and `delegation` took it to thirteen, so
+    a wheel that lost both would still clear the only check that runs against
+    an installed package. Deriving the expectation from `load_workflows()`
+    makes the next workflow addition move the floor too.
+    """
+    from openai4s.benchmark import load_workflows
+
+    smoke = _load_script("release_import_smoke")
+    assert smoke.MIN_BENCHMARK_WORKFLOWS == len(load_workflows())
 
 
 def test_installed_release_smoke_requires_tool_bringup_workflow():
@@ -875,6 +892,111 @@ def test_publishing_requires_an_existing_draft_before_anything_runs():
     for job in ("  attach:", "  pypi:"):
         block = workflow[workflow.index(job) : workflow.index(job) + 900]
         assert "guard" in block, f"{job.strip()} may run without the draft check"
+
+
+def test_every_job_that_reads_the_draft_can_see_it():
+    """A draft release is visible only to a caller with push access.
+
+    The workflow-level token is `contents: read`, and under it `gh release view`
+    answers "release not found" for an existing draft. The guard inherited that
+    token, so the first real publish dispatch (v0.3.0, run 35087359578)
+    refused a correct draft. The draft-first design was never reachable. Every
+    job that looks the draft up needs `contents: write`. The guard gets it
+    only because it runs no repository code, which is held here too.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    )
+    assert workflow["permissions"] == {"contents": "read"}
+    readers = {
+        name: job
+        for name, job in workflow["jobs"].items()
+        if any(
+            "gh release" in str(step.get("run") or "")
+            or "release_pipeline.py" in str(step.get("run") or "")
+            for step in job.get("steps") or []
+        )
+    }
+    assert {"guard", "attach", "finalize"} <= set(readers), sorted(readers)
+    for name, job in readers.items():
+        assert (job.get("permissions") or {}).get(
+            "contents"
+        ) == "write", f"{name} reads the draft with a token that cannot see it"
+    guard_steps = workflow["jobs"]["guard"]["steps"]
+    assert all("uses" not in step for step in guard_steps), (
+        "the guard holds contents: write, so it must not check out or run "
+        "repository code"
+    )
+
+
+def _run_guard(tmp_path, *, publish, pypi, draft=True):
+    """Execute the guard's own shell step against a fake `gh` and `curl`."""
+    yaml = pytest.importorskip("yaml")
+    if shutil.which("jq") is None or shutil.which("bash") is None:
+        pytest.skip("the guard step needs bash and jq")
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    )
+    (step,) = workflow["jobs"]["guard"]["steps"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    release = json.dumps({"isDraft": draft, "isPrerelease": False})
+    (bin_dir / "gh").write_text(f"#!/bin/sh\necho '{release}'\n", encoding="utf-8")
+    curl = "exit 7" if pypi == "unreachable" else f"printf '%s' '{pypi}'"
+    (bin_dir / "curl").write_text(
+        f'#!/bin/sh\necho "$@" >> "{tmp_path}/curl.args"\n{curl}\n', encoding="utf-8"
+    )
+    for tool in ("gh", "curl"):
+        (bin_dir / tool).chmod(0o755)
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "TAG": "v9.8.7",
+        "PUBLISH": "true" if publish else "false",
+        "PYPI_ONLY": "false" if publish else "true",
+        "GH_TOKEN": "unused",
+        "GH_REPO": "owner/repo",
+    }
+    return subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_the_guard_refuses_to_stage_a_version_pypi_already_has(tmp_path):
+    """A second dispatch would clobber the draft with bytes PyPI lacks.
+
+    The build is not byte-reproducible and `attach` uploads with `--clobber`.
+    Once PyPI has the version, the pypi job then fails on the reused filename
+    and `--only publish` refuses the mismatch, leaving a release no retry can
+    finish. Only a definite 404 may let staging start.
+    """
+    fresh = _run_guard(tmp_path / "fresh", publish=True, pypi="404")
+    assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+    assert "pypi.org/pypi/openai4s/9.8.7/json" in (
+        tmp_path / "fresh" / "curl.args"
+    ).read_text("utf-8")
+
+    for case, answer in (
+        ("taken", "200"),
+        ("broken", "503"),
+        ("offline", "unreachable"),
+    ):
+        refused = _run_guard(tmp_path / case, publish=True, pypi=answer)
+        assert refused.returncode != 0, (case, refused.stdout)
+    taken = _run_guard(tmp_path / "taken2", publish=True, pypi="200")
+    assert "already on PyPI" in taken.stdout
+    assert "Re-run the failed finalize job" in taken.stdout
+
+    # `pypi_only` exists for a public release whose PyPI upload never
+    # happened; it is not asked, and PyPI answers for it at upload time.
+    recovery = _run_guard(tmp_path / "recovery", publish=False, pypi="200", draft=False)
+    assert recovery.returncode == 0, recovery.stdout + recovery.stderr
+    assert not (tmp_path / "recovery" / "curl.args").exists()
 
 
 def test_publishing_refuses_a_prerelease_draft():
@@ -1411,6 +1533,270 @@ def test_the_linux_bundle_ships_the_resources_only_a_runtime_check_would_miss():
     # so: a skipped smoke that reads like a passed one is how an untested image
     # gets released.
     assert "cross-build" in build.lower()
+
+
+def _desktop_string_value(value: str) -> str:
+    """Decode the desktop-file string layer (Desktop Entry spec section 4)."""
+    escapes = {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
+    decoded = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            index += 1
+            assert index < len(value), "incomplete desktop string escape"
+            char = escapes[value[index]]
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def _desktop_launcher_argv(value: str) -> list[str]:
+    """Parse executable arguments using section 7, not shell quoting rules.
+
+    Quoting is undone after the string layer, and field codes are expanded
+    last. This launcher takes no file/URL arguments, so only literal %% is
+    permitted; treating %F in an unpack path as files is a broken launch.
+
+    This is the specification's reading order, not a desktop's. GLib (since
+    2.36) and KIO both check that the Exec program exists *before* they expand
+    %%, so a path containing a percent sign decodes correctly here and is still
+    dropped by GNOME and KDE -- which is why install.sh warns about one and the
+    test below asserts that it does.
+    """
+    command = _desktop_string_value(value)
+    reserved = "\t\n\r\"'\\><~|&;$*?#()`"
+    arguments = []
+    index = 0
+    while index < len(command):
+        if command[index] == " ":
+            index += 1
+            continue
+        argument = []
+        if command[index] == '"':
+            index += 1
+            while index < len(command) and command[index] != '"':
+                char = command[index]
+                if char == "\\":
+                    index += 1
+                    assert index < len(command), "incomplete Exec argument escape"
+                    char = command[index]
+                    assert char in '\\"`$', "invalid Exec argument escape"
+                else:
+                    assert char not in "`$", "unescaped character in quoted argument"
+                argument.append(char)
+                index += 1
+            assert index < len(command), "unterminated Exec argument quote"
+            index += 1
+            assert index == len(command) or command[index] == " "
+        else:
+            while index < len(command) and command[index] != " ":
+                assert command[index] not in reserved, "unquoted reserved character"
+                argument.append(command[index])
+                index += 1
+        arguments.append("".join(argument))
+    argv = []
+    for decoded in arguments:
+        expanded = []
+        index = 0
+        while index < len(decoded):
+            char = decoded[index]
+            if char == "%":
+                index += 1
+                assert (
+                    index < len(decoded) and decoded[index] == "%"
+                ), "the executable path contains an unescaped desktop field code"
+            expanded.append(char)
+            index += 1
+        argv.append("".join(expanded))
+    return argv
+
+
+def _generated_linux_bundle(tmp_path, directory, themed_icon):
+    """A bundle directory written by the shipped step-6 generator, not installed."""
+    bash = shutil.which("bash")
+    if bash is None or os.name != "posix":
+        pytest.skip("Linux installer requires a POSIX host with Bash")
+    app = tmp_path / directory
+    (app / "bin").mkdir(parents=True)
+    (app / "runtime" / "bin").mkdir(parents=True)
+    (app / "runtime" / "bin" / "python3").symlink_to(sys.executable)
+    for relative, output in (("OpenAI4S", "desktop"), ("bin/openai4s", "cli")):
+        script = app / relative
+        script.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+        script.chmod(0o755)
+    icon = app / "share/icons/hicolor/512x512/apps/openai4s.png"
+    if themed_icon:
+        icon.parent.mkdir(parents=True)
+        icon.write_bytes(b"test icon")
+
+    home = tmp_path / "home $user & quoted"
+    data = home / "share\\name %F"
+    bins = home / "bin overrides"
+    user_data = home / ".openai4s" / "keep.txt"
+    user_data.parent.mkdir(parents=True)
+    user_data.write_text("saved session", encoding="utf-8")
+    env = {
+        **os.environ,
+        "APPDIR": str(app),
+        "APP_NAME": "OpenAI4S",
+        "APP_NAME_LOWER": "openai4s",
+        "HOME": str(home),
+        "XDG_BIN_HOME": str(bins),
+        "XDG_DATA_HOME": str(data),
+    }
+    build = (ROOT / "scripts" / "build_linux_bundle.sh").read_text("utf-8")
+    start = build.index('echo "-- [6/10]')
+    end = build.index("# 7) icons.", start)
+    subprocess.run(
+        [bash, "-c", build[start:end]], env=env, check=True, capture_output=True
+    )
+    return app, env, data, bins, user_data
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        "ordinary-bundle",
+        "bundle with spaces",
+        "bundle $HOME 'single' \"double\" \\backslash %F %% & | `tick` ;<>~*?#()",
+        "bundle @APPDIR@ @ICON@",
+    ],
+)
+@pytest.mark.parametrize("themed_icon", [True, False])
+def test_linux_installer_launches_from_relocated_paths(
+    tmp_path, directory, themed_icon
+):
+    """Run the shipped generator and installer, then launch the rendered Exec."""
+    app, env, data, bins, user_data = _generated_linux_bundle(
+        tmp_path, directory, themed_icon
+    )
+    icon = app / "share/icons/hicolor/512x512/apps/openai4s.png"
+    installed = subprocess.run(
+        [str(app / "install.sh")], env=env, check=True, capture_output=True
+    )
+    # Escaping cannot make a percent sign launch from a GLib or KIO menu (see
+    # `_desktop_launcher_argv`), so the installer has to say so -- and only then.
+    assert (b"path contains '%'" in installed.stderr) == ("%" in directory)
+
+    desktop = data / "applications/openai4s.desktop"
+    fields = dict(
+        line.split("=", 1)
+        for line in desktop.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    argv = _desktop_launcher_argv(fields["Exec"])
+    assert argv == [str(app.resolve() / "OpenAI4S")]
+    assert subprocess.check_output(argv, env=env, text=True).strip() == "desktop"
+    assert _desktop_string_value(fields["Icon"]) == (
+        "openai4s" if themed_icon else str(icon.resolve())
+    )
+    cli = bins / "openai4s"
+    assert cli.resolve() == (app / "bin/openai4s").resolve()
+    assert subprocess.check_output([str(cli)], env=env, text=True).strip() == "cli"
+    if themed_icon:
+        assert (data / "icons/hicolor/512x512/apps/openai4s.png").read_bytes() == (
+            b"test icon"
+        )
+
+    subprocess.run(
+        [str(app / "uninstall.sh")], env=env, check=True, capture_output=True
+    )
+    assert not desktop.exists()
+    assert not cli.is_symlink()
+    assert not (data / "icons/hicolor/512x512/apps/openai4s.png").exists()
+    assert user_data.read_text(encoding="utf-8") == "saved session"
+
+
+def test_linux_installer_refuses_a_template_it_cannot_fill(tmp_path):
+    """Whole-line replacement that matches nothing has to fail, not pass through.
+
+    The renderer looks each template line up by exact text. A line that drifted
+    from its key -- an argument appended to Exec, a renamed launcher -- was
+    written out unchanged with exit 0, installing a menu entry that launches the
+    literal string `@APPDIR@`; the bundle verifier's substring checks still pass
+    such a template.
+    """
+    app, env, data, _bins, _user_data = _generated_linux_bundle(
+        tmp_path, "drifted bundle", True
+    )
+    template = app / "share/applications/openai4s.desktop.in"
+    template.write_text(
+        template.read_text("utf-8").replace(
+            "Exec=@APPDIR@/OpenAI4S", "Exec=@APPDIR@/OpenAI4S %U"
+        ),
+        encoding="utf-8",
+    )
+    installed = subprocess.run([str(app / "install.sh")], env=env, capture_output=True)
+    assert installed.returncode != 0
+    assert b"Exec=@APPDIR@/OpenAI4S" in installed.stderr
+    assert not (data / "applications/openai4s.desktop").exists()
+
+
+def test_linux_installer_carries_a_legacy_encoded_path_through(tmp_path):
+    """`sed` was byte-transparent; the renderer that replaced it has to be too.
+
+    argv reaches Python surrogate-escaped. Writing that back as strict UTF-8
+    raised -- after `write_text` had already opened the destination, so a
+    re-install under a legacy-encoded directory left the working menu entry at
+    zero bytes and aborted with the CLI link and icons half installed. Only the
+    rendering program is run here: APFS will not create such a directory, and
+    argv carries the bytes on every POSIX host.
+    """
+    app, _env, _data, _bins, _user_data = _generated_linux_bundle(
+        tmp_path, "legacy bundle", True
+    )
+    installer = (app / "install.sh").read_text("utf-8")
+    program = installer.split("<<'DESKTOP_ENTRY'\n", 1)[1].split(
+        "\nDESKTOP_ENTRY\n", 1
+    )[0]
+    destination = tmp_path / "rendered.desktop"
+    destination.write_text("the previous, working entry\n", encoding="utf-8")
+    icon = b"/home/j\xfcrgen/icons/openai4s.png"
+
+    subprocess.run(
+        [sys.executable, "-I", "-", str(app), icon, str(destination)],
+        input=program.encode("utf-8"),
+        check=True,
+        capture_output=True,
+    )
+    assert b"Icon=" + icon + b"\n" in destination.read_bytes()
+
+
+def test_the_linux_verifier_runs_the_installer_it_ships(tmp_path):
+    """The bundle gate executes install.sh; a static read cannot see it fail.
+
+    install.sh renders the menu entry with the *bundled* interpreter. The
+    verifier already ran that interpreter and never ran the installer, so an
+    installer that could not start it, or a template it could no longer fill,
+    shipped with every gate green. The generated bundle here stands in for the
+    unpacked archive; on the release runner the same check meets the real one.
+    """
+    verifier = _load_script("verify_linux_bundle")
+    app, _env, _data, _bins, _user_data = _generated_linux_bundle(
+        tmp_path, "bundle with spaces", True
+    )
+    verifier._check_installer_runs(app)
+
+    # A template line the renderer has no key for: substring checks still pass.
+    template = app / "share/applications/openai4s.desktop.in"
+    shipped = template.read_text("utf-8")
+    template.write_text(
+        shipped.replace("Exec=@APPDIR@/OpenAI4S", "Exec=@APPDIR@/OpenAI4S %U"),
+        encoding="utf-8",
+    )
+    verifier._check_desktop_entry(app)
+    with pytest.raises(verifier.BundleCheckError, match="did not run against"):
+        verifier._check_installer_runs(app)
+    template.write_text(shipped, encoding="utf-8")
+
+    # An embedded interpreter that will not start for the installer.
+    runtime = app / "runtime" / "bin" / "python3"
+    runtime.unlink()
+    runtime.write_text("#!/bin/sh\necho 'no isolated mode here' >&2\nexit 1\n", "utf-8")
+    runtime.chmod(0o755)
+    with pytest.raises(verifier.BundleCheckError, match="no isolated mode here"):
+        verifier._check_installer_runs(app)
 
 
 def test_the_windows_package_has_no_native_windows_execution_path():

@@ -82,13 +82,74 @@ class Check:
         }
 
 
+def unopened_database(cfg: Any) -> dict[str, Any] | None:
+    """Why a diagnosis must leave the database closed, or None when it may open it.
+
+    Opening the Store is not a read. On a database older than this release it
+    *is* the upgrade: a backup, the migrations, and the deletion of that backup
+    once they commit -- irreversible by reinstalling the release that wrote the
+    data, and meant to happen after the operator has made a copy. doctor used
+    to open it from the model and connectors checks, so a diagnosis migrated a
+    healthy older database in place, and an upgrade that failed was attempted,
+    rolled back and reported as `[ok] data` with the error left in connector
+    facts. doctor diagnoses; `serve` and `run` upgrade.
+
+    So every probe that would open the Store asks this first -- doctor's
+    model and connectors checks, and the schema and secret-store probes of the
+    ``openai4s diagnostics`` bundle, which did the same. The version is read
+    the read-only way ``serve`` and ``run`` preflight it; only a database
+    already at this release's schema -- or none yet, which opening creates
+    rather than upgrades -- is opened. A version that cannot be read without a
+    read-write open (a hot journal) is left closed too: the open that recovers
+    it would also upgrade it if it is older. So is one that could not be read
+    at all; that refusal is returned under ``error`` for the caller to report.
+    """
+    db_path = getattr(cfg, "db_path", None)
+    if db_path is None:
+        return None
+    path = Path(db_path)
+    try:
+        if path.stat().st_size == 0:
+            return None
+    except OSError:
+        return None
+    from openai4s.storage import migrations
+
+    try:
+        version = migrations.preflight_schema(path)
+    except migrations.FutureSchemaError as e:
+        return {
+            "reason": "future_schema",
+            "schema_version": e.actual_version,
+            "supported_schema_version": e.supported_version,
+            "error": e,
+        }
+    except Exception as e:  # noqa: BLE001 - unreadable is the data check's finding
+        # Not only a corrupt file, which no open could upgrade: SQLITE_BUSY
+        # past the timeout (an older daemon mid-commit) is an OperationalError
+        # too, and the read-write open that followed it could get the lock and
+        # run the upgrade.
+        return {"reason": "unreadable", "error": e}
+    if version is None:
+        return {"reason": "interrupted_write"}
+    if version < migrations.SCHEMA_VERSION:
+        return {
+            "reason": "upgrade_pending",
+            "schema_version": version,
+            "supported_schema_version": migrations.SCHEMA_VERSION,
+        }
+    return None
+
+
 def _store_for(cfg: Any) -> Any:
-    """The store, or None when it cannot be opened.
+    """The store, or None when it cannot or must not be opened.
 
     Several checks need to see what the UI configured, and none of them may
     fail because the database is missing — a fresh install is exactly when this
-    command gets run.
+    command gets run. A database `unopened_database` names is never opened.
     """
+    if unopened_database(cfg) is not None:
+        return None
     try:
         from openai4s.store import get_store
 
@@ -108,7 +169,8 @@ def _model(cfg: Any) -> Check:
     """
     from openai4s.llm.resolve import is_loopback_endpoint, resolve_llm_config
 
-    llm = resolve_llm_config(cfg.llm, _store_for(cfg))
+    unopened = unopened_database(cfg)
+    llm = resolve_llm_config(cfg.llm, None if unopened else _store_for(cfg))
     try:
         from openai4s.llm.registry import provider_spec
 
@@ -146,7 +208,24 @@ def _model(cfg: Any) -> Check:
         "api_key_configured": bool(llm.api_key),
         "endpoint_is_local": keyless,
     }
+    if unopened is not None:
+        facts["database_settings_read"] = False
     # The value is never reported, only whether one resolved.
+    if not llm.api_key and not keyless and unopened is not None:
+        # The key may be saved under Customize -> Models, in the database this
+        # run left closed; "no key" would be a guess reported as a failure.
+        return Check(
+            "model",
+            WARN,
+            f"provider {llm.provider!r} resolves to model {model!r} with no API "
+            f"key in the process configuration, and doctor did not open the "
+            f"database that holds the Customize -> Models settings (see the "
+            f"data check)",
+            f"Resolve the data check and rerun `openai4s doctor`, or set "
+            f"OPENAI4S_{llm.provider.upper()}_API_KEY (or the generic "
+            f"OPENAI4S_LLM_API_KEY).",
+            facts,
+        )
     if not llm.api_key and not keyless:
         return Check(
             "model",
@@ -436,6 +515,28 @@ def _data_dir(cfg: Any) -> Check:
             remedy,
             facts,
         )
+    db_path = getattr(cfg, "db_path", None)
+    if db_path is not None:
+        from openai4s.storage.migrations import FutureSchemaError, preflight_schema
+
+        # The refusal `serve` and `run` print, read the same read-only way and
+        # before anything is prepared: a writable directory holding a database
+        # this release will not open is not usable.
+        try:
+            preflight_schema(Path(db_path))
+        except FutureSchemaError as e:
+            return Check(
+                "data",
+                FAIL,
+                f"the database at {db_path} is from a newer release: {e}",
+                "Run the OpenAI4S release that upgraded this data directory, or "
+                "point OPENAI4S_DATA_DIR at one this release created.",
+                {
+                    **facts,
+                    "schema_version": e.actual_version,
+                    "supported_schema_version": e.supported_version,
+                },
+            )
     prepare = getattr(cfg, "ensure_dirs", None)
     if callable(prepare):
         try:
@@ -448,6 +549,60 @@ def _data_dir(cfg: Any) -> Check:
                 remedy,
                 facts,
             )
+    unopened = unopened_database(cfg)
+    if unopened is not None and unopened["reason"] == "upgrade_pending":
+        version = unopened["schema_version"]
+        supported = unopened["supported_schema_version"]
+        facts.update(
+            schema_version=version,
+            supported_schema_version=supported,
+            upgrade_pending=True,
+        )
+        db = Path(db_path)
+        # `backup_database` names the copy this way, and the migration deletes
+        # it once the upgrade commits: a copy still beside a database at the
+        # same old version is an attempt that did not complete.
+        backup = db.with_name(f"{db.name}.v{version}.bak")
+        if backup.exists():
+            facts["kept_backup"] = str(backup)
+            return Check(
+                "data",
+                FAIL,
+                f"the database at {db} is at schema {version}, and an earlier "
+                f"migration to schema {supported} did not complete: its "
+                f"pre-upgrade backup, which is deleted only when the upgrade "
+                f"succeeds, is still at {backup}",
+                "Run `openai4s serve` or `openai4s run` in the foreground to see "
+                "why: a failed migration is rolled back and printed as one "
+                "`error:` line (exit 2), and re-running it is safe. Keep the "
+                "backup until an upgrade succeeds (docs/upgrading.md).",
+                facts,
+            )
+        return Check(
+            "data",
+            WARN,
+            f"the database at {db} is at schema {version}; the next `openai4s "
+            f"serve` or `openai4s run` migrates it to schema {supported}, which "
+            f"reinstalling an older release does not undo. doctor does not "
+            f"migrate it, so the checks that read the database did not open it",
+            "Back up the data directory first (docs/upgrading.md, section 1), "
+            "then start `openai4s serve` or run `openai4s run` once and rerun "
+            "`openai4s doctor`.",
+            facts,
+        )
+    if unopened is not None and unopened["reason"] == "interrupted_write":
+        return Check(
+            "data",
+            WARN,
+            f"the database at {db_path} holds an interrupted write that only a "
+            f"read-write open recovers; doctor does not open it, so its schema "
+            f"version is unknown and the checks that read the database did not "
+            f"open it",
+            "Copy the database together with its -journal file, then start "
+            "`openai4s serve` or run `openai4s run` once to let SQLite recover "
+            "it, and rerun `openai4s doctor`.",
+            facts,
+        )
     return Check("data", OK, f"usable at {target}", facts=facts)
 
 
@@ -482,15 +637,26 @@ def _connectors(cfg: Any) -> Check:
     except Exception as e:  # noqa: BLE001
         return Check("connectors", WARN, f"science connectors unavailable: {e}")
 
-    try:
-        from openai4s.store import get_store
+    unopened = unopened_database(cfg)
+    store_error: str | None = None
+    if unopened is not None:
+        # The data check reports why; opening it here would be the upgrade.
+        facts["connector_store_not_read"] = unopened["reason"]
+        if unopened["reason"] == "unreadable":
+            # Not a state the data check explains away: the read itself failed.
+            store_error = str(unopened["error"])
+            facts["connector_store_error"] = store_error
+    else:
+        try:
+            from openai4s.store import get_store
 
-        store = get_store(cfg.db_path)
-        # Names and configured-ness only. Values never leave the store.
-        connectors = store.list_connectors()
-        facts["configured_connectors"] = len(connectors)
-    except Exception as e:  # noqa: BLE001
-        facts["connector_store_error"] = str(e)
+            store = get_store(cfg.db_path)
+            # Names and configured-ness only. Values never leave the store.
+            connectors = store.list_connectors()
+            facts["configured_connectors"] = len(connectors)
+        except Exception as e:  # noqa: BLE001
+            store_error = str(e)
+            facts["connector_store_error"] = store_error
 
     # The global kill switch is OPENAI4S_ALLOW_NETWORK; OPENAI4S_EGRESS selects
     # whether an *allowlist* is enforced, and its default — `off` — means
@@ -504,6 +670,19 @@ def _connectors(cfg: Any) -> Check:
     mode = egress.egress_mode()
     facts["network_allowed"] = network
     facts["egress_mode"] = mode
+    if store_error is not None:
+        # Kept only in facts, this was an `ok` beside a database that `serve`
+        # and `run` refuse to open.
+        return Check(
+            "connectors",
+            WARN,
+            f"{len(facts['science_databases'])} science databases are built in, "
+            f"but the configured connectors could not be read from the "
+            f"database: {store_error}",
+            "Resolve the database error above; `openai4s serve` and `openai4s "
+            "run` cannot open it either.",
+            facts,
+        )
     if not network:
         return Check(
             "connectors",
@@ -642,6 +821,8 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
 )
 
 #: Probes `report()` still runs for the CLI, and that a page-load GET must not.
+#: `model` and `connectors` open the Store too, but only a database already at
+#: this release's schema (`unopened_database`): no probe upgrades one.
 #: `data` calls `ensure_dirs()` (a write). `isolation` builds a temp sandbox
 #: and runs the kernel self-test (a subprocess). `remote` runs the BYOC
 #: confinement self-test (another subprocess). `runtime` walks environment
@@ -727,4 +908,5 @@ __all__ = [
     "render",
     "report",
     "run_checks",
+    "unopened_database",
 ]

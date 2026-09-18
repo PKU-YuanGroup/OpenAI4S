@@ -39,7 +39,8 @@ def _run_suite(destination: Path) -> int:
             sys.executable,
             "-m",
             "pytest",
-            "-q",
+            # No `-q`: addopts already passes one, and a second hides the
+            # `N passed, M failed` line this gate's log is read for.
             "--no-header",
             # The same width and scheduler CI runs the suite under. This used
             # to be the one gate that could not take them: the capture is

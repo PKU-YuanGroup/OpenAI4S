@@ -13,7 +13,7 @@ from .capabilities import (
 )
 from .catalog import ARK_PLAN_MODELS
 from .messages import _is_parts
-from .models import LLMError
+from .models import LLMError, MissingCredentialError
 from .providers import _WIRE_DISPATCH
 from .registry import PROVIDERS, provider_spec
 from .tooling import _canonical_tool_specs
@@ -84,7 +84,7 @@ def chat(
         model = cfg.model or spec["model"]
         capabilities = get_model_capabilities(cfg.provider, model, base_url=base)
         if not cfg.api_key and not capabilities.local_endpoint:
-            raise LLMError(
+            raise MissingCredentialError(
                 f"no API key configured for provider {cfg.provider!r}: set the "
                 f"OPENAI4S_{cfg.provider.upper()}_API_KEY (or generic OPENAI4S_LLM_API_KEY) "
                 f"environment variable, or add it to a .env file at the repo root. "

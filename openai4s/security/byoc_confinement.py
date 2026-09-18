@@ -120,6 +120,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from openai4s.security.sandbox import _PROCESS_INFO_DENIES
+
 #: Where the sandbox binary lives on macOS. Probed rather than assumed so a
 #: stripped system reports unavailable instead of failing at exec time.
 _SEATBELT = "sandbox-exec"
@@ -434,6 +436,19 @@ def build_profile(
         lines.append("(allow file-read*")
         lines.extend(f"    (subpath {_quote(path)})" for path in allowed)
         lines.append(f"    (subpath {_quote(stage_dir)}))")
+    # Other processes' argument and environment blocks. `allow default` let the
+    # helper call `sysctl(KERN_PROCARGS2, <daemon pid>)` and read the daemon's
+    # exec-time environment -- where an LLM key configured by environment
+    # variable or `.env` sits in cleartext -- on a process that has the network
+    # by design. The Linux form closes the same read with `--unshare-pid`. The
+    # rules are the kernel profile's, imported so the two builders cannot drift;
+    # see `sandbox._PROCESS_INFO_DENIES` for why both are needed. They hold only
+    # against a reader in a *different session* from its target, which is why
+    # `ComputeManager._spawn_helper` starts the helper with
+    # `start_new_session=True`: measured on macOS 26.6, a same-session reader
+    # recovered the daemon's environment with both rules in place. Last, so no
+    # later rule in this profile can re-open them.
+    lines.extend(_PROCESS_INFO_DENIES)
     return "\n".join(lines) + "\n"
 
 

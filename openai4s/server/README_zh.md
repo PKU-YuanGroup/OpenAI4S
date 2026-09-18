@@ -48,7 +48,7 @@ gateway.py
 | 文件 | 职责 |
 | --- | --- |
 | [`__init__.py`](__init__.py) | 稳定的包门面，导出 `build_server` 与 `serve`。 |
-| [`action_timeline.py`](action_timeline.py) | 把规范的 Action Ledger 投影成 UI 真正看到的 Timeline。一条记录足以说清：跑的是什么、怎么结束的、用掉哪些权限、花了多少用量、引用了哪些 Artifact，而且这些内容都有界、都经过脱敏。供应商的 `wire_state` 和原始参数字符串被刻意省略，避免有人把一个调试端点变成凭据或协议的转储口。 |
+| [`action_timeline.py`](action_timeline.py) | 把规范的 Action Ledger 投影成 UI 真正看到的 Timeline。一条记录足以说清：跑的是什么、怎么结束的、用掉哪些权限、花了多少用量、引用了哪些 Artifact，而且这些内容都有界、都经过脱敏。供应商的 `wire_state` 和原始参数字符串被刻意省略，避免有人把一个调试端点变成凭据或协议的转储口。计划模式那一轮的用户分组以任务命名，而不是以任务前面的计划模式提示命名。 |
 | [`attention.py`](attention.py) | 跨 Session 的只读「需要处理」聚合。把 running/queued 执行、待批准、可恢复失败、view-only/blocked 会话，以及 live/unknown 远程计算合成固定 shape 的卡片。team 可见性在聚合、排序、limit 之前生效。`target.surface`/`dock` 是闭集，服务端不返回任意 URL。GET 零副作用：不 spawn kernel、不打 provider、不 retry/approve/harvest。首版不建物化表。 |
 | [`attention_routes.py`](attention_routes.py) | `GET /attention?limit&cursor`，一张经校验的 `RouteSpec`。cursor 是绑在调用方 team-scope fingerprint 上的 `(updated_at, id)` keyset；来自另一用户或另一组 filter 的 cursor 返回 `400 invalid_cursor`。retry/approve/restore 仍走现有 mutation 路由。 |
 | [`agent_run.py`](agent_run.py) | 把 `AgentEngine` 适配到 Web 契约。它流式输出安全的文本与代码草稿，发出 Web 事件，处理取消，并通过注入的端口执行原生 Action 或 Cell。 |
@@ -73,7 +73,7 @@ gateway.py
 | [`evidence_snapshot.py`](evidence_snapshot.py) | 构造不可变的 Stage 3 Evidence Snapshot：计划、checksum、lineage、适配器、省略声明和可解析的 `evidence_refs`。不含主 Agent 隐藏推理。 |
 | [`review_scratch.py`](review_scratch.py) | Reviewer 校验用的隔离 scratch：子进程环境已擦除秘密，无网络、不能写正式工作区、不能 MCP、不能 `submit_output`。 |
 | [`scientific_review.py`](scientific_review.py) | Stage 3 shadow 编排。冻结 Reviewer 身份，运行确定性检查与独立模型审核，绑定 evidence refs，并记录不把门的 shadow 判断。 |
-| [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：readiness 准入、身份/attempt 分配、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。Stage 1 的准入端口会在任何 Cell id 或 runtime 出现之前拒绝。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
+| [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：readiness 准入、身份/attempt 分配、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。Stage 1 的准入端口会在任何 Cell id 或 runtime 出现之前拒绝。在用户代码即将开始之前还会再检查一次取消：准备 runtime（冷内核的 bootstrap）的过程无法被中断，所以落在这段时间里的 Stop 或 daemon 关闭，会让这个 Cell 以 interrupted 结束、一行代码都不运行，而不是先让它跑起来、等下一次轮询再去中断它。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
 | [`completion_gate.py`](completion_gate.py) | Stage 4 的候选→审核→晋升。它先记下 provisional 候选，等 Scientific Reviewer，再盖上 Verified / completed_with_issues / review_unavailable。它不启动 Repair。 |
 | [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact version/capture 增量渲染的，而不是照着一句声称。trusted 链接只来自公共 URL helper 与精确 version id；隐藏推理不会进到这里。 |
 | [`compute_tasks.py`](compute_tasks.py) | 一个会话的远程计算工作的只读视图。远程任务的寿命长过发起它的那一轮、内核、乃至守护进程，而那份持久记录原先只能从 cell 里够到。这个页面不能轮询，原因是这套系统特有的：**探测即回收**——`ComputeManager.result()` 才是去联系远端的那一步，而联系远端就会把文件拉回来并结束任务，所以一个会自动刷新的页面等于在没人看着的会话里偷偷做回收。本模块只接收一个 `Store`，完全没有 import `ComputeManager`，所以这条保证是结构性的，而不是一句关于调用顺序的承诺。按 `owner_key`（会话工作区）限定范围；别的会话的任务不会被列出、不计入计数，也不会以「已隐藏」的形式被提及。 |
@@ -99,7 +99,7 @@ gateway.py
 | [`notebook_export.py`](notebook_export.py) | 把原始的不可变执行历史确定性地导出成四种只读形态：每种语言一个 `.ipynb`、一个把两者打包并带 checksum 描述的 bundle，以及一份 Markdown 文档。前三种是给人重跑用的；Markdown 那份是给人阅读、以及贴进 issue 或方法学章节用的，所以它把两种语言按执行顺序放在同一份文件里——交错本身就是记录——并以一节 `## Inputs` 开头，列出这条分支的各轮所钉住的每个 Artifact 版本。没有输入时这一节整节省略，因为一个空标题也是一种声称。四种形态都不套用 Notebook 投影那道过滤，所以只含协议调用的 completion Cell 仍可能出现在导出结果里。 |
 | [`notebook_lineage.py`](notebook_lineage.py) | Stage 8 正式 live Notebook 开关，以及 host 侧 Python/R 读→version 映射和写 lineage。它不改内核。 |
 | [`stage12_ga.py`](stage12_ga.py) | Stage 12 GA 总开关声明。它不会打开更早的 Stage。 |
-| [`plans.py`](plans.py) | 管理结构化计划的生命周期。planner 的回复先被解析、规范化，草稿和它的 JSON Artifact 落库，公开的审阅形态由此暴露，通过审阅的计划再被带到执行。实时的 `host.plan_update` 变更仍留在 `HostDispatcher`。 |
+| [`plans.py`](plans.py) | 管理结构化计划的生命周期。planner 的回复先被解析、规范化，草稿和它的 JSON Artifact 落库，公开的审阅形态由此暴露，通过审阅的计划再被带到执行。`plan_mode_request_text` 从计划模式提示中取出用户自己的话，只用于会话标题和 Timeline 标题；模型输入和存储的消息行保留完整提示。实时的 `host.plan_update` 变更仍留在 `HostDispatcher`。 |
 | [`recovery_control.py`](recovery_control.py) | 投影恢复 journal 与 generation 状态，并组合出当前可行的、经校验和脱敏的恢复 Action 计划。只有在工作区目录树和完整的 bootstrap 清单都在的前提下，它才会说某个 checkpoint 可恢复。 |
 | [`recovery_execution.py`](recovery_execution.py) | 在精确的执行所有权下执行一次恢复 mutation。所有语言候选内核跑在同一个 recovery id 下，遇到第一个未完成的候选就停，最后落一条持久的会话终止事件。 |
 | [`recovery_recipe.py`](recovery_recipe.py) | 把不可变的 Cell 事实、依赖闭包、环境需求、sidecar 和确定性检查编译成一份恢复 recipe。保守是有意为之：影响状态却过不了这些检查的 Cell 会以 `never` 重放步骤的形式留在 recipe 里，于是校验会报 Partial，而不是默默宣称旧命名空间还在。 |
@@ -109,7 +109,7 @@ gateway.py
 | [`response_schema.py`](response_schema.py) | 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。 |
 | [`reviews.py`](reviews.py) | 先攒出一次科学审阅所依据的有界证据包，再把这次审阅推到结果。整个过程可取消，结果会落到持久化、用量记账和公开的审阅事件上。 |
 | [`sandbox_grants.py`](sandbox_grants.py) | 可执行 Artifact 预览的签名读取凭证。grant 绑定非空 frame、过期时间、签发时的应用 origin，以及唯一可使用它的另一个 loopback origin；把 Host 改回应用会被拒绝。凭证放在路径段，相对资源解析会保留它，无需设置 cookie。daemon access token 用于签名；脚本可读取的 grant 本身仍是临时 bearer 凭证，自身导航泄露风险见 `docs/security.md`。 |
-| [`security_headers.py`](security_headers.py) | 作用于每个响应的静态 CSP 与加固响应头。所有可执行 UI 代码都放在同源文件中，因此 `script-src` 不需要 `'unsafe-inline'`，也不需要通过重新解析 HTML 动态生成 hash/nonce。 |
+| [`security_headers.py`](security_headers.py) | 作用于每个响应的静态 CSP 与加固响应头。所有可执行 UI 代码都放在同源文件中，因此 `script-src` 不需要 `'unsafe-inline'`，也不需要通过重新解析 HTML 动态生成 hash/nonce。`artifact_content_disposition` 以 `inline` 加清洗后的 Artifact 自身文件名（ASCII `filename` + RFC 5987 `filename*`）标注所服务的 Artifact 字节。 |
 | [`session_branching.py`](session_branching.py) | 让一个会话长出分支所需的全部动作：打 checkpoint、隔离 fork、预览 revert、激活分支，以及把 revert/undo 历史只追加地记下来。revert 从不改写旧的 checkpoint：它先把当前状态记成撤销目标；如果当前 head 之后有外部文件被改动，这次操作会记为 `conflict`，一个字节都不会动。 |
 | [`session_deletion.py`](session_deletion.py) | 会话被持久删除后的清理。会话聚合、工作区、按 root 隔离的 kernel Artifact 输入缓存、快照/CAS 引用和进程内状态都会清掉，而这个会话自己 scope 之外的东西一概不碰。 |
 | [`session_domain.py`](session_domain.py) | 高层的会话领域组合，路由 handler 调它，而不是自己去拼装仓储。它对外承接 checkpoint 与 cursor checkpoint、分支、Timeline、导出、renderer、会话包操作与恢复。 |

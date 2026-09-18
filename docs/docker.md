@@ -44,8 +44,9 @@ publishes to loopback and the shipped Service is a `ClusterIP`, deliberately.
 Two things change the moment the bind is not loopback, and both are worth
 understanding before you publish anything:
 
-- **The access token becomes mandatory and cannot be turned off.**
-  `OPENAI4S_REQUIRE_TOKEN=0` is honoured on loopback only.
+- **The access token is mandatory and cannot be turned off** — on any bind
+  since 0.3.0, when the loopback-only `OPENAI4S_REQUIRE_TOKEN=0` opt-out was
+  removed.
 - **The DNS-rebinding `Host` allowlist stops applying.** With a wildcard bind
   the set of legitimate external hostnames is unknowable, so the daemon stops
   second-guessing the `Host` header. The token is then the only control in
@@ -349,8 +350,8 @@ grant，Workbench 对 HTML 报表始终保留惰性、不执行脚本的预览�
 
 一旦绑定不再是 loopback，有两件事立刻改变，公开任何东西之前值得先弄清楚：
 
-- **访问令牌变成强制的，且关不掉。** `OPENAI4S_REQUIRE_TOKEN=0` 只在 loopback
-  绑定下才被承认。
+- **访问令牌是强制的，且关不掉。** 自 0.3.0 移除了仅限 loopback 的
+  `OPENAI4S_REQUIRE_TOKEN=0` 豁免之后，任何绑定下都是如此。
 - **防 DNS 重绑定的 `Host` 白名单不再生效。** 通配绑定下，合法外部主机名的集合是
   不可知的，于是 daemon 不再去猜 `Host` 头。此时挡在
   `/api/v1/kernel/execute`、`/api/v1/compute/jobs` 与 Host RPC 前面的，就只剩

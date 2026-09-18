@@ -166,8 +166,18 @@ export function envPythonChip(env: EnvSnapshot | null | undefined): EnvPythonChi
   };
 }
 
-export function envPackageCount(env: EnvSnapshot | null | undefined): number {
+/**
+ * The package count the record can back, or null when it has none. A snapshot
+ * whose packages were never read -- a 0.2.x kernel recorded by its mode, an
+ * interpreter the daemon could not read, a remote worker, a non-Python
+ * kernel -- stores `packages: []` and `package_count: 0` beside the
+ * `packages_unavailable` reason. That zero is "not read", not "nothing
+ * installed", and rendering it as a count contradicted the reason shown next
+ * to it.
+ */
+export function envPackageCount(env: EnvSnapshot | null | undefined): number | null {
   const pkgs = (env && env.packages) || [];
+  if (env && !pkgs.length && env.packages_unavailable && !(Number(env.package_count) > 0)) return null;
   if (env && env.package_count != null) return Number(env.package_count) || 0;
   return pkgs.length;
 }

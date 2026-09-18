@@ -5,6 +5,7 @@
 
 import { fetchArtifactText } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
+import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
 import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
 import { t } from "../../i18n/runtime";
@@ -26,9 +27,10 @@ export function el(tag: string, cls?: string | null, text?: string | null): HTML
 export function iconEl(name: string, size: number): HTMLElement {
   const fn = (globalThis as unknown as { iconEl?: unknown }).iconEl;
   if (isReady(fn)) return (fn as (n: string, s: number) => HTMLElement)(name, size);
+  // Nothing installs a global iconEl, so this is the path every notebook and
+  // provenance icon takes; paintIcons() has long run by then.
   const span = document.createElement("span");
-  span.setAttribute("data-icon", name);
-  span.setAttribute("data-icon-size", String(size));
+  paintIcon(span, name, size);
   return span;
 }
 

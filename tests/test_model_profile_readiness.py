@@ -273,3 +273,106 @@ def test_a_probe_never_publishes_what_redaction_does_not_catch(tmp_path, monkeyp
     for leaked in ("10.4.2.17", "/Users/alice", "corp-ca.pem", "org-Acme-Research-Lab"):
         assert leaked not in detail, detail
     assert "not permitted to use this model" in detail
+
+
+def test_the_daemons_key_counts_only_for_the_daemons_own_provider(
+    tmp_path, monkeypatch
+):
+    """The live shape: `OPENAI4S_LLM_PROVIDER=ark` plus one Ark key.
+
+    A keyless Ark profile is dispatched under that key, so it is `ready` -- the
+    card used to say `needs_key` for a profile every turn could run on. The same
+    key is not a Claude credential, so a keyless Claude profile still is not.
+    """
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="ark", api_key="daemon-key-for-the-ark-provider"),
+    )
+    store = get_store(cfg.db_path)
+    service = ModelProfileService(store, cfg, providers=provider_specs)
+    ark = service.create({"name": "ark", "provider": "ark", "model": "m"})
+    claude = service.create({"name": "claude", "provider": "claude", "model": "m"})
+    rows = {row["id"]: row for row in store.list_model_profiles()}
+
+    assert ark["has_api_key"] is False, "the profile holds no key of its own"
+    assert ark["readiness"]["state"] == "ready", ark["readiness"]
+    assert service.credential(rows[ark["id"]]).source == "environment"
+    assert claude["readiness"]["state"] == "needs_key", claude["readiness"]
+    assert service.credential(rows[claude["id"]]).api_key == ""
+
+
+def test_a_listed_profile_says_where_its_credential_comes_from(tmp_path, monkeypatch):
+    """`has_api_key` answers "does this profile hold a key", and must keep doing
+    so -- the edit form reads it to say whether a key is saved. A profile running
+    on the environment's key therefore listed as "No key" beside a `ready` card.
+    `credential_source` is the other half: never the key, only its origin."""
+    monkeypatch.setenv("OPENAI4S_CLAUDE_API_KEY", "environment-key-for-claude")
+    store, service = _service(tmp_path)
+    env = service.create({"name": "env", "provider": "claude", "model": "m"})
+    own = service.create(
+        {"name": "own", "provider": "claude", "model": "m", "api_key": "sk-own-key"}
+    )
+    local = service.create(
+        {
+            "name": "local",
+            "provider": "chatgpt",
+            "model": "llama3",
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+    )
+    none = service.create({"name": "none", "provider": "gemini", "model": "m"})
+
+    assert (env["has_api_key"], env["credential_source"]) == (False, "environment")
+    assert (own["has_api_key"], own["credential_source"]) == (True, "profile")
+    assert (local["has_api_key"], local["credential_source"]) == (False, "local")
+    assert (none["has_api_key"], none["credential_source"]) == (False, "missing")
+    assert "environment-key-for-claude" not in repr([env, own, local, none])
+
+
+def test_a_keyless_local_profile_never_borrows_its_providers_cloud_key(
+    tmp_path, monkeypatch
+):
+    """Local before inherited. The environment fallback used to run first, so a
+    keyless OpenAI-compatible profile at a loopback, private or `.local` address
+    was answered with `OPENAI_API_KEY` -- a cloud credential -- and a turn sent
+    it over plain http to whatever was listening there. A local server that
+    wants a key gets the one saved on its profile."""
+    monkeypatch.setenv("OPENAI_API_KEY", "cloud-credential-for-openai")
+    monkeypatch.setenv("OPENAI4S_CHATGPT_API_KEY", "cloud-credential-for-chatgpt")
+    store, service = _service(tmp_path)
+    endpoints = (
+        "http://127.0.0.1:11434/v1",
+        "http://192.168.1.50:8000/v1",
+        "http://gpu-box.local:11434/v1",
+    )
+    for base_url in endpoints:
+        created = service.create(
+            {
+                "name": base_url,
+                "provider": "chatgpt",
+                "model": "m",
+                "base_url": base_url,
+            }
+        )
+        row = next(p for p in store.list_model_profiles() if p["id"] == created["id"])
+        credential = service.credential(row)
+        assert (credential.source, credential.api_key) == ("local", ""), base_url
+        assert created["readiness"]["state"] == "ready", created["readiness"]
+        assert created["credential_source"] == "local", created
+
+    # The same provider at its cloud endpoint still inherits the environment key,
+    # and a key saved on a local profile is still the one it is dispatched under.
+    remote = service.create({"name": "cloud", "provider": "chatgpt", "model": "m"})
+    keyed = service.create(
+        {
+            "name": "keyed-local",
+            "provider": "chatgpt",
+            "model": "m",
+            "base_url": endpoints[1],
+            "api_key": "saved-on-the-profile",
+        }
+    )
+    rows = {row["id"]: row for row in store.list_model_profiles()}
+    assert service.credential(rows[remote["id"]]).source == "environment"
+    assert service.credential(rows[keyed["id"]]).api_key == "saved-on-the-profile"

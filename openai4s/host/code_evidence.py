@@ -492,7 +492,9 @@ def _check_test_evidence(
             else:
                 problems.append(
                     f"test evidence for {command!r} names cell {cell_id!r}, "
-                    "which this run never executed"
+                    "which this run never executed (a producing_cell_id is the "
+                    "Host-minted id on the `[cell id: …]` line of the Observation "
+                    "of the cell that ran the command, not a cell number)"
                 )
             continue
         if context.frame_id and str(row.get("root_frame_id") or "") != context.frame_id:
@@ -581,9 +583,11 @@ def validate_code_evidence(
             (
                 f"this turn runs in {task_mode} mode, so its completion must "
                 "declare " + ", ".join(missing) + ". Save the implementation to "
-                "source files, keep a thin entry point, run the tests in a cell, "
-                "then submit again naming each file, each entry point, what each "
-                "module owns, and the cell id that ran each test command."
+                "source files, keep a thin entry point, run the tests through "
+                "host.bash in a cell, then submit again naming each file, each "
+                "entry point, what each module owns, and the cell id that ran "
+                "each test command — as keyword arguments of host.submit_output "
+                "(source_files=..., test_evidence=...), not keys inside output."
             ),
             empty,
         )

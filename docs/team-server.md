@@ -98,6 +98,13 @@ namespace rather than a guess, so "is this another member's area?" is a
 question about a path and not about whether a directory called `alice` is
 a person or a dataset.
 
+The routes are `GET /api/v1/files` (list), `GET /api/v1/files/download`
+and `POST /api/v1/files/upload`; they work with team mode off too, whenever
+roots are configured. With no roots, the bare listing answers
+`200 {"roots": [], "configured": false}` — the workbench asks it on every
+load to decide whether to show Team files — while a listing with `?path=`,
+a download or an upload answers `404 {"code": "no_data_roots"}`.
+
 Local Python/R Cells enforce the same ownership boundary at `open(2)`, not only
 through HTTP/Host APIs. The OS sandbox hides the whole daemon data directory,
 other members' writable-root `users/<name>` directories, and sibling or stale

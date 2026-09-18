@@ -388,3 +388,49 @@ def test_plan_no_action_reduces_to_plan_message_not_interruption(tmp_path):
     assert "Plan mode ended" in history[-1]["content"]
     assert "interrupted" not in history[-1]["content"]
     store.close()
+
+
+def _terminal_group(store: Store, root_frame_id: str) -> dict:
+    groups = ActionTimelineService(store).get(root_frame_id)["groups"]
+    return [group for group in groups if group["kind"] == "terminal"][-1]
+
+
+def test_a_plan_draft_turn_terminal_is_not_projected_as_failed(tmp_path):
+    """A plan-mode turn always stops with reason ``plan`` -- that is how it
+    ends when it did exactly what it was asked (draft, then wait for approval).
+
+    The terminal mapping named only ``submitted`` as a success, so every plan
+    draft stored ``type='failed'`` and the Timeline showed "Run plan · failed"
+    beside a frame marked done and a plan marked draft: one turn, two opposite
+    recorded outcomes.
+    """
+    store = Store(tmp_path / "openai4s.db")
+    ledger = RuntimeActionLedger(store, "root-plan", "turn-plan")
+    ledger.append_user("make a plan")
+    reply = ModelReply(content="Here is the plan.\n```json\n{}\n```")
+    ledger.emit(ReplyReceived(reply, 0))
+    ledger.emit(ActionRouted(None, 0))
+    ledger.emit(OutcomeProduced(ExecutionOutcome(stop_reason="plan"), 0))
+    ledger.emit(RunFinished(EngineResult((), None, "plan", 1, reply)))
+
+    terminal = _terminal_group(store, "root-plan")
+    assert terminal["title"] == "Run plan"
+    assert terminal["status"] == "completed"
+    store.close()
+
+
+def test_real_terminal_failures_and_unknown_reasons_stay_failed(tmp_path):
+    """The plan exemption is a named reason, not "anything that is not an
+    error": an unrecognised future reason must not become a silent success."""
+    store = Store(tmp_path / "openai4s.db")
+    for reason in ("max_turns", "no_progress", "runtime_error", "unknown", "planned"):
+        root = f"root-{reason}"
+        ledger = RuntimeActionLedger(store, root, f"turn-{reason}")
+        ledger.append_user("x")
+        ledger.append_terminal(reason)
+        assert _terminal_group(store, root)["status"] == "failed", reason
+    ledger = RuntimeActionLedger(store, "root-cancelled", "turn-cancelled")
+    ledger.append_user("x")
+    ledger.append_terminal("cancelled")
+    assert _terminal_group(store, "root-cancelled")["status"] == "cancelled"
+    store.close()

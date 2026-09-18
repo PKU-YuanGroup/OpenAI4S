@@ -16,3 +16,62 @@
 .history-load-status p {
   margin: 6px 0;
 }
+
+/*
+ * The marker that ends a stopped turn, live and on reopen (messages/stopped.ts),
+ * and a reopened plan execution seed (messages/planPrompt.ts).
+ */
+.msg-stopped,
+.msg-plan-seed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: var(--col);
+  margin: 8px auto 2px;
+  color: var(--text-400);
+  font-size: 12.5px;
+}
+
+.msg-stopped .ic {
+  display: inline-flex;
+  flex: none;
+}
+
+.activity.stopped .a-head .ic {
+  color: var(--text-400);
+}
+
+/* The running/success green bar (style.css .activity) is not a stopped cell's. */
+.activity.stopped {
+  border-left-color: color-mix(in srgb, var(--text-400) 30%, var(--line));
+}
+
+/*
+ * A running cell has not succeeded yet, and a card whose outcome never arrived
+ * claims none: neutral glyph and bar instead of style.css's success green
+ * (messages/cardState.ts). A cell that raised says so.
+ */
+.activity.running .a-head .ic,
+.activity.ended .a-head .ic {
+  color: var(--text-400);
+}
+
+.activity.running,
+.activity.ended {
+  border-left-color: color-mix(in srgb, var(--text-400) 30%, var(--line));
+}
+
+.activity.failed .a-head .ic {
+  color: var(--danger);
+}
+
+.activity.failed {
+  border-left-color: color-mix(in srgb, var(--danger) 46%, var(--line));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .activity.running .a-head .ic svg {
+    animation: spin 1s linear infinite;
+  }
+}

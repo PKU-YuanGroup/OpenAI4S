@@ -17,12 +17,27 @@ These are cheap best-effort probes: if a library is absent the guard no-ops.
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 from typing import Any
 
 
 def _off() -> bool:
     return os.environ.get("OPENAI4S_GUARDS_OFF") == "1"
+
+
+def _loaded_pyplot() -> Any:
+    """pyplot if a Cell already imported it, else None -- never an import.
+
+    Importing pyplot loads matplotlib's font manager, which builds the font
+    list when its cache directory is empty. An enforced sandbox gives every
+    kernel an empty private MPLCONFIGDIR, so an import made here cost the
+    first Cell of every new kernel a full font scan (8-48 seconds on macOS,
+    where it shells out to `system_profiler`) whether or not it ever plotted.
+    A process that has not imported pyplot has no pyplot figures, so reading
+    `sys.modules` loses nothing a snapshot could have reported.
+    """
+    return sys.modules.get("matplotlib.pyplot")
 
 
 class MatplotlibGlobalState:
@@ -33,11 +48,12 @@ class MatplotlibGlobalState:
         self._active = False
 
     def _fignums(self) -> tuple[int, ...]:
+        plt = _loaded_pyplot()
+        if plt is None:
+            return ()
         try:
-            import matplotlib.pyplot as plt
-
             return tuple(plt.get_fignums())
-        except Exception:  # noqa: BLE001 - matplotlib absent / headless
+        except Exception:  # noqa: BLE001 - partially initialised / headless
             return ()
 
     def snapshot(self) -> None:
@@ -58,9 +74,10 @@ class MatplotlibGlobalState:
     def autoclose_leaked(self) -> list[int]:
         """Close figures this cell leaked (keeps the global registry clean)."""
         d = self.diff()
+        plt = _loaded_pyplot()
+        if plt is None:
+            return d["leaked"]
         try:
-            import matplotlib.pyplot as plt
-
             for n in d["leaked"]:
                 plt.close(n)
         except Exception:  # noqa: BLE001

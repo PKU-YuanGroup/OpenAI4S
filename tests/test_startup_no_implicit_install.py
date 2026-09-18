@@ -144,3 +144,42 @@ def test_install_endpoint_path_still_works(monkeypatch):
     out = preinstall.install(["scanpy"])
     assert out["ok"] is True
     assert out["installed"] == ["scanpy"]
+
+
+# --------------------------------------------------------------------------
+# the progress dict is process-wide state, and tests share the process
+# --------------------------------------------------------------------------
+
+_DIRTIED_STATUS = False
+
+
+def test_a_test_may_leave_the_install_progress_dirty():
+    """First half of an ordered pair; the second half is the assertion.
+
+    ``preinstall.STATUS`` is a module global that ``GET /kernel/packages``
+    serialises. The tests above set ``missing``/``installing`` and timestamps
+    and never put them back, so a later route sweep in the same worker captured
+    typed array items and numeric timestamps, and the schema gate reported
+    drift on a route nothing had changed.
+    """
+    global _DIRTIED_STATUS
+    preinstall.STATUS.update(
+        phase="installing",
+        started_at=1.0,
+        finished_at=2.0,
+        installing=["leak-probe"],
+        installed=["leak-probe"],
+        failed=[{"name": "leak-probe", "error": "install failed"}],
+        missing=["leak-probe"],
+        message="leak-probe",
+    )
+    _DIRTIED_STATUS = True
+
+
+def test_the_next_test_sees_install_progress_as_the_process_started():
+    if not _DIRTIED_STATUS:
+        pytest.skip("runs after the test that dirties the progress dict")
+    status = preinstall.status()
+    assert "leak-probe" not in repr(status)
+    assert status["started_at"] is None and status["finished_at"] is None
+    assert status["installing"] == status["installed"] == status["missing"] == []

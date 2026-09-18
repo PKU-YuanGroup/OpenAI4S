@@ -168,9 +168,9 @@ history whose authoring boundary cannot be proven, requires an administrator
 to reactivate it. The compile gate is not an authorization decision.
 
 Customize uses narrow HTTP routes. Personal history/rollback lives at
-`/api/skills/<name>/versions` and `/api/skills/<name>/rollback`; project-local
-state uses `/api/projects/<project_id>/skills/<name>/versions` and
-`.../rollback`. Project IDs are path-scoped and checked against the Store;
+`/api/v1/skills/<name>/versions` and `/api/v1/skills/<name>/rollback`;
+project-local state uses
+`/api/v1/projects/<project_id>/skills/<name>/versions` and `.../rollback`. Project IDs are path-scoped and checked against the Store;
 bundled Skills never expose a rollback action.
 
 ## Installing the Skill library elsewhere (`npx`)

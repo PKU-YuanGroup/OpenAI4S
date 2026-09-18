@@ -17,10 +17,105 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from openai4s.host.progress import SETTLED_STEP_STATUSES
+from openai4s.server.completions import response_language
 from openai4s.store import Store
 
 EventSink = Callable[[dict[str, Any]], None]
 EmitterFactory = Callable[[str], EventSink]
+
+#: How a request says it already carries plan-mode instructions. The workbench
+#: prepends its localised `plan.prompt.*` text (and the legacy app.js its
+#: Chinese literal) starting with one of these, and the revision seed below
+#: starts with one too; the server adds its own instruction only when none is
+#: present, so a request is never instructed twice.
+PLAN_MODE_PROMPT_MARKERS = ("[Plan Mode]", "[计划模式]")
+
+#: The plan-draft instruction a `plan:true` turn adds to the model input when
+#: the request does not carry one. Appended after the task (the stored user
+#: row is unchanged), mirroring the workbench's `plan.prompt.*` wording so the
+#: JSON block `extract_plan_json` looks for is what the model is asked for.
+PLAN_DRAFT_INSTRUCTIONS = {
+    "en": (
+        "[Plan Mode] Do not execute anything or call any tools yet. Devise a "
+        "structured execution plan for the task above, and output only two "
+        "parts:\n"
+        "1) A brief description of the approach (prose, explaining your chosen "
+        "goal/approach and the main analytical thread);\n"
+        "2) Immediately followed by a ```json code block, strictly using the "
+        "following structure:\n"
+        '{"title":"Plan title","rationale":"One-sentence rationale",'
+        '"confidence":"high|medium|low","steps":[{"id":"s1","title":"Step '
+        'title","detail":"What this step does","deliverables":'
+        '["intermediate-table.csv","figure.png"]}]}\n'
+        "Each step must have a unique id, a clear title, a brief description, "
+        "and a list of expected output filenames for that step; where "
+        "reasonable, make each step yield a viewable intermediate result -- a "
+        "table (.csv) or a figure (.png) -- as a deliverable. Wait for user "
+        "approval before executing."
+    ),
+    "zh": (
+        "[计划模式] 请先不要执行、不要调用任何工具。为上面的任务制定一个结构化执行"
+        "计划，并只输出两部分：\n"
+        "1) 一段简短的方案说明（散文，说明你选择的目标/思路与分析主线）；\n"
+        "2) 紧接着一个 ```json 代码块，严格使用如下结构：\n"
+        '{"title":"计划标题","rationale":"一句话理由","confidence":'
+        '"high|medium|low","steps":[{"id":"s1","title":"步骤标题","detail":'
+        '"这一步做什么","deliverables":["中间结果.csv","图.png"]}]}\n'
+        "每个步骤要有唯一 id、清晰标题、简要说明，以及该步预期产出的结果文件名列表；"
+        "尽量让每一步都产出一个可查看的中间结果——一张表格（.csv）或一张图（.png）"
+        "作为 deliverable。等待用户批准后再执行。"
+    ),
+}
+
+
+def carries_plan_mode_prompt(text: str) -> bool:
+    """Whether ``text`` already opens with plan-mode instructions."""
+    return str(text or "").lstrip().startswith(PLAN_MODE_PROMPT_MARKERS)
+
+
+#: Where a plan-mode prompt ends and the user's own words begin: the
+#: workbench's `plan.prompt.part3` and the legacy app.js literal ("Task: " /
+#: "任务："), and `PlanService.run_revision`'s seed ("Change requests: " /
+#: "修改意见：").
+PLAN_MODE_REQUEST_DELIMITERS = (
+    "\n\nTask: ",
+    "\n\n任务：",
+    "\n\nChange requests: ",
+    "\n\n修改意见：",
+)
+
+
+def plan_mode_request_text(text: str) -> str:
+    """The user's own words inside a plan-mode prompt; ``text`` otherwise.
+
+    For what a person reads -- the session title and the text a title is
+    summarised from -- never for model input: the prompt is the instruction the
+    turn was drafted under. Cut at the first delimiter, which is the prompt's
+    own; the user's text keeps any later one. Text with no marker, or with no
+    delimiter to separate, is returned unchanged.
+    """
+    value = str(text or "")
+    if not carries_plan_mode_prompt(value):
+        return value
+    found = [
+        (index, len(delimiter))
+        for delimiter in PLAN_MODE_REQUEST_DELIMITERS
+        if (index := value.find(delimiter)) >= 0
+    ]
+    if not found:
+        return value
+    index, length = min(found)
+    return value[index + length :].strip() or value
+
+
+def plan_draft_instruction(user_text: str) -> str | None:
+    """The instruction a `plan:true` turn appends, or None when the request
+    already carries one. Localised by the request, as the turn's own
+    completion and narration text are."""
+    if carries_plan_mode_prompt(user_text):
+        return None
+    return PLAN_DRAFT_INSTRUCTIONS[response_language(user_text)]
 
 
 class MessageRunner(Protocol):
@@ -66,8 +161,12 @@ class PlanService:
         reply: str,
         prose: str,
         emit: EventSink,
-    ) -> None:
-        """Capture a planner reply as a draft plan and a JSON artifact."""
+    ) -> dict[str, Any] | None:
+        """Capture a planner reply as a draft plan and a JSON artifact.
+
+        Returns the stored draft row, or None when the reply yields no steps
+        -- the caller reports that miss, since nothing is stored for it.
+        """
         root_frame_id = session.root_frame_id
         raw = extract_plan_json(reply)
         task_hint = ""
@@ -80,7 +179,7 @@ class PlanService:
         plan = normalize_plan(raw, prose, task_hint)
         if not plan["steps"]:
             # Keep the prose-only fallback card when no plan can be recovered.
-            return
+            return None
 
         previous = self.store.get_plan_by_frame(root_frame_id)
         reusable = previous if previous and previous.get("status") == "draft" else None
@@ -120,6 +219,7 @@ class PlanService:
                 status="draft",
             )
         self.emit_ready(emit, root_frame_id, row)
+        return row
 
     def write_artifact(
         self,
@@ -219,16 +319,104 @@ class PlanService:
             "status": "discarded",
         }
 
-    def execution_seed(self, plan: dict[str, Any]) -> str:
+    def plan_language(self, plan: dict[str, Any] | None, *extra: str) -> str:
+        """The language a plan's seeds are written in: ``zh`` or ``en``.
+
+        Carried from the request that drafted the plan -- the draft turn's own
+        narration and completion text already followed that request -- and
+        read back from the stored message rather than from memory, so an
+        approval or resume after a daemon restart speaks the same language.
+        The plan's own text (and any ``extra`` a seed quotes, such as revision
+        feedback) counts too, by the same any-CJK rule `response_language`
+        applies to the whole seed: an English seed therefore never quotes
+        Chinese, and the gateway's re-detection of the seed agrees with the
+        template it was built from.
+        """
+        parts = [self._drafting_request(plan), *extra]
+        if plan:
+            parts.append(str(plan.get("title") or ""))
+            parts.append(str(plan.get("rationale") or ""))
+            for step in plan.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                parts.append(str(step.get("title") or ""))
+                parts.append(str(step.get("detail") or ""))
+                parts.extend(str(item) for item in step.get("deliverables") or [])
+        return response_language("\n".join(parts))
+
+    def _drafting_request(self, plan: dict[str, Any] | None) -> str:
+        """The newest user message stored on the plan's frame no later than
+        the plan row itself -- the request its draft turn answered."""
+        if not plan or self.store is None:
+            return ""
+        frame_id = plan.get("frame_id")
+        created_at = plan.get("created_at")
+        if not frame_id or created_at is None:
+            return ""
+        try:
+            rows = self.store.list_messages(str(frame_id), limit=300, newest_first=True)
+            drafted_at = int(created_at)
+        except Exception:  # noqa: BLE001 - language is a best-effort projection
+            return ""
+        for row in rows:
+            if row.get("role") != "user":
+                continue
+            try:
+                if int(row.get("created_at") or 0) <= drafted_at:
+                    return str(row.get("content") or "")
+            except (TypeError, ValueError):
+                continue
+        return ""
+
+    @staticmethod
+    def _step_lines(steps: list[dict[str, Any]], zh: bool) -> list[str]:
         lines = []
-        for index, step in enumerate(plan.get("steps") or []):
-            deliverables = "、".join(step.get("deliverables") or []) or "（无指定文件）"
-            lines.append(
-                f"- [{step.get('id') or ('s' + str(index + 1))}] "
-                f"{step.get('title', '')}：{step.get('detail', '')}  "
-                f"→ 产出：{deliverables}"
+        for index, step in enumerate(steps):
+            step_id = step.get("id") or ("s" + str(index + 1))
+            if zh:
+                deliverables = (
+                    "、".join(step.get("deliverables") or []) or "（无指定文件）"
+                )
+                lines.append(
+                    f"- [{step_id}] {step.get('title', '')}：{step.get('detail', '')}"
+                    f"  → 产出：{deliverables}"
+                )
+            else:
+                deliverables = (
+                    ", ".join(step.get("deliverables") or []) or "(no files specified)"
+                )
+                lines.append(
+                    f"- [{step_id}] {step.get('title', '')}: {step.get('detail', '')}"
+                    f"  → deliverables: {deliverables}"
+                )
+        return lines
+
+    def execution_seed(self, plan: dict[str, Any]) -> str:
+        zh = self.plan_language(plan) == "zh"
+        steps_text = "\n".join(self._step_lines(plan.get("steps") or [], zh))
+        if not zh:
+            return (
+                f'Plan "{plan.get("title", "")}" is approved; start executing it '
+                "automatically now.\n\n"
+                "Follow these steps strictly in order:\n" + steps_text + "\n\n"
+                "Execution rules:\n"
+                '1. Before starting each step, call host.plan_update("<step_id>", '
+                '"in_progress") (this marks the step as in progress on the plan '
+                "card).\n"
+                "2. Once every deliverable file listed for the step is written, "
+                'call host.plan_update("<step_id>", "completed"). If a step '
+                'genuinely cannot be completed, call host.plan_update("<step_id>", '
+                '"failed", note="reason") and continue with the next step.\n'
+                "3. Work through the steps in order, writing each step's result "
+                "files to the working directory (they become artifacts "
+                "automatically).\n"
+                "4. Strictly follow every constraint from my original task (for "
+                "example: in the final summary, do not use Markdown links for raw "
+                "data files larger than about 1MB; refer to them by filename "
+                "only).\n"
+                "5. When everything is done, write a concise final summary and "
+                "call host.submit_output(...)."
             )
-        steps_text = "\n".join(lines)
         return (
             f"已批准计划「{plan.get('title', '')}」，现在开始自动执行。\n\n"
             "请严格按下面的步骤顺序推进：\n" + steps_text + "\n\n"
@@ -258,7 +446,7 @@ class PlanService:
     #: `PLAN_STEP_STATUSES`, `host.plan_update` accepts it, and `app.js` renders
     #: it with its own glyph; only this partition had never heard of it, so
     #: every skipped step was re-run on resume.
-    _SETTLED_STEP_STATUSES = frozenset({"completed", "failed", "skipped"})
+    _SETTLED_STEP_STATUSES = SETTLED_STEP_STATUSES
 
     def unfinished_steps(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         """The steps a resume still has to run.
@@ -279,6 +467,34 @@ class PlanService:
                 remaining.append(step)
         return remaining
 
+    def _status_after_turn(self, plan_id: str, final_status: str) -> str:
+        """The plan status a finished execution turn may write.
+
+        A completed turn is not a completed plan while a step is still
+        `in_progress`. The model can mark the last step in progress and call
+        `host.submit_output` in the same Cell, which ends the turn before it
+        records the step's outcome; mapping that turn straight to `completed`
+        stored -- and the card showed -- PLAN COMPLETE next to a step still in
+        progress, permanently, since only a paused plan can resume.
+
+        Nothing records whether that step's work landed, so it is not settled
+        on the agent's behalf. The plan pauses instead: the step stays in
+        progress, `unfinished_steps` already counts it, and Resume finishes it.
+        A step the turn never started (`pending`) keeps the existing mapping.
+        """
+        if final_status != "completed":
+            return final_status
+        plan = self.store.get_plan(plan_id) or {}
+        step_status = plan.get("step_status") or {}
+        for index, step in enumerate(plan.get("steps") or []):
+            step_id = step.get("id") or f"s{index + 1}"
+            status = (step_status.get(step_id) or {}).get("status") or step.get(
+                "status"
+            )
+            if status == "in_progress":
+                return "paused"
+        return final_status
+
     def resume_seed(self, plan: dict[str, Any], remaining: list[dict[str, Any]]) -> str:
         """The execution seed for a resume: only what is left, and a standing
         instruction not to redo the rest.
@@ -288,6 +504,7 @@ class PlanService:
         a plan whose first three steps produced files is one where "start from
         the top" quietly overwrites them.
         """
+        zh = self.plan_language(plan) == "zh"
         settled = []
         step_status = plan.get("step_status") or {}
         for index, step in enumerate(plan.get("steps") or []):
@@ -296,14 +513,40 @@ class PlanService:
                 "status"
             )
             if status in self._SETTLED_STEP_STATUSES:
-                settled.append(f"- [{step_id}] {step.get('title', '')}（{status}）")
-        lines = []
-        for index, step in enumerate(remaining):
-            deliverables = "、".join(step.get("deliverables") or []) or "（无指定文件）"
-            lines.append(
-                f"- [{step.get('id') or ('s' + str(index + 1))}] "
-                f"{step.get('title', '')}：{step.get('detail', '')}  "
-                f"→ 产出：{deliverables}"
+                settled.append(
+                    f"- [{step_id}] {step.get('title', '')}（{status}）"
+                    if zh
+                    else f"- [{step_id}] {step.get('title', '')} ({status})"
+                )
+        lines = self._step_lines(remaining, zh)
+        if not zh:
+            settled_text = (
+                "These steps already reached a conclusion in the previous run; "
+                "**do not redo them or overwrite their deliverables**:\n"
+                + "\n".join(settled)
+                + "\n\n"
+                if settled
+                else ""
+            )
+            return (
+                f'Continue executing plan "{plan.get("title", "")}" (the previous '
+                "run was interrupted).\n\n"
+                + settled_text
+                + "Steps still to complete:\n"
+                + "\n".join(lines)
+                + "\n\n"
+                "Execution rules:\n"
+                '1. Before starting each step, call host.plan_update("<step_id>", '
+                '"in_progress").\n'
+                "2. Once every deliverable file listed for the step is written, "
+                'call host.plan_update("<step_id>", "completed"). If a step '
+                'genuinely cannot be completed, call host.plan_update("<step_id>", '
+                '"failed", note="reason") and continue with the next step.\n'
+                "3. Only work on the steps listed above; do not re-run steps that "
+                "already have a conclusion.\n"
+                "4. Strictly follow every constraint from my original task.\n"
+                "5. When everything is done, write a concise final summary and "
+                "call host.submit_output(...)."
             )
         settled_text = (
             "以下步骤在上一次执行中已经有结论，**不要重做、不要覆盖它们的产物**：\n"
@@ -497,6 +740,7 @@ class PlanService:
             final_status = (
                 self.store.get_plan(plan["plan_id"]).get("status") or "completed"
             )
+        final_status = self._status_after_turn(plan["plan_id"], final_status)
         if final_status in ("completed", "failed", "paused"):
             self.store.update_plan(plan["plan_id"], status=final_status)
         self.emit_ready(emit, root_frame_id, self.store.get_plan(plan["plan_id"]))
@@ -578,6 +822,7 @@ class PlanService:
             final_status = (
                 self.store.get_plan(plan["plan_id"]).get("status") or "completed"
             )
+        final_status = self._status_after_turn(plan["plan_id"], final_status)
         if final_status in ("completed", "failed", "paused"):
             self.store.update_plan(plan["plan_id"], status=final_status)
         self.emit_ready(
@@ -596,13 +841,29 @@ class PlanService:
         changes: str,
         model: str | None = None,
     ) -> dict[str, Any]:
-        """Regenerate a draft through a plan-only agent turn."""
-        seed = (
-            "请根据下面的修改意见，重新拟定上面的执行计划，并再次只输出："
-            "一段简短的方案说明（散文）＋ 一个 ```json 代码块（"
-            "{title, rationale, confidence, steps:[{id,title,detail,deliverables}]} "
-            "结构，与之前一致）。不要执行、不要调用任何工具。\n\n修改意见：" + changes
-        )
+        """Regenerate a draft through a plan-only agent turn.
+
+        The seed opens with the plan-mode marker, so the plan turn it starts
+        does not append the generic draft instruction on top of it.
+        """
+        plan = self.store.get_plan_by_frame(root_frame_id) if self.store else None
+        if self.plan_language(plan, changes) == "zh":
+            seed = (
+                "[计划模式] 请根据下面的修改意见，重新拟定上面的执行计划，并再次只输出："
+                "一段简短的方案说明（散文）＋ 一个 ```json 代码块（"
+                "{title, rationale, confidence, steps:[{id,title,detail,deliverables}]} "
+                "结构，与之前一致）。不要执行、不要调用任何工具。\n\n修改意见："
+                + changes
+            )
+        else:
+            seed = (
+                "[Plan Mode] Revise the execution plan above according to the "
+                "change requests below, and again output only: a brief description "
+                "of the approach (prose) + one ```json code block (the same "
+                "{title, rationale, confidence, steps:[{id,title,detail,deliverables}]} "
+                "structure as before). Do not execute anything or call any tools."
+                "\n\nChange requests: " + changes
+            )
         return self.run_message(
             root_frame_id,
             project_id,

@@ -95,7 +95,7 @@ audit of `126ef91` and confirmed by reproduction before any fix.
 | # | Item | Commit | Status | Falsification |
 |---|---|---|---|---|
 | 1.3 | Dead unauthenticated second HTTP server deleted; guard against a replacement | `b74372f` | `Completed` | See A6 |
-| 1.4 | Local auth required on loopback by default (D1): persistent owner-only token minted atomically, CLI credential + `OPENAI4S_TOKEN` escape hatch, constant-time compare, mutation query token refused, `/auth/status` reports the real mode, `OPENAI4S_REQUIRE_TOKEN=0` loopback-only until `LEGACY_TOKEN_OPT_OUT_REMOVED_IN` | `57d4ff7` | `Completed` | Restoring the opt-in default fails the default test; the DNS-rebinding test was deliberately made *authenticated* so it still proves the Host check rather than the gate. **This row read `Completed` before its exit matrix existed.** Three legs were claimed and untested: an unauthenticated WebSocket upgrade (every `/api/v1/ws` test presented a credential, on a synthetic handler that could not tell a refusal from a live socket), an unauthenticated REST *matrix* that was one route, and "cookie across restart" asserted as token-file stability rather than a cookie replayed against the handler that replaced the issuer. `tests/test_auth_exit_matrix.py` drives all three over a real socket; removing the gate turns six of its assertions red and minting the token per boot turns the two restart legs red on their own. "One minor release" was prose in four places and is now a version constant a test can fail on. |
+| 1.4 | Local auth required on loopback by default (D1): persistent owner-only token minted atomically, CLI credential + `OPENAI4S_TOKEN` escape hatch, constant-time compare, mutation query token refused, `/auth/status` reports the real mode, `OPENAI4S_REQUIRE_TOKEN=0` loopback-only for one minor release, removed in 0.3.0 | `57d4ff7` | `Completed` | Restoring the opt-in default fails the default test; the DNS-rebinding test was deliberately made *authenticated* so it still proves the Host check rather than the gate. **This row read `Completed` before its exit matrix existed.** Three legs were claimed and untested: an unauthenticated WebSocket upgrade (every `/api/v1/ws` test presented a credential, on a synthetic handler that could not tell a refusal from a live socket), an unauthenticated REST *matrix* that was one route, and "cookie across restart" asserted as token-file stability rather than a cookie replayed against the handler that replaced the issuer. `tests/test_auth_exit_matrix.py` drives all three over a real socket; removing the gate turns six of its assertions red and minting the token per boot turns the two restart legs red on their own. "One minor release" was prose in four places, then a version constant a test failed on; at 0.3.0 the opt-out was removed and that expiry test replaced by one that starts a daemon with `OPENAI4S_REQUIRE_TOKEN=0` and asserts the gate over the wire. |
 | 1.1/1.2 | Demo seed opt-in; the example moved behind `POST /example/session` with `{"confirm": true}` and a dashboard button | `57d4ff7` | `Completed` | Restoring the `"1"` default fails the behavioural test with all six cells listed — not just the flag test |
 | 1.x | The browser client's 3Dmol CDN fallback removed; frontend egress surface frozen | `57d4ff7` | `Completed` | Replanting the fallback fails both new gates by file and line |
 
@@ -701,3 +701,40 @@ It does not upgrade any status above. The five `implemented_unverified` rows
 still wait on one real `workflow_dispatch`; the macOS notarization still waits on
 a certificate; `platform_checks` receipt rows are still `[]`; and BYOC state is
 still absent from the release evidence. Those are named in §12 and remain there.
+
+## 20. v0.3.0 release preparation (2026-09-14)
+
+Recorded against `81279076`, which was `origin/main` when the v0.3.0 release
+audit ran. §8 gives the crosswalk distribution at `408098f`, and §19 changes no
+status. Neither records that one row was reopened after them, so a reader of
+this file would still believe no P0 row is open.
+
+**The crosswalk distribution at `81279076` is 47 `closed`, 5
+`implemented_unverified`, 3 `deferred_p2`, and 1 `open`.** It supersedes §8's
+figure.
+
+The open row is **R2/P0-03**: integrated P0-2, the unified network boundary for
+the bundled research Skills. `e20bd966` (2026-08-21) moved it from `closed`
+back to `open` and removed its evidence digest. The imported bioSkills
+collection contains raw-network Python, shell, R and recipe-code paths that do
+not pass through the Host egress allowlist or SSRF checks, and the gate that
+fingerprints those clients detects them without confining them. The reopen
+landed after the crosswalk's declared audit (`39bc788aa01d`) and before the
+v0.2.0 tag, so v0.2.0 shipped the same behaviour.
+
+**D12 is therefore not met as written.** The owner waived this one row for
+v0.3.0 as a declared known limitation (`D12-W1` in
+[`v03-decisions.md`](v03-decisions.md)). The row stays `open`. The waiver
+changes what may be claimed, not the row's status: the release notes must
+disclose the limitation, and nothing may say P0 is closed.
+
+The five `implemented_unverified` rows still wait on one real `workflow_dispatch`
+of `release.yml` with `publish=true`. The only dispatch that has succeeded so
+far, run 32950628226 for v0.2.0, ran in `pypi_only` mode. That mode publishes
+to PyPI but skips staging assets onto the draft and making the release public.
+The v0.3.0 publish dispatch will therefore be the first
+execution of the `attach` and `finalize` jobs, the stage attestation and the
+evidence upload. D12 permits these rows because each one names that run.
+
+Two more decisions for the release are recorded beside the waiver: D11 is
+settled as "no DMG in v0.3.0", and the Windows/WSL2 zip ships (D13).

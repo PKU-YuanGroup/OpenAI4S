@@ -34,7 +34,22 @@ import { DEFAULT_REF, DEFAULT_REPO, resolveSource } from "./source.mjs";
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MIN_NODE_MAJOR = 18;
 
-const USAGE = `openai4s-skills — install the OpenAI4S Skill library locally
+// The version of the copy that is running, read from the package.json that
+// ships beside it (npm always packs it). The usage text names the pinned npm
+// release the docs install from, which can be older than this copy; printing
+// both keeps a reader from taking one for the other.
+function packageVersion() {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(MODULE_DIR, "..", "..", "package.json"), "utf8")
+    );
+    return typeof manifest.version === "string" ? manifest.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+const USAGE = `openai4s-skills ${packageVersion()} — install the OpenAI4S Skill library locally
 
 USAGE
   npx @pku-yuangroup/openai4s-skills <command> [options]         # latest npm release

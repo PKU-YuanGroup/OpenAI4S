@@ -49,6 +49,17 @@ class ArtifactDeliveryReferenceError(RuntimeError):
     """A durable completion message still addresses this Artifact's bytes."""
 
 
+#: Kernel protocol modes (``Kernel.mode``) that supervisors up to openai4s
+#: 0.2.x persisted as a Python generation's ``runtime``. They name the worker's
+#: host facade, not a language: an R kernel recorded ``r``.
+LEGACY_PYTHON_KERNEL_MODES = frozenset({"repl", "script", "analysis"})
+
+
+def _legacy_mode_verdict(kind: str) -> str:
+    """The sentence 0.2.x capture wrote for a runtime it did not recognise."""
+    return f"{kind} kernel: Python distribution metadata does not apply"
+
+
 def file_identity(path: str) -> str | None:
     """Best-effort physical identity for legacy or aliased artifact paths."""
     try:
@@ -1552,7 +1563,57 @@ class ArtifactRepository:
         except (ValueError, TypeError):
             result.pop("remote_json", None)
             result["remote"] = []
+        self._read_legacy_python_kernel(result)
         return result
+
+    def _read_legacy_python_kernel(self, snapshot: dict) -> None:
+        """Read a Python kernel that 0.2.x recorded under its protocol mode.
+
+        0.2.x stored a Web Python generation's runtime as ``repl``, and its
+        capture then froze ``kind: "repl"``, no packages and "repl kernel:
+        Python distribution metadata does not apply" into the row. The capture
+        path now reads such a generation as Python, but rows are frozen when a
+        file is captured, so every artifact made before the upgrade kept
+        serving that sentence -- about a Python kernel, labelled captured.
+
+        Corrected here, on the one read every consumer shares (the environment
+        route, the session package and the share projection), rather than by
+        rewriting the row: ``kind`` is part of the content address, and the
+        stored bytes remain the audit record of what 0.2.x wrote.
+
+        Only the label is corrected. The packages were never read, and reading
+        the interpreter now would describe it as it is today, not as it was
+        when the file was produced -- so the package list is reported unknown,
+        never filled in.
+        """
+        kind = str(snapshot.get("kind") or "")
+        if (
+            kind not in LEGACY_PYTHON_KERNEL_MODES
+            or snapshot.get("packages")
+            or snapshot.get("packages_unavailable") != _legacy_mode_verdict(kind)
+        ):
+            return
+        generation_id = snapshot.get("generation_id")
+        if generation_id:
+            with self._lock:
+                try:
+                    row = self._connection.execute(
+                        "SELECT language FROM kernel_generations "
+                        "WHERE generation_id=?",
+                        (generation_id,),
+                    ).fetchone()
+                except sqlite3.Error:
+                    row = None
+            # The generation is the authority when it survives. A missing one
+            # (a deleted session's, or an import that dropped it) leaves the
+            # mode name, which 0.2.x only ever gave to Python kernels.
+            if row is not None and str(row[0] or "").lower() not in {"", "python"}:
+                return
+        snapshot["kind"] = "python"
+        snapshot["packages_unavailable"] = (
+            f"openai4s 0.2.x recorded this Python kernel by its {kind!r} mode "
+            "and did not read its packages; the package list is unknown"
+        )
 
     def env_snapshot_for_artifact(
         self, artifact_id: str, version_id: str | None = None

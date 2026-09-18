@@ -105,6 +105,26 @@ _NATIVE_KEY_ENV = {
 }
 
 
+def provider_env_api_key(provider: str | None) -> str:
+    """The key this process's environment holds for exactly one provider.
+
+    `OPENAI4S_<PROVIDER>_API_KEY`, then the provider's native variables.
+    Deliberately NOT the generic `OPENAI4S_LLM_API_KEY`: that one belongs to
+    whichever provider the daemon was started for, and `LLMConfig` only reaches
+    for it because it is resolving that provider. Asked about any other
+    provider, it would hand one vendor's credential to another.
+    """
+    name = str(provider or "").strip().lower()
+    if not name:
+        return ""
+    env_name = name.upper().replace("-", "_")
+    for variable in (f"OPENAI4S_{env_name}_API_KEY", *_NATIVE_KEY_ENV.get(name, ())):
+        value = (os.environ.get(variable) or "").strip()
+        if not is_placeholder_api_key(value):
+            return value
+    return ""
+
+
 @dataclass
 class LLMConfig:
     """Multi-provider base-model config.

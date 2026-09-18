@@ -30,7 +30,7 @@ import { ensureActivateKeys, hint, openMenu } from "./chrome";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
 import { sessionCopy } from "./copy";
-import { navigation, ownsNavigation, resetSessionDirectory, type Navigation } from "./navigation";
+import { resetSessionDirectory } from "./navigation";
 import {
   DATE_BUCKET_KEYS,
   SESSION_MAX_PAGES,
@@ -219,47 +219,64 @@ export async function loadProjects(opts?: { append?: boolean; q?: string }): Pro
 
 let foldersRequest = 0;
 let sessionsRequest = 0;
-let folderCacheOwner: Navigation | null = null;
 export type SessionRead = { status: "loaded" | "error" | "superseded"; rows: SessionLike[] };
+type ListOwner = () => boolean;
 type SessionFlight = {
-  owner: Navigation; promise: Promise<SessionRead>; want: number; more: boolean;
+  owner: ListOwner; promise: Promise<SessionRead>; want: number; more: boolean;
   pending: boolean; replaced: Promise<void>; supersede: () => void;
 };
 let latestSessionRead: SessionFlight | null = null;
 
 export function invalidateFolders(): void {
   foldersRequest++;
-  folderCacheOwner = null;
   _foldersFor.value = null;
   foldersLoading.value = false;
 }
 
+// A list read belongs to the project it was issued for, and to nothing else.
+// `_openGen` says who owns the *view*: every conversation open and every trip
+// Home bumps it, and neither makes project P's rows wrong. Keyed on it, a
+// refresh after a delete, a rename, a send or a WS frame_update was dropped the
+// moment the user clicked another row -- and nothing re-issues it, because
+// openConversation reloads only an empty list.
+const listScope = (): ListOwner => {
+  const pid = project.value;
+  return () => project.value === pid;
+};
+
 export async function loadFolders(): Promise<void> {
-  const owner = navigation();
+  const pid = project.value;
   const request = ++foldersRequest;
-  const current = () => ownsNavigation(owner) && request === foldersRequest;
-  if (!owner.projectId) {
+  const scope = listScope();
+  const current = () => scope() && request === foldersRequest;
+  if (!pid) {
     folders.value = [];
     _foldersFor.value = null;
     foldersLoading.value = false;
     foldersLoadError.value = false;
     return;
   }
-  if (_foldersFor.value === owner.projectId && folderCacheOwner && ownsNavigation(folderCacheOwner)) return;
+  if (_foldersFor.value === pid && folders.value) {
+    // Answering from cache still ends any read this call superseded, whose own
+    // `finally` will not fire once `foldersRequest` moved past it.
+    foldersLoading.value = false;
+    return;
+  }
   foldersLoading.value = true;
   foldersLoadError.value = false;
   try {
-    const data = await api(`/projects/${encodeURIComponent(owner.projectId)}/folders`) as { folders?: unknown[] } | null;
+    const data = await api(`/projects/${encodeURIComponent(pid)}/folders`) as { folders?: unknown[] } | null;
     if (!current()) return;
     if (!data || !Array.isArray(data.folders) || data.folders.some((row) =>
       !row || typeof row !== "object" || typeof (row as { folder_id?: unknown }).folder_id !== "string")) {
       throw new Error("invalid folders response");
     }
     folders.value = data.folders;
-    _foldersFor.value = owner.projectId;
-    folderCacheOwner = owner;
+    _foldersFor.value = pid;
   } catch {
     if (!current()) return;
+    // An unread list is not an empty one: keep whatever was confirmed and say
+    // the read failed, so renderSessions can offer Retry instead of "no rows".
     foldersLoadError.value = true;
   } finally {
     if (current()) {
@@ -270,15 +287,16 @@ export async function loadFolders(): Promise<void> {
 }
 
 export function loadSessions(options: { more?: boolean } = {}): Promise<SessionRead> {
-  const owner = navigation();
+  const pid = project.value;
   const request = ++sessionsRequest;
-  const current = () => ownsNavigation(owner) && request === sessionsRequest;
-  if (_sessionScope.value !== (owner.projectId || "")) resetSessionDirectory();
+  const scope = listScope();
+  const current = () => scope() && request === sessionsRequest;
+  if (_sessionScope.value !== (pid || "")) resetSessionDirectory();
   const previous = latestSessionRead;
-  const continuing = previous?.pending && ownsNavigation(previous.owner) ? previous : null;
+  const continuing = previous?.pending && previous.owner() ? previous : null;
   const want = Math.max(sessionWalkBudget((sessionPages.value || 1) + (options.more ? 1 : 0)), continuing?.want || 1);
   const more = !!options.more || !!continuing?.more;
-  const scope = owner.projectId ? `&project_id=${encodeURIComponent(owner.projectId)}` : "";
+  const query = pid ? `&project_id=${encodeURIComponent(pid)}` : "";
   sessionsLoading.value = true;
   sessionsLoadError.value = false;
   _sessionsLoadingMore.value = more;
@@ -288,7 +306,7 @@ export function loadSessions(options: { more?: boolean } = {}): Promise<SessionR
     let cursor: string | null = null;
     try {
       while (state.walked < want) {
-        const data = await api(`/frames?limit=${SESSION_PAGE_SIZE}${scope}` +
+        const data = await api(`/frames?limit=${SESSION_PAGE_SIZE}${query}` +
           (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "")) as {
             frames?: SessionLike[]; has_more?: boolean; next_cursor?: string | null;
           } | null;
@@ -327,15 +345,16 @@ export function loadSessions(options: { more?: boolean } = {}): Promise<SessionR
   })();
   let supersede!: () => void;
   const replaced = new Promise<void>((resolve) => { supersede = resolve; });
-  const flight = { owner, promise, want, more, pending: true, replaced, supersede };
-  void promise.then(() => { flight.pending = false; });
+  const flight: SessionFlight = { owner: scope, promise, want, more, pending: true, replaced, supersede };
+  const settle = () => { flight.pending = false; };
+  void promise.then(settle, settle);
   latestSessionRead = flight;
   previous?.supersede();
   return promise;
 }
 
-/** Follow a newer read in the SAME navigation without sending another GET. */
-export async function loadSessionsForNavigation(owner: Navigation): Promise<SessionRead> {
+/** Follow a newer read in the SAME project without sending another GET. */
+export async function loadSessionsForScope(owner: ListOwner): Promise<SessionRead> {
   void loadSessions();
   let flight = latestSessionRead!;
   for (;;) {
@@ -343,11 +362,15 @@ export async function loadSessionsForNavigation(owner: Navigation): Promise<Sess
       flight.promise,
       flight.replaced.then((): SessionRead => ({ status: "superseded", rows: [] })),
     ]);
-    if (!ownsNavigation(owner)) return { status: "superseded", rows: [] };
+    if (!owner()) return { status: "superseded", rows: [] };
     const latest = latestSessionRead;
-    if (!latest || !ownsNavigation(latest.owner) || latest === flight) return result;
+    if (!latest || !latest.owner() || latest === flight) return result;
     flight = latest;
   }
+}
+
+export function sessionListScope(): ListOwner {
+  return listScope();
 }
 
 export async function loadMoreSessions(): Promise<void> {

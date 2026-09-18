@@ -176,22 +176,64 @@ _TASK_MODE_SHARED_STRUCTURE = """\
   targeted unit tests over the domain functions, and one minimal seeded
   end-to-end run. The tests are part of the deliverable, not scaffolding."""
 
-_TASK_MODE_SHARED_COMPLETION = """\
+_TASK_MODE_SAVE_ARTIFACTS = """\
 Save each source file as an artifact (`host.save_artifact(path, filename)`)
 once it is written, so it is a durable deliverable rather than a file that
-happens to be on disk.
+happens to be on disk."""
 
-Finish by declaring, in `host.submit_output(...)` or `finalize_response`:
-`source_files` (every source file you wrote), `entry_points`,
-`architecture_summary` (one short paragraph naming what each module owns), and
-`test_evidence` (each entry names the command and the id of the cell that
-actually ran it). The Host verifies these against the filesystem, the artifact
-store, and the recorded cell output before accepting the completion — an
+# The ARMED completion contract: only an explicit selection arms it, and only
+# an armed turn shows the `[cell id: …]` line and can have `host.bash`
+# pre-authorized. A detected turn gets `_TASK_MODE_ADVISORY_COMPLETION`
+# instead, because teaching it this runner and this id would promise what its
+# runtime never does (no id on its Observations; `host.bash` denied headless,
+# an approval card per command on the Web).
+# (Concatenated, not an f-string: the example call below has literal braces.)
+_TASK_MODE_SHARED_COMPLETION = _TASK_MODE_SAVE_ARTIFACTS + """
+
+Run every test command through `host.bash(command)` inside a Python cell,
+exactly as written. The Host accepts a test only with a `host.bash` receipt for
+that exact command string: the kernel's record of that command's exit status,
+run with this cell's environment. A test run through `subprocess` or
+`os.system`, or one whose output you merely print, leaves no receipt and is
+refused. Do not change what the command runs to get one (a wrapper script, an
+edited `PATH`): that substitutes the runner and is not a test result. If the
+command cannot run, say so. Once that cell has run, its Observation starts with a
+`[cell id: …]` line: that id (never a cell number, a kernel label, or a guess)
+is the test's `producing_cell_id`, so submit in a later cell, after you have
+seen it.
+
+Finish by declaring `source_files` (every source file you wrote),
+`entry_points`, `architecture_summary` (one short paragraph naming what each
+module owns), and `test_evidence` (each entry names the exact command string
+and the `producing_cell_id` of the cell that ran it). They are keyword
+arguments of `host.submit_output`, not keys inside its `output` dict:
+
+    host.submit_output(
+        {"summary": "..."}, ["..."],
+        source_files=[{"path": "pkg/core.py"}], entry_points=["run.py"],
+        architecture_summary="...",
+        test_evidence=[{"command": "python -m pytest -q", "producing_cell_id": "<id>"}],
+    )
+
+`finalize_response` takes the same four fields as top-level arguments. The Host
+verifies them against the filesystem, the artifact store, the recorded cell
+output, and its own shell receipts before accepting the completion — an
 unbacked claim is refused, not published. There is no field for a test's output
 text: pass or fail is read off the recorded output of the cell you name, so
 report the cell, not your reading of it."""
 
-TASK_MODE_REUSABLE_PIPELINE = f"""\
+_TASK_MODE_ADVISORY_COMPLETION = f"""\
+{_TASK_MODE_SAVE_ARTIFACTS}
+
+When you did write source code, finish by declaring `source_files` (every
+source file you wrote), `entry_points`, and `architecture_summary` (one short
+paragraph naming what each module owns) as keyword arguments of
+`host.submit_output(...)`, or top-level arguments of `finalize_response` —
+never as keys inside the `output` dict. Leave `test_evidence` out on this
+turn: it cites a Host-minted cell id that only an explicitly selected mode
+shows you, so say in the answer which tests you ran and what they printed."""
+
+_TASK_MODE_REUSABLE_PIPELINE_GUIDANCE = f"""\
 [TASK MODE: reusable_pipeline]
 This request asks for something that RUNS AGAIN — not a one-off conclusion. The
 deliverable is code someone can re-run tomorrow on new inputs, plus the results
@@ -206,11 +248,9 @@ How to work:
 - Open with a SHORT module-responsibility plan (a few lines: which file owns
   what, and why). "Start instantly, never open with a plan" belongs to a plain
   analysis run; this mode plans briefly, then implements immediately.
-{_TASK_MODE_SHARED_STRUCTURE}
+{_TASK_MODE_SHARED_STRUCTURE}"""
 
-{_TASK_MODE_SHARED_COMPLETION}"""
-
-TASK_MODE_CODEBASE_CHANGE = f"""\
+_TASK_MODE_CODEBASE_CHANGE_GUIDANCE = f"""\
 [TASK MODE: codebase_change]
 This request changes a codebase. The deliverable is saved source code plus the
 evidence that it still works — not a transcript of edits inside cells.
@@ -229,9 +269,27 @@ How to work:
   lines: which files move, which are new, what each owns). "Start instantly,
   never open with a plan" belongs to a plain analysis run; this mode plans
   briefly, then implements immediately.
-{_TASK_MODE_SHARED_STRUCTURE}
+{_TASK_MODE_SHARED_STRUCTURE}"""
 
-{_TASK_MODE_SHARED_COMPLETION}"""
+#: Explicitly selected modes: the guidance plus the armed, Host-verified
+#: completion contract.
+TASK_MODE_REUSABLE_PIPELINE = (
+    f"{_TASK_MODE_REUSABLE_PIPELINE_GUIDANCE}\n\n{_TASK_MODE_SHARED_COMPLETION}"
+)
+TASK_MODE_CODEBASE_CHANGE = (
+    f"{_TASK_MODE_CODEBASE_CHANGE_GUIDANCE}\n\n{_TASK_MODE_SHARED_COMPLETION}"
+)
+
+#: Detected modes: the same guidance with the advisory completion, which
+#: teaches no runner and no cell id the turn's runtime would not honour.
+#: :func:`openai4s.agent.task_modes.task_mode_prompt` appends
+#: :data:`TASK_MODE_DETECTED_NOTE`.
+TASK_MODE_REUSABLE_PIPELINE_DETECTED = (
+    f"{_TASK_MODE_REUSABLE_PIPELINE_GUIDANCE}\n\n{_TASK_MODE_ADVISORY_COMPLETION}"
+)
+TASK_MODE_CODEBASE_CHANGE_DETECTED = (
+    f"{_TASK_MODE_CODEBASE_CHANGE_GUIDANCE}\n\n{_TASK_MODE_ADVISORY_COMPLETION}"
+)
 
 
 #: Appended to a mode fragment when the mode was DETECTED from the request
@@ -261,6 +319,8 @@ _REGISTRY: dict[str, str] = {
     "security_general": SECURITY_GENERAL,
     "task_mode_reusable_pipeline": TASK_MODE_REUSABLE_PIPELINE,
     "task_mode_codebase_change": TASK_MODE_CODEBASE_CHANGE,
+    "task_mode_reusable_pipeline_detected": TASK_MODE_REUSABLE_PIPELINE_DETECTED,
+    "task_mode_codebase_change_detected": TASK_MODE_CODEBASE_CHANGE_DETECTED,
 }
 
 

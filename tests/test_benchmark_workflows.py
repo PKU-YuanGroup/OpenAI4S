@@ -17,12 +17,15 @@ import hashlib
 import json
 import re
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from openai4s.benchmark import load_workflows, run_case
 from openai4s.benchmark.model import OUTCOMES
 from openai4s.benchmark.steps import STEPS
+
+ROOT = Path(__file__).resolve().parents[1]
 
 WORKFLOWS = load_workflows()
 CASES = [(w, c) for w in WORKFLOWS for c in w.cases]
@@ -59,6 +62,133 @@ def test_every_workflow_carries_at_least_two_cases():
 
 def test_forty_six_versioned_cases_are_frozen():
     assert len(CASES) == 46
+
+
+# --------------------------------------------------------------------------
+# the same two numbers, everywhere they are restated
+# --------------------------------------------------------------------------
+
+#: A count written as digits, as an English word, or as a Chinese word. The
+#: superseded words stay in the alternation on purpose: a site that drifts back
+#: to `eleven` must be reported as a wrong value, not quietly drop out of the
+#: gate as a sentence that no longer matches.
+_COUNT = (
+    r"(?:\d+|eleven|thirteen|thirty-four|forty-six" r"|十一个|十三个|三十四个|四十六个)"
+)
+
+#: What each count word is worth. A word missing here is a table bug, and the
+#: lookup raises rather than guessing.
+_COUNT_WORDS = {
+    "eleven": 11,
+    "thirteen": 13,
+    "thirty-four": 34,
+    "forty-six": 46,
+    "十一个": 11,
+    "十三个": 13,
+    "三十四个": 34,
+    "四十六个": 46,
+}
+
+#: Every prose site that states the workflow/case counts, and how it states
+#: them. The package docstring and the two package READMEs are what a reader of
+#: the installed distribution sees; the root README pair is also the PyPI
+#: `long_description`; `workflows/README*.md` is the index the counts belong to;
+#: `CLAUDE.md` is the contributor guide; the test module's own docstring is the
+#: one a contributor reads first. `docs/v02-decisions.md` deliberately does not
+#: appear: it is a frozen decision record of the original "10 workflows / 20
+#: cases" plan, not a claim about the current tree.
+COUNT_SITES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "README.md",
+        rf"a ({_COUNT})-workflow/({_COUNT})-case benchmark",
+        ("workflows", "cases"),
+    ),
+    (
+        "README.md",
+        rf"— ({_COUNT})\s+workflows / ({_COUNT}) cases run against",
+        ("workflows", "cases"),
+    ),
+    (
+        "README_zh.md",
+        rf"({_COUNT}) workflow/({_COUNT}) case 基准",
+        ("workflows", "cases"),
+    ),
+    (
+        "README_zh.md",
+        rf"({_COUNT}) workflow / ({_COUNT}) case 跑在真实",
+        ("workflows", "cases"),
+    ),
+    (
+        "CLAUDE.md",
+        rf"holds the ({_COUNT}) science-workflow benchmark manifests \(({_COUNT}) cases\)",
+        ("workflows", "cases"),
+    ),
+    (
+        "openai4s/benchmark/README.md",
+        rf"({_COUNT}) workflows and ({_COUNT})\s+cases that actually execute",
+        ("workflows", "cases"),
+    ),
+    (
+        "openai4s/benchmark/README_zh.md",
+        rf"({_COUNT}) workflow、({_COUNT})真的会",
+        ("workflows", "cases"),
+    ),
+    (
+        "openai4s/benchmark/__init__.py",
+        rf"({_COUNT}) representative workflows and ({_COUNT}) versioned",
+        ("workflows", "cases"),
+    ),
+    (
+        "workflows/README.md",
+        rf"({_COUNT}) workflows and ({_COUNT})\s+cases, each workflow JSON",
+        ("workflows", "cases"),
+    ),
+    (
+        "workflows/README_zh.md",
+        rf"({_COUNT}) workflow、共 ({_COUNT}) 个用例",
+        ("workflows", "cases"),
+    ),
+    (
+        "tests/test_benchmark_workflows.py",
+        rf"({_COUNT}) workflows and\s+({_COUNT}) cases worthless",
+        ("workflows", "cases"),
+    ),
+)
+
+
+def _count_value(stated: str) -> int:
+    if stated.isdigit():
+        return int(stated)
+    return _COUNT_WORDS[stated]
+
+
+def test_every_prose_count_matches_the_tree():
+    """The two frozen numbers are restated in about ten prose sites.
+
+    `test_thirteen_workflows_are_frozen` and
+    `test_forty_six_versioned_cases_are_frozen` pin the numbers in code, and
+    `tests/test_release_gates.py` holds the release floor to them. Nothing read
+    the prose, which is how 11/34 survived the step to 13/46 — and how a change
+    that corrected six of those sites still left `README.md:123` disagreeing
+    with the Chinese row beside it. Each site is matched by a sentence-specific
+    pattern so a sentence that stops stating the count fails here instead of
+    silently dropping out of the gate.
+    """
+    expected = {"workflows": len(WORKFLOWS), "cases": len(CASES)}
+    problems = []
+    for rel, pattern, kinds in COUNT_SITES:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        matches = list(re.finditer(pattern, text))
+        if not matches:
+            problems.append(f"{rel}: no sentence matches {pattern!r} any more")
+        for match in matches:
+            for stated, name in zip(match.groups(), kinds):
+                if _count_value(stated) != expected[name]:
+                    problems.append(
+                        f"{rel}: says {stated!r} where the tree's {name} count is "
+                        f"{expected[name]} ({match.group(0)[:60]!r})"
+                    )
+    assert not problems, "\n".join(problems)
 
 
 def test_the_engineering_deliverable_workflows_are_present_and_refuse():

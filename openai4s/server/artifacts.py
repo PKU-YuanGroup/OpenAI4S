@@ -31,7 +31,10 @@ from openai4s.artifact_restore import (
 from openai4s.execution import CaptureResult
 from openai4s.security.fsprobe import lstat_is_symlink
 from openai4s.server.errors import record_diagnostic
-from openai4s.storage.artifacts import ArtifactDeliveryReferenceError
+from openai4s.storage.artifacts import (
+    LEGACY_PYTHON_KERNEL_MODES,
+    ArtifactDeliveryReferenceError,
+)
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 _EMBEDDED_IMAGE_TYPES = frozenset(
@@ -768,6 +771,29 @@ def _write_confined_text(workspace: Path, relative: Path, content: str) -> Path:
     if target.is_symlink() or not target.resolve(strict=True).is_relative_to(root):
         raise OSError("artifact target escaped its workspace")
     return target
+
+
+#: Kernel protocol modes (``Kernel.mode``) that older supervisors persisted as
+#: a Python generation's ``runtime``. They name the worker's host facade, not
+#: a language. One definition, shared with the Store's read of rows those
+#: supervisors' captures already froze.
+_LEGACY_PYTHON_KERNEL_MODES = LEGACY_PYTHON_KERNEL_MODES
+
+
+def _remote_generation(environment: dict[str, Any]) -> bool:
+    """Whether a generation's worker ran outside this daemon's machine.
+
+    New rows say so explicitly. Rows written before that are recognised by the
+    cluster lease key the gateway gives a remote kernel
+    (``("cluster", workload_id, epoch)``), the same test its execution-plane
+    check uses.
+    """
+    if environment.get("execution_plane") == "remote":
+        return True
+    key = environment.get("key")
+    return bool(
+        isinstance(key, (list, tuple)) and len(key) >= 1 and key[0] == "cluster"
+    )
 
 
 def _same_interpreter(interpreter: Any, has_generation: bool = False) -> bool:
@@ -3811,7 +3837,26 @@ class ArtifactManager:
         environment = (generation or {}).get("environment")
         environment = environment if isinstance(environment, dict) else {}
         runtime = str(environment.get("runtime") or language or "python").lower()
+        generation_language = str(
+            (generation or {}).get("language") or language or ""
+        ).lower()
+        if runtime in _LEGACY_PYTHON_KERNEL_MODES and generation_language in {
+            "",
+            "python",
+        }:
+            # Supervisors up to 0.2.0 stored the kernel's protocol mode as
+            # the runtime, so every Web Python generation reads "repl". It is
+            # still a Python kernel; reading it as a foreign runtime recorded
+            # no packages and a false "does not apply".
+            runtime = "python"
         interpreter = environment.get("interpreter")
+        remote = _remote_generation(environment)
+        if remote:
+            # A remote worker's generation cannot name an interpreter this
+            # daemon may read: legacy rows stored the daemon's own
+            # sys.executable there (the Kernel default), and freezing it would
+            # attribute this process's packages to another machine.
+            interpreter = None
 
         snapshot: dict[str, Any] = {
             "kind": runtime,
@@ -3849,8 +3894,16 @@ class ArtifactManager:
                     f"could not read distributions from {interpreter!r}"
                     if interpreter
                     else (
-                        "this kernel generation records no interpreter, and "
-                        "the daemon's packages are not this kernel's"
+                        (
+                            "remote worker: its interpreter runs on another "
+                            "machine, and the daemon's packages are not this "
+                            "kernel's"
+                        )
+                        if remote
+                        else (
+                            "this kernel generation records no interpreter, and "
+                            "the daemon's packages are not this kernel's"
+                        )
                     )
                 )
             else:
@@ -3931,13 +3984,21 @@ class ArtifactManager:
 
 
 def _capture_snippet(index: int) -> str:
+    # pyplot is read from sys.modules, never imported, as in
+    # kernel/guards.py: importing it builds matplotlib's font list, and an
+    # enforced sandbox gives each kernel an empty private MPLCONFIGDIR. The
+    # old `'matplotlib' in sys.modules` test imported pyplot after a Cell that
+    # only imported `matplotlib`, or whose first pyplot import was stopped,
+    # so a font scan (8-48s on macOS) ran after the Cell and the Stop or the
+    # daemon shutdown waited it out. A process that has not imported pyplot
+    # has no pyplot figures to capture.
     return (
         "import json as __oj\n"
         "__osfigs=[]\n"
         "try:\n"
         " import sys as __sys\n"
-        " if 'matplotlib' in __sys.modules:\n"
-        "  import matplotlib.pyplot as __plt\n"
+        " __plt=__sys.modules.get('matplotlib.pyplot')\n"
+        " if __plt is not None:\n"
         "  for __n in list(__plt.get_fignums()):\n"
         f"   __nm='figure_cell{index}_'+str(__n)+'.png'\n"
         "   try:\n"

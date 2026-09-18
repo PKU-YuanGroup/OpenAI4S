@@ -242,18 +242,82 @@ class OnboardingService:
             model=defaults["model"],
             base_url=defaults["base_url"],
             has_api_key=has_key,
-            complete=self._stored("onboarding_complete") == "1",
+            complete=(
+                self._stored("onboarding_complete") == "1" or self._already_set_up()
+            ),
             data_dir=str(self.cfg.data_dir),
             platform=system,
             native_runtime_supported=system in {"Linux", "Darwin"},
         )
 
+    #: Rows only a configured install has: Customize -> Models, a profile
+    #: activation and `openai4s init` write them, and a first boot writes none.
+    _CONFIGURATION_SETTINGS = (
+        "llm_provider",
+        "llm_model",
+        "llm_base_url",
+        "llm_api_key",
+        "active_model_profile",
+    )
+
+    def _already_set_up(self) -> bool:
+        """An install that is past its first run without ever saying so.
+
+        `onboarding_complete` is written only by `openai4s init` and by the Web
+        wizard, and 0.2.0 had no Web wizard. So an install configured through
+        Customize -> Models or used for real work under 0.2.0 carries no flag,
+        and read as a first run after upgrading: a blocking modal over its own
+        history, saying "No profile yet".
+
+        Answered from the database on every read rather than backfilled once,
+        so there is no migration to get wrong and a GET still writes nothing.
+        Two kinds of evidence count -- a stored model configuration, or
+        history: a session that has held a message, or a Cell that was
+        executed. The second history matters because a Notebook REPL cell
+        writes an execution record and never a message, so an install used
+        only through the Notebook would otherwise read as a first run. A
+        session that was created and never run is not history. Nor is an
+        environment key alone: with no history and no stored configuration,
+        that is exactly what a fresh install started from a `.env` looks like.
+        """
+        if any(self._stored(key) for key in self._CONFIGURATION_SETTINGS):
+            return True
+        try:
+            profiles = self.store.list_model_profiles() or []
+        except Exception:  # noqa: BLE001 - a store without profiles has none
+            profiles = []
+        if any(not profile.get("deleted_at") for profile in profiles):
+            return True
+        for probe in ("has_message_history", "has_execution_history"):
+            has_history = getattr(self.store, probe, None)
+            if not callable(has_history):
+                continue
+            try:
+                if has_history():
+                    return True
+            except Exception:  # noqa: BLE001 - unreadable history is no evidence
+                continue
+        return False
+
     def _stored(self, key: str) -> str:
         return str(self.store.get_setting(key) or "").strip()
 
     def _stored_secret(self, key: str) -> str:
-        """Resolve a credential setting, whether reference or legacy plaintext."""
-        return str(self.store.get_secret_setting(key) or "").strip()
+        """Resolve a credential setting, whether reference or legacy plaintext.
+
+        A host without a secure store is a *read* that has no answer, not a
+        failure of this service. `store.secrets` fails closed there by design —
+        the accepted answer on every headless Linux server and container — and
+        letting it propagate turned `GET /onboarding` into an `internal error`
+        that the wizard could not dismiss, because its Skip button posts to the
+        same service. The `except` mirrors `gateway.effective_api_key` and
+        `llm.resolve.store_overrides`, which read the same setting the same
+        guarded way.
+        """
+        try:
+            return str(self.store.get_secret_setting(key) or "").strip()
+        except Exception:  # noqa: BLE001 - a broker we cannot read holds nothing
+            return ""
 
     def _provider(self, value: str) -> str:
         provider = str(value or "").strip().lower()

@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -539,3 +540,266 @@ def test_the_macos_probe_is_already_fail_closed(monkeypatch, tmp_path):
     # And a readable home is plainly unconfined.
     monkeypatch.setenv("HOME", str(tmp_path))
     assert probe(object()) is False
+
+
+# --------------------------------------------------------------------------
+# other processes' environments, and the helper's own
+# --------------------------------------------------------------------------
+#
+# The kernel profile closed `sysctl(KERN_PROCARGS2, <daemon pid>)` -- the macOS
+# read of another process's exec-time argument and environment block, where a
+# daemon whose LLM key is configured by environment variable or `.env` holds it
+# in cleartext. This profile is the second Seatbelt builder and had no such
+# deny, while the helper also has the network by design. The Linux form closes
+# the same read with `--unshare-pid`.
+#
+# Two further halves, both measured:
+#
+#   * the gate on that read depends on whether reader and target share a
+#     *session*. A same-session reader is let through even with both denies in
+#     place, and `_spawn_helper` started the helper in the daemon's session;
+#   * the helper's *own* exec-time block is readable to itself on both
+#     platforms (KERN_PROCARGS2 on its own pid, `/proc/self/environ`) and no
+#     profile can refuse that. `scrub_secret_env` only edits `os.environ`, the
+#     in-process copy, so a key the host passed at exec was still one read away
+#     from provider code.
+
+_PROCARGS_READER = r"""
+import ctypes, ctypes.util, json, os, re, sys
+
+MARKER = b"SANDBOX_MARKER_API_KEY="
+libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def read(pid):
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+    size = ctypes.c_size_t(0)
+    if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or not size.value:
+        return "BLOCKED", ctypes.get_errno()
+    buf = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+        return "BLOCKED", ctypes.get_errno()
+    names = [p for p in buf.raw[: size.value].split(b"\0")
+             if re.match(rb"^[A-Za-z_][A-Za-z0-9_]*=", p)]
+    found = any(p.startswith(MARKER) for p in names)
+    return ("RECOVERED" if found else "ABSENT"), len(names)
+
+
+# Invoked exactly as the helper entrypoint is: oneshot <provider.py> <op> <stage> <flag>.
+stage = sys.argv[4]
+reply = {"ok": True, "parent": read(os.getppid()), "self": read(os.getpid())}
+with open(os.path.join(stage, "reply.json"), "w") as fh:
+    json.dump(reply, fh)
+"""
+
+# The daemon stand-in: an ordinary (non-setsid) process holding the marker in
+# its exec-time environment, running the real `_run_helper` -> `_spawn_helper`
+# path with only the helper entrypoint swapped for the reader above.
+_DAEMON = r"""
+import json, sys, types
+from pathlib import Path
+
+import openai4s.compute.manager as manager
+
+reader, root = sys.argv[1], Path(sys.argv[2])
+manager._HELPER_MAIN = reader
+(root / "skills").mkdir(parents=True, exist_ok=True)
+stage = root / "stage"
+stage.mkdir(exist_ok=True)
+provider = root / "provider.py"
+provider.write_text("PROVIDER = None\n", encoding="utf-8")
+cfg = types.SimpleNamespace(data_dir=root, skills_dir=root / "skills")
+reply = manager.ComputeManager(cfg)._run_helper(
+    {"provider_py": str(provider), "meta": {}}, "probe", {}, {}, stage
+)
+print("REPLY" + json.dumps(reply))
+"""
+
+
+def _run_the_real_helper_path(tmp_path, mode: str) -> dict:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    reader = tmp_path / "reader.py"
+    reader.write_text(_PROCARGS_READER, encoding="utf-8")
+    daemon = tmp_path / "daemon.py"
+    daemon.write_text(_DAEMON, encoding="utf-8")
+    env = {
+        **os.environ,
+        "SANDBOX_MARKER_API_KEY": "sandbox-marker-value",
+        "OPENAI4S_COMPUTE_CONFINEMENT": mode,
+    }
+    proc = subprocess.run(
+        [sys.executable, str(daemon), str(reader), str(tmp_path / "root")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=180,
+    )
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("REPLY")]
+    assert proc.returncode == 0 and lines, (
+        f"the helper path did not produce a reply: rc={proc.returncode} "
+        f"stdout={proc.stdout[-300:]!r} stderr={proc.stderr[-600:]!r}"
+    )
+    return json.loads(lines[-1][len("REPLY") :])
+
+
+def test_the_profile_keeps_the_helper_out_of_other_processes():
+    """Stated in the profile so it is reviewable off-macOS, like the keychain."""
+    lines = bc.build_profile("/tmp/stage-x", home="/tmp/home-x").splitlines()
+    allow_default = lines.index("(allow default)")
+    for rule in (
+        "(deny process-info* (target others))",
+        '(deny sysctl-read (sysctl-name-prefix "kern.proc"))',
+    ):
+        assert rule in lines, f"the helper profile is missing {rule}"
+        # SBPL is last-match-wins: before `allow default` it would never match.
+        assert lines.index(rule) > allow_default, f"{rule} precedes allow default"
+
+
+def test_the_helper_is_started_in_its_own_session(tmp_path, monkeypatch):
+    """The other half of the macOS gate, pinned where CI can see it.
+
+    With both denies in place a reader in the *daemon's* session still recovered
+    the daemon's environment; only a different session is refused. bubblewrap's
+    `--new-session` covers the sandboxed child on Linux, but the Popen flag is
+    what the Seatbelt path relies on.
+    """
+    import types
+
+    from openai4s.compute import manager as manager_module
+
+    seen: dict = {}
+
+    class _Proc:
+        returncode = 0
+
+        def __init__(self) -> None:
+            import io
+
+            self.stdin = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        seen.update(kwargs)
+        return _Proc()
+
+    monkeypatch.setattr(manager_module.subprocess, "Popen", fake_popen)
+    (tmp_path / "skills").mkdir()
+    cfg = types.SimpleNamespace(data_dir=tmp_path, skills_dir=tmp_path / "skills")
+    manager = manager_module.ComputeManager(cfg)
+    manager._spawn_helper(["helper"], {}, {}, 5.0, "probe", tmp_path)
+
+    assert seen.get("start_new_session") is True, (
+        "the provider helper shares the daemon's session, where the macOS "
+        "process-info gate lets it read the daemon's environment"
+    )
+
+
+@macos_only
+def test_a_confined_helper_cannot_read_the_daemons_environment(tmp_path):
+    """The exfiltration, through the real `_run_helper` spawn path.
+
+    The control runs the same path with confinement off, so a later non-RECOVERED
+    verdict is about the boundary rather than about a marker that was never in
+    the daemon's environment or a reader that cannot read.
+    """
+    control = _run_the_real_helper_path(tmp_path / "off", "off")
+    assert (
+        control["parent"][0] == "RECOVERED"
+    ), f"the unconfined control could not read the daemon; vacuous: {control}"
+
+    confined = _run_the_real_helper_path(tmp_path / "enforce", "enforce")
+    assert confined["parent"][0] == "BLOCKED", (
+        "a confined provider helper recovered the daemon's exec-time "
+        f"environment via KERN_PROCARGS2: {confined}"
+    )
+
+
+@macos_only
+def test_the_helper_is_not_execd_with_the_daemons_credentials(tmp_path):
+    """Its own exec-time block is readable to itself whatever the profile says.
+
+    `(target others)` rightly leaves a process its own arguments, so the only
+    way to keep a credential out of that read is to not put it there.
+    """
+    for mode in ("off", "enforce"):
+        reply = _run_the_real_helper_path(tmp_path / mode, mode)
+        verdict, count = reply["self"]
+        assert verdict == "ABSENT", (
+            f"[{mode}] the helper was exec'd with the daemon's credential in its "
+            f"own environment block: {reply}"
+        )
+        assert count > 0, f"[{mode}] the self-read returned no environment: {reply}"
+
+
+@pytest.mark.parametrize("confined", (False, True))
+def test_credential_shaped_variables_never_reach_the_helper_exec(
+    tmp_path, monkeypatch, confined
+):
+    """The same guarantee, platform-independent, at the spawn boundary.
+
+    Everything the helper's own `scrub_secret_env` would remove from
+    `os.environ` -- credential-shaped names and the baseline prefixes -- plus
+    the provider's declared `secret_env`, which travel on stdin instead.
+    """
+    import types
+
+    from openai4s.compute import manager as manager_module
+
+    monkeypatch.setenv("OPENAI4S_COMPUTE_CONFINEMENT", "auto" if confined else "off")
+    monkeypatch.setenv("OPENAI4S_ARK_API_KEY", "marker-ark")
+    monkeypatch.setenv("SOMETHING_ACCESS_TOKEN", "marker-token")
+    monkeypatch.setenv("AWS_REGION", "marker-region")
+    monkeypatch.setenv("ACMECLOUD_SESSION", "marker-declared")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    if confined:
+        monkeypatch.setattr(bc, "wrap", lambda argv, stage, **_k: list(argv))
+
+    captured: dict = {}
+
+    def fake_spawn(argv, creds, env, deadline, op, stage):
+        captured.update(env=env, creds=creds)
+        (Path(stage) / "reply.json").write_text('{"ok": true}', encoding="utf-8")
+        return types.SimpleNamespace(returncode=0)
+
+    (tmp_path / "skills").mkdir()
+    cfg = types.SimpleNamespace(data_dir=tmp_path, skills_dir=tmp_path / "skills")
+    manager = manager_module.ComputeManager(cfg)
+    monkeypatch.setattr(manager, "_spawn_helper", fake_spawn)
+    provider = tmp_path / "provider.py"
+    provider.write_text("PROVIDER = None\n", encoding="utf-8")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    meta = {"secret_env": ["ACMECLOUD_SESSION"]}
+    manager._run_helper(
+        {"provider_py": str(provider), "meta": meta},
+        "probe",
+        {},
+        {"ACMECLOUD_SESSION": "marker-declared"},
+        stage,
+    )
+
+    env = captured["env"]
+    # Names only in the message: on failure the values are whatever this host's
+    # environment holds, which is not something a test log should carry.
+    leaked = [
+        name
+        for name in (
+            "OPENAI4S_ARK_API_KEY",
+            "SOMETHING_ACCESS_TOKEN",
+            "AWS_REGION",
+            "ACMECLOUD_SESSION",
+            "OPENAI4S_LLM_API_KEY",
+        )
+        if name in env
+    ]
+    assert not leaked, f"placed in the helper's exec environment: {leaked}"
+    # What the helper does need survives: ordinary configuration, and the
+    # confinement anchor its own probe compares against.
+    assert env.get("HTTPS_PROXY") == "http://proxy.invalid:3128"
+    assert "PATH" in env
+    if confined:
+        assert "OPENAI4S_HOST_HOME_DEV" in env
+    # The credential still reaches the helper -- on stdin, as designed.
+    assert captured["creds"] == {"ACMECLOUD_SESSION": "marker-declared"}

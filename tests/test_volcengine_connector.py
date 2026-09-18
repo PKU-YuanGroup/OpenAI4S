@@ -17,6 +17,7 @@ from openai4s.server.volcengine_arkcli import (
     ArkCliError,
     CommandResult,
     _child_env,
+    _command_env,
     _normalize_device_code,
     _resolve_batch_shim,
 )
@@ -921,6 +922,54 @@ def test_the_offline_suite_never_resolves_a_real_arkcli(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
 
     assert ArkCliBridge().executable() == ""
+
+
+def test_a_launcher_discovered_windows_cli_never_shadows_a_wsl_cli(
+    tmp_path, monkeypatch
+):
+    """The Windows launcher's PATH discovery is a fallback, not an override."""
+
+    windows_cli = tmp_path / "arkcli.exe"
+    windows_cli.write_bytes(b"MZ")
+    monkeypatch.delenv("OPENAI4S_ARKCLI_PATH")
+    monkeypatch.setenv("OPENAI4S_ARKCLI_FALLBACK_PATH", str(windows_cli))
+
+    assert (
+        ArkCliBridge(which=lambda _name: "/usr/local/bin/arkcli").executable()
+        == "/usr/local/bin/arkcli"
+    )
+    assert ArkCliBridge(which=lambda _name: None).executable() == str(windows_cli)
+
+
+def test_the_fallback_cannot_bypass_the_offline_pin(tmp_path, monkeypatch):
+    windows_cli = tmp_path / "arkcli.exe"
+    windows_cli.write_bytes(b"MZ")
+    monkeypatch.setenv("OPENAI4S_ARKCLI_FALLBACK_PATH", str(windows_cli))
+
+    assert ArkCliBridge(which=lambda _name: None).executable() == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="WSL interop is a Linux-side path")
+def test_a_windows_cli_through_wsl_interop_receives_the_caller_contract(
+    monkeypatch,
+):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("WSLENV", "OPENAI4S_SECRET/u")
+
+    env = _command_env(("/mnt/c/Tools/Ark/arkcli.exe", "api", "apikey.list"))
+
+    names = env["WSLENV"].split(":")
+    # `/w`: included only when WSL launches a Win32 process (Microsoft's WSLENV
+    # flag table); `/u` would silently drop every one of these.
+    assert {"ARKCLI_CALLER_TYPE/w", "ARKCLI_SKILL_NAME/w", "HTTPS_PROXY/w"} <= set(
+        names
+    )
+    assert all(
+        name.endswith("/w")
+        and (name.startswith("ARKCLI_") or name.upper().endswith("_PROXY/W"))
+        for name in names
+    )
+    assert "WSLENV" not in _command_env(("/usr/local/bin/arkcli", "auth", "whoami"))
 
 
 def test_an_npm_cmd_shim_resolves_to_the_node_entry_script(tmp_path):

@@ -8,10 +8,11 @@ import { skillsCatalog } from "../../stores/customize";
 import { _envSnapById } from "../../stores/artifacts";
 import { t } from "../../i18n";
 
+export { loadModels } from "./models";
+
 type HostWindow = Window & {
   hint?: (message: string, err?: boolean, spin?: boolean) => void;
   openViewer?: (artifact: unknown) => void;
-  loadModels?: () => Promise<void> | void;
   refreshKeyBanner?: () => Promise<void> | void;
   grow?: () => void;
   openModalEl?: (modal: Element) => void;
@@ -39,11 +40,6 @@ export function confirmAction(message: string): boolean {
 export function openViewer(artifact: unknown): void {
   const fn = hostWindow().openViewer;
   if (isReady(fn)) fn(artifact);
-}
-
-export async function loadModels(): Promise<void> {
-  const fn = hostWindow().loadModels;
-  if (isReady(fn)) await fn();
 }
 
 export async function refreshKeyBanner(): Promise<void> {

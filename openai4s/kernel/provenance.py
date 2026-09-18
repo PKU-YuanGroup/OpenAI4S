@@ -521,13 +521,96 @@ def install(host_call: Callable[[str, list], Any]) -> None:
     except ImportError:
         pass
 
-    # matplotlib
-    try:
-        from matplotlib.figure import Figure
+    # matplotlib: wrapped as `matplotlib.figure` loads, never imported here.
+    _install_matplotlib_figure_hook()
 
-        _prov_wrap_method_writer(Figure, "savefig", path_argno=0)
-    except ImportError:
-        pass
+
+#: Imported by nothing in this module. Loading it loads matplotlib's font
+#: manager, which scans every system font when its cache directory is empty --
+#: and an enforced sandbox gives each kernel an empty private MPLCONFIGDIR. An
+#: eager import here cost the first Cell of every new kernel 8-48 seconds on
+#: macOS (`system_profiler`), `x = 1` included.
+_MATPLOTLIB_FIGURE = "matplotlib.figure"
+
+
+def _wrap_matplotlib_figure(module: Any) -> None:
+    figure = getattr(module, "Figure", None)
+    if isinstance(figure, type):
+        _prov_wrap_method_writer(figure, "savefig", path_argno=0)
+
+
+class _WrapAfterExecLoader:
+    """Runs one module's real loader, then wraps its writers.
+
+    Only the object the import system calls is replaced. The module gets its
+    real loader back *before* its body runs, so nothing that later reads
+    `__loader__` or `__spec__.loader` -- resources, `inspect`, a reload --
+    ever meets this shim.
+    """
+
+    def __init__(self, loader: Any) -> None:
+        self._loader = loader
+
+    def create_module(self, spec: Any) -> Any:
+        create = getattr(self._loader, "create_module", None)
+        return create(spec) if create is not None else None
+
+    def exec_module(self, module: Any) -> None:
+        module.__loader__ = self._loader
+        spec = getattr(module, "__spec__", None)
+        if spec is not None and spec.loader is self:
+            spec.loader = self._loader
+        self._loader.exec_module(module)
+        try:
+            _wrap_matplotlib_figure(module)
+        except Exception:  # noqa: BLE001 - provenance must never break an import
+            pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._loader, name)
+
+
+class _MatplotlibFigureImportHook:
+    """A `sys.meta_path` entry that wraps `Figure.savefig` as it is imported.
+
+    Wrapping between Cells instead would miss the commonest plotting Cell there
+    is: import, plot and save in one go. The hook resolves the spec through the
+    finders behind it, exactly as the import system would, and only swaps the
+    loader, so a module it cannot wrap still imports normally -- untracked,
+    which is the safe direction for provenance.
+    """
+
+    _openai4s_provenance_hook = True
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        if fullname != _MATPLOTLIB_FIGURE:
+            return None
+        finders = list(sys.meta_path)
+        start = finders.index(self) + 1 if self in finders else 0
+        for finder in finders[start:]:
+            if getattr(finder, "_openai4s_provenance_hook", False):
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            if find_spec is None:
+                continue
+            spec = find_spec(fullname, path, target)
+            if spec is None:
+                continue
+            if getattr(spec.loader, "exec_module", None) is None:
+                return None
+            spec.loader = _WrapAfterExecLoader(spec.loader)
+            return spec
+        return None
+
+
+def _install_matplotlib_figure_hook() -> None:
+    loaded = sys.modules.get(_MATPLOTLIB_FIGURE)
+    if loaded is not None:
+        _wrap_matplotlib_figure(loaded)
+    if not any(
+        getattr(finder, "_openai4s_provenance_hook", False) for finder in sys.meta_path
+    ):
+        sys.meta_path.insert(0, _MatplotlibFigureImportHook())
 
 
 def _patch_dataframe_getitem(pd: Any) -> None:
@@ -558,5 +641,10 @@ def uninstall() -> None:
     global _installed
     builtins.open = _real_open  # type: ignore[assignment]
     _json.loads = _real_json_loads  # type: ignore[assignment]
+    sys.meta_path[:] = [
+        finder
+        for finder in sys.meta_path
+        if not getattr(finder, "_openai4s_provenance_hook", False)
+    ]
     _execution_root[0] = None
     _installed = False

@@ -148,7 +148,12 @@ from openai4s.server.completion_gate import (
     CompletionGateService,
     message_review_metadata,
 )
-from openai4s.server.completions import completion_message, response_language
+from openai4s.server.completions import (
+    CANCEL_REASONS,
+    cancellation_marker,
+    completion_message,
+    response_language,
+)
 from openai4s.server.delivery import (
     CompletionDeliveryService,
     DeliveryValidationError,
@@ -159,6 +164,7 @@ from openai4s.server.errors import (
     GatewayError,
     error_code_for,
     gateway_error_payload,
+    log_turn_failure,
     public_exception,
     public_failure,
     record_diagnostic,
@@ -170,6 +176,9 @@ from openai4s.server.execution_coordinator import (
 from openai4s.server.execution_views import ExecutionViewService
 from openai4s.server.global_views import GlobalResearchViewService
 from openai4s.server.model_discovery import LocalModelDiscoveryService
+from openai4s.server.model_profiles import (
+    CREDENTIAL_SCOPE_MISMATCH as _CREDENTIAL_SCOPE_MISMATCH,
+)
 from openai4s.server.model_profiles import ModelProfileError, ModelProfileService
 from openai4s.server.model_profiles import clean_api_key as _clean_api_key
 from openai4s.server.model_profiles import migrate_provider_alias
@@ -184,6 +193,7 @@ from openai4s.server.notebook_lineage import (
 from openai4s.server.plans import PlanService
 from openai4s.server.plans import extract_plan_json as _extract_plan_json
 from openai4s.server.plans import normalize_plan as _normalize_plan
+from openai4s.server.plans import plan_draft_instruction, plan_mode_request_text
 from openai4s.server.plans import public_plan as _plan_public
 from openai4s.server.plans import short_hash as _short_hash
 from openai4s.server.plans import slugify as _slugify
@@ -198,6 +208,7 @@ from openai4s.server.recovery_runtime import (
 from openai4s.server.reviews import ReviewPorts, ReviewService
 from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
+    artifact_content_disposition,
     artifact_security_headers,
     embeddable_security_headers,
     ketcher_editor_security_headers,
@@ -388,23 +399,6 @@ _API_ROOT = contract.API_ROOT
 #: is not allowed to read -- and the route answers with a mode string only,
 #: never with any part of the token.
 _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
-
-#: The release by which `OPENAI4S_REQUIRE_TOKEN=0` must be gone.
-#:
-#: "Kept for one minor release" was written in a comment below and restated in
-#: three docs, and none of the four said *which* release or would ever notice
-#: the deadline passing. The variable turns off the only credential check in
-#: front of `kernel/execute`, `compute/jobs` and `host.bash`, so an escape hatch
-#: that quietly becomes permanent is the entire cost of the decision arriving
-#: without the deadline it was granted on. `tests/test_auth_exit_matrix.py`
-#: fails once `openai4s.__version__` reaches this, which puts the decision in
-#: front of a person instead of leaving it to nobody's memory.
-#:
-#: The original deadline was 0.2.0. Bumping the package to 0.2.0 for the first
-#: multi-platform desktop ship would have failed that test; the opt-out itself
-#: is unchanged, and the deadline moved to 0.3.0 so a person still has to
-#: decide rather than the hatch becoming permanent by inattention.
-LEGACY_TOKEN_OPT_OUT_REMOVED_IN = "0.3.0"
 
 
 def _wants_html(headers) -> bool:
@@ -1555,6 +1549,7 @@ class WSHub:
             "step",
             "step_update",
             "plan_ready",
+            "plan_not_captured",
             "plan_progress",
             "execution_state",
             "execution_queue",
@@ -1974,6 +1969,9 @@ class SessionState:
         # Per-session model override (from the composer dropdown) + plan flag.
         self.model: str | None = None
         self.plan: bool = False
+        # Whether this plan turn stored a draft. Reset per turn; a plan turn
+        # that ends without one says so on its result and the stream.
+        self.plan_captured: bool = False
         # Explore mode: autonomous deep exploration — larger turn budget and the
         # turn only ends via host.submit_output (prose-only replies are nudged).
         self.explore: bool = False
@@ -2407,8 +2405,9 @@ START INSTANTLY. Your FIRST move of a turn is the first concrete action (a searc
 a fetch, a code cell) — or simply the answer, if the question is conversational. \
 Do NOT open with a plan: no upfront `host.todo_write`, no prose step list, no \
 "here is my plan first". When the user wants to review a plan before execution they \
-switch on Plan mode (which the server enforces and announces in the message); \
-otherwise they chose instant execution, so deliver progress from the very first \
+switch on Plan mode: that turn has no tools and its message carries explicit \
+plan-mode instructions, which take precedence over this paragraph for that turn. \
+Otherwise they chose instant execution, so deliver progress from the very first \
 card. Only for a genuinely long campaign (≳4 distinct stages) may you drop a \
 `host.todo_write` progress tracker — AFTER the work is visibly underway — and \
 keep its statuses current as you go.
@@ -2982,6 +2981,7 @@ class SessionRunner:
                     )
                 ),
                 bind_lineage=self._bind_notebook_lineage,
+                cancelled=self._cell_cancelled,
             )
         )
         self.recovery = SessionRecoveryService(
@@ -7180,8 +7180,9 @@ class SessionRunner:
                 "send_message": runner.send_message,
                 "delegation_stats": runner.delegation_stats,
             }
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
+        except Exception as error:  # noqa: BLE001
+            # A 409 for a dangling model pin is a refusal, not a crash.
+            log_turn_failure(error, surface="web:delegation_wiring")
 
     def _resolve_env(self, st: SessionState):
         """The Environment this session's kernel should run in. Sets st.env_name
@@ -7288,6 +7289,19 @@ class SessionRunner:
             self._ensure_kernel(st)
             return None
         return f"unsupported kernel language: {language}"
+
+    def _cell_cancelled(self, st: SessionState) -> bool:
+        """Whether the Cell about to start belongs to a cancelled execution.
+
+        ``st.cancel`` is the event the watchdog observes once a Cell runs; the
+        admitted ticket's own signal is what a Stop, a session close or daemon
+        shutdown sets first. Either one means user code must not start.
+        """
+
+        if st.cancel.is_set():
+            return True
+        ticket = self.executions.current(st.root_frame_id)
+        return bool(ticket is not None and ticket.cancellation.is_set())
 
     def _make_step_sink(self, st: SessionState):
         """Return the dispatcher's on_step callback: persist each semantic step
@@ -8367,7 +8381,7 @@ class SessionRunner:
                         # twice.
                         raise
                     except Exception as e:  # noqa: BLE001
-                        traceback.print_exc()
+                        log_turn_failure(e, surface="web:message")
                         emit = self.hub.emitter(root_frame_id)
                         message = job.project(e, "web:message")
                         self._persist_outer_failure(root_frame_id, job, message)
@@ -8995,20 +9009,29 @@ class SessionRunner:
             )
             if profile is None:
                 raise unavailable
+            if profile.get("deleted_at"):
+                # Said outright rather than left to the destroyed key: with an
+                # environment fallback, a tombstone's missing key no longer makes
+                # it undispatchable by itself.
+                raise unavailable
             recorded = ModelProfileService.revision_config(profile, revision)
             if not recorded:
                 raise unavailable
             service = ModelProfileService(
                 self.store, self.cfg, providers=lambda: PROVIDERS
             )
-            api_key = service.resolve_key(profile)
-            if not api_key:
-                # A revoked or cleared key. Falling through to the active profile
-                # here is the substitution this method exists to stop.
-                raise unavailable
+            # The same rule readiness and bind apply -- own key, the same
+            # provider's environment key, keyless for a local endpoint -- judged
+            # against the revision being dispatched.
+            credential = service.credential(profile, recorded)
+            if not credential.usable:
+                # A revoked key, or none for this provider. Falling through to
+                # the active profile here is the substitution this method exists
+                # to stop.
+                raise self._unusable_pin_error(credential.source)
             from dataclasses import replace
 
-            return replace(
+            pinned = replace(
                 self.cfg.llm,
                 provider=str(recorded.get("provider") or "") or self.cfg.llm.provider,
                 base_url=str(recorded.get("base_url") or "") or None,
@@ -9019,8 +9042,13 @@ class SessionRunner:
                 # header selector: a configuration that exists in no profile.
                 # Changing model is a rebind, not a field on a message.
                 model=str(recorded.get("model") or ""),
-                api_key=api_key,
+                api_key=credential.api_key,
             )
+            # `replace` re-runs `LLMConfig.__post_init__`, which fills an empty
+            # key from the environment -- including the generic key that belongs
+            # to another provider. A keyless local endpoint stays keyless.
+            pinned.api_key = credential.api_key
+            return pinned
         except GatewayError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -9361,17 +9389,7 @@ class SessionRunner:
                 else None
             )
             usable = profile is not None and recorded is not None
-            if usable and not profile.get("deleted_at"):
-                # The credential too, not just the revision's existence. Without
-                # this a revoked key passed the bind and was only discovered at
-                # dispatch, where the old code answered by silently using the
-                # active profile instead.
-                service = ModelProfileService(
-                    self.store, self.cfg, providers=lambda: PROVIDERS
-                )
-                if not service.resolve_key(profile):
-                    usable = False
-            elif usable:
+            if usable and profile.get("deleted_at"):
                 # A tombstoned profile keeps its revisions so history stays
                 # readable, but it may not be bound to going forward.
                 usable = False
@@ -9382,6 +9400,14 @@ class SessionRunner:
                     "longer exists; choose one to continue",
                     "model_revision_unavailable",
                 )
+            # The credential too, not just the revision's existence, and by the
+            # rule dispatch applies (`ModelProfileService.credential`). Without
+            # this a revoked key passed the bind and was only discovered at
+            # dispatch, where the old code answered by silently using the active
+            # profile instead.
+            credential = self._profile_credential(profile, recorded)
+            if not credential.usable:
+                raise self._unusable_pin_error(credential.source)
             return {
                 "model_profile_id": bound_id,
                 "model_profile_revision": int(bound_revision or 0),
@@ -9392,15 +9418,12 @@ class SessionRunner:
         # some configuration, and D2 says to recover that rather than to adopt
         # whatever happens to be active now. The only thing a pre-upgrade frame
         # recorded is a model string, so that is what there is to match on.
-        recorded = str(frame.get("model") or "").strip()
-        if recorded and self.store.message_count(root_frame_id) > 0:
-            matches = [
-                item
-                for item in profiles
-                if str(item.get("model") or "").strip() == recorded
-            ]
+        legacy = self._legacy_model_matches(root_frame_id, frame, profiles)
+        if legacy is not None:
+            recorded, matches = legacy
             if len(matches) == 1:
                 target = matches[0]
+                self._require_profile_credential(target, follows_active=False)
                 revision = int(target.get("revision") or 0) or 1
                 self.store.update_frame(
                     root_frame_id,
@@ -9440,14 +9463,109 @@ class SessionRunner:
             # there when the user wants to name one.
             return {"model_profile_id": "", "model_profile_revision": 0, "bound": False}
 
+        return self._bind_active_profile(root_frame_id, profiles)
+
+    def _legacy_model_matches(
+        self, root_frame_id: str, frame: dict, profiles: list[dict]
+    ) -> tuple[str, list[dict]] | None:
+        """The legacy backfill's candidates, or None when it does not apply.
+
+        One copy for the send path and for the no-active rebind, which has to
+        know what that send is about to decide before it drops a pin.
+        """
+        recorded = str(frame.get("model") or "").strip()
+        if not recorded or self.store.message_count(root_frame_id) <= 0:
+            return None
+        # Live profiles only. A tombstone keeps its model string for history,
+        # and counting it made a deleted profile "the" match -- refused for a
+        # key it can never be given -- or made its same-model replacement
+        # "ambiguous" with it, for good.
+        return recorded, [
+            item
+            for item in profiles
+            if not item.get("deleted_at")
+            and str(item.get("model") or "").strip() == recorded
+        ]
+
+    def rebind_model_revision(self, root_frame_id: str) -> dict:
+        """`POST /frames/{id}/model-binding`: re-pin to the active configuration.
+
+        What the rebind prompt asks the user to confirm -- "re-bind it to the
+        active configuration" -- and so what this does. The route used to unpin
+        and then run `bind_model_revision`, which, for any session with a
+        recorded model and history (every session the workbench creates), took
+        the legacy backfill instead: a model-string match that ignored the
+        active profile the user had just been told it would use. A deleted
+        profile matched there too, so the answer was a key refusal nothing
+        could satisfy, or `model_revision_ambiguous` again right after the user
+        confirmed the prompt that `model_revision_ambiguous` opens.
+
+        The target is checked before the old pin is dropped, so a refused
+        rebind leaves the session's record of what it ran under untouched.
+
+        With no active profile there is nothing to re-pin to, and an unpinned
+        session is bound by its next send exactly as `bind_model_revision`
+        decides. So this is that decision, taken now: unbound on the global
+        configuration, or backfilled to the one live profile its recorded model
+        names -- and the answer says which. When that send would be refused
+        again (several live matches, or a unique one no credential resolves
+        for) it answers 409 `model_profile_needs_active` before the pin is
+        dropped. It used to answer 200 `{bound: false}`, the client said
+        "re-bound", and the next send was `model_revision_ambiguous` again --
+        offering the same rebind, with no way out that it named.
+        """
+        profiles = self.store.list_model_profiles()
+        active = self._active_profile(profiles)
+        if active is not None:
+            self._require_profile_credential(active)
+            self.store.unpin_model(root_frame_id)
+            return self._bind_active_profile(root_frame_id, profiles)
+        frame = self.store.get_frame(root_frame_id) or {}
+        legacy = self._legacy_model_matches(root_frame_id, frame, profiles)
+        if legacy is not None:
+            recorded, matches = legacy
+            if len(matches) > 1:
+                raise GatewayError(
+                    409,
+                    f"no model profile is active and more than one matches "
+                    f"{recorded!r}; activate the one this session continues under "
+                    "in Customize -> Models, then send again",
+                    "model_profile_needs_active",
+                )
+            if len(matches) == 1 and not self._profile_credential(matches[0]).usable:
+                name = str(matches[0].get("name") or matches[0].get("id") or "")
+                raise GatewayError(
+                    409,
+                    f"no model profile is active and {name!r}, which this "
+                    "session's recorded model matches, has no usable API key; "
+                    "activate a profile in Customize -> Models (or add that "
+                    "profile's key), then send again",
+                    "model_profile_needs_active",
+                )
+        self.store.unpin_model(root_frame_id)
+        return self.bind_model_revision(root_frame_id)
+
+    def _active_profile(self, profiles: list[dict]) -> dict | None:
         active_id = str(self.store.get_setting("active_model_profile") or "")
-        active = next((item for item in profiles if item.get("id") == active_id), None)
+        if not active_id:
+            return None
+        return next((item for item in profiles if item.get("id") == active_id), None)
+
+    def _bind_active_profile(self, root_frame_id: str, profiles: list[dict]) -> dict:
+        active = self._active_profile(profiles)
         if active is None:
             # Nothing to bind to. Deliberately not an error: an install driven
             # entirely by .env has no profiles at all, and refusing to run would
             # break a configuration this project documents as supported.
             return {"model_profile_id": "", "model_profile_revision": 0, "bound": False}
+        active_id = str(active.get("id") or "")
 
+        # Checked BEFORE the pin is written. This branch used to pin the active
+        # profile with no credential check at all, so a profile nothing could
+        # dispatch was pinned here and refused at dispatch as "no longer
+        # usable" -- and `POST /frames/{id}/model-binding`, which that error
+        # points at, came straight back here and pinned it again.
+        self._require_profile_credential(active)
         revision = int(active.get("revision") or 0)
         if not revision:
             # A profile written before revisions existed. Seal one now rather
@@ -9471,6 +9589,75 @@ class SessionRunner:
             "model_profile_revision": revision,
             "bound": True,
         }
+
+    @staticmethod
+    def _unusable_pin_error(source: str) -> GatewayError:
+        """The 409 for a pinned revision no credential may be dispatched under.
+
+        One sentence for the bind and the dispatch, which used to carry two
+        spellings of it. A scope mismatch gets its own: "add its API key" is
+        advice that cannot help when the key the profile holds belongs to the
+        provider or endpoint the profile names now, not the pinned one.
+        """
+        if source == _CREDENTIAL_SCOPE_MISMATCH:
+            message = (
+                "this session is pinned to an earlier configuration of its model "
+                "profile, and the profile now names a different provider or "
+                "endpoint; its credential is not sent to the old one. Rebind the "
+                "session to continue"
+            )
+        else:
+            message = (
+                "this session is pinned to a model profile whose credential is "
+                "not available; add its API key in Customize -> Models or rebind "
+                "the session to continue"
+            )
+        return GatewayError(409, message, "model_revision_unavailable")
+
+    def _profile_credential(self, profile: dict, configuration: dict | None = None):
+        return ModelProfileService(
+            self.store, self.cfg, providers=lambda: PROVIDERS
+        ).credential(profile, configuration)
+
+    def _require_profile_credential(
+        self, profile: dict, *, follows_active: bool = True
+    ) -> None:
+        """Refuse to pin a profile that no request could be dispatched under.
+
+        Its own code, not `model_revision_unavailable`: that one is answered by
+        rebinding, and rebinding an unbound session lands on this same active
+        profile. What is missing is a credential, and that is what it says.
+
+        `follows_active=False` is the legacy backfill, which binds the profile
+        the session's recorded model names whatever is active -- so "activate
+        another profile" is advice that would not change the answer.
+        """
+        credential = self._profile_credential(profile)
+        if credential.usable:
+            return
+        name = str(profile.get("name") or profile.get("id") or "the active profile")
+        provider = str(profile.get("provider") or "").strip()
+        if credential.source == "revoked":
+            message = (
+                f"the API key stored for model profile {name!r} can no longer be "
+                "read; enter it again in Customize -> Models"
+            )
+        else:
+            variable = (
+                f"OPENAI4S_{provider.upper().replace('-', '_')}_API_KEY"
+                if provider
+                else "the provider's API key variable"
+            )
+            message = (
+                f"model profile {name!r} has no API key: add one in Customize -> "
+                f"Models, set {variable} for the daemon, or activate another "
+                "profile"
+                if follows_active
+                else f"model profile {name!r}, which this session's recorded "
+                "model matches, has no API key: add one in Customize -> Models "
+                f"or set {variable} for the daemon"
+            )
+        raise GatewayError(409, message, "model_profile_needs_key")
 
     def freeze_model_binding(self, root_frame_id: str) -> dict:
         """Bind if needed and return the exact pair to carry on a ticket.
@@ -9518,6 +9705,11 @@ class SessionRunner:
         turn.
         """
 
+        # The live stream concatenates text chunks into one markdown block, and
+        # model prose often ends without a newline -- so the completion text
+        # rendered as "...gradient.Printed ...". Stored rows are separate and
+        # unaffected; only the wire chunk gets the paragraph break.
+        separator = _completion_separator(assistant_visible)
         if self.stage1_trusted_delivery and produced_artifacts:
             try:
                 delivery_service = self.completion_delivery
@@ -9609,7 +9801,7 @@ class SessionRunner:
                         "type": "text_chunk",
                         "frame_id": root_frame_id,
                         "block_type": "text",
-                        "chunk": final_text + "\n",
+                        "chunk": separator + final_text + "\n",
                         "delivery_id": delivery_id,
                         "message_id": message_id,
                     }
@@ -9640,7 +9832,7 @@ class SessionRunner:
                     "type": "text_chunk",
                     "frame_id": root_frame_id,
                     "block_type": "text",
-                    "chunk": final_text + "\n",
+                    "chunk": separator + final_text + "\n",
                 }
             )
         return {
@@ -9680,6 +9872,7 @@ class SessionRunner:
         if model:
             st.model = model
         st.plan = bool(plan)
+        st.plan_captured = False
         # plan mode wins: a plan turn never executes, so explore is meaningless
         st.explore = bool(explore) and not st.plan
         # Per turn, not per session: the same session's next request can be a
@@ -9748,12 +9941,15 @@ class SessionRunner:
             # as an instant placeholder (and the fallback), then upgraded to a
             # concise LLM-written summary in the background — off the turn's path.
             frame = self.store.get_frame(root_frame_id) or {}
+            title_placeholder = ""
+            # A plan turn's request can open with the workbench's plan-mode
+            # prompt; the title is the task inside it. The summarizer handed the
+            # prompt followed it instead of titling, so the 80-character
+            # "[Plan Mode] Do not execute ..." placeholder became the title.
+            title_text = plan_mode_request_text(user_text) if st.plan else user_text
             if not (frame.get("name") or frame.get("task_summary")):
-                placeholder = re.sub(r"\s+", " ", user_text).strip()[:80]
-                self.store.update_frame(root_frame_id, task_summary=placeholder)
-                self._spawn_title_summary(
-                    root_frame_id, user_text, self._llm_cfg(st), placeholder
-                )
+                title_placeholder = re.sub(r"\s+", " ", title_text).strip()[:80]
+                self.store.update_frame(root_frame_id, task_summary=title_placeholder)
             stored_user_message = self.store.add_message(
                 root_frame_id=root_frame_id,
                 branch_id=st.branch_id,
@@ -9771,6 +9967,16 @@ class SessionRunner:
                 source_id=stored_user_message["message_id"],
                 branch_id=st.branch_id,
             )
+            if title_placeholder:
+                # After the user row, never before it. Resolving the config is
+                # where a turn-level refusal fires (a pin that cannot be
+                # honoured, an unreadable own key), and it used to fire here
+                # ahead of `add_message`: the client had its 202 and a cleared
+                # composer, the failure row was stored, and the request itself
+                # survived only as the session title.
+                self._spawn_title_summary(
+                    root_frame_id, title_text, self._llm_cfg(st), title_placeholder
+                )
             # resolve @filename references → inject the artifact content (M4)
             resolved, message_refs = self._resolve_mentions(st, user_text)
             if message_refs:
@@ -9798,6 +10004,15 @@ class SessionRunner:
             )
             if mode_fragment:
                 resolved = resolved + "\n\n" + mode_fragment
+            if st.plan:
+                # Withholding tools is not an instruction: without this a REST
+                # `plan:true` turn never told the model the format to draft in.
+                # Skipped when the request already carries plan-mode text (the
+                # workbench prefix, the revision seed). Model input only, like
+                # the fragments above; the stored user row is unchanged.
+                plan_instruction = plan_draft_instruction(user_text)
+                if plan_instruction:
+                    resolved = resolved + "\n\n" + plan_instruction
             # attach the pinned figure(s) with the pin marker drawn on, so a
             # vision model SEES what the user pointed at (not an x%/y% guess)
             content = (
@@ -9922,6 +10137,8 @@ class SessionRunner:
             # and the retry veto if it read one. The id above is not in here,
             # because it exists whether or not anything was raised.
             failure_meta: dict[str, object] = {}
+            # Set once this turn's stopped marker is durable and streamed.
+            cancel_identity: dict[str, object] | None = None
             loop_reason: str | None = None
             try:
                 st.dispatcher.last_output = None
@@ -10053,7 +10270,7 @@ class SessionRunner:
                         "chunk": "\n\n" + err_text + "\n",
                     }
                 )
-                traceback.print_exc()
+                log_turn_failure(e, surface="web:turn")
             if st.guardian_blocked_reason:
                 status = "blocked_by_guardian"
             elif st.cancel.is_set():
@@ -10282,7 +10499,11 @@ class SessionRunner:
                                     "type": "text_chunk",
                                     "frame_id": root_frame_id,
                                     "block_type": "text",
-                                    "chunk": str(candidate_final["text"]) + "\n",
+                                    "chunk": (
+                                        _completion_separator(assistant_visible)
+                                        + str(candidate_final["text"])
+                                        + "\n"
+                                    ),
                                     "provisional": True,
                                     "review_status": "candidate",
                                     "turn_id": str(action_ledger.turn_id),
@@ -10562,8 +10783,14 @@ class SessionRunner:
                     "Blocked · Guardian. The denied action was not executed; "
                     "a fresh continuation is required."
                 )
-            elif status == "cancelled" and not had_prose:
-                tail = "_已取消。_"
+            elif status == "cancelled":
+                # Whether or not prose streamed. A Web Cell turn always has the
+                # in-progress narration ("... am running it now"), so gating
+                # this on "no prose" left every turn stopped mid-Cell reopening
+                # with only a claim that the cell was still running.
+                cancel_identity = self._close_cancelled_turn(
+                    st, emit, turn_identity, user_text
+                )
             elif status == "completed" and loop_reason != "submitted" and not had_prose:
                 tail = "_(no textual response)_"
             if tail:
@@ -10595,6 +10822,20 @@ class SessionRunner:
                         tail_row.get("message_id"),
                         turn_identity,
                     )
+            if st.plan and status == "completed" and not st.plan_captured:
+                # The turn itself completed -- the model answered -- but there
+                # is no draft to approve. Said on the stream and on the result
+                # so an API client is not left polling `GET /plan` for a row
+                # that was never written. The workbench keeps its prose
+                # approval fallback either way.
+                emit(
+                    {
+                        "type": "plan_not_captured",
+                        "frame_id": root_frame_id,
+                        "request_id": turn_request_id,
+                        "reason": "no_plan_steps",
+                    }
+                )
             if (
                 auto_review
                 and status == "completed"
@@ -10618,6 +10859,10 @@ class SessionRunner:
                     status = "blocked_by_guardian"
                 elif st.cancel.is_set():
                     status = "cancelled"
+                    if cancel_identity is None:
+                        cancel_identity = self._close_cancelled_turn(
+                            st, emit, turn_identity, user_text
+                        )
             if (
                 (not gated)
                 and self.cfg.roadmap_features.stage3_scientific_review_shadow
@@ -10693,6 +10938,8 @@ class SessionRunner:
                 "owner": execution.owner.as_dict(),
                 "error": err_text if status == "failed" else None,
                 **turn_identity,
+                # Plan turns only: whether a draft plan row was stored.
+                **({"plan_captured": bool(st.plan_captured)} if st.plan else {}),
             }
         # For direct (non-MessageJob) calls the coordinator completes while the
         # context exits. Keep the historical terminal frame event last; queued
@@ -10705,6 +10952,7 @@ class SessionRunner:
                 # The stream is the surface the user is watching, and it is the
                 # one that said only "failed".
                 **turn_identity,
+                **({"cancelled": dict(cancel_identity)} if cancel_identity else {}),
                 **(
                     {
                         "review_status": gate_metadata.get("review_status"),
@@ -10716,6 +10964,51 @@ class SessionRunner:
             }
         )
         return response
+
+    def _close_cancelled_turn(
+        self,
+        st: SessionState,
+        emit: Callable[[dict], None],
+        turn_identity: Mapping[str, object],
+        user_text: str,
+    ) -> dict[str, object]:
+        """Persist and stream the stopped marker that ends a cancelled turn.
+
+        One row, one chunk, one identity: the REST reopen, the live stream and
+        the terminal ``frame_update`` carry the same ``cancelled`` object, so a
+        client renders the same marker whichever surface it read. The content
+        is in the request's language, the reason says whose stop it was.
+        """
+
+        identity: dict[str, object] = {
+            **{
+                key: value
+                for key, value in turn_identity.items()
+                if key in ("request_id", "execution_id")
+            },
+            "reason": "auto_budget" if st.auto_budget_terminal_reason else "user",
+        }
+        marker = cancellation_marker(
+            str(identity["reason"]), response_language(user_text)
+        )
+        self.store.add_message(
+            root_frame_id=st.root_frame_id,
+            branch_id=st.branch_id,
+            role="assistant",
+            content=marker,
+            frame_id=st.root_frame_id,
+            metadata={"cancelled": dict(identity)},
+        )
+        emit(
+            {
+                "type": "text_chunk",
+                "frame_id": st.root_frame_id,
+                "block_type": "text",
+                "chunk": "\n\n" + marker + "\n",
+                "cancelled": dict(identity),
+            }
+        )
+        return identity
 
     def _resolve_mentions(self, st: SessionState, text: str) -> tuple[str, list[dict]]:
         """Append the content of any @-referenced artifact to the prompt.
@@ -11588,12 +11881,23 @@ class SessionRunner:
         }
 
     def _emit_artifact_step(
-        self, st: SessionState, title: str, saved: list[dict], emit
+        self,
+        st: SessionState,
+        title: str,
+        saved: list[dict],
+        emit,
+        environment: str | None = None,
+        language: str | None = None,
     ) -> None:
         """Persist + stream a completed artifact-kind step for the files a cell
         produced. Mirrors the host.save_artifact step shape (kind='artifact',
         input={files, environment}, output={artifacts:[…]}) so the same step
-        renderer and the reopen reconstruction both show a "Saving …" card."""
+        renderer and the reopen reconstruction both show a "Saving …" card.
+
+        ``environment``/``language`` are the producing Cell's runtime label and
+        language. Without them every R Cell's card said "python". A row that
+        records ``language`` is read as written; rows without it (0.2.x) are
+        read through their producing Cell by the Store."""
         rid = st.root_frame_id
         files = [a["filename"] for a in saved]
         label = (
@@ -11603,7 +11907,9 @@ class SessionRunner:
                 "Saving " + (files[0] if len(files) == 1 else f"{len(files)} artifacts")
             )
         )
-        step_input = {"files": files, "environment": self._kernel_id(st)}
+        step_input = {"files": files, "environment": environment or self._kernel_id(st)}
+        if language:
+            step_input["language"] = language
         step_output = {"artifacts": saved}
         summary = f"{len(saved)} artifact" + ("" if len(saved) == 1 else "s")
         sid = "s-" + uuid.uuid4().hex[:12]
@@ -11645,7 +11951,8 @@ class SessionRunner:
 
     # -- structured plan: capture / persist / approve / revise / discard ----
     def _finalize_plan(self, st: SessionState, reply: str, prose: str, emit) -> None:
-        self.plans.finalize(st, reply, prose, emit)
+        if self.plans.finalize(st, reply, prose, emit):
+            st.plan_captured = True
         plan = self.plans.get_state(st.root_frame_id)
         cursor = ""
         if isinstance(plan, Mapping):
@@ -12157,7 +12464,7 @@ class SessionRunner:
                         outcome["handled"] = e
                         raise
                     except Exception as e:  # noqa: BLE001
-                        traceback.print_exc()
+                        log_turn_failure(e, surface="web:plan")
                         message = job.project(e, "web:plan")
                         self._persist_outer_failure(root_frame_id, job, message)
                         emit = self.hub.emitter(root_frame_id)
@@ -12307,9 +12614,25 @@ class SessionRunner:
             self.executions.mark_finalizing(
                 execution, reason="persisting notebook cell"
             )
-            emit(
-                {"type": "frame_update", "frame_id": root_frame_id, "status": "success"}
-            )
+            # An interrupted cell is not a success, whether the stop came
+            # through the coordinator or as a kernel interrupt; the Notebook
+            # already said "interrupted" for the same cell.
+            if execution.cancellation.is_set() or r.get("interrupted"):
+                emit(
+                    {
+                        "type": "frame_update",
+                        "frame_id": root_frame_id,
+                        "status": "cancelled",
+                    }
+                )
+            else:
+                emit(
+                    {
+                        "type": "frame_update",
+                        "frame_id": root_frame_id,
+                        "status": "success",
+                    }
+                )
             return {
                 "status": (
                     "cancelled" if execution.cancellation.is_set() else "completed"
@@ -12402,7 +12725,7 @@ class SessionRunner:
                     }
                 )
             except Exception as error:  # noqa: BLE001 - job owns its failure
-                traceback.print_exc()
+                log_turn_failure(error, surface="web:repl")
                 # A *kernel* error is not this path: a traceback from the
                 # user's own cell arrives as a normal result and is the whole
                 # point of a REPL. This clause only fires when the machinery
@@ -13144,65 +13467,47 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.jobs import JobManager
 
     _jobs_mgr = JobManager(cfg.data_dir / "compute-jobs")
-    # M2: the daemon exposes unauthenticated code-exec endpoints (kernel/execute,
-    # compute/jobs, host.bash). On loopback that's fine (single-user local tool);
-    # if bound to a non-loopback address (or OPENAI4S_REQUIRE_TOKEN=1) we gate
-    # every request behind a one-time token (first `?token=` sets a cookie).
+    # M2: the daemon exposes code-exec endpoints (kernel/execute, compute/jobs,
+    # host.bash), so every request is gated behind the access token (the first
+    # `?token=` on `/` sets a cookie), on every bind.
     import secrets as _secrets
 
-    _loopback = cfg.host in ("127.0.0.1", "localhost", "::1")
-    # Required by default (decision D1). It used to be opt-in on loopback, on
+    # Required on every bind (decision D1). It used to be opt-in on loopback, on
     # the reasoning that a single-user local tool needs no gate -- but the
     # daemon exposes unauthenticated code execution (kernel/execute,
     # compute/jobs, host.bash), and "local" includes every other process on the
     # machine and every web page the user visits. The Host and Origin guards
     # cover the browser; they do not cover a local process.
     #
-    # `OPENAI4S_REQUIRE_TOKEN=0` is the escape hatch, and it lives until
-    # `LEGACY_TOKEN_OPT_OUT_REMOVED_IN` above -- a version rather than "one
-    # minor release", because the second is not a date anything can check. It
-    # is the same variable that used to opt *in*, with its sense reversed: a
-    # script setting it to 1 keeps working and simply asks for what is now the
-    # default.
+    # There is no opt-out. `OPENAI4S_REQUIRE_TOKEN=0` turned the gate off on
+    # loopback for exactly one minor release (D1, docs/v03-decisions.md); v0.2.0
+    # was that release, and from 0.3.0 the variable is ignored whatever its
+    # value -- `tests/test_auth_exit_matrix.py` drives a daemon started with it
+    # and asserts the gate over the wire.
     #
-    # It is honoured on loopback only. A non-loopback bind is reachable by
-    # anything that can route to it, and there is no configuration under which
-    # that should answer without a credential.
-    _legacy_opt_out = os.environ.get("OPENAI4S_REQUIRE_TOKEN", "").strip().casefold()
-    _needs_token = (not _loopback) or _legacy_opt_out not in ("0", "false", "no")
     # Persisted, not per-boot. A token minted into a closure changed on every
     # restart, which invalidated every cookie already issued -- tolerable for a
     # gate that is off by default, not for one that is on. It also has to be
     # readable by the CLI, which must present a credential once the gate is
     # required and cannot import the web server to find out what it is.
-    _auth_token = local_auth.load_or_mint(cfg.data_dir) if _needs_token else None
+    _auth_token = local_auth.load_or_mint(cfg.data_dir)
     # stderr and flushed, like every other startup notice here. On plain
     # `print` this went to stdout, which is block-buffered whenever it is not a
     # TTY -- so under nohup, systemd, Docker or any redirect to a log file, the
     # one line a user needs in order to open their own daemon sat in a buffer
     # and did not appear. It showed up in a terminal, which is exactly why it
     # survived: the configuration that hides it is the one nobody develops in.
-    if _auth_token:
-        # Rendered, not echoed. A wildcard bind names interfaces rather than an
-        # address, so `http://0.0.0.0:8760/` is a URL nothing dials -- and a
-        # container has no other way to be reachable, which makes the one line
-        # an operator needs the one line that was wrong for them.
-        _reachable = "localhost" if cfg.host in ("0.0.0.0", "::", "") else cfg.host
-        print(
-            f"[openai4s] access token required.\n"
-            f"  open: http://{_reachable}:{cfg.port}/?token={_auth_token}",
-            file=sys.stderr,
-            flush=True,
-        )
-    elif _loopback:
-        print(
-            "[openai4s] WARNING: OPENAI4S_REQUIRE_TOKEN=0 — this daemon answers "
-            "without a credential, and it can execute code. Any other process "
-            "on this machine can drive it. This opt-out is removed in the next "
-            "minor release.",
-            file=sys.stderr,
-            flush=True,
-        )
+    # Rendered, not echoed. A wildcard bind names interfaces rather than an
+    # address, so `http://0.0.0.0:8760/` is a URL nothing dials -- and a
+    # container has no other way to be reachable, which makes the one line
+    # an operator needs the one line that was wrong for them.
+    _reachable = "localhost" if cfg.host in ("0.0.0.0", "::", "") else cfg.host
+    print(
+        f"[openai4s] access token required.\n"
+        f"  open: http://{_reachable}:{cfg.port}/?token={_auth_token}",
+        file=sys.stderr,
+        flush=True,
+    )
     # honour persisted network toggle on boot
     if store.get_setting("network_enabled") == "0":
         os.environ["OPENAI4S_ALLOW_NETWORK"] = "0"
@@ -13363,8 +13668,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             """
             if _team_auth is not None:
                 return self._team_identity_from_request() is not None
-            if not _auth_token:
-                return True
             from http.cookies import SimpleCookie
 
             jar = SimpleCookie(self.headers.get("Cookie", "") or "")
@@ -14168,8 +14471,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if _team_auth is not None:
                     if not self._team_admit(method, path):
                         return
-                # M2: token gate (only active when bound non-loopback / opt-in).
-                elif _auth_token and path not in _UNAUTHENTICATED_PATHS:
+                # M2: token gate, on every bind.
+                elif path not in _UNAUTHENTICATED_PATHS:
                     from http.cookies import SimpleCookie
 
                     jar = SimpleCookie(self.headers.get("Cookie", "") or "")
@@ -14651,11 +14954,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             other shape is 404 with no detail -- a probe of this origin must
             not learn whether an id exists.
             """
-            if not _auth_token:
-                # Nothing signs grants, so none can be honoured. This is the
-                # posture where the app never offers a sandboxed preview.
-                self._json({"error": "not found"}, 404)
-                return
             if self._presents_session_cookie():
                 # A legitimate spend is the cross-site subframe load, on which
                 # a SameSite=Strict cookie is never sent. A request that does
@@ -14840,6 +15138,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     200,
                     body,
                     ctype,
+                    {
+                        "Content-Disposition": artifact_content_disposition(
+                            meta.get("filename") or decoded_ident
+                        )
+                    },
                     security=artifact_security_headers(),
                 )
                 return
@@ -14897,9 +15200,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
             if force_html:
                 ctype = "text/html; charset=utf-8"
+            # Named after the Artifact, not the URL's last segment: the path
+            # here may be a content-addressed snapshot.
             self._serve_file(
                 Path(path),
                 ctype,
+                extra={
+                    "Content-Disposition": artifact_content_disposition(
+                        (meta or {}).get("filename") or Path(path).name
+                    )
+                },
                 security=artifact_security_headers(),
             )
 
@@ -15088,10 +15398,35 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 try:
                     report = verify_package(staged)
                 except EvidenceError as error:
-                    raise GatewayError(400, str(error)) from error
+                    # The staging file is this daemon's, not the caller's: an
+                    # error naming it (e.g. "tmpab12.openai4s-session.zip has
+                    # no manifest.json") discloses a host temp path.
+                    message = (
+                        str(error)
+                        .replace(str(staged), "the uploaded archive")
+                        .replace(staged.name, "the uploaded archive")
+                    )
+                    raise GatewayError(400, message) from error
                 finally:
                     staged.unlink(missing_ok=True)
-                self._json(report)
+                # The documented shape only. `verify_package` is shared with
+                # the CLI, whose report carries `path` -- over HTTP that is the
+                # deleted staging file under the daemon's TMPDIR. An allowlist
+                # also keeps any key the CLI report grows later off the wire.
+                self._json(
+                    {
+                        key: report.get(key)
+                        for key in (
+                            "ok",
+                            "format",
+                            "schema_version",
+                            "archive_sha256",
+                            "files_verified",
+                            "problems",
+                            "verifies",
+                        )
+                    }
+                )
                 return
             if sub == "/sessions/import" and method == "POST":
                 payload = self._body_bytes(limit=MAX_ARCHIVE_BYTES)
@@ -15258,7 +15593,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if artifact_index_routes.handle(self, method, sub, q, store):
                 return
-            # ---- identity / meta (no-auth local mode) ----
+            # ---- identity / meta (local identity; behind the token gate) ----
             if sub == "/me":
                 self._json(
                     {
@@ -15268,7 +15603,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         or cfg.llm.provider,
                         "has_api_key": bool(runner.effective_api_key()),
                         "shared_api_key": False,
-                        "auth_mode": "token" if _auth_token else "none",
+                        "auth_mode": "token",
                     }
                 )
                 return
@@ -15341,8 +15676,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(
                     {
                         "authenticated": self._is_authenticated(),
-                        "auth_mode": "token" if _auth_token else "none",
-                        "token_header": _TOKEN_HEADER if _auth_token else None,
+                        "auth_mode": "token",
+                        "token_header": _TOKEN_HEADER,
                     }
                 )
                 return
@@ -15565,10 +15900,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # though this route protects itself — which would invite moving
                 # it above the real gate some day. Verified by a test that
                 # drives a quarantined session and expects 423.
+                #
+                # It binds the ACTIVE configuration, which is what its prompt
+                # says, and not the legacy backfill a plain unpin-and-bind fell
+                # into for any session carrying a recorded model.
                 frame_id = m.group(1)
-                store.unpin_model(frame_id)
                 self._json(
-                    {"ok": True, "binding": runner.bind_model_revision(frame_id)}
+                    {"ok": True, "binding": runner.rebind_model_revision(frame_id)}
                 )
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)/probe", sub)
@@ -15599,10 +15937,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 _disconnect_datapro_if_auth_context_changed(
                     previous_datapro_credential, previous_provider
                 )
+                activated = next(
+                    (
+                        item
+                        for item in store.list_model_profiles()
+                        if item.get("id") == payload.get("active_id")
+                    ),
+                    {},
+                )
                 self._json(
                     {
                         **payload,
-                        "has_api_key": bool(runner.effective_api_key()),
+                        # Whether a key is in effect for THIS profile, by the rule
+                        # its sessions are dispatched under. This reported
+                        # `effective_api_key()`, which falls back to the daemon's
+                        # key -- possibly another provider's -- so a profile with
+                        # no key anywhere was announced as keyed.
+                        "has_api_key": bool(
+                            activated and model_profiles.credential(activated).api_key
+                        ),
                     }
                 )
                 return
@@ -15890,7 +16243,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method == "POST":
                     b = self._body()
-                    pid = b.get("project_id") or "default"
+                    # Required, not defaulted. The old fallback named a
+                    # `default` project nothing ever creates, so a client that
+                    # omitted the field was told "project not found" about a
+                    # project it never named.
+                    pid = b.get("project_id")
+                    if not isinstance(pid, str) or not pid.strip():
+                        raise GatewayError(
+                            400,
+                            "POST /frames requires project_id; create one with "
+                            "POST /projects or list them with GET /projects",
+                            "project_id_required",
+                        )
                     fid = runner.create_session(
                         pid,
                         model=b.get("model"),
@@ -15992,6 +16356,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             **(
                                 {"failure": _message_failure(mm)}
                                 if _message_failure(mm)
+                                else {}
+                            ),
+                            # Absent unless this row is a cancelled turn's
+                            # stopped marker; the same identity the live
+                            # chunk and terminal frame_update carried.
+                            **(
+                                {"cancelled": _message_cancelled(mm)}
+                                if _message_cancelled(mm)
                                 else {}
                             ),
                             **(
@@ -17551,12 +17923,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 self._team_guard_served_artifact(artifact)
                 if (
-                    not _auth_token
-                    or not _app_origins()
+                    not _app_origins()
                     or not str(artifact.get("root_frame_id") or "").strip()
                 ):
-                    # No signing secret, so no sandboxed preview exists to
-                    # grant. The client falls back to the inert preview.
+                    # No sandbox origin for this bind, or no frame to scope the
+                    # grant to, so no sandboxed preview exists to grant. The
+                    # client falls back to the inert preview.
                     self._json({"error": "sandbox preview unavailable"}, 409)
                     return
                 version_id = (
@@ -19249,6 +19621,19 @@ def _project_json(p: dict) -> dict:
     }
 
 
+def _completion_separator(assistant_visible: list) -> str:
+    """The paragraph break a completion chunk needs on the live stream.
+
+    Clients append consecutive text chunks to one markdown block until a tool
+    header or step card starts a new one, so a completion text streamed right
+    after visible prose must open its own paragraph. An extra blank line after
+    a block boundary renders as nothing.
+    """
+    if any(str(block.get("text") or "").strip() for block in assistant_visible):
+        return "\n\n"
+    return ""
+
+
 def _message_failure(message: dict) -> dict | None:
     """The failure identity stored on one message, projected safely.
 
@@ -19284,6 +19669,35 @@ def _message_failure(message: dict) -> dict | None:
     if failure.get("output_committed") is True:
         out["output_committed"] = True
     return out or None
+
+
+def _message_cancelled(message: dict) -> dict | None:
+    """The stopped-marker identity stored on one message, projected safely.
+
+    Same allowlist as `_message_failure`: two ids already published on the
+    live surfaces and a reason from a closed vocabulary. Nothing else from the
+    metadata blob reaches the client.
+    """
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    cancelled = raw.get("cancelled")
+    if not isinstance(cancelled, dict):
+        return None
+    reason = cancelled.get("reason")
+    if reason not in CANCEL_REASONS:
+        return None
+    out: dict = {"reason": reason}
+    for key in ("request_id", "execution_id"):
+        value = cancelled.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value
+    return out
 
 
 def _message_review_gate(message: dict) -> dict | None:
@@ -19611,9 +20025,24 @@ def _format_annotations_block(annos: list) -> str:
 class _GatewayHTTPServer(ThreadingHTTPServer):
     """HTTP server whose resource close also closes every SessionRunner slot."""
 
+    #: A peer that went away mid-request. Browsers close keep-alive sockets
+    #: and tabs all the time; the stdlib printed "Exception occurred during
+    #: processing of request" plus a full traceback for each, which reads as a
+    #: crash in every upgrade and CI log.
+    _CLIENT_DISCONNECTS = (
+        ConnectionResetError,
+        BrokenPipeError,
+        ConnectionAbortedError,
+    )
+
     def __init__(self, *args, runner: SessionRunner, **kwargs) -> None:
         self.runner = runner
         super().__init__(*args, **kwargs)
+
+    def handle_error(self, request, client_address) -> None:
+        if isinstance(sys.exc_info()[1], self._CLIENT_DISCONNECTS):
+            return
+        super().handle_error(request, client_address)
 
     def server_close(self) -> None:
         try:
@@ -19931,12 +20360,32 @@ def run_server(httpd: ThreadingHTTPServer) -> None:
     returned, and stops a loop another thread may be running.
     """
     try:
+        # Only the serving daemon builds matplotlib font lists for sandboxed
+        # kernels; a CLI one-shot or a test would abandon the scan at exit.
+        from openai4s.kernel.font_cache import enable_background_builds
+
+        runner_cfg = getattr(getattr(httpd, "runner", None), "cfg", None)
+        enable_background_builds(getattr(runner_cfg, "data_dir", None))
+    except Exception:  # noqa: BLE001 - an optimisation must not stop serving
+        pass
+    try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        httpd.shutdown()
-        httpd.server_close()
+        try:
+            # A font-list build enabled above is a confined child in its own
+            # session: this process exiting does not stop it, and it ran on
+            # after `openai4s stop` had reported success. Killed, not waited
+            # out, and first, so no kernel spawn during teardown starts one.
+            from openai4s.kernel.font_cache import shutdown_background_builds
+
+            shutdown_background_builds()
+        except Exception:  # noqa: BLE001 - teardown continues regardless
+            pass
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 def serve_app(cfg: Config | None = None, *, block: bool = True) -> ThreadingHTTPServer:

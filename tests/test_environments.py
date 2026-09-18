@@ -349,7 +349,8 @@ def test_dispatcher_env_list_and_use(tmp_path, monkeypatch):
     assert "biotite" in envs["struct"]["has"]
     assert "pandas" in envs["python"]["has"]
     assert r["missing"] == ["nonexistent-probe-pkg"]  # in no env → needs install
-    assert envs["r"]["runnable"] is False
+    # runnable on the channel it serves: an R-only env runs ```r cells
+    assert envs["r"]["runnable"] is True
 
     u = disp._m_env_use({"name": "python"})
     assert u["ok"] is True and switched["name"] == "python"
@@ -362,6 +363,45 @@ def test_dispatcher_env_list_and_use(tmp_path, monkeypatch):
     assert disp.active_r_env == "r"
     assert switched["name"] == "r"  # gateway applies via the pending-env path
     assert "```r" in u_r["note"]
+
+
+def test_env_list_reports_an_r_only_env_runnable_on_the_r_channel(
+    tmp_path, monkeypatch
+):
+    """`env_list` must agree with `env_use` and with where R cells really run.
+
+    `runnable` was `interpreter is not None`, and `interpreter` is the *Python*
+    that hosts the notebook kernel -- None for every R-only environment. So the
+    model was told the one environment its ```r cells ran in could not run
+    anything, while `env_use` accepted it and `resolve_r_interpreter` picked
+    its Rscript. A model taking the field at its word refused to use R. The
+    package recommendation skipped R environments the same way, so a request
+    for R packages never pointed at the environment that had them.
+
+    `Environment.to_dict` keeps its narrower meaning: it backs the Notebook's
+    Python-kernel picker, where an R-only environment is correctly disabled.
+    """
+    roots = tmp_path / "envs"
+    _make_py_env(roots, "python", packages=("numpy",))
+    r_env = _make_r_env(roots, "rlang")
+    description = r_env / "lib" / "R" / "library" / "probeRplot" / "DESCRIPTION"
+    description.parent.mkdir(parents=True)
+    description.write_text("Package: probeRplot\nVersion: 1.0\n", "utf-8")
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(roots))
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
+    E.discover_environments(force=True)
+    disp = build_dispatcher()
+
+    listed = disp._m_env_list({"packages": ["probeRplot"]})
+
+    envs = {e["name"]: e for e in listed["environments"]}
+    assert envs["rlang"]["language"] == "r"
+    assert envs["rlang"]["runnable"] is True
+    assert envs["python"]["runnable"] is True
+    assert envs["rlang"]["has"] == ["probeRplot"]
+    assert listed["recommend"] == "rlang"
+    assert disp._m_env_use({"name": "rlang"})["ok"] is True
+    assert E.get_environment("rlang").to_dict()["runnable"] is False
 
 
 def test_env_use_rescans_after_operator_creates_a_conda_environment(

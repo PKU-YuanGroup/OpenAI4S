@@ -1,0 +1,110 @@
+# Citation metadata for GitHub's "Cite this repository" button.
+#
+# GitHub renders `preferred-citation` when it is present, so that block is
+# the arXiv paper and must match the BibTeX in both README halves;
+# tests/test_citation_metadata.py holds the three copies together, and the
+# software metadata below to pyproject.toml.
+# `repository-code` stays at the top level only: ruby-cff, the library GitHub
+# Docs names, prefers it over `url` for the BibTeX link, so inside
+# `preferred-citation` it would replace the arXiv link with the repository
+# link.
+# There is deliberately no `version` or `date-released`: this file is not
+# one of the version pins bumped at release time, and a stale version is
+# worse than none.
+cff-version: 1.2.0
+message: >-
+  If you use OpenAI4S in your research, please cite the paper below.
+type: software
+title: OpenAI4S
+abstract: >-
+  A pure-stdlib hybrid Code-as-Action scientific research agent.
+authors:
+  - given-names: Gongbo
+    family-names: Zhang
+  - given-names: Hao
+    family-names: Li
+  - given-names: Yu
+    family-names: Wang
+  - given-names: Mujie
+    family-names: Lin
+  - given-names: Liuzhenghao
+    family-names: Lv
+  - given-names: Yicheng
+    family-names: Mao
+  - given-names: Yimi
+    family-names: Wang
+  - given-names: Jun
+    family-names: Zhu
+  - given-names: Minhan
+    family-names: Tang
+  - given-names: Zhengxiang
+    family-names: Jiang
+  - given-names: Yusong
+    family-names: Wang
+  - given-names: Jiayu
+    family-names: Yao
+  - given-names: Kunpeng
+    family-names: Ning
+  - given-names: Dawei
+    family-names: Pang
+  - given-names: Yonghong
+    family-names: Tian
+  - name: OpenAI4S Community
+  - given-names: Yuyang
+    family-names: Liu
+  - given-names: Li
+    family-names: Yuan
+repository-code: "https://github.com/PKU-YuanGroup/OpenAI4S"
+url: "https://github.com/PKU-YuanGroup/OpenAI4S"
+license: MIT
+keywords:
+  - agent
+  - scientific-computing
+  - code-as-action
+  - llm
+preferred-citation:
+  type: generic
+  title: "OpenAI4S: Code as Action, Science as Sessions"
+  authors:
+    - given-names: Gongbo
+      family-names: Zhang
+    - given-names: Hao
+      family-names: Li
+    - given-names: Yu
+      family-names: Wang
+    - given-names: Mujie
+      family-names: Lin
+    - given-names: Liuzhenghao
+      family-names: Lv
+    - given-names: Yicheng
+      family-names: Mao
+    - given-names: Yimi
+      family-names: Wang
+    - given-names: Jun
+      family-names: Zhu
+    - given-names: Minhan
+      family-names: Tang
+    - given-names: Zhengxiang
+      family-names: Jiang
+    - given-names: Yusong
+      family-names: Wang
+    - given-names: Jiayu
+      family-names: Yao
+    - given-names: Kunpeng
+      family-names: Ning
+    - given-names: Dawei
+      family-names: Pang
+    - given-names: Yonghong
+      family-names: Tian
+    - name: OpenAI4S Community
+    - given-names: Yuyang
+      family-names: Liu
+    - given-names: Li
+      family-names: Yuan
+  year: 2026
+  doi: 10.48550/arXiv.2609.15096
+  url: "https://arxiv.org/abs/2609.15096"
+  identifiers:
+    - type: other
+      value: "arXiv:2609.15096"
+      description: arXiv preprint, primary class cs.AI

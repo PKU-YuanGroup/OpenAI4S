@@ -8,10 +8,13 @@
 
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
+import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
 import { el, messagesHost } from "./dom";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
+import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
+import { cancelledIdentity, stoppedMarker } from "./stopped";
 
 export const INITIAL_RENDER_BATCH = 40;
 
@@ -28,6 +31,7 @@ export type StoredMessage = {
   created_at?: unknown;
   artifact_refs?: unknown;
   failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown };
+  cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown };
   review_status?: unknown;
   metadata?: { review_status?: unknown };
   [key: string]: unknown;
@@ -89,7 +93,7 @@ function addMsgActions(wrap: HTMLElement, text: string): void {
   const row = el("div", "msg-actions");
   const copy = el("button");
   copy.title = t("msgAction.copy");
-  copy.setAttribute("data-icon", "copy");
+  paintIcon(copy, "copy");
   copy.onclick = () => {
     try {
       if (navigator.clipboard) void navigator.clipboard.writeText(text || "");
@@ -99,13 +103,13 @@ function addMsgActions(wrap: HTMLElement, text: string): void {
   };
   const tup = el("button");
   tup.title = t("msgAction.thumbsUp");
-  tup.setAttribute("data-icon", "thumbs-up");
+  paintIcon(tup, "thumbs-up");
   const tdn = el("button");
   tdn.title = t("msgAction.thumbsDown");
-  tdn.setAttribute("data-icon", "thumbs-down");
+  paintIcon(tdn, "thumbs-down");
   const edit = el("button");
   edit.title = t("common.edit");
-  edit.setAttribute("data-icon", "pencil");
+  paintIcon(edit, "pencil");
   edit.onclick = () => {
     const c = document.getElementById("composer") as HTMLTextAreaElement | null;
     if (!c) return;
@@ -149,12 +153,31 @@ export function renderStored(
 ): HTMLElement | null {
   const text = messageText(m);
   if (!text.trim()) return null;
+  const stopped = m.role !== "user" ? cancelledIdentity(m.cancelled) : null;
+  if (stopped) {
+    // The stopped marker row renders as the marker the live stream showed.
+    const marker = el("div", "msg assistant turn-stopped");
+    marker.dataset.turnStatus = "cancelled";
+    marker.appendChild(stoppedMarker(stopped));
+    marker.dataset.ts = String(new Date(String(m.created_at || "")).getTime() || 0);
+    (target || messagesHost())?.appendChild(marker);
+    return marker;
+  }
+  const seed = m.role === "user" ? planSeed(text) : null;
+  if (seed) {
+    // A plan's execution seed is the server's instruction, not the user's message.
+    const marker = el("div", "msg plan-seed");
+    marker.appendChild(planSeedMarker(seed));
+    marker.dataset.ts = String(new Date(String(m.created_at || "")).getTime() || 0);
+    (target || messagesHost())?.appendChild(marker);
+    return marker;
+  }
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
   rememberCandidateIdentity(w, m);
   (w as HTMLElement & { _messageText?: string })._messageText = text;
   if (m.role === "user") {
     const b = el("div", "bubble");
-    b.textContent = text;
+    b.textContent = planModeRequestText(text);
     w.appendChild(b);
     callWindow("renderMessageRefChips", w, m.artifact_refs);
   } else {

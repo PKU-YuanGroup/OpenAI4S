@@ -159,6 +159,43 @@ _TIMEOUT_EXIT_CODE = 124
 _EXIT_UNCONFINED = 71
 
 
+def _helper_exec_env(
+    environ: dict[str, str], declared_secret_env: list[str] | tuple[str, ...] = ()
+) -> dict[str, str]:
+    """The environment the provider helper is exec'd with.
+
+    The helper's own `scrub_secret_env` removes credential-shaped names and the
+    baseline secret prefixes from `os.environ` before it imports provider code,
+    and that was taken to mean provider code cannot read them. It edits the
+    in-process copy only. The exec-time block the kernel keeps is untouched and
+    readable to the process itself -- `sysctl(KERN_PROCARGS2)` on its own pid on
+    macOS, `/proc/self/environ` on Linux -- and no sandbox profile refuses a
+    process its own arguments. So a daemon LLM key configured by environment
+    variable or `.env`, which this used to pass through (only `NGC_`, `NVIDIA_`
+    and `HF_` were stripped), was one read away from a provider shim that has
+    the network by design.
+
+    The same rule is applied here, before exec, so the scrub is true of the
+    block rather than of the copy: the helper's own predicate (imported, so the
+    two cannot drift) plus the provider's declared `secret_env`, whose values
+    reach the helper on stdin. Nothing the helper runs could have used a removed
+    variable anyway -- its first act is to drop them.
+    """
+    from openai4s_compute_provider._constants import (
+        BASELINE_SECRET_PREFIXES,
+        CRED_KEY_RE,
+    )
+
+    declared = set(declared_secret_env)
+    return {
+        name: value
+        for name, value in environ.items()
+        if name not in declared
+        and not name.startswith(BASELINE_SECRET_PREFIXES)
+        and not CRED_KEY_RE.search(name)
+    }
+
+
 def _safe_remote_path(value: str, *, label: str) -> str:
     """A remote path that cannot walk out of where the caller said it was going.
 
@@ -1837,13 +1874,10 @@ class ComputeManager:
                     )
                 # `auto`: the documented visible degradation.
                 argv = plain_argv
-        # Scrub inherited secrets from the child env; the helper's own prologue
-        # also drops the provider's secret_env_prefixes.
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith(("NGC_", "NVIDIA_", "HF_"))
-        }
+        # Scrub inherited secrets from the child env *before* exec -- see
+        # `_helper_exec_env` for why the helper's own in-process scrub is not
+        # enough. Its prologue still drops the provider's secret_env_prefixes.
+        env = _helper_exec_env(dict(os.environ), prov["meta"].get("secret_env") or ())
         if confined:
             # The anchor the helper's own check compares against. It cannot be
             # obtained from inside the boundary, which is the point: the value
@@ -1927,7 +1961,18 @@ class ComputeManager:
         stage: Path,
     ) -> Any:
         """One helper process, credential on stdin, under a hard deadline."""
-        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, env=env)
+        # Its own session, and on macOS that is part of the boundary rather than
+        # process hygiene. Seatbelt's gate on reading another process's
+        # environment block (`sysctl(KERN_PROCARGS2)`) is only enforced between
+        # *different* sessions: measured on macOS 26.6, a confined helper in the
+        # daemon's session recovered the daemon's exec-time environment -- and
+        # any LLM key configured there -- with the profile's process-info denies
+        # in place, and was refused once started in a session of its own. The
+        # kernel worker relies on the same property (`PipeTransport`). bubblewrap
+        # already gives the sandboxed child a new session on Linux.
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, env=env, start_new_session=True
+        )
         proc.stdin.write((json.dumps({"op": "auth", **creds}) + "\n").encode("utf-8"))
         proc.stdin.close()
         try:

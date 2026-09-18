@@ -139,10 +139,27 @@ def _provider(store: DataProStore) -> str:
     return str(store.get_setting("llm_provider") or "").strip().lower()
 
 
+def _brokered(store: DataProStore, key: str) -> str:
+    """A credential read that has no answer when the broker cannot be read.
+
+    `store.secrets` fails closed on a host with no keychain, libsecret or
+    DPAPI. Every model-profile activation reads the Ark key through here to
+    decide whether DataPro must reconnect, so an unguarded read turned that
+    refusal into an `internal error` on activation, including for a profile
+    that has no key at all. No key is also what the outbound resolver acts on:
+    `_outbound_headers` refuses with "not configured". `gateway.effective_api_key`
+    and `llm.resolve.store_overrides` guard the same read the same way.
+    """
+    try:
+        return str(store.get_secret_setting(key) or "").strip()
+    except Exception:  # noqa: BLE001 - a broker we cannot read holds nothing
+        return ""
+
+
 def explicit_agent_plan_key(store: DataProStore) -> str:
     """Return the dedicated key through SecretBroker, never its settings ref."""
 
-    return str(store.get_secret_setting(AGENT_PLAN_KEY_SETTING) or "").strip()
+    return _brokered(store, AGENT_PLAN_KEY_SETTING)
 
 
 def is_volcengine_endpoint(base_url: str) -> bool:
@@ -177,7 +194,7 @@ def ark_key_for_datapro(store: DataProStore) -> str:
     # parties that never issued it.
     if not is_volcengine_endpoint(str(store.get_setting("llm_base_url") or "")):
         return ""
-    return str(store.get_secret_setting("llm_api_key") or "").strip()
+    return _brokered(store, "llm_api_key")
 
 
 def resolve_agent_plan_key(store: DataProStore) -> str:

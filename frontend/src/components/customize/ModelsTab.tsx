@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
-import { t } from "../../i18n";
-import { publicText } from "../../features/scrub/scrub";
+import { LANG, t } from "../../i18n";
+import { publicModelId, publicText } from "../../features/scrub/scrub";
 import { api, apiErrorText } from "../../features/customize/api";
 import { custTab } from "../../features/customize/actions";
 import { defaultModel } from "../../stores/customize";
@@ -30,6 +30,63 @@ import { VolcenginePanel } from "./vendors/volcengine";
 
 type Profile = Record<string, unknown>;
 
+/**
+ * UI-LIVE-06 copy. Feature-local on purpose: `i18n/en.ts` / `zh.ts` are
+ * generated extracts of the legacy dictionary and are byte-checked.
+ */
+const COPY = {
+  en: {
+    liveSource: "In use now · from the daemon's environment or saved settings, not a saved profile",
+    liveNoProfiles: "No saved profiles. The active model above comes from the environment or saved settings.",
+    envKey: "🔑 Key from environment",
+  },
+  zh: {
+    liveSource: "当前在用 · 来自守护进程的环境变量或已保存的设置，不是已保存的配置档",
+    liveNoProfiles: "还没有已保存的配置档。上方正在使用的模型来自环境变量或已保存的设置。",
+    envKey: "🔑 密钥来自环境变量",
+  },
+} as const;
+
+function copy(key: keyof (typeof COPY)["en"]): string {
+  return (LANG === "zh" ? COPY.zh : COPY.en)[key];
+}
+
+/**
+ * The key half of a profile row. `has_api_key` is only "holds a key of its
+ * own", so a profile dispatched under the daemon's environment key for the same
+ * provider read "No key" beside a `ready` card; `credential_source` says which.
+ */
+export function profileKeyLabel(p: Record<string, unknown>): string {
+  if (p.has_api_key) return t("cust.models.hasKey");
+  if (p.credential_source === "environment") return copy("envKey");
+  if (p.credential_source === "local" || loopbackModelBase(p.base_url)) {
+    return t("cust.models.local.keyless");
+  }
+  return t("cust.models.noKey");
+}
+
+type LiveModel = { provider: string; model: string; baseUrl: string; hasKey: boolean };
+
+/**
+ * What `GET /config/llm` says the daemon runs on. Never carries key material.
+ * The model id and protocol go through `publicModelId`, not `publicText`: the
+ * generic credential regex rendered `ark-code-latest` as "[redacted]" (the
+ * hazard `features/customize/models.ts` `entryText` already names).
+ */
+function readLiveModel(raw: unknown): LiveModel | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const model = publicModelId(asString(row.model), 200);
+  const provider = publicModelId(asString(row.provider), 64);
+  if (!model) return null;
+  return {
+    provider,
+    model,
+    baseUrl: publicText(asString(row.base_url), 300).trim(),
+    hasKey: row.has_api_key === true,
+  };
+}
+
 export function ModelsTab() {
   const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
@@ -38,6 +95,7 @@ export function ModelsTab() {
     active_id: string;
     protocols: unknown[];
   }>({ profiles: [], active_id: "", protocols: [] });
+  const [live, setLive] = useState<LiveModel | null>(null);
   const [discovery, setDiscovery] = useState<LocalDiscovery | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanErr, setScanErr] = useState<string | null>(null);
@@ -52,13 +110,21 @@ export function ModelsTab() {
   useEffect(() => {
     void (async () => {
       try {
-        const next = await api("/model-profiles");
+        // The live configuration alongside the saved profiles. An install
+        // driven by `.env` has no profiles at all, and this tab then said "No
+        // models configured yet" while every turn ran on the environment's
+        // model. Best-effort: an unreadable config must not hide the profiles.
+        const [next, conf] = await Promise.all([
+          api("/model-profiles"),
+          api("/config/llm").catch(() => null),
+        ]);
         if (!alive()) return;
         setData({
           profiles: asList(next.profiles) as Profile[],
           active_id: asString(next.active_id),
           protocols: asList(next.protocols),
         });
+        setLive(readLiveModel(conf));
         markCustomizeLoaded();
       } catch (e) {
         if (!alive()) return;
@@ -271,8 +337,9 @@ export function ModelsTab() {
         </div>
       </div>
       <Subhead>{t("cust.models.configuredHeading")}</Subhead>
+      {live && !data.active_id ? liveModelRow(live, protocols) : null}
       {!data.profiles.length ? (
-        <Empty>{t("cust.models.empty2")}</Empty>
+        <Empty>{live && !data.active_id ? copy("liveNoProfiles") : t("cust.models.empty2")}</Empty>
       ) : (
         data.profiles.map((p) => (
           <ProfileRow
@@ -284,6 +351,36 @@ export function ModelsTab() {
           />
         ))
       )}
+    </div>
+  );
+}
+
+/**
+ * The configuration turns run on when no saved profile is active. A plain
+ * render helper rather than a component: it holds no state of its own.
+ */
+function liveModelRow(live: LiveModel, protocols: ProtocolOption[]) {
+  const bits: string[] = [];
+  if (live.provider) bits.push(protocolLabelOf(protocols, live.provider));
+  bits.push(live.model);
+  bits.push(
+    live.hasKey
+      ? t("cust.models.hasKey")
+      : loopbackModelBase(live.baseUrl)
+        ? t("cust.models.local.keyless")
+        : t("cust.models.noKey"),
+  );
+  return (
+    <div class="cust-row prof-row" data-live-model="true">
+      <div class="info">
+        <div class="nm">
+          <span>{live.model}</span> <Pill>{t("cust.models.activePill")}</Pill>
+        </div>
+        <div class="ds">
+          {bits.join(" · ") + (live.baseUrl ? "  ·  " + live.baseUrl : "")}
+        </div>
+        <div class="ds">{copy("liveSource")}</div>
+      </div>
     </div>
   );
 }
@@ -383,13 +480,7 @@ function ProfileRow({
   const bits: string[] = [];
   if (p.provider) bits.push(protocolLabelOf(protocols, p.provider));
   if (p.model) bits.push(asString(p.model));
-  bits.push(
-    p.has_api_key
-      ? t("cust.models.hasKey")
-      : loopbackModelBase(p.base_url)
-        ? t("cust.models.local.keyless")
-        : t("cust.models.noKey"),
-  );
+  bits.push(profileKeyLabel(p));
   return (
     <div class="cust-row prof-row">
       <div class="info">

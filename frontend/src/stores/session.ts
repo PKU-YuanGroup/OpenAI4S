@@ -77,6 +77,13 @@ export type HistoryLoadState = HistoryLoadResult & {
   deferred: boolean;
 };
 export const historyLoad = field(() => null as HistoryLoadState | null);
+/**
+ * The frame whose session-scoped state (#messages, Notebook cells, dock,
+ * Timeline) `openConversation` last reset for. Not `currentId`: a new session
+ * is published before it is opened, and Home clears `currentId` without
+ * clearing any of that state.
+ */
+export const openedFrameId = field(() => null as string | null);
 export const historyMutation = field(() => 0);
 export const historyUnconfirmed = field(() => 0);
 const historyPendingSubmissions = field(() => new Set<object>());

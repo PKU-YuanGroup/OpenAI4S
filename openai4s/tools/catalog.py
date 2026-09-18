@@ -433,8 +433,22 @@ class SessionToolCatalog:
             for group in _GROUPS
         )
 
-    def search_capabilities(self, query: str) -> dict[str, Any]:
-        """Find and monotonically activate matching progressive groups."""
+    def search_capabilities(
+        self,
+        query: str,
+        *,
+        offered: Callable[[Tool], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Find and monotonically activate matching progressive groups.
+
+        ``offered`` is the caller's model-facing tool projection. When given,
+        ``matched_groups[*].tools`` and ``visible_tools`` name only tools it
+        offers, and ``unavailable_tools`` (present only when non-empty) names
+        the rest of the active groups' tools with the reason, so a model is
+        never told a tool is visible that its provider ``tools=`` list lacks.
+        Matching and activation stay unfiltered. Unset, the result is exactly
+        the historical one.
+        """
 
         normalized = str(query or "").strip().casefold()
         if not normalized:
@@ -485,12 +499,22 @@ class SessionToolCatalog:
                 for group in _GROUPS
                 if str(group["id"]) in self._active_groups
             ]
-            visible_tools = [
-                tool.name
-                for tool in tools
-                if self._group_for(tool) in self._active_groups
+            active_tools = [
+                tool for tool in tools if self._group_for(tool) in self._active_groups
             ]
-        return {
+        visible_tools = [tool.name for tool in active_tools]
+        hidden: list[str] = []
+        if offered is not None:
+            # Outside the lock: the projection reads permission state.
+            hidden = [tool.name for tool in active_tools if not offered(tool)]
+            if hidden:
+                excluded = set(hidden)
+                visible_tools = [name for name in visible_tools if name not in excluded]
+                for _score, group in matches:
+                    group["tools"] = [
+                        name for name in group["tools"] if name not in excluded
+                    ]
+        result: dict[str, Any] = {
             "query": normalized,
             "matched_groups": [item[1] for item in matches],
             "activated_group_ids": [
@@ -499,6 +523,11 @@ class SessionToolCatalog:
             "active_group_ids": active,
             "visible_tools": visible_tools,
         }
+        if hidden:
+            result["unavailable_tools"] = [
+                {"name": name, "reason": "approval_unreachable"} for name in hidden
+            ]
+        return result
 
     def get(self, name: str) -> Tool | None:
         return next((tool for tool in self.tools() if tool.name == name), None)

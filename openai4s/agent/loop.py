@@ -21,6 +21,7 @@ from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.cell_record import DelegatedCellRecorder
 from openai4s.agent.delegation import _child_context_budget
 from openai4s.agent.engine import AgentEngine
+from openai4s.agent.events import ReplyReceived
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
 from openai4s.agent.models import KernelEnvSpec
@@ -200,6 +201,39 @@ class _LedgerTranscriptEventSink:
         self.transcript.emit(event)
 
 
+class _FrameUsageEventSink:
+    """Meter every delivered provider reply onto the frame this Agent opened.
+
+    The Web turn loop does the same through ``WebEventSink.add_usage``; the CLI
+    root Agent never did, so its frame kept NULL token columns while the
+    Action Ledger held the real numbers.
+    """
+
+    def __init__(self, inner: Any, record: Callable[[Mapping[str, Any]], None]):
+        self.inner = inner
+        self.record = record
+
+    def emit(self, event: Any) -> None:
+        if isinstance(event, ReplyReceived) and event.reply.usage:
+            self.record(event.reply.usage)
+        self.inner.emit(event)
+
+
+def _frame_status_for_stop_reason(stop_reason: object) -> str:
+    """The frame status vocabulary the Web gateway already writes.
+
+    Only ``submitted`` is a completion. ``cancelled`` keeps its own word, as a
+    cancelled Web turn does; ``max_turns``, ``no_progress`` and any reason this
+    table has never heard of are failures, so a new stop reason fails closed.
+    """
+
+    if stop_reason == "submitted":
+        return "done"
+    if stop_reason == "cancelled":
+        return "cancelled"
+    return "failed"
+
+
 def _completion_summary(completion: Any) -> str | None:
     """Project an EngineResult completion into the CLI's final-message slot."""
 
@@ -212,6 +246,58 @@ def _completion_summary(completion: Any) -> str | None:
             return summary.strip()
     summary = completion.get("summary")
     return summary.strip() if isinstance(summary, str) and summary.strip() else None
+
+
+#: A pre-authorized command longer than this would be truncated in the
+#: permission target the gate matches, so its rule would admit any command
+#: sharing that prefix.
+_MAX_ALLOWED_TEST_COMMAND_CHARS = 4000
+
+
+def allowed_test_command_error(command: str) -> str | None:
+    """Why ``command`` cannot be pre-authorized as exact test evidence, if so.
+
+    The rule must name one command: the text the gate matches (redacted and
+    bounded) has to equal the command itself, and the command must be one the
+    evidence check would accept -- a composition that can mask a failing exit
+    status is refused there, so authorizing it here would only buy a refusal.
+    """
+
+    from openai4s.bash_capability import command_preserves_failure_status
+    from openai4s.host.bash import redact_shell_text
+
+    if not isinstance(command, str) or not command.strip():
+        return "a test command must be a non-empty string"
+    if "\x00" in command:
+        return "a test command must not contain a NUL byte"
+    if len(command) > _MAX_ALLOWED_TEST_COMMAND_CHARS:
+        return (
+            "a test command longer than "
+            f"{_MAX_ALLOWED_TEST_COMMAND_CHARS} characters cannot be matched exactly"
+        )
+    if redact_shell_text(command, limit=_MAX_ALLOWED_TEST_COMMAND_CHARS) != command:
+        return "a test command must not carry a credential-shaped value"
+    if not command_preserves_failure_status(command):
+        return (
+            "its shell composition (;, |, ||, a newline, or a substitution) "
+            "could mask a failing test's exit status, so it can never back "
+            "test_evidence"
+        )
+    return None
+
+
+def _preauthorized_test_commands_note(commands: Sequence[str]) -> str:
+    listed = "\n".join(f"- host.bash({command!r})" for command in commands)
+    return (
+        "Pre-authorized test commands for this run. host.bash is approved for "
+        "exactly these command strings, so run each test with the string "
+        "verbatim and cite that same string as the test_evidence command:\n"
+        f"{listed}\n"
+        "Any other host.bash command needs an approval this run may not have: "
+        "check everything else (an entry-point smoke, an import check) in "
+        "Python inside the cell, by importing the module and calling its "
+        "functions."
+    )
 
 
 @dataclass
@@ -245,6 +331,16 @@ class Agent:
     # per-turn prompt fragment is appended and whether the Host demands
     # verified source/entry-point/test evidence at completion.
     task_mode: str | None = None
+    # Exact test commands the operator pre-authorized for an explicit code
+    # mode (``openai4s run --allow-test-command``). Each becomes a
+    # conversation-scoped exact-command ``bash`` allow rule, so the Host can
+    # issue the receipt ``test_evidence`` is verified against in a run that has
+    # nobody to approve it. The receipt requirement itself is unchanged.
+    allowed_test_commands: Sequence[str] = ()
+    # Record this root Agent's cells to `execution_log` even without an
+    # explicit code mode. `openai4s run --auto` sets it: its post-run review
+    # can only judge the executed code and output the run actually recorded.
+    record_cells: bool = False
     # Durable kernel-generation store handle (duck-typed Store). When set (or
     # defaulted from the dispatcher's store), each worker lifetime writes a
     # kernel_generations row under this Agent's frame so artifact environment
@@ -273,6 +369,10 @@ class Agent:
     _generation_recorder: KernelGenerationRecorder | None = field(
         default=None, init=False, repr=False
     )
+    # True only for a root Agent that opened its own turn frame. Nobody else
+    # closes that row: a delegated child's frame belongs to the DelegationRunner
+    # and an embedder's frame to the embedder, so neither is ever written here.
+    _owns_frame: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.max_turns is None:
@@ -291,6 +391,11 @@ class Agent:
                     kind="turn", model=self.cfg.llm.model, depth=self.delegate_depth
                 )
                 self.dispatcher.frame_id = self.frame_id
+                self._owns_frame = True
+            # What `search_capabilities` reports as visible must be what this
+            # Agent offers the provider, or a model calls a tool it was never
+            # offered and loses the turn to the gate's refusal.
+            self.dispatcher.model_tool_offered = self._tool_offered
         # Durable generation registration defaults to the dispatcher's store:
         # the CLI root and every delegated child then record real kernel
         # generations under their own frame with no extra wiring.
@@ -538,8 +643,175 @@ class Agent:
         recorder.bind_generation_source(self.current_kernel_generation_id)
         self.cell_execution_hooks = recorder
 
+    def _explicit_evidence_mode(self) -> str | None:
+        """The explicitly selected mode, when it arms the code-evidence gate."""
+
+        raw = str(self.task_mode or "").strip()
+        if not raw:
+            return None
+        try:
+            mode = resolve_task_mode("", explicit=raw).value
+        except ValueError:
+            # `run` raises the loud error for an unknown name; nothing to arm.
+            return None
+        return mode if mode in EVIDENCE_REQUIRED_MODES else None
+
+    def authorize_test_commands(self) -> list[str]:
+        """Install ``allowed_test_commands`` as exact ``bash`` allow rules.
+
+        Only for an explicit evidence mode, only in this Agent's own
+        conversation, and only for the exact command text: the rule pattern is
+        glob-escaped, and a command whose permission target would not equal its
+        own text (a credential-shaped token the gate redacts, or an overlong
+        command it truncates) is refused, because either would turn one
+        command into a family. Idempotent. Returns the installed commands.
+        """
+
+        commands = [str(command) for command in self.allowed_test_commands]
+        if not commands or self._explicit_evidence_mode() is None:
+            return []
+        for command in commands:
+            problem = allowed_test_command_error(command)
+            if problem is not None:
+                raise ValueError(f"--allow-test-command {command!r}: {problem}")
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return []
+        from openai4s.storage.permissions import literal_permission_pattern
+
+        root = str(self.frame_id)
+        try:
+            frame = store.get_frame(root)
+            if isinstance(frame, Mapping) and frame.get("root_frame_id"):
+                root = str(frame["root_frame_id"])
+        except Exception:  # noqa: BLE001 - the Agent's own frame is the scope
+            pass
+        for command in commands:
+            store.set_permission_rule(
+                scope="conversation",
+                scope_id=root,
+                tool="bash",
+                pattern=literal_permission_pattern(command),
+                decision="allow",
+            )
+        return commands
+
+    def code_mode_preflight_refusal(self) -> str | None:
+        """Why an explicit code mode cannot complete here, before any model call.
+
+        Its completion needs a Host-authorized ``host.bash`` receipt for each
+        cited test command. When no channel, rule, or unattended policy could
+        ever authorize ``host.bash`` in this process, every turn of the run is
+        spent on a contract it cannot meet; say so instead. ``None`` when the
+        run has no such requirement or the runner is authorizable.
+        """
+
+        mode = self._explicit_evidence_mode()
+        if mode is None:
+            return None
+        self.authorize_test_commands()
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return None
+        from openai4s.permissions import broker
+
+        permission_broker = broker()
+        if permission_broker.approval_reachable(
+            store=store,
+            frame_id=str(self.frame_id),
+            method="bash",
+            side_effect_class="runtime_mutation",
+            guardian_config=self.cfg,
+        ):
+            return None
+        if self.allowed_test_commands:
+            blocker = "a standing 'bash' deny rule blocks every command, including the pre-authorized ones"
+        elif permission_broker.guardian_adjudicates(
+            store=store, frame_id=str(self.frame_id), guardian_config=self.cfg
+        ):
+            blocker = (
+                "no standing 'bash' allow rule applies, and the Auto Mode Guardian "
+                "never approves a shell command"
+            )
+        else:
+            blocker = (
+                "no interactive approval channel is attached, no standing 'bash' "
+                "allow rule applies, and OPENAI4S_UNATTENDED_APPROVAL is not 'allow'"
+            )
+        return (
+            f"--mode {mode} completes only with test_evidence backed by a "
+            "Host-authorized host.bash receipt for each test command, and nothing "
+            f"in this run can authorize host.bash: {blocker}. Pre-authorize the "
+            "exact test command(s) the run will cite with --allow-test-command "
+            "CMD (repeatable), or run the task in the Web UI, where a person can "
+            "approve the command."
+        )
+
     def run(self, task: str) -> dict:
         """Run one task through the shared engine and local runtime adapters."""
+        if not self._owns_frame:
+            return self._run_task(task)
+        # This Agent opened its turn frame, so it is the only writer that can
+        # close it. Reopened first: a reused Agent must not report the last
+        # run's terminal while this one is still going.
+        self._persist_frame_status("processing")
+        try:
+            result = self._run_task(task)
+        except KeyboardInterrupt:
+            # Ctrl-C is the CLI user's Stop; a Web Stop records "cancelled" too.
+            self._persist_frame_status("cancelled")
+            raise
+        except BaseException:
+            self._persist_frame_status("failed")
+            raise
+        self._persist_frame_status(
+            _frame_status_for_stop_reason(result.get("stop_reason"))
+        )
+        return result
+
+    def close_unrun_frame(self, status: str = "failed") -> None:
+        """Close the turn frame this Agent opened for a run that never starts.
+
+        ``__post_init__`` opens the root frame and only ``run`` closes it, so a
+        caller that refuses after construction (the CLI's code-mode preflight)
+        would leave the row ``processing`` forever. A frame this Agent did not
+        open -- a delegated child's, an embedder's -- is never written.
+        """
+
+        if self._owns_frame:
+            self._persist_frame_status(status)
+
+    def _persist_frame_status(self, status: str) -> None:
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        try:
+            store.update_frame(str(self.frame_id), status=status)
+        except Exception:  # noqa: BLE001 - a status write cannot break the run
+            pass
+
+    def _record_frame_usage(self, usage: Mapping[str, Any]) -> None:
+        """Add one reply's usage to the owned frame, as the Web loop does."""
+
+        if not self._owns_frame or not self.frame_id:
+            return
+        store = getattr(self.dispatcher, "store", None)
+        if store is None:
+            return
+        try:
+            store.add_frame_tokens(
+                str(self.frame_id),
+                input_tokens=int(
+                    usage.get("prompt_tokens") or usage.get("input_tokens", 0) or 0
+                ),
+                output_tokens=int(
+                    usage.get("completion_tokens") or usage.get("output_tokens", 0) or 0
+                ),
+            )
+        except Exception:  # noqa: BLE001 - metering cannot break the run
+            pass
+
+    def _run_task(self, task: str) -> dict:
         assert self.dispatcher is not None
         assert self.max_turns is not None
         # An Agent can be reused.  A previous submission must never make the
@@ -564,15 +836,19 @@ class Agent:
         set_mode = getattr(self.dispatcher, "set_task_mode", None)
         if callable(set_mode):
             set_mode(mode.value if explicit else None)
-        if explicit and mode.value in EVIDENCE_REQUIRED_MODES:
+        if self.record_cells or (explicit and mode.value in EVIDENCE_REQUIRED_MODES):
             # The armed contract demands test_evidence naming real
             # execution_log rows, and a root CLI Agent historically recorded
             # none — which made the requirement unsatisfiable and the refusal
             # ("this run never executed that cell") actively false. Recording
-            # rides the explicit contract only, so every other CLI run keeps
-            # its historical no-rows behaviour.
+            # rides the explicit contract, or an explicit `record_cells`
+            # request (`--auto`'s reviewer), so every other CLI run keeps its
+            # historical no-rows behaviour.
             self._install_cell_recorder()
         fragment = task_mode_prompt(mode, explicit=explicit)
+        authorized_tests = self.authorize_test_commands() if explicit else []
+        if authorized_tests:
+            fragment += "\n\n" + _preauthorized_test_commands_note(authorized_tests)
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt()},
             {
@@ -646,6 +922,10 @@ class Agent:
                     if action_ledger is not None
                     else transcript_events
                 )
+                if self._owns_frame:
+                    event_sink = _FrameUsageEventSink(
+                        event_sink, self._record_frame_usage
+                    )
 
                 def _account_abandoned_reply(reply: Mapping[str, Any]) -> None:
                     """Meter a reply that landed after this run was cancelled.
@@ -657,16 +937,23 @@ class Agent:
                     close, left open on every non-Web path.
                     """
 
+                    usage = reply.get("usage")
+                    # Billed like a delivered reply, as the Web loop bills it.
+                    if isinstance(usage, Mapping) and usage:
+                        self._record_frame_usage(usage)
                     if action_ledger is None:
                         return
-                    usage = reply.get("usage")
+                    # Reached even with no counters, exactly as the Web loop's
+                    # ``account_abandoned_reply`` does: an unmeasured late reply
+                    # is recorded as *unknown* rather than as free, which is
+                    # what the team quota gate reads.
                     action_ledger.record_abandoned_usage(usage)
 
                 model: Any = ChatModel(
                     self.cfg.llm,
                     chat,
-                    tools=lambda messages: with_finalize_response(
-                        tool_catalog.specs_for(messages)
+                    tools=lambda messages: self._model_tool_specs(
+                        tool_catalog, messages
                     ),
                     # ChatModel owns cancellation end to end: it refuses to
                     # start a cancelled call, returns the canonical no-op reply
@@ -688,8 +975,8 @@ class Agent:
                 policy_providers: dict[str, Any] = dict(
                     log=self._log,
                     context_budget_provider=_child_context_budget(self.cfg),
-                    tool_schema_provider=lambda state: with_finalize_response(
-                        tool_catalog.specs_for(state.messages)
+                    tool_schema_provider=lambda state: self._model_tool_specs(
+                        tool_catalog, state.messages
                     ),
                     workspace_provider=lambda _s: run_cwd,
                     should_cancel=(
@@ -746,6 +1033,69 @@ class Agent:
             completion=result.completion,
             turns=result.turns,
         )
+
+    def _model_tool_specs(
+        self, tool_catalog: Any, messages: Sequence[Mapping[str, Any]]
+    ) -> tuple[Any, ...]:
+        """The tool declarations this run offers the model.
+
+        The session catalog's progressive projection, minus every
+        approval-required tool no approval path in this process could allow:
+        with no channel attached, no standing allow rule, and an unattended
+        posture (or the Guardian) that refuses it, each call is only a wasted
+        turn. A Web session attaches a channel for its root, so its delegated
+        children keep everything. Hiding is a projection, never the control:
+        the catalog, the ledger's resolver, and the permission gate still see
+        every tool, so one called anyway is refused and audited as before.
+        """
+
+        specs = tool_catalog.specs_for(messages)
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return with_finalize_response(specs)
+        reachable: dict[str, bool] = {}
+        visible = [
+            spec
+            for spec in specs
+            if self._tool_offered(
+                tool_catalog.get(getattr(spec, "name", "")), _reachable=reachable
+            )
+        ]
+        return with_finalize_response(visible)
+
+    def _tool_offered(
+        self, tool: Any, *, _reachable: dict[str, bool] | None = None
+    ) -> bool:
+        """Whether this run's projection offers ``tool`` to the model.
+
+        The one predicate behind both the provider ``tools=`` list and what
+        ``search_capabilities`` calls visible. A tool that needs no approval
+        is always offered; an approval-required one only when some approval
+        path in this process could allow its method. ``_reachable`` memoizes
+        per method within one projection.
+        """
+
+        if tool is None or not getattr(tool, "requires_approval", False):
+            return True
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return True
+        method = str(tool.host_method)
+        if _reachable is not None and method in _reachable:
+            return _reachable[method]
+        from openai4s.permissions import broker
+
+        reachable = broker().approval_reachable(
+            store=store,
+            frame_id=str(self.frame_id),
+            method=method,
+            dangerous=bool(getattr(tool, "dangerous", False)),
+            side_effect_class=str(getattr(tool, "side_effect_class", "")),
+            guardian_config=self.cfg,
+        )
+        if _reachable is not None:
+            _reachable[method] = reachable
+        return reachable
 
     def _session_is_metered(self) -> bool:
         """Whether the team ledger charges this run's session root.
@@ -1187,45 +1537,146 @@ def enable_auto_run_environment(
     return applied
 
 
+def _cli_run_evidence(
+    store: Any, root_frame_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The run's native tool ledger, and the evidence gaps its record shows.
+
+    A CLI dispatcher projects no activity steps, so the tool calls live only
+    in the canonical action ledger: each ``result`` event is projected into
+    the reviewer's ``kind/title/status/summary`` shape. Every started Cell
+    allocates an execution attempt whether or not a recorder is armed, so an
+    attempt with no ``execution_log`` row is a Cell that ran and cannot be
+    shown -- declared, rather than letting a packet without it read complete.
+    """
+
+    ledger: list[dict[str, Any]] = []
+    for group in store.list_action_groups(root_frame_id, include_events=True):
+        if group.get("kind") != "native_tools":
+            continue
+        events = list(group.get("events") or [])
+        names = {
+            event.get("action_id"): str(
+                (event.get("canonical_arguments") or {}).get("name") or ""
+            )
+            for event in events
+            if event.get("type") == "proposed"
+            and isinstance(event.get("canonical_arguments"), Mapping)
+        }
+        for event in events:
+            message = event.get("result")
+            if event.get("type") != "result" or not isinstance(message, Mapping):
+                continue
+            ledger.append(
+                {
+                    "kind": "tool",
+                    "title": names.get(event.get("action_id"))
+                    or str(message.get("name") or ""),
+                    "status": "error" if message.get("is_error") else "done",
+                    "summary": str(message.get("content") or "")[:2_000],
+                }
+            )
+    recorded = {
+        str(cell.get("producing_cell_id") or "")
+        for cell in store.list_cells(root_frame_id)
+    }
+    unrecorded = sorted(
+        {
+            str(attempt.get("producing_cell_id") or "")
+            for attempt in store.list_execution_attempts(root_frame_id=root_frame_id)
+            if attempt.get("terminal_state") != "prepare_failed"
+        }
+        - recorded
+        - {""}
+    )
+    gaps: list[dict[str, Any]] = []
+    if unrecorded:
+        gaps.append({"kind": "cells_unrecorded", "count": len(unrecorded)})
+    return ledger, gaps
+
+
 def review_cli_result(
     task: str,
     result: Mapping[str, Any],
     *,
     cfg: Config,
+    store: Any = None,
+    root_frame_id: str | None = None,
     chat_call: Any = None,
 ) -> dict[str, Any]:
     """Post-run Scientific Reviewer adapter for the CLI.
 
     The Web path reviews through `CompletionGateService`, which needs durable
-    frame, branch and turn rows the one-shot CLI never creates. This reviews the
-    same evidence the engine actually produced and returns the same terminal
-    vocabulary, so `--auto` reports a real verdict rather than a placeholder.
+    branch and turn rows the one-shot CLI never creates. This reviews the
+    evidence the run actually recorded under its root frame -- the cells it
+    executed (code, output, errors), its native tool ledger, its artifacts and
+    lineage -- through the same collector the Web path uses, and returns the
+    same terminal vocabulary, so `--auto` reports a real verdict rather than a
+    placeholder. Without a Store and frame, or when the record cannot be read
+    or is missing executed cells, the snapshot says so as an omission: a review
+    of an answer with no evidence behind it is never reported as verified.
+    Scope: the root run's own cells. A delegated child records its cells under
+    its own frame, and those are not collected (nor declared missing), the same
+    as on the Web path; the reviewer sees a child's work only through the
+    parent cell that received its result.
     """
 
     from openai4s.server.completion_gate import terminal_for_review
-    from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
+    from openai4s.server.evidence_snapshot import (
+        collect_turn_evidence,
+        freeze_evidence_snapshot,
+    )
     from openai4s.server.scientific_review import ScientificReviewService
 
     answer = str(result.get("final_message") or "")
-    # A one-shot run has no durable frame, but it does have an identity, and
+    structured = result.get("submitted_output")
+    # A one-shot run has no durable turn row, but it does have an identity, and
     # leaving the block empty is not the same as saying so: the reviewer read
     # four blank ids as missing provenance and raised a finding about the
     # harness rather than the answer. `cli:<uuid>` is true and self-describing.
     run_id = f"cli:{uuid.uuid4().hex[:16]}"
-    snapshot = freeze_evidence_snapshot(
-        {
-            "identity": {
-                "root_frame_id": run_id,
-                "branch_id": run_id,
-                "turn_id": run_id,
-                "execution_id": run_id,
-            },
-            "user_request": task,
-            "candidate_answer": answer,
-            "structured_completion": result.get("submitted_output"),
-            "environment": {"runtime": "cli"},
-        }
-    )
+    root = str(root_frame_id or "").strip()
+    snapshot: dict[str, Any] | None = None
+    unavailable = "the run's durable execution record was not supplied"
+    if store is not None and root:
+        try:
+            tool_ledger, gaps = _cli_run_evidence(store, root)
+            snapshot = collect_turn_evidence(
+                store,
+                root_frame_id=root,
+                branch_id=root,
+                turn_id=run_id,
+                execution_id=run_id,
+                user_request=task,
+                candidate_answer=answer,
+                structured_completion=structured,
+                tool_ledger=tool_ledger,
+                environment_defaults={"runtime": "cli"},
+                collection_omissions=gaps,
+            )
+        except Exception as error:  # noqa: BLE001 - unreadable evidence is a gap
+            snapshot = None
+            unavailable = (
+                f"the execution record could not be read ({type(error).__name__})"
+            )
+    if snapshot is None:
+        snapshot = freeze_evidence_snapshot(
+            {
+                "identity": {
+                    "root_frame_id": root or run_id,
+                    "branch_id": root or run_id,
+                    "turn_id": run_id,
+                    "execution_id": run_id,
+                },
+                "user_request": task,
+                "candidate_answer": answer,
+                "structured_completion": structured,
+                "environment": {"runtime": "cli"},
+                "collection_omissions": [
+                    {"kind": "execution_evidence_unavailable", "reason": unavailable}
+                ],
+            }
+        )
     service = ScientificReviewService(store=None, config=cfg, chat_call=chat_call)
     try:
         review = service.evaluate(

@@ -13,5 +13,5 @@ Markdown + highlight kernel. Whole-string `esc` then markup replacement; scheme 
 | [`esc.test.ts`](esc.test.ts) | Quote-escape order; old `&<>` assertions still hold. |
 | [`highlight.ts`](highlight.ts) | mdHighlight scanner; `_OC_KW ∪ MD_KEYWORDS`; EDKW derived from the same table. |
 | [`highlight.test.ts`](highlight.test.ts) | `.tok-*` names, keyword union, EDKW derivation. |
-| [`render.ts`](render.ts) | `renderMd` / `mdInline` / `mdCodeBlock`. F-21 wraps tables in `.md-table-wrap`. |
-| [`render.test.ts`](render.test.ts) | Five XSS samples from `tests/browser_smoke.mjs`; scheme whitelist; table wrap. |
+| [`render.ts`](render.ts) | `renderMd` / `mdInline` / `mdCodeBlock`. F-21 wraps tables in `.md-table-wrap`. A one-segment `/api/artifacts/<id>` link stored by 0.2.0 (a 404 on every contract-v1 gateway) is rewritten to `/api/v1/artifacts/<id>`; every other href is left as written. |
+| [`render.test.ts`](render.test.ts) | Five XSS samples from `tests/browser_smoke.mjs`; scheme whitelist; legacy Artifact-link rewrite; table wrap. |

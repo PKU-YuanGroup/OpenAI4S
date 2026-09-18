@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from typing import Any, Callable
@@ -128,6 +129,24 @@ def perm_match(text: str, pattern: str) -> bool:
         return fnmatch.fnmatchcase(text, pattern)
     except Exception:  # noqa: BLE001
         return False
+
+
+_GLOB_METACHARACTERS = re.compile(r"[*?\[]")
+
+
+def literal_permission_pattern(text: str) -> str:
+    """A rule pattern that :func:`perm_match` accepts for ``text`` alone.
+
+    Rule patterns are globs, so an "exact command" rule written verbatim would
+    authorize every command its ``*``/``?``/``[`` happen to match --
+    ``pytest tests/test_*.py`` would also admit ``pytest tests/test_x.py; rm
+    -rf ~``. Each metacharacter is wrapped in a one-character class, which
+    fnmatch reads as that literal character. (``perm_match``'s equality
+    shortcut still admits the bracketed spelling itself; that string differs
+    from ``text`` only by those brackets, so it never names a broader action.)
+    """
+
+    return _GLOB_METACHARACTERS.sub(lambda match: f"[{match.group(0)}]", text)
 
 
 # Gentle defaults for the local research daemon.  The kernel can already run
@@ -990,6 +1009,7 @@ __all__ = [
     "canonical_permission_action_digest",
     "DEFAULT_PERMISSION_RULES",
     "permission_action_digest",
+    "literal_permission_pattern",
     "PermissionRuleRepository",
     "perm_match",
 ]

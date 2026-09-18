@@ -10,7 +10,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 JSON 助手（`/api/v1`、`ApiError`）。 |
 | [`chrome.css`](chrome.css) | 本车道样式：palette / notes / team / resizer 类名。 |
-| [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `hint` / `grow`。 |
+| [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window 能力。不 import `window-exports`。 |
 | [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。 |
 | [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制。 |
@@ -21,7 +21,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`notes.ts`](notes.ts) | Files dock 里的项目笔记。 |
 | [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、stub 安全的 `isReady`、乱序 `PAL.gen`。 |
 | [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。 |
-| [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。 |
+| [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |
+| [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |
 | [`team.test.ts`](team.test.ts) | 身份芯片、admin 面板、guest 重定向、团队模态走陷阱。 |
 | [`team.ts`](team.ts) | 团队 IIFE。`/auth/me` 探测；admin/files 模态走陷阱。 |
 | [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限。 |

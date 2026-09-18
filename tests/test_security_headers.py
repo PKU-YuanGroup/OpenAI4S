@@ -21,6 +21,7 @@ from html.parser import HTMLParser
 import pytest
 
 from openai4s.server.security_headers import (
+    artifact_content_disposition,
     artifact_content_security_policy,
     artifact_security_headers,
     content_security_policy,
@@ -307,3 +308,33 @@ def test_the_policy_is_a_constant():
     assert policy == content_security_policy()
     assert "default-src 'self'" in policy
     assert "'unsafe-inline'" not in _directive(policy, "script-src")
+
+
+@pytest.mark.parametrize(
+    ("stored", "ascii_name", "encoded"),
+    [
+        ("group_summary.csv", "group_summary.csv", "group_summary.csv"),
+        ("figures/plot.png", "plot.png", "plot.png"),
+        ("..\\up\\notes.txt", "notes.txt", "notes.txt"),
+        # a right-to-left override would show "xexe.csv" as "xvsc.exe"
+        ("x\u202eexe.csv", "xexe.csv", "xexe.csv"),
+        # a lone surrogate is not UTF-8 encodable: dropped, never a crash
+        ("\ud800bad.csv", "bad.csv", "bad.csv"),
+        ("\u6570\u636e.csv", "__.csv", "%E6%95%B0%E6%8D%AE.csv"),
+        ("", "artifact", "artifact"),
+        ("..", "artifact", "artifact"),
+        ("dir/", "artifact", "artifact"),
+    ],
+)
+def test_artifact_disposition_is_inline_and_names_only_the_last_component(
+    stored, ascii_name, encoded
+):
+    value = artifact_content_disposition(stored)
+    assert value == f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
+
+
+def test_artifact_disposition_bounds_a_long_name_but_keeps_its_extension():
+    value = artifact_content_disposition("a" * 1000 + ".csv")
+    encoded = value.split("filename*=UTF-8''", 1)[1]
+    assert encoded.endswith(".csv")
+    assert len(encoded) <= 180

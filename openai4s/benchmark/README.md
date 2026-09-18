@@ -1,7 +1,7 @@
 # `openai4s/benchmark/`
 
 The runner for the versioned science-workflow benchmark whose manifests live in
-[`workflows/`](../../workflows/README.md): eleven workflows and thirty-four
+[`workflows/`](../../workflows/README.md): thirteen workflows and forty-six
 cases that actually execute, plus a separate strict Stage 0 field/safety
 acceptance pack.
 

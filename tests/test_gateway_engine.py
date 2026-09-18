@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -2005,7 +2006,93 @@ def test_cancel_after_llm_reply_prevents_returned_cell(monkeypatch, tmp_path):
     assert hub.events[-1]["status"] == "cancelled"
     stored = runner.store.list_messages(frame_id)
     assert [message["role"] for message in stored] == ["user", "assistant"]
-    assert stored[-1]["content"] == "_已取消。_"
+    # English request, English marker: this used to be a hard-coded
+    # "_已取消。_" in every session.
+    assert stored[-1]["content"] == "_Stopped by user._"
+    assert json.loads(stored[-1]["metadata"])["cancelled"]["reason"] == "user"
+
+
+def _stored_metadata(message: dict) -> dict:
+    raw = message.get("metadata")
+    return json.loads(raw) if isinstance(raw, str) and raw else dict(raw or {})
+
+
+@pytest.mark.parametrize(
+    ("request_text", "budget", "marker", "reason"),
+    [
+        ("Run the 600-iteration loop", False, "_Stopped by user._", "user"),
+        ("运行这个 600 次循环", False, "_已由用户停止。_", "user"),
+        (
+            "Run the 600-iteration loop",
+            True,
+            "_Stopped: the Auto Mode budget was reached._",
+            "auto_budget",
+        ),
+    ],
+)
+def test_stopped_cell_turn_stores_and_streams_a_marker_after_narration(
+    monkeypatch, tmp_path, request_text, budget, marker, reason
+):
+    """A Stop while a Cell runs must leave a durable, streamed stopped marker.
+
+    The Web narration "I have prepared a Python cell and am running it now"
+    counts as prose, and the cancel note was written only for a turn with no
+    prose -- so every Cell turn stopped mid-run reopened with nothing but a
+    claim that the cell was still running, and the live view showed nothing
+    either. Stored truth (frame status, execution log) said cancelled.
+    """
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    reply = "```python\nimport time\nfor _ in range(600):\n    time.sleep(1)\n```"
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, on_delta, kwargs
+        return {"content": reply, "usage": {}}
+
+    def stopped_execute(state, code, origin, emit, stream=True, language="python"):
+        del code, origin, emit, stream, language
+        if budget:
+            state.auto_budget_terminal_reason = "max_tool_calls"
+        state.cancel.set()
+        return {
+            "status": "error",
+            "interrupted": True,
+            "result": {"stdout": "", "stderr": "", "error": None, "interrupted": True},
+        }
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", stopped_execute)
+
+    result = runner.run_message(frame_id, "default", request_text)
+
+    assert result["status"] == "cancelled"
+    stored = runner.store.list_messages(frame_id)
+    # The in-progress narration is still there; it is no longer the last word.
+    narration = stored[-2]["content"]
+    assert "running it now" in narration or "正在执行" in narration, narration
+    last = stored[-1]
+    assert last["role"] == "assistant"
+    assert last["content"] == marker
+    cancelled = _stored_metadata(last)["cancelled"]
+    assert cancelled["reason"] == reason
+    assert cancelled["request_id"] == result["request_id"]
+    assert cancelled["execution_id"] == result["execution_id"]
+
+    # Streamed live, as the chunk right before the terminal frame event.
+    markers = [
+        (index, event)
+        for index, event in enumerate(hub.events)
+        if event.get("type") == "text_chunk" and event.get("cancelled")
+    ]
+    assert len(markers) == 1
+    index, chunk = markers[0]
+    assert chunk["block_type"] == "text"
+    assert chunk["chunk"].strip() == marker
+    assert chunk["cancelled"] == cancelled
+    terminal = hub.events[-1]
+    assert terminal["type"] == "frame_update" and terminal["status"] == "cancelled"
+    assert terminal["cancelled"] == cancelled
+    assert index < len(hub.events) - 1
 
 
 def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
@@ -2563,5 +2650,415 @@ def test_a_team_owned_session_is_metered_and_drains_its_abandoned_streams(
             lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError()),
         )
         assert runner._session_is_metered(frame_id) is False
+    finally:
+        runner.close()
+
+
+# --- UI-LIVE-07: the completion text starts its own paragraph live -----------
+
+_GRADIENT_PROSE = (
+    "The means rise from setosa to virginica, reflecting the classic iris "
+    "species-size gradient."
+)
+
+
+def _live_text(hub) -> str:
+    return "".join(
+        event.get("chunk", "")
+        for event in hub.events
+        if event.get("type") == "text_chunk" and event.get("block_type") == "text"
+    )
+
+
+def test_native_finalize_after_streamed_prose_starts_a_new_paragraph(
+    monkeypatch, tmp_path
+):
+    """The model's closing prose had no trailing newline, and the completion
+    text arrived as the next chunk of the same live markdown block, so the UI
+    rendered "...gradient.Printed mean petal length...". The stored rows were
+    always separate; only the stream joined them."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    call = _native_call(
+        "finalize-1",
+        "finalize_response",
+        {
+            "summary": "Printed mean petal length per species.",
+            "completion_bullets": ["Printed means"],
+        },
+    )
+    reply, _assistant = _native_reply(_GRADIENT_PROSE, [call])
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, kwargs
+        for offset in range(0, len(_GRADIENT_PROSE), 7):
+            on_delta(_GRADIENT_PROSE[offset : offset + 7])
+        return reply
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+
+    result = runner.run_message(frame_id, "default", "answer in one sentence")
+
+    assert result["status"] == "completed"
+    live = _live_text(hub)
+    assert "gradient.Printed" not in live
+    assert "gradient.\n\nPrinted mean petal length" in live
+    contents = [m["content"] for m in runner.store.list_messages(frame_id)]
+    assert contents[-2] == _GRADIENT_PROSE
+    assert contents[-1].startswith("Printed mean petal length")
+
+
+def test_submit_output_cell_after_single_newline_prose_starts_a_new_paragraph(
+    monkeypatch, tmp_path
+):
+    """A single newline still renders as one paragraph ("gradient. Printed")."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    content = (
+        _GRADIENT_PROSE
+        + "\n```python\nhost.submit_output({'summary': "
+        + "'Printed mean petal length per species.'}, ['Printed means'])\n```"
+    )
+
+    def fake_chat(messages, cfg, on_delta=None, **kwargs):
+        del messages, cfg, kwargs
+        for offset in range(0, len(content), 7):
+            on_delta(content[offset : offset + 7])
+        return {"content": content, "usage": {}}
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del code, origin, emit, stream, language
+        state.dispatcher.last_output = {
+            "output": {"summary": "Printed mean petal length per species."},
+            "completion_bullets": ["Printed means"],
+        }
+        return {"result": {"stdout": "", "stderr": "", "error": None}}
+
+    monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+
+    result = runner.run_message(frame_id, "default", "answer in one sentence")
+
+    assert result["status"] == "completed"
+    live = _live_text(hub)
+    # A blank line (or more -- the renderer skips extras) before the completion.
+    assert re.search(r"gradient\.\n[ \t]*\n\s*Printed mean petal length", live), repr(
+        live
+    )
+
+
+def test_completion_without_prior_prose_gets_no_leading_blank_line(
+    monkeypatch, tmp_path
+):
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def finish_silently(state, emit, visible):
+        del emit, visible
+        state.last_engine_completion = {
+            "output": {"summary": "Printed mean petal length per species."}
+        }
+        state.last_model_prose = ""
+        return "submitted"
+
+    monkeypatch.setattr(runner, "_loop", finish_silently)
+
+    result = runner.run_message(frame_id, "default", "answer in one sentence")
+
+    assert result["status"] == "completed"
+    assert _live_text(hub).startswith("Printed mean petal length")
+
+
+@pytest.mark.parametrize("stage", ["stage1", "stage4"])
+def test_trusted_and_gated_completion_chunks_also_start_a_new_paragraph(
+    monkeypatch, tmp_path, stage
+):
+    """The same join at the other two emit sites: the Stage 1 trusted
+    delivery branch and the Stage 4 provisional candidate."""
+    for flags in (
+        (
+            RoadmapFeatureFlags(stage1_trusted_delivery=True)
+            if stage == "stage1"
+            else RoadmapFeatureFlags(stage4_review_completion_gate=True)
+        ),
+    ):
+        home = tmp_path / stage
+        home.mkdir()
+        cfg = Config(
+            data_dir=home,
+            llm=LLMConfig(provider="deepseek", api_key="test-key"),
+            max_turns=3,
+            roadmap_features=flags,
+        )
+        hub = _Hub()
+        runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+        frame_id = runner.store.new_frame(
+            kind="turn", project_id="default", status="ready"
+        )
+        runner.store.update_frame(frame_id, name="Existing test session")
+
+        def ensure_runtime(state):
+            state.dispatcher = SimpleNamespace(last_output=None)
+            state.messages = [{"role": "system", "content": "sys"}]
+            return state.dispatcher
+
+        def finish_after_prose(state, emit, visible, runner=runner):
+            visible.append({"at": 100, "text": _GRADIENT_PROSE})
+            emit(
+                {
+                    "type": "text_chunk",
+                    "frame_id": state.root_frame_id,
+                    "block_type": "text",
+                    "chunk": _GRADIENT_PROSE,
+                }
+            )
+            target = state.workspace / "means.csv"
+
+            def write():
+                target.write_text("species,mean\nsetosa,1.46\n", encoding="utf-8")
+                return "ok", True
+
+            runner._invoke_control_with_artifacts(
+                state, SimpleNamespace(name="write_file"), emit, write
+            )
+            state.last_engine_completion = {
+                "output": {"summary": "Printed mean petal length per species."}
+            }
+            state.last_model_prose = _GRADIENT_PROSE
+            return "submitted"
+
+        class _Gate:
+            @staticmethod
+            def active_mode(_root_frame_id):
+                return "review_only"
+
+            def gate_after_turn(self, **fields):
+                return None
+
+            def finalize_after_delivery(self, **fields):
+                return None
+
+        monkeypatch.setattr(runner, "_ensure_runtime", ensure_runtime)
+        monkeypatch.setattr(runner, "_loop", finish_after_prose)
+        monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+        if flags.stage4_review_completion_gate:
+            runner.completion_gate = _Gate()
+        try:
+            runner.run_message(frame_id, "default", "answer in one sentence")
+            live = _live_text(hub)
+            assert "gradient.Printed" not in live, (flags, repr(live))
+            assert "gradient.\n\nPrinted mean petal length" in live, (flags, live)
+        finally:
+            runner.close()
+
+
+def test_reopened_messages_project_the_stopped_marker(monkeypatch, tmp_path):
+    """GET /frames/{fid}/messages carries the stopped marker's identity.
+
+    Allowlisted like `failure`: the three scalars the live surfaces already
+    published, nothing else from the metadata blob. Driven end to end -- a real
+    cancelled turn on the daemon's runner, then the real handler over a socket.
+    """
+    from tests.test_team_auth_routes import _body_json, _get, _TeamDaemon
+
+    node = _TeamDaemon(tmp_path / "home", team_mode=False)
+    try:
+        runner = node.runner
+        pid = node.store.create_project(name="Stop project")["project_id"]
+        frame_id = node.store.new_frame(kind="turn", project_id=pid, status="ready")
+        node.store.update_frame(frame_id, name="Stopped session")
+        dispatcher = SimpleNamespace(last_output=None)
+
+        def ensure_runtime(state):
+            state.dispatcher = dispatcher
+            state.messages = [{"role": "system", "content": "sys"}]
+            return dispatcher
+
+        def fake_chat(messages, cfg, on_delta=None, **kwargs):
+            del messages, cfg, on_delta, kwargs
+            return {"content": "```python\nimport time\ntime.sleep(600)\n```"}
+
+        def stopped_execute(state, code, origin, emit, stream=True, language="python"):
+            del code, origin, emit, stream, language
+            state.cancel.set()
+            return {"result": {"stdout": "", "stderr": "", "error": None}}
+
+        monkeypatch.setattr(runner, "_ensure_runtime", ensure_runtime)
+        monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+        monkeypatch.setattr(gateway_mod, "chat", fake_chat)
+        monkeypatch.setattr(runner, "_execute_and_log", stopped_execute)
+
+        result = runner.run_message(frame_id, pid, "Sleep for ten minutes")
+        assert result["status"] == "cancelled"
+        # Junk beside the marker must not be published by the projection.
+        last = runner.store.list_branch_message_boundaries(
+            frame_id, branch_id=runner.store.active_session_branch(frame_id)
+        )[-1]
+        runner.store.update_message_metadata(
+            last["message_id"], {"internal_note": "do not publish"}
+        )
+
+        status, raw = _get(
+            node.port, f"/api/v1/frames/{frame_id}/messages", token=node.token
+        )
+        assert status == 200, raw[:300]
+        messages = _body_json(raw)["messages"]
+        assert messages[-1]["content"] == "_Stopped by user._"
+        assert messages[-1]["cancelled"] == {
+            "request_id": result["request_id"],
+            "execution_id": result["execution_id"],
+            "reason": "user",
+        }
+        assert "internal_note" not in json.dumps(messages)
+        assert all("cancelled" not in m for m in messages[:-1])
+    finally:
+        node.close()
+
+
+# --- daemon log noise: expected refusals are one line, not a crash -----------
+
+
+def test_interrupted_repl_cell_does_not_report_success(monkeypatch, tmp_path):
+    """The Notebook said "interrupted" and the terminal frame event said
+    "success" for the same cell."""
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub())
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    outcomes = iter(
+        [
+            {"stdout": "", "stderr": "", "error": None, "interrupted": True},
+            {"stdout": "ok\n", "stderr": "", "error": None},
+        ]
+    )
+
+    def fake_execute(state, code, origin, emit, stream=True, language="python"):
+        del state, code, origin, emit, stream, language
+        return {
+            "idx": 1,
+            "state_revision": 1,
+            "generation_id": "gen-1",
+            "result": next(outcomes),
+            "figures": [],
+            "files_written": [],
+        }
+
+    monkeypatch.setattr(runner, "_execute_and_log", fake_execute)
+    hub = runner.hub
+    try:
+        interrupted = runner.run_repl(
+            frame_id, "default", "import time; time.sleep(60)"
+        )
+        assert interrupted["cell"]["status"] == "interrupted"
+        terminal = [e for e in hub.events if e.get("type") == "frame_update"]
+        assert terminal[-1]["status"] == "cancelled"
+
+        finished = runner.run_repl(frame_id, "default", "print('ok')")
+        assert finished["cell"]["status"] == "ok"
+        terminal = [e for e in hub.events if e.get("type") == "frame_update"]
+        assert terminal[-1]["status"] == "success"
+    finally:
+        runner.close()
+
+
+def test_missing_llm_key_turn_logs_one_line_not_a_traceback(
+    monkeypatch, tmp_path, capfd
+):
+    """A credential-less daemon printed a full traceback for every turn --
+    an expected, user-fixable refusal that buried real server errors in the
+    log CI dumps after a failure."""
+    import openai4s.llm as llm_facade
+    from openai4s.config import LLMConfig as _LLMConfig
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("this test must never reach a provider")
+
+    # The offline transport injection seam: a missing key must be refused
+    # before any request is built, and nothing here may egress if it is not.
+    monkeypatch.setattr(llm_facade, "_post_json", no_network)
+    monkeypatch.setattr(llm_facade, "_post_sse", no_network)
+
+    def keyless(st=None):
+        cfg = _LLMConfig(provider="claude")
+        cfg.api_key = ""  # after __post_init__'s environment fallback
+        return cfg
+
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+    monkeypatch.setattr(runner, "_llm_cfg", keyless)
+    capfd.readouterr()
+
+    result = runner.run_message(frame_id, "default", "hello")
+
+    assert result["status"] == "failed"
+    err = capfd.readouterr().err
+    assert "Traceback" not in err, err
+    lines = [line for line in err.splitlines() if "web:turn" in line]
+    assert len(lines) == 1, err
+    assert "llm_credential_missing" in lines[0]
+
+
+def test_unexpected_turn_failure_still_prints_its_traceback(
+    monkeypatch, tmp_path, capfd
+):
+    """Control: only expected refusals are quietened."""
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def broken_chat(messages, cfg, on_delta=None, **kwargs):
+        raise ZeroDivisionError("a real bug")
+
+    monkeypatch.setattr(gateway_mod, "chat", broken_chat)
+    capfd.readouterr()
+
+    result = runner.run_message(frame_id, "default", "hello")
+
+    assert result["status"] == "failed"
+    err = capfd.readouterr().err
+    assert "Traceback" in err and "ZeroDivisionError" in err
+
+
+def test_model_revision_refusal_in_delegation_wiring_logs_one_line(
+    monkeypatch, tmp_path, capfd
+):
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), _Hub())
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+
+    def unavailable(_st=None):
+        raise gateway_mod.GatewayError(
+            409,
+            "the pinned model revision is unavailable",
+            "model_revision_unavailable",
+        )
+
+    monkeypatch.setattr(runner, "_llm_cfg", unavailable)
+    capfd.readouterr()
+    try:
+        runner._wire_delegation(state, dispatcher=SimpleNamespace())
+        err = capfd.readouterr().err
+        assert "Traceback" not in err, err
+        assert "409 model_revision_unavailable" in err
+    finally:
+        runner.close()
+
+
+def test_queued_turn_refusal_logs_one_line(monkeypatch, tmp_path, capfd):
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def refuse(*args, **kwargs):
+        raise gateway_mod.GatewayError(
+            409,
+            "the pinned model revision is unavailable",
+            "model_revision_unavailable",
+        )
+
+    monkeypatch.setattr(runner, "run_message", refuse)
+    capfd.readouterr()
+    try:
+        job = runner.submit_message(frame_id, "default", "hello")
+        assert job.done.wait(5)
+        err = capfd.readouterr().err
+        assert "Traceback" not in err, err
+        assert "409 model_revision_unavailable" in err
     finally:
         runner.close()

@@ -185,3 +185,88 @@ def test_dispatcher_last_output_remains_bidirectionally_compatible(tmp_path):
         "output": {"answer": 42},
         "completion_bullets": ["Computed the answer"],
     }
+
+
+# --- irregular past tenses --------------------------------------------------
+#
+# The English tense guard accepted a first word ending in "ed" or one of a short
+# list of irregular forms. "Wrote" was listed; "Overwrote", "Rewrote", "Took",
+# "Cut", "Reset" and "Undid" were not, so a correct bullet raised inside
+# host.submit_output after the Cell's file write had already happened, and
+# finalize_response refused the same wording. Both doors share the validator.
+
+IRREGULAR_PAST_BULLETS = [
+    "Overwrote measurements.csv with header x,y,z",
+    "Rewrote the loader",
+    "Took three replicate measurements",
+    "Cut the reads to 100 bp",
+    "Reset the random seed",
+    "Undid the normalization",
+    "Redid the alignment",
+    "Rebuilt the index",
+    "Did a sensitivity sweep",
+    "Gave each sample an identifier",
+    "Brought the tables into one frame",
+    "Lost no rows during the join",
+    "Knew the reference build from the header",
+    "Grew the training set",
+    "Hid the internal columns",
+    "Overrode the default threshold",
+    "Upheld the original labels",
+    "Mistook nothing: rechecked every ID",
+    "Unset the proxy variable",
+    "Froze the environment lockfile",
+    "Spent the budget on two runs",
+]
+
+NOT_PAST_BULLETS = [
+    "Will compute the score",
+    "Computing the score",
+    "Plan to save the model",
+    "Compute the score",
+    "Output the table",
+    "Present the results",
+    "Rerun the analysis",
+    "Outlet flow was measured",
+]
+
+
+@pytest.mark.parametrize("bullet", IRREGULAR_PAST_BULLETS)
+def test_irregular_and_prefixed_past_tense_bullets_are_accepted_by_both_doors(
+    bullet,
+):
+    from openai4s.agent.finalize import validate_finalize_arguments
+
+    assert validate_completion_bullets([bullet]) is None
+    assert CompletionService().submit(
+        {"output": {"rows": 3}, "completion_bullets": [bullet]}
+    ) == {"status": "ok"}
+    assert (
+        validate_finalize_arguments({"summary": "x", "completion_bullets": [bullet]})
+        is None
+    )
+
+
+@pytest.mark.parametrize("bullet", NOT_PAST_BULLETS)
+def test_future_progressive_imperative_and_prefix_false_friends_stay_refused(
+    bullet,
+):
+    from openai4s.agent.finalize import validate_finalize_arguments
+
+    assert "past-tense verb" in validate_completion_bullets([bullet])
+    assert "past-tense verb" in validate_finalize_arguments(
+        {"summary": "x", "completion_bullets": [bullet]}
+    )
+
+
+@pytest.mark.parametrize(
+    "bullet", ["Overwrote x.csv", "Rewrote the report", "Rebuilt the index"]
+)
+def test_newly_accepted_write_verbs_still_need_execution_evidence(bullet):
+    """Accepting the wording must not open a zero-execution completion claim."""
+    from openai4s.agent.finalize import reconcile_completion_claims
+
+    arguments = {"summary": "x", "completion_bullets": [bullet]}
+    refusal = reconcile_completion_claims(arguments, {"cells": 0, "tool_calls": 0})
+    assert refusal is not None and bullet in refusal
+    assert reconcile_completion_claims(arguments, {"cells": 1, "tool_calls": 0}) is None

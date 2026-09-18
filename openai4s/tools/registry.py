@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from openai4s.tools.artifacts import (
     GetArtifactMetadataTool,
@@ -739,6 +739,8 @@ def run_tool_calls(
     calls: list[dict],
     errors: list[str],
     catalog: Any = None,
+    *,
+    on_result: Callable[[Any, bool], None] | None = None,
 ) -> str:
     """Execute a batch of parsed tool calls through `dispatcher` (up to
     MAX_TOOL_CALLS_PER_TURN) and return a single bounded observation string.
@@ -746,9 +748,15 @@ def run_tool_calls(
     For a fixed dispatcher (the CLI loop). The web loop runs calls inline so it
     can apply a pending env switch between them, but uses finalize_tool_batch
     for the same bounding.
+
+    ``on_result(call, ok)`` is told how each call that actually ran ended, so a
+    caller can count executed work without re-deriving it from the parsed
+    list: a refused, denied or failed call reports ``ok=False``.
     """
     parts: list[str] = []
     for call in calls[:MAX_TOOL_CALLS_PER_TURN]:
-        text, _ok = execute_tool_call(dispatcher, call, catalog)
+        text, ok = execute_tool_call(dispatcher, call, catalog)
         parts.append(text)
+        if on_result is not None:
+            on_result(call, ok)
     return finalize_tool_batch(parts, len(calls), errors)

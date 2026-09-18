@@ -522,13 +522,18 @@ def test_an_explicit_code_mode_arms_the_contract_on_both_doors(monkeypatch, tmp_
 def test_the_detected_fragment_carries_an_advisory_note_and_the_explicit_one_does_not():
     """The fragment must not promise Host verification the turn will not run.
     An explicit selection gets the verified-contract wording (and the registry
-    pin above stays byte-for-byte); a detected one is told, honestly, that the
-    declarations stay advisory and a misread never blocks completion."""
+    pin above stays byte-for-byte); a detected one keeps the same guidance but
+    swaps the armed completion for the advisory one, and is told, honestly,
+    that the declarations stay advisory and a misread never blocks completion."""
     explicit = task_mode_prompt(TaskMode.CODEBASE_CHANGE)
     detected = task_mode_prompt(TaskMode.CODEBASE_CHANGE, explicit=False)
     assert explicit == prompts.build("task_mode_codebase_change")
-    assert detected.startswith(explicit)
-    note = detected[len(explicit) :]
+    guidance, _armed = explicit.split("\n\nSave each source file as an artifact", 1)
+    assert detected.startswith(guidance + "\n\nSave each source file as an artifact")
+    assert detected.endswith("\n\n" + prompts.TASK_MODE_DETECTED_NOTE)
+    assert "host.bash" in explicit and "host.bash" not in detected
+    note = prompts.TASK_MODE_DETECTED_NOTE
+    assert "inferred" not in explicit
     assert "inferred" in note
     assert "advisory" in note
     assert "never blocks" in note

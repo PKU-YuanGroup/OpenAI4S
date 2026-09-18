@@ -1,5 +1,6 @@
 """Pytest fixtures + path setup for the openai4s test suite."""
 
+import copy
 import os
 import re
 import sys
@@ -218,8 +219,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # something meaningless, and the answer would then stand for every test
     # after it. Cleared on both sides so no verdict is inherited.
     _reset_confinement_self_test()
+    _reset_preinstall_status()
     yield
     _reset_confinement_self_test()
+    _reset_preinstall_status()
     reset_singletons()
 
 
@@ -230,6 +233,31 @@ def _reset_confinement_self_test() -> None:
         byoc_confinement.reset_self_test_cache()
     except Exception:  # noqa: BLE001
         pass
+
+
+#: ``preinstall.STATUS`` as it stood before any test body ran in this process.
+_PREINSTALL_STATUS_AT_START: dict | None = None
+
+
+def _reset_preinstall_status() -> None:
+    """Put the process-wide install progress back the way the process had it.
+
+    ``GET /kernel/packages`` serialises ``preinstall.STATUS``. Tests that set
+    ``missing``/``installing`` or timestamps and left them there made a later
+    route sweep in the same xdist worker capture typed array items and numeric
+    timestamps, so the schema gate reported drift that depended only on which
+    files shared a worker -- and a recapture could have frozen it.
+    """
+    global _PREINSTALL_STATUS_AT_START
+    try:
+        from openai4s.kernel import preinstall
+    except Exception:  # noqa: BLE001
+        return
+    with preinstall._LOCK:
+        if _PREINSTALL_STATUS_AT_START is None:
+            _PREINSTALL_STATUS_AT_START = copy.deepcopy(preinstall.STATUS)
+        preinstall.STATUS.clear()
+        preinstall.STATUS.update(copy.deepcopy(_PREINSTALL_STATUS_AT_START))
 
 
 # ---------------------------------------------------------------------------

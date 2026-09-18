@@ -3,7 +3,7 @@
  * localStorage keys `os-side-w` / `os-dock-w` unchanged.
  */
 
-import { t } from "../../i18n/runtime";
+import { tOptional } from "../../i18n/runtime";
 import { $, el } from "./dom";
 
 let _colClampBound = false;
@@ -57,7 +57,12 @@ export function initColResizers(): void {
 /** app.js:13277-13319 */
 function makeColResizer(host: HTMLElement, kind: "side" | "dock"): void {
   const h = el("div", "col-resizer col-resizer-" + kind);
-  h.title = t("resizer.drag");
+  // A static label, not t() read once: this runs from bootChrome() before the
+  // locale chunks land, when t() answers with the key, and nothing wrote the
+  // title again -- so the tooltip was "resizer.drag" on every load and never
+  // followed a language switch. applyStaticI18n repaints it with the Shell.
+  h.setAttribute("data-i18n-title", "resizer.drag");
+  h.title = tOptional("resizer.drag") ?? "";
   host.appendChild(h);
   let startX = 0;
   let curW = 0;

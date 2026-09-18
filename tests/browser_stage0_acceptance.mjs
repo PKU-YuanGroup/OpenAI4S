@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import util from "node:util";
 
 import { authenticate } from "./browser_auth.mjs";
 
@@ -51,15 +52,12 @@ function makeSummary(mode = "acceptance") {
       ok: true,
     },
     self_test_checks: null,
+    // `completion_artifact_url_unversioned` used to lead this list: the
+    // default completion link was `/api/artifacts/<artifact_id>`, a 404 on
+    // every contract-v1 daemon. It is closed -- the link is now built under
+    // /api/v1 -- so the facts below require the rendered link to fetch the
+    // uploaded bytes instead of reproducing the 404.
     current_gaps: [
-      {
-        id: "completion_artifact_url_unversioned",
-        current_path: "/api/artifacts/<artifact_id>",
-        current_status: 404,
-        canonical_path: "/api/v1/artifacts/<artifact_id>",
-        canonical_status: 200,
-        planned_fix_stage: 1,
-      },
       {
         id: "ketcher_placeholder",
         current_path: "/ketcher",
@@ -149,7 +147,11 @@ function validateSummarySchema(candidate) {
     const digest = candidate.resource_identity_sha256[kind];
     assertion(digest === null || /^[0-9a-f]{64}$/.test(digest), `summary ${kind} hash invalid`);
   }
-  assertion(Array.isArray(candidate.current_gaps) && candidate.current_gaps.length === 3, "summary current_gaps invalid");
+  assertion(Array.isArray(candidate.current_gaps) && candidate.current_gaps.length === 2, "summary current_gaps invalid");
+  assertion(
+    !candidate.current_gaps.some((gap) => gap && gap.id === "completion_artifact_url_unversioned"),
+    "summary re-lists the closed completion_artifact_url_unversioned gap",
+  );
   assertion(Array.isArray(candidate.failures) && candidate.failures.every((item) => typeof item === "string"), "summary failures invalid");
   assertion(candidate.cleanup && typeof candidate.cleanup === "object", "summary cleanup missing");
   assertion(typeof candidate.cleanup.attempted === "boolean", "summary cleanup.attempted invalid");
@@ -242,11 +244,40 @@ function linuxProcessStartToken(pid) {
   return parseLinuxProcessStartToken(raw);
 }
 
+function parseDarwinProcessStartSeconds(lstart) {
+  // `ps -o lstart=` under LC_ALL=C: "Mon Sep 14 11:42:09 2026", local time.
+  const started = Date.parse(String(lstart || "").trim());
+  return Number.isFinite(started) ? Math.floor(started / 1000) : null;
+}
+
+function darwinStartTokenFor(seconds, recorded) {
+  // The daemon records kp_proc.p_starttime as "<seconds>.<microseconds>"; ps
+  // reports that same instant to the second. Answer with the recorded token
+  // only when the seconds agree, and with a value that cannot equal it when
+  // they do not, so the caller's equality check decides either way.
+  if (seconds === null) return null;
+  const match = /^(\d+)\.\d{6}$/.exec(typeof recorded === "string" ? recorded : "");
+  return match && Number(match[1]) === seconds ? recorded : `ps-start-${seconds}`;
+}
+
+function darwinProcessStartToken(pid, recorded) {
+  // macOS has no procfs; the daemon reads its start token from sysctl.
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") return null;
+  return darwinStartTokenFor(parseDarwinProcessStartSeconds(result.stdout), recorded);
+}
+
+const hostProcessStartToken =
+  process.platform === "darwin" ? darwinProcessStartToken : linuxProcessStartToken;
+
 function validateDisposableDataDir(
   base,
   environment = process.env,
   pidLiveness = pidIsLive,
-  processStartToken = linuxProcessStartToken,
+  processStartToken = hostProcessStartToken,
 ) {
   if (Object.prototype.hasOwnProperty.call(environment, "OPENAI4S_TOKEN")) {
     throw new Error("OPENAI4S_TOKEN override is forbidden for disposable acceptance");
@@ -321,7 +352,7 @@ function validateDisposableDataDir(
     throw new Error("disposable daemon pid is not live");
   }
   if (state.pid_start !== null) {
-    const currentStart = processStartToken(pid);
+    const currentStart = processStartToken(pid, state.pid_start);
     if (currentStart === null) {
       throw new Error("disposable daemon start token could not be verified");
     }
@@ -535,6 +566,26 @@ function disposableBindingSelfTest() {
       ) === "22",
       "Linux process start-token parser did not preserve field 22",
     );
+    const darwinSeconds = parseDarwinProcessStartSeconds("Mon Sep  4 01:02:03 2026\n");
+    assertion(
+      darwinSeconds === Math.floor(new Date(2026, 8, 4, 1, 2, 3).getTime() / 1000),
+      "macOS ps lstart parser did not read the local start time",
+    );
+    assertion(
+      darwinStartTokenFor(darwinSeconds, `${darwinSeconds}.123456`) ===
+        `${darwinSeconds}.123456`,
+      "a macOS start token whose seconds match ps was not confirmed",
+    );
+    for (const recorded of [`${darwinSeconds + 1}.123456`, `${darwinSeconds}`, null]) {
+      assertion(
+        darwinStartTokenFor(darwinSeconds, recorded) !== recorded,
+        "a macOS start token ps does not confirm was accepted",
+      );
+    }
+    assertion(
+      darwinStartTokenFor(null, `${darwinSeconds}.123456`) === null,
+      "an unreadable macOS start time was not reported as unverifiable",
+    );
     const tokenBoundState = { ...state, pid_start: "verified-start-token" };
     fs.writeFileSync(
       path.join(dataDir, "daemon.json"),
@@ -624,7 +675,8 @@ async function redactionAndSchemaSelfTest() {
     "stage0-self-test.txt",
   );
   assertion(
-    projected.includes("/api/artifacts/artifact-stage0-self-test"),
+    projected.includes("](/api/v1/artifacts/artifact-stage0-self-test)") &&
+      !projected.includes("](/api/artifacts/"),
     "production completion child self-test returned an unexpected link",
   );
   disposableBindingSelfTest();
@@ -661,12 +713,87 @@ async function redactionAndSchemaSelfTest() {
       new URL(onboardingPosts[0]).pathname === "/api/v1/onboarding/complete",
     "authenticate did not attempt the documented first-run skip",
   );
+  // A daemon that rejects the token (another data dir, or another process on
+  // the port) leaves the page on the bootstrap URL, `?token=` and all. The
+  // failure message used to quote that URL, writing a live credential into
+  // CI output from browser_matrix, admission_fault, p1_controls and smoke.
+  const rejectedToken = "captured-rejected-token-0123456789";
+  let rejectedUrl = "";
+  let rejection = null;
+  try {
+    await authenticate(
+      {
+        goto: async (url) => {
+          rejectedUrl = url;
+          return { status: () => 401 };
+        },
+        url: () => rejectedUrl,
+      },
+      "http://127.0.0.1:18999/",
+      rejectedToken,
+    );
+  } catch (error) {
+    rejection = error;
+  }
+  assertion(rejection !== null, "authenticate accepted a bootstrap the daemon rejected");
+  assertion(
+    !String(rejection.message).includes(rejectedToken) &&
+      !String(rejection.stack || "").includes(rejectedToken),
+    "authenticate printed the rejected access token",
+  );
+  assertion(
+    String(rejection.message).includes("did not accept the access token") &&
+      String(rejection.message).includes("401"),
+    "authenticate did not name the rejected bootstrap",
+  );
+  // The other way a bootstrap fails: page.goto() itself throws, because
+  // nothing listens on the port or a non-HTTP process holds it. Playwright
+  // quotes the navigation URL, `?token=` and all, in the message, the Call
+  // log and the error's own `log` array, and Node prints every one of them
+  // for an uncaught error -- which is what p1_controls, admission_fault and
+  // smoke do with it. The double throws that shape.
+  const unreachableToken = "captured-unreachable-token-0123456789";
+  let unreachable = null;
+  try {
+    await authenticate(
+      {
+        goto: async (url) => {
+          const error = new Error(
+            `page.goto: net::ERR_CONNECTION_REFUSED at ${url}\n` +
+              `Call log:\n  - navigating to "${url}", waiting until "domcontentloaded"\n`,
+          );
+          error.log = [`  - navigating to "${url}", waiting until "domcontentloaded"`];
+          throw error;
+        },
+        url: () => "chrome-error://chromewebdata/",
+      },
+      "http://127.0.0.1:18999/",
+      unreachableToken,
+    );
+  } catch (error) {
+    unreachable = error;
+  }
+  assertion(unreachable !== null, "authenticate swallowed a bootstrap navigation that threw");
+  assertion(
+    !util.inspect(unreachable, { depth: 8 }).includes(unreachableToken) &&
+      !String(unreachable.message).includes(unreachableToken) &&
+      !String(unreachable.stack || "").includes(unreachableToken),
+    "authenticate printed the access token when the bootstrap navigation threw",
+  );
+  assertion(
+    String(unreachable.message).includes("could not reach the daemon") &&
+      String(unreachable.message).includes("http://127.0.0.1:18999/") &&
+      String(unreachable.message).includes("ERR_CONNECTION_REFUSED"),
+    "authenticate did not name the unreachable bootstrap",
+  );
   const selfTestSummary = makeSummary("self_test");
   selfTestSummary.self_test_checks = {
     redaction: true,
     schema: true,
     disposable_binding: true,
     captured_token_authentication: true,
+    rejected_token_redaction: true,
+    unreachable_token_redaction: true,
     production_completion: true,
     pid_liveness_portability: true,
   };
@@ -951,6 +1078,7 @@ async function runAcceptance() {
         completion_artifact_url: {
           current_path: normalizedArtifactPath(currentCompletionPath, artifactId),
           current_status: currentArtifact.status,
+          current_sha256: sha256(currentArtifact.bytes),
           canonical_path: normalizedArtifactPath(canonicalArtifactPath, artifactId),
           canonical_status: canonicalArtifact.status,
           canonical_sha256: sha256(canonicalArtifact.bytes),
@@ -976,10 +1104,14 @@ async function runAcceptance() {
         facts.ketcher.status === 200 && facts.ketcher.explicit_placeholder === true,
         `${label}: /ketcher was not the explicit placeholder`,
       );
+      // The link the production projector + renderer actually emit must be
+      // the served, versioned route and return the uploaded bytes. This was
+      // pinned to the un-versioned 404 while that gap was open.
       requireFact(
-        facts.completion_artifact_url.current_path === "/api/artifacts/<artifact_id>" &&
-          facts.completion_artifact_url.current_status === 404,
-        `${label}: production completion Artifact URL did not reproduce the known 404`,
+        facts.completion_artifact_url.current_path === "/api/v1/artifacts/<artifact_id>" &&
+          facts.completion_artifact_url.current_status === 200 &&
+          facts.completion_artifact_url.current_sha256 === artifactSha256,
+        `${label}: production completion Artifact URL did not return the uploaded bytes`,
       );
       requireFact(
         facts.completion_artifact_url.canonical_path === "/api/v1/artifacts/<artifact_id>" &&
@@ -1001,7 +1133,7 @@ async function runAcceptance() {
       rendered_href: normalizedArtifactPath(currentCompletionPath, artifactId),
       response_status: clickResponse.status(),
     };
-    requireFact(clickResponse.status() === 404, "current completion Artifact link did not reproduce the known 404 on click");
+    requireFact(clickResponse.status() === 200, "current completion Artifact link did not answer 200 on click");
 
     await openNotebook();
     await page.reload({ waitUntil: "domcontentloaded" });

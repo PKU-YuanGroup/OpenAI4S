@@ -120,6 +120,18 @@ def _command_env(argv: Sequence[str]) -> dict[str, str]:
             "ARKCLI_SKILL_NAME": skill_name,
         }
     )
+    if os.name != "nt" and str(argv[0]).lower().endswith(".exe"):
+        # A Windows arkcli.exe reached through WSL interop receives only the
+        # Linux variables WSLENV names, and the allowlist never copies the
+        # daemon's own WSLENV. Name exactly the caller identity and the
+        # already-allowlisted proxy settings a Linux arkcli would see. `/w` is
+        # "only when running Win32 from WSL"; `/u` is the opposite direction,
+        # and `/p` would rewrite a proxy URL as a path.
+        child_env["WSLENV"] = ":".join(
+            f"{key}/w"
+            for key in child_env
+            if key.startswith("ARKCLI_") or key.upper().endswith("_PROXY")
+        )
     return child_env
 
 
@@ -408,6 +420,9 @@ class ArkCliBridge:
         self._configured_executable = executable or os.environ.get(
             "OPENAI4S_ARKCLI_PATH", ""
         )
+        # Set by the Windows launcher for an arkcli.exe it merely found on the
+        # Windows PATH: consulted only after a CLI installed inside WSL.
+        self._fallback_executable = os.environ.get("OPENAI4S_ARKCLI_FALLBACK_PATH", "")
         self._which = which
         self._runner = runner
         self._version: str | None = None
@@ -429,7 +444,13 @@ class ArkCliBridge:
         )
         if packaged.is_file():
             return str(packaged)
-        return self._which("arkcli") or ""
+        found = self._which("arkcli")
+        if found:
+            return found
+        fallback = Path(str(self._fallback_executable or "").strip())
+        if fallback.is_absolute() and fallback.is_file():
+            return str(fallback)
+        return ""
 
     def availability(self) -> dict[str, Any]:
         executable = self.executable()

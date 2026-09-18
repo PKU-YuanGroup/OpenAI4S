@@ -110,3 +110,43 @@ def test_the_progress_record_names_the_tree_the_crosswalk_was_audited_against():
         "mention that commit; one of the two documents is describing a tree the "
         "other one is not"
     )
+
+
+#: `**47 `closed`, 5 `implemented_unverified`, 3 `deferred_p2`, and 1 `open`**`,
+#: matched after whitespace normalisation because the sentence wraps.
+DISTRIBUTION = re.compile(
+    r"(\d+) `closed`, (\d+) `implemented_unverified`, (\d+) `deferred_p2`, "
+    r"and (\d+|no) `open`"
+)
+
+
+def test_the_latest_recorded_distribution_matches_the_crosswalk():
+    """The last distribution this file states is the one a reader believes.
+
+    §8 recorded "48 `closed` ... and no `open` row" at `408098f`. A later
+    commit reopened one P0 row in the crosswalk and nothing here said so, so the
+    progress record kept telling readers no P0 was open while the data said one
+    was. The check compares the *last* stated distribution with the crosswalk's
+    actual counts, so an older snapshot may stay as history but may not be the
+    final word.
+    """
+    from collections import Counter
+
+    text = " ".join(PROGRESS.read_text("utf-8").split())
+    stated = DISTRIBUTION.findall(text)
+    assert stated, "the progress record no longer states a crosswalk distribution"
+    closed, unverified, deferred, open_ = stated[-1]
+    counts = Counter(
+        item["status"] for item in json.loads(CROSSWALK.read_text("utf-8"))["items"]
+    )
+    recorded = {
+        "closed": int(closed),
+        "implemented_unverified": int(unverified),
+        "deferred_p2": int(deferred),
+        "open": 0 if open_ == "no" else int(open_),
+    }
+    actual = {status: counts.get(status, 0) for status in recorded}
+    assert recorded == actual, (
+        f"the last distribution in next-version-progress.md is {recorded}; "
+        f"plan-crosswalk.json has {actual}"
+    )

@@ -13,11 +13,12 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`load.test.ts`](load.test.ts) | `custTab()` 开始一次待定加载；标记只结算一次；超时只对仍在等待的 generation 生效。 |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`。路径必须是单个前导斜杠。 |
 | [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
-| [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer` / `loadModels`；`effProject`。 |
+| [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`。 |
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
 | [`memory.ts`](memory.ts) | Memory 作用域。绝不发送字面 `"default"`。 |
-| [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取。 |
+| [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取；`loadModels` / `chooseComposerModel` 用 `GET /models` 与 `PUT /models/default` 填充 composer `#model-select` 的 store（由 `bootCustomize` 调用）。 |
+| [`models.test.ts`](models.test.ts) | `loadModels` 请求 `/models` 并填充 `models` / `defaultModel` / `defaultModelName`（配置档条目用模型名命名，id 原样保留）；`bootCustomize` 接好了它。 |
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `nestedEditor`。 |
 | [`tabs.ts`](tabs.ts) | 九个 tab id；`agents` → `specialists`。 |
 | [`tabs.test.ts`](tabs.test.ts) | Tab 状态机。 |

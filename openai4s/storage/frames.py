@@ -905,6 +905,24 @@ class FrameRepository:
             ).fetchone()
         return row["n"] or 0
 
+    def has_message_history(self) -> bool:
+        """Whether any session on this install has ever held a message."""
+        with self._lock:
+            row = self._connection.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
+        return row is not None
+
+    def has_execution_history(self) -> bool:
+        """Whether any Cell on this install has ever been executed.
+
+        A Notebook REPL cell is recorded here and never as a message, so this
+        is the history an install used only through the Notebook has.
+        """
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM execution_log LIMIT 1"
+            ).fetchone()
+        return row is not None
+
     def cell_count(self, root_frame_id: str) -> int:
         with self._lock:
             row = self._connection.execute(
@@ -1035,7 +1053,89 @@ class FrameRepository:
                     except (ValueError, TypeError):
                         pass
             steps.append(step)
+        self._read_legacy_capture_environments(steps)
         return steps
+
+    def _read_legacy_capture_environments(self, steps: list[dict]) -> None:
+        """Read a pre-0.3.0 Cell capture step's runtime through its Cell.
+
+        The Web "Saving ..." step was written with the Python kernel's label
+        whatever language the Cell was, so an R Cell's card said "environment
+        python" while the artifact's env snapshot for the same file said "r".
+        New rows record ``language`` next to ``environment`` and are read as
+        written. A row without it is read through the Cell that produced its
+        artifact versions (or, failing that, the generation their snapshot
+        names), on the one read every consumer shares -- the steps route, the
+        review, the session package and the share projection -- rather than
+        by rewriting what was stored.
+
+        Only that shape is corrected: a Python-labelled row whose every version
+        resolves to an R Cell. Anything unresolved or mixed is left as stored.
+        """
+        pending: dict[int, list[str]] = {}
+        for position, step in enumerate(steps):
+            data = step.get("input")
+            output = step.get("output")
+            if (
+                step.get("kind") != "artifact"
+                or not isinstance(data, dict)
+                or not isinstance(output, dict)
+                or "language" in data
+                or not str(data.get("environment") or "").startswith("python")
+            ):
+                continue
+            versions = [
+                str(item["version_id"])
+                for item in output.get("artifacts") or []
+                if isinstance(item, dict) and item.get("version_id")
+            ]
+            if versions:
+                pending[position] = versions
+        if not pending:
+            return
+        wanted = sorted({version for group in pending.values() for version in group})
+        r_labels: dict[str, str | None] = {}
+        for offset in range(0, len(wanted), 500):
+            chunk = wanted[offset : offset + 500]
+            marks = ",".join("?" * len(chunk))
+            with self._lock:
+                try:
+                    rows = self._connection.execute(
+                        "SELECT v.version_id, x.language AS cell_language, "
+                        "x.kernel_id, g.language AS generation_language "
+                        "FROM artifact_versions v "
+                        "LEFT JOIN execution_log x "
+                        "ON x.producing_cell_id=v.producing_cell_id "
+                        "LEFT JOIN env_snapshots s ON s.snapshot_id=v.env_snapshot_id "
+                        "LEFT JOIN kernel_generations g "
+                        "ON g.generation_id=s.generation_id "
+                        f"WHERE v.version_id IN ({marks})",
+                        tuple(chunk),
+                    ).fetchall()
+                except sqlite3.Error:
+                    return
+            for row in rows:
+                languages = {
+                    str(value).strip().lower()
+                    for value in (row["cell_language"], row["generation_language"])
+                    if value and str(value).strip()
+                }
+                if languages != {"r"}:
+                    r_labels[row["version_id"]] = None
+                    continue
+                kernel_id = str(row["kernel_id"] or "").strip()
+                r_labels[row["version_id"]] = (
+                    kernel_id
+                    if kernel_id == "r" or kernel_id.startswith("r — ")
+                    else "r"
+                )
+        for position, versions in pending.items():
+            labels = {r_labels.get(version) for version in versions}
+            if None in labels:
+                continue
+            steps[position]["input"]["environment"] = (
+                labels.pop() if len(labels) == 1 else "r"
+            )
 
     def step_count(self, frame_id: str) -> int:
         with self._lock:

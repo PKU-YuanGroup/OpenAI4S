@@ -12,8 +12,6 @@ from urllib.parse import quote
 
 from openai4s.server.contract import API_ROOT
 
-_LEGACY_API_ROOT = "/api"
-
 
 def artifact_version_url(version_id: str) -> str:
     """Return the canonical URL for one immutable Artifact version.
@@ -51,10 +49,14 @@ def completion_artifact_url(
 ) -> str | None:
     """Build a completion link under the selected rollout contract.
 
-    The flag-off branch exactly preserves the pre-Stage-1 route and fallback
-    to a filename.  Once trusted delivery is enabled, only an exact immutable
-    version is linkable; a missing version returns no URL instead of silently
-    weakening the guarantee to a mutable Artifact head.
+    The flag-off branch preserves the pre-Stage-1 semantics -- the mutable
+    Artifact head, with a fallback to a filename -- through the compatible
+    ``{API_ROOT}/artifacts/{ident}`` reader.  It used to be built under the
+    un-versioned ``/api`` prefix, which every contract-v1 gateway answers with
+    a 404, so each default completion link was dead on arrival.  Once trusted
+    delivery is enabled, only an exact immutable version is linkable; a
+    missing version returns no URL instead of silently weakening the
+    guarantee to a mutable Artifact head.
     """
     if trusted_delivery:
         if not isinstance(version_id, str) or not version_id:
@@ -63,7 +65,7 @@ def completion_artifact_url(
     legacy_ident = artifact_id or filename
     if legacy_ident is None:
         legacy_ident = ""
-    return f"{_LEGACY_API_ROOT}/artifacts/{quote(str(legacy_ident), safe='')}"
+    return f"{API_ROOT}/artifacts/{quote(str(legacy_ident), safe='')}"
 
 
 __all__ = ["artifact_version_url", "completion_artifact_url"]

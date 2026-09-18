@@ -29,6 +29,7 @@ class Harness:
         self.run_cell_id = None
         self.capture_cell_id = None
         self.capture_receipts = None
+        self.artifact_steps: list[tuple[str, str]] = []
 
     def ports(self) -> CellExecutionPorts:
         return CellExecutionPorts(
@@ -90,8 +91,11 @@ class Harness:
         self.capture_receipts = artifact_receipts
         return self.capture_result
 
-    def emit_artifact_step(self, session, title, artifacts, emit):
+    def emit_artifact_step(
+        self, session, title, artifacts, emit, environment, language
+    ):
         self.order.append("artifact_step")
+        self.artifact_steps.append((environment, language))
 
     def record_cell(self, **record):
         self.order.append("record")
@@ -295,6 +299,32 @@ def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
     assert harness.records[0]["state_revision"] == 1
     assert result.state_revision == 1
     assert result.generation_id is None
+    assert harness.artifact_steps == [("python — struct", "python")]
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [("r", ("r", "r")), ("python", ("python — struct", "python"))],
+)
+def test_the_saving_step_names_the_cell_s_own_runtime(tmp_path, language, expected):
+    """The capture card is a second record of which runtime wrote the files.
+    It was handed nothing about the Cell, so its writer used the Python
+    kernel's label and every R Cell's card said "python"."""
+    harness = Harness()
+    harness.capture_result = CaptureResult(
+        files_written=["table.csv"],
+        artifacts=[{"artifact_id": "artifact-1", "filename": "table.csv"}],
+    )
+    service = CellExecutionService(harness.ports(), id_factory=lambda: "cell-1")
+
+    service.execute(
+        _session(tmp_path),
+        CellRequest("write.csv(x, 'table.csv')", "agent", language=language),
+        lambda _event: None,
+    )
+
+    assert harness.artifact_steps == [expected]
+    assert harness.records[0]["kernel_id"] == expected[0]
 
 
 def test_bind_lineage_records_host_side_reads(tmp_path):
@@ -862,6 +892,62 @@ def test_watchdog_hard_cancel_is_durably_classified_as_cancelled(tmp_path):
     assert "cell_cancelled" in persisted
     assert "time limit" not in persisted
     assert "private worker detail" not in persisted
+
+
+def test_a_cancellation_during_preparation_finishes_the_cell_without_running_it(
+    tmp_path,
+):
+    """Preparation (a cold kernel's bootstrap) cannot be interrupted, and the
+    watchdog only looks at cancellation once user code is running. A Stop or a
+    daemon shutdown landing in between must end the Cell as interrupted with
+    none of its code started -- not start it and interrupt it a poll later."""
+
+    harness = Harness()
+    cancelled = {"value": False}
+    attempts: list[tuple] = []
+
+    def prepare_during_which_shutdown_lands(session, language):
+        harness.order.append("prepare")
+        cancelled["value"] = True
+        return None
+
+    ports = replace(
+        harness.ports(),
+        prepare_language=prepare_during_which_shutdown_lands,
+        cancelled=lambda session: cancelled["value"],
+        allocate_attempt=lambda *args: "attempt-before-start",
+        finish_attempt=lambda attempt_id, state, error: attempts.append(
+            (attempt_id, state, error)
+        ),
+    )
+    service = CellExecutionService(ports, id_factory=lambda: "cell-before-start")
+    events: list[dict] = []
+
+    result = service.execute(
+        _session(tmp_path),
+        CellRequest("open('marker', 'w').write('ran')", "user"),
+        events.append,
+    )
+
+    assert "run" not in harness.order
+    assert "capture" not in harness.order
+    assert result.executed is False
+    assert result.result["interrupted"] is True
+    assert "none of its code ran" in result.result["error"]
+    assert attempts == [
+        (
+            "attempt-before-start",
+            "interrupted",
+            {
+                "kind": "ExecutionCancelled",
+                "message": "the execution attempt was cancelled",
+                "code": "cell_cancelled",
+            },
+        )
+    ]
+    assert harness.records[0]["result"]["interrupted"] is True
+    assert events[-1]["type"] == "notebook_cell_finished"
+    assert events[-1]["status"] == "interrupted"
 
 
 def test_attempt_milestone_write_failure_still_finalizes_attempt(tmp_path):

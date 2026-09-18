@@ -276,9 +276,10 @@ def test_the_number_of_references_is_bounded_and_says_when_it_cuts(tmp_path):
 
 
 def test_the_legacy_spelling_still_works_and_says_it_is_unpinned(tmp_path):
-    """Kept for one minor release. It resolves through the artifact's latest
-    *version* rather than the live path, so at least the bytes sent are a
-    version that exists rather than whatever a concurrent cell left mid-write.
+    """Deprecated; kept until `LEGACY_REF_REMOVED_IN` (0.4.0). It resolves
+    through the artifact's latest *version* rather than the live path, so at
+    least the bytes sent are a version that exists rather than whatever a
+    concurrent cell left mid-write.
     """
     cfg = _cfg(tmp_path)
     store = get_store(cfg.db_path)
@@ -308,6 +309,56 @@ def test_a_legacy_reference_never_reaches_another_session(tmp_path):
     )
     assert problems[0]["code"] == "not_found"
     assert "not yours" not in resolved
+
+
+def _minor(version: str) -> tuple[int, int]:
+    major, minor = (int(part) for part in version.split(".")[:2])
+    return major, minor
+
+
+def test_the_legacy_spelling_has_an_expiry_that_can_fire():
+    """ "Kept working for one minor release" was a promise with no deadline.
+
+    The bare `@name` spelling arrived before v0.2.0 with that sentence in a
+    comment, a docstring, `docs/webapp-api.md` and the test above -- and none of
+    the four said which release, so 0.3.0 could ship past the window without
+    anything noticing. The `OPENAI4S_REQUIRE_TOKEN=0` opt-out had the same shape
+    and was given a version constant a test failed on; this is that mechanism
+    for the second promise.
+
+    It removes nothing. It fails the build on the first release that ships the
+    unpinned spelling at or past the declared version, which is the point at
+    which a person has to decide: remove `LEGACY_REF` and `_resolve_legacy`
+    (after the workbench autocomplete stops inserting a bare name), or move the
+    constant deliberately and say so in the release notes.
+    """
+    from openai4s import __version__
+
+    assert hasattr(
+        artifact_refs, "LEGACY_REF"
+    ), "the bare @name spelling is gone; delete LEGACY_REF_REMOVED_IN and this test"
+    expires = artifact_refs.LEGACY_REF_REMOVED_IN
+    assert _minor(__version__) < _minor(expires), (
+        f"the bare @name spelling was kept until {expires} and this tree is "
+        f"{__version__}. Remove LEGACY_REF and _resolve_legacy, or make a "
+        f"deliberate decision to extend it and move LEGACY_REF_REMOVED_IN."
+    )
+
+
+def test_the_documented_deadline_is_the_constant():
+    """The docs name the release, and it is the one the test above enforces --
+    a constant moved without the docs would put the old deadline back in front
+    of every reader."""
+    doc_path = Path(__file__).resolve().parents[1] / "docs" / "webapp-api.md"
+    doc = doc_path.read_text("utf-8")
+    expires = artifact_refs.LEGACY_REF_REMOVED_IN
+    names_the_release = f"removed in {expires}" in doc
+    assert names_the_release, (
+        f"docs/webapp-api.md does not say the bare @name spelling is removed in "
+        f"{expires}"
+    )
+    still_open_ended = "still works for one minor release" in doc
+    assert not still_open_ended, "docs/webapp-api.md restored the dateless promise"
 
 
 # --------------------------------------------------------------------------

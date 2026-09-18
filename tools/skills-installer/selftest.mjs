@@ -10,6 +10,7 @@
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -315,6 +316,22 @@ test("installs a real Skill from the repository checkout", () => {
         .digest("hex")
     );
   });
+});
+
+test("usage names the version of the copy that is running", () => {
+  // The usage text also names the pinned npm release the docs install from.
+  // That pin can lag this copy (package.json moves before the registry does),
+  // so the copy's own version must be printed from package.json, not typed in.
+  const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const result = spawnSync(process.execPath, [path.join(MODULE_DIR, "cli.mjs"), "help"], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const firstLine = result.stdout.split("\n", 1)[0];
+  assert.ok(
+    firstLine.startsWith(`openai4s-skills ${manifest.version} `),
+    `usage header ${JSON.stringify(firstLine)} does not name ${manifest.version}`
+  );
 });
 
 process.stdout.write(`\n${passed} passed, ${failures.length} failed\n`);

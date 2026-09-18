@@ -38,7 +38,7 @@ from openai4s.agent.finalize import (
     note_execution_evidence,
 )
 from openai4s.agent.models import ExecutionOutcome, ModelReply, RunState
-from openai4s.agent.runtime import format_observation
+from openai4s.agent.runtime import evidence_cell_id, format_observation
 from openai4s.server.completions import action_narration, outcome_narration
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
@@ -517,26 +517,28 @@ class WebActionExecutor:
                 kwargs["validate"] = lambda name, arguments: tool_validation_error(
                     name, arguments, self.tool_catalog
                 )
-            # Count dispatched calls, not declared ones: the batch answers
-            # parse/validation/limit refusals and post-cancel remainders
-            # without ever invoking a tool, and an unknown tool name reaches
-            # invoke but is refused before the dispatcher — none executed work.
-            # Count only calls that actually reach the dispatcher, so a
-            # refused/hallucinated call cannot become finalize-time evidence.
-            # list.append is atomic under the GIL, so the parallel read waves
-            # count safely.
-            invoked: list[Any] = []
+            # Count executed calls, not declared or merely dispatched ones:
+            # the batch answers parse/validation/limit refusals and post-cancel
+            # remainders without ever invoking a tool, an unknown tool name is
+            # refused before the dispatcher, and a static precheck, the
+            # permission gate, an auto-budget refusal, a soft-fail result or a
+            # raised dispatch all end without the work a later bullet may
+            # claim. Count a call only once its dispatch reports ok, so none of
+            # those can become finalize-time evidence. list.append is atomic
+            # under the GIL, so the parallel read waves count safely.
+            executed: list[Any] = []
 
             def _counted_invoke(call):
-                if call_reaches_dispatcher(
+                result = self._invoke_native(call, apply_pending=False)
+                if result[1] is True and call_reaches_dispatcher(
                     call.name, self.tool_catalog, call.arguments
                 ):
-                    invoked.append(call)
-                return self._invoke_native(call, apply_pending=False)
+                    executed.append(call)
+                return result
 
             outcome = execute_native_batch(action, _counted_invoke, **kwargs)
-            if invoked:
-                note_execution_evidence(state.metadata, tool_calls=len(invoked))
+            if executed:
+                note_execution_evidence(state.metadata, tool_calls=len(executed))
             if self.cancelled():
                 return outcome
             return self._apply_trailing_pending(outcome)
@@ -554,7 +556,13 @@ class WebActionExecutor:
                 result, executed = cell_outcome, True
             if executed:
                 note_execution_evidence(state.metadata, cells=1)
-            observation = format_observation(result)
+            observation = format_observation(
+                result,
+                cell_id=evidence_cell_id(
+                    self.dispatcher(),
+                    result.get("id") if executed and isinstance(result, dict) else None,
+                ),
+            )
             if count_code_blocks(reply.content) > 1 or has_incomplete_code_block(
                 reply.content
             ):
@@ -668,15 +676,16 @@ class WebActionExecutor:
                     errors.append("remaining legacy tool calls skipped: cancelled")
                     break
                 try:
-                    text, _ok = self._invoke_native(call)
+                    text, ok = self._invoke_native(call)
                 except Exception as exc:  # noqa: BLE001
                     errors.append(_env_switch_notice(exc))
                     break
                 parts.append(text)
-                # Count only calls that reach the dispatcher: an unknown name
-                # or invalid arguments are refused before it and executed
-                # nothing, so they must not back an execution-shaped finalize.
-                if call_reaches_dispatcher(
+                # Count only calls that ran ok: an unknown name or invalid
+                # arguments are refused before the dispatcher, and a precheck
+                # block, a permission denial or a soft-fail result executed
+                # nothing, so none may back an execution-shaped finalize.
+                if ok is True and call_reaches_dispatcher(
                     (call or {}).get("name"),
                     self.tool_catalog,
                     (call or {}).get("arguments"),

@@ -43,6 +43,7 @@ from enum import Enum
 from openai4s import prompts
 
 __all__ = [
+    "TASK_MODE_DETECTED_PROMPT_NAMES",
     "TASK_MODE_PROMPT_NAMES",
     "TaskMode",
     "resolve_task_mode",
@@ -63,6 +64,15 @@ class TaskMode(str, Enum):
 TASK_MODE_PROMPT_NAMES: dict[str, str] = {
     TaskMode.REUSABLE_PIPELINE.value: "task_mode_reusable_pipeline",
     TaskMode.CODEBASE_CHANGE.value: "task_mode_codebase_change",
+}
+
+#: The same modes' DETECTED fragments: identical guidance, but an advisory
+#: completion that teaches none of the armed contract (the ``host.bash``
+#: runner, the ``[cell id: …]`` line, ``test_evidence``), because a detected
+#: turn arms nothing and its runtime shows no id and pre-authorizes no runner.
+TASK_MODE_DETECTED_PROMPT_NAMES: dict[str, str] = {
+    TaskMode.REUSABLE_PIPELINE.value: "task_mode_reusable_pipeline_detected",
+    TaskMode.CODEBASE_CHANGE.value: "task_mode_codebase_change_detected",
 }
 
 
@@ -189,14 +199,16 @@ def task_mode_prompt(mode: str | TaskMode, *, explicit: bool = True) -> str:
     """The per-turn prompt fragment for ``mode`` (``""`` for the default).
 
     ``explicit=False`` marks a mode that was *detected* rather than selected:
-    the same fragment is returned with an honest advisory note appended,
-    because on such a turn the Host does not verify (or require) the code
-    evidence and the fragment must not promise that it will. The default keeps
-    the registry fragment byte for byte.
+    the same guidance is returned with the advisory completion in place of
+    the armed one, plus an honest advisory note, because on such a turn the
+    Host does not verify (or require) the code evidence, shows no cell id, and
+    pre-authorizes no ``host.bash`` runner -- the fragment must not promise
+    any of that. The default keeps the registry fragment byte for byte.
     """
 
     resolved = _coerce(mode)
-    name = TASK_MODE_PROMPT_NAMES.get(resolved.value)
+    names = TASK_MODE_PROMPT_NAMES if explicit else TASK_MODE_DETECTED_PROMPT_NAMES
+    name = names.get(resolved.value)
     if name is None:
         return ""
     body = prompts.build(name)

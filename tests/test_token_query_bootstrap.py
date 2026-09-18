@@ -60,8 +60,7 @@ class _Response:
 
 @pytest.fixture
 def gate(tmp_path, monkeypatch):
-    """A real Handler class with the token gate armed, plus its token."""
-    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "1")
+    """A real Handler class, its token gate on as it always is, plus its token."""
     monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path))
     cfg = Config(
         data_dir=tmp_path,

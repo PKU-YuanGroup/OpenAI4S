@@ -586,12 +586,32 @@ commits. Files must resolve inside the run's evidence roots, match a declared
 sha256, and be registered artifacts; a Python entry point must `compile()`
 from its own bytes and is never executed; and each test command names the cell
 that ran it, whose stored status and recorded stdout — never the model's
-description of them — decide whether it passed. So that this contract is
-satisfiable outside the Web gateway (which records every cell itself), a root
-CLI `Agent` running an explicit code mode installs the same cell recorder
-delegated children get, writing its cells to `execution_log` under its own
-frame with `origin="agent"`; every other CLI run keeps its historical no-rows
-behaviour. An `analysis_run` completion is unchanged.
+description of them — decide whether it passed, and whose action group must
+also hold a successful `host.bash` receipt for that exact command string (a
+test run through `subprocess`, or merely printed, has none). That receipt is
+the kernel worker's own report of the string's exit status: `host.bash` runs
+inside the Cell's kernel process with the Cell's `PATH`, cwd and in-process
+state, and the Host authorizes and audits the command but never executes it.
+So the receipt catches a test that was not run, was only printed, or failed; it
+is not proof against a Cell that deliberately fakes the runner. The
+model learns the Host-minted cell id from the `[cell id: …]` line that heads
+every Observation while the contract is armed (Web and CLI alike), and the
+explicit mode fragment names `host.bash` as the runner and the four fields as
+keyword arguments of `host.submit_output`. A detected mode's fragment keeps the
+same structure guidance but swaps in an advisory completion that teaches
+neither the runner nor the cell id — its Observations carry no id, and nothing
+pre-authorizes `host.bash` for it. So that this contract is satisfiable outside
+the Web gateway (which records every cell itself), a root CLI `Agent` running an
+explicit code mode installs the same cell recorder delegated children get,
+writing its cells to `execution_log` under its own frame with `origin="agent"`;
+every other CLI run keeps its historical no-rows behaviour. The receipt still
+needs `host.bash` to be authorized, and a headless run has no one to ask: the
+operator pre-authorizes each exact test command string with `openai4s run
+--allow-test-command CMD` (a conversation-scoped, glob-escaped `bash` allow
+rule), and when no channel, rule, or unattended policy could authorize
+`host.bash`, `openai4s run --mode reusable_pipeline|codebase_change` refuses
+before the first model call instead of spending every turn on a contract it
+cannot meet. An `analysis_run` completion is unchanged.
 
 Scientific database breadth does not expand the model's tool count. The
 registry exposes only `science_list_dbs` and `science_search`; a connector

@@ -6,7 +6,7 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 
 | Platform | Tier | Kernel | OS sandbox | Gate |
 | --- | --- | --- | --- | --- |
-| macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization via `scripts/notarize_macos_dmg.sh`; public DMG requires `macos_asset=notarized`, otherwise omitted |
+| macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization via `scripts/notarize_macos_dmg.sh`; the release workflow uploads a DMG only with `macos_asset=notarized`, otherwise omits it. **No release has met this gate:** v0.3.0's image is an ad-hoc-signed preview, built locally and attached outside the workflow ([D11](v03-decisions.md)), and so was v0.2.0's. The tier describes the code; Gatekeeper blocks the preview's first launch |
 | macOS (Intel) | stable | runs | Seatbelt | the `.dmg` is Apple Silicon only; install from PyPI |
 | Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | full filesystem/egress boundary runs in every CI (`harness/smoke/linux_sandbox.py`); private-PID Python/R interrupt is a separate job that allows raw networking; the release workflow does not re-execute the full smoke until multiple scheduled greens pass |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
@@ -21,11 +21,11 @@ because that package does not run OpenAI4S on Windows.
 
 | Download | Built by | Verified by | What it is |
 | --- | --- | --- | --- |
-| `OpenAI4S-<v>-macos-arm64.dmg` | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) then [`scripts/notarize_macos_dmg.sh`](../scripts/notarize_macos_dmg.sh) | `verify_macos_bundle.py` | An `.app` with an embedded relocatable CPython and the pre-baked science stack. A public release only uploads this image when `macos_asset=notarized` (sign → notarytool → staple); the default is `omit`. |
+| `OpenAI4S-<v>-macos-arm64.dmg` | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) then [`scripts/notarize_macos_dmg.sh`](../scripts/notarize_macos_dmg.sh) | `verify_macos_bundle.py` | An `.app` with an embedded relocatable CPython and the pre-baked science stack. The release workflow only uploads this image when `macos_asset=notarized` (sign → notarytool → staple); the default is `omit`. **The image on the [v0.3.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0) is an ad-hoc-signed preview** that was built locally and attached outside the workflow, because the signing and notary credentials do not exist. v0.2.0's, also a preview, is still on the [v0.2.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0). |
 | `OpenAI4S-<v>-linux-x86_64.tar.gz` | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | The same payload as a relocatable directory, plus a `.desktop` template and a per-user `install.sh`. Unpack anywhere and run `./OpenAI4S`. |
-| `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**. It requires WSL2 + working bubblewrap 0.8.0+, installs offline, and opens the authenticated URL returned by the WSL CLI. Not a native Windows build; see below and the [Windows/WSL2 guide](windows-wsl.md). |
+| `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**. It requires WSL2 + working bubblewrap 0.8.0+, installs offline, and opens the authenticated URL returned by the WSL CLI. Not a native Windows build; see below and the [Windows/WSL2 guide](windows-wsl.md). First published in v0.3.0; the scope that is still unverified is listed in the [parity audit](windows-wsl-parity-audit.md). |
 | `openai4s-<v>-py3-none-any.whl` | `uv build` | `verify_release_artifacts.py` | The zero-dependency wheel, for any supported platform with its own Python. |
-| *(none yet — build it yourself)* | [`Dockerfile`](../Dockerfile) | [`scripts/container_smoke.sh`](../scripts/container_smoke.sh) | A Linux container image of the daemon and workbench. No registry publishes it, so this row names no download: `docker build -t openai4s:local .` from a checkout. Multi-arch is free here in a way it is not for the bundles — the wheel is `py3-none-any` and the science stack has manylinux `aarch64` wheels — but nothing has built an arm64 image either, so that is untested rather than promised. See [docker.md](docker.md). |
+| `ghcr.io/pku-yuangroup/openai4s:<v>` and `:latest` | [`Dockerfile`](../Dockerfile), pushed by [`publish-image.yml`](../.github/workflows/publish-image.yml) | [`scripts/container_smoke.sh`](../scripts/container_smoke.sh) | A linux/amd64 container image of the daemon and workbench, published from `0.2.0` on. `publish-image.yml` pushes it only after the smoke passes. An anonymous `docker pull` works only while the GitHub package is public; otherwise run `docker build -t openai4s:local .` from a checkout. Multi-arch is free here in a way it is not for the bundles — the wheel is `py3-none-any` and the science stack has manylinux `aarch64` wheels — but nothing has built an arm64 image either, so that is untested rather than promised. See [docker.md](docker.md). |
 
 Only `x86_64` slices are published, the same way the `.dmg` is Apple Silicon
 only. Both build scripts take `ARCH=aarch64` and produce a correct arm64 bundle,
@@ -128,12 +128,18 @@ build on each:
 Not a difference in the code — the same kernel and the same host RPC run on
 both. The tiers differ in what has been *proven*:
 
-- macOS ships as a signed, notarized `.dmg`, which is a distribution promise on
-  top of a technical one. `scripts/notarize_macos_dmg.sh` is the sign →
+- macOS distribution is gated on a signed, notarized `.dmg`, which would be a
+  distribution promise on top of the technical one. No release has met that
+  gate yet. v0.2.0 and v0.3.0 each carry an ad-hoc-signed preview image, and
+  v0.3.0's was built locally and attached outside the release workflow, because
+  the Developer ID and notary credentials do not exist
+  ([D11](v03-decisions.md)). The tier therefore rests on the technical half:
+  Seatbelt enforced and smoke-tested nightly, and a PyPI install on either
+  architecture. `scripts/notarize_macos_dmg.sh` is the sign →
   `notarytool submit --wait` → staple → `stapler validate` → `spctl` path.
-  The release workflow input `macos_asset` defaults to `omit` so a preview DMG
-  is never uploaded; `notarized` fail-fasts if the Developer ID + notary secret
-  set is incomplete.
+  The release workflow input `macos_asset` defaults to `omit` so the workflow
+  never uploads a preview DMG; `notarized` fail-fasts if the Developer ID +
+  notary secret set is incomplete.
 - Linux is gated on a real enforced-bubblewrap end-to-end test rather than on a
   probe that degrades. The full boundary test exists, asserts the backend
   really is bubblewrap, and now runs as an independent Ubuntu 24.04 CI job
@@ -195,9 +201,10 @@ why a missing Seatbelt is a CI failure rather than a shrug.
 
 The container image is the ordinary case of that degradation rather than an
 exception to it. An unprivileged container cannot give bubblewrap the user,
-mount and network namespaces it wants — the same confinement that keeps
-`harness.smoke.linux_sandbox` off GitHub-hosted runners — so `auto` warns once
-and the container becomes the boundary. What that boundary does *not* replace
+mount and network namespaces it wants, so `auto` warns once and the container
+becomes the boundary. (The hosted CI runner is not a container: the
+`linux-sandbox-full` job runs bubblewrap directly on the runner, with the
+packaged `bwrap-userns-restrict` AppArmor profile loaded.) What that boundary does *not* replace
 is specific: an unenforced sandbox drops the secret-read masks over
 `<data_dir>/openai4s.db` and `<data_dir>/access-token` at the same time as the
 network namespace, and a cell's working directory is two levels below that

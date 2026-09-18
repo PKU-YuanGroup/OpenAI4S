@@ -1664,6 +1664,67 @@ def test_storage_readmes_name_the_migration_numbers_the_code_uses(tmp_path):
             )
 
 
+def _schema_objects(path: Path) -> set[tuple[str, str]]:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as probe:
+        return {
+            (row[0], row[1])
+            for row in probe.execute(
+                "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+            )
+        }
+
+
+def test_an_upgrade_backs_up_before_any_schema_write_and_a_failure_changes_nothing(
+    tmp_path, monkeypatch
+):
+    """UPG3-03. docs/upgrading.md promises the database is copied "before it
+    changes anything", and MigrationError promises "the database is unchanged".
+
+    Store.__init__ commits the base schema script before it migrates, and that
+    script carried migration 32's browse index. On an older database the index
+    was committed first -- so the `.bak` was not the pre-upgrade database, and a
+    failed upgrade "rolled back" to a database that still had it. The existing
+    step-32 rollback test drove `run_migrations` directly on a connection and so
+    never went through that script.
+    """
+    from openai4s.storage import migrations
+
+    db = tmp_path / "v31.db"
+    Store(db).close()
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("DROP INDEX IF EXISTS ix_artifacts_project_created")
+        conn.execute("DELETE FROM schema_migrations WHERE version>=32")
+        conn.execute("PRAGMA user_version = 31")
+    before = _schema_objects(db)
+
+    at_backup: dict[str, set[tuple[str, str]]] = {}
+    real_backup = migrations.backup_database
+
+    def spy(path, version):
+        at_backup["objects"] = _schema_objects(Path(path))
+        return real_backup(path, version)
+
+    def interrupted(_self, connection):
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_artifacts_project_created "
+            "ON artifacts(project_id, created_at DESC, artifact_id DESC)"
+        )
+        raise RuntimeError("killed after index")
+
+    monkeypatch.setattr(migrations, "backup_database", spy)
+    monkeypatch.setattr(Store, "_apply_artifact_browse_index", interrupted)
+
+    with pytest.raises(MigrationError, match="killed after index"):
+        Store(db)
+
+    assert at_backup["objects"] == before, "a schema write preceded the backup"
+    backup = db.with_name(f"{db.name}.v31.bak")
+    assert _schema_objects(backup) == before
+    assert _schema_objects(db) == before
+    with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as probe:
+        assert current_version(probe) == 31
+
+
 def test_future_schema_is_refused_before_any_store_initialization_write(
     tmp_path, monkeypatch
 ):

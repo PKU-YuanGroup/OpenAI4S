@@ -13,11 +13,12 @@ F-19 Customize domain logic. Tab state machine, timer lease (unmount clears ever
 | [`load.test.ts`](load.test.ts) | A `custTab()` starts a pending load; marks settle it once; the deadline only fires for the generation still pending. |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`. Path must be a single leading slash. |
 | [`environment.ts`](environment.ts) | Skill readiness note; `sanitizeStandardProfileReadiness`. |
-| [`host.ts`](host.ts) | `hint` / `openViewer` / `loadModels` via `isReady`; `effProject`. |
+| [`host.ts`](host.ts) | `hint` / `openViewer` via `isReady`; re-exports the real `loadModels` from `models.ts` (no window bridge); `effProject`. |
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` and public re-exports. |
 | [`layout.ts`](layout.ts) | `os-layout` density. `setLayout` / `applyLayout`. |
 | [`memory.ts`](memory.ts) | Memory scopes. Never send the literal `"default"`. |
-| [`models.ts`](models.ts) | Local-endpoint sanitizer, protocol catalogue, capability-receipt reader. |
+| [`models.ts`](models.ts) | Local-endpoint sanitizer, protocol catalogue, capability-receipt reader; `loadModels` / `chooseComposerModel` fill the composer `#model-select` stores from `GET /models` and `PUT /models/default` (called by `bootCustomize`). |
+| [`models.test.ts`](models.test.ts) | `loadModels` requests `/models` and fills `models` / `defaultModel` / `defaultModelName` (a profile entry is named by its model, ids stay verbatim); `bootCustomize` wires it. |
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `nestedEditor`. |
 | [`tabs.ts`](tabs.ts) | Nine tab ids; `agents` → `specialists`. |
 | [`tabs.test.ts`](tabs.test.ts) | Tab state machine. |

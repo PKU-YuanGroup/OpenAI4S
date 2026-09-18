@@ -2,12 +2,21 @@ import { useEffect } from "preact/hooks";
 import { HistoryLoadStatus } from "../../features/messages/components";
 import { finishArtifactsBoot } from "../../features/artifacts/boot";
 import { bindWorkbench } from "../../features/sessions/boot";
+import { routesToWorkspace } from "../../features/sessions/dom";
+import { ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
 
 export function Shell() {
   useEffect(() => {
     void finishArtifactsBoot(bindWorkbench());
   }, []);
+  // The first view waits for the locale chunks. Painting the dashboard in the
+  // meantime put a deep link on the wrong screen for the whole wait, so a path
+  // the router will open in the workspace starts with neither view shown and
+  // a neutral indicator instead. `dashboard.css` hides the indicator as soon
+  // as either view is revealed, whichever code path reveals it.
+  const pendingRoute =
+    typeof location !== "undefined" && routesToWorkspace(String(location.pathname || ""));
 
   return (
     <>
@@ -15,7 +24,7 @@ export function Shell() {
       <a class="skip-link" href="#messages">
         Skip to content
       </a>
-      <div id="dashboard" class="dashboard">
+      <div id="dashboard" class={pendingRoute ? "dashboard hidden" : "dashboard"}>
         <header class="dash-head">
           <div class="dash-brand">
             <div class="wordmark">
@@ -324,7 +333,7 @@ export function Shell() {
                         type="button"
                       />
                       <div class="nb-model">
-                        <select id="model-select" data-i18n-title="composer.model" title="模型" />
+                        <ModelSelect />
                         <span class="ic" data-icon="chevron-down" data-icon-size="14" />
                       </div>
                     </div>
@@ -372,6 +381,13 @@ export function Shell() {
             </div>
           </div>
         </aside>
+      </div>
+
+      <div id="route-loading" class="route-loading" role="status" hidden={!pendingRoute}>
+        <span class="spin" data-icon="loader" data-icon-size="20" aria-hidden="true" />
+        <span class="route-loading-label" data-i18n="common.loading">
+          Loading…
+        </span>
       </div>
 
       <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">

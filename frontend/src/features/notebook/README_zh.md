@@ -17,6 +17,6 @@ F-14 Notebook 面板。Cell 合并与 live 协议从 `app.js`（9765-9910）移�
 | [`scroll.ts`](scroll.ts) | 跟随 + `_nbReading` / `_nbDirty` / `_nbSched`（app.js:10339-10350, 9900-9908）。 |
 | [`chrome.ts`](chrome.ts) | `highlightTraceback`、`notebookExportLink`、live 图片、行内表格。 |
 | [`Notebook.tsx`](Notebook.tsx) | CellList / chips / REPL / `renderNotebook` / `cellNode`。 |
-| [`install.ts`](install.ts) | WS handler + window 上的 `highlightTraceback` / `notebookExportLink`。 |
+| [`install.ts`](install.ts) | WS handler + window 上的 `highlightTraceback` / `notebookExportLink`。由于每种 WS 类型只有一个处理器，`notebook_cell_finished` 同时收尾聊天区的实时活动卡片（`messages/cardState.ts`）。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
 | [`notebook.test.ts`](notebook.test.ts) | 合并、重放去重、invalidate 时机、滚动门控、traceback XSS。 |

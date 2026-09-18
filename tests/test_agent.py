@@ -363,6 +363,201 @@ def test_submit_output_soft_fail_does_not_complete(monkeypatch):
     )
 
 
+class _MeteredLLM(ScriptedLLM):
+    """A ScriptedLLM whose every reply bills a fixed canonical usage."""
+
+    def __init__(self, replies, *, raise_on_call=None, after_call=None):
+        super().__init__(replies)
+        self.raise_on_call = raise_on_call
+        self.after_call = after_call
+        self.observed_status: list[str | None] = []
+        self.agent = None
+
+    def __call__(self, messages, cfg, **kw):
+        if self.agent is not None:
+            frame = self.agent.dispatcher.store.get_frame(self.agent.frame_id)
+            self.observed_status.append(frame and frame.get("status"))
+        if self.raise_on_call is not None:
+            raise self.raise_on_call
+        reply = super().__call__(messages, cfg, **kw)
+        reply["usage"] = {
+            "prompt_tokens": 100,
+            "completion_tokens": 7,
+            "input_tokens": 100,
+            "output_tokens": 7,
+        }
+        if self.after_call is not None:
+            self.after_call()
+        return reply
+
+
+class _SettableCancellation:
+    def __init__(self, cancelled: bool = False) -> None:
+        self.flag = cancelled
+
+    def cancelled(self) -> bool:
+        return self.flag
+
+
+def _root_frame_row(agent):
+    frame = agent.dispatcher.store.get_frame(agent.frame_id)
+    assert frame is not None
+    return frame
+
+
+def test_cli_root_frame_is_done_with_token_totals_after_submit(monkeypatch):
+    """A root Agent owns the turn frame it opened, so it must close it.
+
+    The frame used to keep the repository default ``processing`` forever with
+    NULL token columns, so `GET /frames/<fid>/status` on the same data dir
+    answered "processing" for a finished CLI run and per-session token
+    accounting silently skipped every CLI run.
+    """
+    scripted = _MeteredLLM(
+        ["```python\nhost.submit_output({'a': 1}, ['Computed the answer'])\n```"]
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=3)
+
+    result = agent.run("submit once")
+
+    assert result["stop_reason"] == "submitted"
+    frame = _root_frame_row(agent)
+    assert frame["status"] == "done"
+    assert frame["input_tokens"] == 100
+    assert frame["output_tokens"] == 7
+
+
+def test_cli_root_frame_is_failed_after_max_turns(monkeypatch):
+    scripted = _MeteredLLM(["Still thinking."] * 5)
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=2)
+
+    result = agent.run("never finishes")
+
+    assert result["stop_reason"] == "max_turns"
+    frame = _root_frame_row(agent)
+    assert frame["status"] == "failed"
+    assert frame["input_tokens"] == 200
+    assert frame["output_tokens"] == 14
+
+
+def test_cli_root_frame_is_cancelled_when_cancelled_before_the_run(monkeypatch):
+    scripted = _MeteredLLM(["never called"])
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=3,
+        cancellation=_SettableCancellation(cancelled=True),
+    )
+
+    result = agent.run("cancelled up front")
+
+    assert result["stop_reason"] == "cancelled"
+    assert scripted.calls == []
+    # The Web gateway's vocabulary for a cancelled turn, not a second one.
+    assert _root_frame_row(agent)["status"] == "cancelled"
+
+
+def test_cli_root_frame_is_cancelled_when_the_engine_stops_on_cancel(monkeypatch):
+    cancellation = _SettableCancellation()
+    scripted = _MeteredLLM(
+        ["Still thinking."] * 5,
+        after_call=lambda: setattr(cancellation, "flag", True),
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=5,
+        cancellation=cancellation,
+    )
+
+    result = agent.run("stopped mid-run")
+
+    assert result["stop_reason"] == "cancelled"
+    assert len(scripted.calls) == 1
+    assert _root_frame_row(agent)["status"] == "cancelled"
+    # The one billed reply lands on the frame whether the engine received it
+    # or ChatModel abandoned it to its (asynchronous) late-accounting sink.
+    import time
+
+    deadline = time.monotonic() + 10
+    while _root_frame_row(agent)["input_tokens"] is None:
+        assert time.monotonic() < deadline, "the billed reply was never metered"
+        time.sleep(0.05)
+    assert _root_frame_row(agent)["input_tokens"] == 100
+
+
+def test_cli_root_frame_is_failed_when_the_run_raises(monkeypatch):
+    scripted = _MeteredLLM([], raise_on_call=RuntimeError("provider exploded"))
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=3)
+
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        agent.run("the provider raises")
+
+    assert _root_frame_row(agent)["status"] == "failed"
+
+
+def test_cli_root_frame_is_cancelled_on_ctrl_c(monkeypatch):
+    """Ctrl-C is the CLI user's Stop: it re-raises, and the frame says so."""
+
+    def interrupted(self, messages, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(loop_mod.AgentEngine, "run", interrupted)
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=3)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("interrupted")
+
+    assert _root_frame_row(agent)["status"] == "cancelled"
+
+
+def test_reused_cli_agent_reopens_its_frame_for_the_next_run(monkeypatch):
+    """A reused Agent must not report the previous run's terminal mid-run."""
+    scripted = _MeteredLLM(["Still thinking."] * 2)
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=2)
+    scripted.agent = agent
+
+    assert agent.run("first")["stop_reason"] == "max_turns"
+    assert _root_frame_row(agent)["status"] == "failed"
+
+    scripted._replies = ["Still thinking."] * 2
+    scripted.observed_status.clear()
+    assert agent.run("second")["stop_reason"] == "max_turns"
+
+    assert scripted.observed_status == ["processing", "processing"]
+    frame = _root_frame_row(agent)
+    assert frame["status"] == "failed"
+    assert frame["input_tokens"] == 400
+
+
+def test_agent_given_a_frame_does_not_write_that_frame_s_status(monkeypatch):
+    """A delegated child's status belongs to the DelegationRunner, and an
+    embedder's frame to the embedder: only a frame the Agent opened is its."""
+    from openai4s.store import get_store
+
+    store = get_store(get_config().db_path)
+    frame_id = store.new_frame(kind="turn", model="m", depth=1)
+    store.update_frame(frame_id, status="awaiting_user_response")
+    scripted = _MeteredLLM(["Still thinking."] * 3)
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(
+        use_skills=False, allow_delegate=False, max_turns=2, frame_id=frame_id
+    )
+
+    assert agent.run("child")["stop_reason"] == "max_turns"
+
+    frame = store.get_frame(frame_id)
+    assert frame["status"] == "awaiting_user_response"
+    assert frame["input_tokens"] is None
+    assert frame["output_tokens"] is None
+
+
 def test_max_turns_stop(monkeypatch):
     # never calls submit_output -> should stop at max_turns
     scripted = ScriptedLLM(["```python\nx = 1\n```"] * 10)

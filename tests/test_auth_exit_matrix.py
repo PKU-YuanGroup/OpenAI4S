@@ -400,62 +400,106 @@ def test_a_cookie_from_a_different_data_dir_is_not_accepted(tmp_path):
         mine.close()
 
 
-# -- the escape hatch's expiry ------------------------------------------------
+# -- the retired loopback opt-out -----------------------------------------------
 
 
-def test_the_legacy_opt_out_has_an_expiry_that_can_fire():
-    """ "Kept for one minor release" was a sentence in four places and a
-    mechanism in none.
+def _body(raw: bytes) -> dict:
+    import json
 
-    A code comment, `docs/configuration.md`, `docs/security.md` and
-    `docs/webapp-api.md` all say the loopback opt-out lives for one minor
-    release; nothing said which one, and nothing would ever notice it had
-    outlived that. `OPENAI4S_REQUIRE_TOKEN=0` turns off the only credential
-    check in front of `kernel/execute`, `compute/jobs` and `host.bash`, so an
-    escape hatch that quietly becomes permanent is the whole cost of the
-    decision arriving without the deadline it was granted on.
+    return json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
 
-    This does not remove anything. It fails the build on the first release that
-    ships past the declared version, which is the point at which a person has to
-    decide -- rather than the point at which nobody remembers.
+
+@pytest.mark.parametrize("value", ["0", "false", "no"])
+def test_require_token_zero_is_ignored_on_loopback(
+    tmp_path, monkeypatch, capsys, value
+):
+    """`OPENAI4S_REQUIRE_TOKEN=0` was granted exactly one minor release (D1).
+
+    It turned off the only credential check in front of `kernel/execute`,
+    `compute/jobs` and `host.bash` on a loopback bind, and v0.2.0 was the
+    release it was granted for. From 0.3.0 the variable is ignored: a daemon
+    started with it still mints the persistent token, still refuses an
+    anonymous caller, and `/auth/status` still reports the gate it enforces.
+
+    Driven over a real socket rather than by reading the token file, because a
+    token file that exists beside a handler that does not check it is the
+    shape the opt-out had -- only the wire can tell the two apart.
     """
-    from openai4s import __version__
-    from openai4s.server.gateway import LEGACY_TOKEN_OPT_OUT_REMOVED_IN
-
-    current = tuple(int(part) for part in __version__.split(".")[:2])
-    expires = tuple(
-        int(part) for part in LEGACY_TOKEN_OPT_OUT_REMOVED_IN.split(".")[:2]
-    )
-
-    assert current < expires, (
-        f"OPENAI4S_REQUIRE_TOKEN=0 was granted until {LEGACY_TOKEN_OPT_OUT_REMOVED_IN} "
-        f"and this tree is {__version__}. Remove the opt-out and this test, or "
-        f"make a deliberate decision to extend it and move the constant."
-    )
-
-
-def test_the_legacy_opt_out_is_refused_off_loopback(tmp_path):
-    """The other half of the grant: it is honoured on loopback only. A
-    non-loopback bind is reachable by anything that can route to it, and there
-    is no configuration under which that should answer without a credential."""
-    import os
-
-    previous = os.environ.get("OPENAI4S_REQUIRE_TOKEN")
-    os.environ["OPENAI4S_REQUIRE_TOKEN"] = "0"
+    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", value)
+    node = _Daemon(tmp_path / "loopback")
     try:
-        cfg = _config(tmp_path / "public", _free_port())
-        cfg.host = "0.0.0.0"
-        runner = gateway_mod.SessionRunner(cfg, _Hub())
-        try:
-            gateway_mod.make_handler(cfg, _Hub(), runner)
-            assert local_auth.read_token(cfg.data_dir), (
-                "a non-loopback bind honoured the loopback-only opt-out and "
-                "minted no token"
-            )
-        finally:
-            runner.close()
+        assert node.cfg.host == "127.0.0.1"
+        assert local_auth.read_token(
+            node.data_dir
+        ), f"OPENAI4S_REQUIRE_TOKEN={value} on loopback minted no token"
+
+        status, raw = _get(node.port, contract.API_ROOT + "/auth/status")
+        assert status == 200, raw[:200]
+        body = _body(raw)
+        assert body["auth_mode"] == "token", body
+        assert body["authenticated"] is False, body
+        assert body["token_header"] == local_auth.TOKEN_HEADER, body
+
+        assert _get(node.port, contract.API_ROOT + "/frames")[0] == 401
+        ws_status, ws_raw = _ws_upgrade(node.port, token=None)
+        assert ws_status == 401, ws_raw[:200]
+
+        err = capsys.readouterr().err
+        assert "access token required" in err
+        assert "OPENAI4S_REQUIRE_TOKEN=0" not in err, err
     finally:
-        if previous is None:
-            os.environ.pop("OPENAI4S_REQUIRE_TOKEN", None)
-        else:
-            os.environ["OPENAI4S_REQUIRE_TOKEN"] = previous
+        node.close()
+
+
+def test_require_token_zero_is_ignored_off_loopback(tmp_path, monkeypatch):
+    """A non-loopback bind is reachable by anything that can route to it. It
+    never honoured the opt-out, and it must not start to now that the variable
+    means nothing anywhere."""
+    monkeypatch.setenv("OPENAI4S_REQUIRE_TOKEN", "0")
+    cfg = _config(tmp_path / "public", _free_port())
+    cfg.host = "0.0.0.0"
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    try:
+        gateway_mod.make_handler(cfg, _Hub(), runner)
+        assert local_auth.read_token(
+            cfg.data_dir
+        ), "a non-loopback bind honoured OPENAI4S_REQUIRE_TOKEN=0 and minted no token"
+    finally:
+        runner.close()
+
+
+def test_no_browser_gate_still_configures_the_retired_token_switch():
+    """A gate that pins `OPENAI4S_REQUIRE_TOKEN` in its daemon's environment
+    reads as though the credential gate were still a setting. It is not, so a
+    pinned value documents a contract 0.3.0 removed. Comments may still name
+    the variable to explain its removal; code may not set it."""
+    offenders = []
+    for gate in sorted(Path(__file__).resolve().parent.glob("*.mjs")):
+        for number, line in enumerate(gate.read_text("utf-8").splitlines(), 1):
+            code = line.strip()
+            if code.startswith(("//", "*", "/*")):
+                continue
+            if "OPENAI4S_REQUIRE_TOKEN" in code:
+                offenders.append(f"{gate.name}:{number}: {code}")
+    assert offenders == []
+
+
+def test_no_python_test_arms_the_retired_token_switch():
+    """The Python half of the same dead contract. A test that sets
+    `OPENAI4S_REQUIRE_TOKEN` to an arming value reads as though its gate were
+    off without it; the gate is on regardless. The tests that set the retired
+    opt-out values to prove they are ignored are the point, and stay."""
+    import re
+
+    arming = re.compile(
+        r"""(?:setenv\(|environ\[)\s*["']OPENAI4S_REQUIRE_TOKEN["']\s*[\],]\s*=?\s*"""
+        r"""["'](?:1|true|yes|on)["']""",
+        re.IGNORECASE,
+    )
+    offenders = []
+    for test_file in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        text = test_file.read_text("utf-8", errors="replace")
+        for number, line in enumerate(text.splitlines(), 1):
+            if arming.search(line):
+                offenders.append(f"{test_file.name}:{number}: {line.strip()}")
+    assert offenders == []

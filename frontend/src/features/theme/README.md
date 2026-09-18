@@ -8,5 +8,5 @@ Workbench appearance (light / dark / system). `openai4s/server/webui/theme-boots
 
 | File | Responsibility |
 | --- | --- |
-| [`theme.ts`](theme.ts) | `applyTheme` / `setTheme` / `cycleTheme` / `installTheme`. localStorage key `os-theme`. |
-| [`theme.test.ts`](theme.test.ts) | Single source of truth, storage key, cycle, system follow, classic head script, no `body.theme-dark`. |
+| [`theme.ts`](theme.ts) | `applyTheme` / `setTheme` / `cycleTheme` / `installTheme`. localStorage key `os-theme`. `refreshThemeToggle` swaps `data-icon` and repaints the sun/moon drawing from `icons/paths.ts`. |
+| [`theme.test.ts`](theme.test.ts) | Single source of truth, storage key, cycle, system follow, classic head script, no `body.theme-dark`, toggle buttons repainted (not just re-labelled). |

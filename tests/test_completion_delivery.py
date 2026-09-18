@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from openai4s.config import Config
+from openai4s.server.contract import API_ROOT
 from openai4s.server.delivery import (
     CompletionDeliveryService,
     DeliveryValidationError,
@@ -165,9 +166,17 @@ def _verified_metadata():
 
 
 def test_url_helper_preserves_flag_off_and_encodes_one_exact_version_segment():
+    # Flag-off keeps its mutable-head (artifact id, else filename) semantics,
+    # but under the versioned root the gateway actually serves. The old
+    # un-versioned `/api/artifacts/...` form was answered with a 404 by every
+    # daemon since the HTTP surface moved to /api/v1.
     assert (
         completion_artifact_url(artifact_id="artifact/legacy", trusted_delivery=False)
-        == "/api/artifacts/artifact%2Flegacy"
+        == f"{API_ROOT}/artifacts/artifact%2Flegacy"
+    )
+    assert (
+        completion_artifact_url(filename="报告 1.csv", trusted_delivery=False)
+        == f"{API_ROOT}/artifacts/%E6%8A%A5%E5%91%8A%201.csv"
     )
     assert artifact_version_url("version/报告 ?#") == (
         "/api/v1/artifacts/versions/version%2F%E6%8A%A5%E5%91%8A%20%3F%23"

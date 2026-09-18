@@ -6,7 +6,7 @@
  * POST so a terminal event that beats the 202 cannot be revived by the await.
  */
 
-import { t } from "../../i18n/runtime";
+import { LANG, t, tOptional } from "../../i18n/runtime";
 import { turnDone } from "./turn";
 import { _openGen, currentId } from "../../stores/session";
 import { defaultModelName } from "../../stores/customize";
@@ -54,6 +54,96 @@ export function planStepIcon(status: unknown): string {
   return "circle";
 }
 
+/**
+ * Plan-card copy the generated F-07 dictionaries do not carry. Kept here so
+ * `i18n/en.ts` / `zh.ts` stay byte-for-byte extracts.
+ */
+const PLAN_COPY: Record<"zh" | "en", Record<string, string>> = {
+  zh: {
+    "plan.eyebrow.unconfirmed": "计划已结束，有步骤未确认完成",
+    "plan.status.unconfirmed": "执行已结束（{0}/{1}），{2} 个步骤开始后未确认完成",
+    "plan.step.unconfirmed": "已开始，未确认完成",
+  },
+  en: {
+    "plan.eyebrow.unconfirmed": "PLAN ENDED — STEPS NOT CONFIRMED",
+    "plan.status.unconfirmed": "Execution ended ({0}/{1}); {2} started step(s) not confirmed",
+    "plan.step.unconfirmed": "Started, not confirmed",
+  },
+};
+
+export function planT(key: string, ...args: unknown[]): string {
+  const fromDict = tOptional(key);
+  const s = fromDict != null ? fromDict : PLAN_COPY[LANG]?.[key] || PLAN_COPY.en[key] || key;
+  return args.length
+    ? String(s).replace(/\{(\d+)\}/g, (m, i) => (args[+i] != null ? String(args[+i]) : m))
+    : s;
+}
+
+/**
+ * A step row's class and glyph. `in_progress` pulses only while the plan is
+ * executing; under any other plan status nothing is running that step, so it
+ * is drawn as started-but-not-confirmed instead of as live work.
+ */
+export function planStepView(
+  stepStatus: unknown,
+  planStatus: string,
+): { cls: string; icon: string; unconfirmed: boolean } {
+  const status = stepStatus ? String(stepStatus) : "pending";
+  if (status === "in_progress" && planStatus !== "executing") {
+    return { cls: "unconfirmed", icon: "circle-dot", unconfirmed: true };
+  }
+  return { cls: status, icon: planStepIcon(status), unconfirmed: false };
+}
+
+/**
+ * The card's eyebrow and footer. A `completed` plan with a step still
+ * `in_progress` is not shown as complete: the server no longer stores that
+ * pair, but rows written before it did still carry it.
+ */
+export function planCardLabels(
+  steps: readonly { status?: string }[],
+  st: string,
+): { eyebrow: string; status: string; statusCls: string } {
+  const done = steps.filter((s) => s.status === "completed").length;
+  const total = steps.length;
+  const open = steps.filter((s) => s.status === "in_progress").length;
+  if (st === "completed" && open > 0) {
+    return {
+      eyebrow: planT("plan.eyebrow.unconfirmed"),
+      status: planT("plan.status.unconfirmed", done, total, open),
+      statusCls: "unconfirmed",
+    };
+  }
+  const eyebrow =
+    st === "draft"
+      ? t("plan.eyebrow.draft")
+      : st === "executing"
+        ? t("plan.eyebrow.executing")
+        : st === "completed"
+          ? t("plan.eyebrow.completed")
+          : st === "failed"
+            ? t("plan.eyebrow.failed")
+            : st === "paused"
+              ? t("plan.eyebrow.paused")
+              : t("plan.eyebrow.default");
+  const status =
+    st === "executing"
+      ? t("plan.status.executing", done, total)
+      : st === "completed"
+        ? t("plan.status.completed", done, total)
+        : st === "failed"
+          ? t("plan.status.failed", done, total)
+          : st === "paused"
+            ? t(
+                "plan.status.paused",
+                done,
+                total,
+                steps.filter((x) => !planStepSettled(x.status)).length,
+              )
+            : "";
+  return { eyebrow, status, statusCls: st };
+}
+
 type PlanStep = {
   id?: string;
   title?: string;
@@ -94,19 +184,8 @@ export function renderPlanCard(plan: unknown, status?: string | null): void {
   card.id = "plan-card-live";
   const head = el("div", "pc-head");
   const tt = el("div", "pc-title-wrap");
-  const eyebrow =
-    st === "draft"
-      ? t("plan.eyebrow.draft")
-      : st === "executing"
-        ? t("plan.eyebrow.executing")
-        : st === "completed"
-          ? t("plan.eyebrow.completed")
-          : st === "failed"
-            ? t("plan.eyebrow.failed")
-            : st === "paused"
-              ? t("plan.eyebrow.paused")
-              : t("plan.eyebrow.default");
-  tt.appendChild(el("div", "pc-eyebrow", eyebrow));
+  const labels = planCardLabels(p.steps || [], st);
+  tt.appendChild(el("div", "pc-eyebrow", labels.eyebrow));
   tt.appendChild(el("div", "pc-title", p.title || t("plan.title.default")));
   head.appendChild(tt);
   if (p.confidence) {
@@ -130,10 +209,12 @@ export function renderPlanCard(plan: unknown, status?: string | null): void {
   const steps = el("div", "pc-steps");
   (p.steps || []).forEach((s, i) => {
     const sid = s.id || "s" + (i + 1);
-    const row = el("div", "pc-step " + (s.status || "pending"));
+    const view = planStepView(s.status, st);
+    const row = el("div", "pc-step " + view.cls);
     row.dataset.stepId = sid;
+    if (view.unconfirmed) row.title = planT("plan.step.unconfirmed");
     const chk = el("span", "pc-check");
-    chk.innerHTML = icon(planStepIcon(s.status), 15);
+    chk.innerHTML = icon(view.icon, 15);
     row.appendChild(chk);
     const body = el("div", "pc-step-body");
     body.appendChild(
@@ -183,24 +264,8 @@ export function renderPlanCard(plan: unknown, status?: string | null): void {
     pa.appendChild(no);
     card.appendChild(pa);
   } else {
-    const done = (p.steps || []).filter((s) => s.status === "completed").length;
-    const total = (p.steps || []).length;
-    const stEl = el("div", "pc-status " + st);
-    stEl.textContent =
-      st === "executing"
-        ? t("plan.status.executing", done, total)
-        : st === "completed"
-          ? t("plan.status.completed", done, total)
-          : st === "failed"
-            ? t("plan.status.failed", done, total)
-            : st === "paused"
-              ? t(
-                  "plan.status.paused",
-                  done,
-                  total,
-                  (p.steps || []).filter((x) => !planStepSettled(x.status)).length,
-                )
-              : "";
+    const stEl = el("div", "pc-status " + labels.statusCls);
+    stEl.textContent = labels.status;
     card.appendChild(stEl);
     if (st === "paused") {
       const pa = el("div", "pa");

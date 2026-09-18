@@ -58,6 +58,8 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     "files.index.unavailable": "无法加载文件索引。",
     "artifact.editPinned": "当前标签页显示的是固定版本；请打开最新版本后再编辑",
     "prov.env.noSnapshot": "此版本未记录生产时环境（上传文件，或早于环境捕获功能生成）；不会用守护进程的实时环境替代。",
+    "prov.env.packagesUnknown": "未知",
+    "prov.env.packagesNotApplicable": "不适用",
   },
   en: {
     "artifact.invalidMetadata": "The response does not contain valid artifact metadata. Export stopped.",
@@ -111,6 +113,8 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     "files.index.unavailable": "Could not load the file index.",
     "artifact.editPinned": "This tab shows a fixed version; open the latest version to edit the file",
     "prov.env.noSnapshot": "No environment was recorded for this version (uploaded file, or produced before environment capture existed); the live daemon environment is not substituted.",
+    "prov.env.packagesUnknown": "unknown",
+    "prov.env.packagesNotApplicable": "n/a",
   },
 };
 

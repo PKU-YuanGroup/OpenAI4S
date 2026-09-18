@@ -26,20 +26,20 @@ _MAX_PARALLEL_READS = 8
 def call_reaches_dispatcher(
     name: Any, catalog: Any = None, arguments: Any = None
 ) -> bool:
-    """Whether a native call would actually reach the dispatcher (execute work).
+    """Whether a native call would reach the dispatcher at all.
 
-    Finalize evidence must count executed work, not declared work. An unknown
-    tool name, or a known tool with invalid arguments, is refused *before* the
-    dispatcher — ``execute_tool_call`` reports it and nothing runs — so it must
-    not back a later execution-shaped completion claim.
+    This is a necessary condition for finalize evidence, never a sufficient
+    one. An unknown tool name, or a known tool with invalid arguments, is
+    refused *before* the dispatcher — ``execute_tool_call`` reports it and
+    nothing runs. Pass ``arguments`` on the legacy text-parsed path, which
+    invokes calls without a prior validate, to reject a known tool whose
+    arguments would be refused.
 
-    The native batch already applies this gate before ``invoke`` (unknown names
-    slip through its validator, hence the name check here), but the legacy
-    text-parsed path invokes calls without a prior validate, so pass
-    ``arguments`` there to reject a known tool whose arguments would be refused.
-    (A known, valid call blocked by a static precheck is the one residual
-    over-count; such blocks are rare, and are themselves a signal the model
-    should not then claim it executed work.)
+    A call that passes this check can still end without executing anything:
+    the tool's static precheck, the dispatcher's permission gate, an admission
+    refusal, a soft-fail ``{"error": ...}`` result, or a raised dispatch. The
+    executors therefore count a call as evidence only when it passes this
+    check *and* its dispatch reported ``ok`` — never from this check alone.
     """
     if not isinstance(name, str) or not name:
         return False

@@ -12,4 +12,4 @@ M-01 首次运行向导视图。四个决策步骤、skip/清单，以及三态�
 | [`index.ts`](index.ts) | 再导出 host、badge 与 readiness 面板。 |
 | [`onboarding.css`](onboarding.css) | 车道本地遮罩；≤900px 时触控目标 ≥40px。 |
 | [`ReadinessPanel.tsx`](ReadinessPanel.tsx) | 来自 GET `/onboarding` 的 standard-profile + 网络姿态。 |
-| [`Wizard.tsx`](Wizard.tsx) | `#onboarding` 对话框；路径 / Test / readiness / 项目。 |
+| [`Wizard.tsx`](Wizard.tsx) | `#onboarding` 对话框；路径 / Test / readiness / 项目。Test 运行时只禁用它自己的按钮：Skip、清单和 Continue 仍可使用，离开该步骤后，probe 迟到的结果会被丢弃。 |

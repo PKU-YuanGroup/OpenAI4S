@@ -8,5 +8,5 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`theme.ts`](theme.ts) | `applyTheme` / `setTheme` / `cycleTheme` / `installTheme`。localStorage 键为 `os-theme`。 |
-| [`theme.test.ts`](theme.test.ts) | 单真值源、存储键、循环切换、跟随系统、经典 head 脚本、无 `body.theme-dark`。 |
+| [`theme.ts`](theme.ts) | `applyTheme` / `setTheme` / `cycleTheme` / `installTheme`。localStorage 键为 `os-theme`。`refreshThemeToggle` 切换 `data-icon`，并用 `icons/paths.ts` 重绘太阳/月亮图形。 |
+| [`theme.test.ts`](theme.test.ts) | 单真值源、存储键、循环切换、跟随系统、经典 head 脚本、无 `body.theme-dark`、切换按钮真正重绘（不只改属性）。 |

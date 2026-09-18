@@ -65,14 +65,17 @@ _EXECUTION_CLAIM_STARTERS = frozenset(
         "generated",
         "installed",
         "measured",
+        "overwrote",
         "plotted",
         "produced",
         "profiled",
         "queried",
         "ran",
+        "rebuilt",
         "rendered",
         "reran",
         "retrieved",
+        "rewrote",
         "saved",
         "simulated",
         "trained",
@@ -85,11 +88,13 @@ _EXECUTION_CLAIM_STARTERS = frozenset(
 def note_execution_evidence(
     metadata: MutableMapping[str, Any], *, cells: int = 0, tool_calls: int = 0
 ) -> None:
-    """Record that this run really dispatched a cell or native tool batch.
+    """Record that this run really executed a cell or native tool calls.
 
-    Executors call this at the execution site — after the kernel or dispatcher
-    ran, never for a safety-gate refusal — so the finalize-time reconciliation
-    reads what happened rather than what was attempted.
+    Executors call this at the execution site — after the kernel ran, or after
+    a dispatched call reported ok — never for a safety-gate refusal, a static
+    precheck block, a permission denial or a failed dispatch, so the
+    finalize-time reconciliation reads what happened rather than what was
+    attempted.
     """
 
     current = metadata.get(EXECUTION_EVIDENCE_KEY)

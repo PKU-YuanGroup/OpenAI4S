@@ -342,12 +342,63 @@ def test_unauthenticated_files_access_is_401(daemon):
 
 
 def test_unconfigured_roots_shape(tmp_path):
+    """No roots: the bare listing is an empty answer, anything addressed is 404.
+
+    The workbench probes the bare listing on every load to decide whether to
+    show Team files. A 404 there was a console error on every page load of
+    every install without `OPENAI4S_DATA_ROOTS` -- noise that hides real
+    errors. "There are no roots" is a successful answer to "which roots are
+    there"; a request that names a path still cannot be served.
+    """
     node = _TeamDaemon(tmp_path / "home2")
     node.seed_user("alice", "fake-pw-a")
     try:
         cookie = _login(node, "alice", "fake-pw-a")
         status, raw = _get(node.port, "/api/v1/files", cookie=cookie)
+        assert status == 200, raw[:300]
+        assert _body_json(raw) == {"roots": [], "configured": False}
+
+        from urllib.parse import quote
+
+        target = quote(str(tmp_path))
+        status, raw = _get(node.port, f"/api/v1/files?path={target}", cookie=cookie)
         assert status == 404
         assert _body_json(raw).get("code") == "no_data_roots"
+        status, raw = _get(
+            node.port, f"/api/v1/files/download?path={target}", cookie=cookie
+        )
+        assert status == 404
+        assert _body_json(raw).get("code") == "no_data_roots"
+        status, raw = _upload(node, cookie, str(tmp_path), "x.txt", b"x")
+        assert status == 404
+        assert _body_json(raw).get("code") == "no_data_roots"
+    finally:
+        node.close()
+
+
+def test_single_user_listing_without_roots_is_empty_not_404(tmp_path):
+    """The same probe on the default install: token auth, team mode off."""
+    node = _TeamDaemon(tmp_path / "solo", team_mode=False)
+    try:
+        status, raw = _get(node.port, "/api/v1/files", token=node.token)
+        assert status == 200, raw[:300]
+        assert _body_json(raw) == {"roots": [], "configured": False}
+    finally:
+        node.close()
+
+
+def test_single_user_listing_with_roots_still_lists_them(tmp_path):
+    """Control: the file area is not a team-mode feature. Configured roots are
+    listed with team mode off, so gating the probe on team mode would hide a
+    working Team files surface from a single-user install."""
+    root = tmp_path / "datasets"
+    root.mkdir()
+    node = _TeamDaemon(tmp_path / "solo-roots", team_mode=False, data_roots=[root])
+    try:
+        status, raw = _get(node.port, "/api/v1/files", token=node.token)
+        assert status == 200, raw[:300]
+        body = _body_json(raw)
+        assert body["configured"] is True
+        assert [r["path"] for r in body["roots"]] == [str(root.resolve())]
     finally:
         node.close()

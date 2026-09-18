@@ -328,6 +328,14 @@ def _title(group: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> str
     if kind == "user":
         message = group.get("assistant_message")
         content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, str):
+            # A workbench plan turn's input opens with the plan-mode prompt;
+            # the one-line title names the task inside it, the payload stays
+            # whole. Imported here: the gateway has loaded it by then, and this
+            # module keeps no import of the Store-backed plan service.
+            from openai4s.server.plans import plan_mode_request_text
+
+            content = plan_mode_request_text(content)
         return _one_line(content) or "User message"
     if kind == "native_tools":
         names = []

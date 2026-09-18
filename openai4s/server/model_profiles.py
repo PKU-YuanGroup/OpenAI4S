@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from openai4s.config import Config, LLMConfig, is_placeholder_api_key
+from openai4s.config import (
+    Config,
+    LLMConfig,
+    is_placeholder_api_key,
+    provider_env_api_key,
+)
 from openai4s.endpoint_identity import endpoint_sha256, normalize_endpoint
 from openai4s.llm.capabilities import (
     CAPABILITY_PROBE_TOOL,
@@ -60,7 +67,40 @@ WITHHELD_PROTOCOLS: dict[str, str] = {}
 PROBLEM_DETAIL = {
     "needs_key": "no credential resolves for this profile",
     "needs_model": "no model is named and this protocol has no default",
+    "credential_revoked": (
+        "the API key stored for this profile can no longer be read; enter it again"
+    ),
 }
+
+#: Where a profile's credential comes from. The first three are usable.
+CREDENTIAL_PROFILE = "profile"
+CREDENTIAL_ENVIRONMENT = "environment"
+CREDENTIAL_LOCAL = "local"
+CREDENTIAL_REVOKED = "revoked"
+CREDENTIAL_DELETED = "deleted"
+CREDENTIAL_MISSING = "missing"
+#: A pinned revision whose provider or endpoint is not the one the profile
+#: names now. The profile's credential belongs to its current configuration.
+CREDENTIAL_SCOPE_MISMATCH = "revision_scope_mismatch"
+_USABLE_CREDENTIALS = frozenset(
+    (CREDENTIAL_PROFILE, CREDENTIAL_ENVIRONMENT, CREDENTIAL_LOCAL)
+)
+
+
+@dataclass(frozen=True)
+class ProfileCredential:
+    """The one answer to "what would this profile be dispatched under".
+
+    `api_key` is empty for a keyless local endpoint and for every unusable
+    source. Never serialised: callers project `source` or a boolean.
+    """
+
+    api_key: str
+    source: str
+
+    @property
+    def usable(self) -> bool:
+        return self.source in _USABLE_CREDENTIALS
 
 
 class ModelProfileError(ValueError):
@@ -96,6 +136,25 @@ def resolve_profile_key(store: Any, profile: Mapping[str, Any]) -> str:
         return clean_api_key(store.secrets.get(raw))
     except Exception:  # noqa: BLE001 - an unreadable secret is an absent one
         return ""
+
+
+def _network_failure(error: BaseException | None) -> bool:
+    """A connect, DNS or socket failure: no HTTP status came back.
+
+    `transport.py` wraps every `URLError` in a `TransportError` with no
+    `status`, and that is not an `OSError`, so an `isinstance` check alone
+    missed every refused connection, unknown host and connect timeout. The
+    probe reported them as "internal error" and then sent its second request
+    to an endpoint that had just failed to answer the first. The gateway's
+    turn path (`_friendly_error`) already reads a status-less transport error
+    this way. The only other status-less transport errors are a stream read
+    that broke mid-reply and a caller's cancel, which the probe never sends.
+    """
+    from openai4s.llm.models import TransportError
+
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return True
+    return isinstance(error, TransportError) and error.status is None
 
 
 def _probe_detail(error: Exception, public: dict) -> str:
@@ -157,10 +216,31 @@ def _probe_detail(error: Exception, public: dict) -> str:
         return (
             "the provider returned a server error; this is not a configuration problem"
         )
-    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+    if _network_failure(error):
         return (
-            "the endpoint could not be reached; check the base URL and this "
-            "machine's network access"
+            "the endpoint could not be reached, or the connection dropped; "
+            "check the base URL and this machine's network access"
+        )
+    if status == 408:
+        return (
+            "the endpoint timed out answering the probe; check this machine's "
+            "network access and try again"
+        )
+    if isinstance(status, int) and 400 <= status < 500:
+        # The status is a transport-set integer, never provider prose.
+        return (
+            f"the provider rejected the probe request (HTTP {status}); check "
+            "the model name and the protocol selected for this profile"
+        )
+    # The transport normalises a body it could not decode into its own typed
+    # `LLMError` and keeps the decode failure as the cause, so the check has to
+    # read the cause too -- still a type, never the provider's prose.
+    if isinstance(error, json.JSONDecodeError) or isinstance(
+        getattr(error, "__cause__", None), (json.JSONDecodeError, UnicodeDecodeError)
+    ):
+        return (
+            "the endpoint answered, but not like a model API; check the base "
+            "URL (OpenAI-compatible endpoints usually end in /v1)"
         )
     # Unknown provenance. `public_exception` already chose the generic sentence
     # and wrote the original to the diagnostic log under its own surface.
@@ -203,6 +283,153 @@ class ModelProfileService:
     def resolve_key(self, profile: Mapping[str, Any]) -> str:
         """See :func:`resolve_profile_key`."""
         return resolve_profile_key(self.store, profile)
+
+    def credential(
+        self,
+        profile: Mapping[str, Any],
+        configuration: Mapping[str, Any] | None = None,
+    ) -> ProfileCredential:
+        """The credential rule, in one place, for every caller that needs it.
+
+        Readiness, both pin-writing branches of `bind_model_revision` and the
+        pinned dispatch used to answer this three different ways: readiness
+        accepted a loopback endpoint, the fresh bind checked nothing, and the
+        bound bind and dispatch accepted only the profile's own stored key. So a
+        profile that readiness called `ready` -- a keyless Ollama endpoint -- or
+        one relying on `OPENAI4S_ARK_API_KEY` was pinned on the first send and
+        refused at dispatch as "no longer usable", and the rebind that error
+        asks for pinned the same profile again.
+
+        In order:
+
+        1. the profile's own key, brokered or legacy plaintext;
+        2. a brokered key that no longer resolves is a refusal, not a fallback:
+           the profile asked for *that* credential;
+        3. keyless, when the endpoint is local by the rule `chat()` and
+           `doctor` apply -- BEFORE any inherited key. A same-provider
+           environment key is a cloud credential (`OPENAI_API_KEY` for the
+           OpenAI-compatible protocol local discovery adds), and a local
+           endpoint is plain http to a loopback, private or `.local` host. A
+           local server that wants a key gets the one saved on its profile;
+        4. a key the daemon's environment holds for the SAME provider -- never
+           another provider's (see :func:`provider_env_api_key`).
+
+        `configuration` is the revision being dispatched, when that is not the
+        profile's current one: an inherited or keyless answer is about the
+        provider and endpoint the request will actually reach.
+
+        0. Before any of that, a revision whose provider or effective endpoint
+           is not the profile's current one is refused
+           (`CREDENTIAL_SCOPE_MISMATCH`). The key is shared across revisions
+           and `edit()` stores a replacement while provider or base_url moves,
+           so "the profile's own key" is the key entered for the configuration
+           the profile names NOW. Returned first, it sent that key to a pinned
+           older revision's endpoint -- the real OpenAI key to the third-party
+           proxy the profile used to name, an Ark key to Anthropic. No
+           environment fallback either: `OPENAI_API_KEY` to that same proxy is
+           the same disclosure. A model-only revision keeps provider and
+           endpoint, so it still dispatches; the rest are answered by
+           `POST /frames/{id}/model-binding`.
+        """
+        if profile.get("deleted_at"):
+            # Delete destroyed the key; an environment fallback must not bring
+            # a tombstone back to life.
+            return ProfileCredential("", CREDENTIAL_DELETED)
+        if configuration is not None and self._credential_scope(
+            configuration
+        ) != self._credential_scope(profile):
+            return ProfileCredential("", CREDENTIAL_SCOPE_MISMATCH)
+        own = self.resolve_key(profile)
+        if own:
+            return ProfileCredential(own, CREDENTIAL_PROFILE)
+        if is_ref(str(profile.get("api_key") or "")):
+            return ProfileCredential("", CREDENTIAL_REVOKED)
+        target = configuration if configuration is not None else profile
+        provider = str(target.get("provider") or "").strip().lower()
+        if self._keyless_endpoint(
+            provider, str(target.get("model") or ""), str(target.get("base_url") or "")
+        ):
+            return ProfileCredential("", CREDENTIAL_LOCAL)
+        inherited = self._provider_key(provider)
+        if inherited:
+            return ProfileCredential(inherited, CREDENTIAL_ENVIRONMENT)
+        return ProfileCredential("", CREDENTIAL_MISSING)
+
+    def _credential_scope(self, configuration: Mapping[str, Any]) -> tuple[str, str]:
+        """`(provider, effective endpoint)`: where a request under it is sent.
+
+        An empty base_url is resolved by the code that dispatches it, not by a
+        copy of its rule: the pinned dispatch hands `base_url=None` to
+        `LLMConfig.__post_init__`, which reads `OPENAI4S_<P>_BASE_URL`, then
+        `OPENAI4S_LLM_BASE_URL`, and only then the protocol's default. Judged
+        against the static default alone, a revision pinned to `""` while the
+        environment named a proxy matched a revision spelling out the official
+        endpoint, and the key entered for that endpoint went to the proxy. With
+        no override, `""` and the default spelled out are still one endpoint;
+        `normalize_endpoint` makes a trailing slash or a stripped query the same
+        one too.
+        """
+        provider = str(configuration.get("provider") or "").strip().lower()
+        endpoint = normalize_endpoint(str(configuration.get("base_url") or ""))
+        if not endpoint:
+            dispatched = provider or str(getattr(self.cfg.llm, "provider", "") or "")
+            try:
+                resolved = LLMConfig(
+                    provider=dispatched, base_url="", model="unused", api_key="unused"
+                ).base_url
+            except Exception:  # noqa: BLE001 - fall back to the static default
+                resolved = ""
+            endpoint = normalize_endpoint(str(resolved or ""))
+        if not endpoint:
+            spec = self._providers().get(provider, {})
+            endpoint = normalize_endpoint(str(spec.get("base_url") or ""))
+        return provider, endpoint
+
+    def _provider_key(self, provider: str) -> str:
+        if not provider:
+            return ""
+        key = provider_env_api_key(provider)
+        if key:
+            return key
+        base = str(getattr(self.cfg.llm, "provider", "") or "").strip().lower()
+        if provider != base:
+            return ""
+        # The daemon's own provider: its resolved key (the only place the
+        # generic `OPENAI4S_LLM_API_KEY` may apply), then an operator-injected
+        # `llm` credential. Not the `llm_api_key` settings row itself: behind a
+        # writable backend that row is a copy another profile's activation made.
+        key = clean_api_key(getattr(self.cfg.llm, "api_key", ""))
+        if key:
+            return key
+        return self._injected_llm_key()
+
+    def _injected_llm_key(self) -> str:
+        broker = getattr(self.store, "secrets", None)
+        if broker is None or not getattr(broker, "read_only", False):
+            return ""
+        try:
+            from openai4s.security.secret_broker import make_ref
+
+            return clean_api_key(
+                broker.get(
+                    make_ref("llm", "llm_api_key", getattr(broker, "namespace", None))
+                )
+            )
+        except Exception:  # noqa: BLE001 - an unreadable injection is an absent one
+            return ""
+
+    @staticmethod
+    def _keyless_endpoint(provider: str, model: str, base_url: str) -> bool:
+        try:
+            from openai4s.llm.capabilities import get_model_capabilities
+
+            return bool(
+                get_model_capabilities(
+                    provider, model.strip() or None, base_url=base_url.strip() or None
+                ).local_endpoint
+            )
+        except Exception:  # noqa: BLE001 - unknown protocol: the loopback rule
+            return is_loopback_endpoint(base_url)
 
     def _store_key(self, profile_id: str, key: str) -> str:
         """Put a profile's key behind a reference. Returns what to persist."""
@@ -344,12 +571,16 @@ class ModelProfileService:
         provider = str(profile.get("provider") or "")
         model = self.effective_model_id(provider, profile.get("model"))
         base_url = str(profile.get("base_url") or "") or None
+        credential = self.credential(profile)
         cfg = LLMConfig(
             provider=provider,
-            api_key=self.resolve_key(profile),
+            api_key=credential.api_key,
             base_url=base_url,
             model=str(profile.get("model") or "") or None,
         )
+        # `__post_init__` re-resolves an empty key from the environment, which
+        # for a keyless local endpoint would send the daemon's generic key to it.
+        cfg.api_key = credential.api_key
         outbound = 0
         native = EVIDENCE_UNKNOWN
         streaming = EVIDENCE_UNKNOWN
@@ -416,7 +647,7 @@ class ModelProfileService:
 
         status = getattr(last_error, "status", None) if last_error else None
         stop_after_first = last_error is not None and (
-            isinstance(last_error, (TimeoutError, ConnectionError, OSError))
+            _network_failure(last_error)
             or status in (401, 403, 429)
             or (isinstance(status, int) and 500 <= status < 600)
         )
@@ -504,6 +735,7 @@ class ModelProfileService:
         """
         provider = str(profile.get("provider") or "").strip().lower()
         problems: list[str] = []
+        details: list[str] = []
         if provider not in PROFILE_PROTOCOLS:
             return {
                 "state": "unsupported",
@@ -511,23 +743,24 @@ class ModelProfileService:
                 "build can dispatch",
                 "checked_endpoint": False,
             }
-        if not self.resolve_key(profile) and not is_loopback_endpoint(
-            str(profile.get("base_url") or "")
-        ):
-            # A loopback endpoint is the exception `resolve.py` already names:
-            # "demanding an API key from them is demanding a credential that
-            # does not exist". `chat()` honours it -- a keyless request is
-            # permitted when the endpoint is local -- and `doctor` honours it.
-            # This surface did not, so a working Ollama or LM Studio profile
-            # was reported `needs_key` and could not be probed at all. The UI
-            # then hand-rolled its own loopback check for the badge while still
-            # rendering the warning above it, which is what a rule wired to one
-            # of three call sites looks like from the outside.
+        credential = self.credential(profile)
+        if not credential.usable:
+            # The same rule bind and dispatch apply (see `credential`). A local
+            # endpoint is the exception `resolve.py` already names: "demanding
+            # an API key from them is demanding a credential that does not
+            # exist". This card used to be the only surface honouring it, so a
+            # profile it called `ready` could never run a turn.
             problems.append("needs_key")
+            details.append(
+                PROBLEM_DETAIL["credential_revoked"]
+                if credential.source == CREDENTIAL_REVOKED
+                else PROBLEM_DETAIL["needs_key"]
+            )
         if not str(profile.get("model") or "").strip():
             spec = self._providers().get(provider, {})
             if not spec.get("model"):
                 problems.append("needs_model")
+                details.append(PROBLEM_DETAIL["needs_model"])
         if problems:
             # Prose, like the two states either side of this branch. `detail`
             # was the joined problem *codes*, which was fine while nothing
@@ -535,9 +768,7 @@ class ModelProfileService:
             # moment one did. `state` is still the code a client branches on.
             return {
                 "state": problems[0],
-                "detail": "; ".join(
-                    PROBLEM_DETAIL.get(item, item) for item in problems
-                ),
+                "detail": "; ".join(details),
                 "checked_endpoint": False,
             }
         return {
@@ -564,6 +795,12 @@ class ModelProfileService:
             "base_url": profile.get("base_url") or "",
             "model": profile.get("model") or "",
             "has_api_key": bool(self.resolve_key(profile)),
+            # Where the credential this profile is dispatched under comes from:
+            # `profile`, `environment` (the same provider's key in the daemon's
+            # environment), `local` (keyless local endpoint), `revoked` or
+            # `missing`. `has_api_key` alone made an environment-keyed profile
+            # read "No key" beside a `ready` card. Never the key itself.
+            "credential_source": self.credential(profile).source,
             # Local-only readiness. Never a network call: see `readiness`.
             "readiness": self.readiness(profile),
             # The number a session binds to. Surfaced so a client can show

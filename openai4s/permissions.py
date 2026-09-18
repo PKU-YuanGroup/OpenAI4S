@@ -684,6 +684,120 @@ class PermissionBroker:
         root, proj = self._permission_scope(store, frame_id, project_id)
         return self._approvals_reviewer(store, root, proj or "default")
 
+    def guardian_adjudicates(
+        self,
+        *,
+        store,
+        frame_id: str | None,
+        guardian_config: Any = None,
+        project_id: str | None = None,
+    ) -> bool:
+        """Whether the next ``ask`` for this conversation goes to the Guardian.
+
+        The same selection :meth:`gate` freezes, exposed so a caller explaining
+        a refusal can name the posture that produced it.
+        """
+
+        try:
+            reviewer = self.approvals_reviewer_for(
+                store=store, frame_id=frame_id, project_id=project_id
+            )
+            return _stage7_auto_review_requested(
+                guardian_config or _daemon_config(), reviewer
+            )
+        except Exception:  # noqa: BLE001 - explanatory only; never a grant
+            return False
+
+    def approval_reachable(
+        self,
+        *,
+        store,
+        frame_id: str | None,
+        method: str,
+        dangerous: bool = False,
+        side_effect_class: str | None = None,
+        guardian_config: Any = None,
+        project_id: str | None = None,
+    ) -> bool:
+        """Whether a call to ``method`` that needs approval could be allowed here.
+
+        A read-only projection of :meth:`gate` for callers that must decide
+        before any call exists: the headless CLI's model-facing tool list and
+        its explicit code-mode preflight. It creates no request, trips no
+        Guardian breaker, and grants nothing -- the gate stays authoritative
+        and still refuses and audits a call that is made anyway.
+
+        Reachable means one of the gate's allow paths can still fire: a human
+        channel is attached for the conversation, a standing ``allow`` rule
+        exists for the tool, the Guardian (when it adjudicates) has the tool on
+        its read-only allowlist, or -- only when no Guardian adjudicates --
+        ``OPENAI4S_UNATTENDED_APPROVAL=allow``. A standing ``deny`` for every
+        target vetoes all of them, exactly as it does in the gate. Anything
+        that cannot be read answers ``True``: hiding a capability that was in
+        fact reachable is worse than one refused call.
+
+        It is an approximation, not a replay of the gate. It does not model an
+        open Guardian denial circuit, the unattended file policy, or a
+        delegated child's ``deny``/``ask`` policy (each can still refuse a call
+        this answers ``True`` for), nor the order in which the gate consults
+        the Guardian before a channel. The one allow path it omits is a
+        restart-once continuation grant, which exists only after a person
+        approves a request a daemon restart left open; a fresh CLI root has
+        none.
+        """
+
+        try:
+            from openai4s.storage.permissions import perm_match
+
+            root, proj = self._permission_scope(store, frame_id, project_id)
+            scoped = store.list_permission_rules_for_frame(
+                root_frame_id=root, project_id=proj or "default"
+            )
+            rules = [
+                rule
+                for scope in ("global", "project", "conversation")
+                for rule in (scoped.get(scope) or [])
+                if perm_match(method, str(rule.get("tool") or "*"))
+            ]
+            if any(
+                rule.get("decision") == "deny"
+                and str(rule.get("pattern") or "*") in ("*", "")
+                for rule in rules
+            ):
+                return False
+            if any(rule.get("decision") == "allow" for rule in rules):
+                return True
+            with self._lock:
+                if root is not None and root in self._channels:
+                    return True
+            reviewer = self._approvals_reviewer(store, root, proj or "default")
+            config = guardian_config or _daemon_config()
+            if _stage7_auto_review_requested(config, reviewer):
+                from openai4s.server.guardian_enforce import (
+                    ALLOWED_SIDE_EFFECTS,
+                    ALLOWED_TOOLS,
+                )
+
+                return (
+                    not dangerous
+                    and method in ALLOWED_TOOLS
+                    and (
+                        side_effect_class is None
+                        or side_effect_class in ALLOWED_SIDE_EFFECTS
+                    )
+                )
+            if reviewer == "user":
+                from openai4s.server.guardian_enforce import feature_enabled
+
+                if feature_enabled(config):
+                    # `decide_unattended` refuses a recorded human-only
+                    # conversation when nobody is there to ask.
+                    return False
+            unattended = os.environ.get("OPENAI4S_UNATTENDED_APPROVAL", "deny")
+            return unattended.strip().lower() == "allow"
+        except Exception:  # noqa: BLE001 - an unreadable posture keeps the tool
+            return True
+
     def _resolve_guardian_decision(
         self,
         store,

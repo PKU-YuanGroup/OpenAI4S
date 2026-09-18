@@ -4,6 +4,7 @@ usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
 import ntpath
 import os
 import signal
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -61,12 +62,29 @@ def test_persistent_namespace():
         assert r["stdout"].strip() == "42"
 
 
+#: A worker's one-time cold start -- the sandbox self-test, the Host facade
+#: and provenance install on its first Cell -- is not what the thread-affinity
+#: test below measures, and on a loaded macOS runner it alone has taken 17-48
+#: seconds. It gets its own generous budget.
+_COLD_START_BUDGET_S = 120
+#: The property under test: a warm kernel answers its creating request thread.
+_WARM_EXECUTE_BUDGET_S = 15
+
+
 def test_kernel_survives_the_request_thread_that_created_it(tmp_path):
     kernel = None
     try:
         with ThreadPoolExecutor(max_workers=1) as requests:
-            kernel = requests.submit(Kernel, cwd=str(tmp_path)).result(timeout=15)
-            first = requests.submit(kernel.execute, "marker = 41").result(timeout=15)
+            kernel = requests.submit(Kernel, cwd=str(tmp_path)).result(
+                timeout=_COLD_START_BUDGET_S
+            )
+            warm = requests.submit(kernel.execute, "pass").result(
+                timeout=_COLD_START_BUDGET_S
+            )
+            assert warm["error"] is None
+            first = requests.submit(kernel.execute, "marker = 41").result(
+                timeout=_WARM_EXECUTE_BUDGET_S
+            )
             assert first["error"] is None
         # The request thread is now gone, as after a Web REPL/Agent turn. The
         # next request must see the same worker and its original namespace.
@@ -178,6 +196,35 @@ def test_variable_inspector_reads_only_safe_builtins_without_repr_hooks():
         assert variables["trap"] == {"name": "trap", "type": "TrapList"}
         assert "host" not in variables and "openai4s" not in variables
         assert kernel.execute("print(events)")["stdout"].strip() == "[]"
+
+
+def test_variable_inspector_hides_the_skill_bootstrap_it_did_not_author(tmp_path):
+    """The Variable Inspector lists the user's bindings, not the session's glue.
+
+    Every Web session runs the skill import gate as a system cell before the
+    first user cell, and that source binds its helpers into the same namespace
+    user code runs in -- as it must: the frozen-sidecar replay reads its policy
+    back through ``globals()``. The inspector hid only dunders, ``host`` and
+    ``openai4s``, so a session holding one variable listed 33, thirty-two of
+    them ``_o4s_*`` imports, sets and classes the user never wrote.
+
+    Driven through the same bootstrap call the gateway makes, so the names
+    under test are the ones a real session injects rather than a list copied
+    from the generator.
+    """
+    from openai4s.server.recovery_runtime import bootstrap_python_generation
+    from openai4s.skills_loader import SkillLoader
+
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as kernel:
+        metadata = bootstrap_python_generation(
+            kernel, tmp_path, SkillLoader().bootstrap_code()
+        )
+        assert metadata["status"] == "active", metadata
+        assert kernel.execute("pp = 7")["error"] is None
+
+        names = [item["name"] for item in kernel.inspect_variables()["variables"]]
+
+        assert names == ["pp"]
 
 
 def test_variable_inspector_fails_busy_without_competing_frame_reader():
@@ -357,6 +404,105 @@ def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
     assert forbidden.isdisjoint(env)
     assert "/host/injected-pythonpath" not in env["PYTHONPATH"]
     assert source["OPENAI4S_LLM_API_KEY"] == "llm-secret"  # source not mutated
+
+
+def test_the_kernel_interpreter_bin_dir_leads_path_when_no_env_is_selected(tmp_path):
+    """A shell a Cell starts must resolve `python` to the Cell's own
+    interpreter. Only a selected conda prefix used to reach PATH, so a daemon
+    or CLI launched by absolute path from a non-activated venv gave
+    `host.bash("python -m pytest -q")` whatever `python` the host PATH had --
+    nothing at all on macOS (exit 127)."""
+
+    source = {"PATH": "/usr/bin:/bin", "HOME": "/home/scientist"}
+    interpreter = str(tmp_path / "venv" / "bin" / "python")
+
+    env = build_kernel_environment(
+        source=source, cwd=str(tmp_path), interpreter=interpreter
+    )
+    assert env["PATH"].split(os.pathsep) == [
+        str(tmp_path / "venv" / "bin"),
+        "/usr/bin",
+        "/bin",
+    ]
+
+    # Unresolved: a venv interpreter is often a symlink to a base Python, and
+    # the base Python's directory has none of the venv's site-packages.
+    linked = tmp_path / "linked-venv" / "bin"
+    linked.mkdir(parents=True)
+    (linked / "python").symlink_to(sys.executable)
+    env = build_kernel_environment(
+        source=source, cwd=str(tmp_path), interpreter=str(linked / "python")
+    )
+    assert env["PATH"].split(os.pathsep)[0] == str(linked)
+
+    # A selected conda prefix still wins, and a bare or relative interpreter
+    # never puts the workspace ('.') on PATH.
+    conda = tmp_path / "conda" / "science"
+    env = build_kernel_environment(
+        source=source,
+        cwd=str(tmp_path),
+        env_root=str(conda),
+        interpreter=interpreter,
+    )
+    assert env["PATH"].split(os.pathsep) == [str(conda / "bin"), "/usr/bin", "/bin"]
+    for bare in ("python", "./python", ""):
+        env = build_kernel_environment(
+            source=source, cwd=str(tmp_path), interpreter=bare
+        )
+        assert env["PATH"] == "/usr/bin:/bin"
+    assert build_kernel_environment(source=source, cwd=str(tmp_path))["PATH"] == (
+        "/usr/bin:/bin"
+    )
+
+
+def test_an_r_worker_path_is_not_given_the_daemon_python(monkeypatch, tmp_path):
+    """The R kernel reuses this manager with its own argv; `self.python` is
+    still the daemon's interpreter there, which R's shell must not inherit."""
+
+    # Sparse, as in a non-activated launch: `uv run` would otherwise already
+    # have put the venv's bin dir first and this would prove nothing.
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    def child_env(argv):
+        kernel = manager_mod.Kernel.__new__(manager_mod.Kernel)
+        kernel.mode = "repl"
+        kernel.cwd = str(tmp_path)
+        kernel.python = sys.executable
+        kernel.env_root = None
+        kernel.env_name = None
+        kernel.argv = argv
+        kernel.authorization_generation = "kernel:test"
+        return kernel._child_env()
+
+    python_dir = os.path.dirname(sys.executable)
+    assert child_env(None)["PATH"].split(os.pathsep)[0] == python_dir
+    r_path = child_env(["sh", "-c", "exec Rscript r_worker.R"])["PATH"]
+    assert r_path == "/usr/bin:/bin"
+
+
+def test_host_bash_python_is_the_kernel_interpreter_in_a_non_activated_launch(
+    monkeypatch, tmp_path
+):
+    """The command the explicit code modes teach, run the way they teach it,
+    from a launch with no venv activated and no `python` on the host PATH."""
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    code = """
+import sys
+version = host.bash('python -m pytest --version')
+print('pytest-exit', version['exit_code'])
+probe = host.bash('python -c "import sys; print(sys.prefix)"')
+print('same-prefix', probe['stdout'].strip() == sys.prefix)
+"""
+    with Kernel(
+        dispatcher=_authorized_bash_dispatcher(tmp_path), cwd=str(tmp_path)
+    ) as kernel:
+        result = kernel.execute(code)
+
+    assert result["error"] is None, result
+    assert "pytest-exit 0" in result["stdout"], result
+    assert "same-prefix True" in result["stdout"], result
 
 
 def test_python_kernel_and_its_subprocesses_cannot_inherit_host_api_key(
@@ -561,6 +707,111 @@ def test_save_artifact_host_call_carries_canonical_and_declared_cell_ids():
             ],
         ),
     ]
+
+
+def _require_matplotlib_in_the_kernel() -> None:
+    # `find_spec`, not `importorskip`: importing matplotlib into the test
+    # process is exactly the cost these tests are about, and not theirs to pay.
+    import importlib.util
+
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is not installed")
+
+
+_MATPLOTLIB_MODULES = (
+    "matplotlib",
+    "matplotlib.figure",
+    "matplotlib.font_manager",
+    "matplotlib.pyplot",
+)
+
+
+@pytest.mark.parametrize(
+    ("mode", "guards_off"),
+    [("repl", False), ("repl", True), ("jupyter", False)],
+    ids=["guards-and-provenance", "provenance-only", "guards-only"],
+)
+def test_a_cell_that_never_plots_never_loads_matplotlib(
+    tmp_path, monkeypatch, mode, guards_off
+):
+    """Importing matplotlib builds its font list, and under an enforced
+    sandbox every Kernel gets an empty private MPLCONFIGDIR, so that import
+    was a font scan (`system_profiler` on macOS) of 8-48 seconds on the first
+    Cell of every new kernel -- `x = 1` included. Two independent layers paid
+    it for Cells that never plot: the figure-leak guard imported pyplot to
+    read its figure numbers, and provenance imported `matplotlib.figure` to
+    wrap `savefig`. Each parameter isolates one of them."""
+
+    _require_matplotlib_in_the_kernel()
+    if guards_off:
+        monkeypatch.setenv("OPENAI4S_GUARDS_OFF", "1")
+    else:
+        monkeypatch.delenv("OPENAI4S_GUARDS_OFF", raising=False)
+    monkeypatch.delenv("OPENAI4S_PROVENANCE_OFF", raising=False)
+
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path), mode=mode) as kernel:
+        assert kernel.execute("x = 1")["error"] is None
+        probe = kernel.execute(
+            "import sys\n"
+            f"print([name for name in {_MATPLOTLIB_MODULES!r} if name in sys.modules])"
+        )
+
+    assert probe["error"] is None
+    assert probe["stdout"].strip() == "[]"
+
+
+def _figure_lineage_dispatcher(records):
+    def dispatcher(method, args):
+        if method == "prov_record":
+            records.append(args[0])
+            return {"ok": True}
+        if method == "prov_resolve_path":
+            return None
+        return _echo_dispatcher(method, args)
+
+    return dispatcher
+
+
+_TAGGED_FIGURE_SAVE = (
+    "from openai4s.kernel import provenance\n"
+    "figure = plt.figure()\n"
+    "provenance.set_tags(figure, frozenset({'input-version'}))\n"
+    "figure.savefig('figure.png')\n"
+    "plt.close(figure)\n"
+)
+
+
+@pytest.mark.parametrize("same_cell", [True, False], ids=["same-cell", "later-cell"])
+def test_figure_savefig_lineage_survives_a_matplotlib_imported_after_install(
+    tmp_path, same_cell
+):
+    """Provenance no longer imports matplotlib to wrap `Figure.savefig`; it
+    wraps it the moment `matplotlib.figure` is imported. A wrapper applied
+    only between Cells would miss the commonest plotting Cell there is --
+    import, plot and save in one go -- so both orders must report the edge."""
+
+    _require_matplotlib_in_the_kernel()
+    records: list[dict] = []
+    importing = (
+        "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\n"
+    )
+    with Kernel(
+        dispatcher=_figure_lineage_dispatcher(records), cwd=str(tmp_path)
+    ) as kernel:
+        assert kernel.execute("x = 1")["error"] is None
+        if same_cell:
+            saved = kernel.execute(importing + _TAGGED_FIGURE_SAVE)
+        else:
+            assert kernel.execute(importing)["error"] is None
+            saved = kernel.execute(_TAGGED_FIGURE_SAVE)
+
+    assert saved["error"] is None
+    assert (tmp_path / "figure.png").is_file()
+    figure_records = [
+        record for record in records if record.get("filename") == "figure.png"
+    ]
+    assert figure_records, records
+    assert figure_records[-1]["input_version_ids"] == ["input-version"]
 
 
 def test_host_call_soft_fail_single_key_error_dict():

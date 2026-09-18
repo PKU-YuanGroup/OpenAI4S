@@ -20,3 +20,28 @@
 .ctx-menu:focus-within {
   outline: none;
 }
+
+/* A deep link's first paint (Shell.tsx): neither view is shown until routing
+   picks one. After both in DOM order, so a plain sibling rule retires it the
+   moment either view loses `.hidden` -- no code path has to remember to. */
+#route-loading {
+  display: flex;
+  justify-content: center;
+  padding-top: 28vh;
+  color: var(--text-400);
+}
+
+#route-loading[hidden],
+#dashboard:not(.hidden) ~ #route-loading,
+#workspace:not(.hidden) ~ #route-loading {
+  display: none;
+}
+
+.route-loading-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

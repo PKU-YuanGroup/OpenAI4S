@@ -550,3 +550,112 @@ def test_schema_probe_distinguishes_future_and_corrupt_database(cfg, future):
     assert schema["status"] == "unavailable"
     assert str(cfg.db_path) not in json.dumps(schema)
     assert cfg.db_path.read_bytes() == before
+
+
+def _cli_diagnostics(monkeypatch, cfg, target):
+    """`openai4s diagnostics --output target` against `cfg`'s data directory."""
+    import importlib
+
+    import openai4s.config as config_mod
+
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(cfg.data_dir))
+    monkeypatch.setattr(config_mod, "_CONFIG", None, raising=False)
+    cli = importlib.import_module("openai4s.cli.main")
+    return cli.main(["diagnostics", "--output", str(target)])
+
+
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_the_bundle_does_not_upgrade_a_database_from_an_older_release(
+    cfg, tmp_path, monkeypatch, capsys, conflicting
+):
+    """UPG5-01, the second diagnosis command. `security_posture` opened the
+    Store read-write to read the schema, and on a database older than this
+    release that open *is* the upgrade: `openai4s diagnostics` migrated a
+    healthy data directory in place, and attempted (then rolled back, keeping
+    its backup) one whose upgrade fails -- the directory a user with an upgrade
+    problem runs it on for a bug report. It now reads the version the
+    read-only way and records the pending upgrade instead of performing it."""
+    from openai4s.diagnostics import archive_safe
+    from openai4s.storage.migrations import SCHEMA_VERSION
+    from tests.test_doctor import _older_database, _user_version
+
+    _older_database(cfg.db_path, conflicting=conflicting)
+    before = cfg.db_path.read_bytes()
+    backup = cfg.db_path.with_name(f"openai4s.db.v{SCHEMA_VERSION - 1}.bak")
+    target = tmp_path / "bundle.zip"
+
+    assert _cli_diagnostics(monkeypatch, cfg, target) == 0
+    capsys.readouterr()
+
+    assert cfg.db_path.read_bytes() == before
+    assert _user_version(cfg.db_path) == SCHEMA_VERSION - 1
+    assert not backup.exists()
+    with zipfile.ZipFile(target) as archive:
+        security = json.loads(archive.read("report.json"))["security"]
+    assert security["schema"] == {
+        "status": "skipped",
+        "code": "upgrade_pending",
+        "version": SCHEMA_VERSION - 1,
+        "expected": SCHEMA_VERSION,
+        "current": False,
+    }
+    assert security["secret_store"] == {"status": "skipped"}
+    # The in-process report and its shareable projection agree.
+    live = security_posture(cfg)
+    assert archive_safe({"security": live})["security"]["schema"] == security["schema"]
+    assert cfg.db_path.read_bytes() == before
+
+
+def test_the_bundle_leaves_a_database_that_needs_recovery_closed(cfg, monkeypatch):
+    """A hot journal hides the version from a read-only handle, and the
+    read-write open that recovers it would also upgrade an older database."""
+    import openai4s.storage.migrations as migrations
+    from openai4s.diagnostics import archive_safe
+    from openai4s.store import Store
+
+    Store(cfg.db_path).close()
+    monkeypatch.setattr(migrations, "preflight_schema", lambda *_a, **_k: None)
+    opened = []
+    monkeypatch.setattr(
+        "openai4s.store.get_store", lambda path: opened.append(path) or None
+    )
+
+    security = security_posture(cfg)
+    assert opened == []
+    assert security["schema"]["code"] == "interrupted_write"
+    assert security["schema"]["current"] is False
+    assert "version" not in security["schema"]
+    archived = archive_safe({"security": security})["security"]
+    assert archived["schema"]["code"] == "interrupted_write"
+    assert archived["secret_store"] == {"status": "skipped"}
+
+
+def test_the_bundle_does_not_open_a_database_whose_version_it_could_not_read(
+    cfg, monkeypatch
+):
+    """Busy past SQLite's timeout (an older daemon mid-commit) is an
+    OperationalError, not a corrupt file: the read-write open that followed it
+    could get the lock and run the upgrade. The failure is recorded instead."""
+    import sqlite3
+
+    import openai4s.storage.migrations as migrations
+    from openai4s.store import Store
+
+    Store(cfg.db_path).close()
+
+    def busy(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(migrations, "preflight_schema", busy)
+    opened = []
+    monkeypatch.setattr(
+        "openai4s.store.get_store", lambda path: opened.append(path) or None
+    )
+
+    security = security_posture(cfg)
+    assert opened == []
+    assert security["schema"] == {
+        "status": "unavailable",
+        "error_type": "OperationalError",
+    }
+    assert security["secret_store"] == security["schema"]

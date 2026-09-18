@@ -13,10 +13,12 @@ type MolViewer = {
 type HostWindow = Window & {
   S?: { _molViewer?: MolViewer };
   t?: (key: string, interpolated?: string) => string;
+  tOptional?: (key: string) => string | null;
   hint?: (message: string) => void;
 };
 
 import { isReady } from "../../compat/stub";
+import { iconSvg } from "../icons/paths";
 let theme: ThemeMode | undefined;
 let watchingSystem = false;
 
@@ -70,13 +72,25 @@ function rethemeMolViewer(dark: boolean): void {
 export function refreshThemeToggle(): void {
   const dark = themeIsDark();
   const name = dark ? "sun" : "moon";
-  const translate = hostWindow().t;
-  const title = isReady(translate) ? translate("theme.toggle") : "";
+  // tOptional, not t: before the locale chunk loads t() answers with the key,
+  // and this runs as soon as the Shell is bound -- a bare "theme.toggle" would
+  // replace the markup's readable title and aria-label.
+  const { t: translate, tOptional } = hostWindow();
+  const title = isReady(tOptional)
+    ? (tOptional("theme.toggle") ?? "")
+    : isReady(translate)
+      ? translate("theme.toggle")
+      : "";
   for (const sel of ["#dash-theme", "#ws-theme"]) {
     const button = document.querySelector(sel);
     if (button === null) continue;
-    const el = button as HTMLElement;
+    const el = button as HTMLElement & { _painted?: boolean };
     el.dataset.icon = name;
+    // Repaint the drawing too (app.js:216-227 did). paintIcons() marks a node
+    // painted and never visits it again, so swapping data-icon alone leaves the
+    // glyph from boot on the button forever.
+    el.innerHTML = iconSvg(name, +(el.dataset.iconSize || 20) || 20);
+    el._painted = true;
     if (title !== "") {
       el.title = title;
       el.setAttribute("aria-label", title);

@@ -1,6 +1,6 @@
 """The versioned science-workflow benchmark: manifests, steps, and a runner.
 
-The suite freezes eleven representative workflows and thirty-four versioned
+The suite freezes thirteen representative workflows and forty-six versioned
 cases, and it is specific about what would make them worthless: a
 directory of fixtures nobody executes, or cases that pass because the thing
 they exercise is a mock.

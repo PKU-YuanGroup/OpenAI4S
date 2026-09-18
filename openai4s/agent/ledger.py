@@ -43,6 +43,14 @@ from .models import ModelReply
 
 REDACTED = "<redacted>"
 
+#: Terminal reasons that record a ``completed`` event. Named, not inferred:
+#: ``plan`` is how a plan-mode turn ends when it did what it was asked (draft,
+#: then wait for approval) -- the frame is ``done`` and the plan ``draft`` --
+#: so recording it ``failed`` gave one turn two opposite outcomes. Whether a
+#: plan was actually captured is reported by the turn result, not here. Any
+#: other reason, including one added later, stays ``failed`` until named.
+_SUCCESSFUL_TERMINAL_REASONS = frozenset({"submitted", "plan"})
+
 _COMMON_SECRET_KEYS = frozenset(
     {
         "api_key",
@@ -637,7 +645,7 @@ class RuntimeActionLedger:
             group_id=group["group_id"],
             type=(
                 "completed"
-                if reason == "submitted"
+                if reason in _SUCCESSFUL_TERMINAL_REASONS
                 else ("cancelled" if reason == "cancelled" else "failed")
             ),
             result=payload,

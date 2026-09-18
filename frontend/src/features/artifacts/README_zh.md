@@ -16,7 +16,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`cache.ts`](cache.ts) | `artifactCacheKey` / `syncArtifactVersion` / `artUrl`（精确 version 不走 latest）。 |
 | [`catalog.test.ts`](catalog.test.ts) | UMD 空值防御、兼容渲染器 id、PDB CA 点。 |
 | [`catalog.ts`](catalog.ts) | `scientificRenderers()` 空值防御、catalog 与 descriptor 拉取。 |
-| [`copy.ts`](copy.ts) | M-03 搜索/过滤/深链文案（不改生成的 i18n 字典）。 |
+| [`copy.ts`](copy.ts) | M-03 搜索/过滤/深链文案，以及 provenance Environment 面板的无快照、包数量未知/不适用文案（不改生成的 i18n 字典）。 |
 | [`deeplink.test.ts`](deeplink.test.ts) | 查询串解析；精确 version；禁止静默降级 latest。 |
 | [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。空 versions → not-found。 |
 | [`events.test.ts`](events.test.ts) | `artifact_created` 版本同步 + 现场插图；跳过 stub 的 `nbRender`。 |

@@ -117,6 +117,24 @@ OpenAI4S.cmd
 命令       ~/.local/bin/openai4s
 ```
 
+#### 火山引擎登录
+
+在「自定义 → 模型」中配置火山模型。WSL 内安装的 CLI 照常被发现并保持优先。
+经 `OpenAI4S.cmd` 启动时，启动器还会发现 Windows PATH 中的 `arkcli.exe`，
+转为 WSL 路径后作为后备：只有 WSL 内找不到 CLI 时才使用，从而复用该 CLI
+已有的 Windows 登录。WSL 无法访问的 `arkcli.exe`（例如位于网络共享上）会被跳过。
+设置 `OPENAI4S_ARKCLI_PATH` 表示显式指定，优先于以上两者。
+未加入 PATH 的独立 exe 可指定完整路径：
+
+```powershell
+$env:OPENAI4S_ARKCLI_PATH = 'C:\Tools\Ark\arkcli.exe'
+.\OpenAI4S.cmd
+```
+
+无需设置 `WSLENV`。ZIP 不自带 Ark CLI。修改路径后需先运行 `OpenAI4S.cmd stop`
+再重新启动：服务已在运行时，再次启动会沿用旧值。Windows npm 的 `.cmd`
+不能直接在 WSL 执行，请使用原生 exe 或在 WSL 安装 CLI。
+
 ### 4. 日常命令
 
 在 Windows PowerShell 中：
@@ -316,6 +334,28 @@ settings, and removes the launcher-managed condarc. Files the launcher writes
 carry a `managed-by-openai4s-windows-launcher` marker. Remove that marker before
 taking ownership of either file; later launches then preserve the complete
 file byte for byte.
+
+### Volcengine login
+
+Configure the model in Customize → Models. A CLI installed inside WSL is
+discovered normally and keeps precedence. When started through
+`OpenAI4S.cmd`, the launcher also discovers `arkcli.exe` on the Windows PATH
+and forwards its translated path as a fallback, used only when no CLI is found
+inside WSL, so it can reuse that CLI's existing Windows login. An `arkcli.exe`
+WSL cannot reach, such as one on a network share, is skipped. Setting
+`OPENAI4S_ARKCLI_PATH` chooses a CLI explicitly and overrides both. For a
+standalone executable outside PATH:
+
+```powershell
+$env:OPENAI4S_ARKCLI_PATH = 'C:\Tools\Ark\arkcli.exe'
+.\OpenAI4S.cmd
+```
+
+No manual `WSLENV` setting is needed. The executable must already be
+installed; the ZIP does not bundle Ark CLI. After changing the path, run
+`OpenAI4S.cmd stop` and start again: a launch that finds the daemon already
+running keeps the old value. A Windows npm `.cmd` launcher is not a WSL
+executable: use its native `arkcli.exe` or install the CLI in WSL.
 
 ### Lifecycle commands
 

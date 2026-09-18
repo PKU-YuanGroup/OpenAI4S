@@ -15,6 +15,10 @@ from typing import Any, Callable, Protocol
 
 from openai4s.agent.actions import is_completion_only_cell
 from openai4s.execution import CaptureResult, CellExecutionResult, CellRequest
+from openai4s.execution.attempts import (
+    attempt_state_for_exception,
+    attempt_state_for_result,
+)
 from openai4s.execution.watchdog import (
     KernelCancellation,
     KernelNotResetCancellation,
@@ -103,6 +107,10 @@ def _no_attempt_generation(
     del attempt_id, session, language
 
 
+def _never_cancelled(session: "CellSession") -> bool:
+    return False
+
+
 def _no_attempt_finish(attempt_id: str, terminal_state: str, error: Any = None) -> None:
     del attempt_id, terminal_state, error
 
@@ -142,7 +150,13 @@ class CellExecutionPorts:
         ],
         CaptureResult,
     ]
-    emit_artifact_step: Callable[[CellSession, str, list[dict], EventSink], None]
+    # (session, title, artifacts, emit, environment, language). The last two
+    # are this Cell's runtime label and language: the step card is a second
+    # record of which runtime wrote the files, and it said "python" for every
+    # R Cell while the artifact's env snapshot said "r".
+    emit_artifact_step: Callable[
+        [CellSession, str, list[dict], EventSink, str, str], None
+    ]
     record_cell: Callable[..., None]
     # Admission runs before allocating a Cell id/revision/attempt or touching a
     # runtime. Stage 1 uses it for local environment readiness; a refusal must
@@ -163,6 +177,12 @@ class CellExecutionPorts:
     mark_attempt_capture: Callable[[str], None] = _no_attempt_milestone
     finish_attempt: Callable[[str, str, Any], None] = _no_attempt_finish
     bind_lineage: Callable[..., list[str]] | None = None
+    # Whether this Cell's execution was cancelled (a Stop, a session close,
+    # daemon shutdown). Consulted once more after the runtime is prepared and
+    # immediately before user code would start: preparation can take seconds
+    # (a cold kernel's bootstrap) and nothing can interrupt it, so a
+    # cancellation that lands there must not be answered by running the Cell.
+    cancelled: Callable[[CellSession], bool] = _never_cancelled
 
 
 #: Author-written, never a rendering of an exception. The timeout wording keeps
@@ -198,6 +218,11 @@ CELL_CANCELLED_RESET_UNAVAILABLE_MESSAGE = (
     "the cell was cancelled and required a hard stop; the old kernel was reset "
     "and variables from earlier cells were cleared, but its replacement could "
     "not be initialized; retry to start a fresh kernel"
+)
+#: Nothing ran, so nothing was reset: the Cell was cancelled while its runtime
+#: was still being prepared, and its code was never started.
+CELL_CANCELLED_BEFORE_START_MESSAGE = (
+    "the cell was cancelled before it started, so none of its code ran"
 )
 CELL_CANCELLED_NO_RESET_MESSAGE = (
     "the cell was cancelled and stopped here, but its kernel could not be reset "
@@ -428,6 +453,26 @@ class CellExecutionService:
                 refused.result["skill_network"] = network_decision.as_dict()
             return refused
 
+        # The last check before user code. Everything above can take seconds
+        # -- a fresh kernel's bootstrap runs inside `prepare_language`, before
+        # any lease exists for a Stop to interrupt -- and the watchdog only
+        # looks at cancellation once the Cell is already running. A daemon
+        # shutdown landing in that window used to start the user's code anyway.
+        if self.ports.cancelled(session):
+            return self._soft_error(
+                session,
+                request,
+                emit,
+                index,
+                cell_id,
+                kernel_id,
+                CELL_CANCELLED_BEFORE_START_MESSAGE,
+                attempt_id,
+                "interrupted",
+                generation_id,
+                interrupted=True,
+            )
+
         lease = session.kernels.lease("r") if request.language == "r" else None
         try:
             with frame_scope(session.root_frame_id):
@@ -475,7 +520,7 @@ class CellExecutionService:
                 raise record_exc from exc
             self._finish_attempt(
                 attempt_id,
-                "cancelled" if isinstance(exc, KernelCancellation) else "worker_died",
+                attempt_state_for_exception(exc, otherwise="worker_died"),
                 exc,
             )
             if show_in_notebook and request.stream:
@@ -526,7 +571,14 @@ class CellExecutionService:
             if attempt_id is not None:
                 self.ports.mark_attempt_capture(attempt_id)
             if capture.artifacts and request.stream:
-                self.ports.emit_artifact_step(session, title, capture.artifacts, emit)
+                self.ports.emit_artifact_step(
+                    session,
+                    title,
+                    capture.artifacts,
+                    emit,
+                    kernel_id,
+                    request.language,
+                )
             if self.ports.bind_lineage is not None:
                 # Stage 8 lineage is evidence used by review/completion.  A
                 # failed binding must therefore make capture fail, not publish
@@ -553,7 +605,7 @@ class CellExecutionService:
             raise
         self._finish_attempt(
             attempt_id,
-            _terminal_state(result),
+            attempt_state_for_result(result),
             result.get("error") or None,
         )
         if show_in_notebook and request.stream:
@@ -681,8 +733,12 @@ class CellExecutionService:
         attempt_id: str | None,
         terminal_state: str,
         generation_id: str | None,
+        *,
+        interrupted: bool = False,
     ) -> CellExecutionResult:
         result = _error_result(cell_id, message)
+        if interrupted:
+            result["interrupted"] = True
         if attempt_id is not None:
             try:
                 self.ports.mark_attempt_response(attempt_id)
@@ -715,7 +771,13 @@ class CellExecutionService:
         except BaseException as exc:
             self._finish_attempt(attempt_id, "record_failed", exc)
             raise
-        self._finish_attempt(attempt_id, terminal_state, message)
+        self._finish_attempt(
+            attempt_id,
+            terminal_state,
+            # A cancellation is a user intent with a stable code, not a failure
+            # message; `_finish_attempt` persists it as such.
+            KernelCancellation(message) if interrupted else message,
+        )
         show_in_notebook = not (
             request.origin == "agent"
             and is_completion_only_cell(request.code, request.language)
@@ -955,18 +1017,6 @@ def _error_result(cell_id: str, message: str) -> dict[str, Any]:
         "trace": {"error_lineno": None, "error_call": None},
         "usage": {},
     }
-
-
-def _terminal_state(result: dict[str, Any]) -> str:
-    if result.get("interrupted"):
-        return "interrupted"
-    error = str(result.get("error") or "")
-    lowered = error.lower()
-    if "timed out" in lowered or "timeout" in lowered:
-        return "timed_out"
-    if error:
-        return "failed"
-    return "completed"
 
 
 __all__ = ["CellExecutionPorts", "CellExecutionService", "activity_title"]

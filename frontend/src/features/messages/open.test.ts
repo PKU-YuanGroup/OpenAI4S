@@ -6,6 +6,8 @@ import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
 import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
 import { loadEarlierMessages } from "../sessions/messages";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
+import { adoptCreatedFrame } from "../chrome/upload";
+import { loadExecutionLog } from "../notebook/cells";
 
 const paint = vi.hoisted(() => ({ empty: vi.fn(), batches: vi.fn(), pageRows: vi.fn() }));
 const chrome = vi.hoisted(() => ({ hint: vi.fn() }));
@@ -607,4 +609,68 @@ it("loaded earlier pages are reused only when they reach the newest page", async
   await recoverConversation("f");
   expect(session.historyContent.value?.messages.map((row) => row.seq)).toEqual(rows(701, 1300).map((row) => row.seq));
   expect(session.msgCursor.value).toBe(701);
+});
+
+/**
+ * UI5-F1. A new session is published (currentId = new id) BEFORE it is opened,
+ * so openConversation saw the new frame as its own predecessor, skipped every
+ * per-session reset, and the execution-log merge -- which keeps local cells the
+ * server does not list -- showed the previous session's cells in the new one's
+ * Notebook, interleaved with its own under duplicate S-numbers.
+ */
+describe("a newly created session's Notebook", () => {
+  const A_CELLS = [
+    { producing_cell_id: "a-cell-1", cell_index: 1, source: "a_value = 1" },
+    { producing_cell_id: "a-cell-2", cell_index: 2, source: "print('A cell two')" },
+  ];
+  const B_LOG = { entries: [{ producing_cell_id: "b-cell-1", cell_index: 1, source: "print('B only')" }], kernels: [] };
+
+  function logServer(extra?: (path: string) => Response | Promise<Response> | undefined) {
+    return server((path) => extra?.(path) ?? (path.endsWith("/frames/g/execution-log") ? response(B_LOG) : undefined));
+  }
+
+  it("starts empty after New session from an open one, and holds only its own cells", async () => {
+    logServer(); await openConversation("f");
+    cells.value = A_CELLS; liveCells.value = [{ producing_cell_id: "a-live" }];
+
+    await adoptCreatedFrame("g", null, { loadSessions: async () => {}, openConversation });
+
+    expect(session.currentId.value).toBe("g");
+    expect(cells.value).toEqual([]);
+    expect(liveCells.value).toEqual([]);
+    await loadExecutionLog("g");
+    expect((cells.value as Array<{ producing_cell_id?: string }>).map((c) => c.producing_cell_id)).toEqual(["b-cell-1"]);
+  });
+
+  it("starts empty when the previous session was left for Home first", async () => {
+    logServer(); await openConversation("f");
+    cells.value = A_CELLS;
+    session.currentId.value = null; // showDashboard
+
+    await adoptCreatedFrame("g", null, { loadSessions: async () => {}, openConversation });
+
+    expect(cells.value).toEqual([]);
+  });
+
+  it("an execution-log read of the previous session that lands late adds nothing", async () => {
+    const lateA = deferred<Response>();
+    logServer((path) => (path.endsWith("/frames/f/execution-log") ? lateA.promise : undefined));
+    await openConversation("f");
+    cells.value = A_CELLS;
+    const inflight = loadExecutionLog("f");
+
+    await adoptCreatedFrame("g", null, { loadSessions: async () => {}, openConversation });
+    lateA.resolve(response({ entries: A_CELLS, kernels: [] }));
+    await inflight;
+    await loadExecutionLog("g");
+
+    expect((cells.value as Array<{ producing_cell_id?: string }>).map((c) => c.producing_cell_id)).toEqual(["b-cell-1"]);
+  });
+
+  it("reopening the same session keeps its cells", async () => {
+    logServer(); await openConversation("f");
+    cells.value = A_CELLS;
+    await openConversation("f");
+    expect(cells.value).toEqual(A_CELLS);
+  });
 });

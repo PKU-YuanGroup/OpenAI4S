@@ -74,6 +74,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
+- **`2026-09`** 🧭 **`v0.3.0` —— 新工作台，以及第一个 Windows 安装包** —— Preact/TypeScript 工作台取代 `app.js` 单体成为默认 UI，本次 release 也在 Linux tarball 之外首次发布 **Windows/WSL2 zip**。每个本地守护进程现在都要求访问令牌：`OPENAI4S_REQUIRE_TOKEN=0` 这个 loopback 豁免已被移除。交互式 HTML 报告运行在独立的沙箱源上；Notebook cell 保留自己产出的精确 Artifact 版本；长上下文压缩真正落地，并能在重启后恢复；委派的子代理继承父会话的环境，并留下持久、可导出的 cell 记录；Auto Mode 以原子方式准入预算，并会停下没有进展的运行。单细胞 RNA 分析 Skill 让总数达到 604。Apple Silicon 的 **macOS 镜像**是 ad-hoc 签名的预览版，未经公证。数据库 schema 从 27 升到 32，首次启动前请先阅读 **[从 0.2.x 升级](docs/upgrading_zh.md)**。
 - **`2026-08-24`** 🚀 **`v0.2.0` —— 多平台发布** —— 一个 release，两个桌面安装包：Apple Silicon **`.dmg`** 与内嵌同一套 Python 与科学栈的可移动 **Linux `x86_64` tarball**（Windows/WSL2 zip 已构建、正在稳定化，将随后续版本发布）。底层新增：带 Guardian 审查边界的 **Auto Mode**、诚实的**完成证据对账**（崩溃的 cell 不再可能渲染成干净的成功）、**MCP Streamable HTTP** 传输（含火山引擎 DataPro 连接器与豆包联网搜索）、**Anthropic Messages SSE 流式**、锁定的 **561 个 bioSkills 配方集合**（共 603 个 Skill，可用 `npx` 装到任何地方）、工作台的轨迹账本视图、Docker/Kubernetes 部署、`openai4s --version`，以及让运行中的 R cell 在每个平台都能可靠中断的信号修复系列。
 - **`2026-08-04`** 🔭 **`main` —— 通往 `v0.2.0` 的路上** —— **只读会话共享**（经出站 relay 隧道，`openai4s share` / `openai4s relay`）、**七个规范化的公共数据库连接器**（检索结果自带来源与时间）、带版本的 **`/api/v1`** 接口（keyset 分页、统一错误信封、可续传的 WebSocket 游标）、**环境即事务**（`openai4s env plan|apply|rollback`）、脱敏的 `doctor` / `diagnostics` 支持包、默认关闭且可撤销的遥测、逆合成规划 Skill，以及一套 **10 workflow / 20 case 的基准**——它跑在真实的 Store、内核与 dispatcher 上。Linux 与 Windows 桌面包在此构建并验证——Linux 包随上面的 `v0.2.0` 发布，Windows 包将随后续版本发布。
 - **`2026-07-15`** 🍎 **`v0.1.0` —— macOS 应用** —— 一键、免工具链的 Apple Silicon `.dmg`，内嵌 Python 与完整默认内核科学栈（rdkit · scanpy · 单细胞栈），并支持 PyPI 安装（`pip install openai4s`）与自动化发布。**第一次用？→ [上手指南](docs/startup-guide.md)。**
@@ -108,7 +109,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 | **数据与检索** | 七个规范化公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · Tavily 与免密钥搜索作为备用 · 托管的 DataPro 专业数据集检索 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
-| **运维、安全与发布** | `/api/v1` 与启动凭据 · Seatbelt/bubblewrap 沙箱适配器，降级与 fail-closed 状态显式呈现 · 无人值守时默认拒绝的持久审批 · 脱敏诊断 · 可撤销遥测 · 环境即事务 · 跑在真实 Store、内核与 dispatcher 上的 11 workflow/34 case 基准 · 公开前先验证产物的分阶段发布流水线 |
+| **运维、安全与发布** | `/api/v1` 与启动凭据 · Seatbelt/bubblewrap 沙箱适配器，降级与 fail-closed 状态显式呈现 · 无人值守时默认拒绝的持久审批 · 脱敏诊断 · 可撤销遥测 · 环境即事务 · 跑在真实 Store、内核与 dispatcher 上的 13 workflow/46 case 基准 · 公开前先验证产物的分阶段发布流水线 |
 
 ---
 
@@ -141,34 +142,34 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 
 `setup.sh` 用 **uv** 创建轻量控制面 `.venv`。如需完整的 Python + R 科学计算内核，请先安装 `micromamba`、`mamba` 或 `conda`，然后改用 `./setup.sh --with-kernel-envs`；已有环境可用 `./setup.sh --update-kernel-envs` 同步，且不会删除用户自行安装的包。`start.sh` 从环境中启动守护进程 + Web UI。启动无需 API Key —— **在 UI 里设置你的模型**(Customize → Models)。不启动 UI 跑单个任务:`uv run openai4s run "Compute the mean of [4,8,15,16,23,42] and submit it." -v`。
 
-### macOS 应用（无需任何工具链）
+### macOS
 
-Apple Silicon 用户可以完全跳过 clone：从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest) 下载 `OpenAI4S-<version>-macos-arm64.dmg`，拖进「应用程序」即可启动。镜像内嵌了自带的 Python 以及默认内核科学栈——numpy · pandas · scipy · matplotlib · scikit-learn · **rdkit**（化学信息学）· **scanpy** 及单细胞栈 · umap · numba · biopython——首次启动不联网、不 `pip`。数据仍写在 `~/.openai4s`。
+> [!NOTE]
+> **`v0.3.0` 附带的是 macOS 预览镜像，不是经过公证的镜像。** [v0.3.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0)上的 `OpenAI4S-0.3.0-macos-arm64.dmg` 仅支持 Apple Silicon，只做了 ad-hoc 签名、未经公证，所以第一次打开会被 Gatekeeper 拦下，处理步骤见[上手指南](docs/startup-guide.md#zh)。它是在发布流程之外构建并挂上去的：发布流程仍然只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它，而这些凭据目前还不存在。请使用这个固定页面，不要去最新 Release 里找，因为由发布流程产出的 release 不带镜像。Intel Mac，或不想运行未公证的应用时，请按下面的方式从 PyPI 安装，或使用上面的源码方式运行。如果之前用的是 v0.2.0 应用，请先阅读[从 0.2.x 升级](docs/upgrading_zh.md)：0.3.0 会升级数据目录，之后 0.2.0 不能再打开它。
 
-该构建仅做 ad-hoc 签名、**未做公证（notarization）**，所以首次打开会被 Gatekeeper 拦下。**macOS 15+**：先双击一次，关掉提示，再到「系统设置 → 隐私与安全性」点 **仍要打开**；**macOS 12–14**：右键点应用 → **打开** → **打开**。两个版本都可以直接用 `xattr -dr com.apple.quarantine /Applications/OpenAI4S.app` 解除。
+请从 PyPI 安装到一个单独的虚拟环境中。Apple Silicon 与 Intel 都适用，需要 Python 3.10 或更新版本：
 
-**首次运行 —— 先配模型，再配搜索。** 启动应用后会打开工作台 `http://127.0.0.1:8760/`。启动不带任何 Key，因此：
+```bash
+python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
+pip install "openai4s[science]"   # numpy · pandas · matplotlib · scikit-learn；需要 RDKit 时用 [science,chemistry]
+openai4s serve                    # 启动守护进程，并用访问令牌打开工作台
+```
+
+数据写在 `~/.openai4s`。如果关掉了标签页，`openai4s url` 会再次打印带令牌的工作台 URL。R 内核需要一个 Conda 家族管理器（`micromamba`、`mamba` 或 `conda`），运行一次 `openai4s setup` 即可构建。
+
+**首次运行 —— 先配模型，再配搜索。** 启动不带任何 Key，所以打开工作台之后：
 
 1. **模型 API** —— 打开 **设置 ⚙ → 模型**，选协议（**ark 兼容协议** 对应豆包/GLM/Kimi/DeepSeek/MiniMax，或 **OpenAI** / **Anthropic 兼容协议**），粘贴 **API Key**，点 **新增**，再点 **设为当前**。最省钱：用火山方舟 ¥9.9/月 套餐的 `ark` 协议。
 2. **搜索 API** *（可选、推荐）* —— 打开 **设置 ⚙ → 网络**，保持 **允许联网** 打开，把火山方舟 **Agent Plan Key** 粘进主选的**豆包搜索 Custom 版**卡片 → **保存凭证**。当前 Ark 模型已使用同一个 Key 时会自动复用。Tavily 与免密钥引擎仍作为备用；豆包专用健康检查不会把备用结果冒充豆包成功。
 
-完整流程（安装 → Gatekeeper → 模型 → 搜索 → R 内核）见：**[上手指南](docs/startup-guide.md)**。
-
-命令行随应用一起打包，想挂到 PATH 上就建个软链：
-
-```bash
-sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
-openai4s setup        # 仅当你需要 R 内核：需要先装 micromamba/mamba/conda
-```
-
-R 内核未被打包（它需要一个 conda 环境）。Intel Mac 请改用 PyPI 安装（`pip install openai4s`）。
+完整流程（安装 → 模型 → 搜索 → R 内核，以及 v0.2.0 预览镜像的 Gatekeeper 步骤）见：**[上手指南](docs/startup-guide.md#zh)**。
 
 ### Linux 应用（无需任何工具链）
 
 > [!NOTE]
-> Linux 安装包自 `v0.2.0` 起随每个 release 发布。Windows/WSL2 安装包仍在稳定化，将随后续版本发布——下方 Windows 一节描述的是它发布后的形态；在此之前，可在 WSL2 里 `pip install openai4s`，或把 Linux tarball 解包到 WSL2 中使用。更早的版本（`v0.1.0` 只带 macOS 镜像）请用上面的源码方式，或 `pip install openai4s`。
+> Linux 安装包自 `v0.2.0` 起随每个 release 发布。Windows/WSL2 安装包自 `v0.3.0` 起发布，见下方 Windows 一节。更早的版本（`v0.1.0` 只带 macOS 镜像，`v0.2.0` 没有 Windows 包）请用上面的源码方式，或 `pip install openai4s`。
 
-从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest) 下载 `OpenAI4S-<version>-linux-x86_64.tar.gz`，解包到任意位置直接运行。内嵌的 Python 和预装科学栈与 macOS 镜像完全一致，只是形态换成了一个可任意移动的目录：
+从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest) 下载 `OpenAI4S-<version>-linux-x86_64.tar.gz`，解包到任意位置直接运行。它内嵌自带的 Python 和预装科学栈，形态是一个可任意移动的目录：
 
 ```bash
 tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
@@ -182,6 +183,16 @@ tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
 
 下载 `OpenAI4S-<version>-windows-x86_64.zip`，解压后双击 `OpenAI4S.cmd`。首次运行会检查 WSL2 与可工作的 bubblewrap 0.8.0+ 沙箱，校验并安装随包 Linux payload，创建 `~/.local/bin/openai4s`，在 WSL 中启动守护进程，再用 Windows 浏览器打开带本地登录引导的安全 URL。应用本体不下载、不 `pip`、不装工具链；支持基线是 Ubuntu 24.04，启动器可配置国内 PyPI/Conda 镜像以及 WSL 可访问的代理。详见双语 [Windows/WSL2 指南](docs/windows-wsl.md)。
 
+`v0.3.0` 是第一个发布这个安装包的版本，它的验收证据只覆盖 x86_64 上的 WSL2 和测试所用的 Ubuntu 24.04 发行版。[WSL2 一致性审计](docs/windows-wsl-parity-audit_zh.md)的最后一节（「修复验收记录 — 2026-09-07」）列出以下尚未验证的范围：
+
+- 与 macOS 并排运行的一致性对比。对比中的 macOS 一侧来自源码阅读，并未实际运行。
+- Windows on ARM、其他发行版，以及测试所用之外的 WSL 网络模式。
+- 真实的供应商登录与推理。科学家流程是在 `OPENAI4S_NOTEBOOK_REPL=1` 下运行的，没有调用真实模型。
+- Conda 环境准备，因此 Windows 上的 R 和其他命名环境都未经验证。R 只是作为测试前提装进了测试发行版。
+- 全部领域配方。
+- Windows 整机重启。只测试了重启 WSL 发行版，重启后能重新打开已保存的结果和已存的凭据。
+- 冷启动性能。未经修改的完整浏览器 smoke 未通过：它超过了 20 秒的排队准入等待。并发负载下还出现过 WSL 服务连接超时。
+
 **原生 Windows 不受支持，而且程序会直接拒绝在那里启动内核**，不是「先警告再照跑」——内核要拉起 POSIX 子进程，R 通道靠 shell 重定向走文件描述符 3 和 4，沙箱也没有 Windows 后端。WSL2 报告自己是 Linux，所以这个包跑的就是其他平台跑的同一个构建。如果你还没有 WSL2，启动器会停下来并给出那条确切的命令（管理员 PowerShell 里的 `wsl --install`）。详见：**[平台支持矩阵](docs/platforms.md)**。
 
 ### 🐳 Docker 与 Kubernetes
@@ -193,7 +204,7 @@ docker compose exec openai4s openai4s url   # 带令牌、可直接打开的 URL
 
 镜像由本仓库构建——Debian-slim 上的 CPython、wheel，以及 `science` extra——以非特权用户运行，只有一个挂在 `/data` 的卷。模型 key 用 `OPENAI4S_SECRET_LLM_LLM_API_KEY` 传入（在集群里就是一个 `Secret`）；镜像从环境读取凭据，不会把任何凭据形状的东西写到卷上。上集群则是 `kubectl apply -f deploy/kubernetes.yaml`：一个单副本 Deployment、一个 `ReadWriteOnce` 声明、一个 ClusterIP Service，探针打在 `/health` 上。
 
-官方镜像自 `0.2.0` 起随每个 release 发布到 GitHub Packages——`docker pull ghcr.io/pku-yuangroup/openai4s:latest`（或版本 tag；linux/amd64），由与每个 PR 相同的 `container_smoke.sh` 冒烟把关——也可以照上面的方式从检出的源码自行构建。公开它之前有两件事值得知道。在容器内绑定 `0.0.0.0` 会让访问令牌变成强制、同时关掉防 DNS 重绑定的 `Host` 白名单，于是挡在那些会执行代码的端点前面的就只剩令牌——这也是为什么 compose 只发布到 loopback、Service 只用 `ClusterIP`。另外，非特权容器无法给 bubblewrap 它所需要的命名空间，因此内核沙箱会可见地降级、由容器充当边界；那是一道更粗的边界，**[容器指南](docs/docker.md)** 写清楚了它不再覆盖什么。
+发布版镜像由 `publish-image.yml` 推送到 GitHub Packages，名为 `ghcr.io/pku-yuangroup/openai4s:<version>` 与 `:latest`（linux/amd64，自 `0.2.0` 起）；只有通过与每个 PR 相同的 `container_smoke.sh` 冒烟的镜像才会被推送。如果 `docker pull ghcr.io/pku-yuangroup/openai4s:latest` 要求你登录，请照上面的方式从检出的源码自行构建。公开它之前有两件事值得知道。在容器内绑定 `0.0.0.0` 会让访问令牌变成强制、同时关掉防 DNS 重绑定的 `Host` 白名单，于是挡在那些会执行代码的端点前面的就只剩令牌——这也是为什么 compose 只发布到 loopback、Service 只用 `ClusterIP`。另外，非特权容器无法给 bubblewrap 它所需要的命名空间，因此内核沙箱会可见地降级、由容器充当边界；那是一道更粗的边界，**[容器指南](docs/docker.md)** 写清楚了它不再覆盖什么。
 
 ### 🧩 把 Skills 带去任何地方（`npx`）
 
@@ -226,7 +237,8 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 | 文档 | 内容 |
 |---|---|
-| [**上手指南**](docs/startup-guide.md) | macOS `.dmg` 全流程：安装、Gatekeeper、配置模型，以及用一个 Agent Plan Key 授权豆包搜索（Tavily/免密钥备用） |
+| [**上手指南**](docs/startup-guide.md#zh) | macOS 全流程：安装 v0.3.0 预览镜像（Apple Silicon，ad-hoc 签名，含 Gatekeeper 步骤）或从 PyPI 安装、配置模型，以及用一个 Agent Plan Key 授权豆包搜索（Tavily/免密钥备用） |
+| [**从 0.2.x 升级**](docs/upgrading_zh.md) | 在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
 | [**模型后端 bring-up**](docs/model-backend-bringup_zh.md) | 本地/远程 GPU 选择、checkpoint staging、真实推理 canary 准入与 connector 可移植性 |
@@ -255,7 +267,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
   Partial，而且只有带可证明检查点映射的记录才提供 Fork，更早的历史会返回 409。
 - [x] 经由你自己运行的出站 relay 实现只读会话共享：守护进程从不监听公网端口，残留密钥
   会让发布 fail closed。
-- [x] 端到端科研工作流的**可执行**基准 —— 11 workflow / 34 case 跑在真实的 Store、内核
+- [x] 端到端科研工作流的**可执行**基准 —— 13 workflow / 46 case 跑在真实的 Store、内核
   管理器、host dispatcher 与计算管理器上；声明为 `failure` / `permission_denied` /
   `recovered` / `provenance` 的用例，一旦运行*成功*即判定失败。对外发布可横向比较的
   公开成绩仍在后面。
@@ -264,7 +276,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 ### 下一步
 
-- [ ] **发布 Windows 与 Linux 桌面包**，与 macOS 镜像并列，让每个受支持的平台都能免工具链安装。
+- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布，但 macOS 镜像仍是 ad-hoc 签名的预览版，首次打开会被 Gatekeeper 拦下，Linux 与 Windows 也只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
 - [ ] **NVIDIA 科学计算套件** —— 在现有 NVIDIA NIM 集成之外，把 **BioNeMo**（生物分子基础模型）与 **Parabricks**（GPU 加速的基因组学流水线）作为一等公民接入 Skill 与 BYOC 后端。
 - [ ] 本地 GPU 模型服务,让结构/设计类 Skill 无需远程计算即可运行。
 - [ ] SSH + NVIDIA NIM 之外的更多 BYOC 提供方(Modal / SLURM)。
@@ -321,15 +333,18 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 ## ✏️ 引用
 
 ```bibtex
-@software{openai4s2026,
-  title        = {OpenAI4S: An Open-Source Code-as-Action Scientific Research Agent},
-  author       = {OpenAI4S contributors},
-  organization = {Peking University Shenzhen Graduate School--YuanKong Intelligence AI Agent Joint Research Laboratory},
-  year         = {2026},
-  url          = {https://github.com/PKU-YuanGroup/OpenAI4S},
-  note         = {Open AI for Scientist —— 对 Code-as-Action 范式的纯标准库开源复现}
+@misc{zhang2026openai4scodeactionscience,
+      title={OpenAI4S: Code as Action, Science as Sessions},
+      author={Gongbo Zhang and Hao Li and Yu Wang and Mujie Lin and Liuzhenghao Lv and Yicheng Mao and Yimi Wang and Jun Zhu and Minhan Tang and Zhengxiang Jiang and Yusong Wang and Jiayu Yao and Kunpeng Ning and Dawei Pang and Yonghong Tian and OpenAI4S Community and Yuyang Liu and Li Yuan},
+      year={2026},
+      eprint={2609.15096},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2609.15096},
 }
 ```
+
+---
 
 ## 🤝 社区贡献者
 
@@ -339,11 +354,14 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 <a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
 <a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
+<a href="https://github.com/CyrusAuyeung" title="CyrusAuyeung"><img src=".github/contributors/CyrusAuyeung.png" width="64" height="64" alt="CyrusAuyeung" /></a>
 <a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
-<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
-<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
-<a href="https://github.com/WenyuLiang" title="WenyuLiang"><img src=".github/contributors/WenyuLiang.png" width="64" height="64" alt="WenyuLiang" /></a>
 <a href="https://github.com/ClarenceYC" title="ClarenceYC"><img src=".github/contributors/ClarenceYC.png" width="64" height="64" alt="ClarenceYC" /></a>
+<a href="https://github.com/muzimu217" title="muzimu217"><img src=".github/contributors/muzimu217.png" width="64" height="64" alt="muzimu217" /></a>
+<a href="https://github.com/WenyuLiang" title="WenyuLiang"><img src=".github/contributors/WenyuLiang.png" width="64" height="64" alt="WenyuLiang" /></a>
+<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
+<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
+<a href="https://github.com/ChampionZhong" title="ChampionZhong"><img src=".github/contributors/ChampionZhong.png" width="64" height="64" alt="ChampionZhong" /></a>
 <a href="https://github.com/cursoragent" title="cursoragent"><img src=".github/contributors/cursoragent.png" width="64" height="64" alt="cursoragent" /></a>
 <a href="https://github.com/yusowa0716" title="yusowa0716"><img src=".github/contributors/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
 <a href="https://github.com/riiiiiiin" title="riiiiiiin"><img src=".github/contributors/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>

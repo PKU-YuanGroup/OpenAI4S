@@ -13,6 +13,8 @@ instead, and gateway re-exports it so existing importers keep working.
 from __future__ import annotations
 
 import os
+import sys
+import traceback
 from typing import Any
 
 from openai4s.observability import correlation_id, fingerprint, log_event
@@ -53,6 +55,46 @@ class GatewayError(Exception):
         self.code = code
         self.message = message
         self.error_code = error_code
+
+
+def expected_refusal(error: BaseException) -> str | None:
+    """One loggable line when ``error`` is an expected refusal, else None.
+
+    A 4xx ``GatewayError`` is the daemon saying no on purpose (a dangling
+    model pin, a missing project), and a missing LLM credential is a setup
+    step the user has not done. Neither is a crash. Both carry author-written
+    text only: the GatewayError message is the one the client is sent, and the
+    credential error names environment variables, never a value.
+    """
+    if isinstance(error, GatewayError):
+        try:
+            status = int(error.code)
+        except (TypeError, ValueError):
+            return None
+        if 400 <= status < 500:
+            code = error.error_code or error_code_for(status)
+            return f"{status} {code}: {error.message}"
+        return None
+    from openai4s.llm.models import MissingCredentialError
+
+    if isinstance(error, MissingCredentialError):
+        return f"llm_credential_missing: {error}"
+    return None
+
+
+def log_turn_failure(error: BaseException, *, surface: str) -> None:
+    """Log a caught failure: one line for an expected refusal, else a traceback.
+
+    Replaces a bare ``traceback.print_exc()`` at the job/turn catch-alls. A
+    credential-less daemon printed a full traceback for every turn, and a
+    dangling model pin two per request -- which buried any real server error
+    in the log an operator (or CI's "show daemon log" step) reads.
+    """
+    line = expected_refusal(error)
+    if line is None:
+        traceback.print_exception(type(error), error, error.__traceback__)
+        return
+    print(f"[openai4s] {surface}: refused: {line}", file=sys.stderr, flush=True)
 
 
 def gateway_error_payload(error: GatewayError) -> dict:
@@ -120,6 +162,22 @@ def public_failure(payload: object, status: int, request_id: str | None) -> obje
 #: guess which messages are safe, and it would guess wrong in the direction
 #: that destroys the good ones.
 INTERNAL_ERROR_MESSAGE = "internal error"
+
+#: The public sentence for a secret broker that failed closed. Fixed text, so
+#: nothing from the refused backend's self-test reaches the client.
+SECRET_STORE_UNAVAILABLE_MESSAGE = (
+    "no secure credential store is available on this host, so credentials "
+    "cannot be saved or read; use a system keychain, supply them through the "
+    "daemon's environment (OPENAI4S_SECRET_ENV=1), or set "
+    "OPENAI4S_SECRET_STORE=plaintext (see docs/security.md)"
+)
+
+
+def _secret_store_unavailable(exc: BaseException) -> bool:
+    from openai4s.security.secret_broker import SecretStoreUnavailable
+
+    return isinstance(exc, SecretStoreUnavailable)
+
 
 #: Long enough to identify a failure, short enough that a diagnostic cannot
 #: become a channel for the data the exception was carrying.
@@ -367,6 +425,17 @@ def public_exception(
     if isinstance(exc, GatewayError):
         return _enriched(gateway_error_payload(exc), exc.code, request_id), exc.code
     record_diagnostic(exc, surface=surface, request_id=request_id)
+    if _secret_store_unavailable(exc):
+        # A known refusal, not an unknown failure: the broker fails closed on
+        # a host with no keychain, libsecret or DPAPI. As "internal error" it
+        # told the operator nothing, on exactly the headless servers and
+        # containers where `auto` meets it. The exception's own text is not
+        # used, because its detail can quote a backend's self-test output.
+        body = {
+            "error": SECRET_STORE_UNAVAILABLE_MESSAGE,
+            "code": "secret_store_unavailable",
+        }
+        return _enriched(body, 503, request_id), 503
     status = int(status)
     payload = {
         "error": INTERNAL_ERROR_MESSAGE,
@@ -407,9 +476,12 @@ def _enriched(payload: dict, status: int, request_id: str) -> dict:
 __all__ = [
     "ERROR_CODES",
     "INTERNAL_ERROR_MESSAGE",
+    "SECRET_STORE_UNAVAILABLE_MESSAGE",
     "GatewayError",
     "error_code_for",
+    "expected_refusal",
     "gateway_error_payload",
+    "log_turn_failure",
     "public_exception",
     "public_failure",
     "DIAGNOSTIC_DETAIL",

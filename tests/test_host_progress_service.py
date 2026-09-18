@@ -200,6 +200,32 @@ def test_plan_mutation_precedes_sink_and_sink_failure_is_best_effort(tmp_path):
     assert store.get_plan(plan["plan_id"])["step_status"]["s1"]["status"] == "skipped"
 
 
+@pytest.mark.parametrize("status", ["in_progress", "pending"])
+def test_a_completed_plan_s_step_cannot_be_reopened(tmp_path, status):
+    """A completed plan with a step in progress is the contradiction the plan
+    card showed. The completion write no longer produces it, and a later
+    host.plan_update must not either: nothing is running the plan, and only a
+    paused plan can resume, so the step would stay open for good."""
+    store = _store(tmp_path)
+    frame_id = store.new_frame(project_id="science")
+    plan = _plan(store, frame_id, "Finished")
+    store.set_plan_step_status(plan["plan_id"], "s1", "completed")
+    store.update_plan(plan["plan_id"], status="completed")
+    events = []
+    service = _service(store, {"frame_id": frame_id, "sink": events.append})
+
+    result = service.plan_update({"step_id": "s1", "status": status})
+
+    assert "completed" in result["error"], result
+    assert set(result) == {"error"}
+    row = store.get_plan(plan["plan_id"])
+    assert row["status"] == "completed"
+    assert row["step_status"]["s1"]["status"] == "completed"
+    assert events == []
+    # Recording a decision about a finished plan's step is still allowed.
+    assert service.plan_update({"step_id": "s1", "status": "failed"})["ok"] is True
+
+
 def test_dispatcher_progress_wrappers_keep_late_bound_wiring(tmp_path):
     dispatcher = HostDispatcher(Config(data_dir=tmp_path), frame_id=None)
     frame_id = dispatcher.store.new_frame(project_id="science")

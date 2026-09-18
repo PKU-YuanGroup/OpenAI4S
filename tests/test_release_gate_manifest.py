@@ -318,6 +318,113 @@ def test_attestation_uses_the_latest_attempt_for_a_name():
     assert all(row["conclusion"] == "success" for row in rows)
 
 
+def _paginated(listing: dict, *, pages: int = 2) -> list[dict]:
+    """Split one listing into the page objects `gh api --paginate` fetches."""
+    runs = listing["check_runs"]
+    size = -(-len(runs) // pages)
+    return [
+        {"total_count": len(runs), "check_runs": runs[start : start + size]}
+        for start in range(0, len(runs), size)
+    ]
+
+
+@pytest.mark.parametrize(
+    "render",
+    [
+        # `gh api --paginate` on an object endpoint: one document per page,
+        # written back to back with nothing between them.
+        pytest.param(
+            lambda pages: "".join(json.dumps(p) for p in pages), id="paginate"
+        ),
+        # the same, as a human-run `gh api` in a terminal pretty-prints it
+        pytest.param(
+            lambda pages: "\n".join(json.dumps(p, indent=2) for p in pages) + "\n",
+            id="paginate-pretty",
+        ),
+        # `gh api --paginate --slurp`: every page wrapped in one array
+        pytest.param(lambda pages: json.dumps(pages), id="slurp"),
+    ],
+)
+def test_the_quality_job_reads_every_page_of_the_check_run_listing(tmp_path, render):
+    """More than 100 check runs at the release SHA must not make it unreleasable.
+
+    The quality job saves `gh api --paginate .../check-runs?per_page=100`, and
+    for an object endpoint gh writes each page as its own JSON document. The
+    reader was one `json.loads`, which raises "Extra data" on the second page --
+    after every local gate had already run -- so any commit that had collected
+    more than 100 check runs (nightly schedules, CodeQL, Dependabot) could not
+    produce a receipt at all.
+    """
+    from scripts import run_quality_gates
+
+    pages = _paginated(_listing())
+    assert len(pages) == 2 and all(page["check_runs"] for page in pages)
+    target = tmp_path / "check-runs.json"
+    target.write_text(render(pages), "utf-8")
+
+    rows = run_quality_gates._attest(target, SHA)
+
+    assert sorted(row["check_name"] for row in rows) == sorted(
+        gate.check_name for gate in release_gates.CHECK_SUITE_GATES
+    )
+
+
+def test_a_later_page_still_decides_the_latest_attempt(tmp_path):
+    """Merging pages must not keep only the first: a newer red attempt counts."""
+    from scripts import run_quality_gates
+
+    listing = _listing()
+    newer_failure = {
+        **listing["check_runs"][0],
+        "id": 9999,
+        "conclusion": "failure",
+        "started_at": "2026-07-30T00:00:00Z",
+    }
+    pages = _paginated(listing) + [{"total_count": 1, "check_runs": [newer_failure]}]
+    target = tmp_path / "check-runs.json"
+    target.write_text("".join(json.dumps(page) for page in pages), "utf-8")
+
+    with pytest.raises(GateManifestError, match="failure"):
+        run_quality_gates._attest(target, SHA)
+
+
+@pytest.mark.parametrize(
+    "text, reason",
+    [
+        ("", "empty"),
+        ("   \n", "empty"),
+        ('{"check_runs": []}{"check_runs": [', "JSON"),
+        ('{"check_runs": []} trailing', "JSON"),
+        ("[]", "empty"),
+        ('[{"check_runs": []}, 7]', "page"),
+        ('{"check_runs": []}{"total_count": 3}', "check_runs"),
+        ('"check_runs"', "page"),
+    ],
+)
+def test_a_malformed_check_run_listing_is_refused_not_guessed(tmp_path, text, reason):
+    from scripts import run_quality_gates
+
+    target = tmp_path / "check-runs.json"
+    target.write_text(text, "utf-8")
+    with pytest.raises(GateManifestError, match=reason):
+        run_quality_gates._attest(target, SHA)
+
+
+def test_the_quality_job_collects_the_listing_in_a_shape_the_reader_accepts():
+    """The workflow and the reader have to agree on what `check-runs.json` is."""
+    quality = _workflow("release.yml")["jobs"]["quality"]
+    collect = next(
+        step
+        for step in quality["steps"]
+        if "check-runs.json" in str(step.get("run", ""))
+        and "gh api" in str(step.get("run", ""))
+    )
+    command = " ".join(str(collect["run"]).split())
+    assert "--paginate" in command, "an unpaginated listing stops at 100 runs"
+    assert "--slurp" in command
+    assert "per_page=100" in command
+
+
 # --- and through the step staging really runs ------------------------------
 
 
@@ -858,6 +965,58 @@ def test_the_container_publication_boundary_is_held_to_the_same_rule():
     assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in str(resolve.get("run") or "")
 
 
+def test_a_published_release_dispatches_its_container_image():
+    """`finalize` must start `publish-image.yml` itself, for the tag it published.
+
+    `publish-image.yml` listens for `release: published`, but `finalize` makes
+    the release public with the job's `GITHUB_TOKEN`, and GitHub starts no
+    workflow run for an event that token raised (`workflow_dispatch` is the
+    documented exception). So the image never built on its own: `:latest`
+    would have stayed at the previous version while every README said it
+    ships with each release.
+
+    The dispatch has to name the tag twice. `--ref` makes `github.sha` in the
+    image workflow the tagged commit, which its `revalidate_release_tag.sh`
+    compares the tag against; `-f ref=` is the tag it builds and pushes.
+    """
+    finalize = _workflow("release.yml")["jobs"]["finalize"]
+    assert (finalize.get("permissions") or {}).get("actions") == "write", (
+        "dispatching a workflow needs `actions: write`; without it the step "
+        "fails after the release is already public"
+    )
+    steps = finalize.get("steps") or []
+    names = [str(step.get("name") or "") for step in steps]
+    publish = next(
+        index
+        for index, step in enumerate(steps)
+        if "--only publish" in str(step.get("run") or "")
+    )
+    dispatches = [
+        index
+        for index, step in enumerate(steps)
+        if "publish-image.yml" in str(step.get("run") or "")
+    ]
+    assert len(dispatches) == 1, "finalize does not dispatch the image workflow"
+    dispatch = steps[dispatches[0]]
+    assert (
+        dispatches[0] > publish
+    ), f"the image must be dispatched only after the release is public: {names}"
+    assert "if" not in dispatch, "a condition could dispatch after a failed publish"
+
+    command = " ".join(str(dispatch.get("run") or "").split())
+    assert "gh workflow run publish-image.yml" in command
+    assert '--ref "$TAG"' in command
+    assert '-f ref="$TAG"' in command
+    env = dispatch.get("env") or {}
+    assert env.get("TAG") == "${{ inputs.tag }}"
+    assert env.get("GH_TOKEN") == "${{ github.token }}"
+
+    image = _workflow("publish-image.yml")
+    triggers = image.get("on", image.get(True)) or {}
+    assert "workflow_dispatch" in triggers
+    assert "ref" in (triggers["workflow_dispatch"].get("inputs") or {})
+
+
 @pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])
 def test_every_job_has_an_explicit_timeout(workflow):
     """Item 4. ci.yml had none at all on any of its ten jobs, so a hung browser
@@ -870,6 +1029,118 @@ def test_every_job_has_an_explicit_timeout(workflow):
         assert (
             isinstance(budget, int) and 0 < budget <= 120
         ), f"{workflow}:{name} has an implausible timeout: {budget}"
+
+
+def test_the_quality_job_budget_fits_two_full_suite_runs():
+    """The quality job runs the whole suite twice inside one timeout.
+
+    `LOCAL_GATES` runs one after another: a serial `pytest -q`, then the
+    response-schema capture re-runs the suite under four workers. The last
+    v0.2.0-era dispatch spent 37 minutes in that step; the suite has grown ~18%
+    since, projecting ~44 minutes, and busy hosted runners have been measured at
+    1.3-2.8x their usual wall time. At 60 minutes a slow runner times the job
+    out after most of the work, with no receipt and a failure that reads like a
+    test failure. This pins a policy, not a measurement: the real check is the
+    step time of the first dispatch.
+    """
+    from scripts import release_gates
+
+    quality = _workflow("release.yml")["jobs"]["quality"]
+    pytest_gate = next(g for g in release_gates.LOCAL_GATES if g.name == "pytest")
+    serial = not any(
+        part == "-n" or part.startswith("-n") or part.startswith("--numprocesses")
+        for part in pytest_gate.command
+    )
+    floor = 90 if serial else 45
+    assert quality["timeout-minutes"] >= floor, (
+        f"the quality job runs a {'serial' if serial else 'parallel'} suite plus "
+        f"the schema capture in {quality['timeout-minutes']} minutes; "
+        f"budget at least {floor}"
+    )
+
+
+def _addopts_quiet() -> int:
+    """How many `-q` the project's pytest `addopts` already passes."""
+    import re
+    import shlex
+
+    # Read as text: `tomllib` is 3.11+, and this suite also runs on 3.10.
+    text = (ROOT / "pyproject.toml").read_text("utf-8")
+    section = text[text.index("[tool.pytest.ini_options]") :]
+    found = re.search(r"^addopts\s*=\s*(['\"])(.*?)\1\s*$", section, re.M)
+    assert found, "pyproject.toml's pytest addopts moved; re-read it here"
+    return sum(_quiet_flags(shlex.split(found.group(2))))
+
+
+def _quiet_flags(argv) -> list[int]:
+    """The verbosity each argv element lowers pytest by (`-q` 1, `-qq` 2)."""
+    counts = []
+    for part in argv:
+        part = str(part)
+        if part == "--quiet":
+            counts.append(1)
+        elif (
+            part.startswith("-")
+            and not part.startswith("--")
+            and set(part[1:]) == {"q"}
+        ):
+            counts.append(len(part) - 1)
+    return counts
+
+
+def _suite_invocations(tmp_path, monkeypatch):
+    """The argv of every place a release gate runs the whole offline suite."""
+    import subprocess
+
+    from scripts import capture_response_schemas
+    from scripts.release_pipeline import Pipeline
+
+    pytest_gate = next(g for g in release_gates.LOCAL_GATES if g.name == "pytest")
+    captured: list[list[str]] = []
+
+    def record(argv, **_kwargs):
+        captured.append([str(part) for part in argv])
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(capture_response_schemas.subprocess, "run", record)
+    capture_response_schemas._run_suite(tmp_path / "captured.json")
+    schemas = captured.pop()
+
+    Pipeline(
+        "0.2.0",
+        mode="local",
+        assets_dir=tmp_path,
+        runner=lambda argv, cwd=None: record(argv),
+    ).step_test()
+    local = captured.pop()
+    return {
+        "release pytest gate": list(pytest_gate.command),
+        "response-schemas capture": schemas,
+        "local rehearsal test step": local,
+    }
+
+
+def test_no_suite_gate_repeats_the_quiet_flag_addopts_already_passes(
+    tmp_path, monkeypatch
+):
+    """`addopts` already carries `-q`; a second one hides the result line.
+
+    At verbosity -2 pytest's terminal reporter returns before it prints
+    `N passed, M failed`, so the release quality log -- the only human-readable
+    evidence beside a receipt that records exit codes -- carried no test counts
+    for the serial suite or the schema capture. ci.yml already says so where it
+    runs the suite; the release gates did not follow.
+    """
+    baseline = _addopts_quiet()
+    assert baseline == 1, "the premise changed: addopts no longer passes one -q"
+    invocations = _suite_invocations(tmp_path, monkeypatch)
+    assert all("pytest" in " ".join(argv) for argv in invocations.values()), invocations
+    repeated = {
+        site: argv
+        for site, argv in invocations.items()
+        if baseline + sum(_quiet_flags(argv)) > 1
+    }
+    assert not repeated, f"these suite runs suppress pytest's summary line: {repeated}"
 
 
 def test_linux_bwrap_interrupt_smoke_is_an_independent_real_runtime_job():

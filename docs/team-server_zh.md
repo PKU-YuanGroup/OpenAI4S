@@ -50,6 +50,8 @@ export OPENAI4S_DATA_ROOTS=/lab/datasets=ro:/lab/scratch
 
 `=ro` 让一个根对所有人只读，管理员也不例外——只读根的意义就在于每个分析都在读的参考数据不能漂。可写的根有一个固定的命名空间：每位成员的上传落在 `<root>/users/<用户名>/`，由身份算出而绝不来自请求；别人的 `users/<name>/` 不可读——共享区仍然共享，scratch 是个人的。这是固定命名空间而不是猜测，于是"这是不是别的成员的区域"是一个关于路径的问题，而不是"叫 `alice` 的目录是人还是数据集"的问题。
 
+路由是 `GET /api/v1/files`（列目录）、`GET /api/v1/files/download` 与 `POST /api/v1/files/upload`；只要配置了根，团队模式关闭时同样可用。未配置根时，裸列表返回 `200 {"roots": [], "configured": false}`——工作台每次加载都会问它，以决定是否显示团队文件——而带 `?path=` 的列目录、下载与上传返回 `404 {"code": "no_data_roots"}`。
+
 本机 Python/R Cell 会在 `open(2)` 层执行同一套属主边界，而不只依赖 HTTP/Host
 API。OS 沙箱会隐藏整个 daemon 数据目录、可写 data root 中其他成员的
 `users/<name>`，以及 sibling 或旧版遗留的 kernel 临时目录；只把当前工作区和

@@ -1,15 +1,15 @@
 /** openConversation, newSession, resumeWatch, routing. app.js:7087-7219, 2678-2706, 13231-13248. */
 
 import { t } from "../../i18n";
-import { _msgEarlierLoading, currentId, project } from "../../stores/session";
+import { _msgEarlierLoading, _openGen, currentId, project } from "../../stores/session";
 import { apiErrorText } from "./api";
 import { binds } from "./binds";
 import { hint } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
-import { $ } from "./dom";
+import { $, FRAME_ROUTE, PROJECT_ROUTE } from "./dom";
 import { callLane } from "./lane";
-import { loadProjects, loadSessions, loadSessionsForNavigation } from "./load";
-import { beginNavigation, beginProjectNavigation, navigation, ownsNavigation } from "./navigation";
+import { loadProjects, loadSessions, loadSessionsForScope, sessionListScope } from "./load";
+import { beginNavigation, resetSessionDirectory } from "./navigation";
 import { adoptCreatedFrame, createUploadSession } from "../chrome/upload";
 import { openConversation, recoverConversation } from "../messages/open";
 import { renderProjMenu } from "./projects";
@@ -25,6 +25,16 @@ import { unsub } from "../ws/connect";
  */
 export { resumeWatch } from "../send/ticket";
 
+/**
+ * Who owns the *view*. Not a list-read owner: session and folder rows are
+ * scoped to their project (`load.ts: listScope`), and the project menu cancels
+ * a pending open through `projects.ts: projectFilterVersion`.
+ */
+type ViewOwner = { generation: number; projectId: string | null };
+const viewOwner = (): ViewOwner => ({ generation: _openGen.value, projectId: project.value });
+const ownsView = (owner: ViewOwner): boolean =>
+  _openGen.value === owner.generation && project.value === owner.projectId;
+
 export async function newSession(projectId?: string): Promise<void> {
   // onclick passes a MouseEvent, and `window.newSession` is reachable from the
   // legacy shell too. Only an explicit string is a project override; a user
@@ -38,7 +48,7 @@ export async function newSession(projectId?: string): Promise<void> {
   // later open must not invalidate this newer intent. With no open frame,
   // keep the visit so Attach and the first Send still share their creation.
   if (fresh) beginNavigation();
-  const owner = navigation();
+  const owner = viewOwner();
   try {
     // Empty-project auto creation, Attach, and the first Send all share this
     // promise. They cannot create sibling frames and split bytes from text.
@@ -54,7 +64,7 @@ export async function newSession(projectId?: string): Promise<void> {
       // happened yet.
       await creation.opened;
     } else {
-      if (!ownsNavigation(owner) || (project.value || null) !== targetProject) return;
+      if (!ownsView(owner) || (project.value || null) !== targetProject) return;
       // Release the previous conversation the way openConversation would,
       // BEFORE the new id is published: openConversation derives "previous"
       // from currentId, and publishing first made it see the new frame as its
@@ -69,7 +79,7 @@ export async function newSession(projectId?: string): Promise<void> {
     }
     if (currentId.value === frameId) $("#composer")?.focus();
   } catch (e) {
-    if (!ownsNavigation(owner)) return;
+    if (!ownsView(owner)) return;
     const error = t("folder.create.failed", apiErrorText(e));
     hint(error, true);
     if (fresh && currentId.value) {
@@ -82,11 +92,11 @@ export async function newSession(projectId?: string): Promise<void> {
       // Recovery keeps its address and scope, and follows a newer directory
       // refresh immediately rather than waiting for a superseded socket.
       await Promise.allSettled([
-        loadSessionsForNavigation(owner),
+        loadSessionsForScope(sessionListScope()),
         recoverConversation(retained, owner.generation),
         Promise.resolve(callLane("loadArtifacts", retained)),
       ]);
-      if (ownsNavigation(owner) && currentId.value === retained) hint(error, true);
+      if (ownsView(owner) && currentId.value === retained) hint(error, true);
     }
   }
 }
@@ -105,26 +115,28 @@ export { openConversation };
 
 export async function routeInitialView(): Promise<void> {
   const path = (typeof location !== "undefined" && location.pathname) || "/";
-  const fm = path.match(/^\/projects\/([^/]+)\/frames\/([^/]+)/);
+  const fm = path.match(FRAME_ROUTE);
   if (fm) {
     const pid = decodeURIComponent(fm[1] || "");
     const fid = decodeURIComponent(fm[2] || "");
-    const owner = beginProjectNavigation(pid);
+    project.value = pid;
+    resetSessionDirectory();
+    const owner = viewOwner();
     showWorkspace();
     await loadProjects();
-    if (!ownsNavigation(owner)) return;
-    await loadSessionsForNavigation(owner);
-    if (!ownsNavigation(owner)) return;
+    if (!ownsView(owner)) return;
+    await loadSessionsForScope(sessionListScope());
+    if (!ownsView(owner)) return;
     renderProjMenu();
     await openConversation(fid, pid);
     return;
   }
-  const pm = path.match(/^\/projects\/([^/]+)\/?$/);
+  const pm = path.match(PROJECT_ROUTE);
   if (pm) {
     const pid = decodeURIComponent(pm[1] || "");
-    const owner = navigation();
+    const owner = viewOwner();
     const { openProject } = await import("./projects");
-    if (ownsNavigation(owner)) await openProject(pid);
+    if (ownsView(owner)) await openProject(pid);
     return;
   }
   showDashboard();

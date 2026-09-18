@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,6 +274,25 @@ def _tokenize(*texts: str) -> set[str]:
     for t in texts:
         toks.update(_WORD.findall(t.lower()))
     return toks
+
+
+#: A query term found in a Skill's name or description is stronger evidence
+#: than the same term somewhere in its body.
+_SUMMARY_BOOST = 1.5
+
+
+def _query_tokens(query: str) -> set[str]:
+    """The query terms that can carry evidence.
+
+    A one-character token is punctuation debris more often than a word:
+    ``t-test`` yields ``t``, which 479 of 604 bundled recipes contain through
+    ``don't``, ``-t`` flags and loop variables. It is dropped whenever the
+    query has anything longer, and kept when it is all there is, so a bare
+    ``R`` still retrieves something rather than nothing.
+    """
+
+    tokens = _tokenize(query)
+    return {token for token in tokens if len(token) > 1} or tokens
 
 
 @dataclass
@@ -914,6 +935,49 @@ def _bootstrap_runtime_code(
     )
 
 
+@dataclass(frozen=True, eq=False)
+class _SearchIndex:
+    """Corpus statistics for exactly one discovered Skill map.
+
+    ``discover()`` publishes a fresh map by reference swap, so the index is
+    keyed on that map's identity: a rediscovery invalidates it, and a search
+    racing a rediscovery rebuilds rather than weighting one corpus by another's
+    document frequencies. Frequencies cover every discovered Skill, disabled
+    and allowlist-withheld ones included, so a Skill's score does not move
+    when some unrelated Skill is switched off or scoped away.
+    """
+
+    corpus: dict[str, Skill]
+    document_frequency: dict[str, int]
+    summary_tokens: dict[str, frozenset[str]]
+
+    @classmethod
+    def build(cls, corpus: dict[str, Skill]) -> "_SearchIndex":
+        frequency: Counter[str] = Counter()
+        for skill in corpus.values():
+            frequency.update(skill.keywords)
+        return cls(
+            corpus=corpus,
+            document_frequency=dict(frequency),
+            summary_tokens={
+                key: frozenset(_tokenize(skill.name, skill.description))
+                for key, skill in corpus.items()
+            },
+        )
+
+    def weight(self, token: str) -> float:
+        """Smoothed inverse document frequency (the BM25 form).
+
+        It stays strictly positive even for a token every Skill contains, so a
+        one-Skill corpus, or a query made only of common words, still ranks
+        its matches instead of scoring them all zero and returning nothing.
+        """
+
+        total = len(self.corpus)
+        frequency = self.document_frequency.get(token, 0)
+        return math.log(1.0 + (total - frequency + 0.5) / (frequency + 0.5))
+
+
 class SkillLoader:
     def __init__(
         self,
@@ -941,6 +1005,7 @@ class SkillLoader:
         self.project_id = project_id or getattr(capabilities, "project_id", None)
         self.session_id = session_id or getattr(capabilities, "session_id", None)
         self._skills: dict[str, Skill] = {}
+        self._search_index: _SearchIndex | None = None
         self._last_manifest: dict | None = None
 
     def scoped(
@@ -1484,6 +1549,16 @@ class SkillLoader:
         matching the documented limitation of the skill-retrieval prompt.
         Returns the full doc of the top matches so the agent can then use them.
 
+        Each matched token counts by its inverse document frequency over the
+        discovered corpus, in the body and again (x1.5) in the name or
+        description. Counting every token as 1.0 let ubiquitous words decide
+        the ranking: the ``t`` of ``t-test`` is in 479 of 604 Skills, and a
+        35k-character genomics recipe that merely contained all the common
+        words of a two-sample t-test query ranked first while the recipes
+        about statistical testing ranked 10th and 13th. Equal scores rank
+        non-collection Skills first, then by name, instead of by whichever
+        directory discovery happened to walk first.
+
         `permits` is the caller's allowlist predicate, applied AFTER scoring
         and BEFORE the limit slice. Ranking still happens over the whole
         corpus, so a permitted skill keeps the position it earned -- but the
@@ -1494,21 +1569,38 @@ class SkillLoader:
         the two skills it is allowed, so a child whose allowlist is its whole
         reason to exist retrieved nothing at all.
         """
-        q_tokens = _tokenize(query)
+        candidates = self.skills()
+        corpus = self._skills
+        index = self._search_index
+        if index is None or index.corpus is not corpus:
+            index = _SearchIndex.build(corpus)
+            self._search_index = index
+        # A fixed (sorted) token order makes every score the same sequence of
+        # float additions, so two Skills matching the same tokens tie exactly
+        # and the tie-break below decides -- not the last bit of rounding.
+        weights = [
+            (token, index.weight(token)) for token in sorted(_query_tokens(query))
+        ]
         scored: list[tuple[float, Skill]] = []
-        for s in self.skills().values():
+        for key, s in candidates.items():
             if permits is not None and not permits(s.name):
                 continue
-            if not q_tokens:
-                score = 0.0
-            else:
-                overlap = len(q_tokens & s.keywords)
-                # bias toward name/description hits
-                name_hit = len(q_tokens & _tokenize(s.name, s.description))
-                score = overlap + 1.5 * name_hit
+            summary = index.summary_tokens.get(key)
+            if summary is None or index.corpus.get(key) is not s:
+                summary = frozenset(_tokenize(s.name, s.description))
+            body = sum(weight for token, weight in weights if token in s.keywords)
+            boost = sum(weight for token, weight in weights if token in summary)
+            score = body + _SUMMARY_BOOST * boost
             if score > 0:
                 scored.append((score, s))
-        scored.sort(key=lambda t: t[0], reverse=True)
+        scored.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].collection is not None,
+                str(item[1].name),
+                str(item[1].root),
+            )
+        )
         results = []
         for score, s in scored[:limit]:
             gate = s.sidecar_gate()

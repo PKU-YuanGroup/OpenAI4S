@@ -11,7 +11,7 @@ be compared at all:
      "gates": [{"name": "pytest", "command": ["pytest"], "returncode": 0}]}
 
 ...staged a release. One gate instead of eight, `pytest` instead of
-`uv run pytest -q`, and nothing to notice either. The receipt recorded a *shape*
+`uv run pytest`, and nothing to notice either. The receipt recorded a *shape*
 that reads as evidence and decides nothing — the same failure the receipt was
 introduced to fix, one level up. The test fixture in
 `tests/test_release_pipeline.py` was itself written that way, which is how the
@@ -64,10 +64,11 @@ LINUX_REEXEC_GATE = "linux-sandbox"
 CI_ATTESTATION_STATUSES = frozenset({"passed", "failed", "missing", "skipped"})
 RELEASE_REEXECUTION_STATUSES = frozenset({"executed", "unproven"})
 
-#: Bumped whenever the receipt's shape or the gate list changes. The consumer
-#: requires an exact match rather than `>=`: an older producer cannot know about
-#: a gate added later, so accepting its receipt would silently drop that gate.
-SCHEMA_VERSION = 5
+#: Bumped whenever the receipt's shape or the gate list changes -- including a
+#: gate's argv, which the manifest digest covers. The consumer requires an exact
+#: match rather than `>=`: an older producer cannot know about a gate added
+#: later, so accepting its receipt would silently drop that gate.
+SCHEMA_VERSION = 6
 
 RECEIPT_FORMAT = "openai4s-quality-receipt"
 
@@ -111,7 +112,10 @@ LOCAL_GATES: tuple[Gate, ...] = (
         LOCAL_KIND,
         ("uv", "run", "python", "scripts/check_directory_readmes.py"),
     ),
-    Gate("pytest", LOCAL_KIND, ("uv", "run", "pytest", "-q")),
+    # No `-q`: pyproject's addopts already passes one, and at verbosity -2
+    # pytest prints no `N passed, M failed` line, so the quality log carried no
+    # test counts beside a receipt that records only exit codes.
+    Gate("pytest", LOCAL_KIND, ("uv", "run", "pytest")),
     Gate(
         "harness-pr",
         LOCAL_KIND,

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import EnvironmentToolContext
+
+if TYPE_CHECKING:
+    from openai4s.kernel.environments import Environment
 
 
 class EnvListTool(Tool):
@@ -32,6 +36,22 @@ class EnvListTool(Tool):
     resource_target_default = "catalog"
 
     @staticmethod
+    def is_runnable(environment: Environment) -> bool:
+        """Whether cells can run in ``environment`` on the channel it serves.
+
+        ``Environment.interpreter`` is the Python that hosts the notebook
+        kernel, so it is None for every R-only environment -- yet ``env_use``
+        accepts one and R cells run on its ``Rscript``. Judged per language
+        here, for the model; ``Environment.to_dict`` keeps the Python-only
+        meaning the Notebook's kernel picker needs. Only an interpreter's
+        presence is checked, as for Python: the R worker still needs
+        ``jsonlite`` and says so when it is missing.
+        """
+        if environment.language == "r":
+            return bool(environment.rscript)
+        return environment.interpreter is not None
+
+    @staticmethod
     def current_environment_name(runtime: EnvironmentToolContext) -> str:
         if runtime.active_env_bin:
             return Path(runtime.active_env_bin).parent.name
@@ -55,12 +75,13 @@ class EnvListTool(Tool):
             missing = [
                 package for package in packages if not environment.has_package(package)
             ]
+            runnable = self.is_runnable(environment)
             environments.append(
                 {
                     "name": environment.name,
                     "language": environment.language,
                     "python_version": environment.python_version(),
-                    "runnable": environment.interpreter is not None,
+                    "runnable": runnable,
                     "current": environment.name == current,
                     "description": environment.description(),
                     "notable": environment.notable(),
@@ -68,7 +89,7 @@ class EnvListTool(Tool):
                     "missing": missing,
                 }
             )
-            if environment.interpreter is not None and packages:
+            if runnable and packages:
                 score = len(has)
                 if score > best_score or (
                     score == best_score and environment.name == current

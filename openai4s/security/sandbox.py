@@ -323,22 +323,17 @@ def _seatbelt_workspace_read_rules(
 _DENY_READ_KINDS = ("literal", "prefix", "subpath")
 
 
-def _default_secret_read_denials(
-    workspace: str | os.PathLike[str],
-) -> tuple[tuple[str, str], ...]:
-    """Concrete secret files a cell must never read.
+def _instance_secret_entries(data_dir: Path) -> list[tuple[str, str]]:
+    """The credential files belonging to one OpenAI4S data directory.
 
-    General filesystem reads stay allowed (legit science reads system/data
-    files); only these specific credential locations are denied.  Read fresh
-    from the environment so the per-test ``OPENAI4S_DATA_DIR`` redirect is
-    honoured — never the ``config`` singleton.
+    Every entry is a specific file or the ``shares`` / ``cluster-workspaces``
+    subtree, never the whole directory -- an instance's agent workspaces stay
+    readable so legitimate cross-reads keep working.
     """
 
     entries: list[tuple[str, str]] = []
     # The daemon SQLite DB: its settings/connectors tables hold the LLM API
     # keys and MCP tokens that host.query's QUERY_DENYLIST deliberately hides.
-    data_env = os.environ.get("OPENAI4S_DATA_DIR")
-    data_dir = Path(data_env).expanduser() if data_env else Path.home() / ".openai4s"
     entries.append(("prefix", str(data_dir / "openai4s.db")))
     # The daemon's access token, which is a sibling of the DB rather than a
     # prefix of it -- so the entry above never covered it. Verified under an
@@ -367,6 +362,44 @@ def _default_secret_read_denials(
     # The per-allocation credential files themselves, written into each
     # workload's runtime directory. Same credential, one indirection away.
     entries.append(("subpath", str(data_dir / "cluster-workspaces")))
+    return entries
+
+
+def _default_secret_read_denials(
+    workspace: str | os.PathLike[str],
+) -> tuple[tuple[str, str], ...]:
+    """Concrete secret files a cell must never read.
+
+    General filesystem reads stay allowed (legit science reads system/data
+    files); only these specific credential locations are denied.  Read fresh
+    from the environment so the per-test ``OPENAI4S_DATA_DIR`` redirect is
+    honoured — never the ``config`` singleton.
+    """
+
+    entries: list[tuple[str, str]] = []
+    # Deny the credential set for the configured data dir *and* the well-known
+    # default ``~/.openai4s`` instance. Building the list from a single data
+    # dir left the default instance's token/DB/bootstrap-secret readable to an
+    # enforced cell whenever ``OPENAI4S_DATA_DIR`` was redirected (a CLI run
+    # with a custom data dir, a benchmark, the test suite, or a second daemon)
+    # -- credentials equally sensitive whichever instance owns them. Resolve so
+    # the two passes de-duplicate when the configured dir *is* the default.
+    data_env = os.environ.get("OPENAI4S_DATA_DIR")
+    instance_dirs: list[Path] = []
+    if data_env:
+        instance_dirs.append(Path(data_env).expanduser())
+    default_dir = Path.home() / ".openai4s"
+    instance_dirs.append(default_dir)
+    seen_dirs: set[str] = set()
+    for data_dir in instance_dirs:
+        try:
+            key = str(data_dir.resolve())
+        except OSError:
+            key = str(data_dir)
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
+        entries.extend(_instance_secret_entries(data_dir))
     # The git-ignored daemon .env, discovered the same way config._load_dotenv
     # walks for it.
     try:
@@ -451,6 +484,7 @@ def build_seatbelt_profile(
             raise SandboxConfigurationError(f"unknown deny-read kind: {kind!r}")
         lines.append(f"(deny file-read* ({kind} {_seatbelt_string(path)}))")
     lines.extend(_KEYCHAIN_DENIES)
+    lines.extend(_PROCESS_INFO_DENIES)
     return "\n".join(lines) + "\n"
 
 
@@ -479,6 +513,50 @@ _KEYCHAIN_DENIES: tuple[str, ...] = (
     '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
     '(deny file-read* (subpath "/Library/Keychains"))',
     '(deny file-read* (regex #"^/Users/[^/]+/Library/Keychains"))',
+)
+
+
+#: Keeping the cell out of the daemon's process environment on macOS.
+#:
+#: `(allow default)` otherwise lets a cell read another process's argument and
+#: environment block through `sysctl(CTL_KERN, KERN_PROCARGS2, <pid>)` -- and
+#: that is where a daemon whose LLM key is configured by environment variable /
+#: .env holds it in cleartext. bubblewrap masks `/proc/<daemon>/environ` for
+#: exactly this reason (see `_bwrap_daemon_environ_mask`); these are the
+#: Seatbelt-side analog. Verified end to end against a live daemon under
+#: `enforce`: with these denies removed a cell recovers the daemon's real
+#: `OPENAI4S_ARK_API_KEY` (fingerprint match) via KERN_PROCARGS2; with them in
+#: place the same cell's `sysctl` returns EPERM and the key is not recovered.
+#:
+#: BOTH denies are required, and neither alone suffices -- measured on macOS
+#: 26.x. Between processes in *different sessions* the kernel gates the
+#: KERN_PROCARGS2 read behind two authorization paths, the process-info class
+#: and the `kern.proc` sysctl name, and passing *either* allows the read; only
+#: denying both closes it. `(target others)` keeps a cell reading its own
+#: `rusage`/`argv`, which the gate does not touch.
+#:
+#: The session is what decides whether the gate applies at all, not whether the
+#: daemon is detached. A reader in its target's own session is let through with
+#: both denies in place, and the daemon is not reliably detached (`start.sh`
+#: runs `openai4s serve` in the foreground; only `serve --detached` calls
+#: setsid). What holds is the reader's side: `PipeTransport` starts every kernel
+#: worker with `start_new_session=True`, and the BYOC helper profile reuses these
+#: rules with the same spawn flag, so a cell is never in the daemon's session.
+#: That flag is load-bearing here; see the comment at its assignment in
+#: `kernel/transport.py`.
+#:
+#: The cost: the `kern.proc` deny also applies to a cell's queries about *other*
+#: processes, so `psutil.process_iter()` / `Process().children()` raise
+#: PermissionError under enforce. It cannot be narrowed without reopening the
+#: read, which is named under `kern.proc` too. Measured to leave the science
+#: stack intact under enforce (numpy/pandas, matplotlib savefig, scikit-learn
+#: n_jobs=2, multiprocessing, ProcessPoolExecutor, subprocess, os.cpu_count, an R
+#: cell, urllib HTTPS) and a normal live analysis turn completing. A process in
+#: the cell's *own* session stays readable; that is inside the same-uid operator
+#: trust boundary this sandbox already disclaims (docs/security.md).
+_PROCESS_INFO_DENIES: tuple[str, ...] = (
+    "(deny process-info* (target others))",
+    '(deny sysctl-read (sysctl-name-prefix "kern.proc"))',
 )
 
 

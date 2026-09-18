@@ -38,15 +38,28 @@ from openai4s.server.errors import record_diagnostic
 #: that fixes what it means.
 PINNED_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)#(v-[0-9a-zA-Z]{6,})")
 
-#: The unpinned spelling, kept working for one minor release. It resolves
-#: inside the calling session only, exactly as before -- widening it to the
-#: project would let a guessed filename pull in another session's file, which
-#: is the thing the pinned form asks for explicitly and gets checked for.
+#: The unpinned spelling, deprecated and kept working until
+#: `LEGACY_REF_REMOVED_IN` below. It resolves inside the calling session only,
+#: exactly as before -- widening it to the project would let a guessed filename
+#: pull in another session's file, which is the thing the pinned form asks for
+#: explicitly and gets checked for.
 # The trailing guard must reject a *word* character too, not just `#`.
 # `(?!#v-)` alone was defeated by backtracking: `\w+` gave back the final
 # character of "csv", the lookahead then saw "v" rather than "#", and
 # `@a.csv#v-abc123` produced a phantom legacy reference to "a.cs".
 LEGACY_REF = re.compile(r"(?:^|\s)@([\w./-]+\.\w+)(?![\w#])")
+
+#: The release by which the bare `@name` spelling must be gone.
+#:
+#: It shipped in v0.2.0 promised for "one minor release", a sentence in four
+#: places that named no release and would never notice the window closing.
+#: v0.2.0's notes carried no deprecation for it, and CONTRIBUTING requires one
+#: a minor release ahead of a removal, so 0.3.0 announces it and this names the
+#: removal release. `tests/test_artifact_refs.py` fails once
+#: `openai4s.__version__` reaches it. Before removing: the workbench
+#: autocomplete must stop inserting a bare name for an artifact row with no
+#: `version_id` (frontend/src/features/autocomplete/rank.ts).
+LEGACY_REF_REMOVED_IN = "0.4.0"
 
 #: How many references one message may resolve, and how much of each is
 #: injected. Both bound the *prompt*, which is the scarce resource here: a
@@ -596,10 +609,10 @@ def _resolve_legacy(
 ) -> tuple[str | None, RefProblem | None, ArtifactRef | None]:
     """The unpinned spelling: this session only, and it says it is unpinned.
 
-    Kept for one minor release. It resolves through the artifact's *latest*
-    version rather than its live path, so at least the bytes sent are a version
-    that exists rather than whatever a concurrent cell happened to leave on
-    disk mid-write.
+    Deprecated; kept until `LEGACY_REF_REMOVED_IN` (0.4.0). It resolves through
+    the artifact's *latest* version rather than its live path, so at least the
+    bytes sent are a version that exists rather than whatever a concurrent cell
+    happened to leave on disk mid-write.
     """
     row = store.artifact_by_filename(name, root_frame_id, strict=True)
     if not row:
