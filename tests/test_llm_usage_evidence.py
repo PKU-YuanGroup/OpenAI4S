@@ -1022,3 +1022,28 @@ def test_the_v2_reviewer_charges_the_session_and_is_gated(tmp_path):
         )
         assert refused["reason"] == "quota_exceeded", refused
         assert refused["summary"] == "Paused · Team quota exhausted", refused
+
+
+def test_an_exception_that_never_reached_the_provider_is_not_charged():
+    """`llm_not_started` is set by exactly two things -- `llm.chat` and
+    `ReviewError` -- so a caller whose try wraps more than the wire charged for
+    calls that never happened. A `KeyboardInterrupt` during assembly, or a
+    `TypeError` from building the request, arrived with no flag and no usage
+    and was metered as a completed call with no counters.
+
+    `llm.chat` attaches `usage` on every raise that reached the provider and on
+    none that did not, so that attribute is the positive evidence."""
+    from openai4s.llm.usage import charge_call
+
+    charged = []
+
+    charge_call(charged.append, KeyboardInterrupt())
+    charge_call(charged.append, TypeError("still assembling the request"))
+    assert charged == []
+
+    reached = RuntimeError("provider answered, then the parse failed")
+    reached.usage = llm.normalize_usage(
+        {"prompt_tokens": 12, "completion_tokens": 2}, "chatgpt"
+    )
+    charge_call(charged.append, reached)
+    assert [measured_usage(u)["input_tokens"] for u in charged] == [12]

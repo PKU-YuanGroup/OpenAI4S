@@ -2809,11 +2809,11 @@ class SessionRunner:
             auto_mode=self.auto_mode,
             owner_instance_id=self._owner_instance_id,
             # The two halves V1 has had all along (`enforce_llm_quota` at the
-            # `review_evidence` port, `record_session_llm_usage` in the review
-            # thread) and V2 had neither of. Enforcing kinds, unlike the
-            # titler's: a review is a real billed call, not cosmetic overhead.
+            # `review_evidence` port, the meter in the review thread) and V2
+            # had neither of. One sink for both reviewers, so the policy
+            # cannot drift between them.
             quota_gate=self.enforce_llm_quota,
-            usage_sink=self._record_overhead_usage,
+            usage_sink=self._record_review_usage,
         )
         self.completion_gate = CompletionGateService(
             store=self.store,
@@ -5251,6 +5251,39 @@ class SessionRunner:
         except Exception:  # noqa: BLE001 - ownership lookup is best-effort
             return False
 
+    def _record_review_usage(self, root_frame_id: str, usage: Any) -> None:
+        """Charge a Reviewer call: both halves, non-enforcing when unmeasured.
+
+        Split from `_record_overhead_usage` for one reason, stated in full at
+        `record_review_llm_usage`: the Reviewer runs on a model the daemon
+        picked for independence, so its silence must not refuse a member whose
+        own traffic is measurable.
+        """
+        from openai4s.storage.governance import record_review_llm_usage
+
+        if not root_frame_id:
+            return
+        self._add_frame_tokens_best_effort(root_frame_id, usage)
+        record_review_llm_usage(self.store, root_frame_id, usage)
+
+    def _add_frame_tokens_best_effort(self, root_frame_id: str, usage: Any) -> None:
+        """The legacy per-frame counter half, which is a display projection.
+
+        Its own try, never sharing one with the ledger write: a failed
+        projection must not take the governance row down with it.
+        """
+        from openai4s.llm.usage import measured_usage
+
+        try:
+            counters = measured_usage(usage)
+            self.store.add_frame_tokens(
+                root_frame_id,
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+
     def _record_overhead_usage(self, root_frame_id: str, usage: Any) -> None:
         """Charge a daemon-owned call to a session: both halves.
 
@@ -5267,17 +5300,7 @@ class SessionRunner:
         never refuse a member's next turn; a summarizer burst and a Reviewer
         call are real spend and belong in the window.
         """
-        from openai4s.llm.usage import measured_usage
-
-        try:
-            counters = measured_usage(usage)
-            self.store.add_frame_tokens(
-                root_frame_id,
-                input_tokens=int(counters.get("input_tokens", 0) or 0),
-                output_tokens=int(counters.get("output_tokens", 0) or 0),
-            )
-        except Exception:  # noqa: BLE001 - metering never breaks the call
-            pass
+        self._add_frame_tokens_best_effort(root_frame_id, usage)
         record_session_llm_usage(self.store, root_frame_id, usage)
 
     def _record_screening_usage(self, root_frame_id: str, usage: Any) -> None:
@@ -5289,20 +5312,11 @@ class SessionRunner:
         a side effect of screening them, and the way out of that is to stop
         screening -- which is the failure this layer exists to prevent.
         """
-        from openai4s.llm.usage import measured_usage
         from openai4s.storage.governance import record_screening_llm_usage
 
         if not root_frame_id:
             return
-        try:
-            counters = measured_usage(usage)
-            self.store.add_frame_tokens(
-                root_frame_id,
-                input_tokens=int(counters.get("input_tokens", 0) or 0),
-                output_tokens=int(counters.get("output_tokens", 0) or 0),
-            )
-        except Exception:  # noqa: BLE001 - metering never breaks the call
-            pass
+        self._add_frame_tokens_best_effort(root_frame_id, usage)
         record_screening_llm_usage(self.store, root_frame_id, usage)
 
     def enforce_llm_quota(self, root_frame_id: str) -> None:
@@ -11734,6 +11748,12 @@ class SessionRunner:
             # exact generation is current rather than mutating a stale record.
             self.recovery.touch(st, language, state="active")
 
+    def _screening_cfg(self, st: Any) -> Any:
+        """The Config a pre-exec screener must be handed on the Web path."""
+        import dataclasses as _dc
+
+        return _dc.replace(self.cfg, llm=self._llm_cfg(st))
+
     def _safety_refusal(self, st: Any, code: str, origin: str) -> str | None:
         """Pre-exec safety verdict for an agent cell (reports e6w and diO).
 
@@ -11758,14 +11778,29 @@ class SessionRunner:
         """
         if origin != "agent":
             return None
+        # The session's RESOLVED config, not the boot one. Both screeners read
+        # `cfg.llm.api_key` and return "unconfigured; failed open" when it is
+        # empty -- and on the documented Web install it is always empty, because
+        # the key is configured through Customize → Models and lives in
+        # settings, which is the reason `_llm_cfg` exists at all. So the port
+        # widened, the call was wired, and the screener still never ran here:
+        # every biosecurity-relevant cell got ALLOW with `screened=False` from a
+        # screener that had not looked at anything. The CLI passes `self.cfg`
+        # and is correct, because a CLI run really does carry its key there.
+        #
+        # Resolved inside each screen's own try, with no fallback to `self.cfg`:
+        # falling back would screen with the config we just established cannot
+        # screen, which is the defect wearing a handler.
+        screening_cfg = None
         try:
+            screening_cfg = self._screening_cfg(st)
             security = self.cfg.security
             if security.code_gate_enabled:
                 from openai4s.security import classify_code
 
                 verdict = classify_code(
                     code,
-                    self.cfg,
+                    screening_cfg,
                     usage_sink=lambda usage: self._record_screening_usage(
                         st.root_frame_id, usage
                     ),
@@ -11780,12 +11815,14 @@ class SessionRunner:
                 return None
             from openai4s.security import gather_trajectory, screen_trajectory
 
+            if screening_cfg is None:
+                screening_cfg = self._screening_cfg(st)
             messages = list(getattr(st, "messages", ()) or ())
             user_text, actions = gather_trajectory(messages, code)
             screen = screen_trajectory(
                 user_text,
                 actions,
-                self.cfg,
+                screening_cfg,
                 usage_sink=lambda usage: self._record_screening_usage(
                     st.root_frame_id, usage
                 ),

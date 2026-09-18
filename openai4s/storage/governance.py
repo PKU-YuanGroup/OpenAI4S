@@ -671,6 +671,29 @@ def record_principal_llm_usage(
         pass
 
 
+def record_review_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+    """Charge a Reviewer call, without letting an unmeasurable one lock a window.
+
+    Measured tokens go to the enforced kinds: a review is real spend, not
+    cosmetic overhead like a session title. What is different is where the
+    tokens come from. The Reviewer deliberately runs on a DIFFERENT model --
+    independence from the producing Agent is the point -- so its provider is
+    one the daemon picked, not one the member chose. A provider that answers
+    without a usage block therefore writes ``llm_*_unknown`` against a member
+    whose own traffic is perfectly measurable, and ``check_quota`` refuses
+    their whole window on its presence. Being locked out of your session
+    because the *reviewer's* endpoint is terse is not a bookkeeping
+    inconvenience; it is an outage with no diagnosis attached.
+
+    Visible and non-enforcing is the same answer the session titler got, for
+    the same structural reason: the member cannot choose, refuse, or even see
+    the endpoint whose silence would refuse them.
+    """
+    record_session_llm_usage(
+        store, root_frame_id, usage, unmeasured_kind="llm_review_unmeasured"
+    )
+
+
 def record_screening_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
     """Charge a security screener's tokens without letting it refuse anything.
 

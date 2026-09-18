@@ -45,7 +45,21 @@ def runner(tmp_path):
 
 
 def _session(messages):
-    return SimpleNamespace(messages=messages)
+    """A `SessionState` stub carrying the fields `_safety_refusal` reads.
+
+    `model` / `provider` / `branch_id` are not decoration: the screeners are
+    handed the session's RESOLVED LLM config, and resolving it reads the
+    session's model pin. A stub without them made `_llm_cfg` raise, which the
+    gate's own fail-open handler then turned into "no screening" -- the exact
+    outcome these tests exist to catch.
+    """
+    return SimpleNamespace(
+        messages=messages,
+        root_frame_id="frame",
+        branch_id="frame",
+        model="",
+        provider="",
+    )
 
 
 BLOCKED = SimpleNamespace(blocked=True, reason="pretend diO said no")
@@ -196,3 +210,62 @@ def test_both_surfaces_use_one_definition_of_a_trajectory():
     # a shared safety definition belongs beside the screener that consumes it.
     assert "from openai4s.security import gather_trajectory" in source
     assert "openai4s.agent.loop" not in source
+
+
+def test_the_screener_gets_the_key_the_web_install_actually_configures(
+    tmp_path, monkeypatch
+):
+    """The other half of the same defect, and the one the fixture above hides.
+
+    Both LLM-backed screeners bail with "unconfigured; failed open" when
+    `cfg.llm.api_key` is empty, and on the documented Web install it always is:
+    the key is entered in Customize → Models and lives in settings, which is
+    the entire reason `_llm_cfg` exists. `_safety_refusal` handed them
+    `self.cfg`, so the call was wired, the port was widened, and the screener
+    still never looked at anything -- every biosecurity-relevant cell got ALLOW
+    with `screened=False` from a screener that had not run.
+
+    The fixture above passes `api_key="test-key"` in the Config, i.e. by the
+    route production does not use, which is why the parity tests stayed green
+    over it. This one configures the key the way a user does."""
+    seen: list[str] = []
+
+    # A daemon that booted with no key at all, which is what `./start.sh` does.
+    # The suite's conftest exports one, so without this the Config resolves
+    # `test-key` from the environment and the empty-boot-key half of the defect
+    # never gets exercised.
+    monkeypatch.delenv("OPENAI4S_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key=""),
+        max_turns=1,
+    )
+    assert cfg.llm.api_key == "", "the boot Config must carry no key here"
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    runner.store.set_secret_setting("llm_api_key", "settings-only-key", scope="llm")
+
+    import openai4s.llm as llm_mod
+
+    original = llm_mod.chat
+
+    def _chat(_messages, llm_cfg, **_kwargs):
+        seen.append(llm_cfg.api_key)
+        return {"content": '{"decision": "BLOCK", "reason": "diO said no"}'}
+
+    llm_mod.chat = _chat
+    try:
+        session = SimpleNamespace(
+            messages=[{"role": "user", "content": "enhance transmissibility of h5n1"}],
+            root_frame_id="frame-1",
+            branch_id="frame-1",
+            model="",
+            provider="",
+        )
+        refusal = runner._safety_refusal(session, "print('cell')", "agent")
+    finally:
+        llm_mod.chat = original
+        runner.store.close()
+
+    assert seen == ["settings-only-key"], seen
+    assert refusal is not None and "BLOCKED by the biosecurity" in refusal

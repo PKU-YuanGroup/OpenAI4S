@@ -439,26 +439,37 @@ class ReviewService:
                     # Account on the captured call before publishing completion.
                     # Stop may have released its owner; the next review cannot
                     # inherit this result or bypass its late usage.
-                    try:
-                        from openai4s.llm.usage import measured_usage
-                        from openai4s.storage.governance import record_session_llm_usage
+                    from openai4s.storage.governance import record_review_llm_usage
 
-                        result = review_box.get("result") or {}
-                        usage = result.get(
-                            "usage", getattr(review_box.get("error"), "usage", None)
-                        )
-                        if "result" in review_box or not getattr(
-                            review_box.get("error"), "llm_not_started", False
-                        ):
+                    result = review_box.get("result") or {}
+                    usage = result.get(
+                        "usage", getattr(review_box.get("error"), "usage", None)
+                    )
+                    charge = "result" in review_box or not getattr(
+                        review_box.get("error"), "llm_not_started", False
+                    )
+                    # Two writers, two trys. The legacy per-frame counter is a
+                    # display projection; the governance row is the ledger the
+                    # quota check reads. Sharing one `except: pass` meant a
+                    # failed counter write -- a closed Store generation on this
+                    # detached thread is the live case -- silently skipped the
+                    # ledger too, so the spend simply disappeared.
+                    if charge:
+                        try:
+                            from openai4s.llm.usage import measured_usage
+
                             counters = measured_usage(usage)
                             self.store.add_frame_tokens(
                                 root_frame_id,
                                 input_tokens=counters.get("input_tokens", 0),
                                 output_tokens=counters.get("output_tokens", 0),
                             )
-                            record_session_llm_usage(self.store, root_frame_id, usage)
-                    except Exception:  # accounting must not replace the result
-                        pass
+                        except Exception:  # accounting must not replace the result
+                            pass
+                        try:
+                            record_review_llm_usage(self.store, root_frame_id, usage)
+                        except Exception:  # noqa: BLE001 - same contract
+                            pass
                     review_done.set()
                     with self.lock:
                         if self.provider_calls.get(root_frame_id) is review_done:

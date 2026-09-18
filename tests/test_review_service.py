@@ -690,8 +690,15 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
         assert totals.get("llm_output_tokens") == 3, totals
 
         # Paired negative: an unattested reply must not fill the same limit.
-        # The ledger records the refusal as an `_unknown` row and the charged
+        # The ledger records the refusal as a VISIBLE row and the charged
         # totals stay where the attested call left them.
+        #
+        # `llm_review_unmeasured`, not `llm_*_unknown`: the Reviewer runs on a
+        # deliberately different model, so a provider the DAEMON picked
+        # answering without a usage block would otherwise refuse the member's
+        # whole quota window -- `check_quota` refuses on the mere presence of
+        # an `*_unknown` row -- while the member's own traffic is perfectly
+        # measurable. Same answer the session titler got, for the same reason.
         reviews["call"] = lambda _evidence, cfg: {
             "verdict": "pass",
             "summary": "No issues found",
@@ -714,8 +721,13 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
         }
         assert totals.get("llm_input_tokens") == 11, totals
         assert totals.get("llm_output_tokens") == 3, totals
-        assert totals.get("llm_input_tokens_unknown") == 1, totals
-        assert totals.get("llm_output_tokens_unknown") == 1, totals
+        assert totals.get("llm_review_unmeasured") == 2, totals
+        assert "llm_input_tokens_unknown" not in totals, totals
+        assert "llm_output_tokens_unknown" not in totals, totals
+        # The consequence, not just the row name: the window still admits.
+        store.governance.check_quota(
+            user_id=user["id"], project_id="p", kind="llm_input_tokens"
+        )
     finally:
         store.close()
 

@@ -240,7 +240,16 @@ def charge_call(sink: Any, outcome: Any) -> None:
         if isinstance(outcome, BaseException):
             if getattr(outcome, "llm_not_started", False):
                 return
-            sink(getattr(outcome, "usage", None))
+            # Positive evidence, not the absence of a flag. Only ``llm.chat``
+            # and ``ReviewError`` set ``llm_not_started``, so a caller whose
+            # try wraps more than the wire -- a ``KeyboardInterrupt``, a
+            # ``TypeError`` while the request was still being assembled -- was
+            # charged for a call that never happened. ``llm.chat`` attaches
+            # ``usage`` on every raise that reached the provider and on none
+            # that did not, which is the fact worth reading.
+            if not hasattr(outcome, "usage"):
+                return
+            sink(outcome.usage)
         else:
             sink((outcome or {}).get("usage"))
     except Exception:  # noqa: BLE001 - metering never changes an answer
