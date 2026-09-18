@@ -1026,6 +1026,8 @@ class HostDispatcher:
             one_call=lambda spec: self._one_llm(spec),
             fanout_cap=lambda: self.LLM_FANOUT_CAP,
             executor_factory=lambda **kwargs: ThreadPoolExecutor(**kwargs),
+            quota_gate=self._llm_quota_gate,
+            usage_sink=self._record_llm_usage,
         )
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
@@ -2187,6 +2189,45 @@ class HostDispatcher:
         return result
 
     # --- llm --------------------------------------------------------------
+    def _llm_quota_gate(self) -> None:
+        """Refuse an in-kernel `host.llm` request the session may not afford.
+
+        `SessionRunner.enforce_llm_quota`'s own docstring names the rule this
+        port violated: the reviewer "would otherwise be an unmetered,
+        user-triggered way around an exhausted quota". `host.llm` is a third
+        such port and the widest -- one call fans out to LLM_FANOUT_CAP real
+        requests with no per-cell ceiling.
+        """
+        from openai4s.storage.governance import enforce_session_llm_quota
+
+        frame_id = self.frame_id
+        if not frame_id:
+            return
+        # Re-resolved, never `self.store`: a closed Store generation survives on
+        # the attribute and every query on it raises (see the note above).
+        enforce_session_llm_quota(get_store(self.cfg.db_path), str(frame_id))
+
+    def _record_llm_usage(self, usage: Any) -> None:
+        """Charge one in-kernel LLM reply to the frame and the quota ledger."""
+        from openai4s.storage.governance import record_session_llm_usage
+
+        frame_id = self.frame_id
+        if not frame_id:
+            return
+        try:
+            store = get_store(self.cfg.db_path)
+            from openai4s.llm.usage import measured_usage
+
+            counters = measured_usage(usage)
+            store.add_frame_tokens(
+                str(frame_id),
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+        record_session_llm_usage(get_store(self.cfg.db_path), str(frame_id), usage)
+
     def _one_llm(self, spec: dict) -> str:
         return self._llm_service.one(spec)
 

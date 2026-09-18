@@ -593,11 +593,99 @@ __all__ = [
 ]
 
 
-def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+def enforce_session_llm_quota(store: Any, frame_id: str) -> None:
+    """The pre-call LLM quota gate, for entry points outside ``SessionRunner``.
+
+    ``SessionRunner.enforce_llm_quota`` is bound to a Web session and looks the
+    owner up by the id it is handed. This one resolves the frame to its session
+    root first, because its callers -- the in-kernel ``host.llm`` loop and the
+    context summarizer -- run under a *delegated child's* frame as often as
+    under the root, and an unresolved child has no owner row at all. Gating on
+    the resolved root is the difference between the gate applying to a fan-out
+    and silently not applying to it.
+
+    Frozen decision, shared with its sibling: a *broken* check admits and
+    audits -- availability over bookkeeping. Only ``QuotaExceeded`` escapes.
+    """
+    governance = getattr(store, "governance", None)
+    team = getattr(store, "team", None)
+    if governance is None or team is None:
+        return
+    try:
+        scope = store.resolve_frame_scope(frame_id)
+        root = scope["root_frame_id"]
+        owner = team.session_owner(root)
+    except Exception:  # noqa: BLE001 - a broken lookup reads as unowned
+        return
+    if owner is None:
+        return  # single-user and unowned sessions stay inert (INV-1)
+    project = owner["project_id"] or scope.get("project_id")
+    try:
+        for kind in (KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS):
+            governance.check_quota(
+                user_id=owner["user_id"], project_id=project, kind=kind
+            )
+    except QuotaExceeded:
+        raise
+    except Exception as error:  # noqa: BLE001
+        try:
+            team.audit(
+                actor=owner["user_id"],
+                action="quota_check_failed",
+                detail=str(error)[:200],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def record_principal_llm_usage(
+    store: Any, user_id: str | None, usage: Any, *, prefix: str
+) -> None:
+    """Attribute spend that belongs to a person but to no session.
+
+    The capability probe is the case: a real billed request with no frame to
+    charge. ``prefix`` names a kind outside ``ENFORCED_QUOTA_KINDS``, so the
+    spend is visible in ``/team/usage`` and can never refuse anything -- a
+    probe that could close its own window would go dark exactly when an
+    operator is diagnosing what broke it.
+    """
+    try:
+        from openai4s.llm.usage import measured_usage
+
+        counters = measured_usage(usage)
+        governance = getattr(store, "governance", None)
+        if governance is None or not user_id:
+            return
+        for suffix, key in (
+            ("input_tokens", "input_tokens"),
+            ("output_tokens", "output_tokens"),
+        ):
+            amount = counters.get(key)
+            if amount:
+                governance.record_usage(
+                    user_id=user_id,
+                    kind=f"{prefix}_{suffix}",
+                    amount=float(amount),
+                )
+    except Exception:  # noqa: BLE001 - metering never breaks the call it meters
+        pass
+
+
+def record_session_llm_usage(
+    store: Any, root_frame_id: str, usage: Any, *, unmeasured_kind: str | None = None
+) -> None:
     """Charge one provider call's tokens to the session's owner (M2-5).
 
     The single metering hook for every LLM call the daemon makes on a
-    session's behalf. It exists as a function rather than as code inside
+    SESSION's behalf: the turn ledger, the reviewer, the in-kernel
+    ``host.llm`` inner loop, the context summarizer and the session titler.
+    A call with no session does not come here -- the capability probe
+    attributes to the acting principal through ``record_principal_llm_usage``
+    instead. Keep that list honest rather than letting this sentence grow
+    back into a claim the code does not carry: it was false for four real,
+    billed call sites before they were wired.
+
+    It exists as a function rather than as code inside
     the turn ledger because the reviewer reaches the provider through its
     own port, and it was billing only the legacy per-frame counters -- so a
     member could run reviews forever without the ledger the quota check
@@ -630,9 +718,13 @@ def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None
         ):
             amount = counters.get(key)
             if amount is None:
+                # `*_unknown` is lockout-grade: `check_quota` refuses the whole
+                # window on its presence. `unmeasured_kind` names a kind outside
+                # ENFORCED_QUOTA_KINDS instead, for daemon overhead that should
+                # be VISIBLE without being able to refuse a member's next turn.
                 governance.record_usage(
                     user_id=owner["user_id"],
-                    kind=f"{kind}_unknown",
+                    kind=unmeasured_kind or f"{kind}_unknown",
                     amount=1,
                     project_id=project,
                     ref=root,

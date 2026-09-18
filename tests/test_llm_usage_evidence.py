@@ -4,6 +4,7 @@ import json
 import threading
 from contextlib import closing
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -684,3 +685,178 @@ def test_a_call_that_never_left_the_process_is_not_billable():
     assert caught.value.llm_not_started is True
     # The attested-but-empty usage is what would otherwise have been charged.
     assert measured_usage(caught.value.usage) == {}
+
+
+def _owned(tmp_path):
+    """A store with one owned session, so the governance ledger is live."""
+    from openai4s.store import Store
+
+    store = Store(tmp_path / "meter.db")
+    user = store.team.create_user(
+        username="meter", password="fake-password", role="member"
+    )
+    root = store.new_frame(kind="turn", project_id="p")
+    store.team.set_session_owner(root, user["id"], project_id="p")
+    return store, root, user["id"]
+
+
+def _ledger(store, user_id):
+    return {
+        row["kind"]: row["total"]
+        for row in store.governance.usage_summary(user_id=user_id)
+    }
+
+
+def test_host_llm_charges_the_session_and_is_gated(tmp_path):
+    """`host.llm` returned `response["content"]` and dropped the reply, so a
+    cell's own LLM spend reached no frame counter, no governance ledger and no
+    quota -- the widest of the four unmetered ports, at up to LLM_FANOUT_CAP
+    billed requests per call."""
+
+    from openai4s.host.llm import LLMService
+    from openai4s.storage.governance import (
+        QuotaExceeded,
+        enforce_session_llm_quota,
+        record_session_llm_usage,
+    )
+
+    with closing(_owned(tmp_path)[0]) as store:
+        root = store.new_frame(kind="turn", project_id="p")
+        user = store.team.get_user_by_username("meter")
+        store.team.set_session_owner(root, user["id"], project_id="p")
+
+        service = LLMService(
+            SimpleNamespace(llm=cfg()),
+            chat_call=lambda *_a, **_k: {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 5}, "chatgpt"
+                ),
+            },
+            quota_gate=lambda: enforce_session_llm_quota(store, root),
+            usage_sink=lambda usage: record_session_llm_usage(store, root, usage),
+        )
+        assert service.one({"messages": [{"role": "user", "content": "hi"}]}) == "ok"
+        assert _ledger(store, user["id"])["llm_input_tokens"] == 40
+
+        # ...and the same port now answers to the quota it used to bypass.
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user["id"],
+            kind="llm_input_tokens",
+            limit_amount=10,
+            window="day",
+        )
+        with pytest.raises(QuotaExceeded):
+            service.one({"messages": [{"role": "user", "content": "again"}]})
+
+
+def test_the_context_summarizer_charges_the_session(tmp_path):
+    """A summarizer call never becomes an action, so the Action Ledger never
+    carried it to the quota ledger and `add_usage` is scoped to the turn.
+    Compaction is the daemon's largest burst; it was entirely free."""
+
+    from openai4s.agent import compaction as comp_mod
+    from openai4s.storage.governance import record_session_llm_usage
+
+    with closing(_owned(tmp_path)[0]) as store:
+        root = store.new_frame(kind="turn", project_id="p")
+        user = store.team.get_user_by_username("meter")
+        store.team.set_session_owner(root, user["id"], project_id="p")
+        charged = []
+
+        reply = {
+            "content": "## Summary\nthings happened",
+            "usage": llm.normalize_usage(
+                {"prompt_tokens": 900, "completion_tokens": 30}, "chatgpt"
+            ),
+        }
+        # `_summary_chunk` reaches the wire through the module-level `chat`.
+        import unittest.mock as mock
+
+        with mock.patch.object(comp_mod, "chat", lambda *_a, **_k: reply):
+            summary = comp_mod._summary_chunk(
+                [{"role": "user", "content": "x"}],
+                SimpleNamespace(llm=cfg()),
+                256,
+                None,
+                None,
+                lambda: charged.append("gated"),
+                lambda usage: record_session_llm_usage(store, root, usage),
+            )
+        assert "things happened" in summary
+        assert charged == ["gated"]  # the gate ran BEFORE the request
+        assert _ledger(store, user["id"])["llm_input_tokens"] == 900
+
+
+def test_session_titling_is_visible_but_cannot_close_a_window(tmp_path):
+    """Titling is daemon overhead on ordinary user traffic. It must be counted,
+    and it must NOT be able to refuse a member's next turn: a cosmetic
+    64-token call writing a lockout-grade `*_unknown` row would brick a quota
+    window on every new session against a provider that reports no usage."""
+
+    from openai4s.server.titles import SessionTitleService
+    from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
+
+    with closing(_owned(tmp_path)[0]) as store:
+        root = store.new_frame(kind="turn", project_id="p")
+        user = store.team.get_user_by_username("meter")
+        store.team.set_session_owner(root, user["id"], project_id="p")
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user["id"],
+            kind="llm_input_tokens",
+            limit_amount=10_000,
+            window="day",
+        )
+        service = SessionTitleService(
+            store=store,
+            broadcast=lambda *_a: None,
+            chat_call=lambda *_a, **_k: {"content": "A title", "usage": {}},
+            usage_sink=lambda frame, usage: record_session_llm_usage(
+                store, frame, usage, unmeasured_kind="llm_overhead_unmeasured"
+            ),
+        )
+        assert service.summarize("hello there", cfg(), root) == "A title"
+        rows = _ledger(store, user["id"])
+        assert rows["llm_overhead_unmeasured"] >= 1  # visible
+        assert "llm_input_tokens_unknown" not in rows  # and not lockout-grade
+        store.governance.check_quota(
+            user_id=user["id"], project_id="p", kind="llm_input_tokens"
+        )
+
+
+def test_a_probe_is_attributed_to_its_operator_and_can_refuse_nothing(tmp_path):
+    """A probe has no session. Attributing it to the person who pressed the
+    button keeps the spend visible; `llm_probe_*` is outside
+    ENFORCED_QUOTA_KINDS so a failed probe can never write the row that
+    refuses the next probe -- the diagnostic would go dark exactly when an
+    operator is fixing what broke it."""
+
+    from openai4s.storage.governance import (
+        ENFORCED_QUOTA_KINDS,
+        record_principal_llm_usage,
+    )
+
+    with closing(_owned(tmp_path)[0]) as store:
+        user = store.team.get_user_by_username("meter")
+        record_principal_llm_usage(
+            store,
+            user["id"],
+            llm.normalize_usage(
+                {"prompt_tokens": 12, "completion_tokens": 4}, "chatgpt"
+            ),
+            prefix="llm_probe",
+        )
+        rows = _ledger(store, user["id"])
+        assert rows["llm_probe_input_tokens"] == 12
+        assert rows["llm_probe_output_tokens"] == 4
+        assert "llm_probe_input_tokens" not in ENFORCED_QUOTA_KINDS
+        with pytest.raises(ValueError):
+            store.governance.set_quota(
+                scope="user",
+                scope_id=user["id"],
+                kind="llm_probe_input_tokens",
+                limit_amount=1,
+                window="day",
+            )

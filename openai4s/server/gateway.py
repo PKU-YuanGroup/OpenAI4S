@@ -244,7 +244,7 @@ from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.specialists import builtin_catalog
 from openai4s.storage.connectors import public_connector
-from openai4s.storage.governance import QuotaExceeded
+from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
@@ -2930,8 +2930,21 @@ class SessionRunner:
             chat_call=lambda messages, llm_cfg, **kwargs: chat(
                 messages, llm_cfg, **kwargs
             ),
-            summarize_call=lambda user_text, llm_cfg: self._summarize_title(
-                user_text, llm_cfg
+            summarize_call=lambda user_text, llm_cfg, root_frame_id="": (
+                self._summarize_title(user_text, llm_cfg, root_frame_id)
+            ),
+            # Daemon overhead, so an unmeasured title records a visible,
+            # NON-enforcing row: a cosmetic 64-token call must never be able to
+            # refuse a member's next turn.
+            usage_sink=lambda root_frame_id, usage: (
+                record_session_llm_usage(
+                    self.store,
+                    root_frame_id,
+                    usage,
+                    unmeasured_kind="llm_overhead_unmeasured",
+                )
+                if root_frame_id
+                else None
             ),
         )
         self.cells = CellExecutionService(
@@ -5231,6 +5244,26 @@ class SessionRunner:
             return self.store.team.session_owner(root_frame_id) is not None
         except Exception:  # noqa: BLE001 - ownership lookup is best-effort
             return False
+
+    def _record_overhead_usage(self, root_frame_id: str, usage: Any) -> None:
+        """Charge daemon-owned overhead (the context summarizer) to a session.
+
+        Both halves: a summarizer call never becomes an action, so the Action
+        Ledger never carries it to `record_session_llm_usage` the way an
+        ordinary reply is carried, and `add_usage` is scoped to the turn.
+        """
+        from openai4s.llm.usage import measured_usage
+
+        try:
+            counters = measured_usage(usage)
+            self.store.add_frame_tokens(
+                root_frame_id,
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+        record_session_llm_usage(self.store, root_frame_id, usage)
 
     def enforce_llm_quota(self, root_frame_id: str) -> None:
         """Team-mode LLM quota (M2-6), consulted before a provider request.
@@ -9229,8 +9262,10 @@ class SessionRunner:
     def review_call_inflight(self, root_frame_id: str) -> bool:
         return self.reviews.call_inflight(root_frame_id)
 
-    def _summarize_title(self, user_text: str, llm_cfg) -> str | None:
-        return self.titles.summarize(user_text, llm_cfg)
+    def _summarize_title(
+        self, user_text: str, llm_cfg, root_frame_id: str = ""
+    ) -> str | None:
+        return self.titles.summarize(user_text, llm_cfg, root_frame_id)
 
     def _spawn_title_summary(
         self, root_frame_id: str, user_text: str, llm_cfg, placeholder: str
@@ -11496,6 +11531,14 @@ class SessionRunner:
                 ),
                 workspace_provider=lambda _s: str(st.workspace),
                 should_cancel=st.cancel.is_set,
+                # The summarizer spends on the session's behalf, so it answers
+                # to the session's quota and lands in its ledger. A summarizer
+                # call never becomes an action, so the Action Ledger never saw
+                # it and both halves have to be wired here.
+                quota_gate=lambda: self.enforce_llm_quota(st.root_frame_id),
+                usage_sink=lambda usage: self._record_overhead_usage(
+                    st.root_frame_id, usage
+                ),
             ),
             event_sink=events,
             cancellation=EventCancellation(st.cancel),
@@ -15916,7 +15959,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # refresh loop or a link crawler to spend it for them, and the
                 # whole point of an *explicit* probe is that a human asked.
                 try:
-                    self._json(model_profiles.probe(m.group(1)))
+                    identity = getattr(self, "_team_identity", None)
+                    self._json(
+                        model_profiles.probe(
+                            m.group(1),
+                            actor_user_id=(
+                                getattr(identity, "user_id", None)
+                                if identity is not None
+                                else None
+                            ),
+                        )
+                    )
                 except ModelProfileError as exc:
                     self._json({"error": str(exc)}, exc.status_code)
                 return

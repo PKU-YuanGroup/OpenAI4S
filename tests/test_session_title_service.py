@@ -243,13 +243,21 @@ def test_spawn_resolves_replaced_store_when_background_work_starts():
 
 
 def test_spawn_uses_injected_summary_wrapper_for_runtime_overrides():
+    """The frame id travels to whatever override is installed. The gateway
+    replaces `summarize_call`, so a meter that only hooked the default method
+    would never fire on the real path -- which is how this billed call went
+    unmetered."""
+
     store = FakeStore({"name": None, "task_summary": "Placeholder"})
     calls = []
     service, _store, _broadcasts, _threads = _service(store=store)
-    service._summarize_call = lambda text, cfg: calls.append((text, cfg)) or "Override"
+    service._summarize_call = (
+        lambda text, cfg, root_frame_id: calls.append((text, cfg, root_frame_id))
+        or "Override"
+    )
     cfg = object()
 
     service.spawn("frame-5", "message", cfg, "Placeholder")
 
-    assert calls == [("message", cfg)]
+    assert calls == [("message", cfg, "frame-5")]
     assert store.update_calls == [("frame-5", {"task_summary": "Override"})]

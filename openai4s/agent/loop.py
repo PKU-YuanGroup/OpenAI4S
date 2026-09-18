@@ -790,6 +790,36 @@ class Agent:
         except Exception:  # noqa: BLE001 - a status write cannot break the run
             pass
 
+    def _record_overhead_usage(self, usage: Any) -> None:
+        """Charge daemon-owned overhead (the context summarizer) to this run.
+
+        Both halves, unlike ``_record_frame_usage``: an ordinary reply reaches
+        the governance ledger through the Action Ledger, but a summarizer call
+        never becomes an action, so without this it reached neither the frame
+        nor the quota the next turn is checked against.
+        """
+        from openai4s.storage.governance import record_session_llm_usage
+
+        self._record_frame_usage(usage if isinstance(usage, Mapping) else {})
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        record_session_llm_usage(store, str(self.frame_id), usage)
+
+    def _compaction_quota_gate(self) -> None:
+        """Refuse a summarizer request the session may not afford.
+
+        Compaction is the daemon's largest single burst -- several chunks, each
+        with a retry on truncation, all carrying ~48k-token prompts -- and all
+        of it ran before the turn's own gated call without being checked.
+        """
+        from openai4s.storage.governance import enforce_session_llm_quota
+
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        enforce_session_llm_quota(store, str(self.frame_id))
+
     def _record_frame_usage(self, usage: Mapping[str, Any]) -> None:
         """Add one reply's usage to the owned frame, as the Web loop does."""
 
@@ -990,6 +1020,12 @@ class Agent:
                         if self.cancellation is not None
                         else None
                     ),
+                    # Compaction spends real tokens on the session's behalf, so
+                    # it answers to the session's quota and lands in its ledger.
+                    # Both are inert without a team owner (INV-1), so a
+                    # single-user CLI run is unchanged.
+                    quota_gate=self._compaction_quota_gate,
+                    usage_sink=self._record_overhead_usage,
                 )
                 context_policy = self.context_policy or CompactionPolicy(
                     self.cfg, **policy_providers

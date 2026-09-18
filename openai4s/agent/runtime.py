@@ -25,6 +25,7 @@ from openai4s.execution.attempts import (
 from openai4s.llm.models import LLMDeadlineExceeded
 from openai4s.llm.transport import CallState, bind_call_context
 from openai4s.observability import carry_context
+from openai4s.storage.governance import QuotaExceeded
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
@@ -625,6 +626,11 @@ class CompactionPolicy:
     # Polled between summary chunks and handed to each summary ``chat()``;
     # the engine's own cancellation seam never reaches those calls.
     should_cancel: Callable[[], bool] | None = None
+    # Who may spend, and where the spend is recorded. Injected like every other
+    # seam here so a bare CompactionPolicy (CLI, delegation, tests) stays inert:
+    # the summarizer must never be stricter than the turn it serves.
+    quota_gate: Callable[[], None] | None = None
+    usage_sink: Callable[[Any], None] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS
@@ -755,7 +761,17 @@ class CompactionPolicy:
                 context_budget=context_budget,
                 workspace=workspace,
                 should_cancel=self.should_cancel,
+                quota_gate=self.quota_gate,
+                usage_sink=self.usage_sink,
             )
+        except QuotaExceeded as error:
+            # A quota window is a transient state of the ACCOUNT, not a defect
+            # in compaction. Counted as a failure it would trip the breaker at
+            # `max_failure_attempts` and disable compaction for the rest of an
+            # otherwise healthy run, long after the window reopened.
+            state.metadata["last_compaction_error"] = str(error)[:500]
+            self.log(f"[compaction refused] {error}")
+            return messages, before
         except CompactionCancelled as error:
             # The user stopped the run; that is not a compaction failure and
             # must not count toward the breaker.

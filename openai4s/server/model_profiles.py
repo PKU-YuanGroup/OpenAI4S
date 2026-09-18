@@ -529,7 +529,9 @@ class ModelProfileService:
             install_receipt_overlay(row)
         return public_receipt(row, stale=False, probe_version=PROBE_VERSION)
 
-    def probe(self, profile_id: str) -> dict[str, Any]:
+    def probe(
+        self, profile_id: str, *, actor_user_id: str | None = None
+    ) -> dict[str, Any]:
         """Contact the endpoint because a user asked, and record a receipt.
 
         Never called from a read path. `readiness` answers "is this configured"
@@ -590,19 +592,38 @@ class ModelProfileService:
 
         from openai4s.llm import chat as _chat
 
+        def _meter(usage: Any) -> None:
+            # A probe has no session to charge, but it does have the person who
+            # pressed the button. `llm_probe_*` is outside ENFORCED_QUOTA_KINDS
+            # on purpose: the spend shows up in /team/usage and can never refuse
+            # anything. A probe able to close its own window would go dark
+            # exactly when an operator is diagnosing what broke it.
+            from openai4s.storage.governance import record_principal_llm_usage
+
+            record_principal_llm_usage(
+                self.store, actor_user_id, usage, prefix="llm_probe"
+            )
+
         def _request(**kwargs: Any) -> dict[str, Any]:
             nonlocal outbound
             outbound += 1
             if outbound > 2:
                 raise RuntimeError("capability probe exceeded two requests")
-            return (
-                _chat(
-                    kwargs.pop("messages"),
-                    cfg,
-                    **kwargs,
+            try:
+                reply = (
+                    _chat(
+                        kwargs.pop("messages"),
+                        cfg,
+                        **kwargs,
+                    )
+                    or {}
                 )
-                or {}
-            )
+            except BaseException as error:
+                if not getattr(error, "llm_not_started", False):
+                    _meter(getattr(error, "usage", None))
+                raise
+            _meter(reply.get("usage"))
+            return reply
 
         identity = self._receipt_identity(profile)
         adapter_streaming = bool(identity["adapter_streaming"])

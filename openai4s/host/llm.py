@@ -19,12 +19,19 @@ class LLMService:
         one_call: Callable[[dict], str] | None = None,
         fanout_cap: int | Callable[[], int] = 32,
         executor_factory: Callable[..., Any] = ThreadPoolExecutor,
+        quota_gate: Callable[[], None] | None = None,
+        usage_sink: Callable[[Any], None] | None = None,
     ) -> None:
         self.config = config
         self.chat_call = chat_call
         self.one_call = one_call
         self.fanout_cap = fanout_cap
         self.executor_factory = executor_factory
+        # The two halves the daemon owns and this service must not implement:
+        # who may spend, and where the spend is recorded. Both are injected so
+        # a bare LLMService (CLI, tests) stays inert.
+        self.quota_gate = quota_gate
+        self.usage_sink = usage_sink
 
     def _config(self) -> Config:
         return self.config() if callable(self.config) else self.config
@@ -41,12 +48,31 @@ class LLMService:
 
     def one(self, spec: dict) -> str:
         config = self._config()
-        response = self._chat(
-            spec.get("messages") or [],
-            config.llm,
-            max_tokens=spec.get("max_tokens"),
-            temperature=spec.get("temperature"),
-        )
+        # Before the request, not after: a refusal must not have spent anything.
+        # Outside the metering try below, because a swallowed gate is not a gate.
+        if self.quota_gate is not None:
+            self.quota_gate()
+        try:
+            response = self._chat(
+                spec.get("messages") or [],
+                config.llm,
+                max_tokens=spec.get("max_tokens"),
+                temperature=spec.get("temperature"),
+            )
+        except BaseException as error:
+            # A call that reached the provider was billed even though it
+            # raised. `llm.chat` attaches the evidence for exactly this.
+            if self.usage_sink is not None and not getattr(
+                error, "llm_not_started", False
+            ):
+                self.usage_sink(getattr(error, "usage", None))
+            raise
+        # `host.llm` used to project `content` out and drop the whole reply, so
+        # a cell's own LLM spend reached no frame counter, no governance ledger
+        # and no budget -- the widest of the daemon's unmetered ports, at up to
+        # LLM_FANOUT_CAP billed requests per call.
+        if self.usage_sink is not None:
+            self.usage_sink(response.get("usage"))
         return response.get("content", "")
 
     def _complete_one(self, spec: dict) -> str:
