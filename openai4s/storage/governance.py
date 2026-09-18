@@ -704,24 +704,44 @@ def record_screening_llm_usage(store: Any, root_frame_id: str, usage: Any) -> No
     ``record_session_llm_usage`` directly because of the one thing a screener
     must never be able to do.
 
-    ``check_quota`` refuses an entire window on the mere presence of an
-    ``llm_*_unknown`` row. A screener that minted one -- a provider that
-    answers without a usage block is enough -- would lock a member out of
-    their own session as a side effect of being screened. So an unmeasured
-    screening call records a VISIBLE but non-enforcing kind instead, exactly
-    as the session titler does. Measured tokens are still charged to the
-    enforced kinds: they are real spend on the member's model.
+    BOTH halves stay outside ``ENFORCED_QUOTA_KINDS``, which is the whole
+    reason this is a separate function. The screeners are deliberately never
+    GATED -- a quota refusal there would not save the tokens, it would execute
+    the cell, or hand the model the tool output, with the screen switched off.
+    A charge that can refuse but cannot be refused is the worst of both: the
+    member is denied their next turn for spend they never requested and could
+    not have avoided. Worse for the injection scan, whose prompt is 16 KB of
+    text an attacker chose: a page that makes the agent fetch enough of it
+    would consume a member's window through a control meant to protect them.
 
-    The screeners themselves are deliberately never GATED. A quota refusal
-    there would not save tokens, it would execute the cell unscreened.
+    So measured screening tokens record ``llm_screening_input_tokens`` /
+    ``llm_screening_output_tokens`` -- visible in ``/team/usage``, able to
+    refuse nothing -- which is the shape ``record_principal_llm_usage`` already
+    uses for the capability probe, and for the same stated reason: a call that
+    could close its own window would go dark exactly when an operator is
+    diagnosing what broke it.
+
+    The unmeasured case needs its own name for a second reason.
+    ``check_quota`` refuses an entire window on the mere presence of an
+    ``llm_*_unknown`` row, and a provider that answers without a usage block
+    is enough to mint one.
     """
     record_session_llm_usage(
-        store, root_frame_id, usage, unmeasured_kind="llm_screening_unmeasured"
+        store,
+        root_frame_id,
+        usage,
+        unmeasured_kind="llm_screening_unmeasured",
+        kind_prefix="llm_screening",
     )
 
 
 def record_session_llm_usage(
-    store: Any, root_frame_id: str, usage: Any, *, unmeasured_kind: str | None = None
+    store: Any,
+    root_frame_id: str,
+    usage: Any,
+    *,
+    unmeasured_kind: str | None = None,
+    kind_prefix: str = "llm",
 ) -> None:
     """Charge one provider call's tokens to the session's owner (M2-5).
 
@@ -762,8 +782,8 @@ def record_session_llm_usage(
             return
         project = owner["project_id"] or scope.get("project_id")
         for kind, key in (
-            ("llm_input_tokens", "input_tokens"),
-            ("llm_output_tokens", "output_tokens"),
+            (f"{kind_prefix}_input_tokens", "input_tokens"),
+            (f"{kind_prefix}_output_tokens", "output_tokens"),
         ):
             amount = counters.get(key)
             if amount is None:

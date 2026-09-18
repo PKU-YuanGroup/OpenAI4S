@@ -156,7 +156,10 @@ def screen_trajectory(
                 max_tokens=200,
                 temperature=0.0,
             )
-        except Exception as error:
+        except BaseException as error:
+            # Wider than the handler below, matching `LLMService.one`: a call
+            # the provider answered was billed even if a cancellation or a
+            # shutdown is what unwound it.
             charge_call(usage_sink, error)
             raise
         charge_call(usage_sink, res)

@@ -2246,8 +2246,15 @@ class HostDispatcher:
         frame_id = self.frame_id
         if not frame_id:
             return
+        # Re-resolved once, never `self.store`: a closed Store generation
+        # survives on the attribute and every query on it raises. Once, not
+        # twice: the second `get_store` was the one statement in this method
+        # that could raise, and it sat outside the try guarding the first.
         try:
             store = get_store(self.cfg.db_path)
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            return
+        try:
             from openai4s.llm.usage import measured_usage
 
             counters = measured_usage(usage)
@@ -2258,7 +2265,7 @@ class HostDispatcher:
             )
         except Exception:  # noqa: BLE001 - metering never breaks the call
             pass
-        record_screening_llm_usage(get_store(self.cfg.db_path), str(frame_id), usage)
+        record_screening_llm_usage(store, str(frame_id), usage)
 
     def _one_llm(self, spec: dict) -> str:
         return self._llm_service.one(spec)

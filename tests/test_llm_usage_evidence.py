@@ -880,6 +880,13 @@ def test_the_three_security_screeners_charge_the_session(tmp_path, monkeypatch):
     They are metered and deliberately NOT gated. A quota refusal here would
     not save the tokens; it would run the cell, or hand the model the tool
     output, with the screen switched off.
+
+    And because they cannot be refused, their spend must not be able to refuse
+    anything either: it records `llm_screening_*`, which is visible in
+    `/team/usage` and outside `ENFORCED_QUOTA_KINDS`. A charge that can refuse
+    but cannot be refused would deny the member their next turn for spend they
+    never requested -- and for the injection scan, spend an attacker chose the
+    size of.
     """
     from openai4s.security import classify_code, scan_tool_result, screen_trajectory
     from openai4s.storage.governance import record_screening_llm_usage
@@ -900,7 +907,7 @@ def test_the_three_security_screeners_charge_the_session(tmp_path, monkeypatch):
             "import socket\ns = socket.socket()", config, usage_sink=sink
         )
         assert verdict.source == "llm", verdict
-        assert _ledger(store, user_id)["llm_input_tokens"] == 40
+        assert _ledger(store, user_id)["llm_screening_input_tokens"] == 40
 
         monkeypatch.setattr(
             "openai4s.llm.chat",
@@ -918,7 +925,7 @@ def test_the_three_security_screeners_charge_the_session(tmp_path, monkeypatch):
             use_llm=True,
             usage_sink=sink,
         )
-        assert _ledger(store, user_id)["llm_input_tokens"] == 47
+        assert _ledger(store, user_id)["llm_screening_input_tokens"] == 47
 
         monkeypatch.setattr(
             "openai4s.llm.chat",
@@ -933,7 +940,20 @@ def test_the_three_security_screeners_charge_the_session(tmp_path, monkeypatch):
         screen_trajectory(
             "enhance transmissibility of h5n1", "code", config, usage_sink=sink
         )
-        assert _ledger(store, user_id)["llm_input_tokens"] == 50
+        totals = _ledger(store, user_id)
+        assert totals["llm_screening_input_tokens"] == 50, totals
+        # The consequence, not just the kind name: none of it can refuse.
+        assert "llm_input_tokens" not in totals, totals
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=1,
+            window="day",
+        )
+        store.governance.check_quota(
+            user_id=user_id, project_id="p", kind="llm_input_tokens"
+        )
 
 
 def test_a_failing_meter_cannot_downgrade_a_screening_verdict(monkeypatch):
