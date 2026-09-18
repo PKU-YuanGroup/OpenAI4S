@@ -466,6 +466,47 @@ class GovernanceRepository:
             )
             self._connection.commit()
 
+    def clear_unknown_usage(
+        self, *, scope: str, scope_id: str, kind: str, window: str
+    ) -> int:
+        """Retire the ``*_unknown`` rows that are refusing one quota window.
+
+        ``check_quota`` refuses on the mere PRESENCE of an ``llm_*_unknown``
+        row, which is the correct fail-closed answer to "we billed something
+        and cannot say how much" — but the ledger is append-only and nothing
+        else deletes from it, so a single unattested reply closed a window for
+        as long as ``window`` lasts. The only escape was ``delete_quota``:
+        removing the cap to clear a bookkeeping artifact, which is the one
+        outcome a quota exists to prevent.
+
+        This does not forgive spend. It deletes only the ``_unknown`` markers
+        inside the window; every measured row stays, so the numeric limit still
+        applies immediately afterwards. The caller is expected to write an
+        audit row — the operator is asserting "I looked at why this went
+        unmeasured", and that assertion is the thing worth keeping.
+        """
+        if scope not in ("user", "project"):
+            raise ValueError("scope must be 'user' or 'project'")
+        if window not in _QUOTA_WINDOWS_MS:
+            raise ValueError(f"window must be one of {sorted(_QUOTA_WINDOWS_MS)}")
+        if kind not in (KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS):
+            raise ValueError(
+                f"kind must be one of "
+                f"{sorted((KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS))}; "
+                f"no other kind records an unknown marker"
+            )
+        # The same WHERE `check_quota` refuses on, so clearing cannot leave a
+        # row the gate would still see.
+        column = "user_id" if scope == "user" else "project_id"
+        with self._lock:
+            since = self._clock_ms() - _QUOTA_WINDOWS_MS[window]
+            cur = self._connection.execute(
+                f"DELETE FROM usage_ledger WHERE kind=? AND ts>=? AND {column}=?",
+                (f"{kind}_unknown", since, scope_id),
+            )
+            self._connection.commit()
+        return int(cur.rowcount or 0)
+
     def delete_quota(
         self, *, scope: str, scope_id: str, kind: str, window: str
     ) -> bool:

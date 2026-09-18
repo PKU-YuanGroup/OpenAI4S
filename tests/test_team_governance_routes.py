@@ -749,6 +749,107 @@ def test_session_quota_blocks_creation_and_usage_is_reported(daemon):
 # -- metering units -----------------------------------------------------------
 
 
+def test_an_unknown_marker_can_be_cleared_without_deleting_the_quota(daemon):
+    """`check_quota` refuses a window on the mere PRESENCE of an
+    `llm_*_unknown` row, and the ledger is append-only. Before this route the
+    only escape was `DELETE /team/quotas` -- removing the cap to clear a
+    bookkeeping artifact, which is the one outcome a quota exists to prevent.
+    Clearing the markers must NOT forgive measured spend: the numeric limit has
+    to bite again immediately."""
+
+    from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
+
+    r = _login(daemon, "root", "fake-pw-r")
+    a = _login(daemon, "alice", "fake-pw-a")
+    fid = _create_session(daemon, a)
+    uid = _uid(daemon, "alice")
+    status, _ = _post(
+        daemon.port,
+        "/api/v1/team/quotas",
+        {
+            "scope": "user",
+            "scope_id": uid,
+            "kind": "llm_input_tokens",
+            "limit_amount": 100,
+            "window": "day",
+        },
+        cookie=r,
+    )
+    assert status == 200
+
+    # Real spend, then one reply nobody could measure.
+    record_session_llm_usage(
+        daemon.store,
+        fid,
+        normalize_usage({"input_tokens": 60, "output_tokens": 1}, "chatgpt"),
+    )
+    daemon.store.governance.check_quota(
+        user_id=uid, project_id=_pid(daemon), kind="llm_input_tokens"
+    )
+    record_session_llm_usage(daemon.store, fid, None)
+    with pytest.raises(QuotaExceeded):
+        daemon.store.governance.check_quota(
+            user_id=uid, project_id=_pid(daemon), kind="llm_input_tokens"
+        )
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/team/quotas/unknown/clear",
+        {
+            "scope": "user",
+            "scope_id": uid,
+            "kind": "llm_input_tokens",
+            "window": "day",
+        },
+        cookie=r,
+    )
+    assert status == 200, raw[:300]
+    assert _body(raw)["cleared"] == 1
+    # The window opens again...
+    daemon.store.governance.check_quota(
+        user_id=uid, project_id=_pid(daemon), kind="llm_input_tokens"
+    )
+    # ...but the measured 60 survived, so the cap still bites at 100.
+    record_session_llm_usage(
+        daemon.store,
+        fid,
+        normalize_usage({"input_tokens": 50, "output_tokens": 1}, "chatgpt"),
+    )
+    with pytest.raises(QuotaExceeded):
+        daemon.store.governance.check_quota(
+            user_id=uid, project_id=_pid(daemon), kind="llm_input_tokens"
+        )
+
+    # The operator's assertion outlives the rows they cleared.
+    status, raw = _get(daemon.port, "/api/v1/team/audit", cookie=r)
+    actions = [row["action"] for row in _body(raw)["audit"]]
+    assert "usage_unknown_cleared" in actions
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"scope": "nobody", "kind": "llm_input_tokens", "window": "day"},
+        {"scope": "user", "kind": "llm_input_tokens", "window": "century"},
+        {"scope": "user", "kind": "sessions_created", "window": "day"},
+    ],
+)
+def test_clearing_refuses_a_scope_window_or_kind_it_cannot_honour(daemon, bad):
+    """`sessions_created` is an enforced quota kind but records no unknown
+    marker, so accepting it would report a successful clear that cleared
+    nothing."""
+
+    r = _login(daemon, "root", "fake-pw-r")
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/team/quotas/unknown/clear",
+        {**bad, "scope_id": _uid(daemon, "alice")},
+        cookie=r,
+    )
+    assert status == 400, raw[:300]
+    assert _body(raw)["code"] == "invalid_quota"
+
+
 def test_ledger_attributes_llm_usage_to_the_owner(daemon):
     a = _login(daemon, "alice", "fake-pw-a")
     fid = _create_session(daemon, a)

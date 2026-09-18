@@ -40,6 +40,16 @@ curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
 
 只有存在真实执行点的 kind 才允许设置。一个没人查的限额比没有限额更糟，因为总会有人按它做计划。
 
+守护进程无法计量的回复会记为 `llm_*_unknown` 标记，只要窗口内存在这样的标记，
+配额检查就会拒绝：无法统计的花费不等于可以忽略的花费。账本是只追加的，所以在
+查清标记出现的原因之后再清除它们——清除不会赦免任何已计量的花费，数值上限随即
+重新生效，清除动作本身会以 `usage_unknown_cleared` 记入审计：
+
+```bash
+curl -X POST .../api/v1/team/quotas/unknown/clear -d '{"scope":"user",
+  "scope_id":"...","kind":"llm_input_tokens","window":"month"}'
+```
+
 ## 2b. 文件区
 
 `OPENAI4S_DATA_ROOTS` 是冒号分隔的目录白名单，而 D8 说了三种根：**只读的 datasets 区**、项目区、以及**个人 scratch**。策略就写在同一个值里：

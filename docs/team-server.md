@@ -78,6 +78,18 @@ curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
 Only kinds with a real enforcement point may be set. A limit nobody
 consults is worse than no limit, because somebody will plan around it.
 
+A reply the daemon could not measure is recorded as an `llm_*_unknown`
+marker, and the quota check refuses the window while one is present: spend
+it cannot count is not spend it may ignore. Because the ledger is
+append-only, clear the markers once you know why they appeared — this
+forgives no measured spend, so the numeric limit applies again immediately,
+and the clear itself is audited as `usage_unknown_cleared`:
+
+```bash
+curl -X POST .../api/v1/team/quotas/unknown/clear -d '{"scope":"user",
+  "scope_id":"...","kind":"llm_input_tokens","window":"month"}'
+```
+
 ## 2b. The file area
 
 `OPENAI4S_DATA_ROOTS` is a colon-separated allowlist of directories, and D8

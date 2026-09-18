@@ -6049,6 +6049,31 @@
         "type": "object"
       }
     },
+    "DELETE /team/quotas/unknown/clear [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /team/usage [error]": {
       "schema": {
         "properties": {
@@ -19553,13 +19578,19 @@
                   "type": "null"
                 },
                 "target": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "ts": {
                   "type": "integer"
                 },
                 "user_id": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 }
               },
               "required": [
@@ -19745,6 +19776,31 @@
         },
         "required": [
           "quotas"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /team/quotas/unknown/clear [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -26578,6 +26634,31 @@
       }
     },
     "PATCH /team/quotas [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /team/quotas/unknown/clear [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -39790,6 +39871,48 @@
         "type": "object"
       }
     },
+    "POST /team/quotas/unknown/clear [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /team/quotas/unknown/clear [ok]": {
+      "schema": {
+        "properties": {
+          "cleared": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cleared",
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
     "POST /team/usage [error]": {
       "schema": {
         "properties": {
@@ -46307,6 +46430,31 @@
       }
     },
     "PUT /team/quotas [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /team/quotas/unknown/clear [error]": {
       "schema": {
         "properties": {
           "code": {
