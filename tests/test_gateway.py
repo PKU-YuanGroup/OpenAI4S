@@ -7309,3 +7309,45 @@ def test_bytes_route_honours_an_explicit_version_without_latest_fallback(tmp_pat
         assert sends[-1][:2] == (200, b"v2-longer")
     finally:
         runner.close()
+
+
+def test_the_session_dispatcher_gets_the_key_the_install_configures(
+    tmp_path, monkeypatch
+):
+    """The dispatcher is built once per session from the BOOT config, and on the
+    documented install that config has no key: it is entered in Customize →
+    Models and lives in settings. So everything the dispatcher owns that reaches
+    a provider was dead there — `host.llm` raised MissingCredentialError, and
+    the injection screener's nuanced pass returned "not injected" without
+    calling a model, leaving `OPENAI4S_SAFETY=llm` with only its static regex.
+
+    `_wire_delegation` already resolved the config for delegated children ("so
+    delegated specialists inherit the currently selected model"); the session's
+    own ports did not get the same treatment. Refreshed per turn, not frozen at
+    construction, so a model changed mid-session reaches them.
+    """
+    monkeypatch.delenv("OPENAI4S_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="ark", api_key=""),
+        max_turns=1,
+    )
+    assert cfg.llm.api_key == "", "the boot Config must carry no key here"
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    try:
+        runner.store.set_secret_setting("llm_api_key", "settings-key", scope="llm")
+        root = runner.store.new_frame(kind="turn", project_id="p")
+        st = runner._state(root, "default")
+        dispatcher = runner._ensure_runtime(st)
+        assert dispatcher.cfg.llm.api_key == "settings-key"
+        # The kernel's own LLM port reads through the same attribute.
+        assert dispatcher._llm_service._config().llm.api_key == "settings-key"
+
+        # ...and a key changed mid-session reaches the next turn, because this
+        # refresh sits beside the per-turn delegation rewire rather than at
+        # construction.
+        runner.store.set_secret_setting("llm_api_key", "rotated-key", scope="llm")
+        assert runner._ensure_runtime(st).cfg.llm.api_key == "rotated-key"
+    finally:
+        runner.close()

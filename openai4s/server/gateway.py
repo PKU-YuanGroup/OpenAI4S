@@ -6050,6 +6050,27 @@ class SessionRunner:
         self._configure_background_kernel_factory(st, dispatcher)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
+        #
+        # The dispatcher is built once per session from the BOOT config, whose
+        # `llm.api_key` is empty on the documented install because the key is
+        # entered in Customize → Models and lives in settings. Everything the
+        # dispatcher owns that reaches a provider was therefore dead there:
+        # `host.llm` raised MissingCredentialError, and the injection screener's
+        # nuanced pass returned "not injected" without ever calling a model, so
+        # `OPENAI4S_SAFETY=llm` left only the static regex running. Delegated
+        # children already got the resolved config from `_wire_delegation`
+        # ("so delegated specialists inherit the currently selected model"),
+        # which is the same fix this line applies to the session's own ports.
+        #
+        # Here rather than at construction, for the reason the delegation
+        # rewire is here: it runs every turn, so a model changed mid-session
+        # reaches these ports without discarding the control plane.
+        try:
+            import dataclasses as _dc
+
+            dispatcher.cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
+        except Exception:  # noqa: BLE001 - a broken resolve leaves the boot cfg
+            pass
         self._wire_delegation(st)
         return dispatcher
 
