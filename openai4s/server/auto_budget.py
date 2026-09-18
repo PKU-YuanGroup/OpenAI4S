@@ -99,6 +99,11 @@ TERMINAL_USER_TRUTH = {
     "budget_exhausted": "Paused · Budget exhausted",
     "loop_detected": "Paused/Blocked · Loop detected",
     "budget_measurement_unavailable": "无法验证 token 预算",
+    # The team quota refused the Reviewer's own provider call. It belongs in
+    # this table rather than beside it: `is_completion_disguise` only guards
+    # reasons listed here, so a terminal outside it could be presented with a
+    # completion status and read as a passed review.
+    "quota_exceeded": "Paused · Team quota exhausted",
 }
 _COMPLETION_STATUSES = frozenset(
     {"verified", "completed", "completed_with_issues", "pass"}

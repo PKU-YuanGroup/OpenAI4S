@@ -219,6 +219,34 @@ def measured_usage(value: Any) -> MeasuredUsage:
     return MeasuredUsage(evidence.counters)
 
 
+def charge_call(sink: Any, outcome: Any) -> None:
+    """Hand one provider call's usage to a meter, on either path.
+
+    ``outcome`` is the reply mapping on success or the raised exception on
+    failure. A call that never left the process is not billable -- that is
+    ``llm.chat``'s ``llm_not_started`` evidence, and reading it in one place
+    keeps the call sites that must honour it from drifting apart. Before it
+    existed, a failure raised before the first attempt was counted read as
+    *started* and became two lockout-grade ``llm_*_unknown`` rows.
+
+    Never raises. A meter that fails must not change what its caller returns:
+    three of the callers are security screeners whose contract is to fail open,
+    so a metering exception there would silently downgrade a real UNSAFE
+    verdict to SAFE -- the screening would look like it had run and passed.
+    """
+    if sink is None:
+        return
+    try:
+        if isinstance(outcome, BaseException):
+            if getattr(outcome, "llm_not_started", False):
+                return
+            sink(getattr(outcome, "usage", None))
+        else:
+            sink((outcome or {}).get("usage"))
+    except Exception:  # noqa: BLE001 - metering never changes an answer
+        _LOG.debug("usage sink failed", exc_info=True)
+
+
 def measured_total(value: Any) -> int | None:
     counters = measured_usage(value)
     if "input_tokens" in counters and "output_tokens" in counters:

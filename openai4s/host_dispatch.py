@@ -2154,7 +2154,13 @@ class HostDispatcher:
         if not text or not text.strip():
             return result
         try:
-            verdict = scan_tool_result(text, source=src, cfg=self.cfg, use_llm=use_llm)
+            verdict = scan_tool_result(
+                text,
+                source=src,
+                cfg=self.cfg,
+                use_llm=use_llm,
+                usage_sink=self._record_screening_usage,
+            )
         except Exception:  # noqa: BLE001 - screening must never break a call
             return result
         if not verdict.injected:
@@ -2227,6 +2233,32 @@ class HostDispatcher:
         except Exception:  # noqa: BLE001 - metering never breaks the call
             pass
         record_session_llm_usage(get_store(self.cfg.db_path), str(frame_id), usage)
+
+    def _record_screening_usage(self, usage: Any) -> None:
+        """Charge a pre-execution screener's tokens to this frame.
+
+        Separate from `_record_llm_usage` in one respect that matters: an
+        unmeasured screening call must not be able to refuse the member's next
+        turn. `record_screening_llm_usage` names the non-enforcing kind.
+        """
+        from openai4s.storage.governance import record_screening_llm_usage
+
+        frame_id = self.frame_id
+        if not frame_id:
+            return
+        try:
+            store = get_store(self.cfg.db_path)
+            from openai4s.llm.usage import measured_usage
+
+            counters = measured_usage(usage)
+            store.add_frame_tokens(
+                str(frame_id),
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+        record_screening_llm_usage(get_store(self.cfg.db_path), str(frame_id), usage)
 
     def _one_llm(self, spec: dict) -> str:
         return self._llm_service.one(spec)

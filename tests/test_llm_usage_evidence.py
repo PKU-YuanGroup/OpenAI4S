@@ -860,3 +860,165 @@ def test_a_probe_is_attributed_to_its_operator_and_can_refuse_nothing(tmp_path):
                 limit_amount=1,
                 window="day",
             )
+
+
+def _reply(prompt_tokens, completion_tokens):
+    return {
+        "content": '{"decision": "UNSAFE", "categories": [6], "reason": "x"}',
+        "usage": llm.normalize_usage(
+            {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+            "chatgpt",
+        ),
+    }
+
+
+def test_the_three_security_screeners_charge_the_session(tmp_path, monkeypatch):
+    """Each pre-execution screener is a real billed provider call the member
+    never asked for, and all three projected `content` out of the reply and
+    dropped the rest -- no frame counter, no ledger, no budget.
+
+    They are metered and deliberately NOT gated. A quota refusal here would
+    not save the tokens; it would run the cell, or hand the model the tool
+    output, with the screen switched off.
+    """
+    from openai4s.security import classify_code, scan_tool_result, screen_trajectory
+    from openai4s.storage.governance import record_screening_llm_usage
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+
+        def sink(usage):
+            record_screening_llm_usage(store, root, usage)
+
+        security = SimpleNamespace(safety_mode="llm", biosecurity=True)
+        config = SimpleNamespace(llm=cfg(), security=security)
+
+        monkeypatch.setattr(
+            "openai4s.llm.chat", lambda *_a, **_k: _reply(40, 5), raising=False
+        )
+        verdict = classify_code(
+            "import socket\ns = socket.socket()", config, usage_sink=sink
+        )
+        assert verdict.source == "llm", verdict
+        assert _ledger(store, user_id)["llm_input_tokens"] == 40
+
+        monkeypatch.setattr(
+            "openai4s.llm.chat",
+            lambda *_a, **_k: {
+                "content": '{"injected": false}',
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 7, "completion_tokens": 1}, "chatgpt"
+                ),
+            },
+            raising=False,
+        )
+        scan_tool_result(
+            "the search returned three papers on mitochondria",
+            cfg=config,
+            use_llm=True,
+            usage_sink=sink,
+        )
+        assert _ledger(store, user_id)["llm_input_tokens"] == 47
+
+        monkeypatch.setattr(
+            "openai4s.llm.chat",
+            lambda *_a, **_k: {
+                "content": '{"decision": "ALLOW", "reason": "ok"}',
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 3, "completion_tokens": 1}, "chatgpt"
+                ),
+            },
+            raising=False,
+        )
+        screen_trajectory(
+            "enhance transmissibility of h5n1", "code", config, usage_sink=sink
+        )
+        assert _ledger(store, user_id)["llm_input_tokens"] == 50
+
+
+def test_a_failing_meter_cannot_downgrade_a_screening_verdict(monkeypatch):
+    """The screeners are wrapped in a blanket `except Exception` that fails
+    open. Calling a sink inside it means a metering bug silently turns a real
+    UNSAFE into SAFE -- the screen would look like it had run and passed."""
+    from openai4s.security import classify_code
+
+    def _explode(_usage):
+        raise RuntimeError("the ledger is on fire")
+
+    monkeypatch.setattr(
+        "openai4s.llm.chat", lambda *_a, **_k: _reply(1, 1), raising=False
+    )
+    verdict = classify_code(
+        "import socket\ns = socket.socket()",
+        SimpleNamespace(llm=cfg(), security=SimpleNamespace(safety_mode="llm")),
+        usage_sink=_explode,
+    )
+    assert verdict.decision == "UNSAFE", verdict
+    assert verdict.source == "llm", verdict
+
+
+def test_the_v2_reviewer_charges_the_session_and_is_gated(tmp_path):
+    """V1 (`review_evidence`) has had a gate and a meter since its port was
+    introduced. V2 runs after every completed turn, again on the bounded retry
+    and once per auto-repair round, and had neither: its tokens settled the
+    Auto Mode reservation table -- a per-run ceiling -- and stopped there,
+    while the per-user window `check_quota` reads stayed blind to them."""
+    from openai4s.server.scientific_review import ScientificReviewService
+    from openai4s.storage.governance import (
+        enforce_session_llm_quota,
+        record_session_llm_usage,
+    )
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        service = ScientificReviewService(
+            store=None,
+            config=SimpleNamespace(),
+            quota_gate=lambda frame_id: enforce_session_llm_quota(store, frame_id),
+            usage_sink=lambda frame_id, usage: record_session_llm_usage(
+                store, frame_id, usage
+            ),
+        )
+        snapshot = {
+            "identity": {"root_frame_id": root, "branch_id": root, "turn_id": "t"},
+            "user_request": "do the thing",
+            "candidate_answer": "did the thing",
+            "artifacts": [],
+        }
+        reviewer_cfg = replace(cfg(), model="reviewer-model", max_tokens=1800)
+        result = service.evaluate(
+            snapshot,
+            result_review_mode="review_only",
+            agent_cfg=SimpleNamespace(llm=replace(cfg(), model="agent-model")),
+            reviewer_cfg=reviewer_cfg,
+            allow_same_model=True,
+            chat_call=lambda *_a, **_k: {
+                "content": '{"verdict": "pass", "summary": "ok", "findings": []}',
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 90, "completion_tokens": 10}, "chatgpt"
+                ),
+            },
+        )
+        assert result.get("reason") != "quota_exceeded", result
+        assert _ledger(store, user_id)["llm_input_tokens"] == 90
+
+        # ...and the same reviewer now answers to the quota it used to bypass,
+        # as a terminal the user can read -- not as `reviewer_inference_failed`,
+        # which would say the Reviewer is broken when the team is out of quota.
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=10,
+            window="day",
+        )
+        refused = service.evaluate(
+            snapshot,
+            result_review_mode="review_only",
+            agent_cfg=SimpleNamespace(llm=replace(cfg(), model="agent-model")),
+            reviewer_cfg=reviewer_cfg,
+            allow_same_model=True,
+            chat_call=lambda *_a, **_k: pytest.fail("the gate let the call through"),
+        )
+        assert refused["reason"] == "quota_exceeded", refused
+        assert refused["summary"] == "Paused · Team quota exhausted", refused

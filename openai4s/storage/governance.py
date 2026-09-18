@@ -671,6 +671,32 @@ def record_principal_llm_usage(
         pass
 
 
+def record_screening_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+    """Charge a security screener's tokens without letting it refuse anything.
+
+    The three pre-execution screeners -- the code classifier, the injection
+    scan and the biosecurity trajectory screen -- are real billed provider
+    calls the member never asked for, and until now none of them reached a
+    ledger at all. They are metered here rather than through
+    ``record_session_llm_usage`` directly because of the one thing a screener
+    must never be able to do.
+
+    ``check_quota`` refuses an entire window on the mere presence of an
+    ``llm_*_unknown`` row. A screener that minted one -- a provider that
+    answers without a usage block is enough -- would lock a member out of
+    their own session as a side effect of being screened. So an unmeasured
+    screening call records a VISIBLE but non-enforcing kind instead, exactly
+    as the session titler does. Measured tokens are still charged to the
+    enforced kinds: they are real spend on the member's model.
+
+    The screeners themselves are deliberately never GATED. A quota refusal
+    there would not save tokens, it would execute the cell unscreened.
+    """
+    record_session_llm_usage(
+        store, root_frame_id, usage, unmeasured_kind="llm_screening_unmeasured"
+    )
+
+
 def record_session_llm_usage(
     store: Any, root_frame_id: str, usage: Any, *, unmeasured_kind: str | None = None
 ) -> None:

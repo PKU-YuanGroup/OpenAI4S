@@ -398,7 +398,11 @@ def review_snapshot(
             snapshot_complete=complete,
         )
     except Exception as error:
+        # Reached the provider; only the answer was unusable. See
+        # `ReviewError.llm_not_started` -- the flag defaults True for the
+        # host-side raises, so a post-call failure has to clear it.
         error.usage = usage
+        error.llm_not_started = False
         raise
     normalized["usage"] = copy_usage(
         usage,

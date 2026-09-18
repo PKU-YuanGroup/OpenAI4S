@@ -41,7 +41,24 @@ Limit the list to the most important 8 findings."""
 
 
 class ReviewError(RuntimeError):
-    """Raised when the reviewer response cannot be normalized safely."""
+    """Raised when the reviewer response cannot be normalized safely.
+
+    ``llm_not_started`` defaults True because most of these raises happen
+    BEFORE the provider is contacted -- the evidence packet could not be
+    bounded, or it omitted changed artifacts. Without the flag the reviewer's
+    meter read a host-side refusal as a completed call with no counters, which
+    is not a harmless over-charge: ``measured_usage(None)`` is empty, so
+    ``record_session_llm_usage`` wrote ``llm_input_tokens_unknown`` and
+    ``llm_output_tokens_unknown``, and ``check_quota`` refuses the whole window
+    on their presence. A turn that changed 65 artifacts -- the cap
+    ``ReviewService`` applies while still counting the total -- therefore locked
+    a member out of their own quota with zero real spend.
+
+    The raises that DO happen after a reply arrives clear the flag explicitly
+    where they attach ``usage``, so the default is the safe half of the split.
+    """
+
+    llm_not_started = True
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -378,7 +395,11 @@ def review_evidence(
     try:
         normalized = normalize_review(_json_object(result.get("content") or ""))
     except Exception as error:
+        # The call DID reach the provider; only the answer was unusable. Both
+        # halves matter: the usage is the evidence, and clearing the flag is
+        # what keeps this from being read as a host-side refusal.
         error.usage = usage
+        error.llm_not_started = False
         raise
     normalized["usage"] = copy_usage(
         usage,

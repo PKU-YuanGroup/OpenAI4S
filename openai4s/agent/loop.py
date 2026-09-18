@@ -526,7 +526,9 @@ class Agent:
         # Layer 2: code-safety classifier (report e6w).
         if sec.code_gate_enabled:
             try:
-                verdict = classify_code(code, self.cfg)
+                verdict = classify_code(
+                    code, self.cfg, usage_sink=self._record_screening_usage
+                )
             except Exception:  # noqa: BLE001 - gate must not crash the turn
                 verdict = None
             if verdict is not None and not verdict.safe:
@@ -538,7 +540,12 @@ class Agent:
         if sec.biosecurity:
             try:
                 user_text, actions = gather_trajectory(messages, code)
-                screen = screen_trajectory(user_text, actions, self.cfg)
+                screen = screen_trajectory(
+                    user_text,
+                    actions,
+                    self.cfg,
+                    usage_sink=self._record_screening_usage,
+                )
             except Exception:  # noqa: BLE001
                 screen = None
             if screen is not None and screen.blocked:
@@ -805,6 +812,24 @@ class Agent:
         if store is None or not self.frame_id:
             return
         record_session_llm_usage(store, str(self.frame_id), usage)
+
+    def _record_screening_usage(self, usage: Any) -> None:
+        """Charge a pre-execution screener's tokens to this run.
+
+        The code classifier and the biosecurity trajectory screen are real
+        billed calls the user never asked for, and both reached the provider
+        on every gated cell without reaching any ledger. They are recorded
+        through the non-enforcing kind: an unmeasured screen must never be
+        able to refuse the next turn, because the alternative to screening is
+        not "save the tokens", it is "run the cell unscreened".
+        """
+        from openai4s.storage.governance import record_screening_llm_usage
+
+        self._record_frame_usage(usage if isinstance(usage, Mapping) else {})
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        record_screening_llm_usage(store, str(self.frame_id), usage)
 
     def _compaction_quota_gate(self) -> None:
         """Refuse a summarizer request the session may not afford.

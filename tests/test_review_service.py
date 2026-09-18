@@ -718,3 +718,67 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
         assert totals.get("llm_output_tokens_unknown") == 1, totals
     finally:
         store.close()
+
+
+def test_a_host_side_review_refusal_does_not_lock_the_quota_window(tmp_path):
+    """`ReviewError` is raised twice BEFORE the provider is contacted: the
+    evidence packet could not be bounded, or it omitted changed artifacts.
+    `ReviewService` meters unless the error says the call never started, and
+    `ReviewError` did not say so -- so a host-side refusal was accounted as a
+    completed call carrying no counters, which is not an over-charge but a
+    `*_unknown` row, and `check_quota` refuses the whole window on its
+    presence. `ReviewService` caps `changed` at 64 while still counting the
+    total, so a turn touching 65 artifacts took that raise every time: a member
+    locked out of their own session with zero real spend.
+
+    Asserted on the real Store against a real `check_quota`, because both the
+    row and the refusal are database facts."""
+    from openai4s.review import ReviewError
+    from openai4s.store import get_store
+
+    store = get_store(str(tmp_path / "state.db"))
+    try:
+        user = store.team.create_user(username="alice", password="pw", role="member")
+        fid = store.new_frame(kind="turn", project_id="p")
+        store.team.set_session_owner(fid, user["id"], project_id="p")
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user["id"],
+            kind="llm_input_tokens",
+            limit_amount=1_000_000,
+            window="day",
+        )
+
+        threads = ImmediateThreads()
+        review_box = {}
+        service, _store, state, events, _jobs, reviews = _service(
+            store, review_box=review_box, thread_factory=threads
+        )
+        state.root_frame_id = fid
+
+        def _refuse(_evidence, _cfg):
+            raise ReviewError("review evidence omitted changed artifacts")
+
+        reviews["call"] = _refuse
+        service.run(
+            state,
+            events.append,
+            user_text="Create a report",
+            assistant_text="Report created",
+            artifact_versions_before={},
+            cell_count_before=0,
+            step_count_before=0,
+        )
+
+        totals = {
+            row["kind"]: row["total"]
+            for row in store.governance.usage_summary(user_id=user["id"])
+        }
+        assert "llm_input_tokens_unknown" not in totals, totals
+        assert "llm_output_tokens_unknown" not in totals, totals
+        # The consequence, not just the row: the window still admits.
+        store.governance.check_quota(
+            user_id=user["id"], project_id="p", kind="llm_input_tokens"
+        )
+    finally:
+        store.close()

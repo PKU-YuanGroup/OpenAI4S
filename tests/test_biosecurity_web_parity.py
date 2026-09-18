@@ -58,7 +58,7 @@ def test_the_trajectory_screener_actually_runs_here(runner, monkeypatch):
     verdict is honoured."""
     seen: list[tuple[str, str]] = []
 
-    def _screen(user_text, actions, _cfg):
+    def _screen(user_text, actions, _cfg, **_kw):
         seen.append((user_text, actions))
         return BLOCKED
 
@@ -83,7 +83,7 @@ def test_the_screener_sees_the_conversation_not_just_the_cell(runner, monkeypatc
     reach it, which is the whole reason the port signature changed."""
     captured: dict = {}
 
-    def _screen(user_text, actions, _cfg):
+    def _screen(user_text, actions, _cfg, **_kw):
         captured["user"] = user_text
         captured["actions"] = actions
         return ALLOWED

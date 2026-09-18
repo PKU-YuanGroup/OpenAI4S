@@ -2808,6 +2808,12 @@ class SessionRunner:
             config=cfg,
             auto_mode=self.auto_mode,
             owner_instance_id=self._owner_instance_id,
+            # The two halves V1 has had all along (`enforce_llm_quota` at the
+            # `review_evidence` port, `record_session_llm_usage` in the review
+            # thread) and V2 had neither of. Enforcing kinds, unlike the
+            # titler's: a review is a real billed call, not cosmetic overhead.
+            quota_gate=self.enforce_llm_quota,
+            usage_sink=self._record_overhead_usage,
         )
         self.completion_gate = CompletionGateService(
             store=self.store,
@@ -5246,11 +5252,20 @@ class SessionRunner:
             return False
 
     def _record_overhead_usage(self, root_frame_id: str, usage: Any) -> None:
-        """Charge daemon-owned overhead (the context summarizer) to a session.
+        """Charge a daemon-owned call to a session: both halves.
 
-        Both halves: a summarizer call never becomes an action, so the Action
-        Ledger never carries it to `record_session_llm_usage` the way an
-        ordinary reply is carried, and `add_usage` is scoped to the turn.
+        Used by the context summarizer and by the V2 scientific Reviewer.
+        Neither becomes an action, so the Action Ledger never carries it to
+        `record_session_llm_usage` the way an ordinary reply is carried, and
+        `add_usage` is scoped to the turn. Keep this list accurate rather than
+        letting it name one caller while serving several -- the docstring that
+        claimed a single metering hook for "every LLM call the daemon makes"
+        was false for four billed sites before they were wired.
+
+        Enforcing kinds on purpose. The session titler has its own sink with a
+        non-enforcing `unmeasured_kind` because a cosmetic 64-token call must
+        never refuse a member's next turn; a summarizer burst and a Reviewer
+        call are real spend and belong in the window.
         """
         from openai4s.llm.usage import measured_usage
 
@@ -5264,6 +5279,31 @@ class SessionRunner:
         except Exception:  # noqa: BLE001 - metering never breaks the call
             pass
         record_session_llm_usage(self.store, root_frame_id, usage)
+
+    def _record_screening_usage(self, root_frame_id: str, usage: Any) -> None:
+        """Charge a pre-execution screener's tokens to a session.
+
+        Same two halves as `_record_overhead_usage`, and one deliberate
+        difference: the non-enforcing kind. A screener that minted a
+        lockout-grade `llm_*_unknown` row would refuse a member's next turn as
+        a side effect of screening them, and the way out of that is to stop
+        screening -- which is the failure this layer exists to prevent.
+        """
+        from openai4s.llm.usage import measured_usage
+        from openai4s.storage.governance import record_screening_llm_usage
+
+        if not root_frame_id:
+            return
+        try:
+            counters = measured_usage(usage)
+            self.store.add_frame_tokens(
+                root_frame_id,
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+        record_screening_llm_usage(self.store, root_frame_id, usage)
 
     def enforce_llm_quota(self, root_frame_id: str) -> None:
         """Team-mode LLM quota (M2-6), consulted before a provider request.
@@ -11723,7 +11763,13 @@ class SessionRunner:
             if security.code_gate_enabled:
                 from openai4s.security import classify_code
 
-                verdict = classify_code(code, self.cfg)
+                verdict = classify_code(
+                    code,
+                    self.cfg,
+                    usage_sink=lambda usage: self._record_screening_usage(
+                        st.root_frame_id, usage
+                    ),
+                )
                 if verdict is not None and not verdict.safe:
                     return verdict.as_observation()
         except Exception:  # noqa: BLE001 - the gate must never break a turn
@@ -11736,7 +11782,14 @@ class SessionRunner:
 
             messages = list(getattr(st, "messages", ()) or ())
             user_text, actions = gather_trajectory(messages, code)
-            screen = screen_trajectory(user_text, actions, self.cfg)
+            screen = screen_trajectory(
+                user_text,
+                actions,
+                self.cfg,
+                usage_sink=lambda usage: self._record_screening_usage(
+                    st.root_frame_id, usage
+                ),
+            )
         except Exception:  # noqa: BLE001
             return None
         # Only BLOCK stops a cell. ESCALATE stays advisory here for the same

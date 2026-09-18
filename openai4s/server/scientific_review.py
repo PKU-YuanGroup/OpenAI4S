@@ -42,6 +42,7 @@ from openai4s.server.review_scratch import (
     run_scratch_python,
 )
 from openai4s.storage.auto_mode import AutoModeConflictError
+from openai4s.storage.governance import QuotaExceeded
 
 
 def scoped_finding_id(review_run_id: str, fingerprint: str) -> str:
@@ -208,12 +209,29 @@ class ScientificReviewService:
         auto_mode: Any | None = None,
         chat_call: ChatCall | None = None,
         owner_instance_id: str = "daemon",
+        quota_gate: Callable[[str], None] | None = None,
+        usage_sink: Callable[[str, Any], None] | None = None,
     ) -> None:
         self.store = store
         self.config = config
         self.auto_mode = auto_mode
         self.chat_call = chat_call
         self.owner_instance_id = owner_instance_id
+        # Who may spend, and where the spend is recorded. Injected rather than
+        # implemented here for the same reason `LLMService` injects them: this
+        # service is constructed with `store=None` on the CLI path and with a
+        # throwaway Store in tests, and only the gateway holds a live Store, a
+        # session owner and the enforcement policy at once. Both default to
+        # None, so every other construction stays inert.
+        #
+        # V1 (`review_evidence`) has had both halves since the port was
+        # introduced. V2 is the reviewer that actually runs after every
+        # completed turn -- once per turn, again on the bounded retry, and once
+        # per auto-repair round -- and it had neither: its tokens reached the
+        # Auto Mode reservation table and stopped there, which is a per-run
+        # ceiling, not the per-user window `check_quota` reads.
+        self.quota_gate = quota_gate
+        self.usage_sink = usage_sink
 
     @property
     def feature_enabled(self) -> bool:
@@ -673,6 +691,13 @@ class ScientificReviewService:
             frozen.get("snapshot_sha256") or ""
         ) != _storage_digest(_durable_snapshot_payload(frozen)):
             frozen = freeze_evidence_snapshot(frozen)
+        # Read off the snapshot rather than threaded through three callers:
+        # `collect_turn_evidence` writes it (evidence_snapshot.py), the frozen
+        # digest covers it, and it is present on the CLI path too. One source,
+        # so a caller that forgot to pass it cannot silently un-meter a review.
+        screening_frame_id = str(
+            (frozen.get("identity") or {}).get("root_frame_id") or ""
+        )
         identity = self.freeze_reviewer_identity(
             agent_cfg=agent_cfg,
             reviewer_cfg=reviewer_cfg,
@@ -730,6 +755,26 @@ class ScientificReviewService:
                     "cancelled": True,
                 }
             attempts += 1
+            # Outside the try below, because a swallowed gate is not a gate --
+            # and before `budget.reserve`, so a refusal leaves no reservation
+            # to release. Inside the loop, so the bounded retry is re-gated
+            # rather than inheriting the first attempt's admission.
+            #
+            # The refusal becomes a terminal result instead of propagating: on
+            # the way out, every enclosing handler maps any exception to
+            # `reviewer_inference_failed`, which would tell the user their
+            # Reviewer is broken when in fact their team is out of quota.
+            if self.quota_gate is not None and screening_frame_id:
+                try:
+                    self.quota_gate(screening_frame_id)
+                except QuotaExceeded:
+                    return self._budget_terminal(
+                        frozen,
+                        identity,
+                        findings,
+                        "quota_exceeded",
+                        attempts=attempts,
+                    )
             admission_id = None
             token_admission_id = None
             try:
@@ -786,9 +831,20 @@ class ScientificReviewService:
                             amount=bound,
                             token_upper_bound=bound,
                         )
-                model_result = review_snapshot(
-                    dict(frozen), reviewer_cfg, chat_call=invoke
-                )
+                try:
+                    model_result = review_snapshot(
+                        dict(frozen), reviewer_cfg, chat_call=invoke
+                    )
+                except BaseException as call_error:
+                    # The Auto Mode budget below settles this same failure on
+                    # its own table; this charges the OTHER ledger, the
+                    # per-user quota window. `charge_call` reads
+                    # `llm_not_started`, so a call that never left the process
+                    # is not billed -- the same discriminator the budget uses
+                    # at the `except` handler below.
+                    self._charge_review(screening_frame_id, call_error)
+                    raise
+                self._charge_review(screening_frame_id, model_result)
                 last_error = None
                 # The review reservation settles on its own terms. Gating it
                 # on `token_admission_id` -- as this did -- means a turn that
@@ -920,6 +976,23 @@ class ScientificReviewService:
             return None
         budgets = getattr(getattr(self.config, "auto_mode", None), "budgets", None)
         return AutoBudgetAdmission(store, budgets)
+
+    def _charge_review(self, root_frame_id: str, outcome: Any) -> None:
+        """Charge one Reviewer call to the session's quota window.
+
+        Separate from the Auto Mode budget that settles a few lines above it,
+        and deliberately so: `auto_mode_budget_reservations` is a per-Auto-Run
+        round and token ceiling, `usage_ledger` is the per-user/project sliding
+        window `check_quota` reads. Nothing reads one as the other, so this is
+        not a second charge for the same tokens -- it is the first charge in
+        the ledger that was blind to them.
+        """
+        from openai4s.llm.usage import charge_call
+
+        sink = self.usage_sink
+        if sink is None or not root_frame_id:
+            return
+        charge_call(lambda usage: sink(root_frame_id, usage), outcome)
 
     def _budget_terminal(
         self,
