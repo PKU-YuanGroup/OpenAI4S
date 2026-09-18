@@ -13,6 +13,8 @@ from openai4s.agent import Agent
 from openai4s.agent.delegation import DelegationError, DelegationRunner
 from openai4s.config import Config, RoadmapFeatureFlags, get_config
 from openai4s.kernel.readiness import EnvironmentReadinessError
+from openai4s.llm import normalize_usage
+from openai4s.llm.usage import measured_total
 
 
 class ScriptedLLM:
@@ -363,13 +365,32 @@ def test_submit_output_soft_fail_does_not_complete(monkeypatch):
     )
 
 
-class _MeteredLLM(ScriptedLLM):
-    """A ScriptedLLM whose every reply bills a fixed canonical usage."""
+#: The provider counters every ``_MeteredLLM`` reply carries, before the wire
+#: attests them.  Kept apart so the paired negatives below can show that this
+#: exact payload buys nothing on its own.
+_BILLED_COUNTERS = {
+    "prompt_tokens": 100,
+    "completion_tokens": 7,
+    "input_tokens": 100,
+    "output_tokens": 7,
+}
 
-    def __init__(self, replies, *, raise_on_call=None, after_call=None):
+
+class _MeteredLLM(ScriptedLLM):
+    """A ScriptedLLM whose every reply bills a fixed canonical usage.
+
+    This fake stands in for ``chat()``, which runs every provider reply
+    through ``normalize_usage`` — so it attests its usage the same way, and a
+    frame charged from it is charged from measurement evidence rather than
+    from a key scan.  ``attested=False`` skips that seam to model a producer
+    nobody measured; the meter must then charge nothing.
+    """
+
+    def __init__(self, replies, *, raise_on_call=None, after_call=None, attested=True):
         super().__init__(replies)
         self.raise_on_call = raise_on_call
         self.after_call = after_call
+        self.attested = attested
         self.observed_status: list[str | None] = []
         self.agent = None
 
@@ -380,12 +401,13 @@ class _MeteredLLM(ScriptedLLM):
         if self.raise_on_call is not None:
             raise self.raise_on_call
         reply = super().__call__(messages, cfg, **kw)
-        reply["usage"] = {
-            "prompt_tokens": 100,
-            "completion_tokens": 7,
-            "input_tokens": 100,
-            "output_tokens": 7,
-        }
+        # The suite's configured provider is `deepseek`, whose wire is the
+        # OpenAI-compatible Chat one — `chatgpt` is its usage mapping.
+        reply["usage"] = (
+            normalize_usage(dict(_BILLED_COUNTERS), "chatgpt")
+            if self.attested
+            else dict(_BILLED_COUNTERS)
+        )
         if self.after_call is not None:
             self.after_call()
         return reply
@@ -426,6 +448,41 @@ def test_cli_root_frame_is_done_with_token_totals_after_submit(monkeypatch):
     assert frame["status"] == "done"
     assert frame["input_tokens"] == 100
     assert frame["output_tokens"] == 7
+    # Paired negative: the totals above are bought by the attestation, not by
+    # the counters' shape.  The same payload as a bare dict buys nothing, so
+    # this test cannot pass on a meter that key-scans whatever it is handed.
+    assert measured_total(dict(_BILLED_COUNTERS)) is None
+
+
+def test_cli_root_frame_is_not_charged_for_an_unmeasured_reply(monkeypatch):
+    """An unattested reply must be charged nothing, not key-scanned.
+
+    The paired negative for every ``_MeteredLLM`` total in this file, driven
+    through the real ``Agent._record_frame_usage`` rather than through the
+    meter alone: a reply that never passed the ``normalize_usage``
+    attestation seam carries counters that *look* chargeable, and charging
+    them would enter an unmeasured reply into per-session accounting as
+    though it had been measured.
+    """
+    scripted = _MeteredLLM(
+        ["```python\nhost.submit_output({'a': 1}, ['Computed the answer'])\n```"],
+        attested=False,
+    )
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=3)
+
+    assert agent.run("submit once")["stop_reason"] == "submitted"
+
+    frame = _root_frame_row(agent)
+    assert frame["status"] == "done"
+    assert frame["input_tokens"] == 0
+    assert frame["output_tokens"] == 0
+    # End to end the zero above is produced by `copy_usage` refusing to mint
+    # evidence, so it survives a revert of the meter's own fallback. Assert
+    # that half directly, or this test guards only one of the two.
+    from openai4s.llm.usage import measured_total
+
+    assert measured_total(dict(_BILLED_COUNTERS)) is None
 
 
 def test_cli_root_frame_is_failed_after_max_turns(monkeypatch):

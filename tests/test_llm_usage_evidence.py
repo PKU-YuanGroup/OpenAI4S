@@ -279,16 +279,38 @@ def test_local_resource_errors_use_safe_bilingual_projection(kind):
 
 @pytest.mark.parametrize("wire", ["review", "scientific"])
 @pytest.mark.parametrize(
-    "raw,total", [({}, None), ({"input_tokens": 7, "output_tokens": 3}, 10)]
+    "attested,total",
+    [
+        (None, None),  # the reply carried no usage at all
+        (True, 10),  # the adapter attested the counters it received
+        (False, None),  # the same counters, unattested -- refused, not charged
+    ],
 )
 @pytest.mark.parametrize("malformed", [False, True])
 def test_reviewer_projection_and_parse_errors_preserve_original_usage(
-    wire, raw, total, malformed
+    wire, attested, total, malformed
 ):
+    """The injected ``chat_call`` is this path's attestation seam: ``review_evidence``
+    and ``review_snapshot`` call it directly, never through ``llm.chat``. So what
+    the projection must carry through both the success return and the parse-error
+    return is the adapter's *evidence*, not its display keys -- an attested
+    measurement stays chargeable, and the identical counters from an unattested
+    adapter stay refused."""
+
     from openai4s.review import review_evidence
     from openai4s.scientific_reviewer import review_snapshot
 
     invoke = review_evidence if wire == "review" else review_snapshot
+    counters = {"input_tokens": 7, "output_tokens": 3}
+    if attested is None:
+        raw = {}
+    elif attested:
+        raw = llm.normalize_usage(counters, "chatgpt")
+        # Paired negative: the very same counters as a bare dict are refused, so
+        # the assertion below turns on the attestation and not on the key names.
+        assert measured_total(dict(counters)) is None
+    else:
+        raw = dict(counters)
 
     def chat_call(*_args, **_kwargs):
         return {
@@ -309,6 +331,8 @@ def test_reviewer_projection_and_parse_errors_preserve_original_usage(
     else:
         usage = invoke({}, cfg(), chat_call=chat_call)["usage"]
     assert measured_total(usage) == total
+    if attested is not None:
+        assert usage["input_tokens"] == 7  # the display survives the refusal
 
 
 @pytest.mark.parametrize("cache", [None, "bad", -1, False])
@@ -524,3 +548,102 @@ def test_cli_frame_meter_charges_what_the_web_frame_meter_charges():
     agent._record_frame_usage(measured)
 
     assert charged == [("frame-1", 0, 0), ("frame-1", 7, 3)]
+
+
+@pytest.mark.parametrize(
+    "strip",
+    [
+        pytest.param(dict, id="dict()"),
+        pytest.param(lambda u: {**u}, id="spread"),
+        pytest.param(lambda u: json.loads(json.dumps(u)), id="json-round-trip"),
+        pytest.param(lambda u: {k: v for k, v in u.items()}, id="comprehension"),
+    ],
+)
+def test_a_copy_that_lost_its_evidence_is_refused_not_recertified(strip):
+    """``dict(x)`` on a dict subclass builds a plain dict through CPython's
+    concrete fast path -- there is no dunder to intercept it -- so these four
+    copies CANNOT carry provenance. That is exactly why a meter refuses a
+    plain mapping instead of re-deriving counters from one: the old key scan
+    could not tell a stripped copy from a raw provider payload, and certified
+    counters the evidence had refused. Refusing costs an ``*_unknown`` row;
+    trusting costs a silent overrun of the Auto Mode budget and the quota
+    ledger."""
+
+    unmeasured = llm.normalize_usage(
+        RawUsage({"prompt_tokens": 1200, "completion_tokens": 340}, final=False),
+        "chatgpt",
+    )
+    assert measured_total(unmeasured) is None
+    stripped = strip(unmeasured)
+    assert stripped["total_tokens"] == 1540  # the public shape is unchanged
+    assert measured_total(stripped) is None
+    assert verifiable_token_usage(stripped) is None
+    # copy_usage used to *mint* evidence for an evidence-less input, which
+    # laundered a stripped copy back into an audited-looking value.
+    assert measured_total(copy_usage(stripped)) is None
+
+
+def test_evidence_survives_every_copy_python_can_intercept():
+    """The counterpart: the refusal above must not swallow a real
+    measurement, and every channel that DOES route through a dunder is
+    sealed."""
+
+    import copy as copy_mod
+    import pickle
+
+    from openai4s.llm.usage import UsageMetrics
+
+    measured = llm.normalize_usage(
+        RawUsage({"prompt_tokens": 1200, "completion_tokens": 340}, final=True),
+        "chatgpt",
+    )
+    assert measured_total(measured) == 1540
+    for clone in (
+        measured.copy(),
+        copy_mod.copy(measured),
+        copy_mod.deepcopy(measured),
+        pickle.loads(pickle.dumps(measured)),
+        measured | {},
+    ):
+        assert type(clone) is UsageMetrics
+        assert measured_total(clone) == 1540
+
+
+def test_asdict_neither_crashes_nor_inverts_the_trust_bit():
+    """``dataclasses.asdict`` rebuilds a dict field as ``type(obj)(pairs)``.
+    A Mapping-only constructor made that raise for ``UsageMetrics`` and, worse,
+    silently hand ``RawUsage`` an EMPTY dict marked final=True -- counters lost
+    and the trust bit inverted to "measured" in one step."""
+
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Box:
+        usage: dict
+
+    rebuilt = dataclasses.asdict(
+        Box(usage=RawUsage({"prompt_tokens": 5}, final=False))
+    )["usage"]
+    assert dict(rebuilt) == {"prompt_tokens": 5}  # was {} -- counters lost
+    assert rebuilt.final is False  # was True -- trust inverted
+    assert measured_total(rebuilt) is None
+
+    metrics = llm.normalize_usage(
+        {"prompt_tokens": 7, "completion_tokens": 3}, "chatgpt"
+    )
+    # Was TypeError: __init__() missing 1 required positional argument.
+    assert measured_total(dataclasses.asdict(Box(usage=metrics))["usage"]) is None
+
+
+def test_measuring_a_verdict_twice_is_the_identity():
+    """The one production path that meters twice -- ``_canonical_usage`` hands
+    its result to ``record_session_llm_usage``, which measures again -- used to
+    depend on the trusting key scan for its second pass. The verdict carries
+    its own type instead."""
+
+    measured = llm.normalize_usage(
+        RawUsage({"prompt_tokens": 7, "completion_tokens": 3}, final=True), "chatgpt"
+    )
+    once = measured_usage(measured)
+    assert measured_usage(once) is once
+    assert measured_total(once) == 10

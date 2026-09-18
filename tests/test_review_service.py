@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from openai4s.config import LLMConfig
+from openai4s.llm import normalize_usage
+from openai4s.llm.usage import copy_usage, measured_total
 from openai4s.server.reviews import ReviewPorts, ReviewService
 
 
@@ -154,6 +156,25 @@ class HeldThreads:
 
     def run(self, index=0):
         self.created[index]["target"]()
+
+
+def _provider_usage(input_tokens, output_tokens):
+    """The usage a real reviewer call returns.
+
+    ``review.review_evidence`` gets its counters from ``chat``, which attests
+    them at the wire seam with ``normalize_usage``, and then projects them with
+    ``copy_usage``. A fake that returns a bare dict skips that seam, and a bare
+    dict carries no provenance -- so a meter refuses it rather than certifying
+    numbers nothing attested. Each test below pairs its charge with that
+    refusal.
+    """
+    return copy_usage(
+        normalize_usage(
+            {"input_tokens": input_tokens, "output_tokens": output_tokens},
+            "chatgpt",
+        ),
+        {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    )
 
 
 def _service(
@@ -354,7 +375,7 @@ def test_run_builds_evidence_persists_usage_and_streams_exact_steps(tmp_path):
             "verdict": "pass",
             "summary": "No issues found",
             "issues": [],
-            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "usage": _provider_usage(11, 3),
             "model": cfg.model,
         }
 
@@ -392,6 +413,27 @@ def test_run_builds_evidence_persists_usage_and_streams_exact_steps(tmp_path):
     assert [event["status"] for event in events] == ["running", "done"]
     assert threads.created[0]["name"] == "openai4s-review-call-frame"
     assert threads.created[0]["daemon"] is True
+
+    # Paired negative for the charge above: a second review reporting the same
+    # numbers as a bare dict never passed the attestation seam, so the frame
+    # counters must record nothing rather than certify what no one measured.
+    reviews["call"] = lambda _evidence, cfg: {
+        "verdict": "pass",
+        "summary": "No issues found",
+        "issues": [],
+        "usage": {"input_tokens": 11, "output_tokens": 3},
+        "model": cfg.model,
+    }
+    service.run(
+        state,
+        events.append,
+        user_text="Create a report",
+        assistant_text="Report created",
+        artifact_versions_before={"old": "v1"},
+        cell_count_before=1,
+        step_count_before=0,
+    )
+    assert store.tokens == [("frame", 11, 3), ("frame", 0, 0)]
 
 
 def test_run_honors_pre_provider_cancel_without_starting_provider():
@@ -461,7 +503,7 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
         return {
             "verdict": "pass",
             "summary": "No issues found",
-            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "usage": _provider_usage(11, 3),
         }
 
     service, store, state, events, _jobs, _reviews = _service(
@@ -501,6 +543,9 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     assert events[-1]["summary"] == "Review cancelled"
 
     assert store.tokens == [("frame", 11, 3)]
+    # Paired negative: the charge above holds because the fake's usage is
+    # attested, not because the counters look plausible.
+    assert measured_total({"input_tokens": 11, "output_tokens": 3}) is None
 
 
 def test_submit_manual_review_preserves_status_tail_and_job_pruning():
@@ -624,7 +669,7 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
             "verdict": "pass",
             "summary": "No issues found",
             "issues": [],
-            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "usage": _provider_usage(11, 3),
             "model": cfg.model,
         }
         service.run(
@@ -643,5 +688,33 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
         }
         assert totals.get("llm_input_tokens") == 11, totals
         assert totals.get("llm_output_tokens") == 3, totals
+
+        # Paired negative: an unattested reply must not fill the same limit.
+        # The ledger records the refusal as an `_unknown` row and the charged
+        # totals stay where the attested call left them.
+        reviews["call"] = lambda _evidence, cfg: {
+            "verdict": "pass",
+            "summary": "No issues found",
+            "issues": [],
+            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "model": cfg.model,
+        }
+        service.run(
+            state,
+            events.append,
+            user_text="Create a report",
+            assistant_text="Report created",
+            artifact_versions_before={},
+            cell_count_before=0,
+            step_count_before=0,
+        )
+        totals = {
+            row["kind"]: row["total"]
+            for row in store.governance.usage_summary(user_id=user["id"])
+        }
+        assert totals.get("llm_input_tokens") == 11, totals
+        assert totals.get("llm_output_tokens") == 3, totals
+        assert totals.get("llm_input_tokens_unknown") == 1, totals
+        assert totals.get("llm_output_tokens_unknown") == 1, totals
     finally:
         store.close()

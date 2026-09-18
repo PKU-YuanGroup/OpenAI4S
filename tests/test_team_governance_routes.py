@@ -13,6 +13,8 @@ import pytest
 from openai4s.agent.ledger import RuntimeActionLedger
 from openai4s.agent.runtime import ChatModel
 from openai4s.config import LLMConfig
+from openai4s.llm import normalize_usage
+from openai4s.llm.usage import MeasuredUsage, RawUsage
 from openai4s.storage.governance import QuotaExceeded
 from tests.test_team_auth_routes import (  # noqa: F401  (fixture reuse)
     _fast_pbkdf2,
@@ -753,19 +755,55 @@ def test_ledger_attributes_llm_usage_to_the_owner(daemon):
     ledger = RuntimeActionLedger(
         store=daemon.store, root_frame_id=fid, turn_id="turn-1"
     )
-    ledger._record_team_usage({"input_tokens": 100, "output_tokens": 7})
+    # Each value enters the ledger in the shape its production caller hands
+    # it: `_reply_accounting` has already run the reply through
+    # `measured_usage`, so what reaches `_record_team_usage` is a verdict.
+    ledger._record_team_usage(MeasuredUsage({"input_tokens": 100, "output_tokens": 7}))
     # A provider may finish after Stop has already quarantined its content.
-    # Those counters still belong to the session owner and quota ledger.
-    ledger.record_abandoned_usage({"input_tokens": 11, "output_tokens": 2})
-    # The gateway forwards the reply's own usage mapping, so the alias-only
-    # OpenAI shape has to meter too: `record_session_llm_usage` reads the
-    # canonical names, and dropping the aliases would let Stop bypass the
-    # quota ledger silently -- exactly what this path exists to prevent.
-    ledger.record_abandoned_usage({"prompt_tokens": 5, "completion_tokens": 1})
+    # Those counters still belong to the session owner and quota ledger. A
+    # late *reply* carries the normalized usage `chat()` attested.
+    ledger.record_abandoned_usage(
+        normalize_usage({"input_tokens": 11, "output_tokens": 2}, "chatgpt")
+    )
+    # A late *error* instead carries the provider's own `RawUsage` straight
+    # off the wire, so the alias-only OpenAI shape has to meter too:
+    # `record_session_llm_usage` reads the canonical names, and dropping the
+    # aliases would let Stop bypass the quota ledger silently -- exactly what
+    # this path exists to prevent.
+    ledger.record_abandoned_usage(
+        RawUsage({"prompt_tokens": 5, "completion_tokens": 1}, final=True)
+    )
     rows = daemon.store.governance.usage_summary(user_id=_uid(daemon, "alice"))
     by_kind = {r["kind"]: r["total"] for r in rows}
     assert by_kind["llm_input_tokens"] == 116
     assert by_kind["llm_output_tokens"] == 10
+    assert "llm_input_tokens_unknown" not in by_kind
+
+    # The paired refusal, on the same call path: the very same counters as a
+    # bare mapping carry no attestation -- nothing says they describe a
+    # finished generation -- so the ledger must refuse to charge them and
+    # record the gap loudly instead. Charging an unmeasured reply into the
+    # quota ledger is the silent failure; an `*_unknown` row is the loud one.
+    ledger.record_abandoned_usage({"input_tokens": 1000, "output_tokens": 1000})
+    rows = daemon.store.governance.usage_summary(user_id=_uid(daemon, "alice"))
+    by_kind = {r["kind"]: r["total"] for r in rows}
+    assert by_kind["llm_input_tokens"] == 116  # unchanged by the bare dict
+    assert by_kind["llm_output_tokens"] == 10
+    assert by_kind["llm_input_tokens_unknown"] == 1
+    assert by_kind["llm_output_tokens_unknown"] == 1
+
+    # ...and again straight at the sink. The refusal above is `_canonical_usage`'s:
+    # it converts the bare mapping to None one layer up, so `record_session_llm_usage`
+    # never sees it. The sink carries its own guard, and the reviewer's provider path
+    # reaches it WITHOUT passing through `_canonical_usage` -- so without this,
+    # that half of the fix could be reverted with this file still green.
+    ledger._record_team_usage({"input_tokens": 2000, "output_tokens": 2000})
+    rows = daemon.store.governance.usage_summary(user_id=_uid(daemon, "alice"))
+    by_kind = {r["kind"]: r["total"] for r in rows}
+    assert by_kind["llm_input_tokens"] == 116  # unchanged by the bare dict
+    assert by_kind["llm_output_tokens"] == 10
+    assert by_kind["llm_input_tokens_unknown"] == 2
+    assert by_kind["llm_output_tokens_unknown"] == 2
 
     # no ownership row -> no rows written (single-user inertness, INV-1)
     orphan = daemon.store.new_frame(kind="turn", status="ready")
@@ -773,7 +811,10 @@ def test_ledger_attributes_llm_usage_to_the_owner(daemon):
         store=daemon.store, root_frame_id=orphan, turn_id="turn-2"
     )
     before = len(daemon.store.governance.usage_summary())
-    ledger2._record_team_usage({"input_tokens": 5, "output_tokens": 5})
+    # Attested, so the assertion below is about the missing owner and not
+    # about the refusal above -- an unowned session writes neither counters
+    # nor `*_unknown` rows.
+    ledger2._record_team_usage(MeasuredUsage({"input_tokens": 5, "output_tokens": 5}))
     assert len(daemon.store.governance.usage_summary()) == before
 
 

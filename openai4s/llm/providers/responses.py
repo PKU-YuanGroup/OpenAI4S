@@ -137,7 +137,9 @@ def _chat_responses(
             # Preserve the native detail objects here; the provider-neutral
             # client maps them after the wire call.  Flattening at this layer
             # would discard cached/reasoning counters before normalization.
-            state["usage"] = dict(u)
+            # Stated, not inherited: every sibling branch below builds a
+            # RawUsage with an explicit `final`.
+            state["usage"] = RawUsage(u, final=True)
             return True
         elif t == "response.incomplete":
             response = evt.get("response") or {}
