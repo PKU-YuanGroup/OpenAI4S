@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentId } from "../../stores/session";
+import { setLang } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
-import { stream } from "../../stores/stream";
+import { running, stream } from "../../stores/stream";
+import { failureHint, failureMeta } from "../send/turn";
 import { installNotebook } from "../notebook/install";
 import { setNotebookRenderImpl } from "../notebook/scroll";
 import { turnDone } from "../send/turn";
@@ -176,7 +178,8 @@ const marker = {
   cancelled: { reason: "user", request_id: "req-1", execution_id: "exec-1" },
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await setLang("en");
   resetStoreFields();
   doc = new FakeDoc();
   vi.stubGlobal("document", doc);
@@ -189,6 +192,46 @@ afterEach(() => {
 });
 
 describe("stopped turn marker", () => {
+  it.each(["llm_stream_timeout", "llm_stream_interrupted", "no_progress"])(
+    "offers explicit continuation for %s live and on reopen",
+    async (code) => {
+      currentId.value = "recoverable-frame";
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal("send", send);
+      vi.stubGlobal("failureMeta", failureMeta);
+      vi.stubGlobal("Node", FakeEl);
+      const failure = { code, output_committed: true, request_id: "req-recovery" };
+      startStream();
+      feed("text", "Received part of the answer.\n", { type: "text_chunk", block_type: "text" });
+      const wrap = live().wrap as unknown as FakeEl;
+      turnDone("failed", failure);
+      expect(wrap.querySelector(".msg-failure-meta")!.dataset.failureCode).toBe(code);
+      expect(wrap.querySelectorAll(".turn-continue")).toHaveLength(1);
+      expect(failureHint(failure)).not.toContain("retrying would repeat work");
+
+      const click = wrap.querySelector(".turn-continue")!.onclick as () => Promise<void>;
+      await click();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]![0]).toContain("completed work");
+      running.value = true;
+      await click();
+      expect(send).toHaveBeenCalledTimes(1);
+      running.value = false;
+
+      for (const render of [renderStored, renderOlderPage]) {
+        const restored = render({ role: "assistant", content: "Stopped.", failure }) as unknown as FakeEl;
+        expect(restored.querySelectorAll(".turn-continue")).toHaveLength(1);
+        expect(restored.querySelector(".msg-failure-meta")!.dataset.failureCode).toBe(code);
+      }
+      await click();
+      expect(send).toHaveBeenCalledTimes(1); // an older failure cannot submit a new turn
+      currentId.value = "another-frame";
+      const latest = doc.host.querySelectorAll(".turn-continue").at(-1)!;
+      await (latest.onclick as () => Promise<void>)();
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("renders the streamed marker as a stopped marker and stops the running card", () => {
     startStream();
     feed("text", "I have prepared a Python cell and am running it now.\n", {

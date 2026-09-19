@@ -8,6 +8,7 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 
 | File | Responsibility |
 | --- | --- |
+| [`failure.ts`](failure.ts) | Shared live and restored failure hints, with explicit continuation for stream interruption and repeated-action stops. |
 | [`cardState.ts`](cardState.ts) | The live activity card's state: a new Cell card shows a progress glyph (not the success check) and records its `producing_cell_id`; `notebook_cell_finished` (forwarded by the Notebook's handler) marks that card failed (x glyph, error bar, "Failed · N lines"), succeeded or stopped; `turnDone` settles any card still running to a neutral "ended". The generated "Running analysis · cell N" title becomes "Analysis · cell N" once the cell ends; a cell's own title stays. Feature-local copy. |
 | [`copy.ts`](copy.ts) | Source-owned bilingual history-recovery text; generated locale extracts stay unchanged. |
 | [`components.tsx`](components.tsx) | `MessageList` (`#messages` / `#jump-pill`), accessible history status/retry outside the message host, and `StreamingPre`. |

@@ -75,3 +75,7 @@
     animation: spin 1s linear infinite;
   }
 }
+.msg-failure-meta .turn-continue {
+  margin-inline-start: 0.75rem;
+  cursor: pointer;
+}
