@@ -1069,6 +1069,16 @@ def test_an_exception_that_never_reached_the_provider_is_not_charged():
     assert [measured_usage(u)["input_tokens"] for u in charged] == [12]
 
 
+#: What a SERIALISED caller spends against a 100-token window at 40 tokens a
+#: call. The check runs before the spend, so `used` is 0, 40 and 80 -- each
+#: under the limit -- and only the fourth is refused, at 120. No gate can do
+#: better than serial, so 120 is the ceiling these tests hold the fan-out to.
+#: The defect they pin put 1280 through, so the margin is not delicate; an
+#: earlier draft asserted 100 and went red on a runner that scheduled three
+#: calls where this machine scheduled one.
+SERIAL_CEILING = 120
+
+
 def _fanout_service(store, root, *, chat, cap=32):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1132,7 +1142,7 @@ def test_a_fanout_cannot_outrun_the_quota_it_is_gated_by(tmp_path):
         with pytest.raises(QuotaExceeded):
             service.complete({"batch": batch})
         charged = _ledger(store, user_id).get("llm_input_tokens", 0)
-        assert charged <= 100, charged
+        assert charged <= SERIAL_CEILING, charged
         # Nothing is left promised once the batch unwinds, or the window would
         # shrink for the rest of the daemon's life.
         assert service._inflight_input == 0.0
@@ -1188,7 +1198,7 @@ def test_asking_for_nothing_does_not_reserve_nothing(tmp_path):
         with pytest.raises(QuotaExceeded):
             service.complete({"batch": batch})
         assert len(calls) < 32, len(calls)
-        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= 100
+        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= SERIAL_CEILING
         assert service._inflight_input == 0.0
 
 
@@ -1249,7 +1259,7 @@ def test_an_unpriceable_message_does_not_buy_free_concurrency(tmp_path, poison):
                 {"batch": [{"messages": [dict(poison)]} for _ in range(32)]}
             )
         assert len(calls) < 32, len(calls)
-        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= 100
+        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= SERIAL_CEILING
         assert service._inflight_input == 0.0
 
 
@@ -1382,7 +1392,7 @@ def test_a_boolean_cap_is_priced_like_the_wire_reads_it(tmp_path):
         assert service._projected(spec, service.config) != (0.0, 0.0)
         with pytest.raises(QuotaExceeded):
             service.complete({"batch": [dict(spec) for _ in range(32)]})
-        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= 100
+        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= SERIAL_CEILING
 
 
 def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):

@@ -183,10 +183,26 @@ export async function navigationChecks(page, api) {
       page.on("request", observe);
       try {
         await page.locator("#dash-projects .d-row").filter({ hasText: a.name }).click();
-        await waitUntil("project session read pending", held.waiting).catch((error) => {
+        await waitUntil("project session read pending", held.waiting).catch(async (error) => {
+          // The six reads the first diagnostic caught were all `?limit=50`,
+          // the dashboard's own Running poll, and not one carried a
+          // project_id -- so the click did not open the project. Two things
+          // can produce that and they want opposite fixes: the click never
+          // took effect (the dashboard is still up), or it did and the app
+          // served the project from cache without a read. This says which.
+          const after = await page
+            .evaluate(() => ({
+              dashboardVisible: !document
+                .querySelector("#dashboard")
+                ?.classList.contains("hidden"),
+              rows: document.querySelectorAll("#dash-projects .d-row").length,
+              project: window.S?.currentProjectId ?? null,
+            }))
+            .catch((probe) => ({ probeFailed: String(probe).slice(0, 120) }));
           throw new Error(
             `${error.message}; expected project_id=${a.pid} without a cursor, ` +
-            `page issued ${frameReads.length} /frames read(s): ${JSON.stringify(frameReads)}`,
+            `page issued ${frameReads.length} /frames read(s): ${JSON.stringify(frameReads)}; ` +
+            `after the click: ${JSON.stringify(after)}`,
           );
         });
         await held.finish(fault);
