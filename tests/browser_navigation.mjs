@@ -168,21 +168,34 @@ export async function navigationChecks(page, api) {
     ]) {
       await page.locator("#back-home").click();
       const held = await holdResponse(page, sessionRead(a));
+      // What the page actually asked for while we waited. When this times out
+      // in CI it has always burned the WHOLE budget -- 21s of scene work then
+      // 20s, and then 60s when the timeout was raised -- so the read is not
+      // arriving late, it is not arriving. Raising the clock only made the
+      // failure slower, so the clock is back to the default and the failure
+      // now carries the evidence needed to tell "no request was issued" from
+      // "a request was issued with different params".
+      const frameReads = [];
+      const observe = (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === "/api/v1/frames") frameReads.push(url.search || "(no query)");
+      };
+      page.on("request", observe);
       try {
         await page.locator("#dash-projects .d-row").filter({ hasText: a.name }).click();
-        // 60s, not the 20s default: this polls for a request the click has
-        // already triggered to reach the handler, and on a loaded runner the
-        // whole navigation scene has been measured at 77s against 23.6s
-        // nominal. A pending read that has not arrived in a minute is a real
-        // failure; one that has not arrived in twenty seconds is a slow box.
-        await waitUntil("project session read pending", held.waiting, 60000);
+        await waitUntil("project session read pending", held.waiting).catch((error) => {
+          throw new Error(
+            `${error.message}; expected project_id=${a.pid} without a cursor, ` +
+            `page issued ${frameReads.length} /frames read(s): ${JSON.stringify(frameReads)}`,
+          );
+        });
         await held.finish(fault);
         await page.locator('[data-read-error="sessions"]').waitFor();
         assert.equal(framePosts, 0);
         await page.locator('[data-read-error="sessions"] button').click();
         await rows(a, 100);
         assert.equal(await page.locator('[data-read-error="sessions"]').count(), 0);
-      } finally { await held.finish(); }
+      } finally { page.off("request", observe); await held.finish(); }
     }
     assert.equal(framePosts, 0);
     // Browser history can open a project while a conversation is still on

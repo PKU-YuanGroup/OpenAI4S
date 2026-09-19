@@ -1633,9 +1633,20 @@ def test_a_deeply_nested_request_still_gets_a_bound():
     from openai4s.config import LLMConfig
     from openai4s.server.auto_budget import token_upper_bound_parts
 
+    # 600, and the number is load-bearing in both directions. The recursive
+    # count died from ~450 on the oldest supported interpreter, so this is
+    # past it; and `json.dumps` -- which this function still calls, and which
+    # has its own limit tied to the interpreter's recursion limit -- handles
+    # 600 on 3.10 but not 1500. An earlier draft used 2000 and passed on 3.13
+    # while failing on 3.10 for a reason that has nothing to do with the count.
+    #
+    # Deeper than json itself can go is not left unguarded, it is simply not
+    # this function's problem: `LLMService` treats any raise as unpriceable and
+    # runs such a call alone, which
+    # `test_a_call_nobody_can_price_runs_alone` pins.
     head = {"role": "user", "content": "x", "d": None}
     node = head
-    for _ in range(2000):
+    for _ in range(600):
         node["d"] = {"n": None}
         node = node["d"]
 
@@ -1644,6 +1655,6 @@ def test_a_deeply_nested_request_still_gets_a_bound():
     assert parts is not None, "a deep request must be priceable, not free"
     prompt, completion, attempts = parts
     # Priced in proportion to what it is, not flattened to a token amount that
-    # would let it through: 2000 nested nodes at the per-node allowance.
-    assert prompt > 64 * 2000
+    # would let it through: 600 nested nodes at the per-node allowance.
+    assert prompt > 64 * 600
     assert (completion, attempts) == (64, 3)

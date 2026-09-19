@@ -1253,23 +1253,6 @@ def test_an_unpriceable_message_does_not_buy_free_concurrency(tmp_path, poison):
         assert service._inflight_input == 0.0
 
 
-def _deep_message(depth=2000):
-    """A message deep enough to have broken the pricer's node count.
-
-    Not `json.dumps` -- the C encoder serialises depth 5000 without complaint.
-    It was `token_upper_bound_parts`' own recursive `nodes()` walk, which
-    raised past ~500 levels, and the caller read any raise as "unpriceable",
-    which it treated as free. The count is iterative now, so this is priced;
-    the fixture stays as a regression guard on both halves.
-    """
-    head = {"role": "user", "content": "x", "d": None}
-    node = head
-    for _ in range(depth):
-        node["d"] = {"n": None}
-        node = node["d"]
-    return head
-
-
 def test_a_call_nobody_can_price_runs_alone(tmp_path):
     """Three bypasses of this gate were one shape: make the request
     unpriceable and the promise is 0, so every sibling starts against the same
