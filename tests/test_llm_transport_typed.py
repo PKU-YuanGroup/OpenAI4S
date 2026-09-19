@@ -415,6 +415,59 @@ def test_sse_failure_after_committed_output_is_never_retried(
     assert seen == [{"delta": "committed"}]
 
 
+def test_sse_event_handler_failure_is_not_an_upstream_interruption(monkeypatch):
+    """The read loop's handler also covers ``on_event``. A local bug there
+    must not be classified as the stream being cut: that class offers the user
+    a continuation, which would only reproduce the same local error."""
+
+    class _Stream:
+        def __iter__(self):
+            yield b'data: {"delta":"committed"}\n'
+            yield b"\n"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+
+    def broken_handler(event):
+        raise KeyError("private handler detail")
+
+    with pytest.raises(TransportError) as e:
+        post_sse("https://x.invalid", {}, {}, 5, broken_handler, sleep=_Recorder())
+    assert llm_failure_code(e.value) is None
+    assert e.value.output_committed is True
+    assert e.value.retryable is False
+    assert "private handler detail" not in str(e.value)
+
+
+def test_sse_timeout_keeps_its_code_when_the_retry_budget_runs_out(monkeypatch):
+    """The budget rewrap used to build a plain TransportError, which dropped
+    the stream classification on the uncommitted path."""
+
+    class _Stream:
+        def __iter__(self):
+            raise TimeoutError("no first byte")
+            yield  # pragma: no cover
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+    with pytest.raises(TransportError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            lambda event: None,
+            retry_budget=0.0,
+            sleep=_Recorder(),
+        )
+    assert "retry budget" in str(e.value)
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+
+
 def test_sse_read_failure_before_any_event_is_retryable(monkeypatch):
     class _Stream:
         def __iter__(self):

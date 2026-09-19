@@ -236,7 +236,9 @@ def _retry_loop(
                 # Report the real reason rather than silently giving up: a
                 # 300s Retry-After is a legitimate answer that this call is
                 # simply not allowed to wait out.
-                raise TransportError(
+                # ``type(err)``: a stream read failure keeps its class, and
+                # with it the stable failure code the recovery path keys on.
+                raise type(err)(
                     f"{last} (retry budget of {retry_budget}s exhausted; the "
                     f"provider asked for {delay:.1f}s more)",
                     provider=provider,
@@ -420,7 +422,22 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
         if not isinstance(event, dict):
             raise LLMError("LLM event stream yielded a non-object JSON event")
         committed = True
-        on_event(event)
+        try:
+            on_event(event)
+        except LLMError:
+            raise
+        except Exception as e:  # noqa: BLE001 - a handler bug is not a read failure
+            # Typed here, inside the read loop's own handler, so a local
+            # failure in the caller's event handler is never classified as the
+            # upstream interrupting the stream -- that class offers the user a
+            # continuation which would only reproduce the same local error.
+            raise TransportError(
+                f"LLM event handler failed: {type(e).__name__}",
+                provider=provider,
+                operation="post_sse",
+                retryable=False,
+                output_committed=True,
+            ) from e
 
     try:
         try:
