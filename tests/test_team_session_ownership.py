@@ -127,6 +127,44 @@ def test_cross_user_read_is_404_not_403(daemon):
         assert status == 404, (path, raw[:200])
 
 
+def test_a_project_member_may_read_a_project_visible_session(daemon):
+    """Project visibility is deliberately broader than ownership, and this is
+    the route where that shows.
+
+    `may_control_session` says it in words -- "Project visibility ... can make a
+    session readable, but it must not let another project member cancel the
+    owner's scheduler allocation" -- and `GET /frames/{id}/messages` is pinned
+    as *not* a session-control mutation in test_team_governance. A reviewer
+    reading only `_team_require_session_control` sees no guard on this route and
+    concludes it is unguarded; the guard is `_team_scope_guard`, which matches
+    every `/frames/{id}/...` path and answers 404 unless the caller may see the
+    session. Adding the control predicate here would 403 the read below, which
+    the artifact provenance panel and the main session view both depend on.
+    """
+    a = _login(daemon, "alice", "fake-pw-a")
+    b = _login(daemon, "bob", "fake-pw-b")
+    fid_a = _create_session(daemon, a)
+    bob_id = daemon.store.team.get_user_by_username("bob")["id"]
+    daemon.store.governance.set_member(_project_id(daemon), bob_id)
+
+    # Sessions are created `project`-visible (test_creation_records_the_owner).
+    status, raw = _get(daemon.port, f"/api/v1/frames/{fid_a}/messages", cookie=b)
+    assert status == 200, raw[:300]
+    assert _body(raw)["messages"], "the positive control must not be an empty read"
+
+    # ...and the owner can still take it back, on this same route.
+    assert (
+        _post(
+            daemon.port,
+            f"/api/v1/frames/{fid_a}/visibility",
+            {"visibility": "private"},
+            cookie=a,
+        )[0]
+        == 200
+    )
+    assert _get(daemon.port, f"/api/v1/frames/{fid_a}/messages", cookie=b)[0] == 404
+
+
 def test_cross_user_operations_are_refused(daemon):
     a = _login(daemon, "alice", "fake-pw-a")
     b = _login(daemon, "bob", "fake-pw-b")
