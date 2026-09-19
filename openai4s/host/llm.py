@@ -67,15 +67,25 @@ class LLMService:
         over-refuses, and a quota that turns away work it was never going to
         cost is its own defect. Unknown bounds are 0, which leaves the gate
         exactly as strong as it was before -- honest, rather than a guess
-        wearing a limit's name.
+        wearing a limit's name. The responses wire is the live case: the bound
+        declines to certify it, so a fan-out there is admitted exactly as it
+        was before this gate existed.
         """
         from openai4s.server.auto_budget import token_upper_bound_parts
 
+        # Price what the wire will SEND, not what the spec asked for. Every
+        # adapter resolves the cap as `max_tokens or cfg.max_tokens`, so a
+        # spec asking for 0 still sends the configured cap -- while the bound
+        # reads 0 as "no completion" and declines to price the call at all.
+        # A cell could therefore reserve nothing by asking for nothing:
+        # measured at `max_tokens: 0` putting all 32 fan-out items through a
+        # 100-token window again, the whole overshoot back in one field.
+        completion = spec.get("max_tokens") or getattr(config.llm, "max_tokens", None)
         try:
             parts = token_upper_bound_parts(
                 config.llm,
                 messages=spec.get("messages") or [],
-                max_tokens=spec.get("max_tokens"),
+                max_tokens=completion,
             )
         except Exception:  # noqa: BLE001 - an unpriceable call is not refused
             parts = None

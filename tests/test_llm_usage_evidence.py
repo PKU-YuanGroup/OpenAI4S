@@ -1139,6 +1139,59 @@ def test_a_fanout_cannot_outrun_the_quota_it_is_gated_by(tmp_path):
         assert service._inflight_output == 0.0
 
 
+def test_asking_for_nothing_does_not_reserve_nothing(tmp_path):
+    """The gate prices what the WIRE will send, not what the spec asked for.
+
+    Every adapter resolves the cap as `max_tokens or cfg.max_tokens`, so a spec
+    asking for 0 still sends the configured cap -- while the bound reads 0 as
+    "no completion" and declines to price the call at all. A cell could
+    therefore reserve nothing by asking for nothing: measured at `max_tokens: 0`
+    putting all 32 fan-out items through a 100-token window again, the whole
+    overshoot back in a single field the cell controls."""
+    import threading
+
+    from openai4s.storage.governance import QuotaExceeded
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=100,
+            window="day",
+        )
+        started = threading.Barrier(2, timeout=5)
+        calls = []
+
+        def chat(_messages, _llm_cfg, **_kwargs):
+            calls.append(1)
+            # Hold workers inside the provider call together, which is the
+            # window the ledger cannot describe. Without it they complete and
+            # release one at a time and the run only measures the serial path.
+            try:
+                started.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            }
+
+        service = _fanout_service(store, root, chat=chat)
+        batch = [
+            {"messages": [{"role": "user", "content": "x"}], "max_tokens": 0}
+            for _ in range(32)
+        ]
+        with pytest.raises(QuotaExceeded):
+            service.complete({"batch": batch})
+        assert len(calls) < 32, len(calls)
+        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= 100
+        assert service._inflight_input == 0.0
+
+
 def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):
     """The paired positive, and the one that matters for every ordinary run:
     these bounds carry a wire allowance and the transport's retry ceiling, so
