@@ -35,6 +35,7 @@ from .progress_circuit import (
     attach_progress_circuit,
     circuit_from_state,
 )
+from .recovery import recovery_message
 
 
 class AgentEngine:
@@ -188,6 +189,17 @@ class AgentEngine:
             completion_value = completion
         else:
             completion_value = None
+            note = recovery_message(
+                stop_reason,
+                progress_reason=progress_reason,
+                tool_names=(
+                    (call.name for call in state.last_reply.tool_calls)
+                    if state.last_reply is not None
+                    else ()
+                ),
+            )
+            if note is not None and (not state.messages or state.messages[-1] != note):
+                state.messages.append(note)
         result = EngineResult(
             tuple(dict(message) for message in state.messages),
             completion_value,

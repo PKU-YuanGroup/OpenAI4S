@@ -77,3 +77,102 @@ def test_a_mid_timeline_system_message_is_marked_as_such():
         ]
     )
     assert conv[-1]["content"] == "[system] NOTE"
+
+
+def _stopped_turn_history():
+    from openai4s.agent.recovery import recovery_message
+
+    call = {
+        "id": "c1",
+        "wire_id": "toolu_1",
+        "name": "list_dir",
+        "arguments": {},
+        "raw_arguments": "{}",
+    }
+    return [
+        {"role": "system", "content": "POLICY"},
+        {"role": "user", "content": "TASK"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "wire_id": "toolu_1",
+            "name": "list_dir",
+            "content": "ok",
+        },
+        recovery_message("no_progress", tool_names=["list_dir"]),
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_a_system_note_after_tool_results_never_splits_the_anthropic_tool_pair():
+    """The stopped-turn recovery note is recorded right after a tool batch.
+    Emitted before the pending results were flushed, it sat between the
+    assistant's tool_use and its tool_result -- a request Anthropic rejects,
+    from durable history, so every later turn of the session failed too."""
+    from openai4s.llm.messages import _anthropic_messages
+
+    _, conv = _anthropic_messages(_stopped_turn_history())
+    index = next(i for i, m in enumerate(conv) if m["role"] == "assistant")
+    assert conv[index + 1]["content"][0]["type"] == "tool_result"
+    assert conv[index + 2]["content"].startswith("[system] [Stopped turn recovery]")
+    assert conv[index + 3]["content"] == "continue"
+
+
+def test_a_system_note_after_tool_results_never_splits_the_gemini_call_pair():
+    from openai4s.llm.messages import _gemini_contents
+
+    _, contents = _gemini_contents(_stopped_turn_history())
+    index = next(i for i, m in enumerate(contents) if m["role"] == "model")
+    assert "functionResponse" in contents[index + 1]["parts"][0]
+    assert contents[index + 2]["parts"][0]["text"].startswith("[system] ")
+    assert contents[index + 3]["parts"][0]["text"] == "continue"
+
+
+def test_a_trailing_system_note_after_tool_results_is_still_delivered():
+    from openai4s.llm.messages import _anthropic_messages, _gemini_contents
+
+    history = _stopped_turn_history()[:-1]
+    _, conv = _anthropic_messages(history)
+    assert conv[-2]["content"][0]["type"] == "tool_result"
+    assert conv[-1]["content"].startswith("[system] ")
+    _, contents = _gemini_contents(history)
+    assert "functionResponse" in contents[-2]["parts"][0]
+    assert contents[-1]["parts"][0]["text"].startswith("[system] ")
+
+
+def test_the_responses_wire_keeps_a_mid_timeline_note_out_of_instructions():
+    """``instructions`` is standing policy. The positional recovery note hoisted
+    into it told every later, unrelated request that it was a continuation --
+    and each further stop stacked another copy."""
+    from openai4s.llm.messages import _responses_input
+
+    instructions, items = _responses_input(_stopped_turn_history())
+    assert instructions == "POLICY"
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == ["user", "function_call", "function_call_output", "user", "user"]
+    assert items[3]["content"][0]["text"].startswith("[system] [Stopped turn recovery]")
+    assert items[4]["content"][0]["text"] == "continue"
+
+
+def test_the_responses_wire_does_not_put_a_note_inside_a_tool_batch():
+    from openai4s.llm.messages import _responses_input
+
+    history = _stopped_turn_history()
+    second = dict(history[3], tool_call_id="c2", wire_id="toolu_2")
+    history[2]["tool_calls"].append(
+        dict(history[2]["tool_calls"][0], id="c2", wire_id="toolu_2")
+    )
+    # The note sits between the two results of one batch.
+    history.insert(5, second)
+    _, items = _responses_input(history)
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == [
+        "user",
+        "function_call",
+        "function_call",
+        "function_call_output",
+        "function_call_output",
+        "user",
+        "user",
+    ]

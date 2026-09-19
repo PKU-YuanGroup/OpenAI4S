@@ -376,7 +376,16 @@ def test_sse_connect_failure_is_retried(monkeypatch):
     assert len(state) == 2
 
 
-def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (TimeoutError("private timeout detail"), "llm_stream_timeout"),
+        (ConnectionResetError("stream died mid-flight"), "llm_stream_interrupted"),
+    ],
+)
+def test_sse_failure_after_committed_output_is_never_retried(
+    monkeypatch, failure, code
+):
     """The rule that keeps the retry honest: the caller has already seen these
     bytes, so replaying the request would emit them twice."""
 
@@ -384,7 +393,7 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         def __iter__(self):
             yield b'data: {"delta":"committed"}\n'
             yield b"\n"
-            raise ConnectionResetError("stream died mid-flight")
+            raise failure
 
         def close(self):
             pass
@@ -401,8 +410,62 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
     assert e.value.output_committed is True
     assert e.value.retryable is False
+    assert llm_failure_code(e.value) == code
     assert len(calls) == 1, "a committed stream must not be replayed"
     assert seen == [{"delta": "committed"}]
+
+
+def test_sse_event_handler_failure_is_not_an_upstream_interruption(monkeypatch):
+    """The read loop's handler also covers ``on_event``. A local bug there
+    must not be classified as the stream being cut: that class offers the user
+    a continuation, which would only reproduce the same local error."""
+
+    class _Stream:
+        def __iter__(self):
+            yield b'data: {"delta":"committed"}\n'
+            yield b"\n"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+
+    def broken_handler(event):
+        raise KeyError("private handler detail")
+
+    with pytest.raises(TransportError) as e:
+        post_sse("https://x.invalid", {}, {}, 5, broken_handler, sleep=_Recorder())
+    assert llm_failure_code(e.value) is None
+    assert e.value.output_committed is True
+    assert e.value.retryable is False
+    assert "private handler detail" not in str(e.value)
+
+
+def test_sse_timeout_keeps_its_code_when_the_retry_budget_runs_out(monkeypatch):
+    """The budget rewrap used to build a plain TransportError, which dropped
+    the stream classification on the uncommitted path."""
+
+    class _Stream:
+        def __iter__(self):
+            raise TimeoutError("no first byte")
+            yield  # pragma: no cover
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+    with pytest.raises(TransportError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            lambda event: None,
+            retry_budget=0.0,
+            sleep=_Recorder(),
+        )
+    assert "retry budget" in str(e.value)
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
 
 
 def test_sse_read_failure_before_any_event_is_retryable(monkeypatch):

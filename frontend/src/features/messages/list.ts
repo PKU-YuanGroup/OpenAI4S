@@ -11,6 +11,7 @@ import { t } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
 import { el, messagesHost } from "./dom";
+import { failureMeta } from "./failure";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
 import { cancelFrame, scheduleFrame } from "./raf";
 import { planModeRequestText, planSeed, planSeedMarker } from "./planPrompt";
@@ -60,32 +61,6 @@ function callWindow(name: string, ...args: unknown[]): void {
   const fn = (globalThis as Record<string, unknown>)[name];
   if (!isReady(fn)) return;
   (fn as (...a: unknown[]) => unknown)(...args);
-}
-
-function failureMeta(failure: NonNullable<StoredMessage["failure"]>): HTMLElement {
-  const box = el("div", "msg-failure-meta");
-  const bits: string[] = [];
-  const code = String(failure.code || "");
-  const causeKey =
-    code === "llm_request_burst"
-      ? "turn.failure.llmRequestBurst"
-      : code === "llm_rate_limited"
-        ? "turn.failure.llmRateLimited"
-        : code === "llm_upstream_overloaded"
-          ? "turn.failure.llmUpstreamOverloaded"
-          : "";
-  if (causeKey) bits.push(t(causeKey));
-  if (failure.output_committed) bits.push(t("turn.failedCommitted"));
-  if (failure.request_id) {
-    bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)));
-  }
-  box.textContent = bits.join(" ");
-  box.dataset.requestId = failure.request_id
-    ? String(failure.request_id).slice(0, 96)
-    : "";
-  box.dataset.failureCode = failure.code ? String(failure.code).slice(0, 64) : "";
-  if (failure.output_committed) box.dataset.committed = "1";
-  return box;
 }
 
 function addMsgActions(wrap: HTMLElement, text: string): void {
