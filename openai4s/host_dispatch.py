@@ -2196,7 +2196,11 @@ class HostDispatcher:
 
     # --- llm --------------------------------------------------------------
     def _llm_quota_gate(
-        self, *, projected_input: float = 0.0, projected_output: float = 0.0
+        self,
+        *,
+        projected_input: float = 0.0,
+        projected_output: float = 0.0,
+        ttl_s: float | None = None,
     ) -> Any:
         """Reserve an in-kernel `host.llm` request against the session's window.
 
@@ -2224,6 +2228,7 @@ class HostDispatcher:
             str(frame_id),
             projected_input=projected_input,
             projected_output=projected_output,
+            ttl_s=ttl_s,
         )
 
     def _record_llm_usage(self, usage: Any) -> None:

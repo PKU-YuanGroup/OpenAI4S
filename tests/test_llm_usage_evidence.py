@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from contextlib import closing
 from dataclasses import replace
 from types import SimpleNamespace
@@ -1566,3 +1567,41 @@ def test_every_outer_loop_model_is_constructed_with_the_gate():
         "an outer-loop model lost its quota gate; a delegated child then runs "
         "its whole loop, or its summarizer burst, against an unasked window"
     )
+
+
+def test_a_promise_outlives_the_call_it_covers(tmp_path):
+    """The sweep that stops a lost release from shrinking a team's window
+    forever must never expire a promise whose call is still running.
+
+    It was a flat 900s while `LLMConfig.total_timeout_s` validates up to 3600,
+    so an install that raised the timeout had promises vanish mid-call: the
+    window read as unspent, the next fan-out was admitted against it, and the
+    `finally` release then removed nothing."""
+    from openai4s.storage import governance as gov
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        release = gov.reserve_session_llm_spend(
+            store, root, projected_input=500.0, projected_output=10.0, ttl_s=3600.0
+        )
+        try:
+            key = (user_id, "p", "llm_input_tokens")
+            now = time.monotonic()
+            # Still counted well past the old fixed horizon...
+            assert gov._live_total(key, now + 900.0) == 500.0
+            assert gov._live_total(key, now + 3500.0) == 500.0
+            # ...and still swept once the call it covers cannot be running.
+            assert gov._live_total(key, now + 3600.0 + 121.0) == 0.0
+        finally:
+            release()
+
+        # A caller that states no deadline keeps the floor rather than expiring
+        # at once.
+        release = gov.reserve_session_llm_spend(
+            store, root, projected_input=7.0, projected_output=0.0
+        )
+        try:
+            key = (user_id, "p", "llm_input_tokens")
+            assert gov._live_total(key, time.monotonic() + 800.0) == 7.0
+        finally:
+            release()

@@ -146,7 +146,13 @@ class LLMService:
             return None
         promised = self._projected(spec, config)
         release = self.quota_gate(
-            projected_input=promised[0], projected_output=promised[1]
+            projected_input=promised[0],
+            projected_output=promised[1],
+            # The promise has to outlive the call it covers. `total_timeout_s`
+            # is the whole call's deadline, retries included, and it is
+            # configurable to 3600 -- a fixed TTL below that expired a live
+            # promise and handed the next fan-out an unspent-looking window.
+            ttl_s=getattr(config.llm, "total_timeout_s", None),
         )
         return release if callable(release) else None
 

@@ -650,7 +650,28 @@ _INFLIGHT: dict[tuple[str, str, str], list[list[float]]] = {}
 #: thread. Without it a single lost release would shrink a TEAM's window until
 #: the daemon restarted, which is the trade this codebase has already refused
 #: once: a claim outliving its operation is worse than the overshoot it stops.
-_INFLIGHT_TTL_S = 900.0
+#:
+#: Derived from the caller's own deadline, never fixed. It was a flat 900s,
+#: and `LLMConfig.total_timeout_s` validates up to 3600: on an install that
+#: raised it, a promise expired while its provider request was still running,
+#: the window read as unspent, and the `finally` release then removed nothing.
+#: A TTL shorter than the call it covers is not a safety net, it is the bug.
+_INFLIGHT_TTL_FLOOR_S = 900.0
+#: Slack between the call's deadline and its promise expiring, so the release
+#: always wins the race against the sweep.
+_INFLIGHT_TTL_MARGIN_S = 120.0
+
+
+def _inflight_ttl(ttl_s: float | None) -> float:
+    try:
+        requested = float(ttl_s or 0.0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested <= 0:
+        return _INFLIGHT_TTL_FLOOR_S
+    return max(_INFLIGHT_TTL_FLOOR_S, requested + _INFLIGHT_TTL_MARGIN_S)
+
+
 #: One unpriceable call at a time per owner, for the same reason.
 _SOLO_LOCK = threading.Lock()
 _SOLO: dict[tuple[str, str], threading.Semaphore] = {}
@@ -732,6 +753,7 @@ def reserve_session_llm_spend(
     *,
     projected_input: float = 0.0,
     projected_output: float = 0.0,
+    ttl_s: float | None = None,
 ) -> Callable[[], None]:
     """Gate a request against the ledger PLUS this owner's unrecorded promises.
 
@@ -757,7 +779,7 @@ def reserve_session_llm_spend(
         slot.acquire()
     try:
         now = time.monotonic()
-        deadline = now + _INFLIGHT_TTL_S
+        deadline = now + _inflight_ttl(ttl_s)
         claims: list[tuple[tuple[str, str, str], list[float]]] = []
         with _INFLIGHT_LOCK:
             # Check and claim under one lock, or two callers read the same
