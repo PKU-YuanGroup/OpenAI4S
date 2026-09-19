@@ -434,6 +434,41 @@ def test_sse_event_handler_failure_is_not_an_upstream_interruption(monkeypatch):
     assert "private handler detail" not in str(e.value)
 
 
+def test_a_whole_response_read_that_stalls_is_also_a_stream_timeout(monkeypatch):
+    """An idle stall is the same failure whether or not streaming is on.
+
+    `_read_timeout`'s non-total branch is literally "LLM response idle timeout",
+    which is what `StreamTimeoutError` names. Left as a bare `TransportError` it
+    had no failure code, so the recovery note and the Continue button were
+    missing on the whole-response wire -- for the same upstream behaviour that
+    gets both on SSE.
+    """
+
+    class _Stalls:
+        headers: dict[str, str] = {}
+
+        def read1(self, *_a):
+            raise TimeoutError("upstream went quiet mid-body")
+
+        def read(self, *_a):  # pragma: no cover - read1 is preferred
+            raise TimeoutError("upstream went quiet mid-body")
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", lambda *a, **k: _Stalls())
+    with pytest.raises(TransportError) as e:
+        post_json("https://x.invalid", {}, {}, 5, max_attempts=1, sleep=_Recorder())
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+    assert e.value.retryable is False
+
+
 def test_the_budget_rewrap_keeps_the_error_class():
     """A retry given up for budget must not be downgraded to a plain
     ``TransportError``: the recovery path keys on the failure code, and a

@@ -13,6 +13,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
   en: {
     llm_stream_timeout: "The upstream stopped sending data and the stream timed out. Completed work is preserved. Continue to finish the remaining work.",
     llm_stream_interrupted: "The response stream was interrupted. Completed work is preserved. Continue to finish the remaining work.",
+    llm_deadline_exceeded: "The model call reached its total time limit. Completed work is preserved. Continue with a narrower next step.",
+    llm_response_too_large: "The model response exceeded its size limit. Completed work is preserved. Continue with smaller output or tool arguments.",
     no_progress: "Stopped repeating actions. Continue with the recorded results and ask the model to choose a different approach.",
     continue: "Continue",
     draft: "Send or clear the draft in the composer first; Continue sends its own message.",
@@ -21,6 +23,8 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
   zh: {
     llm_stream_timeout: "上游长时间未发送数据，流式响应已超时。已完成的工作已保留，可继续处理未完成部分。",
     llm_stream_interrupted: "流式响应中断。已完成的工作已保留，可继续处理未完成部分。",
+    llm_deadline_exceeded: "模型调用已达到总时限。已完成的工作已保留，可缩小范围后继续。",
+    llm_response_too_large: "模型响应超过大小限制。已完成的工作已保留，可缩小输出或工具参数后继续。",
     no_progress: "已停止重复动作。继续时将携带已有结果，并要求模型换一种方法。",
     continue: "继续",
     draft: "请先发送或清空输入框里的草稿；“继续”会发送它自己的消息。",
@@ -29,7 +33,16 @@ const COPY: Record<"en" | "zh", Record<string, string>> = {
 };
 
 export function canContinueFailure(code: unknown): boolean {
-  return ["llm_stream_timeout", "llm_stream_interrupted", "no_progress"].includes(String(code || ""));
+  // The two local-limit codes sit here for the same reason as the upstream
+  // ones: the turn stopped part-way with its completed work recorded, and
+  // `recovery_message` emits the matching "do not replay" note for them.
+  return [
+    "llm_stream_timeout",
+    "llm_stream_interrupted",
+    "llm_deadline_exceeded",
+    "llm_response_too_large",
+    "no_progress",
+  ].includes(String(code || ""));
 }
 
 export function failureCodeHint(code: unknown): string {

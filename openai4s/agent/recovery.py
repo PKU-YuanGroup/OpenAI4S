@@ -51,6 +51,27 @@ def recovery_message(
             "Do not replay completed actions, resubmit jobs, or recreate existing artifacts "
             "merely because the model stream was interrupted."
         )
+    elif reason in {"llm_deadline_exceeded", "llm_response_too_large"}:
+        # A local limit cuts a committed reply off exactly the way an upstream
+        # interruption does, so the same "do not replay" rule applies. Its own
+        # branch, not a wider set on the one above: the cause is local, so the
+        # remedy is a narrower next step rather than simply asking again, and
+        # the wording has to stay true when the limit was reached before any
+        # bytes were sent.
+        limit = (
+            "this call's total time limit"
+            if reason == "llm_deadline_exceeded"
+            else "this daemon's response size limit"
+        )
+        detail = (
+            f"The previous turn stopped because it reached {limit}. "
+            "Any partial tool arguments or code from that reply were not executed. "
+            "Earlier completed tool calls and cells remain recorded in this history. "
+            "On continuation, inspect those results and continue only the unfinished "
+            "work, in a narrower step that fits within the limit. "
+            "Do not replay completed actions, resubmit jobs, or recreate existing "
+            "artifacts merely because the previous reply was cut off."
+        )
     else:
         return None
     return {"role": "system", "content": "[Stopped turn recovery]\n" + detail}

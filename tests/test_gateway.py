@@ -7086,6 +7086,52 @@ def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_p
 
 
 @pytest.mark.stubbed_backend
+def test_a_budget_stop_keeps_the_partial_prose_it_interrupted(monkeypatch, tmp_path):
+    """A budget refusal cuts the reply the same way an upstream interruption does.
+
+    `except AutoBudgetDenied` *returns* the stop reason instead of raising, so
+    it never falls through to the handler below it -- the one that flushes the
+    prose already on screen and discards the half-streamed code draft. Without
+    its own flush the text the user watched arrive was dropped on reopen.
+    """
+    from openai4s.storage.auto_mode import AutoBudgetDenied
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def fake_ensure(st):
+        if not st.booted:
+            st.dispatcher = SimpleNamespace(last_output=None)
+            st.messages = [{"role": "system", "content": "sys"}]
+            st.booted = True
+
+    def denied_chat(messages, cfg, on_delta=None, **kwargs):
+        on_delta("Visible partial answer.\n```python\nprint(")
+        raise AutoBudgetDenied(
+            "budget_measurement_unavailable", "adapter token usage is not verifiable"
+        )
+
+    monkeypatch.setattr(gateway_mod, "chat", denied_chat)
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+
+    runner.run_message(fid, "default", "give me an answer")
+    messages = store.list_messages(fid)
+    assert any(
+        m["content"].strip() == "Visible partial answer." for m in messages
+    ), "the prose the user already saw must survive the budget stop"
+    assert not any("print(" in str(m.get("content")) for m in messages)
+    assert any(
+        e.get("type") == "notebook_cell_draft" and e.get("status") == "discarded"
+        for e in hub.events
+    ), "the half-streamed cell draft must be withdrawn, not left running"
+    runner.close()
+
+
+@pytest.mark.stubbed_backend
 def test_stream_timeout_preserves_prose_and_can_continue_after_history_restore(
     monkeypatch, tmp_path
 ):
@@ -7125,7 +7171,11 @@ def test_stream_timeout_preserves_prose_and_can_continue_after_history_restore(
     def stalled_chat(messages, cfg, on_delta=None, **kwargs):
         post_sse("https://x.invalid", {}, {}, 1, lambda event: on_delta(event["text"]))
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    # `openai4s.llm.transport._urlopen`, not `urllib.request.urlopen`: the
+    # transport opens through the shared deadline watchdog now, so patching the
+    # stdlib function leaves this test making a real DNS lookup for x.invalid
+    # and asserting the connection error instead of the stream timeout.
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     monkeypatch.setattr(gateway_mod, "chat", stalled_chat)
     monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)

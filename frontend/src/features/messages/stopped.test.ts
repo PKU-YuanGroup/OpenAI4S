@@ -3,7 +3,7 @@ import { currentId } from "../../stores/session";
 import { setLang } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running, stream } from "../../stores/stream";
-import { failureHint, failureMeta } from "../send/turn";
+import { failureHint } from "../send/turn";
 import { installNotebook } from "../notebook/install";
 import { setNotebookRenderImpl } from "../notebook/scroll";
 import { turnDone } from "../send/turn";
@@ -192,13 +192,18 @@ afterEach(() => {
 });
 
 describe("stopped turn marker", () => {
-  it.each(["llm_stream_timeout", "llm_stream_interrupted", "no_progress"])(
+  it.each([
+    "llm_stream_timeout",
+    "llm_stream_interrupted",
+    "llm_deadline_exceeded",
+    "llm_response_too_large",
+    "no_progress",
+  ])(
     "offers explicit continuation for %s live and on reopen",
     async (code) => {
       currentId.value = "recoverable-frame";
       const send = vi.fn().mockResolvedValue(undefined);
       vi.stubGlobal("send", send);
-      vi.stubGlobal("failureMeta", failureMeta);
       vi.stubGlobal("Node", FakeEl);
       const failure = { code, output_committed: true, request_id: "req-recovery" };
       startStream();

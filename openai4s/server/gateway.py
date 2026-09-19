@@ -11671,6 +11671,12 @@ class SessionRunner:
         try:
             result = engine.run(state)
         except AutoBudgetDenied as denied:
+            # Same flush as the handler below, and before `_note_auto_budget_trip`
+            # sets the cancel latch: a budget stop cuts the reply exactly where an
+            # interruption does, so the partial public prose has to survive the
+            # reopen and the streaming code draft has to be discarded. It returns
+            # rather than raising, so it would otherwise never reach that handler.
+            events.finish_interrupted()
             self._note_auto_budget_trip(st, denied)
             self._freeze_auto_budget_tokens(st)
             return denied.reason

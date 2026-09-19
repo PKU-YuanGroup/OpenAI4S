@@ -12,6 +12,8 @@ context had just grown expensive enough to need it.
 tests/test_gateway.py::test_body_rejects_unparseable_json_with_an_explicit_4xx.)
 """
 
+import pathlib
+
 # --------------------------------------------------------------------------
 # system-message placement on the provider wires
 # --------------------------------------------------------------------------
@@ -77,6 +79,46 @@ def test_a_mid_timeline_system_message_is_marked_as_such():
         ]
     )
     assert conv[-1]["content"] == "[system] NOTE"
+
+
+def test_the_continue_button_and_the_recovery_note_share_one_vocabulary():
+    """Two lists, two languages, no build step that compares them.
+
+    The workbench decides which failure codes get a Continue button; the Engine
+    decides which ones get a `[Stopped turn recovery]` note. Offering Continue
+    without a note is the harmful direction: the model is asked to carry on with
+    no instruction not to replay completed actions, resubmit jobs, or recreate
+    artifacts -- which is exactly what the note exists to prevent.
+    """
+    import re
+
+    from openai4s.agent.recovery import recovery_message
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "messages"
+        / "failure.ts"
+    ).read_text(encoding="utf-8")
+    body = re.search(
+        r"export function canContinueFailure\([^)]*\)[^{]*\{(.*?)\n\}", source, re.S
+    )
+    assert body is not None, "canContinueFailure moved; this guard must follow it"
+    offered = set(re.findall(r'"([a-z_]+)"', body.group(1)))
+    # The regex really read the list, rather than matching an empty one.
+    assert "llm_stream_timeout" in offered and len(offered) >= 3
+
+    for code in sorted(offered):
+        assert (
+            recovery_message(code, progress_reason="same_action") is not None
+        ), f"the workbench offers Continue for {code} with no recovery note"
+
+    # And the other direction, on a code the workbench deliberately leaves out:
+    # a rate limit is a wait, not an interrupted reply.
+    assert "llm_rate_limited" not in offered
+    assert recovery_message("llm_rate_limited") is None
 
 
 def _stopped_turn_history():

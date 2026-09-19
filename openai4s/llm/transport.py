@@ -250,7 +250,11 @@ def _response_error(kind, message, response, *, provider, operation):
 def _read_timeout(response, exchange, state, *, provider, operation):
     total = exchange.expired or time.monotonic() >= state.deadline
     return _response_error(
-        LLMDeadlineExceeded if total else TransportError,
+        # The non-total branch IS "the upstream stopped sending bytes for the
+        # configured read timeout" -- the condition `StreamTimeoutError` was
+        # introduced for. Classifying it keeps the recovery affordance on the
+        # whole-response wire too, instead of only where SSE happens to be on.
+        LLMDeadlineExceeded if total else StreamTimeoutError,
         (
             "LLM logical call exceeded its total deadline"
             if total
