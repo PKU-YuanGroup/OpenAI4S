@@ -182,8 +182,34 @@ export async function navigationChecks(page, api) {
       };
       page.on("request", observe);
       try {
-        await page.locator("#dash-projects .d-row").filter({ hasText: a.name }).click();
-        await waitUntil("project session read pending", held.waiting).catch(async (error) => {
+        // `#back-home` runs `showDashboard`, which fires `loadDashboard()` and
+        // does not await it: it paints a skeleton, loads projects, then
+        // rebuilds `#dash-projects`. A click dispatched into that window lands
+        // on a row the repaint is replacing and is simply lost -- which is
+        // what the diagnostic caught, `dashboardVisible:true` with six rows on
+        // screen, no project open and not one read carrying a project_id.
+        //
+        // Retried only while that evidence holds. A project that genuinely
+        // refuses to open still fails, with the same report; only a click the
+        // dashboard's own repaint ate is sent again.
+        const row = page
+          .locator("#dash-projects .d-row")
+          .filter({ hasText: a.name });
+        const stillHome = () =>
+          page
+            .evaluate(
+              () => !document.querySelector("#dashboard")?.classList.contains("hidden"),
+            )
+            .catch(() => false);
+        let opened = false;
+        for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
+          if (attempt && !(await stillHome())) break;
+          await row.click();
+          opened = await waitUntil("project session read pending", held.waiting, 8000)
+            .then(() => true)
+            .catch(() => false);
+        }
+        await waitUntil("project session read pending", held.waiting, 1).catch(async (error) => {
           // The six reads the first diagnostic caught were all `?limit=50`,
           // the dashboard's own Running poll, and not one carried a
           // project_id -- so the click did not open the project. Two things
