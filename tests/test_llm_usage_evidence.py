@@ -1485,3 +1485,84 @@ def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):
         assert len(service.complete({"batch": batch})) == 32
         assert len(calls) == 32
         assert _ledger(store, user_id)["llm_input_tokens"] == 1280
+
+
+def test_the_outer_loop_turn_asks_the_quota_too(tmp_path):
+    """`host.llm` reservations cover in-kernel calls; they say nothing about the
+    turn itself. The Web `ChatModel` has been gated since it was written and
+    the CLI/delegated one never was, so a delegated child ran its whole outer
+    loop -- up to 48 of them -- against a window nothing asked about.
+
+    Driven through the real `ChatModel.complete`, because the defect was a
+    missing argument at a construction site and only the wiring proves it."""
+    from openai4s.agent.runtime import ChatModel
+    from openai4s.storage.governance import QuotaExceeded, enforce_session_llm_quota
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=10,
+            window="day",
+        )
+        store.governance.record_usage(
+            user_id=user_id, kind="llm_input_tokens", amount=50.0
+        )
+        calls = []
+
+        def chat(*_args, **_kwargs):
+            calls.append(1)
+            return {"content": "ok", "usage": {}}
+
+        model = ChatModel(
+            cfg(),
+            chat,
+            quota_gate=lambda: enforce_session_llm_quota(store, root),
+        )
+        with pytest.raises(QuotaExceeded):
+            model.complete([{"role": "user", "content": "hi"}], lambda _delta: None)
+        assert calls == [], "an exhausted window must refuse before the request"
+
+
+def test_an_unowned_session_is_not_gated(tmp_path):
+    """INV-1: the gate is inert without an owner row, so a single-user CLI run
+    and every offline test are unchanged by wiring it in."""
+    from openai4s.agent.runtime import ChatModel
+    from openai4s.storage.governance import enforce_session_llm_quota
+    from openai4s.store import Store
+
+    with closing(Store(tmp_path / "solo.db")) as store:
+        root = store.new_frame(kind="turn", project_id="p")
+        calls = []
+
+        def chat(*_args, **_kwargs):
+            calls.append(1)
+            return {"content": "ok", "usage": {}}
+
+        model = ChatModel(
+            cfg(),
+            chat,
+            quota_gate=lambda: enforce_session_llm_quota(store, root),
+        )
+        model.complete([{"role": "user", "content": "hi"}], lambda _delta: None)
+        assert calls == [1]
+
+
+def test_every_outer_loop_model_is_constructed_with_the_gate():
+    """The defect was a missing argument at a construction site, so the guard
+    has to be about the construction. `ChatModel` accepting a gate proves
+    nothing; the Web path had it and this one did not."""
+    import inspect
+
+    from openai4s.agent import loop as loop_mod
+
+    source = inspect.getsource(loop_mod.Agent._run_task)
+    # BOTH sites: the turn's own model and the context summarizer. Asserting
+    # mere presence was vacuous -- the name appears twice, so dropping either
+    # one left the other matching and the guard green.
+    assert source.count("quota_gate=self._session_quota_gate") == 2, (
+        "an outer-loop model lost its quota gate; a delegated child then runs "
+        "its whole loop, or its summarizer burst, against an unasked window"
+    )

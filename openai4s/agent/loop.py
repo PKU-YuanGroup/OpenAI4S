@@ -831,12 +831,27 @@ class Agent:
             return
         record_screening_llm_usage(store, str(self.frame_id), usage)
 
-    def _compaction_quota_gate(self) -> None:
-        """Refuse a summarizer request the session may not afford.
+    def _session_quota_gate(self) -> None:
+        """Refuse a provider request this session may not afford.
 
-        Compaction is the daemon's largest single burst -- several chunks, each
-        with a retry on truncation, all carrying ~48k-token prompts -- and all
-        of it ran before the turn's own gated call without being checked.
+        Used by the turn itself and by the context summarizer. Compaction is
+        the daemon's largest single burst -- several chunks, each with a retry
+        on truncation, all carrying ~48k-token prompts -- and all of it ran
+        before the turn's own call without being checked. The turn's own call
+        was not checked here either: the Web `ChatModel` has had this gate
+        since it was written, this one never got it, and a delegated child runs
+        its whole outer loop through exactly this path.
+
+        `enforce_session_llm_quota` resolves the frame to its session root
+        first, which is what makes it correct for a child: a delegated frame
+        has no owner row of its own, and the quota belongs to the root's owner.
+
+        A CHECK, not a reservation. `ChatModel.complete` runs the provider call
+        in a detached daemon thread whose reply can outlive the turn and still
+        bill (`abandoned_reply`), so a promise held across it could outlive its
+        operation -- the trade this PR has already refused twice. Concurrent
+        children can therefore still overshoot a nearly-exhausted window by the
+        fan-out; what this closes is starting at all against an exhausted one.
         """
         from openai4s.storage.governance import enforce_session_llm_quota
 
@@ -1026,6 +1041,12 @@ class Agent:
                     # that was already delivered as real -- unmetered, since
                     # ``abandon()`` never ran for it.
                     cancellation=self.cancellation,
+                    # The same gate the Web `ChatModel` has had all along, and
+                    # the one this path never received -- so a delegated child
+                    # ran its entire outer loop against a window nothing asked
+                    # about. Inert without an owner row, so a single-user CLI
+                    # run is unchanged (INV-1).
+                    quota_gate=self._session_quota_gate,
                     abandoned_reply=_account_abandoned_reply,
                     call_scope=self._provider_call_scope(),
                     drain_cancelled_stream=self._session_is_metered(),
@@ -1049,7 +1070,7 @@ class Agent:
                     # it answers to the session's quota and lands in its ledger.
                     # Both are inert without a team owner (INV-1), so a
                     # single-user CLI run is unchanged.
-                    quota_gate=self._compaction_quota_gate,
+                    quota_gate=self._session_quota_gate,
                     usage_sink=self._record_overhead_usage,
                 )
                 context_policy = self.context_policy or CompactionPolicy(
