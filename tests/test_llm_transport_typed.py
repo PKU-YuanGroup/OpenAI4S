@@ -25,12 +25,13 @@ import pytest
 
 from openai4s.llm.models import (
     LLMError,
+    StreamTimeoutError,
     TransportError,
     llm_failure_code,
     parse_retry_after,
     status_is_retryable,
 )
-from openai4s.llm.transport import post_json, post_sse
+from openai4s.llm.transport import _retry_loop, post_json, post_sse
 
 
 class _Recorder:
@@ -368,7 +369,16 @@ def test_sse_connect_failure_is_retried(monkeypatch):
     assert len(state) == 2
 
 
-def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (TimeoutError("private timeout detail"), "llm_stream_timeout"),
+        (ConnectionResetError("stream died mid-flight"), "llm_stream_interrupted"),
+    ],
+)
+def test_sse_failure_after_committed_output_is_never_retried(
+    monkeypatch, failure, code
+):
     """The rule that keeps the retry honest: the caller has already seen these
     bytes, so replaying the request would emit them twice."""
 
@@ -376,7 +386,7 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         def __iter__(self):
             yield b'data: {"delta":"committed"}\n'
             yield b"\n"
-            raise ConnectionResetError("stream died mid-flight")
+            raise failure
 
         def close(self):
             pass
@@ -393,8 +403,111 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
     assert e.value.output_committed is True
     assert e.value.retryable is False
+    assert llm_failure_code(e.value) == code
     assert len(calls) == 1, "a committed stream must not be replayed"
     assert seen == [{"delta": "committed"}]
+
+
+def test_sse_event_handler_failure_is_not_an_upstream_interruption(monkeypatch):
+    """The read loop's handler also covers ``on_event``. A local bug there
+    must not be classified as the stream being cut: that class offers the user
+    a continuation, which would only reproduce the same local error."""
+
+    class _Stream:
+        def __iter__(self):
+            yield b'data: {"delta":"committed"}\n'
+            yield b"\n"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", lambda *a, **k: _Stream())
+
+    def broken_handler(event):
+        raise KeyError("private handler detail")
+
+    with pytest.raises(TransportError) as e:
+        post_sse("https://x.invalid", {}, {}, 5, broken_handler, sleep=_Recorder())
+    assert llm_failure_code(e.value) is None
+    assert e.value.output_committed is True
+    assert e.value.retryable is False
+    assert "private handler detail" not in str(e.value)
+
+
+def test_the_budget_rewrap_keeps_the_error_class():
+    """A retry given up for budget must not be downgraded to a plain
+    ``TransportError``: the recovery path keys on the failure code, and a
+    rewrap that dropped the class silently disabled it.
+
+    Driven through ``_retry_loop`` rather than ``post_sse`` because this branch
+    vetoes the replay of an uncommitted stream read failure outright (see
+    ``test_sse_timeout_keeps_its_code_when_the_call_gives_up``), so no stream
+    error reaches the budget branch from the public entry point. The rewrap
+    still has to preserve the class of whatever error does reach it.
+    """
+
+    def attempt():
+        raise StreamTimeoutError(
+            "upstream went quiet",
+            provider="p",
+            operation="post_sse",
+            retryable=True,
+            retry_after=300.0,
+        )
+
+    with pytest.raises(StreamTimeoutError) as e:
+        _retry_loop(
+            attempt,
+            provider="p",
+            operation="post_sse",
+            max_attempts=3,
+            base_backoff=1.0,
+            max_backoff=60.0,
+            retry_budget=0.0,
+            sleep=_Recorder(),
+        )
+    assert "retry budget" in str(e.value)
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+
+
+def test_sse_timeout_keeps_its_code_when_the_call_gives_up(monkeypatch):
+    """A stream timeout must keep its classification however the call ends.
+
+    Upstream asserted this against the retry-budget rewrap. Here the call gives
+    up one step earlier -- an uncommitted read failure cannot prove the POST
+    never reached the provider, so it is not replayed at all -- and the caller
+    must still see ``llm_stream_timeout``, which is what the recovery path
+    keys on to offer a continuation.
+    """
+
+    class _Stream:
+        def __iter__(self):
+            raise TimeoutError("no first byte")
+            yield  # pragma: no cover
+
+        def close(self):
+            pass
+
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        return _Stream()
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    with pytest.raises(TransportError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            lambda event: None,
+            retry_budget=0.0,
+            sleep=_Recorder(),
+        )
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+    assert e.value.retryable is False
+    assert calls == [1], "an uncommitted stream read failure is not replayed"
 
 
 def test_sse_read_failure_before_any_event_is_not_replayed(monkeypatch):

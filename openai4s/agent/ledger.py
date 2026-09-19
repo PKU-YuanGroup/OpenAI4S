@@ -40,6 +40,7 @@ from .events import (
     RunFinished,
 )
 from .models import ModelReply
+from .recovery import recovery_message
 
 REDACTED = "<redacted>"
 
@@ -852,9 +853,23 @@ def _reduce_action_groups_annotated(
         group_id = str(group.get("group_id") or "")
         if group_id and group_id not in positions:
             positions[group_id] = index
+    recent_tools: list[str] = []
     for index, group in enumerate(groups):
         kind = str(group.get("kind") or "")
         if kind == "terminal":
+            for event in group.get("events") or ():
+                result = event.get("result")
+                if not isinstance(result, Mapping):
+                    continue
+                note = recovery_message(
+                    str(result.get("reason") or ""),
+                    progress_reason=str(result.get("progress_reason") or ""),
+                    tool_names=recent_tools,
+                )
+                if note is not None:
+                    history.append((index, note))
+                    break
+            recent_tools = []
             continue
         if kind == "compaction":
             covered_id, handoff = _compaction_event_fields(group)
@@ -874,12 +889,19 @@ def _reduce_action_groups_annotated(
             else None
         )
         if kind in {"user", "system", "permission_resolution"}:
+            if kind == "user":
+                recent_tools = []
             if message and message.get("role") in {"user", "system"}:
                 history.append((index, message))
             continue
         if message is None or message.get("role") != "assistant":
             # A corrupt/incomplete group must not leak a partial action.
             continue
+        recent_tools = [
+            str(call.get("name") or "")
+            for call in message.get("tool_calls") or ()
+            if isinstance(call, Mapping)
+        ]
         events = list(group.get("events") or ())
         if kind in {"native_tools", "finalize"}:
             raw_calls = message.get("tool_calls")

@@ -121,11 +121,18 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     conv: list[dict] = []
     pending_results: list[dict] = []
+    # A system note recorded right after a tool batch (a stopped-turn recovery
+    # note, a permission resolution) must not be emitted between the
+    # assistant's tool_use and its tool_result: Anthropic rejects that request,
+    # and the note is durable history, so every later turn would fail too.
+    held_system: list[str] = []
 
     def flush_results() -> None:
         if pending_results:
             conv.append({"role": "user", "content": list(pending_results)})
             pending_results.clear()
+        conv.extend(_mid_timeline_system(text) for text in held_system)
+        held_system.clear()
 
     for message in messages:
         role = message.get("role")
@@ -134,6 +141,8 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
             if isinstance(content, str) and content:
                 if not conv and not pending_results:
                     system_parts.append(content)
+                elif pending_results:
+                    held_system.append(content)
                 else:
                     conv.append(_mid_timeline_system(content))
             continue
@@ -186,11 +195,19 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     contents: list[dict] = []
     pending_results: list[dict] = []
     known_calls: dict[str, tuple[str, str | None]] = {}
+    # Same rule as the Anthropic assembler: a functionCall must be answered by
+    # its functionResponse before any other turn content.
+    held_system: list[str] = []
+
+    def mid_timeline(content: str) -> dict:
+        return {"role": "user", "parts": [{"text": _mid_timeline_text(content)}]}
 
     def flush_results() -> None:
         if pending_results:
             contents.append({"role": "user", "parts": list(pending_results)})
             pending_results.clear()
+        contents.extend(mid_timeline(text) for text in held_system)
+        held_system.clear()
 
     for message in messages:
         role = message.get("role")
@@ -199,13 +216,10 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
             if isinstance(content, str) and content:
                 if not contents and not pending_results:
                     system_parts.append(content)
+                elif pending_results:
+                    held_system.append(content)
                 else:
-                    contents.append(
-                        {
-                            "role": "user",
-                            "parts": [{"text": _mid_timeline_text(content)}],
-                        }
-                    )
+                    contents.append(mid_timeline(content))
             continue
         if role == "tool":
             value = message.get("content")
@@ -272,13 +286,40 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
 def _responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
     instructions: list[str] = []
     items: list[dict] = []
+    # Only the leading system messages are policy. One recorded later -- a
+    # compaction handoff, a stopped-turn recovery note -- describes a moment in
+    # the timeline; hoisted into ``instructions`` it became a standing order
+    # for every later request, and each further note stacked another copy.
+    # Held while a tool batch is being answered, for the same reason as the
+    # Anthropic and Gemini assemblers.
+    held_system: list[str] = []
+    answering_tools = False
+
+    def flush_system() -> None:
+        items.extend(
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": _mid_timeline_text(note)}],
+            }
+            for note in held_system
+        )
+        held_system.clear()
+
     for message in messages:
         role = message.get("role")
         text = _flatten_text(message.get("content"))
         if role == "system":
             if text:
-                instructions.append(text)
+                if not items:
+                    instructions.append(text)
+                else:
+                    held_system.append(text)
+                    if not answering_tools:
+                        flush_system()
             continue
+        answering_tools = role == "tool"
+        if not answering_tools:
+            flush_system()
         if role == "tool":
             items.append(
                 {
@@ -323,6 +364,7 @@ def _responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
                 continue
         ptype = "output_text" if role == "assistant" else "input_text"
         items.append({"role": role, "content": [{"type": ptype, "text": text}]})
+    flush_system()
     return "\n\n".join(instructions), items
 
 

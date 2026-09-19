@@ -7085,6 +7085,100 @@ def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_p
     assert len(notices) == 1, "the notice is streamed exactly once"
 
 
+@pytest.mark.stubbed_backend
+def test_stream_timeout_preserves_prose_and_can_continue_after_history_restore(
+    monkeypatch, tmp_path
+):
+    from openai4s.agent.ledger import restore_action_history
+    from openai4s.llm.transport import post_sse
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    attempts = []
+
+    class Interrupted:
+        closed = False
+
+        def __iter__(self):
+            yield b'data: {"text":"Visible partial answer.\\n```python\\nprint("}\n'
+            yield b"\n"
+            raise TimeoutError("private upstream detail")
+
+        def close(self):
+            self.closed = True
+
+    stream = Interrupted()
+
+    def urlopen(*args, **kwargs):
+        attempts.append(1)
+        return stream
+
+    def fake_ensure(st):
+        if not st.booted:
+            st.dispatcher = SimpleNamespace(last_output=None)
+            st.messages = [{"role": "system", "content": "sys"}]
+            st.booted = True
+
+    def stalled_chat(messages, cfg, on_delta=None, **kwargs):
+        post_sse("https://x.invalid", {}, {}, 1, lambda event: on_delta(event["text"]))
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr(gateway_mod, "chat", stalled_chat)
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner, "_execute_and_log", lambda *a, **k: pytest.fail("partial cell executed")
+    )
+
+    result = runner.run_message(fid, "default", "give me an answer")
+    assert result["status"] == "failed"
+    assert result["code"] == "llm_stream_timeout"
+    assert result["output_committed"] is True
+    assert len(attempts) == 1
+    assert stream.closed
+    messages = store.list_messages(fid)
+    assert any(m["content"].strip() == "Visible partial answer." for m in messages)
+    assert "private upstream detail" not in json.dumps(messages)
+    assert "could not be reached" not in messages[-1]["content"]
+    assert hub.events[-1]["code"] == "llm_stream_timeout"
+    assert any(
+        e.get("type") == "notebook_cell_draft" and e.get("status") == "discarded"
+        for e in hub.events
+    )
+
+    restored = restore_action_history(store, fid)
+    assert restored[-1]["role"] == "system"
+    assert "unfinished" in restored[-1]["content"]
+    assert not any("print(" in str(m.get("content")) for m in restored)
+    state = runner._state(fid, "default")
+    state.messages = [{"role": "system", "content": "sys"}, *restored]
+
+    def finish(messages, cfg, on_delta=None, **kwargs):
+        assert any(m == restored[-1] for m in messages)
+        arguments = {
+            "summary": "Recovered answer.",
+            "completion_bullets": ["Answered the question"],
+        }
+        call = {
+            "id": "recovered-final",
+            "wire_id": "recovered-final",
+            "name": "finalize_response",
+            "arguments": arguments,
+            "raw_arguments": json.dumps(arguments),
+            "ordinal": 0,
+        }
+        return {"content": "", "tool_calls": [call], "usage": {}}
+
+    monkeypatch.setattr(gateway_mod, "chat", finish)
+    continued = runner.run_message(fid, "default", "continue")
+    assert continued["status"] == "completed"
+    assert len(attempts) == 1
+    runner.close()
+
+
 @pytest.mark.parametrize("surface", ["lineage", "environment"])
 def test_exact_artifact_provenance_routes_keep_the_requested_version(tmp_path, surface):
     import sys

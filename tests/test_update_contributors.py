@@ -20,6 +20,7 @@ def test_public_recognition_is_appended_after_commit_contributors():
         "EQSTLab",
         "difficulttopickaname",
         "ChampionZhong",
+        "Pandasama2025",
     ]
 
 
@@ -38,6 +39,7 @@ def test_a_recognized_login_the_api_already_lists_is_not_duplicated():
         "eqstlab",
         "difficulttopickaname",
         "ChampionZhong",
+        "Pandasama2025",
     ]
 
 

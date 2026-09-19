@@ -20,7 +20,9 @@ import {
 } from "../../stores/stream";
 import { loadArtifacts } from "../artifacts/load";
 import { settleRunningCards } from "../messages/cardState";
-import { $, el } from "../messages/dom";
+import { $ } from "../messages/dom";
+import { canContinueFailure, failureCodeHint, failureMeta } from "../messages/failure";
+export { failureCodeHint, failureMeta } from "../messages/failure";
 import { finishStoppedStream } from "../messages/stopped";
 import { flushRender, type LiveStream } from "../messages/stream";
 import { notebookOnTurnDone } from "../notebook/kernel";
@@ -50,38 +52,9 @@ export function lastTerminalFailure(): {
     : null;
 }
 
-export function failureCodeHint(code: unknown): string {
-  const key = (
-    {
-      llm_request_burst: "turn.failure.llmRequestBurst",
-      llm_rate_limited: "turn.failure.llmRateLimited",
-      llm_upstream_overloaded: "turn.failure.llmUpstreamOverloaded",
-    } as Record<string, string>
-  )[String(code || "")];
-  return key ? t(key) : "";
-}
-
-export function failureMeta(failure: {
-  code?: unknown;
-  output_committed?: unknown;
-  request_id?: unknown;
-}): HTMLElement {
-  const box = el("div", "msg-failure-meta");
-  const bits: string[] = [];
-  const cause = failureCodeHint(failure.code);
-  if (cause) bits.push(cause);
-  if (failure.output_committed) bits.push(t("turn.failedCommitted"));
-  if (failure.request_id) bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)));
-  box.textContent = bits.join(" ");
-  box.dataset.requestId = failure.request_id ? String(failure.request_id).slice(0, 96) : "";
-  box.dataset.failureCode = failure.code ? String(failure.code).slice(0, 64) : "";
-  if (failure.output_committed) box.dataset.committed = "1";
-  return box;
-}
-
 export function failureHint(detail: unknown): string {
   const rec = detail && typeof detail === "object" ? (detail as Record<string, unknown>) : null;
-  const committed = !!(rec && rec.output_committed);
+  const committed = !!(rec && rec.output_committed) && !canContinueFailure(rec?.code);
   const cause = failureCodeHint(rec && rec.code);
   const base = committed
     ? [t("turn.failedCommitted"), cause].filter(Boolean).join(" ")
@@ -105,6 +78,9 @@ export function turnDone(status: string, detail?: unknown): void {
     flushRender(st, true);
     st.md.classList.remove("cursor");
     addMsgActions(st.wrap, st.full || st.text);
+    if (status === "failed" && detail && typeof detail === "object" && !st.wrap.querySelector(".msg-failure-meta")) {
+      st.wrap.appendChild(failureMeta(detail));
+    }
   }
   const mm = $("#messages");
   if (mm) mm.querySelectorAll(".md.cursor").forEach((n) => n.classList.remove("cursor"));

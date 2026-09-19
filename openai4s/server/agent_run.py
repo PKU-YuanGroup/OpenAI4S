@@ -329,6 +329,7 @@ class WebEventSink:
     _streamer: ProseStreamer | None = field(default=None, init=False)
     _code_draft: CodeDraftStreamer | None = field(default=None, init=False)
     _current_action: Action | None = field(default=None, init=False)
+    _reply_received: bool = field(default=False, init=False)
 
     def emit(self, event: AgentEvent) -> None:
         # Persist the canonical engine event before projecting it to transient
@@ -337,6 +338,7 @@ class WebEventSink:
         if self.action_ledger is not None:
             self.action_ledger.emit(event)
         if isinstance(event, TurnStarted):
+            self._reply_received = False
             self.current_prose = ""
             self.model_prose = ""
             self._current_action = None
@@ -355,6 +357,7 @@ class WebEventSink:
             if self._code_draft is not None:
                 self._code_draft.feed(event.text)
         elif isinstance(event, ReplyReceived):
+            self._reply_received = True
             streamer = self._ensure_streamer()
             streamer.finalize()
             if self._code_draft is not None:
@@ -411,6 +414,19 @@ class WebEventSink:
                 self._streamer.finalize()
             if self._code_draft is not None:
                 self._code_draft.clear("cancelled")
+
+    def finish_interrupted(self) -> None:
+        """Keep partial public prose on reopen, without creating a runnable reply."""
+        if self._streamer is not None and not self._reply_received:
+            self._streamer.finalize()
+            prose = _public_prose_before_action(self._streamer.acc).strip()
+            if prose:
+                self.assistant_visible.append(
+                    {"at": int(time.time() * 1000) - 1, "text": prose}
+                )
+            self._reply_received = True
+        if self._code_draft is not None:
+            self._code_draft.clear("interrupted")
 
     def _ensure_streamer(self) -> ProseStreamer:
         if self._streamer is None:

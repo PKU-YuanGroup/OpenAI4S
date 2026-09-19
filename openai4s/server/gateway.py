@@ -57,6 +57,7 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
+from openai4s.agent.recovery import recovery_message
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
@@ -9207,6 +9208,27 @@ class SessionRunner:
                 if zh
                 else "**The model response exceeded its size limit.** Continue with smaller output or tool arguments."
             )
+        if failure_code in {"llm_stream_timeout", "llm_stream_interrupted"}:
+            cause = (
+                (
+                    "上游长时间未发送数据，流式响应已超时"
+                    if zh
+                    else "The upstream stream timed out while waiting for more data"
+                )
+                if failure_code == "llm_stream_timeout"
+                else (
+                    "上游流式响应中断"
+                    if zh
+                    else "The upstream response stream was interrupted"
+                )
+            )
+            return (
+                f"**{cause}。** 本轮已停止，已完成的工作与收到的文字已保留。"
+                "请在当前会话继续，系统会携带中断原因和已有结果继续未完成部分。"
+                if zh
+                else f"**{cause}.** This turn stopped; completed work and received text are preserved. "
+                "Continue in this session with the interruption context and recorded results to finish the remaining work."
+            )
         if failure_code == "llm_request_burst":
             if getattr(exc, "output_committed", False):
                 return (
@@ -10323,11 +10345,12 @@ class SessionRunner:
                     status = "failed"
                     failure_meta["code"] = NO_PROGRESS_STOP_REASON
                     err_text = (
-                        "已停止重复动作。请编辑提示或显式继续。"
+                        "已停止重复动作。已记录重复原因；继续时会要求模型利用已有结果并换一种方法。也可编辑提示说明缺少的条件。"
                         if response_language(user_text) == "zh"
                         else (
                             "Stopped repeating actions. "
-                            "Edit the prompt or continue explicitly."
+                            "The repetition context is recorded. Continue to ask the model "
+                            "to use existing results and choose a different approach, or edit the prompt."
                         )
                     )
                     emit(
@@ -10366,10 +10389,17 @@ class SessionRunner:
                     # assert a safety nothing here can know.
                     failure_meta["output_committed"] = True
                 try:
+                    recovery = recovery_message(stable_failure_code or "")
                     action_ledger.append_terminal(
-                        "runtime_error",
+                        (
+                            stable_failure_code
+                            if recovery is not None
+                            else "runtime_error"
+                        ),
                         error={"type": type(e).__name__, "message": err_text},
                     )
+                    if recovery is not None:
+                        st.messages.append(recovery)
                 except Exception:  # noqa: BLE001 — preserve the primary failure
                     traceback.print_exc()
                 emit(
@@ -11644,6 +11674,9 @@ class SessionRunner:
             self._note_auto_budget_trip(st, denied)
             self._freeze_auto_budget_tokens(st)
             return denied.reason
+        except Exception:
+            events.finish_interrupted()
+            raise
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
         # A `no_progress` stop is projected by `run_message`, next to
