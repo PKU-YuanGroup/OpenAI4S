@@ -77,5 +77,14 @@
 }
 .msg-failure-meta .turn-continue {
   margin-inline-start: 0.75rem;
-  cursor: pointer;
+  vertical-align: middle;
+}
+/* style.css dims the whole meta row; a dimmed button reads as disabled. */
+.msg-failure-meta:has(.turn-continue) {
+  opacity: 1;
+  color: var(--text-400);
+}
+/* Only the newest row may continue its turn. */
+.msg:has(~ .msg) .turn-continue {
+  display: none;
 }

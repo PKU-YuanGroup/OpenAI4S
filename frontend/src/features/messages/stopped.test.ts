@@ -149,7 +149,7 @@ class FakeDoc {
     return new FakeText(data);
   }
   getElementById(id: string): FakeEl | null {
-    return id === "messages" ? this.host : null;
+    return id === "messages" ? this.host : this.body.querySelector("#" + id);
   }
   querySelector(sel: string): FakeEl | null {
     if (sel === "#messages") return this.host;
@@ -209,7 +209,22 @@ describe("stopped turn marker", () => {
       expect(wrap.querySelectorAll(".turn-continue")).toHaveLength(1);
       expect(failureHint(failure)).not.toContain("retrying would repeat work");
 
+      // A recoverable stop explains itself in the row's own text; the meta
+      // row must not say it a second time.
+      expect(wrap.querySelector(".msg-failure-meta")!.textContent).not.toContain("Continue to finish");
+      expect(wrap.querySelector(".turn-continue")!.classList.contains("outline-btn")).toBe(true);
+
       const click = wrap.querySelector(".turn-continue")!.onclick as () => Promise<void>;
+      // A draft in the composer is the user's; Continue refuses, visibly.
+      const composer = new FakeEl("textarea") as FakeEl & { value: string; focus: () => void };
+      composer.id = "composer";
+      composer.value = "half a sentence";
+      composer.focus = vi.fn();
+      doc.body.appendChild(composer);
+      await click();
+      expect(send).not.toHaveBeenCalled();
+      expect(composer.focus).toHaveBeenCalledTimes(1);
+      composer.value = "";
       await click();
       expect(send).toHaveBeenCalledTimes(1);
       expect(send.mock.calls[0]![0]).toContain("completed work");
@@ -225,6 +240,8 @@ describe("stopped turn marker", () => {
       }
       await click();
       expect(send).toHaveBeenCalledTimes(1); // an older failure cannot submit a new turn
+      // ...and stops offering to: a clickable control that does nothing reads as broken.
+      expect(wrap.querySelectorAll(".turn-continue")).toHaveLength(0);
       currentId.value = "another-frame";
       const latest = doc.host.querySelectorAll(".turn-continue").at(-1)!;
       await (latest.onclick as () => Promise<void>)();

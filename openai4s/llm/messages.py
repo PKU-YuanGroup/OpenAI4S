@@ -286,13 +286,40 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
 def _responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
     instructions: list[str] = []
     items: list[dict] = []
+    # Only the leading system messages are policy. One recorded later -- a
+    # compaction handoff, a stopped-turn recovery note -- describes a moment in
+    # the timeline; hoisted into ``instructions`` it became a standing order
+    # for every later request, and each further note stacked another copy.
+    # Held while a tool batch is being answered, for the same reason as the
+    # Anthropic and Gemini assemblers.
+    held_system: list[str] = []
+    answering_tools = False
+
+    def flush_system() -> None:
+        items.extend(
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": _mid_timeline_text(note)}],
+            }
+            for note in held_system
+        )
+        held_system.clear()
+
     for message in messages:
         role = message.get("role")
         text = _flatten_text(message.get("content"))
         if role == "system":
             if text:
-                instructions.append(text)
+                if not items:
+                    instructions.append(text)
+                else:
+                    held_system.append(text)
+                    if not answering_tools:
+                        flush_system()
             continue
+        answering_tools = role == "tool"
+        if not answering_tools:
+            flush_system()
         if role == "tool":
             items.append(
                 {
@@ -337,6 +364,7 @@ def _responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
                 continue
         ptype = "output_text" if role == "assistant" else "input_text"
         items.append({"role": role, "content": [{"type": ptype, "text": text}]})
+    flush_system()
     return "\n\n".join(instructions), items
 
 
