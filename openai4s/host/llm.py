@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from openai4s.config import Config
+
+
+def _priceable(value: Any) -> Any:
+    """A copy of `value` that `json.dumps(allow_nan=False)` will accept.
+
+    Routed through json itself rather than a recursive walk. The first attempt
+    at this recursed over the structure and raised `RecursionError` on a deeply
+    nested message -- inventing a brand new "unpriceable" path, and therefore a
+    brand new bypass, out of the fix for the last one. `json.dumps` handles
+    that same input, so mirroring it cannot fail where the pricer succeeds.
+
+    `parse_constant` is json's own hook for exactly the three tokens
+    `allow_nan=False` rejects. Each becomes its quoted name, which is longer
+    than the bare token, so the byte bound over the copy is never smaller than
+    the real payload would have produced.
+    """
+    return json.loads(json.dumps(value, default=repr), parse_constant=str)
 
 
 class LLMService:
@@ -46,6 +64,19 @@ class LLMService:
         self._inflight_lock = threading.Lock()
         self._inflight_input = 0.0
         self._inflight_output = 0.0
+        # A call nobody can price runs alone. Three separate bypasses of this
+        # gate were the same shape -- make the request unpriceable and the
+        # promise is 0, so every sibling starts against the same pre-spend
+        # window -- and patching each shape as it was found is a losing game:
+        # the third one was introduced BY the fix for the second. So an
+        # unpriceable call no longer claims nothing, it claims the only slot.
+        # The fan-out degrades to serial, the ledger catches up between calls,
+        # and the gate starts refusing on its own.
+        #
+        # Only where a gate is installed. Without one -- the CLI, tests, a
+        # single-user daemon with no owner row (INV-1) -- there is nothing to
+        # protect and serialising would be pure cost.
+        self._unpriced_slot = threading.Semaphore(1)
 
     def _config(self) -> Config:
         return self.config() if callable(self.config) else self.config
@@ -80,13 +111,49 @@ class LLMService:
         # A cell could therefore reserve nothing by asking for nothing:
         # measured at `max_tokens: 0` putting all 32 fan-out items through a
         # 100-token window again, the whole overshoot back in one field.
-        completion = spec.get("max_tokens") or getattr(config.llm, "max_tokens", None)
+        # The same `type(x) is int` test the pricer applies, so the two cannot
+        # disagree about what a cap is. They did: `type(True) is int` is False
+        # while the wire validator's `isinstance(True, int)` is True, so
+        # `max_tokens: true` priced as unpriceable and was waved through to the
+        # provider -- 32 calls and 1280 tokens against a 100-token window.
+        # Anything that is not a positive int is priced at the configured cap,
+        # which is also what every adapter's `max_tokens or cfg.max_tokens`
+        # sends for a falsy one.
+        requested = spec.get("max_tokens")
+        completion = (
+            requested
+            if type(requested) is int and requested > 0
+            else getattr(config.llm, "max_tokens", None)
+        )
+        messages = spec.get("messages") or []
         try:
             parts = token_upper_bound_parts(
-                config.llm,
-                messages=spec.get("messages") or [],
-                max_tokens=completion,
+                config.llm, messages=messages, max_tokens=completion
             )
+            if parts is None:
+                # Retried on a JSON-safe copy. The bound refuses a request it
+                # cannot serialise EXACTLY -- `allow_nan=False` -- because the
+                # Auto Budget needs a hard ceiling. This gate needs only an
+                # upper bound, and the adapters drop the very keys that make a
+                # message unserialisable, so bounding the raw messages
+                # over-estimates rather than under.
+                #
+                # "Unpriceable" was cell-controllable and therefore free: a
+                # single extra key holding `float("nan")` rides a `host_call`
+                # frame intact (the kernel writes frames with json's default
+                # `allow_nan=True`), makes every sibling claim nothing, and
+                # puts all 32 fan-out items through a 100-token window again.
+                #
+                # This retry closes the `allow_nan` shape only. The surface is
+                # wider than that -- the bound can also RAISE, and the blanket
+                # `except` below reads any raise as free -- which is why the
+                # slot in `_admit` exists and why the node count in
+                # `token_upper_bound_parts` had to stop recursing.
+                parts = token_upper_bound_parts(
+                    config.llm,
+                    messages=_priceable(messages),
+                    max_tokens=completion,
+                )
         except Exception:  # noqa: BLE001 - an unpriceable call is not refused
             parts = None
         if parts is None:
@@ -94,11 +161,33 @@ class LLMService:
         prompt, completion, attempts = parts
         return (float(prompt * attempts), float(completion * attempts))
 
-    def _admit(self, spec: dict, config: Config) -> tuple[float, float]:
-        """Gate this request against the ledger PLUS everything in flight."""
+    def _admit(self, spec: dict, config: Config) -> tuple[float, float] | None:
+        """Gate this request against the ledger PLUS everything in flight.
+
+        Returns the promise to release later, or None when the gate is inert.
+        """
         if self.quota_gate is None:
-            return (0.0, 0.0)
+            return None
         promised = self._projected(spec, config)
+        unpriced = promised == (0.0, 0.0)
+        if unpriced:
+            # Unpriceable. Hold the single slot for the whole call rather than
+            # claiming nothing; released in `one`'s `finally` with the promise.
+            self._unpriced_slot.acquire()
+        try:
+            return self._claim(promised)
+        except BaseException:
+            # The gate refusing must not keep the slot. It did, for one
+            # revision of this method: a refused unpriceable call left the
+            # semaphore held and every later one blocked forever -- a port
+            # bricked for the life of the daemon, which is worse than the
+            # overshoot the slot exists to stop. Measured as a hang, here,
+            # before this was written.
+            if unpriced:
+                self._unpriced_slot.release()
+            raise
+
+    def _claim(self, promised: tuple[float, float]) -> tuple[float, float]:
         with self._inflight_lock:
             # Charged with what OTHER requests have promised, not with this
             # one's own bound. Including it would make the gate refuse work it
@@ -125,7 +214,12 @@ class LLMService:
             self._inflight_output += promised[1]
         return promised
 
-    def _release(self, promised: tuple[float, float]) -> None:
+    def _release(self, promised: tuple[float, float] | None) -> None:
+        if promised is None:
+            return
+        if promised == (0.0, 0.0):
+            self._unpriced_slot.release()
+            return
         with self._inflight_lock:
             self._inflight_input = max(0.0, self._inflight_input - promised[0])
             self._inflight_output = max(0.0, self._inflight_output - promised[1])
@@ -136,32 +230,37 @@ class LLMService:
         # Outside the metering try below, because a swallowed gate is not a gate.
         promised = self._admit(spec, config)
         try:
-            response = self._chat(
-                spec.get("messages") or [],
-                config.llm,
-                max_tokens=spec.get("max_tokens"),
-                temperature=spec.get("temperature"),
-            )
-        except BaseException as error:
-            # A call that reached the provider was billed even though it
-            # raised. `llm.chat` attaches the evidence for exactly this.
-            if self.usage_sink is not None and not getattr(
-                error, "llm_not_started", False
-            ):
-                self.usage_sink(getattr(error, "usage", None))
-            raise
+            try:
+                response = self._chat(
+                    spec.get("messages") or [],
+                    config.llm,
+                    max_tokens=spec.get("max_tokens"),
+                    temperature=spec.get("temperature"),
+                )
+            except BaseException as error:
+                # A call that reached the provider was billed even though it
+                # raised. `llm.chat` attaches the evidence for exactly this.
+                if self.usage_sink is not None and not getattr(
+                    error, "llm_not_started", False
+                ):
+                    self.usage_sink(getattr(error, "usage", None))
+                raise
+            # `host.llm` used to project `content` out and drop the whole
+            # reply, so a cell's own LLM spend reached no frame counter, no
+            # governance ledger and no budget -- the widest of the daemon's
+            # unmetered ports, at up to LLM_FANOUT_CAP billed requests per call.
+            if self.usage_sink is not None:
+                self.usage_sink(response.get("usage"))
         finally:
-            # Every exit path, so a promise cannot outlive the request it was
-            # made for. A leaked promise would shrink the window for the rest
-            # of the daemon's life, which is worse than the overshoot it
-            # prevents -- the trade this codebase already refused once.
+            # After the sink, not before it. The release used to sit in a
+            # `finally` that ran while the ledger row was still unwritten,
+            # leaving a window where the spend was in neither place and a
+            # sibling admitted against a window that had already been spent.
+            #
+            # And on every exit path, so a promise cannot outlive its request:
+            # a leaked promise would shrink the window for the rest of the
+            # daemon's life, which is worse than the overshoot it prevents.
             self._release(promised)
-        # `host.llm` used to project `content` out and drop the whole reply, so
-        # a cell's own LLM spend reached no frame counter, no governance ledger
-        # and no budget -- the widest of the daemon's unmetered ports, at up to
-        # LLM_FANOUT_CAP billed requests per call.
-        if self.usage_sink is not None:
-            self.usage_sink(response.get("usage"))
         return response.get("content", "")
 
     def _complete_one(self, spec: dict) -> str:

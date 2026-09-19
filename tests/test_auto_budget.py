@@ -1616,3 +1616,34 @@ def test_failed_call_budget_overrun_retains_real_usage(tmp_path):
         )
     finally:
         store.close()
+
+
+def test_a_deeply_nested_request_still_gets_a_bound():
+    """The node count used to recurse and raise past ~500 levels of nesting.
+
+    That mattered far from here: the quota reservation in `LLMService` reads
+    ANY raise as "this call cannot be priced", which it then treated as free.
+    A cell could put a deeply nested value in a message key the adapters drop
+    and buy an unmetered fan-out — 32 concurrent calls and 1280 tokens through
+    a 100-token window.
+
+    Never `json.dumps`: the C encoder serialises depth 5000 without complaint.
+    It was this count, which is now iterative.
+    """
+    from openai4s.config import LLMConfig
+    from openai4s.server.auto_budget import token_upper_bound_parts
+
+    head = {"role": "user", "content": "x", "d": None}
+    node = head
+    for _ in range(2000):
+        node["d"] = {"n": None}
+        node = node["d"]
+
+    cfg = LLMConfig(provider="ark", api_key="k", max_tokens=64)
+    parts = token_upper_bound_parts(cfg, messages=[head], max_tokens=64)
+    assert parts is not None, "a deep request must be priceable, not free"
+    prompt, completion, attempts = parts
+    # Priced in proportion to what it is, not flattened to a token amount that
+    # would let it through: 2000 nested nodes at the per-node allowance.
+    assert prompt > 64 * 2000
+    assert (completion, attempts) == (64, 3)

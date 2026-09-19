@@ -230,14 +230,25 @@ def token_upper_bound_parts(
     except (TypeError, ValueError):
         return None
 
-    def nodes(item: Any) -> int:
+    # Iterative, with an explicit stack. The recursive form raised
+    # `RecursionError` past roughly 500 levels of nesting -- and the caller
+    # that prices a quota reservation reads ANY raise as "unpriceable", which
+    # it then treats as free. So a cell could put a deeply nested value in a
+    # message key the adapters drop and buy a whole unmetered fan-out: measured
+    # at 32 concurrent calls and 1280 tokens through a 100-token window. Note
+    # the raise was never `json.dumps` -- the C encoder serialises depth 5000
+    # without complaint -- it was this count.
+    total = 0
+    stack: list[Any] = [request]
+    while stack:
+        item = stack.pop()
+        total += 1
         if isinstance(item, Mapping):
-            return 1 + sum(nodes(child) for child in item.values())
-        if isinstance(item, (list, tuple)):
-            return 1 + sum(nodes(child) for child in item)
-        return 1
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
 
-    return (len(encoded) + (64 * nodes(request)) + 1024, completion, attempts)
+    return (len(encoded) + (64 * total) + 1024, completion, attempts)
 
 
 def token_upper_bound(

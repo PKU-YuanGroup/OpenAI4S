@@ -1192,6 +1192,216 @@ def test_asking_for_nothing_does_not_reserve_nothing(tmp_path):
         assert service._inflight_input == 0.0
 
 
+@pytest.mark.parametrize(
+    "poison",
+    [
+        {"role": "user", "content": "x", "noise": float("nan")},
+        {"role": "user", "content": "x", "deep": {"a": [1, float("inf")]}},
+    ],
+    ids=["nan", "nested-infinity"],
+)
+def test_an_unpriceable_message_does_not_buy_free_concurrency(tmp_path, poison):
+    """ "Unpriceable" was cell-controllable, and therefore free.
+
+    `token_upper_bound_parts` serialises with `allow_nan=False` because the Auto
+    Budget needs a ceiling it can certify; a single extra key holding
+    `float("nan")` makes it decline, and the reservation then claimed nothing.
+    The value reaches the host intact -- the kernel writes `host_call` frames
+    with json's default `allow_nan=True` -- and the adapters drop the extra key,
+    so the request goes out normally. Measured: all 32 fan-out items through a
+    100-token window again, 1280 tokens.
+
+    Non-finite floats are the only value a JSON frame can carry that
+    `allow_nan=False` rejects, so normalising them closes the whole reachable
+    surface rather than this one field."""
+    import threading
+
+    from openai4s.storage.governance import QuotaExceeded
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=100,
+            window="day",
+        )
+        started = threading.Barrier(2, timeout=5)
+        calls = []
+
+        def chat(_messages, _llm_cfg, **_kwargs):
+            calls.append(1)
+            try:
+                started.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            }
+
+        service = _fanout_service(store, root, chat=chat)
+        with pytest.raises(QuotaExceeded):
+            service.complete(
+                {"batch": [{"messages": [dict(poison)]} for _ in range(32)]}
+            )
+        assert len(calls) < 32, len(calls)
+        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= 100
+        assert service._inflight_input == 0.0
+
+
+def _deep_message(depth=2000):
+    """A message deep enough to have broken the pricer's node count.
+
+    Not `json.dumps` -- the C encoder serialises depth 5000 without complaint.
+    It was `token_upper_bound_parts`' own recursive `nodes()` walk, which
+    raised past ~500 levels, and the caller read any raise as "unpriceable",
+    which it treated as free. The count is iterative now, so this is priced;
+    the fixture stays as a regression guard on both halves.
+    """
+    head = {"role": "user", "content": "x", "d": None}
+    node = head
+    for _ in range(depth):
+        node["d"] = {"n": None}
+        node = node["d"]
+    return head
+
+
+def test_a_call_nobody_can_price_runs_alone(tmp_path):
+    """Three bypasses of this gate were one shape: make the request
+    unpriceable and the promise is 0, so every sibling starts against the same
+    pre-spend window. The third was introduced BY the fix for the second.
+
+    So an unpriceable call no longer claims nothing, it claims the only slot.
+    Asserted as peak concurrency rather than as a token count, because a token
+    count is not a test of this: with a fake provider that returns instantly
+    the workers finish one at a time anyway and the ledger keeps up, so the
+    first version of this test stayed green with the serialisation removed."""
+    import threading
+    import time
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=1_000_000,
+            window="day",
+        )
+        lock = threading.Lock()
+        live = 0
+        peak = 0
+
+        def chat(_messages, _llm_cfg, **_kwargs):
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.05)
+            with lock:
+                live -= 1
+            return {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            }
+
+        service = _fanout_service(store, root, chat=chat)
+        # The premise: a call the pricer cannot price at all. Forced here
+        # rather than crafted, because every crafted shape found so far has
+        # been fixable in the pricer -- and the point of the slot is the ones
+        # that will not be.
+        unpriceable = {
+            "messages": [{"role": "user", "content": "x"}],
+            "_unpriceable": 1,
+        }
+        service._projected = lambda spec, config: (  # type: ignore[method-assign]
+            (0.0, 0.0) if "_unpriceable" in spec else (4389.0, 192.0)
+        )
+        assert service._projected(unpriceable, service.config) == (0.0, 0.0)
+        service.complete({"batch": [dict(unpriceable) for _ in range(8)]})
+        assert peak == 1, peak
+        assert service._inflight_input == 0.0
+
+        # Paired positive: a priceable fan-out with headroom is NOT serialised.
+        peak = 0
+        service.complete(
+            {
+                "batch": [
+                    {"messages": [{"role": "user", "content": "x"}]} for _ in range(8)
+                ]
+            }
+        )
+        assert peak > 1, peak
+
+
+def test_a_refused_unpriceable_call_does_not_brick_the_port(tmp_path):
+    """The slot is taken before the gate is asked, so a refusal has to give it
+    back. One revision of this did not, and every later unpriceable call
+    blocked forever -- a port dead for the life of the daemon, which is worse
+    than the overshoot the slot exists to stop. It showed up as a hang."""
+    from openai4s.storage.governance import QuotaExceeded
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=0,
+            window="day",
+        )
+        service = _fanout_service(
+            store, root, chat=lambda *_a, **_k: pytest.fail("refused, yet called")
+        )
+        # Forced, not crafted. Every crafted unpriceable shape found so far has
+        # been fixable in the pricer -- the deep-nesting one was fixed while
+        # this test was being written, which quietly made an earlier version of
+        # it exercise the priced path and pass with the leak still in place.
+        service._projected = lambda spec, config: (0.0, 0.0)  # type: ignore[method-assign]
+        for _ in range(3):
+            with pytest.raises(QuotaExceeded):
+                service.one({"messages": [{"role": "user", "content": "x"}]})
+        assert service._unpriced_slot.acquire(blocking=False) is True
+
+
+def test_a_boolean_cap_is_priced_like_the_wire_reads_it(tmp_path):
+    """`type(True) is int` is False so the pricer declined, while the wire
+    validator's `isinstance(True, int)` is True and waved it through: 32 calls
+    and 1280 tokens against a 100-token window. Only `bool` sat in that gap."""
+    from openai4s.storage.governance import QuotaExceeded
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=100,
+            window="day",
+        )
+        service = _fanout_service(
+            store,
+            root,
+            chat=lambda *_a, **_k: {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            },
+        )
+        spec = {"messages": [{"role": "user", "content": "x"}], "max_tokens": True}
+        assert service._projected(spec, service.config) != (0.0, 0.0)
+        with pytest.raises(QuotaExceeded):
+            service.complete({"batch": [dict(spec) for _ in range(32)]})
+        assert _ledger(store, user_id).get("llm_input_tokens", 0) <= 100
+
+
 def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):
     """The paired positive, and the one that matters for every ordinary run:
     these bounds carry a wire allowance and the transport's retry ceiling, so
