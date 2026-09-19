@@ -31,6 +31,8 @@ from typing import Any
 
 from .models import (
     LLMError,
+    StreamReadError,
+    StreamTimeoutError,
     TransportError,
     llm_failure_code,
     parse_retry_after,
@@ -438,7 +440,10 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
         except Exception as e:  # noqa: BLE001 - normalize transport read failures
             # A mid-stream read failure after events were delivered must not be
             # replayed: the caller already saw partial output.
-            raise TransportError(
+            error_type = (
+                StreamTimeoutError if isinstance(e, TimeoutError) else StreamReadError
+            )
+            raise error_type(
                 f"LLM event stream read error: {e}",
                 provider=provider,
                 operation="post_sse",

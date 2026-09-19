@@ -376,7 +376,16 @@ def test_sse_connect_failure_is_retried(monkeypatch):
     assert len(state) == 2
 
 
-def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (TimeoutError("private timeout detail"), "llm_stream_timeout"),
+        (ConnectionResetError("stream died mid-flight"), "llm_stream_interrupted"),
+    ],
+)
+def test_sse_failure_after_committed_output_is_never_retried(
+    monkeypatch, failure, code
+):
     """The rule that keeps the retry honest: the caller has already seen these
     bytes, so replaying the request would emit them twice."""
 
@@ -384,7 +393,7 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         def __iter__(self):
             yield b'data: {"delta":"committed"}\n'
             yield b"\n"
-            raise ConnectionResetError("stream died mid-flight")
+            raise failure
 
         def close(self):
             pass
@@ -401,6 +410,7 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
     assert e.value.output_committed is True
     assert e.value.retryable is False
+    assert llm_failure_code(e.value) == code
     assert len(calls) == 1, "a committed stream must not be replayed"
     assert seen == [{"delta": "committed"}]
 
