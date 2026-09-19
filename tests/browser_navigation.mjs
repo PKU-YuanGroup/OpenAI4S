@@ -170,7 +170,12 @@ export async function navigationChecks(page, api) {
       const held = await holdResponse(page, sessionRead(a));
       try {
         await page.locator("#dash-projects .d-row").filter({ hasText: a.name }).click();
-        await waitUntil("project session read pending", held.waiting);
+        // 60s, not the 20s default: this polls for a request the click has
+        // already triggered to reach the handler, and on a loaded runner the
+        // whole navigation scene has been measured at 77s against 23.6s
+        // nominal. A pending read that has not arrived in a minute is a real
+        // failure; one that has not arrived in twenty seconds is a slow box.
+        await waitUntil("project session read pending", held.waiting, 60000);
         await held.finish(fault);
         await page.locator('[data-read-error="sessions"]').waitFor();
         assert.equal(framePosts, 0);

@@ -12,11 +12,26 @@ async function menu(page, key, session = false) {
   else await page.locator("#dock-viewer").getByTitle(await page.evaluate(() => window.t("viewer.act.more")), { exact: true }).click();
   await page.getByRole("menuitem", { name: label, exact: true }).click();
 }
-async function downloaded(page, action) {
-  const waiting = page.waitForEvent("download"); await action();
-  const download = await waiting;
-  const body = fs.readFileSync(await download.path(), "utf8");
-  return { body, filename: download.suggestedFilename(), sha256: crypto.createHash("sha256").update(body).digest("hex") };
+function downloaded(page, action, { timeout = 120000 } = {}) {
+  // The wait is armed at the CLICK and settled much later, so its clock has to
+  // outlast whatever the caller does in between. `movingHeadExport` holds the
+  // export's two reads across two 20s `waitUntil` gates and an edit, which the
+  // Playwright default of 30s does not cover: a slow runner blows the download
+  // clock while the harness is deliberately blocking the download.
+  const waiting = page.waitForEvent("download", { timeout });
+  const result = (async () => {
+    await action();
+    const download = await waiting;
+    const body = fs.readFileSync(await download.path(), "utf8");
+    return { body, filename: download.suggestedFilename(), sha256: crypto.createHash("sha256").update(body).digest("hex") };
+  })();
+  // Handled from birth. This promise is created, left floating, and awaited
+  // later on purpose; if the scene throws before that await, an unhandled
+  // rejection kills the runner and prints THIS error instead of the real one.
+  // `.catch` here does not swallow it for the eventual awaiter.
+  waiting.catch(() => {});
+  result.catch(() => {});
+  return result;
 }
 async function open(page, row, sub = "code") {
   await page.evaluate(async ({ row, sub }) => { await window.openViewer(row); window.S.provSub = sub; }, { row, sub });
@@ -43,7 +58,25 @@ async function holdReads(page, match) {
     pending.push(work); return work;
   };
   await page.route("**/api/v1/**", handler);
-  return { captured, async finish() { release(); await Promise.all(pending); await page.unroute("**/api/v1/**", handler); } };
+  // `release` and `unroute` are separate steps because the page acts on the
+  // released response AFTER `Promise.all(pending)` resolves -- `fulfill()`
+  // returning on this side is not the page's continuation having run. Tearing
+  // interception down inside that window races the product's own
+  // `<a href="blob:..." download>` click, and in playwright-firefox that click
+  // becomes a top-level navigation that never commits: no `download` event,
+  // and a main frame left pending, which is both halves of the CI signature.
+  let released = false;
+  return {
+    captured,
+    async release() {
+      if (released) return;
+      released = true;
+      release();
+      await Promise.all(pending);
+    },
+    async unroute() { await page.unroute("**/api/v1/**", handler); },
+    async finish() { await this.release(); await this.unroute(); },
+  };
 }
 
 async function movingHeadExport(page, api, row) {
@@ -64,8 +97,13 @@ async function movingHeadExport(page, api, row) {
     const edited = await api(`/artifacts/${row.id}/edit`, { method: "POST", data: { expected_version_id: row.version_id, content: "Updated after export began\n" } });
     assert.equal(edited.status, 200);
     await waitUntil("actual WS advances the live Viewer head", () => page.evaluate((old) => window.S.dockArtifact.version_id !== old, row.version_id));
-  } finally { await held.finish(); }
-  const file = await download;
+  } finally { await held.release(); }
+  // Unrouted only once the download has landed, and still in a `finally` so a
+  // throw in between cannot leave interception installed for the next scene.
+  let file;
+  try {
+    file = await download;
+  } finally { await held.unroute(); }
   const metadata = JSON.parse(file.body);
   assert.equal(metadata.version_id, row.version_id);
   assert.equal(metadata.lineage.version_id, row.version_id);
