@@ -80,7 +80,14 @@ EXCLUDE = {"github-actions[bot]", "dependabot[bot]", "actions-user"}
 # store read (#165). That commit lands, with its authorship, through #164. The
 # entry keeps the recognition on the wall until the API lists the login, which
 # it then does for the same reason as above.
-RECOGNIZED_CONTRIBUTORS = ("EQSTLab", "difficulttopickaname", "ChampionZhong")
+# `Pandasama2025` reported and diagnosed the committed-stream timeout and
+# repeated-action continuation failures in #174, addressed by #175.
+RECOGNIZED_CONTRIBUTORS = (
+    "EQSTLab",
+    "difficulttopickaname",
+    "ChampionZhong",
+    "Pandasama2025",
+)
 _UA = {"User-Agent": "openai4s-contributors-script"}
 
 
