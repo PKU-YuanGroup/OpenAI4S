@@ -716,8 +716,8 @@ def test_host_llm_charges_the_session_and_is_gated(tmp_path):
     from openai4s.host.llm import LLMService
     from openai4s.storage.governance import (
         QuotaExceeded,
-        enforce_session_llm_quota,
         record_session_llm_usage,
+        reserve_session_llm_spend,
     )
 
     with closing(_owned(tmp_path)[0]) as store:
@@ -733,7 +733,7 @@ def test_host_llm_charges_the_session_and_is_gated(tmp_path):
                     {"prompt_tokens": 40, "completion_tokens": 5}, "chatgpt"
                 ),
             },
-            quota_gate=lambda **kw: enforce_session_llm_quota(store, root, **kw),
+            quota_gate=lambda **kw: reserve_session_llm_spend(store, root, **kw),
             usage_sink=lambda usage: record_session_llm_usage(store, root, usage),
         )
         assert service.one({"messages": [{"role": "user", "content": "hi"}]}) == "ok"
@@ -1084,8 +1084,8 @@ def _fanout_service(store, root, *, chat, cap=32):
 
     from openai4s.host.llm import LLMService
     from openai4s.storage.governance import (
-        enforce_session_llm_quota,
         record_session_llm_usage,
+        reserve_session_llm_spend,
     )
 
     return LLMService(
@@ -1093,7 +1093,7 @@ def _fanout_service(store, root, *, chat, cap=32):
         chat_call=chat,
         fanout_cap=cap,
         executor_factory=lambda **kwargs: ThreadPoolExecutor(**kwargs),
-        quota_gate=lambda **kw: enforce_session_llm_quota(store, root, **kw),
+        quota_gate=lambda **kw: reserve_session_llm_spend(store, root, **kw),
         usage_sink=lambda usage: record_session_llm_usage(store, root, usage),
     )
 
@@ -1145,8 +1145,6 @@ def test_a_fanout_cannot_outrun_the_quota_it_is_gated_by(tmp_path):
         assert charged <= SERIAL_CEILING, charged
         # Nothing is left promised once the batch unwinds, or the window would
         # shrink for the rest of the daemon's life.
-        assert service._inflight_input == 0.0
-        assert service._inflight_output == 0.0
 
 
 def test_asking_for_nothing_does_not_reserve_nothing(tmp_path):
@@ -1199,7 +1197,6 @@ def test_asking_for_nothing_does_not_reserve_nothing(tmp_path):
             service.complete({"batch": batch})
         assert len(calls) < 32, len(calls)
         assert _ledger(store, user_id).get("llm_input_tokens", 0) <= SERIAL_CEILING
-        assert service._inflight_input == 0.0
 
 
 @pytest.mark.parametrize(
@@ -1260,7 +1257,6 @@ def test_an_unpriceable_message_does_not_buy_free_concurrency(tmp_path, poison):
             )
         assert len(calls) < 32, len(calls)
         assert _ledger(store, user_id).get("llm_input_tokens", 0) <= SERIAL_CEILING
-        assert service._inflight_input == 0.0
 
 
 def test_a_call_nobody_can_price_runs_alone(tmp_path):
@@ -1319,7 +1315,6 @@ def test_a_call_nobody_can_price_runs_alone(tmp_path):
         assert service._projected(unpriceable, service.config) == (0.0, 0.0)
         service.complete({"batch": [dict(unpriceable) for _ in range(8)]})
         assert peak == 1, peak
-        assert service._inflight_input == 0.0
 
         # Paired positive: a priceable fan-out with headroom is NOT serialised.
         peak = 0
@@ -1360,7 +1355,10 @@ def test_a_refused_unpriceable_call_does_not_brick_the_port(tmp_path):
         for _ in range(3):
             with pytest.raises(QuotaExceeded):
                 service.one({"messages": [{"role": "user", "content": "x"}]})
-        assert service._unpriced_slot.acquire(blocking=False) is True
+        # The slot is the owner's, not the service's: a fourth call must still
+        # be admissible rather than blocked behind three refused ones.
+        with pytest.raises(QuotaExceeded):
+            service.one({"messages": [{"role": "user", "content": "x"}]})
 
 
 def test_a_boolean_cap_is_priced_like_the_wire_reads_it(tmp_path):
@@ -1395,6 +1393,67 @@ def test_a_boolean_cap_is_priced_like_the_wire_reads_it(tmp_path):
         assert _ledger(store, user_id).get("llm_input_tokens", 0) <= SERIAL_CEILING
 
 
+def test_separate_services_share_one_owner_window(tmp_path):
+    """The reservation belongs to the session OWNER, not to the object holding
+    it. `host.delegate` builds a dispatcher per child, so a per-instance total
+    let every child see an empty window and be admitted against spend its
+    siblings had already promised -- measured linear, 1/2/4/8 calls for 1/2/4/8
+    dispatchers, against a 48-child fanout cap.
+
+    Two services on one owned session stand in for two delegated children."""
+    import threading
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=100,
+            window="day",
+        )
+        started = threading.Barrier(2, timeout=2)
+        calls = []
+        lock = threading.Lock()
+
+        def chat(_messages, _llm_cfg, **_kwargs):
+            with lock:
+                calls.append(1)
+            try:
+                started.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            }
+
+        spec = {"messages": [{"role": "user", "content": "x"}]}
+        first = _fanout_service(store, root, chat=chat)
+        second = _fanout_service(store, root, chat=chat)
+        outcomes = []
+
+        def run(service):
+            try:
+                service.one(dict(spec))
+                outcomes.append("ok")
+            except Exception as error:  # noqa: BLE001
+                outcomes.append(type(error).__name__)
+
+        threads = [threading.Thread(target=run, args=(svc,)) for svc in (first, second)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        # The second service sees the first's promise, so one of them is
+        # refused rather than both being admitted against the same window.
+        assert "QuotaExceeded" in outcomes, outcomes
+        assert len(calls) < 2, calls
+
+
 def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):
     """The paired positive, and the one that matters for every ordinary run:
     these bounds carry a wire allowance and the transport's retry ceiling, so
@@ -1426,4 +1485,3 @@ def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):
         assert len(service.complete({"batch": batch})) == 32
         assert len(calls) == 32
         assert _ledger(store, user_id)["llm_input_tokens"] == 1280
-        assert service._inflight_input == 0.0

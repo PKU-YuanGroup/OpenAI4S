@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -51,32 +50,12 @@ class LLMService:
         # a bare LLMService (CLI, tests) stays inert.
         self.quota_gate = quota_gate
         self.usage_sink = usage_sink
-        # Spend promised to requests that are in flight. The ledger the gate
-        # reads is written only when a call RETURNS, so without this every
-        # worker of a fan-out asks the same pre-spend question and gets the
-        # same "yes": measured at 32 items putting 1280 tokens through a
-        # 100-token window, where a serialised caller is refused on its fourth.
-        #
-        # In-process and released in a `finally`, deliberately. A durable
-        # reservation would survive a crash and shrink the window with nothing
-        # able to clear it; this one dies with the daemon, and a hung request
-        # holds its promise only as long as `total_timeout_s` allows.
-        self._inflight_lock = threading.Lock()
-        self._inflight_input = 0.0
-        self._inflight_output = 0.0
-        # A call nobody can price runs alone. Three separate bypasses of this
-        # gate were the same shape -- make the request unpriceable and the
-        # promise is 0, so every sibling starts against the same pre-spend
-        # window -- and patching each shape as it was found is a losing game:
-        # the third one was introduced BY the fix for the second. So an
-        # unpriceable call no longer claims nothing, it claims the only slot.
-        # The fan-out degrades to serial, the ledger catches up between calls,
-        # and the gate starts refusing on its own.
-        #
-        # Only where a gate is installed. Without one -- the CLI, tests, a
-        # single-user daemon with no owner row (INV-1) -- there is nothing to
-        # protect and serialising would be pure cost.
-        self._unpriced_slot = threading.Semaphore(1)
+        # The in-flight ledger deliberately does NOT live here. It is keyed by
+        # the session owner, in `storage.governance`, because that is what the
+        # quota is keyed by: `host.delegate` gives every child its own
+        # dispatcher and so its own LLMService, and a per-instance total let
+        # each one see an empty window. Measured linear, 1/2/4/8 calls for
+        # 1/2/4/8 dispatchers. `quota_gate` returns the release.
 
     def _config(self) -> Config:
         return self.config() if callable(self.config) else self.config
@@ -161,74 +140,29 @@ class LLMService:
         prompt, completion, attempts = parts
         return (float(prompt * attempts), float(completion * attempts))
 
-    def _admit(self, spec: dict, config: Config) -> tuple[float, float] | None:
-        """Gate this request against the ledger PLUS everything in flight.
-
-        Returns the promise to release later, or None when the gate is inert.
-        """
+    def _admit(self, spec: dict, config: Config) -> Callable[[], None] | None:
+        """Gate this request, and return the release the caller must run."""
         if self.quota_gate is None:
             return None
         promised = self._projected(spec, config)
-        unpriced = promised == (0.0, 0.0)
-        if unpriced:
-            # Unpriceable. Hold the single slot for the whole call rather than
-            # claiming nothing; released in `one`'s `finally` with the promise.
-            self._unpriced_slot.acquire()
+        release = self.quota_gate(
+            projected_input=promised[0], projected_output=promised[1]
+        )
+        return release if callable(release) else None
+
+    def _release(self, release: Callable[[], None] | None) -> None:
+        if release is None:
+            return
         try:
-            return self._claim(promised)
-        except BaseException:
-            # The gate refusing must not keep the slot. It did, for one
-            # revision of this method: a refused unpriceable call left the
-            # semaphore held and every later one blocked forever -- a port
-            # bricked for the life of the daemon, which is worse than the
-            # overshoot the slot exists to stop. Measured as a hang, here,
-            # before this was written.
-            if unpriced:
-                self._unpriced_slot.release()
-            raise
-
-    def _claim(self, promised: tuple[float, float]) -> tuple[float, float]:
-        with self._inflight_lock:
-            # Charged with what OTHER requests have promised, not with this
-            # one's own bound. Including it would make the gate refuse work it
-            # was never going to cost: these bounds carry a wire allowance and
-            # the transport's retry ceiling, so one 40-token call prices at
-            # ~3.8k and a 100-token window would admit nothing at all. The
-            # missing fact was never "what will I cost" -- the ledger records
-            # that a moment later -- it is "what is already promised and not
-            # yet recorded", which is exactly what a fan-out hides.
-            #
-            # So a lone call is gated exactly as it was before, and siblings
-            # that start while it is in flight are the ones held back. Near a
-            # limit that degrades a fan-out to serial, which is the correct
-            # direction; far from one the promises are noise against the limit
-            # and nothing is throttled.
-            #
-            # The lock spans the check AND the claim, or two callers read the
-            # same pending total and both add to it.
-            self.quota_gate(
-                projected_input=self._inflight_input,
-                projected_output=self._inflight_output,
-            )
-            self._inflight_input += promised[0]
-            self._inflight_output += promised[1]
-        return promised
-
-    def _release(self, promised: tuple[float, float] | None) -> None:
-        if promised is None:
-            return
-        if promised == (0.0, 0.0):
-            self._unpriced_slot.release()
-            return
-        with self._inflight_lock:
-            self._inflight_input = max(0.0, self._inflight_input - promised[0])
-            self._inflight_output = max(0.0, self._inflight_output - promised[1])
+            release()
+        except Exception:  # noqa: BLE001 - a failed release must not fail the call
+            pass
 
     def one(self, spec: dict) -> str:
         config = self._config()
         # Before the request, not after: a refusal must not have spent anything.
         # Outside the metering try below, because a swallowed gate is not a gate.
-        promised = self._admit(spec, config)
+        reservation = self._admit(spec, config)
         try:
             try:
                 response = self._chat(
@@ -260,7 +194,7 @@ class LLMService:
             # And on every exit path, so a promise cannot outlive its request:
             # a leaked promise would shrink the window for the rest of the
             # daemon's life, which is worse than the overshoot it prevents.
-            self._release(promised)
+            self._release(reservation)
         return response.get("content", "")
 
     def _complete_one(self, spec: dict) -> str:

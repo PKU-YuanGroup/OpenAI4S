@@ -26,6 +26,8 @@ from __future__ import annotations
 import hashlib
 import secrets
 import sqlite3
+import threading
+import time
 from typing import Any, Callable
 
 from openai4s.storage.migrations import apply_ddl_script
@@ -633,6 +635,187 @@ __all__ = [
     "create_governance_schema",
     "invite_digest",
 ]
+
+
+#: Pre-spend promises, keyed by the SESSION OWNER -- the same identity the
+#: quota is keyed by. It lived on the `LLMService` instance first, which is a
+#: different key: `host.delegate` gives every child its own dispatcher and so
+#: its own service, and each one then saw an empty in-flight total and was
+#: admitted against the same unspent window. Measured linear, 1/2/4/8 calls for
+#: 1/2/4/8 dispatchers, up to the 48-child fanout cap.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: dict[tuple[str, str, str], list[list[float]]] = {}
+#: A promise this old is treated as lost rather than held. Releases run in a
+#: `finally`, so this is for the case a `finally` cannot cover -- a killed
+#: thread. Without it a single lost release would shrink a TEAM's window until
+#: the daemon restarted, which is the trade this codebase has already refused
+#: once: a claim outliving its operation is worse than the overshoot it stops.
+_INFLIGHT_TTL_S = 900.0
+#: One unpriceable call at a time per owner, for the same reason.
+_SOLO_LOCK = threading.Lock()
+_SOLO: dict[tuple[str, str], threading.Semaphore] = {}
+
+
+def _live_total(key: tuple[str, str, str], now: float) -> float:
+    entries = _INFLIGHT.get(key)
+    if not entries:
+        return 0.0
+    entries[:] = [entry for entry in entries if entry[0] > now]
+    if not entries:
+        _INFLIGHT.pop(key, None)
+        return 0.0
+    return sum(entry[1] for entry in entries)
+
+
+def _solo_slot(user_id: str, project: str) -> threading.Semaphore:
+    with _SOLO_LOCK:
+        return _SOLO.setdefault((user_id, project), threading.Semaphore(1))
+
+
+def _resolve_owner(store: Any, frame_id: str) -> tuple[Any, Any, str, str] | None:
+    """(governance, team, user_id, project) for a frame, or None when inert."""
+    governance = getattr(store, "governance", None)
+    team = getattr(store, "team", None)
+    if governance is None or team is None:
+        return None
+    try:
+        scope = store.resolve_frame_scope(frame_id)
+        root = scope["root_frame_id"]
+        owner = team.session_owner(root)
+    except Exception:  # noqa: BLE001 - a broken lookup reads as unowned
+        return None
+    if owner is None:
+        return None  # single-user and unowned sessions stay inert (INV-1)
+    return (
+        governance,
+        team,
+        str(owner["user_id"]),
+        str(owner["project_id"] or scope.get("project_id") or ""),
+    )
+
+
+def _check(
+    governance: Any,
+    team: Any,
+    user_id: str,
+    project: str,
+    amounts: tuple[float, float],
+) -> None:
+    """The frozen contract: a broken check admits and audits, only QuotaExceeded escapes."""
+    try:
+        for kind, amount in (
+            (KIND_LLM_INPUT_TOKENS, amounts[0]),
+            (KIND_LLM_OUTPUT_TOKENS, amounts[1]),
+        ):
+            governance.check_quota(
+                user_id=user_id,
+                project_id=project or None,
+                kind=kind,
+                projected=amount,
+            )
+    except QuotaExceeded:
+        raise
+    except Exception as error:  # noqa: BLE001
+        try:
+            team.audit(
+                actor=user_id,
+                action="quota_check_failed",
+                detail=str(error)[:200],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def reserve_session_llm_spend(
+    store: Any,
+    frame_id: str,
+    *,
+    projected_input: float = 0.0,
+    projected_output: float = 0.0,
+) -> Callable[[], None]:
+    """Gate a request against the ledger PLUS this owner's unrecorded promises.
+
+    Returns the release, which the caller MUST run in a `finally`. Inert
+    without an owner row, so a single-user daemon and the CLI are unchanged.
+
+    The check sees what OTHER requests have promised, never the caller's own
+    bound: these bounds carry a wire allowance and the transport's retry
+    ceiling, so charging a call for itself would price one 40-token request at
+    ~3.8k and let a 100-token window admit nothing at all.
+
+    A request nobody could price promises nothing, so it takes this owner's
+    single slot instead and runs alone -- otherwise "unpriceable" is free, and
+    making a request unpriceable has been cell-controllable three times.
+    """
+    resolved = _resolve_owner(store, frame_id)
+    if resolved is None:
+        return _noop
+    governance, team, user_id, project = resolved
+    unpriced = not projected_input and not projected_output
+    slot = _solo_slot(user_id, project) if unpriced else None
+    if slot is not None:
+        slot.acquire()
+    try:
+        now = time.monotonic()
+        deadline = now + _INFLIGHT_TTL_S
+        claims: list[tuple[tuple[str, str, str], list[float]]] = []
+        with _INFLIGHT_LOCK:
+            # Check and claim under one lock, or two callers read the same
+            # pending total and both add to it.
+            _check(
+                governance,
+                team,
+                user_id,
+                project,
+                (
+                    _live_total((user_id, project, KIND_LLM_INPUT_TOKENS), now),
+                    _live_total((user_id, project, KIND_LLM_OUTPUT_TOKENS), now),
+                ),
+            )
+            for kind, amount in (
+                (KIND_LLM_INPUT_TOKENS, float(projected_input)),
+                (KIND_LLM_OUTPUT_TOKENS, float(projected_output)),
+            ):
+                if amount <= 0:
+                    continue
+                key = (user_id, project, kind)
+                entry = [deadline, amount]
+                _INFLIGHT.setdefault(key, []).append(entry)
+                claims.append((key, entry))
+    except BaseException:
+        # A refusal must not keep the slot. It did, in one revision of the
+        # per-instance version: every later unpriceable call then blocked
+        # forever, a port dead for the life of the daemon.
+        if slot is not None:
+            slot.release()
+        raise
+
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        with _INFLIGHT_LOCK:
+            for key, entry in claims:
+                entries = _INFLIGHT.get(key)
+                if not entries:
+                    continue
+                try:
+                    entries.remove(entry)
+                except ValueError:
+                    pass
+                if not entries:
+                    _INFLIGHT.pop(key, None)
+        if slot is not None:
+            slot.release()
+
+    return release
+
+
+def _noop() -> None:
+    return None
 
 
 def enforce_session_llm_quota(

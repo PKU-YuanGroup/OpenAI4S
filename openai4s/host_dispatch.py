@@ -2197,23 +2197,29 @@ class HostDispatcher:
     # --- llm --------------------------------------------------------------
     def _llm_quota_gate(
         self, *, projected_input: float = 0.0, projected_output: float = 0.0
-    ) -> None:
-        """Refuse an in-kernel `host.llm` request the session may not afford.
+    ) -> Any:
+        """Reserve an in-kernel `host.llm` request against the session's window.
 
         `SessionRunner.enforce_llm_quota`'s own docstring names the rule this
         port violated: the reviewer "would otherwise be an unmetered,
         user-triggered way around an exhausted quota". `host.llm` is a third
         such port and the widest -- one call fans out to LLM_FANOUT_CAP real
         requests with no per-cell ceiling.
+
+        Returns the release, which `LLMService` runs in a `finally`. The
+        in-flight total behind it is keyed by the session OWNER rather than by
+        this dispatcher, because `host.delegate` gives every child its own
+        dispatcher: a per-object total let each child see an empty window and
+        be admitted against spend its siblings had already promised.
         """
-        from openai4s.storage.governance import enforce_session_llm_quota
+        from openai4s.storage.governance import reserve_session_llm_spend
 
         frame_id = self.frame_id
         if not frame_id:
-            return
+            return None
         # Re-resolved, never `self.store`: a closed Store generation survives on
         # the attribute and every query on it raises (see the note above).
-        enforce_session_llm_quota(
+        return reserve_session_llm_spend(
             get_store(self.cfg.db_path),
             str(frame_id),
             projected_input=projected_input,
