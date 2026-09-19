@@ -2195,7 +2195,9 @@ class HostDispatcher:
         return result
 
     # --- llm --------------------------------------------------------------
-    def _llm_quota_gate(self) -> None:
+    def _llm_quota_gate(
+        self, *, projected_input: float = 0.0, projected_output: float = 0.0
+    ) -> None:
         """Refuse an in-kernel `host.llm` request the session may not afford.
 
         `SessionRunner.enforce_llm_quota`'s own docstring names the rule this
@@ -2211,7 +2213,12 @@ class HostDispatcher:
             return
         # Re-resolved, never `self.store`: a closed Store generation survives on
         # the attribute and every query on it raises (see the note above).
-        enforce_session_llm_quota(get_store(self.cfg.db_path), str(frame_id))
+        enforce_session_llm_quota(
+            get_store(self.cfg.db_path),
+            str(frame_id),
+            projected_input=projected_input,
+            projected_output=projected_output,
+        )
 
     def _record_llm_usage(self, usage: Any) -> None:
         """Charge one in-kernel LLM reply to the frame and the quota ledger."""

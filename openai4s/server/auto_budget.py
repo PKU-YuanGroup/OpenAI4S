@@ -165,23 +165,25 @@ def verifiable_token_usage(usage: Any) -> int | None:
     return measured_total(usage)
 
 
-def token_upper_bound(
+def token_upper_bound_parts(
     adapter_cfg: Any,
     *,
     messages: Any = None,
     tools: Any = None,
     max_tokens: int | None = None,
-) -> int | None:
-    """Return a pre-provider upper bound for prompt plus completion tokens.
+) -> tuple[int, int, int] | None:
+    """The per-attempt ``(prompt, completion, attempts)`` ``token_upper_bound`` sums.
 
-    ``max_tokens`` bounds only provider output and therefore cannot be used as
-    a total-spend reservation. Adapters may expose an audited bound directly.
-    Otherwise, for the exact JSON request, UTF-8 bytes upper-bound ordinary
-    tokenizer tokens; the per-node allowance covers provider wire wrappers and
-    chat control tokens. The per-attempt value is multiplied by the transport's
-    audited attempt ceiling. Non-JSON request content fails closed before
-    provider spend. Model-catalog context sizes are deliberately not used: a
-    provider default is not proof about the exact configured endpoint.
+    Split out because the two consumers need different things from the same
+    arithmetic. The Auto Budget reserves a hard TOTAL spend ceiling, so it wants
+    every attempt. A per-kind quota gate charges ``llm_input_tokens`` and
+    ``llm_output_tokens`` separately, and comparing a combined figure against
+    either limit over-refuses -- a 100-byte prompt with ``max_tokens=4000``
+    would be refused by a 1000-token INPUT quota it never threatened.
+
+    Returns None when the parts are not separable: an adapter that publishes
+    only ``total_token_upper_bound`` has no split to offer, and saying so is
+    better than inventing one.
     """
 
     def value(name: str) -> Any:
@@ -189,8 +191,6 @@ def token_upper_bound(
             return adapter_cfg.get(name)
         return getattr(adapter_cfg, name, None)
 
-    # The Responses adapter omits max_output_tokens for its configured proxy.
-    # A configured max_tokens therefore cannot certify that wire's ceiling.
     provider = value("provider")
     if provider:
         from openai4s.llm.registry import provider_spec
@@ -200,14 +200,8 @@ def token_upper_bound(
                 return None
         except (LookupError, ValueError, RuntimeError):
             pass  # injected adapters retain their explicit bound contract
-    total = value("total_token_upper_bound")
-    if type(total) is int and total > 0:
-        return total
     attempts = value("provider_attempt_upper_bound")
     if attempts is None:
-        # Exact production transport ceiling: first request + two bounded
-        # retries. Reserving one prompt for a three-attempt transport would not
-        # be a hard spend ceiling after an ambiguous/lost response.
         from openai4s.llm.transport import DEFAULT_MAX_ATTEMPTS
 
         attempts = DEFAULT_MAX_ATTEMPTS
@@ -221,7 +215,7 @@ def token_upper_bound(
         and type(completion) is int
         and completion > 0
     ):
-        return (prompt + completion) * attempts
+        return (prompt, completion, attempts)
     if messages is None or type(completion) is not int or completion <= 0:
         return None
     request = {"messages": messages, "tools": tools or []}
@@ -243,10 +237,58 @@ def token_upper_bound(
             return 1 + sum(nodes(child) for child in item)
         return 1
 
-    request_bound = (
-        len(encoded) + (64 * nodes(request)) + 1024 + completion
-    ) * attempts
-    return request_bound
+    return (len(encoded) + (64 * nodes(request)) + 1024, completion, attempts)
+
+
+def token_upper_bound(
+    adapter_cfg: Any,
+    *,
+    messages: Any = None,
+    tools: Any = None,
+    max_tokens: int | None = None,
+) -> int | None:
+    """Return a pre-provider upper bound for prompt plus completion tokens.
+
+    ``max_tokens`` bounds only provider output and therefore cannot be used as
+    a total-spend reservation. Adapters may expose an audited bound directly.
+    Otherwise, for the exact JSON request, UTF-8 bytes upper-bound ordinary
+    tokenizer tokens; the per-node allowance covers provider wire wrappers and
+    chat control tokens. The per-attempt value is multiplied by the transport's
+    audited attempt ceiling. Non-JSON request content fails closed before
+    provider spend. Model-catalog context sizes are deliberately not used: a
+    provider default is not proof about the exact configured endpoint.
+
+    The arithmetic lives in :func:`token_upper_bound_parts`; this is its sum,
+    plus the one case that has no parts -- an adapter publishing an audited
+    ``total_token_upper_bound`` directly.
+    """
+
+    def value(name: str) -> Any:
+        if isinstance(adapter_cfg, Mapping):
+            return adapter_cfg.get(name)
+        return getattr(adapter_cfg, name, None)
+
+    total = value("total_token_upper_bound")
+    if type(total) is int and total > 0:
+        # Checked before the parts, and before the wire check, exactly as it
+        # was: an adapter that states its own ceiling is authoritative.
+        provider = value("provider")
+        if provider:
+            from openai4s.llm.registry import provider_spec
+
+            try:
+                if provider_spec(provider)["wire"] == "responses":
+                    return None
+            except (LookupError, ValueError, RuntimeError):
+                pass
+        return total
+    parts = token_upper_bound_parts(
+        adapter_cfg, messages=messages, tools=tools, max_tokens=max_tokens
+    )
+    if parts is None:
+        return None
+    prompt, completion, attempts = parts
+    return (prompt + completion) * attempts
 
 
 def inspect_budget_wiring() -> dict[str, Any]:

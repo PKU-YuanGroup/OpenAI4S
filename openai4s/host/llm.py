@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -19,7 +20,7 @@ class LLMService:
         one_call: Callable[[dict], str] | None = None,
         fanout_cap: int | Callable[[], int] = 32,
         executor_factory: Callable[..., Any] = ThreadPoolExecutor,
-        quota_gate: Callable[[], None] | None = None,
+        quota_gate: Callable[..., None] | None = None,
         usage_sink: Callable[[Any], None] | None = None,
     ) -> None:
         self.config = config
@@ -32,6 +33,19 @@ class LLMService:
         # a bare LLMService (CLI, tests) stays inert.
         self.quota_gate = quota_gate
         self.usage_sink = usage_sink
+        # Spend promised to requests that are in flight. The ledger the gate
+        # reads is written only when a call RETURNS, so without this every
+        # worker of a fan-out asks the same pre-spend question and gets the
+        # same "yes": measured at 32 items putting 1280 tokens through a
+        # 100-token window, where a serialised caller is refused on its fourth.
+        #
+        # In-process and released in a `finally`, deliberately. A durable
+        # reservation would survive a crash and shrink the window with nothing
+        # able to clear it; this one dies with the daemon, and a hung request
+        # holds its promise only as long as `total_timeout_s` allows.
+        self._inflight_lock = threading.Lock()
+        self._inflight_input = 0.0
+        self._inflight_output = 0.0
 
     def _config(self) -> Config:
         return self.config() if callable(self.config) else self.config
@@ -46,12 +60,71 @@ class LLMService:
 
         return chat(*args, **kwargs)
 
+    def _projected(self, spec: dict, config: Config) -> tuple[float, float]:
+        """This request's pre-spend upper bound, split per quota kind.
+
+        Split rather than combined: comparing one figure against either limit
+        over-refuses, and a quota that turns away work it was never going to
+        cost is its own defect. Unknown bounds are 0, which leaves the gate
+        exactly as strong as it was before -- honest, rather than a guess
+        wearing a limit's name.
+        """
+        from openai4s.server.auto_budget import token_upper_bound_parts
+
+        try:
+            parts = token_upper_bound_parts(
+                config.llm,
+                messages=spec.get("messages") or [],
+                max_tokens=spec.get("max_tokens"),
+            )
+        except Exception:  # noqa: BLE001 - an unpriceable call is not refused
+            parts = None
+        if parts is None:
+            return (0.0, 0.0)
+        prompt, completion, attempts = parts
+        return (float(prompt * attempts), float(completion * attempts))
+
+    def _admit(self, spec: dict, config: Config) -> tuple[float, float]:
+        """Gate this request against the ledger PLUS everything in flight."""
+        if self.quota_gate is None:
+            return (0.0, 0.0)
+        promised = self._projected(spec, config)
+        with self._inflight_lock:
+            # Charged with what OTHER requests have promised, not with this
+            # one's own bound. Including it would make the gate refuse work it
+            # was never going to cost: these bounds carry a wire allowance and
+            # the transport's retry ceiling, so one 40-token call prices at
+            # ~3.8k and a 100-token window would admit nothing at all. The
+            # missing fact was never "what will I cost" -- the ledger records
+            # that a moment later -- it is "what is already promised and not
+            # yet recorded", which is exactly what a fan-out hides.
+            #
+            # So a lone call is gated exactly as it was before, and siblings
+            # that start while it is in flight are the ones held back. Near a
+            # limit that degrades a fan-out to serial, which is the correct
+            # direction; far from one the promises are noise against the limit
+            # and nothing is throttled.
+            #
+            # The lock spans the check AND the claim, or two callers read the
+            # same pending total and both add to it.
+            self.quota_gate(
+                projected_input=self._inflight_input,
+                projected_output=self._inflight_output,
+            )
+            self._inflight_input += promised[0]
+            self._inflight_output += promised[1]
+        return promised
+
+    def _release(self, promised: tuple[float, float]) -> None:
+        with self._inflight_lock:
+            self._inflight_input = max(0.0, self._inflight_input - promised[0])
+            self._inflight_output = max(0.0, self._inflight_output - promised[1])
+
     def one(self, spec: dict) -> str:
         config = self._config()
         # Before the request, not after: a refusal must not have spent anything.
         # Outside the metering try below, because a swallowed gate is not a gate.
-        if self.quota_gate is not None:
-            self.quota_gate()
+        promised = self._admit(spec, config)
         try:
             response = self._chat(
                 spec.get("messages") or [],
@@ -67,6 +140,12 @@ class LLMService:
             ):
                 self.usage_sink(getattr(error, "usage", None))
             raise
+        finally:
+            # Every exit path, so a promise cannot outlive the request it was
+            # made for. A leaked promise would shrink the window for the rest
+            # of the daemon's life, which is worse than the overshoot it
+            # prevents -- the trade this codebase already refused once.
+            self._release(promised)
         # `host.llm` used to project `content` out and drop the whole reply, so
         # a cell's own LLM spend reached no frame counter, no governance ledger
         # and no budget -- the widest of the daemon's unmetered ports, at up to

@@ -556,11 +556,27 @@ class GovernanceRepository:
             for r in rows
         ]
 
-    def check_quota(self, *, user_id: str, project_id: str | None, kind: str) -> None:
+    def check_quota(
+        self,
+        *,
+        user_id: str,
+        project_id: str | None,
+        kind: str,
+        projected: float = 0.0,
+    ) -> None:
         """Raise :class:`QuotaExceeded` when a metered action must be refused.
 
         Consumption is measured from the ledger over a sliding window. A
         limit of 0 means "none allowed". No quota rows -> allowed.
+
+        ``projected`` is spend a caller is ABOUT to commit and that no ledger
+        row can describe yet, counted as though it were already recorded. The
+        ledger is written only after a call returns, so without it a caller
+        that starts N requests concurrently gets N independent "yes" answers
+        from the same pre-spend state: measured at 32 concurrent `host.llm`
+        fan-out items putting 1280 tokens through a 100-token window, where a
+        serialised caller is refused on its fourth. Defaults to 0, which is
+        exactly the previous behaviour.
         """
         with self._lock:
             rows = self._connection.execute(
@@ -595,7 +611,7 @@ class GovernanceRepository:
                     f" WHERE kind=? AND ts>=? AND {where}",
                     (kind, since, param),
                 ).fetchone()[0]
-                if float(used) >= float(limit_amount):
+                if float(used) + float(projected) >= float(limit_amount):
                     raise QuotaExceeded(
                         f"{scope} {kind} quota exhausted"
                         f" ({used:g}/{limit_amount:g} per {window})",
@@ -619,7 +635,13 @@ __all__ = [
 ]
 
 
-def enforce_session_llm_quota(store: Any, frame_id: str) -> None:
+def enforce_session_llm_quota(
+    store: Any,
+    frame_id: str,
+    *,
+    projected_input: float = 0.0,
+    projected_output: float = 0.0,
+) -> None:
     """The pre-call LLM quota gate, for entry points outside ``SessionRunner``.
 
     ``SessionRunner.enforce_llm_quota`` is bound to a Web session and looks the
@@ -629,6 +651,12 @@ def enforce_session_llm_quota(store: Any, frame_id: str) -> None:
     under the root, and an unresolved child has no owner row at all. Gating on
     the resolved root is the difference between the gate applying to a fan-out
     and silently not applying to it.
+
+    ``projected_*`` are the caller's pre-spend upper bounds for THIS request,
+    charged per kind. Split per kind on purpose: a combined figure compared
+    against either limit over-refuses -- a 100-byte prompt with
+    ``max_tokens=4000`` would be turned away by a 1000-token INPUT quota it
+    never threatened.
 
     Frozen decision, shared with its sibling: a *broken* check admits and
     audits -- availability over bookkeeping. Only ``QuotaExceeded`` escapes.
@@ -647,9 +675,15 @@ def enforce_session_llm_quota(store: Any, frame_id: str) -> None:
         return  # single-user and unowned sessions stay inert (INV-1)
     project = owner["project_id"] or scope.get("project_id")
     try:
-        for kind in (KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS):
+        for kind, amount in (
+            (KIND_LLM_INPUT_TOKENS, projected_input),
+            (KIND_LLM_OUTPUT_TOKENS, projected_output),
+        ):
             governance.check_quota(
-                user_id=owner["user_id"], project_id=project, kind=kind
+                user_id=owner["user_id"],
+                project_id=project,
+                kind=kind,
+                projected=amount,
             )
     except QuotaExceeded:
         raise

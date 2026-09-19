@@ -733,7 +733,7 @@ def test_host_llm_charges_the_session_and_is_gated(tmp_path):
                     {"prompt_tokens": 40, "completion_tokens": 5}, "chatgpt"
                 ),
             },
-            quota_gate=lambda: enforce_session_llm_quota(store, root),
+            quota_gate=lambda **kw: enforce_session_llm_quota(store, root, **kw),
             usage_sink=lambda usage: record_session_llm_usage(store, root, usage),
         )
         assert service.one({"messages": [{"role": "user", "content": "hi"}]}) == "ok"
@@ -1067,3 +1067,107 @@ def test_an_exception_that_never_reached_the_provider_is_not_charged():
     )
     charge_call(charged.append, reached)
     assert [measured_usage(u)["input_tokens"] for u in charged] == [12]
+
+
+def _fanout_service(store, root, *, chat, cap=32):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from openai4s.host.llm import LLMService
+    from openai4s.storage.governance import (
+        enforce_session_llm_quota,
+        record_session_llm_usage,
+    )
+
+    return LLMService(
+        SimpleNamespace(llm=replace(cfg(), max_tokens=64)),
+        chat_call=chat,
+        fanout_cap=cap,
+        executor_factory=lambda **kwargs: ThreadPoolExecutor(**kwargs),
+        quota_gate=lambda **kw: enforce_session_llm_quota(store, root, **kw),
+        usage_sink=lambda usage: record_session_llm_usage(store, root, usage),
+    )
+
+
+def test_a_fanout_cannot_outrun_the_quota_it_is_gated_by(tmp_path):
+    """The gate reads a ledger that is written only when a call RETURNS, so
+    every worker of a fan-out asked the same pre-spend question and got the
+    same yes. Measured before this: a 100-token window, 40 tokens a call --
+    where a serialised caller is refused on its fourth -- passed all 32 items
+    and recorded 1280 tokens, 12.8x the limit.
+
+    The missing fact was never "what will this call cost"; the ledger records
+    that a moment later. It is "what is already promised and not yet
+    recorded", which is exactly what a fan-out hides."""
+    import threading
+
+    from openai4s.storage.governance import QuotaExceeded
+
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=100,
+            window="day",
+        )
+        started = threading.Barrier(2, timeout=5)
+
+        def chat(_messages, _llm_cfg, **_kwargs):
+            # Hold every worker inside the provider call at once, which is the
+            # window the ledger cannot describe.
+            try:
+                started.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            }
+
+        service = _fanout_service(store, root, chat=chat)
+        batch = [{"messages": [{"role": "user", "content": "x"}]} for _ in range(32)]
+        with pytest.raises(QuotaExceeded):
+            service.complete({"batch": batch})
+        charged = _ledger(store, user_id).get("llm_input_tokens", 0)
+        assert charged <= 100, charged
+        # Nothing is left promised once the batch unwinds, or the window would
+        # shrink for the rest of the daemon's life.
+        assert service._inflight_input == 0.0
+        assert service._inflight_output == 0.0
+
+
+def test_the_gate_does_not_throttle_a_fanout_that_fits(tmp_path):
+    """The paired positive, and the one that matters for every ordinary run:
+    these bounds carry a wire allowance and the transport's retry ceiling, so
+    charging a call for its OWN projection would price one 40-token request at
+    ~3.8k and let a 100-token window admit nothing at all. Far from a limit the
+    promises are noise, and a fan-out must be untouched."""
+    store, root, user_id = _owned(tmp_path)
+    with closing(store):
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user_id,
+            kind="llm_input_tokens",
+            limit_amount=1_000_000,
+            window="day",
+        )
+        calls = []
+
+        def chat(_messages, _llm_cfg, **_kwargs):
+            calls.append(1)
+            return {
+                "content": "ok",
+                "usage": llm.normalize_usage(
+                    {"prompt_tokens": 40, "completion_tokens": 1}, "chatgpt"
+                ),
+            }
+
+        service = _fanout_service(store, root, chat=chat)
+        batch = [{"messages": [{"role": "user", "content": "x"}]} for _ in range(32)]
+        assert len(service.complete({"batch": batch})) == 32
+        assert len(calls) == 32
+        assert _ledger(store, user_id)["llm_input_tokens"] == 1280
+        assert service._inflight_input == 0.0
