@@ -305,3 +305,34 @@ def test_branch_naming_policy_exempts_dependabot_by_ref_not_by_actor():
 
     assert "startsWith(github.head_ref, 'dependabot/')" in condition
     assert "github.actor" not in condition
+
+
+def test_dependabot_batches_every_ecosystem_without_filtering_updates():
+    """The Monday batch includes majors and formatters without filtering fixes.
+
+    Multi-ecosystem jobs do not run the ordinary ungrouped update pass, so
+    selective patterns or old single-ecosystem groups can leave updates out.
+    Keep eligibility unrestricted and let one group own the schedule.
+    """
+    yaml = pytest.importorskip("yaml")
+    config = yaml.safe_load(
+        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    )
+    groups = config.get("multi-ecosystem-groups", {})
+    assert len(groups) == 1
+    group_name, group = next(iter(groups.items()))
+    assert group == {"schedule": {"interval": "weekly", "day": "monday"}}
+    updates = config["updates"]
+    assert {entry["package-ecosystem"] for entry in updates} == {
+        "uv",
+        "npm",
+        "docker",
+        "pre-commit",
+        "github-actions",
+    }
+    for entry in updates:
+        assert entry["multi-ecosystem-group"] == group_name
+        assert entry["patterns"] == ["*"]
+        assert entry["directory"] == "/"
+        for option in ("schedule", "groups", "allow", "ignore", "target-branch"):
+            assert option not in entry, (entry["package-ecosystem"], option)

@@ -31,7 +31,7 @@ repos:
   # arrived and a bare `ruff` became ambiguous. The rule set is pinned in
   # pyproject.toml's [tool.ruff.lint]; see the comment there for why.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 321478e58f4938179c6b86e4ddfa923d1547a49b  # frozen: v0.16.6
+    rev: e8f7d69b957a30acb2c875078d5fd012de24b64c  # frozen: v0.16.7
     hooks:
       - id: ruff-check
         args: [--fix, "--ignore=E501,F401,E722,E402,E741"]
