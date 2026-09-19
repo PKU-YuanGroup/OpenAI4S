@@ -3,6 +3,7 @@ import { bindNotebookArtifact } from "../notebook/cells";
 import { activeTab, dock } from "../../stores/ui";
 import { callWindow } from "./api";
 import { artifactTabKey, syncArtifactVersion } from "./cache";
+import { browseFiles } from "./files-index";
 import { loadProjectArtifacts } from "./load";
 import { renderFilesGrid, renderViewer } from "./ui";
 import type { ArtifactRow } from "./types";
@@ -34,6 +35,12 @@ export function artifactCreatedSideEffects(m: WsMessage): void {
   if (bindNotebookArtifact(m)) callWindow("nbRender");
   if (filesScope.value === "project") {
     void loadProjectArtifacts(true).then(() => {
+      const d = dock.value as { open?: boolean } | null;
+      if (d && d.open && activeTab.value === "files") renderFilesGrid();
+    });
+  } else {
+    // The WS upsert mutates the array in place, so refresh explicitly.
+    void browseFiles({ refresh: true }).then(() => {
       const d = dock.value as { open?: boolean } | null;
       if (d && d.open && activeTab.value === "files") renderFilesGrid();
     });

@@ -201,45 +201,62 @@ async function correctnessScenes(projectId) {
   const latestTab = page.locator("#dock-tabs .dock-tab").filter({ hasText: "history.csv" }).filter({ hasNotText: v1.version_id });
   await latestTab.click();
   await waitUntil("latest sheet v2", async () => (await page.locator("#dock-viewer").innerText()).includes("22"));
+  // Hide this artifact's separate latest-file thumbnail through the real
+  // priority API. Its immutable Notebook outputs must remain readable, and
+  // neither their 404 nor Retry may fetch the head. This gives a strict zero
+  // baseline independent of how many artifact-list refreshes WS replay causes.
   const latestReads = [];
   const recordLatest = (request) => { if (new URL(request.url()).pathname === `/api/v1/artifacts/${v1.artifact_id}`) latestReads.push(request.url()); };
-  page.on("request", recordLatest);
-  // Reopening rebuilds the Notebook through the real execution-log projection.
-  await page.reload({ waitUntil: "networkidle" });
-  await ensureDockOpen();
-  await page.evaluate(() => window.setActiveTab("notebook"));
-  const cell1 = page.locator(`.notebook-cell[data-producing-cell="${first.producing_cell_id}"]`).first();
-  await cell1.waitFor();
-  await cell1.locator("img.nbc-fig").waitFor();
-  assert.equal(await cell1.locator("img.nbc-fig").getAttribute("src"), image1.url);
-  assert.ok(await cell1.locator("img.nbc-fig").evaluate((node) => node.complete && node.naturalWidth > 0));
-  assert.match(await cell1.innerText(), /11/);
-  assert.doesNotMatch(await cell1.locator("table.nbc-table").first().innerText(), /22/);
-  for (const out of first.output_artifacts) {
-    const response = await page.request.get(new URL(out.url, baseUrl).toString());
-    assert.equal(response.status(), 200);
-    const link = cell1.locator(`a[download="${out.filename}"]`);
-    assert.ok(await link.count(), `download link ${out.filename}`);
-    assert.equal(await link.first().getAttribute("href"), out.url);
-    if (out.filename === autoFigureName) assert.deepEqual(await response.body(), originalImage);
-    if (out.filename.endsWith("same.csv")) assert.match(await response.text(), new RegExp(out.filename.split("/")[0] + ",1"));
-  }
-  // The conversation's separate latest-file thumbnail also reads the head.
-  // Measure that normal page load so only additional failure fallback fails.
-  const normalLatestReads = latestReads.length;
-  latestReads.length = 0;
-  await page.route(`**${v1.url}*`, (route) => route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"fixture missing version"}' }));
+  // Playwright routing disables HTTP cache. Keep the same routing/cache mode
+  // in both measured reloads; otherwise normal thumbnails can cost one request
+  // before interception and two after it, falsely resembling a head fallback.
+  const historicalRoute = `**${v1.url}*`;
+  let historicalMissing = false;
+  await api(`/artifacts/${v1.artifact_id}/priority`, { method: "PATCH", data: { priority: -1 } });
   try {
+    await page.evaluate((id) => window.loadArtifacts(id), fid);
+    page.on("request", recordLatest);
+    await page.route(historicalRoute, (route) => historicalMissing
+      ? route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"fixture missing version"}' })
+      : route.continue());
+    // Reopening rebuilds the Notebook through the real execution-log projection.
+    await page.reload({ waitUntil: "networkidle" });
+    await ensureDockOpen();
+    await page.evaluate(() => window.setActiveTab("notebook"));
+    const cell1 = page.locator(`.notebook-cell[data-producing-cell="${first.producing_cell_id}"]`).first();
+    await cell1.waitFor();
+    await cell1.locator("img.nbc-fig").waitFor();
+    assert.equal(await cell1.locator("img.nbc-fig").getAttribute("src"), image1.url);
+    assert.ok(await cell1.locator("img.nbc-fig").evaluate((node) => node.complete && node.naturalWidth > 0));
+    assert.match(await cell1.innerText(), /11/);
+    assert.doesNotMatch(await cell1.locator("table.nbc-table").first().innerText(), /22/);
+    for (const out of first.output_artifacts) {
+      const response = await page.request.get(new URL(out.url, baseUrl).toString());
+      assert.equal(response.status(), 200);
+      const link = cell1.locator(`a[download="${out.filename}"]`);
+      assert.ok(await link.count(), `download link ${out.filename}`);
+      assert.equal(await link.first().getAttribute("href"), out.url);
+      if (out.filename === autoFigureName) assert.deepEqual(await response.body(), originalImage);
+      if (out.filename.endsWith("same.csv")) assert.match(await response.text(), new RegExp(out.filename.split("/")[0] + ",1"));
+    }
+    assert.equal(latestReads.length, 0, "immutable Notebook reads never fetch the hidden artifact head");
+    latestReads.length = 0;
+    historicalMissing = true;
     await page.reload({ waitUntil: "networkidle" }); await ensureDockOpen();
     await page.evaluate(() => window.setActiveTab("notebook"));
     const failedCell = page.locator(`.notebook-cell[data-producing-cell="${first.producing_cell_id}"]`).first();
     await failedCell.locator(".nbc-artifact-error").waitFor();
-    assert.equal(latestReads.length, normalLatestReads, "historical failure adds no latest request beyond normal thumbnails");
+    assert.equal(latestReads.length, 0, "historical failure never fetches the latest head");
     const failedRead = page.waitForResponse((response) => new URL(response.url()).pathname === v1.url && response.status() === 404);
+    await failedCell.locator(".nbc-artifact-error").evaluate((node) => { node.dataset.beforeRetry = "1"; });
     await failedCell.locator(".nbc-artifact-error button").click();
     await failedRead;
-    assert.equal(latestReads.length, normalLatestReads, "retry requests only the exact failed version");
-  } finally { await page.unroute(`**${v1.url}*`); page.off("request", recordLatest); }
+    await failedCell.locator(".nbc-artifact-error:not([data-before-retry])").waitFor();
+    assert.equal(latestReads.length, 0, "retry requests only the exact failed version");
+  } finally {
+    await page.unroute(historicalRoute); page.off("request", recordLatest);
+    await api(`/artifacts/${v1.artifact_id}/priority`, { method: "PATCH", data: { priority: 0 } });
+  }
   console.log("C1 browser: real two-version Cells, reopen, exact figures/tables/downloads, same basename, fixed/latest tabs and 404 without latest passed");
 
   // C3: failures remain visible; only GETs occur during recovery. Anonymous

@@ -11,8 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from openai4s import llm
 from openai4s import review as review_mod
 from openai4s.config import Config, LLMConfig
+from openai4s.llm.usage import measured_total
 from openai4s.server import gateway as gateway_mod
 from openai4s.store import get_store
 
@@ -315,7 +317,13 @@ def test_run_reviewer_pass_persists_evidence_step_and_usage(monkeypatch, tmp_pat
             "verdict": "pass",
             "summary": "No issues found",
             "issues": [],
-            "usage": {"input_tokens": 17, "output_tokens": 4},
+            # A real reviewer reply carries counters attested by llm.chat()'s
+            # normalize_usage seam; only such a value may be charged to the
+            # frame.  The bare-dict form is refused -- see the paired negative
+            # at the end of this test.
+            "usage": llm.normalize_usage(
+                {"prompt_tokens": 17, "completion_tokens": 4}, "chatgpt"
+            ),
             "model": cfg.model,
         }
 
@@ -379,6 +387,37 @@ def test_run_reviewer_pass_persists_evidence_step_and_usage(monkeypatch, tmp_pat
         "running",
         "done",
     ]
+
+    # Paired negative: the same counters arriving as a BARE dict never passed
+    # through the attestation seam, so the meter must refuse them instead of
+    # re-deriving a verdict from their key shape.  Without this the fake above
+    # would only prove that an attested value is charged, which is the easy
+    # half of the contract.
+    monkeypatch.setattr(
+        gateway_mod,
+        "review_evidence",
+        lambda evidence, cfg: {
+            "verdict": "pass",
+            "summary": "No issues found",
+            "issues": [],
+            "usage": {"input_tokens": 500, "output_tokens": 900},
+            "model": cfg.model,
+        },
+    )
+    assert measured_total({"input_tokens": 500, "output_tokens": 900}) is None
+    unattested = runner._run_reviewer(
+        st,
+        hub.emitter(fid),
+        user_text="Create and verify a report",
+        assistant_text="The report was created and verified.",
+        artifact_versions_before={old["artifact_id"]: old["version_id"]},
+        cell_count_before=1,
+        mode="auto",
+    )
+    assert unattested is not None and unattested["verdict"] == "pass"
+    frame = store.get_frame(fid)
+    assert frame["input_tokens"] == 17
+    assert frame["output_tokens"] == 4
 
 
 def test_run_reviewer_issues_are_persisted_and_streamed(monkeypatch, tmp_path):

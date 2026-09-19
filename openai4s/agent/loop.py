@@ -526,7 +526,9 @@ class Agent:
         # Layer 2: code-safety classifier (report e6w).
         if sec.code_gate_enabled:
             try:
-                verdict = classify_code(code, self.cfg)
+                verdict = classify_code(
+                    code, self.cfg, usage_sink=self._record_screening_usage
+                )
             except Exception:  # noqa: BLE001 - gate must not crash the turn
                 verdict = None
             if verdict is not None and not verdict.safe:
@@ -538,7 +540,12 @@ class Agent:
         if sec.biosecurity:
             try:
                 user_text, actions = gather_trajectory(messages, code)
-                screen = screen_trajectory(user_text, actions, self.cfg)
+                screen = screen_trajectory(
+                    user_text,
+                    actions,
+                    self.cfg,
+                    usage_sink=self._record_screening_usage,
+                )
             except Exception:  # noqa: BLE001
                 screen = None
             if screen is not None and screen.blocked:
@@ -790,6 +797,69 @@ class Agent:
         except Exception:  # noqa: BLE001 - a status write cannot break the run
             pass
 
+    def _record_overhead_usage(self, usage: Any) -> None:
+        """Charge daemon-owned overhead (the context summarizer) to this run.
+
+        Both halves, unlike ``_record_frame_usage``: an ordinary reply reaches
+        the governance ledger through the Action Ledger, but a summarizer call
+        never becomes an action, so without this it reached neither the frame
+        nor the quota the next turn is checked against.
+        """
+        from openai4s.storage.governance import record_session_llm_usage
+
+        self._record_frame_usage(usage if isinstance(usage, Mapping) else {})
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        record_session_llm_usage(store, str(self.frame_id), usage)
+
+    def _record_screening_usage(self, usage: Any) -> None:
+        """Charge a pre-execution screener's tokens to this run.
+
+        The code classifier and the biosecurity trajectory screen are real
+        billed calls the user never asked for, and both reached the provider
+        on every gated cell without reaching any ledger. They are recorded
+        through the non-enforcing kind: an unmeasured screen must never be
+        able to refuse the next turn, because the alternative to screening is
+        not "save the tokens", it is "run the cell unscreened".
+        """
+        from openai4s.storage.governance import record_screening_llm_usage
+
+        self._record_frame_usage(usage if isinstance(usage, Mapping) else {})
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        record_screening_llm_usage(store, str(self.frame_id), usage)
+
+    def _session_quota_gate(self) -> None:
+        """Refuse a provider request this session may not afford.
+
+        Used by the turn itself and by the context summarizer. Compaction is
+        the daemon's largest single burst -- several chunks, each with a retry
+        on truncation, all carrying ~48k-token prompts -- and all of it ran
+        before the turn's own call without being checked. The turn's own call
+        was not checked here either: the Web `ChatModel` has had this gate
+        since it was written, this one never got it, and a delegated child runs
+        its whole outer loop through exactly this path.
+
+        `enforce_session_llm_quota` resolves the frame to its session root
+        first, which is what makes it correct for a child: a delegated frame
+        has no owner row of its own, and the quota belongs to the root's owner.
+
+        A CHECK, not a reservation. `ChatModel.complete` runs the provider call
+        in a detached daemon thread whose reply can outlive the turn and still
+        bill (`abandoned_reply`), so a promise held across it could outlive its
+        operation -- the trade this PR has already refused twice. Concurrent
+        children can therefore still overshoot a nearly-exhausted window by the
+        fan-out; what this closes is starting at all against an exhausted one.
+        """
+        from openai4s.storage.governance import enforce_session_llm_quota
+
+        store = getattr(self.dispatcher, "store", None)
+        if store is None or not self.frame_id:
+            return
+        enforce_session_llm_quota(store, str(self.frame_id))
+
     def _record_frame_usage(self, usage: Mapping[str, Any]) -> None:
         """Add one reply's usage to the owned frame, as the Web loop does."""
 
@@ -798,15 +868,21 @@ class Agent:
         store = getattr(self.dispatcher, "store", None)
         if store is None:
             return
+        from openai4s.llm.usage import measured_usage
+
+        # "As the Web loop does" is the whole contract, and it was not kept:
+        # ``gateway.add_usage`` measures first, this read the public *display*
+        # keys. So one non-final streamed reply charged this frame 1200/340
+        # while the identical object charged 0/0 on the Web -- and while this
+        # same run recorded it as ``llm_*_tokens_unknown`` in the governance
+        # ledger. The display dict is what a user should see; only the
+        # evidence may be charged.
+        counters = measured_usage(usage)
         try:
             store.add_frame_tokens(
                 str(self.frame_id),
-                input_tokens=int(
-                    usage.get("prompt_tokens") or usage.get("input_tokens", 0) or 0
-                ),
-                output_tokens=int(
-                    usage.get("completion_tokens") or usage.get("output_tokens", 0) or 0
-                ),
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
             )
         except Exception:  # noqa: BLE001 - metering cannot break the run
             pass
@@ -938,12 +1014,15 @@ class Agent:
                     """
 
                     usage = reply.get("usage")
-                    if not isinstance(usage, Mapping) or not usage:
-                        return
                     # Billed like a delivered reply, as the Web loop bills it.
-                    self._record_frame_usage(usage)
+                    if isinstance(usage, Mapping) and usage:
+                        self._record_frame_usage(usage)
                     if action_ledger is None:
                         return
+                    # Reached even with no counters, exactly as the Web loop's
+                    # ``account_abandoned_reply`` does: an unmeasured late reply
+                    # is recorded as *unknown* rather than as free, which is
+                    # what the team quota gate reads.
                     action_ledger.record_abandoned_usage(usage)
 
                 model: Any = ChatModel(
@@ -962,6 +1041,12 @@ class Agent:
                     # that was already delivered as real -- unmetered, since
                     # ``abandon()`` never ran for it.
                     cancellation=self.cancellation,
+                    # The same gate the Web `ChatModel` has had all along, and
+                    # the one this path never received -- so a delegated child
+                    # ran its entire outer loop against a window nothing asked
+                    # about. Inert without an owner row, so a single-user CLI
+                    # run is unchanged (INV-1).
+                    quota_gate=self._session_quota_gate,
                     abandoned_reply=_account_abandoned_reply,
                     call_scope=self._provider_call_scope(),
                     drain_cancelled_stream=self._session_is_metered(),
@@ -981,6 +1066,12 @@ class Agent:
                         if self.cancellation is not None
                         else None
                     ),
+                    # Compaction spends real tokens on the session's behalf, so
+                    # it answers to the session's quota and lands in its ledger.
+                    # Both are inert without a team owner (INV-1), so a
+                    # single-user CLI run is unchanged.
+                    quota_gate=self._session_quota_gate,
+                    usage_sink=self._record_overhead_usage,
                 )
                 context_policy = self.context_policy or CompactionPolicy(
                     self.cfg, **policy_providers

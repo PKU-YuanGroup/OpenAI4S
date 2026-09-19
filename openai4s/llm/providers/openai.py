@@ -8,7 +8,8 @@ from typing import Any
 from ..messages import _openai_messages
 from ..models import LLMError, TransportError, status_is_retryable
 from ..tooling import _apply_chat_tools, _assistant_message, _normalized_tool_call
-from ..transport import _BROWSER_UA
+from ..transport import _BROWSER_UA, bind_call_context, streaming_refused
+from ..usage import RawUsage
 
 
 def _chat_openai(
@@ -51,8 +52,7 @@ def _chat_openai(
     # Real token streaming: when a delta callback is supplied AND streaming isn't
     # explicitly disabled, POST with `stream:true` and forward each token to
     # on_delta as it arrives, so prose renders live instead of one blob per turn.
-    # Falls back to the blocking path if the stream can't even start (some proxies
-    # 4xx on `stream`), so a provider that refuses SSE still works.
+    # Only a structured refusal of `stream` allows one compatibility POST.
     want_stream = on_delta is not None and os.environ.get(
         "OPENAI4S_LLM_STREAM", "1"
     ) not in ("0", "false", "no", "off")
@@ -67,7 +67,7 @@ def _chat_openai(
                 post_sse=post_sse,
             )
         except _StreamStartError:
-            pass  # SSE refused before any bytes — retry blocking below
+            post_json = bind_call_context(post_json, max_attempts=1)
     body = post_json(url, payload, headers, cfg.timeout_s)
     try:
         choice = body["choices"][0]
@@ -104,8 +104,7 @@ def _chat_openai(
 
 
 class _StreamStartError(Exception):
-    """The streaming request failed before yielding any data — safe to fall back
-    to a blocking call (nothing was emitted to the client yet)."""
+    """An endpoint explicitly refused streaming before semantic output."""
 
 
 # HTTP-equivalent statuses for error events delivered inside an otherwise
@@ -127,15 +126,6 @@ _STREAM_ERROR_STATUS = {
     "overloaded_error": 503,
 }
 
-# Some OpenAI-compatible endpoints support Chat Completions but reject the
-# streaming-only request fields or SSE Accept header.  One blocking retry keeps
-# that compatibility path without giving retryable capacity failures (or
-# credential refusals) a fresh request budget.
-_STREAM_COMPATIBILITY_FALLBACK_STATUS = frozenset({400, 404, 405, 406, 415, 422, 501})
-_STREAM_AUTH_ERROR_CODES = frozenset(
-    {"invalid_api_key", "unauthorized", "authentication_error"}
-)
-
 
 def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> dict:
     payload["stream"] = True
@@ -148,33 +138,14 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
     state: dict[str, Any] = {
         "usage": {},
         "finish": None,
-        "started": False,
         "terminal": False,
+        "usage_final": False,
         "tool_calls": {},
         "output_committed": False,
     }
 
-    def _discard_uncommitted_attempt() -> None:
-        """Drop state an SSE attempt accumulated without publishing.
-
-        The transport may replay a typed provider error.  Reasoning, usage and
-        partial tool fragments are adapter-local until a terminal reply, so
-        they are safe to discard; carrying them into the next attempt would
-        corrupt its reply.  Visible content is never discarded or replayed.
-        """
-
-        if state["output_committed"]:
-            return
-        parts.clear()
-        reasoning.clear()
-        state["usage"] = {}
-        state["finish"] = None
-        state["terminal"] = False
-        state["tool_calls"].clear()
-
-    def _on_event(evt: dict) -> None:
+    def _on_event(evt: dict) -> bool | None:
         if evt.get("error") or evt.get("type") == "error":
-            state["started"] = True
             error = evt.get("error")
             if isinstance(error, dict):
                 detail = error.get("message") or str(error)
@@ -196,7 +167,6 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
                     None,
                 )
                 if status is not None:
-                    _discard_uncommitted_attempt()
                     raise TransportError(
                         f"OpenAI stream error: {detail}",
                         provider=cfg.provider,
@@ -210,12 +180,14 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
                 detail = error or evt.get("message") or str(evt)
             raise LLMError(f"OpenAI stream error: {detail}")
         if evt.get("usage"):
-            state["started"] = True
             state["usage"] = evt["usage"]
+            state["output_committed"] = True
         choices = evt.get("choices") or []
         if not choices:
+            if state["terminal"] and evt.get("usage"):
+                state["usage_final"] = True
+                return True
             return
-        state["started"] = True
         ch = choices[0]
         delta = ch.get("delta") or {}
         piece = delta.get("content")
@@ -224,12 +196,16 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
             state["output_committed"] = True
             try:
                 on_delta(piece)
+            except LLMError:
+                raise
             except Exception:  # noqa: BLE001 — a UI callback must never kill the stream
                 pass
         rc = delta.get("reasoning_content") or delta.get("reasoning")
         if rc:
+            state["output_committed"] = True
             reasoning.append(rc)
         for fragment in delta.get("tool_calls") or ():
+            state["output_committed"] = True
             try:
                 index = int(fragment.get("index", 0))
             except (TypeError, ValueError):
@@ -247,39 +223,31 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
             if function.get("arguments"):
                 acc["arguments"].append(function["arguments"])
         if ch.get("finish_reason"):
+            state["output_committed"] = True
             state["finish"] = ch["finish_reason"]
             state["terminal"] = True
+            if evt.get("usage"):
+                state["usage_final"] = True
+                return True
 
-    timeout = max(cfg.timeout_s, 60.0)
+    timeout = cfg.timeout_s
     try:
         post_sse(url, payload, headers, timeout, _on_event)
-    except TransportError as exc:
-        # A typed HTTP/SSE failure already passed through the bounded transport
-        # retry policy.  Treating it as "streaming unsupported" would start a
-        # second blocking request with a fresh retry budget (3 SSE + 3 JSON).
-        # Preserve the historical one-shot compatibility fallback only for
-        # non-retryable protocol-shape refusals before any stream event.  Auth,
-        # capacity and connection failures must never take this branch.
+    except LLMError as exc:
+        exc.usage = RawUsage(state["usage"], final=state["usage_final"])
+        if isinstance(exc, TransportError):
+            exc.output_committed |= bool(state["output_committed"])
         if (
-            not state["started"]
-            and not exc.retryable
-            and exc.status in _STREAM_COMPATIBILITY_FALLBACK_STATUS
-            and exc.error_code not in _STREAM_AUTH_ERROR_CODES
+            isinstance(exc, TransportError)
+            and not state["output_committed"]
+            and streaming_refused(exc)
         ):
             raise _StreamStartError() from exc
         raise
-    except LLMError:
-        # An untyped failure before the first semantic event may mean this
-        # compatible endpoint simply does not implement SSE. Keep the historical
-        # blocking fallback for that narrow case; typed transport failures above
-        # have already exhausted their one retry budget.
-        if not state["started"]:
-            raise _StreamStartError()
-        raise
     if not state["terminal"]:
-        if not state["started"]:
-            raise _StreamStartError()
-        raise LLMError("OpenAI stream ended before a terminal finish_reason")
+        error = LLMError("OpenAI stream ended before a terminal finish_reason")
+        error.usage = RawUsage(state["usage"], final=False)
+        raise error
     content = "".join(parts)
     calls: list[dict] = []
     openai_calls: list[dict] = []
@@ -314,7 +282,7 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
     return {
         "content": content,
         "reasoning": "".join(reasoning) or None,
-        "usage": state["usage"],
+        "usage": RawUsage(state["usage"], final=state["usage_final"]),
         "finish_reason": "tool_calls" if calls else provider_finish,
         "provider_finish_reason": provider_finish,
         "tool_calls": calls,

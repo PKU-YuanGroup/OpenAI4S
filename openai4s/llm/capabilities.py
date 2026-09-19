@@ -1117,6 +1117,14 @@ def normalize_usage(
         mapping = get_model_capabilities(
             provider_or_mapping, model, base_url=base_url
         ).usage_mapping
+    from .usage import UsageMetrics, usage_evidence
+
+    # An already-normalized value carries its own evidence and has already had
+    # `input_excludes_cache` folded in. Rebuilding `result` from it would fold
+    # the cache counters a second time, so this returns before any derivation
+    # rather than after it.
+    if isinstance(raw, UsageMetrics):
+        return UsageMetrics(dict(raw), raw.evidence)
     input_tokens = _token_value(raw, mapping.input_tokens)
     output_tokens = _token_value(raw, mapping.output_tokens)
     cache_read = _token_value(raw, mapping.cache_read)
@@ -1136,7 +1144,65 @@ def normalize_usage(
         "completion_tokens": output_tokens,
         "total_tokens": total,
     }
-    return result
+    measured = {}
+    invalid = set()
+    missing = object()
+    malformed = object()
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "reasoning_tokens",
+        "total_tokens",
+    ):
+        unusable = False
+        for path in getattr(mapping, key):
+            value: Any = raw
+            for part in path.split("."):
+                if value is missing:
+                    break
+                if not isinstance(value, Mapping):
+                    # Present but not a mapping: malformed evidence, which is
+                    # a different answer from an absent counter.
+                    value = malformed
+                    break
+                value = value.get(part, missing)
+            if value is missing:
+                continue
+            if type(value) is int and value >= 0:
+                measured[key] = value
+                break
+            # Unusable here, but a later alias may still carry the real count.
+            # ``_token_value`` falls through the same way, and the public dict
+            # and the metering counters must not disagree about one payload.
+            unusable = True
+        else:
+            if unusable:
+                invalid.add(key)
+    if mapping.input_excludes_cache and "input_tokens" in measured:
+        if invalid & {"cache_read", "cache_write"}:
+            measured.pop("input_tokens")
+            invalid.add("input_tokens")
+        else:
+            measured["input_tokens"] += measured.get("cache_read", 0) + measured.get(
+                "cache_write", 0
+            )
+    if invalid & {"input_tokens", "output_tokens"}:
+        measured.pop("total_tokens", None)
+    for canonical, alias in (
+        ("input_tokens", "prompt_tokens"),
+        ("output_tokens", "completion_tokens"),
+    ):
+        if canonical in measured:
+            measured[alias] = measured[canonical]
+    if (
+        "total_tokens" not in measured
+        and "input_tokens" in measured
+        and "output_tokens" in measured
+    ):
+        measured["total_tokens"] = measured["input_tokens"] + measured["output_tokens"]
+    return UsageMetrics(result, usage_evidence(raw, measured, frozenset(invalid)))
 
 
 def calculate_usage_cost_usd(
@@ -1157,7 +1223,16 @@ def calculate_usage_cost_usd(
         return None
     if cost.input_per_million is None or cost.output_per_million is None:
         return None
-    raw: Mapping[str, Any] = usage if isinstance(usage, Mapping) else {}
+    from .usage import measured_usage
+
+    if getattr(getattr(usage, "evidence", None), "invalid", frozenset()) & {
+        "cache_read",
+        "cache_write",
+    }:
+        return None
+    raw = measured_usage(usage)
+    if "input_tokens" not in raw or "output_tokens" not in raw:
+        return None
 
     def counter(name: str) -> int:
         value = raw.get(name, 0)

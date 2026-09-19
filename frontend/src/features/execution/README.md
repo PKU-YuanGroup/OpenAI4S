@@ -24,3 +24,7 @@ Does not edit `stores/` or `compat/window-exports.ts` above the lane-additions m
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`lineage.test.ts`](lineage.test.ts) | Provenance chain data transforms; the Environment panel rendered for a legacy 0.2.x snapshot, a really empty Python list and an R kernel. |
 | [`conflict.test.ts`](conflict.test.ts) | 409 presentation; `forkOnce` is single-shot. |
+
+- [`copy.ts`](copy.ts): Bilingual provenance read-state and evidence copy.
+- [`validation.ts`](validation.ts): Strict network lineage/environment validation, with historical nullable fields preserved.
+- [`provenance.test.ts`](provenance.test.ts): Read retries, out-of-order results, artifact owner and exact Cell navigation.

@@ -15,7 +15,7 @@ import {
   resolveArtifactVersion,
   versionResolveMessage,
 } from "./deeplink";
-import { browseFiles, filesGridArtifacts, visibleArtifacts } from "./files-index";
+import { browseFiles, currentFilesFilter, filesGridArtifacts, filesListingIsCurrent, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { renderArtifactBody } from "./renderers";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
@@ -24,8 +24,13 @@ import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
 export function addOpenTab(a: ArtifactRow): void {
   const tabs = (openTabs.value as ArtifactRow[]) || [];
-  if (!tabs.some((x) => x && artifactTabKey(x) === artifactTabKey(a))) {
-    openTabs.value = [...tabs, a];
+  const existing = tabs.find((x) => x && artifactTabKey(x) === artifactTabKey(a));
+  if (!existing) openTabs.value = [...tabs, a];
+  else {
+    // A bare deep link can precede a real listing row for the same exact tab.
+    // Enrich stable ownership without importing another head's producer/data.
+    if (a.root_frame_id != null) existing.root_frame_id = a.root_frame_id;
+    if (a.project_id != null) existing.project_id = a.project_id;
   }
 }
 
@@ -229,19 +234,22 @@ export function renderFilesGrid(): void {
   list.innerHTML = "";
   if (count) count.textContent = String(arts.length);
   paintVersionBanner(list);
-  const indexErr = filesIndexError.value;
+  const indexErr = filesListingIsCurrent() ? filesIndexError.value : null;
   if (indexErr && filesIndexItems.value.length === 0 && !arts.length) {
     list.appendChild(el("div", "files-empty", indexErr));
     return;
   }
   if (!arts.length) {
-    const msg =
-      filesScope.value === "project" ? translate("files.emptyProject") : translate("files.empty");
+    const filter = currentFilesFilter();
+    const msg = filter.q || filter.contentType || filter.origin
+      ? filesT("files.noMatches")
+      : filesScope.value === "project" ? translate("files.emptyProject") : translate("files.empty");
     list.appendChild(el("div", "files-empty", msg));
     return;
   }
   arts.forEach((a) => {
     const card = el("div", "art");
+    card.dataset.artifactId = a.id;
     card.appendChild(tileThumbBig(a));
     card.appendChild(
       el("div", "a-name", ((a.priority || 0) > 0 ? "⭐ " : "") + (a.filename || "artifact")),
@@ -338,7 +346,7 @@ export function openViewer(a: ArtifactRow): void | Promise<void> {
     return applyArtifactDeepLink({
       artifactId: a.id,
       versionId: String(a.version_id),
-    });
+    }, a);
   }
   presentViewer(a);
 }
@@ -361,10 +369,14 @@ export async function openArtifactFromHit(hit: {
   await applyArtifactDeepLink({
     artifactId: hit.id,
     versionId: hit.version_id ? String(hit.version_id) : null,
-  });
+  }, hit);
 }
 
-export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<void> {
+export async function applyArtifactDeepLink(link: ArtifactDeepLink, source?: Pick<ArtifactRow, "id" | "root_frame_id" | "project_id">): Promise<void> {
+  // The versions endpoint does not carry owning-session metadata. Keep only
+  // the stable ownership supplied by the selected real row, never its head's
+  // producing Cell or version-specific metadata.
+  const ownership = source?.id === link.artifactId ? { root_frame_id: source.root_frame_id, project_id: source.project_id } : {};
   const request = ++viewerRequest;
   let result: VersionResolve;
   try {
@@ -379,7 +391,7 @@ export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<voi
   if (request !== viewerRequest) return;
   rememberViewerVersion(result);
   if (result.status === "exact" || result.status === "latest") {
-    presentViewer(result.artifact);
+    presentViewer({ ...result.artifact, ...ownership });
     return;
   }
   // stale / not-found: show the banner and do not substitute latest.

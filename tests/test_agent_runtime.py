@@ -100,7 +100,11 @@ def test_chat_model_passes_native_schemas_and_is_blocking_by_default():
     result = model.complete(source, lambda delta: None)
 
     assert result == {"content": "done"}
-    assert calls == [(source, cfg, {"tools": (spec,)})]
+    assert len(calls) == 1 and calls[0][:2] == (source, cfg)
+    forwarded = dict(calls[0][2])
+    probe = forwarded.pop("should_cancel")
+    assert not probe() and probe.call_state.remaining() > 0
+    assert forwarded == {"tools": (spec,)}
     assert "on_delta" not in calls[0][2]
 
 
@@ -297,6 +301,55 @@ def test_chat_model_bounds_detached_provider_calls(monkeypatch):
     deadline = time.monotonic() + 2
     while runtime._PROVIDER_CALL_BUDGET.outstanding() and time.monotonic() < deadline:
         time.sleep(0.01)
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding() == 0
+
+
+def test_a_late_accounting_submit_failure_still_releases_its_budget_slot(monkeypatch):
+    """``report_abandoned_reply`` latches ``reported`` and detaches before it
+    hands the settle to the drain, so neither ``settle_unreported`` call site
+    can release the slot afterwards. A submit that never started its sink must
+    not hold one of four per-scope slots for the process lifetime."""
+
+    monkeypatch.setattr(
+        runtime,
+        "_PROVIDER_CALL_BUDGET",
+        runtime._DetachedCallBudget(8, per_scope_limit=4),
+    )
+    monkeypatch.setattr(
+        runtime._LATE_ACCOUNTING,
+        "submit",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("can't start new thread")),
+    )
+    entered, release = threading.Event(), threading.Event()
+    shared_cancel = threading.Event()
+
+    def blocked_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        entered.set()
+        assert release.wait(5)
+        return {"content": "late", "usage": {}}
+
+    model = ChatModel(
+        object(),
+        blocked_chat,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+        abandoned_reply=lambda _reply: None,
+        call_scope="frame-late",
+    )
+    owner = threading.Thread(target=lambda: model.complete([], lambda _text: None))
+    owner.start()
+    assert entered.wait(2)
+    shared_cancel.set()
+    owner.join(2)
+    assert not owner.is_alive()
+    release.set()
+    deadline = time.monotonic() + 2
+    while (
+        runtime._PROVIDER_CALL_BUDGET.outstanding("frame-late")
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-late") == 0
     assert runtime._PROVIDER_CALL_BUDGET.outstanding() == 0
 
 

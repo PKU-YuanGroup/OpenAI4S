@@ -1,8 +1,9 @@
+import { DraftsPanel } from "./DraftsPanel";
 import { useEffect } from "preact/hooks";
 import { render } from "preact";
 import { filesScope } from "../../stores/artifacts";
-import { project } from "../../stores/session";
-import { browseFiles, setFilesContentType, setFilesOrigin, setFilesQuery } from "../../features/artifacts/files-index";
+import { _openGen, currentId, project } from "../../stores/session";
+import { browseFiles, currentFilesFingerprint, filesListingIsCurrent, setFilesContentType, setFilesOrigin, setFilesQuery } from "../../features/artifacts/files-index";
 import { loadProjectArtifacts, setFilesScope } from "../../features/artifacts/load";
 import { filesT } from "../../features/artifacts/copy";
 import {
@@ -23,8 +24,10 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleSearch(value: string): void {
   setFilesQuery(value);
   if (searchTimer !== null) clearTimeout(searchTimer);
+  const identity = currentFilesFingerprint();
   searchTimer = setTimeout(() => {
     searchTimer = null;
+    if (identity !== currentFilesFingerprint()) return;
     void browseFiles({ reset: true }).then(() => renderFilesGrid());
   }, 200);
 }
@@ -49,12 +52,21 @@ export function FilesPanel() {
   const origin = filesOrigin.value;
   const scope = filesScope.value;
   const pid = project.value;
+  const fid = currentId.value;
+  const generation = _openGen.value;
+  const currentListing = filesListingIsCurrent();
 
   useEffect(() => {
+    if (searchTimer !== null) { clearTimeout(searchTimer); searchTimer = null; }
     if (scope === "project") {
       void loadProjectArtifacts().then(() => renderFilesGrid());
+    } else {
+      void browseFiles({ refresh: true }).then(() => renderFilesGrid());
     }
-  }, [pid, scope]);
+    return () => {
+      if (searchTimer !== null) { clearTimeout(searchTimer); searchTimer = null; }
+    };
+  }, [pid, fid, generation, scope]);
 
   useEffect(() => {
     renderFilesGrid();
@@ -86,6 +98,7 @@ export function FilesPanel() {
           </button>
         </span>
       </div>
+      <DraftsPanel />
       <div class="files-toolbar">
         <input
           class="files-search"
@@ -121,9 +134,9 @@ export function FilesPanel() {
           ))}
         </span>
       </div>
-      {filesIndexError.value ? <div class="files-index-note">{filesIndexError.value}</div> : null}
+      {currentListing && filesIndexError.value ? <div class="files-index-note">{filesIndexError.value}</div> : null}
       <div id="results-list" class="files-grid" />
-      {filesHasMore.value ? (
+      {currentListing && filesHasMore.value ? (
         <button
           class="outline-btn small files-load-more"
           disabled={filesIndexLoading.value}

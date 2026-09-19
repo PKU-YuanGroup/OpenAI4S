@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any, Callable
 
 # --- calibrated-accountability prompt fragment ------------------------------
 BIOSECURITY_PROMPT = """\
@@ -104,12 +105,23 @@ def looks_biosecurity_relevant(text: str) -> bool:
     return _BIO_TRIGGERS.search(text) is not None
 
 
-def screen_trajectory(user_text: str, agent_actions: str, cfg) -> ScreenVerdict:
+def screen_trajectory(
+    user_text: str,
+    agent_actions: str,
+    cfg,
+    *,
+    usage_sink: Callable[[Any], None] | None = None,
+) -> ScreenVerdict:
     """Run the screener over the trajectory. Never raises; fails open.
 
     `user_text`   — the user's messages (task + any follow-ups).
     `agent_actions` — a compact rendering of what the agent has done so far
                       (code cells / tool calls), already truncated by the caller.
+    `usage_sink`  — receives the screening call's token usage. Metering only:
+                    this screen is never gated. Refusing it on an exhausted
+                    quota would not save the tokens, it would run the cell with
+                    no biosecurity screen at all — the one failure this layer
+                    exists to prevent.
     """
     combined = f"{user_text}\n{agent_actions}"
     if not looks_biosecurity_relevant(combined):
@@ -118,29 +130,39 @@ def screen_trajectory(user_text: str, agent_actions: str, cfg) -> ScreenVerdict:
         )
     try:
         from openai4s.llm import chat
+        from openai4s.llm.usage import charge_call
 
         llm_cfg = getattr(cfg, "llm", None)
         if llm_cfg is None or not getattr(llm_cfg, "api_key", ""):
             return ScreenVerdict(
                 "ALLOW", reason="screener unconfigured; open", screened=False
             )
-        res = chat(
-            [
-                {"role": "system", "content": TRAJECTORY_SCREENER_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "USER MESSAGES:\n"
-                        + user_text[:8000]
-                        + "\n\nAGENT ACTIONS SO FAR:\n"
-                        + agent_actions[:12000]
-                    ),
-                },
-            ],
-            llm_cfg,
-            max_tokens=200,
-            temperature=0.0,
-        )
+        # Own try, so the reply is charged before `_parse_screen` can raise.
+        try:
+            res = chat(
+                [
+                    {"role": "system", "content": TRAJECTORY_SCREENER_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            "USER MESSAGES:\n"
+                            + user_text[:8000]
+                            + "\n\nAGENT ACTIONS SO FAR:\n"
+                            + agent_actions[:12000]
+                        ),
+                    },
+                ],
+                llm_cfg,
+                max_tokens=200,
+                temperature=0.0,
+            )
+        except BaseException as error:
+            # Wider than the handler below, matching `LLMService.one`: a call
+            # the provider answered was billed even if a cancellation or a
+            # shutdown is what unwound it.
+            charge_call(usage_sink, error)
+            raise
+        charge_call(usage_sink, res)
         return _parse_screen(res.get("content", "") or "")
     except Exception as e:  # noqa: BLE001 - screener must never crash a turn
         return ScreenVerdict(

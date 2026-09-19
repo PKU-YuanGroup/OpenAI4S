@@ -244,7 +244,7 @@ from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.specialists import builtin_catalog
 from openai4s.storage.connectors import public_connector
-from openai4s.storage.governance import QuotaExceeded
+from openai4s.storage.governance import QuotaExceeded, record_session_llm_usage
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
@@ -2808,6 +2808,12 @@ class SessionRunner:
             config=cfg,
             auto_mode=self.auto_mode,
             owner_instance_id=self._owner_instance_id,
+            # The two halves V1 has had all along (`enforce_llm_quota` at the
+            # `review_evidence` port, the meter in the review thread) and V2
+            # had neither of. One sink for both reviewers, so the policy
+            # cannot drift between them.
+            quota_gate=self.enforce_llm_quota,
+            usage_sink=self._record_review_usage,
         )
         self.completion_gate = CompletionGateService(
             store=self.store,
@@ -2930,8 +2936,21 @@ class SessionRunner:
             chat_call=lambda messages, llm_cfg, **kwargs: chat(
                 messages, llm_cfg, **kwargs
             ),
-            summarize_call=lambda user_text, llm_cfg: self._summarize_title(
-                user_text, llm_cfg
+            summarize_call=lambda user_text, llm_cfg, root_frame_id="": (
+                self._summarize_title(user_text, llm_cfg, root_frame_id)
+            ),
+            # Daemon overhead, so an unmeasured title records a visible,
+            # NON-enforcing row: a cosmetic 64-token call must never be able to
+            # refuse a member's next turn.
+            usage_sink=lambda root_frame_id, usage: (
+                record_session_llm_usage(
+                    self.store,
+                    root_frame_id,
+                    usage,
+                    unmeasured_kind="llm_overhead_unmeasured",
+                )
+                if root_frame_id
+                else None
             ),
         )
         self.cells = CellExecutionService(
@@ -4658,12 +4677,14 @@ class SessionRunner:
         artifact_id: str,
         content: str,
         *,
+        expected_version_id: str | None = None,
         broadcast=None,
     ) -> dict:
         with self._external_artifact_mutation(artifact_id=artifact_id):
             return self.artifacts.edit(
                 artifact_id,
                 content,
+                expected_version_id=expected_version_id,
                 broadcast=broadcast,
             )
 
@@ -5229,6 +5250,74 @@ class SessionRunner:
             return self.store.team.session_owner(root_frame_id) is not None
         except Exception:  # noqa: BLE001 - ownership lookup is best-effort
             return False
+
+    def _record_review_usage(self, root_frame_id: str, usage: Any) -> None:
+        """Charge a Reviewer call: both halves, non-enforcing when unmeasured.
+
+        Split from `_record_overhead_usage` for one reason, stated in full at
+        `record_review_llm_usage`: the Reviewer runs on a model the daemon
+        picked for independence, so its silence must not refuse a member whose
+        own traffic is measurable.
+        """
+        from openai4s.storage.governance import record_review_llm_usage
+
+        if not root_frame_id:
+            return
+        self._add_frame_tokens_best_effort(root_frame_id, usage)
+        record_review_llm_usage(self.store, root_frame_id, usage)
+
+    def _add_frame_tokens_best_effort(self, root_frame_id: str, usage: Any) -> None:
+        """The legacy per-frame counter half, which is a display projection.
+
+        Its own try, never sharing one with the ledger write: a failed
+        projection must not take the governance row down with it.
+        """
+        from openai4s.llm.usage import measured_usage
+
+        try:
+            counters = measured_usage(usage)
+            self.store.add_frame_tokens(
+                root_frame_id,
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+
+    def _record_overhead_usage(self, root_frame_id: str, usage: Any) -> None:
+        """Charge a daemon-owned call to a session: both halves.
+
+        Used by the context summarizer and by the V2 scientific Reviewer.
+        Neither becomes an action, so the Action Ledger never carries it to
+        `record_session_llm_usage` the way an ordinary reply is carried, and
+        `add_usage` is scoped to the turn. Keep this list accurate rather than
+        letting it name one caller while serving several -- the docstring that
+        claimed a single metering hook for "every LLM call the daemon makes"
+        was false for four billed sites before they were wired.
+
+        Enforcing kinds on purpose. The session titler has its own sink with a
+        non-enforcing `unmeasured_kind` because a cosmetic 64-token call must
+        never refuse a member's next turn; a summarizer burst and a Reviewer
+        call are real spend and belong in the window.
+        """
+        self._add_frame_tokens_best_effort(root_frame_id, usage)
+        record_session_llm_usage(self.store, root_frame_id, usage)
+
+    def _record_screening_usage(self, root_frame_id: str, usage: Any) -> None:
+        """Charge a pre-execution screener's tokens to a session.
+
+        Same two halves as `_record_overhead_usage`, and one deliberate
+        difference: the non-enforcing kind. A screener that minted a
+        lockout-grade `llm_*_unknown` row would refuse a member's next turn as
+        a side effect of screening them, and the way out of that is to stop
+        screening -- which is the failure this layer exists to prevent.
+        """
+        from openai4s.storage.governance import record_screening_llm_usage
+
+        if not root_frame_id:
+            return
+        self._add_frame_tokens_best_effort(root_frame_id, usage)
+        record_screening_llm_usage(self.store, root_frame_id, usage)
 
     def enforce_llm_quota(self, root_frame_id: str) -> None:
         """Team-mode LLM quota (M2-6), consulted before a provider request.
@@ -5961,6 +6050,27 @@ class SessionRunner:
         self._configure_background_kernel_factory(st, dispatcher)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
+        #
+        # The dispatcher is built once per session from the BOOT config, whose
+        # `llm.api_key` is empty on the documented install because the key is
+        # entered in Customize → Models and lives in settings. Everything the
+        # dispatcher owns that reaches a provider was therefore dead there:
+        # `host.llm` raised MissingCredentialError, and the injection screener's
+        # nuanced pass returned "not injected" without ever calling a model, so
+        # `OPENAI4S_SAFETY=llm` left only the static regex running. Delegated
+        # children already got the resolved config from `_wire_delegation`
+        # ("so delegated specialists inherit the currently selected model"),
+        # which is the same fix this line applies to the session's own ports.
+        #
+        # Here rather than at construction, for the reason the delegation
+        # rewire is here: it runs every turn, so a model changed mid-session
+        # reaches these ports without discarding the control plane.
+        try:
+            import dataclasses as _dc
+
+            dispatcher.cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
+        except Exception:  # noqa: BLE001 - a broken resolve leaves the boot cfg
+            pass
         self._wire_delegation(st)
         return dispatcher
 
@@ -6247,12 +6357,27 @@ class SessionRunner:
             raise
         try:
             result = provider_call(messages, cfg, **kwargs)
-        except Exception:
-            self._settle_auto_budget(admission, started=True, unknown=True)
-            self._settle_auto_budget(token_admission, started=True, unknown=True)
+        except Exception as error:
+            started = not getattr(error, "llm_not_started", False)
+            known = verifiable_token_usage(getattr(error, "usage", None))
+            try:
+                self._settle_auto_budget(
+                    admission, started=started, unknown=started and known is None
+                )
+                self._settle_auto_budget(
+                    token_admission,
+                    started=started,
+                    unknown=started and known is None,
+                    committed_amount=known,
+                )
+            except AutoBudgetDenied as denied:
+                denied.llm_not_started = not started
+                denied.usage = getattr(error, "usage", None)
+                self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
+                raise
             raise
         usage_total = None
-        if extra and admission is not None and token_admission is not None:
+        if admission is not None:
             usage_total = verifiable_token_usage(
                 result.get("usage") if isinstance(result, Mapping) else None
             )
@@ -6268,6 +6393,10 @@ class SessionRunner:
                     "adapter token usage is not verifiable",
                     field="extra_token_multiplier",
                 )
+                denied.llm_not_started = False
+                denied.usage = (
+                    result.get("usage") if isinstance(result, Mapping) else None
+                )
                 self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
                 raise denied
         try:
@@ -6279,6 +6408,8 @@ class SessionRunner:
                     committed_amount=usage_total,
                 )
         except AutoBudgetDenied as denied:
+            denied.llm_not_started = False
+            denied.usage = result.get("usage") if isinstance(result, Mapping) else None
             self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
             raise
         return result
@@ -6333,6 +6464,16 @@ class SessionRunner:
     def _freeze_auto_budget_tokens(self, st: SessionState) -> None:
         run_id = str(st.active_auto_mode_run_id or "")
         if not run_id:
+            return
+        reservations = self.store.list_auto_mode_budget_reservations(run_id)
+        if any(
+            row.get("consumer") == "model"
+            and row.get("state") in {"unknown", "reserved"}
+            for row in reservations
+        ):
+            # A late or unmeasured call cannot become an apparently known zero
+            # baseline by reading the display counters on the frame.
+            self._auto_budget().fail_measurement(run_id)
             return
         frame = self.store.get_frame(st.root_frame_id) or {}
         tokens = int(frame.get("input_tokens") or 0) + int(
@@ -9054,6 +9195,18 @@ class SessionRunner:
         code = str(getattr(exc, "error_code", "") or "")
         failure_code = llm_failure_code(exc)
         zh = language == "zh"
+        if failure_code == "llm_deadline_exceeded":
+            return (
+                "**模型调用已达到总时限。** 请缩小请求后在当前会话继续。"
+                if zh
+                else "**The model call reached its total time limit.** Continue this session with a smaller request."
+            )
+        if failure_code == "llm_response_too_large":
+            return (
+                "**模型响应超过大小限制。** 请缩小输出或工具参数后继续。"
+                if zh
+                else "**The model response exceeded its size limit.** Continue with smaller output or tool arguments."
+            )
         if failure_code == "llm_request_burst":
             if getattr(exc, "output_committed", False):
                 return (
@@ -9184,8 +9337,10 @@ class SessionRunner:
     def review_call_inflight(self, root_frame_id: str) -> bool:
         return self.reviews.call_inflight(root_frame_id)
 
-    def _summarize_title(self, user_text: str, llm_cfg) -> str | None:
-        return self.titles.summarize(user_text, llm_cfg)
+    def _summarize_title(
+        self, user_text: str, llm_cfg, root_frame_id: str = ""
+    ) -> str | None:
+        return self.titles.summarize(user_text, llm_cfg, root_frame_id)
 
     def _spawn_title_summary(
         self, root_frame_id: str, user_text: str, llm_cfg, placeholder: str
@@ -11247,6 +11402,9 @@ class SessionRunner:
         llm_cfg = llm_cfg or self._llm_cfg(st)
 
         def add_usage(usage: dict) -> None:
+            from openai4s.llm.usage import measured_usage
+
+            usage = measured_usage(usage)
             self.store.add_frame_tokens(
                 rid,
                 input_tokens=(
@@ -11259,12 +11417,9 @@ class SessionRunner:
 
         def account_abandoned_reply(reply: Mapping[str, Any]) -> None:
             usage = reply.get("usage")
-            if not isinstance(usage, Mapping) or not usage:
-                return
-            canonical = dict(usage)
-            add_usage(canonical)
+            add_usage(usage)
             if action_ledger is not None:
-                action_ledger.record_abandoned_usage(canonical)
+                action_ledger.record_abandoned_usage(usage)
 
         latest_user_text = next(
             (
@@ -11451,6 +11606,14 @@ class SessionRunner:
                 ),
                 workspace_provider=lambda _s: str(st.workspace),
                 should_cancel=st.cancel.is_set,
+                # The summarizer spends on the session's behalf, so it answers
+                # to the session's quota and lands in its ledger. A summarizer
+                # call never becomes an action, so the Action Ledger never saw
+                # it and both halves have to be wired here.
+                quota_gate=lambda: self.enforce_llm_quota(st.root_frame_id),
+                usage_sink=lambda usage: self._record_overhead_usage(
+                    st.root_frame_id, usage
+                ),
             ),
             event_sink=events,
             cancellation=EventCancellation(st.cancel),
@@ -11606,6 +11769,12 @@ class SessionRunner:
             # exact generation is current rather than mutating a stale record.
             self.recovery.touch(st, language, state="active")
 
+    def _screening_cfg(self, st: Any) -> Any:
+        """The Config a pre-exec screener must be handed on the Web path."""
+        import dataclasses as _dc
+
+        return _dc.replace(self.cfg, llm=self._llm_cfg(st))
+
     def _safety_refusal(self, st: Any, code: str, origin: str) -> str | None:
         """Pre-exec safety verdict for an agent cell (reports e6w and diO).
 
@@ -11630,12 +11799,33 @@ class SessionRunner:
         """
         if origin != "agent":
             return None
+        # The session's RESOLVED config, not the boot one. Both screeners read
+        # `cfg.llm.api_key` and return "unconfigured; failed open" when it is
+        # empty -- and on the documented Web install it is always empty, because
+        # the key is configured through Customize → Models and lives in
+        # settings, which is the reason `_llm_cfg` exists at all. So the port
+        # widened, the call was wired, and the screener still never ran here:
+        # every biosecurity-relevant cell got ALLOW with `screened=False` from a
+        # screener that had not looked at anything. The CLI passes `self.cfg`
+        # and is correct, because a CLI run really does carry its key there.
+        #
+        # Resolved inside each screen's own try, with no fallback to `self.cfg`:
+        # falling back would screen with the config we just established cannot
+        # screen, which is the defect wearing a handler.
+        screening_cfg = None
         try:
+            screening_cfg = self._screening_cfg(st)
             security = self.cfg.security
             if security.code_gate_enabled:
                 from openai4s.security import classify_code
 
-                verdict = classify_code(code, self.cfg)
+                verdict = classify_code(
+                    code,
+                    screening_cfg,
+                    usage_sink=lambda usage: self._record_screening_usage(
+                        st.root_frame_id, usage
+                    ),
+                )
                 if verdict is not None and not verdict.safe:
                     return verdict.as_observation()
         except Exception:  # noqa: BLE001 - the gate must never break a turn
@@ -11646,9 +11836,18 @@ class SessionRunner:
                 return None
             from openai4s.security import gather_trajectory, screen_trajectory
 
+            if screening_cfg is None:
+                screening_cfg = self._screening_cfg(st)
             messages = list(getattr(st, "messages", ()) or ())
             user_text, actions = gather_trajectory(messages, code)
-            screen = screen_trajectory(user_text, actions, self.cfg)
+            screen = screen_trajectory(
+                user_text,
+                actions,
+                screening_cfg,
+                usage_sink=lambda usage: self._record_screening_usage(
+                    st.root_frame_id, usage
+                ),
+            )
         except Exception:  # noqa: BLE001
             return None
         # Only BLOCK stops a cell. ESCALATE stays advisory here for the same
@@ -15871,7 +16070,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # refresh loop or a link crawler to spend it for them, and the
                 # whole point of an *explicit* probe is that a human asked.
                 try:
-                    self._json(model_profiles.probe(m.group(1)))
+                    identity = getattr(self, "_team_identity", None)
+                    self._json(
+                        model_profiles.probe(
+                            m.group(1),
+                            actor_user_id=(
+                                getattr(identity, "user_id", None)
+                                if identity is not None
+                                else None
+                            ),
+                        )
+                    )
                 except ModelProfileError as exc:
                     self._json({"error": str(exc)}, exc.status_code)
                 return
@@ -17928,8 +18137,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/edit", sub)
             if m and method in ("POST", "PUT", "PATCH"):
+                body = self._body()
+                expected = body.get("expected_version_id")
+                if "expected_version_id" in body and (
+                    not isinstance(expected, str) or not expected.strip()
+                ):
+                    raise GatewayError(
+                        400, "expected_version_id must be a nonempty string"
+                    )
                 self._json(
-                    self._edit_artifact(m.group(1), self._body().get("content", ""))
+                    self._edit_artifact(
+                        m.group(1),
+                        body.get("content", ""),
+                        expected_version_id=expected,
+                    )
                 )
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/rename", sub)
@@ -19204,7 +19425,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         def _lineage(self, artifact_id: str, version_id: str | None = None) -> dict:
             return execution_views.artifact_lineage(artifact_id, version_id=version_id)
 
-        def _edit_artifact(self, artifact_id: str, content: str) -> dict:
+        def _edit_artifact(
+            self,
+            artifact_id: str,
+            content: str,
+            *,
+            expected_version_id: str | None = None,
+        ) -> dict:
             try:
                 artifact = store.get_artifact(artifact_id)
                 if artifact and artifact.get("root_frame_id"):
@@ -19214,12 +19441,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return runner.edit_artifact(
                     artifact_id,
                     content,
+                    expected_version_id=expected_version_id,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
                         root_frame_id, event
                     ),
                 )
             except ArtifactOperationError as error:
-                raise GatewayError(error.code, error.message) from error
+                raise GatewayError(
+                    error.code, error.message, error.error_code
+                ) from error
 
         def _restore_version(self, artifact_id: str, version_id: str) -> dict:
             artifact = store.get_artifact(artifact_id)

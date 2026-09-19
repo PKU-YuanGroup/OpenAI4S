@@ -493,8 +493,6 @@ class RuntimeActionLedger:
         Accounting must never fail an action — same contract as
         ``_reply_accounting``.
         """
-        if not usage:
-            return
         # One metering hook, shared with the reviewer's provider path: a
         # second copy of this loop is how review calls came to bill only the
         # per-frame counters and never the ledger the quota check reads.
@@ -538,26 +536,9 @@ class RuntimeActionLedger:
         canonical names when those are absent.
         """
 
-        if not isinstance(source, Mapping):
-            return None
-        usage: dict[str, int] = {}
-        for key in cls._USAGE_KEYS:
-            value = source.get(key)
-            if value is None or isinstance(value, bool):
-                continue
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if parsed >= 0:
-                usage[key] = parsed
-        for canonical, alias in (
-            ("input_tokens", "prompt_tokens"),
-            ("output_tokens", "completion_tokens"),
-        ):
-            if canonical not in usage and alias in usage:
-                usage[canonical] = usage[alias]
-        return usage or None
+        from openai4s.llm.usage import measured_usage
+
+        return measured_usage(source) or None
 
     def _reply_accounting(
         self, reply: ModelReply
@@ -571,7 +552,7 @@ class RuntimeActionLedger:
             return usage, None
         try:
             capabilities = get_model_capabilities(self.provider, self.model)
-            cost_usd = calculate_usage_cost_usd(usage, capabilities.cost)
+            cost_usd = calculate_usage_cost_usd(reply.usage, capabilities.cost)
         except (LookupError, TypeError, ValueError):
             # Accounting metadata must never make an otherwise valid action
             # fail. Unknown provider/model pricing remains visibly unknown.

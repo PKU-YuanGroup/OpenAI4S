@@ -11,6 +11,7 @@ from openai4s.agent.events import (
 )
 from openai4s.agent.ledger import REDACTED, RuntimeActionLedger, restore_action_history
 from openai4s.agent.models import EngineResult, ExecutionOutcome, ModelReply
+from openai4s.llm import normalize_usage
 from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.store import Store
 from openai4s.tools.catalog import SessionToolCatalog
@@ -72,19 +73,24 @@ def test_runtime_writer_roundtrips_native_group_and_redacts_arguments(tmp_path):
         }
     )
     call = _call(0)
+    counters = {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "total_tokens": 150,
+    }
     reply = _reply(
         (call,),
         content=(
             "I will inspect the evidence password=assistant-secret "
             "Bearer assistant-bearer"
         ),
-        usage={
-            "input_tokens": 120,
-            "output_tokens": 30,
-            "prompt_tokens": 120,
-            "completion_tokens": 30,
-            "total_tokens": 150,
-        },
+        # Attested the way the wire does it: a reply only reaches the ledger
+        # through ``chat()``, which runs the provider counters through
+        # ``normalize_usage``. A bare dict here would fake a provenance the
+        # real path always supplies.
+        usage=normalize_usage(counters, "ark"),
     )
     ledger.emit(ReplyReceived(reply, 0))
     ledger.emit(ActionRouted(NativeToolBatch((call,)), 0))
@@ -118,6 +124,10 @@ def test_runtime_writer_roundtrips_native_group_and_redacts_arguments(tmp_path):
     assert tools["model"] == "science-model"
     assert tools["usage"]["total_tokens"] == 150
     assert tools["cost_usd"] is None
+    # Paired negative: the same counters stripped of their provenance -- what a
+    # JSON round trip or ``dict(usage)`` leaves behind -- are refused by the one
+    # seam this group's ``usage`` came through, instead of being re-derived.
+    assert RuntimeActionLedger._canonical_usage(dict(counters)) is None
     serialized = repr(tools)
     assert "live-secret" not in serialized
     assert "result-secret" not in serialized

@@ -31,6 +31,10 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / earlier bar. |
 | [`paging.test.ts`](paging.test.ts) | Pagination constants, session sort, walk/dedupe, dashboard filters. |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`, `SESSION_MAX_PAGES=50`, sort/walk/filter. |
+| [`navigation.ts`](navigation.ts) | The view generation and the synchronous directory reset. Deliberately not a list-read owner: list reads are scoped to their project. |
+| [`copy.ts`](copy.ts) | Bilingual directory-read failure and retry copy. |
+| [`load.navigation.test.ts`](load.navigation.test.ts) | Out-of-order sessions/folders/pages, project-scoped read ownership, read errors and auto-open ownership. |
+| [`actions.export.test.ts`](actions.export.test.ts) | Markdown export requires successful validated reads and freezes the session title. |
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | A superseded project navigation cannot replace the current session or its session/folder lists; menu filtering cancels a pending project open, including repeated A→B→A filters, and the open then hands the view back — it reloads the conversation whose reads its entry retired, or opens the menu's project when the workspace was revealed with none; the current navigation transfers ownership to its conversation. List reads are scoped to their project, not to the view generation: a same-project refresh survives a conversation open or a trip Home that overtakes it. |
 | [`projects.ts`](projects.ts) | Project menu/modal/research view, `sanitizeProjectLineage`. `renderProjMenu` takes `#proj-current` over from its static `data-i18n` label. |
 | [`static-i18n-ownership.test.ts`](static-i18n-ownership.test.ts) | Once code has written the session title or the current project's name, neither the late locale-chunk repaint nor a language switch puts "Session" / "Project" back; the title input commits on blur, so that repaint renamed the session on the server. |

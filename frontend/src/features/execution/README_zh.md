@@ -24,3 +24,7 @@ F-14 已用 `isReady` 门控 `toggleExecutedCode` / `buildExecutedCodeView`。F-
 | [`index.ts`](index.ts) | 对外再导出。 |
 | [`lineage.test.ts`](lineage.test.ts) | Provenance 链数据变换；针对 0.2.x 遗留快照、确实为空的 Python 列表和 R kernel 渲染 Environment 面板。 |
 | [`conflict.test.ts`](conflict.test.ts) | 409 呈现；`forkOnce` 只打一次。 |
+
+- [`copy.ts`](copy.ts): 溯源读取状态与证据边界的双语文案。
+- [`validation.ts`](validation.ts): 溯源／环境网络响应严格校验，保留历史可空字段。
+- [`provenance.test.ts`](provenance.test.ts): 只读重试、乱序响应、产物归属与精确 Cell 跳转测试。

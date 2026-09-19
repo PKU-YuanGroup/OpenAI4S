@@ -98,9 +98,11 @@ describe("F-10 window exports", () => {
         text: async () => JSON.stringify(body),
       } as Response;
     });
-    sessions.value = [
-      { id: "frame/9", project_id: "proj/1", name: "Running target" },
-    ];
+    // Entering another project now reloads its directory instead of borrowing
+    // the previous scope's rows. The service substitute supplies that read.
+    loadSessionsMock.mockImplementationOnce(async () => {
+      sessions.value = [{ id: "frame/9", project_id: "proj/1", name: "Running target" }];
+    });
     pendingRequestId.value = "old-request";
     pendingExecutionId.value = "old-execution";
     const target: Record<string, unknown> = {};

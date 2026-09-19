@@ -216,3 +216,31 @@ def test_single_and_batch_item_failures_remain_hard(tmp_path):
         service.complete(
             {"batch": [{"messages": [{"role": "user", "content": "batch failed"}]}]}
         )
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("provider_fails", [False, True])
+def test_usage_store_failure_preserves_the_provider_outcome(
+    tmp_path, monkeypatch, provider_fails
+):
+    dispatcher = HostDispatcher(_config(tmp_path), frame_id="test-frame")
+    provider_error = RuntimeError("provider failed")
+
+    def unavailable_store(*_args, **_kwargs):
+        raise OSError("usage store unavailable")
+
+    def chat(*_args, **_kwargs):
+        # The store was usable at admission, but becomes unavailable while
+        # the provider is in flight. Metering cannot replace either outcome.
+        monkeypatch.setattr(dispatcher_module, "get_store", unavailable_store)
+        if provider_fails:
+            raise provider_error
+        return {"content": "completed analysis"}
+
+    monkeypatch.setattr(dispatcher_module, "chat", chat)
+    if provider_fails:
+        with pytest.raises(RuntimeError) as raised:
+            dispatcher._m_llm({"messages": []})
+        assert raised.value is provider_error
+    else:
+        assert dispatcher._m_llm({"messages": []}) == "completed analysis"

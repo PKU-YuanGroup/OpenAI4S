@@ -2394,6 +2394,17 @@
         403
       ]
     },
+    "/team/quotas/unknown/clear": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
     "/team/usage": {
       "content_types": [
         "application/json"

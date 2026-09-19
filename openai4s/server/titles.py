@@ -19,7 +19,7 @@ ChatCall = Callable[..., dict]
 Broadcast = Callable[[str, dict], None]
 ThreadFactory = Callable[..., Any]
 StoreProvider = Callable[[], SessionTitleStore]
-SummarizeCall = Callable[[str, Any], str | None]
+SummarizeCall = Callable[[str, Any, str], str | None]
 
 
 class SessionTitleService:
@@ -33,12 +33,16 @@ class SessionTitleService:
         chat_call: ChatCall | None = None,
         thread_factory: ThreadFactory | None = None,
         summarize_call: SummarizeCall | None = None,
+        usage_sink: Callable[[str, Any], None] | None = None,
     ) -> None:
         self._store_source = store
         self.broadcast = broadcast
         self._chat_call = chat_call
         self._thread_factory = thread_factory
         self._summarize_call = summarize_call
+        # Titling is real billed spend on ordinary user traffic. It reached no
+        # meter at all, so a session's first message was free in the ledger.
+        self._usage_sink = usage_sink
 
     def _store(self) -> SessionTitleStore:
         source = self._store_source
@@ -53,7 +57,7 @@ class SessionTitleService:
 
         return llm.chat(messages, llm_cfg, **kwargs)
 
-    def summarize(self, user_text: str, llm_cfg) -> str | None:
+    def summarize(self, user_text: str, llm_cfg, root_frame_id: str = "") -> str | None:
         """Return a cleaned short title, or ``None`` for an unusable reply."""
         source = re.sub(r"\s+", " ", user_text or "").strip()[:2000]
         if not source:
@@ -71,12 +75,24 @@ class SessionTitleService:
             },
             {"role": "user", "content": source},
         ]
-        result = self._chat(
-            messages,
-            llm_cfg,
-            max_tokens=64,
-            temperature=0.3,
+        from openai4s.llm.usage import charge_call
+
+        sink = (
+            (lambda usage: self._usage_sink(root_frame_id, usage))
+            if self._usage_sink is not None
+            else None
         )
+        try:
+            result = self._chat(
+                messages,
+                llm_cfg,
+                max_tokens=64,
+                temperature=0.3,
+            )
+        except BaseException as error:
+            charge_call(sink, error)
+            raise
+        charge_call(sink, result)
         if str(result.get("finish_reason") or "").lower() in (
             "length",
             "max_tokens",
@@ -124,7 +140,10 @@ class SessionTitleService:
         def target() -> None:
             try:
                 summarize = self._summarize_call or self.summarize
-                title = summarize(user_text, llm_cfg)
+                # The frame travels to whatever is installed here: the gateway
+                # overrides `summarize_call`, so a meter that only hooked the
+                # default method would never fire on the real path.
+                title = summarize(user_text, llm_cfg, root_frame_id)
             except Exception:  # noqa: BLE001 - titling must never break a turn
                 return
             if not title or title == placeholder:

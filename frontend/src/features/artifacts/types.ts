@@ -36,7 +36,7 @@ export type ArtifactVersionRow = {
   filename?: string | null;
   ordinal?: number;
   is_latest?: boolean;
-  size_bytes?: number;
+  size_bytes?: number | null;
   content_type?: string | null;
   checksum?: string | null;
   producing_cell_id?: string | null;

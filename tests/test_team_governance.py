@@ -4,6 +4,8 @@ and the D4 visibility semantics they enable. All tokens/passwords fake.
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from openai4s.config import Config
@@ -270,6 +272,31 @@ def test_quota_set_validation_and_listing(store):
         is True
     )
     assert store.governance.list_quotas() == []
+
+
+def test_unknown_usage_clear_preserves_a_transaction_it_does_not_own(store):
+    store.governance.record_usage(
+        user_id="u1", kind="llm_input_tokens_unknown", amount=1
+    )
+    with store._lock:
+        store._conn.execute(
+            "INSERT INTO project_members(project_id,user_id,role) VALUES(?,?,?)",
+            ("pending-project", "u1", "member"),
+        )
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="within a transaction"):
+                store.governance.clear_unknown_usage(
+                    scope="user",
+                    scope_id="u1",
+                    kind="llm_input_tokens",
+                    window="day",
+                )
+            assert store._conn.in_transaction
+            assert store.governance.member_role("pending-project", "u1") == "member"
+            assert store.governance.usage_summary(user_id="u1")[0]["events"] == 1
+            assert store.team.list_audit(action="usage_unknown_cleared") == []
+        finally:
+            store._conn.rollback()
 
 
 def test_host_query_cannot_read_governance_tables(store):
