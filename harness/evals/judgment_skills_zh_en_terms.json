@@ -1,0 +1,349 @@
+{
+  "schema_version": 1,
+  "max_entries": 300,
+  "split_seed": 20260920,
+  "_construction": "Built only from the development split of judgment_skills_cases.json (split_seed=20260920). Method: (1) take every query with lang=zh and split=dev; (2) keep a bilingual term if and only if its Chinese key occurs as a substring of at least one of those queries; (3) English values are extra tokens for SkillLoader.search, which tokenizes [a-z0-9]+ and otherwise drops CJK; (4) at most 300 terms. The test split was not read while choosing keys or English expansions.",
+  "n_terms": 85,
+  "terms": [
+    {
+      "zh": "复合物",
+      "en": "complex multimer co-fold"
+    },
+    {
+      "zh": "骨架",
+      "en": "backbone inverse fold"
+    },
+    {
+      "zh": "逆折叠",
+      "en": "inverse folding sequence design mpnn"
+    },
+    {
+      "zh": "热点",
+      "en": "hotspot binder design"
+    },
+    {
+      "zh": "盲对接",
+      "en": "blind docking pose"
+    },
+    {
+      "zh": "对接",
+      "en": "docking pose virtual screening"
+    },
+    {
+      "zh": "奠基文献",
+      "en": "seminal papers literature review doi"
+    },
+    {
+      "zh": "引用",
+      "en": "citation doi"
+    },
+    {
+      "zh": "字号",
+      "en": "font size figure style"
+    },
+    {
+      "zh": "刻度",
+      "en": "ticks legend"
+    },
+    {
+      "zh": "审计",
+      "en": "audit dataset leakage"
+    },
+    {
+      "zh": "适应症",
+      "en": "indication dossier epidemiology"
+    },
+    {
+      "zh": "流行病学",
+      "en": "epidemiology"
+    },
+    {
+      "zh": "催化剂",
+      "en": "catalyst solvent reagent"
+    },
+    {
+      "zh": "遗传算法",
+      "en": "genetic algorithm molecule optimization"
+    },
+    {
+      "zh": "原子对应",
+      "en": "atom mapping reaction centre"
+    },
+    {
+      "zh": "溶剂",
+      "en": "solvent catalyst reagent"
+    },
+    {
+      "zh": "产率",
+      "en": "yield estimation"
+    },
+    {
+      "zh": "前体",
+      "en": "precursor retrosynthesis"
+    },
+    {
+      "zh": "开源权重",
+      "en": "open weights structure prediction"
+    },
+    {
+      "zh": "隔离",
+      "en": "scoped kernel endpoint"
+    },
+    {
+      "zh": "转录本",
+      "en": "transcript quantification salmon kallisto"
+    },
+    {
+      "zh": "短读",
+      "en": "short read alignment"
+    },
+    {
+      "zh": "组装",
+      "en": "genome assembly hifi hifiasm"
+    },
+    {
+      "zh": "宏基因组",
+      "en": "metagenome taxonomic classification"
+    },
+    {
+      "zh": "物种组成",
+      "en": "taxonomic composition metagenome"
+    },
+    {
+      "zh": "双硫酸盐",
+      "en": "bisulfite wgbs bismark"
+    },
+    {
+      "zh": "窄峰",
+      "en": "narrow peak chip-seq"
+    },
+    {
+      "zh": "虚拟筛选",
+      "en": "virtual screening vina"
+    },
+    {
+      "zh": "化合物库",
+      "en": "compound library docking"
+    },
+    {
+      "zh": "比对",
+      "en": "alignment star bwa"
+    },
+    {
+      "zh": "定量",
+      "en": "quantification salmon"
+    },
+    {
+      "zh": "筛选",
+      "en": "crispr screen mageck"
+    },
+    {
+      "zh": "分类",
+      "en": "classification kraken blast"
+    },
+    {
+      "zh": "丰度",
+      "en": "abundance bracken metaphlan"
+    },
+    {
+      "zh": "转换",
+      "en": "converted genome bismark"
+    },
+    {
+      "zh": "全流程",
+      "en": "pipeline backbone sequence validation"
+    },
+    {
+      "zh": "去 batch",
+      "en": "batch correction scvi"
+    },
+    {
+      "zh": "核 DOI",
+      "en": "verify doi literature"
+    },
+    {
+      "zh": "原料",
+      "en": "purchasable stock retrosynthesis"
+    },
+    {
+      "zh": "原位",
+      "en": "pose pocket docking"
+    },
+    {
+      "zh": "细胞类型",
+      "en": "cell type annotation"
+    },
+    {
+      "zh": "摘要",
+      "en": "abstract writing"
+    },
+    {
+      "zh": "组会",
+      "en": "meeting"
+    },
+    {
+      "zh": "拒稿",
+      "en": "reject email"
+    },
+    {
+      "zh": "缩写",
+      "en": "acronym"
+    },
+    {
+      "zh": "翻译",
+      "en": "translate"
+    },
+    {
+      "zh": "打油诗",
+      "en": "poem"
+    },
+    {
+      "zh": "口吻",
+      "en": "writing style"
+    },
+    {
+      "zh": "小分子",
+      "en": "small molecule ligand docking"
+    },
+    {
+      "zh": "逆合成",
+      "en": "retrosynthesis precursor route"
+    },
+    {
+      "zh": "文献支持",
+      "en": "literature support citation"
+    },
+    {
+      "zh": "单细胞",
+      "en": "single-cell scrna-seq scanpy"
+    },
+    {
+      "zh": "蛋白",
+      "en": "protein structure sequence"
+    },
+    {
+      "zh": "配体",
+      "en": "ligand cofactor docking"
+    },
+    {
+      "zh": "折叠",
+      "en": "structure prediction folding"
+    },
+    {
+      "zh": "序列",
+      "en": "sequence design fasta"
+    },
+    {
+      "zh": "开源",
+      "en": "open source weights"
+    },
+    {
+      "zh": "反应物",
+      "en": "reactant product reaction"
+    },
+    {
+      "zh": "对齐",
+      "en": "aligned bam peak"
+    },
+    {
+      "zh": "两样本",
+      "en": "two-sample mendelian randomization"
+    },
+    {
+      "zh": "口袋",
+      "en": "pocket docking virtual screening"
+    },
+    {
+      "zh": "基因组",
+      "en": "genome alignment"
+    },
+    {
+      "zh": "不想比对",
+      "en": "alignment-free quantification"
+    },
+    {
+      "zh": "独立模型",
+      "en": "independent co-fold validation"
+    },
+    {
+      "zh": "附件",
+      "en": "attached pdf"
+    },
+    {
+      "zh": "接受的候选",
+      "en": "accepted precursors retrosynthesis"
+    },
+    {
+      "zh": "看见配体",
+      "en": "ligand-aware inverse fold"
+    },
+    {
+      "zh": "常规预处理",
+      "en": "preprocessing qc normalisation"
+    },
+    {
+      "zh": "润色",
+      "en": "polish writing"
+    },
+    {
+      "zh": "通知",
+      "en": "notice meeting"
+    },
+    {
+      "zh": "华氏度",
+      "en": "fahrenheit"
+    },
+    {
+      "zh": "科普",
+      "en": "popular science"
+    },
+    {
+      "zh": "工作流",
+      "en": "workflow git"
+    },
+    {
+      "zh": "认真回答",
+      "en": "arithmetic"
+    },
+    {
+      "zh": "保持术语",
+      "en": "keep terminology"
+    },
+    {
+      "zh": "纯算法",
+      "en": "algorithm"
+    },
+    {
+      "zh": "博士后",
+      "en": "postdoc"
+    },
+    {
+      "zh": "分数含义",
+      "en": "score meaning"
+    },
+    {
+      "zh": "线粒体",
+      "en": "mitochondria poem"
+    },
+    {
+      "zh": "这批",
+      "en": "this batch 10x"
+    },
+    {
+      "zh": "这个分子",
+      "en": "this molecule"
+    },
+    {
+      "zh": "这个结论",
+      "en": "this claim"
+    },
+    {
+      "zh": "都想叫",
+      "en": "call peaks both"
+    },
+    {
+      "zh": "我有 BAM",
+      "en": "bam files"
+    }
+  ]
+}
