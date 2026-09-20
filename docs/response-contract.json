@@ -703,6 +703,30 @@
         404
       ]
     },
+    "/experimental/judgment": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        405
+      ]
+    },
+    "/experimental/judgment/test": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        405
+      ]
+    },
     "/files": {
       "content_types": [
         "application/json"

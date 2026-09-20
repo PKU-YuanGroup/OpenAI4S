@@ -1760,6 +1760,56 @@
         "type": "object"
       }
     },
+    "DELETE /experimental/judgment [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /experimental/judgment/test [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /files [error]": {
       "schema": {
         "properties": {
@@ -9323,6 +9373,292 @@
           "seeded",
           "seeds_at_startup",
           "started"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /experimental/judgment [ok]": {
+      "schema": {
+        "properties": {
+          "disclosure": {
+            "properties": {
+              "acked": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "properties": {
+                  "literature_check": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "safety_shadow": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "skill_suggest": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "task_mode_shadow": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "text_features": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "literature_check",
+                  "safety_shadow",
+                  "skill_suggest",
+                  "task_mode_shadow",
+                  "text_features"
+                ],
+                "type": "object"
+              },
+              "facts": {
+                "machine_state": true,
+                "type": "object"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "acked",
+              "capabilities",
+              "facts",
+              "version"
+            ],
+            "type": "object"
+          },
+          "effective": {
+            "properties": {
+              "literature_check": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "master": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "safety_shadow": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "skill_suggest": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "task_mode_shadow": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "text_features": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "literature_check",
+              "master",
+              "safety_shadow",
+              "skill_suggest",
+              "task_mode_shadow",
+              "text_features"
+            ],
+            "type": "object"
+          },
+          "egress": {
+            "properties": {
+              "domain_allowed": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "remediation": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "domain_allowed",
+              "mode",
+              "remediation"
+            ],
+            "type": "object"
+          },
+          "experimental": {
+            "type": "boolean"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "disclosure",
+          "effective",
+          "egress",
+          "experimental",
+          "key_configured",
+          "model",
+          "provider"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /experimental/judgment/test [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -22204,6 +22540,289 @@
         "type": "object"
       }
     },
+    "PATCH /experimental/judgment [ok]": {
+      "schema": {
+        "properties": {
+          "disclosure": {
+            "properties": {
+              "acked": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "properties": {
+                  "literature_check": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "safety_shadow": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "skill_suggest": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "task_mode_shadow": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "text_features": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "literature_check",
+                  "safety_shadow",
+                  "skill_suggest",
+                  "task_mode_shadow",
+                  "text_features"
+                ],
+                "type": "object"
+              },
+              "facts": {
+                "machine_state": true,
+                "type": "object"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "acked",
+              "capabilities",
+              "facts",
+              "version"
+            ],
+            "type": "object"
+          },
+          "effective": {
+            "properties": {
+              "literature_check": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "master": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "safety_shadow": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "skill_suggest": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "task_mode_shadow": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "text_features": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "literature_check",
+              "master",
+              "safety_shadow",
+              "skill_suggest",
+              "task_mode_shadow",
+              "text_features"
+            ],
+            "type": "object"
+          },
+          "egress": {
+            "properties": {
+              "domain_allowed": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "remediation": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "domain_allowed",
+              "mode",
+              "remediation"
+            ],
+            "type": "object"
+          },
+          "experimental": {
+            "type": "boolean"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "disclosure",
+          "effective",
+          "egress",
+          "experimental",
+          "key_configured",
+          "model",
+          "provider"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /experimental/judgment/test [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /files [error]": {
       "schema": {
         "properties": {
@@ -29262,6 +29881,56 @@
           "seeded",
           "seeds_at_startup",
           "started"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /experimental/judgment [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /experimental/judgment/test [ok]": {
+      "schema": {
+        "properties": {
+          "error_code": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error_code",
+          "latency_ms",
+          "model",
+          "status"
         ],
         "type": "object"
       }
@@ -42201,6 +42870,289 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /experimental/judgment [ok]": {
+      "schema": {
+        "properties": {
+          "disclosure": {
+            "properties": {
+              "acked": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "properties": {
+                  "literature_check": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "safety_shadow": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "skill_suggest": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "task_mode_shadow": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  },
+                  "text_features": {
+                    "properties": {
+                      "en": {
+                        "type": "string"
+                      },
+                      "zh": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "en",
+                      "zh"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "literature_check",
+                  "safety_shadow",
+                  "skill_suggest",
+                  "task_mode_shadow",
+                  "text_features"
+                ],
+                "type": "object"
+              },
+              "facts": {
+                "machine_state": true,
+                "type": "object"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "acked",
+              "capabilities",
+              "facts",
+              "version"
+            ],
+            "type": "object"
+          },
+          "effective": {
+            "properties": {
+              "literature_check": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "master": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "safety_shadow": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "skill_suggest": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "task_mode_shadow": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              },
+              "text_features": {
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "source"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "literature_check",
+              "master",
+              "safety_shadow",
+              "skill_suggest",
+              "task_mode_shadow",
+              "text_features"
+            ],
+            "type": "object"
+          },
+          "egress": {
+            "properties": {
+              "domain_allowed": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "remediation": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "domain_allowed",
+              "mode",
+              "remediation"
+            ],
+            "type": "object"
+          },
+          "experimental": {
+            "type": "boolean"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "disclosure",
+          "effective",
+          "egress",
+          "experimental",
+          "key_configured",
+          "model",
+          "provider"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /experimental/judgment/test [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],
