@@ -494,6 +494,8 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_w1_integration.py`](test_judgment_w1_integration.py) | The seams between the three W1 packages: the settings route's Store instance reaching `JudgmentService`, the default backend being the TypeSafe transport, and a loopback-fake answer staying marked `fake` in both the result and the audit row. |
 | [`test_judgment_egress.py`](test_judgment_egress.py) | Judgment egress *report*: `off` has no remediation; allowlist without a grant reports `blocked_message` and `check_url` raises; a runtime grant authorizes. Does not add an `EGRESS_GROUPS` entry. |
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`: default-off is informational, missing key / allowlist block warn, and the TypeSafe key never appears in the report. |
+| [`test_bioskills_area_index.py`](test_bioskills_area_index.py) | The generated bioSkills area index covers every current member, no extras, each area ≤254 members, and `source_manifest_sha256` matches `MANIFEST.json`. |
+| [`test_judgment_skill_suggest.py`](test_judgment_skill_suggest.py) | `SkillService.suggest` and `search_skills` wrapping: specialist allowlist, disabled Skills, explicit-name skip, unavailable passthrough, default-off byte identity, Chinese queries, ≤3 requests, Choice ≤255, and `policy_version` in the cache key. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

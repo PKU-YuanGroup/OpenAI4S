@@ -148,15 +148,66 @@ class SearchSkillsTool(Tool):
     resource_key_prefix = "skill"
     resource_target_key = "query"
 
-    def execute(self, runtime: ControlToolContext, arguments: dict) -> list:
-        rows = runtime.invoke(
-            self.host_method,
-            {
-                "query": arguments.get("query", ""),
-                "limit": int(arguments.get("limit") or 5),
-            },
-        )
-        return self.fit_to_budget(rows)
+    def execute(self, runtime: ControlToolContext, arguments: dict) -> Any:
+        spec = {
+            "query": arguments.get("query", ""),
+            "limit": int(arguments.get("limit") or 5),
+        }
+        rows = runtime.invoke(self.host_method, spec)
+        fitted = self.fit_to_budget(rows)
+        semantic = runtime.invoke("suggest_skills", {"query": spec["query"]})
+        if not isinstance(semantic, dict):
+            return fitted
+        status = semantic.get("semantic_status")
+        if status == "disabled":
+            return fitted
+        payload = {
+            "results": fitted,
+            "semantic_status": status,
+            "semantic_suggestions": list(semantic.get("semantic_suggestions") or []),
+        }
+        return self._fit_semantic(payload)
+
+    def _fit_semantic(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep the wrapped search_skills dict inside ``output_limit``.
+
+        Lexical ``results`` are already budgeted. When the semantic envelope
+        still overflows, drop ``reason_fields`` first, then trailing
+        suggestions.
+        """
+
+        import json
+
+        prefix_size = len(f"[Tool: {self.name}]\n")
+
+        def rendered_size(value: Any) -> int:
+            try:
+                body = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+            except (TypeError, ValueError):
+                body = str(value)
+            return prefix_size + len(body)
+
+        if rendered_size(payload) <= self.output_limit:
+            return payload
+        suggestions = [
+            dict(item) if isinstance(item, dict) else item
+            for item in list(payload.get("semantic_suggestions") or [])
+        ]
+        for index in range(len(suggestions) - 1, -1, -1):
+            item = suggestions[index]
+            if isinstance(item, dict) and item.get("reason_fields"):
+                trimmed = dict(item)
+                trimmed["reason_fields"] = []
+                suggestions[index] = trimmed
+                candidate = {**payload, "semantic_suggestions": suggestions}
+                if rendered_size(candidate) <= self.output_limit:
+                    return candidate
+        while suggestions:
+            suggestions.pop()
+            candidate = {**payload, "semantic_suggestions": suggestions}
+            if rendered_size(candidate) <= self.output_limit:
+                return candidate
+        return {**payload, "semantic_suggestions": []}
 
     def fit_to_budget(self, rows: Any) -> Any:
         """Shorten the longest recipes instead of losing the last hits.
