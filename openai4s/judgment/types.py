@@ -231,6 +231,7 @@ class BackendReply:
     usage: Mapping[str, int]
     model: str
     request_id: str | None = None
+    fake: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "answers", dict(self.answers))
@@ -239,3 +240,4 @@ class BackendReply:
         )
         if self.request_id is not None and not isinstance(self.request_id, str):
             raise ValueError("request_id must be a string or None")
+        object.__setattr__(self, "fake", bool(self.fake))
