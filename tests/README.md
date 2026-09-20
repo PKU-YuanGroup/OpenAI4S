@@ -494,6 +494,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_w1_integration.py`](test_judgment_w1_integration.py) | The seams between the three W1 packages: the settings route's Store instance reaching `JudgmentService`, the default backend being the TypeSafe transport, and a loopback-fake answer staying marked `fake` in both the result and the audit row. |
 | [`test_judgment_egress.py`](test_judgment_egress.py) | Judgment egress *report*: `off` has no remediation; allowlist without a grant reports `blocked_message` and `check_url` raises; a runtime grant authorizes. Does not add an `EGRESS_GROUPS` entry. |
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`: default-off is informational, missing key / allowlist block warn, and the TypeSafe key never appears in the report. |
+| [`test_judgment_skills_eval.py`](test_judgment_skills_eval.py) | Frozen Skill-suggestion eval: case schema, gold names exist in the loader, every `lang × category × split` stratum is populated, `no_skill` ≥ 20%, test-split lock hash, B2 glossary built from the development split only, hand-crafted metric/bootstrap edges, and a `slow` offline B0+B2 run on `dev`. Never scores `--split test`. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

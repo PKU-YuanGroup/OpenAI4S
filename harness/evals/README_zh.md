@@ -13,5 +13,9 @@
 | [`retrosynthesis_backends.py`](retrosynthesis_backends.py) | 不加载模型权重，而是把版本化的外部模型响应重新送入生产响应规范化器。它评测 schema、预期成功/错误行为、预测数量、checkpoint provenance 完整度、带分数预测覆盖率，以及确定性的响应摘要。 |
 | [`retrosynthesis_backend_cases.json`](retrosynthesis_backend_cases.json) | 公开安全的合成响应 tape：一个成功的 RetroChimera 形状预测批次，以及一个禁止 checkpoint 自动下载时的拒绝结果。fixture 不包含模型权重、私有化学信息、网络结果或真实 checkpoint 路径。 |
 | [`.gitkeep`](.gitkeep) | 把目录留在 git 里，与当前有哪些计分代码无关。 |
+| [`judgment_skills.py`](judgment_skills.py) | 冻结的 Skill 推荐评测（plan §7）。离线打分 B0 词法检索和 B2 词典扩展；B1（主模型改写）、J1（只跑 `suggest` 第一次请求）和 J2（完整 `suggest`）需要 `--live`。报告 top-1 / top-3、错误推荐、无谓推荐、弃权、延迟、token 和 bootstrap 95% 置信区间，并按语言和类别分开。`--split test` 必须带与模板版本一致的 `--frozen-thresholds`。 |
+| [`judgment_skills_cases.json`](judgment_skills_cases.json) | 约 200 条 agent 撰写的中英文 query，带 gold Skill 名，按 `lang × category` 分层、种子 20260920、开发/测试各 50%。仍需人工抽检至少 20%。 |
+| [`judgment_skills_cases.lock`](judgment_skills_cases.lock) | 测试集（按 id 排序后的规范 JSON）的 SHA-256。测试 query 或 gold 一变，锁校验就会失败。 |
+| [`judgment_skills_zh_en_terms.json`](judgment_skills_zh_en_terms.json) | B2 用的中英术语词典，最多 300 条，只用开发集构建；构建方法写在 `_construction`。 |
 
 两个 evaluator 都完全确定性，不需要 provider key、网络、内核、GPU 或可选模型包。Action routing 对应 [`../../tests/test_action_routing_eval.py`](../../tests/test_action_routing_eval.py)；外部模型协议与 replay 契约由 [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py) 覆盖。

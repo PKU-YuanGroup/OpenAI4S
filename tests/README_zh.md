@@ -494,6 +494,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_w1_integration.py`](test_judgment_w1_integration.py) | W1 三个包之间的接缝：设置路由传进来的 Store 实例能被 `JudgmentService` 接住、默认后端确实是 TypeSafe 传输层，以及来自 loopback 假端点的答案在结果和审计行里都仍然带着 `fake` 标记。 |
 | [`test_judgment_egress.py`](test_judgment_egress.py) | 判断层 egress **报告**：`off` 无补救项；allowlist 且未授权时报告 `blocked_message` 且 `check_url` 抛错；运行时 grant 后放行。不新增 `EGRESS_GROUPS` 分组。 |
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`：默认关闭为信息级、缺 key / allowlist 拦截为 warn，报告中永不出现 TypeSafe key。 |
+| [`test_judgment_skills_eval.py`](test_judgment_skills_eval.py) | 冻结的 Skill 推荐评测：数据集 schema、gold 名都存在于 loader、每个 `lang × category × split` 分层都有样本、`no_skill` ≥ 20%、测试集锁哈希、B2 词典只来自开发集、手写指标/bootstrap 边界，以及标 `slow` 的开发集 B0+B2 离线跑通。从不对 `--split test` 打分。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 
