@@ -20,6 +20,8 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| [`stream_buffer.py`](stream_buffer.py) | 按 UTF-8 字节限额的文本队列，取消与总期限均可解除背压。 |
+| [`recovery.py`](./recovery.py) | 流式中断和无进展停止后的续跑提示；实时上下文与账本重建使用同一逻辑，不重放任何动作。 |
 | [`__init__.py`](./__init__.py) | 包的对外出口：Engine、本地 `Agent` facade 与 `run_task`、各类结果值，以及完成相关的辅助函数。 |
 | [`actions.py`](./actions.py) | 模型回复变成动作的唯一入口。它标准化原生调用，识别 Python/R fence；两者同时出现时，原生调用胜出。只有当 `finalize_response` 是回复里唯一的原生调用时，它才被认成 Engine finalizer。两个外层循环都从这里过，因此不会各自跑偏。 |
 | [`cell_record.py`](./cell_record.py) | 委托子代理 Cell 的持久 execution_log 记录。`DelegatedCellRecorder` 把子代理执行过的每个 Cell——失败与被中断的也记录，宿主侧崩溃时补一条合成 error 行——以 `frame_id = root_frame_id = <子委托 frame>`、`origin="delegate"` 落库，并盖上子内核的持久 generation id。按子 frame 建键让每个子代理拥有独立的 revision 游标，也从构造上把子 Cell 挡在根 Notebook 投影之外；`frame_detail` 与 lineage 的 `cell_recorded` 因此如实，而投影层零改动。记录器绝不向执行器抛异常(Cell 已经跑完，丢一条记录不该让运行失败)；`ComposedCellHooks` 让它先于可选的 stage-1 Artifact 捕获钩子运行，捕获失败也丢不掉执行记录。 |

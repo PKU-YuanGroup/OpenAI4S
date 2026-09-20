@@ -449,6 +449,8 @@ class AutoBudgetConflictError(AutoModeConflictError):
 class AutoBudgetDenied(ValueError):
     """Fail-closed refusal before a metered Auto Mode sink starts."""
 
+    llm_not_started = True
+
     def __init__(self, reason: str, message: str, *, field: str | None = None) -> None:
         super().__init__(message)
         self.reason = str(reason)
@@ -9155,7 +9157,7 @@ class AutoModeRepository:
     def _token_used_locked(self, root_run_id: str) -> tuple[int, int]:
         used_row = self._connection.execute(
             "SELECT COALESCE(SUM(CASE WHEN state IN ('committed','consumed','unknown') "
-            "THEN CASE WHEN committed_amount>0 THEN committed_amount "
+            "THEN CASE WHEN state='committed' THEN committed_amount "
             "ELSE reserved_amount END ELSE 0 END),0), "
             "COALESCE(SUM(CASE WHEN state='reserved' THEN reserved_amount ELSE 0 END),0) "
             "FROM auto_mode_budget_reservations WHERE root_run_id=? AND consumer='token'",

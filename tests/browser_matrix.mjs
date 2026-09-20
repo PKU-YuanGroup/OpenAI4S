@@ -11,12 +11,16 @@
 // different error, a CSS or DOM API one engine has and another does not.
 //
 // Everything here talks to a real daemon over real HTTP and a real WebSocket.
-// Nothing is stubbed: a DOM mock would test the mock, and the point of this
-// file is the parts of the stack a mock replaces.
+// Controlled delivery/read faults exercise the real UI; successful rows and
+// mutations come from the daemon, and DOM assertions observe its stored state.
 
 const REQUESTED = (process.argv.find((a) => a.startsWith("--browser=")) || "").split("=")[1];
 const ENGINES = REQUESTED ? [REQUESTED] : ["chromium", "firefox", "webkit"];
 import { authenticate, redactSecrets } from "./browser_auth.mjs";
+import { editorChecks } from "./browser_editor.mjs";
+import { filesChecks } from "./browser_files.mjs";
+import { navigationChecks } from "./browser_navigation.mjs";
+import { provenanceChecks } from "./browser_provenance.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 
@@ -194,6 +198,26 @@ async function runEngine(engineName) {
       const detail = await probe(frameId);
       await refusesUnknownFrame(probe);
       return detail;
+    });
+
+    await check(engineName, "conditional editor survives races and lost responses", async () => {
+      const result = await editorChecks(page, api, frameId);
+      return `posts=${result.posts} version=${result.finalVersion}`;
+    });
+
+    await check(engineName, "Files cards, filters, pages and refresh agree", async () => {
+      const result = await filesChecks(page, api);
+      return `pages=${result.firstPages.join("/")} refreshed=${result.refreshed}`;
+    });
+
+    await check(engineName, "navigation owns sessions, folders and loading", async () => {
+      const result = await navigationChecks(page, api);
+      return `pages=${result.pages.join("/")} creates=${result.framePosts} cancels=${result.cancels}`;
+    });
+
+    await check(engineName, "provenance reads and exports preserve evidence", async () => {
+      const result = await provenanceChecks(page, api);
+      return `read retries=${result.readonlyRetries} refused exports=${result.failedExports} producer=${result.exactProducer}`;
     });
 
     // ---- consent: the privacy control, in this engine --------------------

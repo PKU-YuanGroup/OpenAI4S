@@ -3,14 +3,16 @@ import {
   _artifactLoadReq,
   _projArtFor,
   artifacts as artifactsSignal,
+  artifactsFrameId,
+  artifactsFrameGeneration,
   dockArtifact,
   filesScope,
 } from "../../stores/artifacts";
-import { currentId, project } from "../../stores/session";
+import { _openGen, currentId, project } from "../../stores/session";
 import { activeTab, dock, provMode } from "../../stores/ui";
 import { api, asArtifactList, callWindow } from "./api";
 import { syncArtifactVersion } from "./cache";
-import { browseFiles } from "./files-index";
+import { browseFiles, filesListingIsCurrent } from "./files-index";
 import type { ArtifactRow } from "./types";
 
 let renderFilesGridImpl: (() => void) | null = null;
@@ -34,6 +36,8 @@ function dockOpenOnFiles(): boolean {
  * generation token drops the result if the session switched mid-flight.
  */
 export async function loadArtifacts(id: string): Promise<void> {
+  if (id !== currentId.value) return;
+  const generation = _openGen.value;
   const request = (_artifactLoadReq.value || 0) + 1;
   _artifactLoadReq.value = request;
   let a: ArtifactRow[] = [];
@@ -42,7 +46,7 @@ export async function loadArtifacts(id: string): Promise<void> {
   } catch {
     a = [];
   }
-  if (id !== currentId.value || request !== _artifactLoadReq.value) return;
+  if (id !== currentId.value || request !== _artifactLoadReq.value || generation !== _openGen.value) return;
   let refreshProv = false;
   a.forEach((x) => {
     const v = x.version_id || x.latest_version_id || x.checksum;
@@ -52,11 +56,14 @@ export async function loadArtifacts(id: string): Promise<void> {
     if (changed && provMode.value && docked && !docked._exactVersion && docked.id === x.id) refreshProv = true;
   });
   artifactsSignal.value = a;
+  artifactsFrameId.value = id;
+  artifactsFrameGeneration.value = generation;
+  if (filesScope.value !== "project") await browseFiles({ refresh: true });
   if (renderConversationArtifactsImpl) renderConversationArtifactsImpl();
   if (refreshProv && dockArtifact.value) callWindow("showProvenance", dockArtifact.value);
   if (dockOpenOnFiles()) {
     if (filesScope.value === "project") {
-      await browseFiles({ reset: true });
+      await browseFiles({ refresh: true });
     }
     if (renderFilesGridImpl) renderFilesGridImpl();
   }
@@ -72,9 +79,9 @@ export async function loadProjectArtifacts(force?: boolean): Promise<void> {
     _projArtFor.value = null;
     return;
   }
-  if (!force && _projArtFor.value === pid && filesScope.value === "project") return;
-  await browseFiles({ reset: true });
-  _projArtFor.value = pid;
+  if (!force && _projArtFor.value === pid && filesScope.value === "project" && filesListingIsCurrent()) return;
+  await browseFiles(force ? { refresh: true } : { reset: true });
+  if (project.value === pid && filesScope.value === "project") _projArtFor.value = pid;
 }
 
 export async function setFilesScope(scope: string): Promise<void> {

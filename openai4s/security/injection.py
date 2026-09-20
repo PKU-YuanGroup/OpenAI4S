@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any, Callable
 
 # --- prompt-injection detector system prompt --------------------------------
 INJECTION_PROMPT = """\
@@ -85,11 +86,20 @@ def _static_scan(content: str) -> InjectionVerdict | None:
 
 
 def scan_tool_result(
-    content: str, *, source: str = "", cfg=None, use_llm: bool = False
+    content: str,
+    *,
+    source: str = "",
+    cfg=None,
+    use_llm: bool = False,
+    usage_sink: Callable[[Any], None] | None = None,
 ) -> InjectionVerdict:
     """Scan tool-returned text for injection. Never raises; fails open.
 
     `source` is a short label (e.g. a domain) used only for logging by callers.
+
+    `usage_sink` receives the nuanced LLM pass's token usage. It is metering
+    only: this scan is never gated, because refusing it would not save the
+    tokens, it would hand the model unscreened tool output.
     """
     if not content or not content.strip():
         return InjectionVerdict(False)
@@ -104,19 +114,34 @@ def scan_tool_result(
     # nuanced LLM pass (llm mode only)
     try:
         from openai4s.llm import chat
+        from openai4s.llm.usage import charge_call
 
         llm_cfg = getattr(cfg, "llm", None)
         if llm_cfg is None or not getattr(llm_cfg, "api_key", ""):
             return InjectionVerdict(False)
-        res = chat(
-            [
-                {"role": "system", "content": INJECTION_PROMPT},
-                {"role": "user", "content": "CONTENT TO SCREEN:\n\n" + content[:16000]},
-            ],
-            llm_cfg,
-            max_tokens=150,
-            temperature=0.0,
-        )
+        # Own try, so the reply is charged before `_parse_injection` can raise:
+        # an unparseable answer is still a billed call, and this scan is the
+        # one that runs on attacker-controlled text.
+        try:
+            res = chat(
+                [
+                    {"role": "system", "content": INJECTION_PROMPT},
+                    {
+                        "role": "user",
+                        "content": "CONTENT TO SCREEN:\n\n" + content[:16000],
+                    },
+                ],
+                llm_cfg,
+                max_tokens=150,
+                temperature=0.0,
+            )
+        except BaseException as error:
+            # Wider than the handler below, matching `LLMService.one`: a call
+            # the provider answered was billed even if a cancellation or a
+            # shutdown is what unwound it.
+            charge_call(usage_sink, error)
+            raise
+        charge_call(usage_sink, res)
         return _parse_injection(res.get("content", "") or "")
     except Exception:  # noqa: BLE001 - screening must never break a tool call
         return InjectionVerdict(False)

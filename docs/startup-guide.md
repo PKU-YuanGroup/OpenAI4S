@@ -8,17 +8,18 @@ This walks a new macOS user to a first answer: install OpenAI4S, point it at a
 model, and (so the agent can read the live literature and databases) point it
 at web search.
 
-> **v0.3.0 publishes no macOS disk image.** The release workflow uploads a
-> `.dmg` only when it is Developer-ID-signed and notarized, and the credentials
-> for that do not exist yet. Install from PyPI instead (§1), which works on
-> Apple Silicon and Intel Macs. The older v0.2.0 preview image is still
-> available, but it runs 0.2.0.
+> **v0.3.0 ships a preview macOS image, not a notarized one.** It is Apple
+> Silicon only, ad-hoc signed and not notarized, so Gatekeeper blocks its first
+> launch (§2). It was built and attached outside the release workflow, which
+> uploads a `.dmg` only when it is Developer-ID-signed and notarized; the
+> credentials for that do not exist yet. On an Intel Mac, or if you would
+> rather not run an un-notarized app, install from PyPI (§1).
 
 ---
 
 ## 1. Install
 
-### From PyPI (recommended)
+### From PyPI (Intel Macs, or your own Python)
 
 You need Python 3.10 or newer, for example from python.org or Homebrew. Install
 into a virtual environment of its own, then start the daemon:
@@ -36,12 +37,13 @@ workbench in your browser with its access token. All data (SQLite database,
 artifacts, logs) lives under `~/.openai4s`. Next time, run
 `source ~/.venvs/openai4s/bin/activate && openai4s serve` again.
 
-### The v0.2.0 preview image (older version)
+### The v0.3.0 preview image (Apple Silicon)
 
-1. Download `OpenAI4S-0.2.0-macos-arm64.dmg` from the
-   [v0.2.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0).
-   It is Apple Silicon only. The latest release has no macOS image, so do not
-   look for one there.
+1. Download `OpenAI4S-0.3.0-macos-arm64.dmg` from the
+   [v0.3.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0).
+   Use that pinned page rather than the newest release: a release the workflow
+   produces carries no macOS image. To check the download, fetch `SHA256SUMS`
+   from the same page and run `shasum -a 256 --ignore-missing -c SHA256SUMS`.
 2. Double-click the `.dmg` to mount it.
 3. **Drag `OpenAI4S` onto the `Applications` folder** in the same window.
 4. Eject the disk image and launch **OpenAI4S** from Applications (or Spotlight).
@@ -52,11 +54,13 @@ numpy · pandas · scipy · matplotlib · seaborn · plotly · **rdkit**
 igraph) · umap · numba · scikit-learn · statsmodels · biopython · h5py · zarr ·
 pyarrow — so the first launch needs **no network and no `pip`**.
 
-It runs **0.2.0**. None of the 0.3.0 changes are in it, and its settings screens
-differ from the ones described below. Do not let it open a data directory that
-0.3.0 has already upgraded; see [Upgrading from 0.2.x](upgrading.md).
+If you used the v0.2.0 app before, read [Upgrading from 0.2.x](upgrading.md)
+before the first launch: 0.3.0 upgrades `~/.openai4s`, and the 0.2.0 app must
+not open it afterwards. The older v0.2.0 image stays on the
+[v0.2.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0);
+it runs 0.2.0, and its settings screens differ from the ones described below.
 
-## 2. The v0.2.0 preview image only — get past Gatekeeper
+## 2. The preview image only — get past Gatekeeper
 
 Skip this section if you installed from PyPI.
 
@@ -164,7 +168,7 @@ With a PyPI install, run the setup command from the same virtual environment:
 openai4s setup
 ```
 
-With the v0.2.0 preview image, expose its bundled CLI first:
+With the preview image, expose its bundled CLI first:
 
 ```bash
 sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s
@@ -206,13 +210,13 @@ engines remain available as backups.
 
 本指南带一位全新的 macOS 用户走到第一个结果：装好 OpenAI4S、配好模型，再配好联网搜索（让智能体能读实时文献与数据库）。
 
-> **v0.3.0 不发布 macOS 磁盘镜像。** 发布流程只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它，而这些凭据目前还不存在。请改用 PyPI 安装（第 1 节），Apple Silicon 与 Intel Mac 都适用。旧的 v0.2.0 预览镜像仍可下载，但它运行的是 0.2.0。
+> **v0.3.0 附带的是 macOS 预览镜像，不是经过公证的镜像。** 它仅支持 Apple Silicon，只做了 ad-hoc 签名、未经公证，所以第一次打开会被 Gatekeeper 拦下（第 2 节）。它是在发布流程之外构建并挂上去的：发布流程只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它，而这些凭据目前还不存在。Intel Mac，或不想运行未公证的应用时，请从 PyPI 安装（第 1 节）。
 
 ---
 
 ## 1. 安装
 
-### 从 PyPI 安装（推荐）
+### 从 PyPI 安装（Intel Mac，或使用自己的 Python）
 
 需要 Python 3.10 或更新版本，例如来自 python.org 或 Homebrew。请安装到一个单独的虚拟环境中，然后启动守护进程：
 
@@ -224,18 +228,18 @@ openai4s serve
 
 `science` extra 会把 numpy、pandas、matplotlib 和 scikit-learn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
 
-### v0.2.0 预览镜像（旧版本）
+### v0.3.0 预览镜像（Apple Silicon）
 
-1. 从 [v0.2.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0)下载 `OpenAI4S-0.2.0-macos-arm64.dmg`。它仅支持 Apple Silicon。最新 Release 里没有 macOS 镜像，不要去那里找。
+1. 从 [v0.3.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0)下载 `OpenAI4S-0.3.0-macos-arm64.dmg`。请使用这个固定页面，不要去最新 Release 里找：由发布流程产出的 release 不带 macOS 镜像。想校验下载，可从同一页面取 `SHA256SUMS`，然后运行 `shasum -a 256 --ignore-missing -c SHA256SUMS`。
 2. 双击 `.dmg` 挂载。
 3. 在弹出的窗口里，**把 `OpenAI4S` 拖到 `Applications`（应用程序）文件夹**。
 4. 推出磁盘镜像，从「应用程序」（或聚焦搜索 Spotlight）启动 **OpenAI4S**。
 
 镜像已内嵌自带的 Python 以及默认内核科学栈——numpy · pandas · scipy · matplotlib · seaborn · plotly · **rdkit**（化学信息学）· **scanpy** 及单细胞栈（anndata · leidenalg · igraph）· umap · numba · scikit-learn · statsmodels · biopython · h5py · zarr · pyarrow——所以首次启动**不联网、不 `pip`**。
 
-它运行的是 **0.2.0**，不包含 0.3.0 的任何改动，设置页面也与下文描述的不同。不要让它打开已被 0.3.0 升级过的数据目录，详见 [从 0.2.x 升级](upgrading_zh.md)。
+如果之前用过 v0.2.0 应用，首次启动前请先阅读[从 0.2.x 升级](upgrading_zh.md)：0.3.0 会升级 `~/.openai4s`，之后 0.2.0 应用不能再打开它。旧的 v0.2.0 镜像仍在 [v0.2.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0)；它运行的是 0.2.0，设置页面也与下文描述的不同。
 
-## 2. 仅适用于 v0.2.0 预览镜像 —— 通过 Gatekeeper
+## 2. 仅适用于预览镜像 —— 通过 Gatekeeper
 
 如果你是从 PyPI 安装的，请跳过本节。
 
@@ -321,7 +325,7 @@ DuckDuckGo 等免密钥抓取则是独立通用搜索路径的最后备用；它
 openai4s setup
 ```
 
-如果用的是 v0.2.0 预览镜像，先把它内置的 CLI 暴露出来：
+如果用的是预览镜像，先把它内置的 CLI 暴露出来：
 
 ```bash
 sudo ln -sf /Applications/OpenAI4S.app/Contents/Resources/runtime/bin/openai4s /usr/local/bin/openai4s

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
+from openai4s.llm import normalize_usage
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.auto_budget import (
     CONSUMERS,
@@ -103,12 +104,31 @@ def _llm(model="reviewer-model"):
     )
 
 
+def _attested_usage(prompt: int = 1, completion: int = 1):
+    """Counters as ``llm.chat()`` hands them on -- through the normalize seam.
+
+    The meter trusts a TYPE, not a set of keys, so a fake adapter that returns
+    a bare dict is refused: it skipped the one seam that attests a provider
+    reply. Crossing it here is what the real wire does, not a workaround.
+    """
+    return normalize_usage(
+        {"prompt_tokens": prompt, "completion_tokens": completion}, "chatgpt"
+    )
+
+
 def _pass_chat(messages, cfg, **kwargs):
     del messages, cfg, kwargs
     return {
         "content": '{"verdict": "pass", "summary": "ok", "findings": []}',
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        "usage": _attested_usage(),
     }
+
+
+def _unattested_pass_chat(messages, cfg, **kwargs):
+    """The same passing reply, but with usage the attestation seam never saw."""
+    reply = _pass_chat(messages, cfg, **kwargs)
+    reply["usage"] = {"prompt_tokens": 1, "completion_tokens": 1}
+    return reply
 
 
 def _snapshot():
@@ -212,6 +232,39 @@ def test_review_limit_two_blocks_third_inference(tmp_path):
     assert result["verdict"] != "pass"
     assert is_completion_disguise(result["verdict"], result["reason"]) is False
     store.close()
+
+    # Paired negative: the attestation above is load-bearing, not decoration.
+    # The same counters as a bare dict are not measurable, so the review path
+    # stops on the measurement gate long before it can reach a round limit --
+    # which is why `budget_exhausted` above is a real round-budget verdict.
+    assert verifiable_token_usage({"prompt_tokens": 1, "completion_tokens": 1}) is None
+    unattested_store = _store(tmp_path, "unattested.db")
+    _start(unattested_store, budgets=_budgets(max_review_rounds=2))
+    # Once the token phase binds, an unmeasurable reply is fatal rather than
+    # merely charged `unknown`; the ceiling is generous so the only thing this
+    # can stop on is the measurement gate.
+    unattested_store.freeze_auto_mode_budget_initial_tokens(
+        "auto-run-1", 1_000_000, extra_token_multiplier=1
+    )
+    unattested = ScientificReviewService(
+        store=unattested_store,
+        config=Config(
+            auto_mode=AutoModeConfig(result_review_mode="review_only"),
+            roadmap_features=RoadmapFeatureFlags(stage3_scientific_review_shadow=True),
+        ),
+        chat_call=_unattested_pass_chat,
+    )
+    refused = unattested.evaluate(
+        _snapshot(),
+        result_review_mode="review_only",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        chat_call=_unattested_pass_chat,
+        run_id="auto-run-1",
+    )
+    assert refused["reason"] == "budget_measurement_unavailable"
+    assert refused["verdict"] != "pass"
+    unattested_store.close()
 
 
 def test_review_retry_has_unique_admission_and_marks_started_token_unknown(tmp_path):
@@ -490,7 +543,13 @@ def test_get_auto_mode_projects_budget_usage_and_circuit(tmp_path):
 
 def test_unverified_tokens_fail_closed_and_are_not_completion(tmp_path):
     assert verifiable_token_usage({}) is None
-    assert verifiable_token_usage({"prompt_tokens": 1, "completion_tokens": 1}) == 2
+    # A plain mapping is refused even when it carries perfectly good-looking
+    # counters: keys are not evidence, and a dict is exactly what a value that
+    # LOST its provenance (`dict(u)`, `{**u}`, a JSON round trip) degrades to.
+    assert verifiable_token_usage({"prompt_tokens": 1, "completion_tokens": 1}) is None
+    # The same counters through the seam that attests a provider reply do
+    # measure -- so this is fail-closed, not a meter that never counts.
+    assert verifiable_token_usage(_attested_usage(1, 1)) == 2
     store = _store(tmp_path)
     _start(store)
     store.freeze_auto_mode_budget_initial_tokens(
@@ -1358,7 +1417,7 @@ def test_pinned_identity_outranks_the_live_run_on_the_provider_thread(tmp_path):
         state,
         [{"role": "user", "content": "hi"}],
         _llm("agent"),
-        lambda *a, **k: {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        lambda *a, **k: {"usage": _attested_usage()},
         **pinned,
     )
     assert store.list_auto_mode_budget_reservations(
@@ -1367,4 +1426,235 @@ def test_pinned_identity_outranks_the_live_run_on_the_provider_thread(tmp_path):
     assert (
         store.list_auto_mode_budget_reservations("auto-run-NEXT") == []
     ), "the live (next) run was charged by a call it never made"
+
+    # Paired negative: the reply above settled because it was attested, not
+    # because the wrapper accepts any dict that looks like usage. The bare
+    # form is refused at the same boundary -- and the refusal is still pinned
+    # to the run that made the call.
+    with pytest.raises(AutoBudgetDenied) as refused:
+        runner._invoke_model_with_auto_budget(
+            state,
+            [{"role": "user", "content": "hi again"}],
+            _llm("agent"),
+            lambda *a, **k: {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+            **{**pinned, "action_group_id": "unattested-call"},
+        )
+    assert refused.value.reason == "budget_measurement_unavailable"
+    assert (
+        store.list_auto_mode_budget_reservations("auto-run-NEXT") == []
+    ), "the live (next) run absorbed another run's refusal"
     store.close()
+
+
+def test_verified_zero_settles_to_zero_in_storage_and_projection(tmp_path):
+    store = _store(tmp_path)
+    try:
+        _start(store)
+        store.freeze_auto_mode_budget_initial_tokens(
+            "auto-run-1", 100, extra_token_multiplier=1
+        )
+        _reserve(
+            store,
+            admission_id="zero",
+            action_group_id="zero",
+            consumer="token",
+            amount=80,
+            token_upper_bound=80,
+        )
+        store.commit_auto_mode_budget("zero", committed_amount=0)
+        meter = AutoBudgetAdmission(store).project_usage("auto-run-1")["budget_usage"][
+            "extra_token_multiplier"
+        ]
+        assert meter["used"] == 0 and meter["remaining"] == 100
+        _reserve(
+            store,
+            admission_id="next",
+            action_group_id="next",
+            consumer="token",
+            amount=100,
+            token_upper_bound=100,
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.stubbed_backend
+def test_initial_unmeasured_facade_reply_cannot_freeze_a_zero_budget(
+    tmp_path, monkeypatch
+):
+    from openai4s import llm
+    from openai4s.config import LLMConfig
+
+    store = _store(tmp_path)
+    try:
+        _start(store)
+        runner = object.__new__(gateway_mod.SessionRunner)
+        runner.store = store
+        runner.cfg = Config()
+        state = SimpleNamespace(
+            root_frame_id="root-1",
+            active_auto_mode_run_id="auto-run-1",
+            active_action_group_id=None,
+            cell_index=1,
+            auto_budget_terminal_reason=None,
+            cancel=threading.Event(),
+        )
+        monkeypatch.setattr(
+            llm.transport,
+            "post_json",
+            lambda *_args: {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            },
+        )
+        with pytest.raises(AutoBudgetDenied) as caught:
+            runner._invoke_model_with_auto_budget(
+                state,
+                [{"role": "user", "content": "hi"}],
+                LLMConfig(provider="chatgpt", api_key="test-key"),
+                llm.chat,
+                run_id="auto-run-1",
+                action_group_id="initial",
+                extra=False,
+            )
+        assert caught.value.reason == "budget_measurement_unavailable"
+        assert caught.value.llm_not_started is False
+        runner._freeze_auto_budget_tokens(state)
+        rows = store.list_auto_mode_budget_reservations("auto-run-1")
+        assert [row["state"] for row in rows if row["consumer"] == "model"] == [
+            "unknown"
+        ]
+        budget = store.get_auto_mode_budget_state("auto-run-1")
+        assert not any(event["type"] == "freeze" for event in budget.get("events", []))
+    finally:
+        store.close()
+
+
+def test_unsent_reviewer_error_releases_review_and_token_reservations(tmp_path):
+    store = _store(tmp_path)
+    try:
+        _start(store, budgets=_budgets(max_review_rounds=2))
+
+        def refuse(*_args, **_kwargs):
+            error = RuntimeError("local refusal")
+            error.llm_not_started = True
+            raise error
+
+        service = ScientificReviewService(
+            store=store,
+            config=Config(
+                auto_mode=AutoModeConfig(result_review_mode="review_only"),
+                roadmap_features=RoadmapFeatureFlags(
+                    stage3_scientific_review_shadow=True
+                ),
+            ),
+            chat_call=refuse,
+        )
+        service.evaluate(
+            _snapshot(),
+            result_review_mode="review_only",
+            agent_cfg=_llm("agent"),
+            reviewer_cfg=_llm("reviewer"),
+            run_id="auto-run-1",
+        )
+        rows = store.list_auto_mode_budget_reservations("auto-run-1")
+        assert {row["consumer"] for row in rows} == {"review", "token"}
+        assert all(row["state"] == "released" for row in rows)
+    finally:
+        store.close()
+
+
+def test_failed_call_budget_overrun_retains_real_usage(tmp_path):
+    from openai4s.llm.models import LLMError
+
+    store = _store(tmp_path)
+    try:
+        _start(store)
+        store.freeze_auto_mode_budget_initial_tokens(
+            "auto-run-1", 100, extra_token_multiplier=1
+        )
+        runner = object.__new__(gateway_mod.SessionRunner)
+        runner.store = store
+        runner.cfg = Config()
+        state = SimpleNamespace(
+            active_auto_mode_run_id="auto-run-1",
+            active_action_group_id=None,
+            cell_index=1,
+            auto_budget_terminal_reason=None,
+            cancel=threading.Event(),
+        )
+        config = _llm("agent")
+        config.total_token_upper_bound = 80
+
+        def failed(*_args, **_kwargs):
+            error = LLMError("failed after billing")
+            # `llm.chat()` re-attests `error.usage` through `normalize_usage`
+            # on the way out, exactly as it does a successful reply -- the
+            # provider billed, so the counters are real even though the call
+            # failed. A bare dict here would be a fake that skipped that.
+            error.usage = _attested_usage(80, 1)
+            raise error
+
+        with pytest.raises(AutoBudgetDenied) as caught:
+            runner._invoke_model_with_auto_budget(
+                state,
+                [],
+                config,
+                failed,
+                run_id="auto-run-1",
+                action_group_id="old-call",
+                extra=True,
+            )
+        assert caught.value.llm_not_started is False
+        assert verifiable_token_usage(caught.value.usage) == 81
+        # Paired negative: 81 is retained because the failure carried attested
+        # counters, not because the settlement re-derives a total from any
+        # dict shaped like usage. Stripped of its attestation, the same
+        # payload is unmeasured and settles unknown instead.
+        assert (
+            verifiable_token_usage({"prompt_tokens": 80, "completion_tokens": 1})
+            is None
+        )
+    finally:
+        store.close()
+
+
+def test_a_deeply_nested_request_still_gets_a_bound():
+    """The node count used to recurse and raise past ~500 levels of nesting.
+
+    That mattered far from here: the quota reservation in `LLMService` reads
+    ANY raise as "this call cannot be priced", which it then treated as free.
+    A cell could put a deeply nested value in a message key the adapters drop
+    and buy an unmetered fan-out — 32 concurrent calls and 1280 tokens through
+    a 100-token window.
+
+    Never `json.dumps`: the C encoder serialises depth 5000 without complaint.
+    It was this count, which is now iterative.
+    """
+    from openai4s.config import LLMConfig
+    from openai4s.server.auto_budget import token_upper_bound_parts
+
+    # 600, and the number is load-bearing in both directions. The recursive
+    # count died from ~450 on the oldest supported interpreter, so this is
+    # past it; and `json.dumps` -- which this function still calls, and which
+    # has its own limit tied to the interpreter's recursion limit -- handles
+    # 600 on 3.10 but not 1500. An earlier draft used 2000 and passed on 3.13
+    # while failing on 3.10 for a reason that has nothing to do with the count.
+    #
+    # Deeper than json itself can go is not left unguarded, it is simply not
+    # this function's problem: `LLMService` treats any raise as unpriceable and
+    # runs such a call alone, which
+    # `test_a_call_nobody_can_price_runs_alone` pins.
+    head = {"role": "user", "content": "x", "d": None}
+    node = head
+    for _ in range(600):
+        node["d"] = {"n": None}
+        node = node["d"]
+
+    cfg = LLMConfig(provider="ark", api_key="k", max_tokens=64)
+    parts = token_upper_bound_parts(cfg, messages=[head], max_tokens=64)
+    assert parts is not None, "a deep request must be priceable, not free"
+    prompt, completion, attempts = parts
+    # Priced in proportion to what it is, not flattened to a token amount that
+    # would let it through: 600 nested nodes at the per-node allowance.
+    assert prompt > 64 * 600
+    assert (completion, attempts) == (64, 3)

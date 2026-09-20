@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 # The classifier system prompt. It asks for a strict JSON object rather than a
 # provider-specific tool call, because openai4s targets several wire formats.
@@ -326,10 +327,20 @@ def _static_scan(code: str) -> Verdict | None:
     return None
 
 
-def classify_code(code: str, cfg=None, *, mode: str | None = None) -> Verdict:
+def classify_code(
+    code: str,
+    cfg=None,
+    *,
+    mode: str | None = None,
+    usage_sink: Callable[[Any], None] | None = None,
+) -> Verdict:
     """Classify one code cell. Never raises — worst case fails open to SAFE.
 
     `cfg` is a `Config`; `mode` overrides `cfg.security.safety_mode` for tests.
+
+    `usage_sink` receives the `llm`-mode call's token usage. It is metering
+    only: this screener is never gated, because refusing it would not save the
+    tokens, it would execute the cell unscreened.
     """
     if not code or not code.strip():
         return Verdict("SAFE", source="fast-path")
@@ -358,12 +369,15 @@ def classify_code(code: str, cfg=None, *, mode: str | None = None) -> Verdict:
         return Verdict("SAFE", source="static")
 
     # 4. llm mode: hand the residual uncertain code to the e6w classifier.
-    return _llm_classify(code, cfg)
+    return _llm_classify(code, cfg, usage_sink=usage_sink)
 
 
-def _llm_classify(code: str, cfg) -> Verdict:
+def _llm_classify(
+    code: str, cfg, *, usage_sink: Callable[[Any], None] | None = None
+) -> Verdict:
     try:
         from openai4s.llm import chat
+        from openai4s.llm.usage import charge_call
 
         llm_cfg = getattr(cfg, "llm", None)
         if llm_cfg is None or not getattr(llm_cfg, "api_key", ""):
@@ -373,20 +387,32 @@ def _llm_classify(code: str, cfg) -> Verdict:
                 source="error",
                 reason="llm classifier unconfigured; failed open",
             )
-        res = chat(
-            [
-                {"role": "system", "content": CLASSIFIER_PROMPT},
-                {
-                    "role": "user",
-                    "content": "Classify this code cell:\n\n```python\n"
-                    + code[:20000]
-                    + "\n```",
-                },
-            ],
-            llm_cfg,
-            max_tokens=300,
-            temperature=0.0,
-        )
+        # The provider call gets its own try so the reply is metered before
+        # anything else can raise. Metering after `_parse_verdict` would lose a
+        # billed call whenever the model answered unparseably -- which is the
+        # answer that errs UNSAFE, so exactly the calls that matter most.
+        try:
+            res = chat(
+                [
+                    {"role": "system", "content": CLASSIFIER_PROMPT},
+                    {
+                        "role": "user",
+                        "content": "Classify this code cell:\n\n```python\n"
+                        + code[:20000]
+                        + "\n```",
+                    },
+                ],
+                llm_cfg,
+                max_tokens=300,
+                temperature=0.0,
+            )
+        except BaseException as error:
+            # Wider than the handler below, matching `LLMService.one`: a call
+            # the provider answered was billed even if a cancellation or a
+            # shutdown is what unwound it.
+            charge_call(usage_sink, error)
+            raise
+        charge_call(usage_sink, res)
         return _parse_verdict(res.get("content", "") or "")
     except Exception as e:  # noqa: BLE001 - the gate must never crash a turn
         return Verdict(

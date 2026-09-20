@@ -16,7 +16,7 @@ the pending upgrade as a warning (so it does not exit 0) and leaves the
 database unchanged. `openai4s diagnostics` does not either: its bundle records
 the pending upgrade in `report.json` and leaves the database unchanged.
 The data directory is `~/.openai4s` unless `OPENAI4S_DATA_DIR` names another
-one. A `pip` install, the Linux tarball and the v0.2.0 macOS app all use that
+one. A `pip` install, the Linux tarball and the macOS app all use that
 default.
 
 The migration copies the database to `openai4s.db.v27.bak` before it changes
@@ -134,10 +134,12 @@ and every daemon requires its access token, including one bound to
 * **Container image.** The image runs Python 3.14; the 0.2.0 image ran 3.12. If
   you extended the image or installed packages into a running container,
   rebuild or reinstall them for 3.14.
-* **No macOS disk image.** v0.3.0 publishes no `.dmg`. On a Mac, install from
-  PyPI (see the [startup guide](startup-guide.md)). The v0.2.0 app still opens a
-  0.2.x data directory, but section 2 applies to it: do not point it at a data
-  directory that 0.3.0 has upgraded.
+* **The macOS disk image is a preview.** v0.3.0 carries an ad-hoc-signed,
+  un-notarized `.dmg` for Apple Silicon; on an Intel Mac, install from PyPI (see
+  the [startup guide](startup-guide.md)). Replacing the v0.2.0 app with it
+  upgrades the data directory on first launch, so back up first. The v0.2.0 app
+  still opens a 0.2.x data directory, but section 2 applies to it: do not point
+  it at a data directory that 0.3.0 has upgraded.
 * **Skills installer.** The npm package `@pku-yuangroup/openai4s-skills@0.2.0`
   stays installable and contains 603 Skills. The repository and the 0.3.0 wheel
   carry 604.

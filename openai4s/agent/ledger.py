@@ -40,6 +40,7 @@ from .events import (
     RunFinished,
 )
 from .models import ModelReply
+from .recovery import recovery_message
 
 REDACTED = "<redacted>"
 
@@ -493,8 +494,6 @@ class RuntimeActionLedger:
         Accounting must never fail an action — same contract as
         ``_reply_accounting``.
         """
-        if not usage:
-            return
         # One metering hook, shared with the reviewer's provider path: a
         # second copy of this loop is how review calls came to bill only the
         # per-frame counters and never the ledger the quota check reads.
@@ -538,26 +537,9 @@ class RuntimeActionLedger:
         canonical names when those are absent.
         """
 
-        if not isinstance(source, Mapping):
-            return None
-        usage: dict[str, int] = {}
-        for key in cls._USAGE_KEYS:
-            value = source.get(key)
-            if value is None or isinstance(value, bool):
-                continue
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if parsed >= 0:
-                usage[key] = parsed
-        for canonical, alias in (
-            ("input_tokens", "prompt_tokens"),
-            ("output_tokens", "completion_tokens"),
-        ):
-            if canonical not in usage and alias in usage:
-                usage[canonical] = usage[alias]
-        return usage or None
+        from openai4s.llm.usage import measured_usage
+
+        return measured_usage(source) or None
 
     def _reply_accounting(
         self, reply: ModelReply
@@ -571,7 +553,7 @@ class RuntimeActionLedger:
             return usage, None
         try:
             capabilities = get_model_capabilities(self.provider, self.model)
-            cost_usd = calculate_usage_cost_usd(usage, capabilities.cost)
+            cost_usd = calculate_usage_cost_usd(reply.usage, capabilities.cost)
         except (LookupError, TypeError, ValueError):
             # Accounting metadata must never make an otherwise valid action
             # fail. Unknown provider/model pricing remains visibly unknown.
@@ -871,9 +853,23 @@ def _reduce_action_groups_annotated(
         group_id = str(group.get("group_id") or "")
         if group_id and group_id not in positions:
             positions[group_id] = index
+    recent_tools: list[str] = []
     for index, group in enumerate(groups):
         kind = str(group.get("kind") or "")
         if kind == "terminal":
+            for event in group.get("events") or ():
+                result = event.get("result")
+                if not isinstance(result, Mapping):
+                    continue
+                note = recovery_message(
+                    str(result.get("reason") or ""),
+                    progress_reason=str(result.get("progress_reason") or ""),
+                    tool_names=recent_tools,
+                )
+                if note is not None:
+                    history.append((index, note))
+                    break
+            recent_tools = []
             continue
         if kind == "compaction":
             covered_id, handoff = _compaction_event_fields(group)
@@ -893,12 +889,19 @@ def _reduce_action_groups_annotated(
             else None
         )
         if kind in {"user", "system", "permission_resolution"}:
+            if kind == "user":
+                recent_tools = []
             if message and message.get("role") in {"user", "system"}:
                 history.append((index, message))
             continue
         if message is None or message.get("role") != "assistant":
             # A corrupt/incomplete group must not leak a partial action.
             continue
+        recent_tools = [
+            str(call.get("name") or "")
+            for call in message.get("tool_calls") or ()
+            if isinstance(call, Mapping)
+        ]
         events = list(group.get("events") or ())
         if kind in {"native_tools", "finalize"}:
             raw_calls = message.get("tool_calls")

@@ -9,6 +9,8 @@ import time
 class LLMError(RuntimeError):
     """Normalized failure raised by every LLM transport and provider."""
 
+    usage: object = None
+
 
 class MissingCredentialError(LLMError):
     """No API key is configured for a provider that needs one.
@@ -84,6 +86,22 @@ class TransportError(LLMError):
         }
 
 
+class LLMDeadlineExceeded(TransportError):
+    """The local logical-call deadline expired; this request is not replayable."""
+
+
+class LLMResponseTooLarge(TransportError):
+    """A local input or buffer limit refused further model output."""
+
+
+class StreamReadError(TransportError):
+    """A response stream failed while being read, after connecting."""
+
+
+class StreamTimeoutError(StreamReadError):
+    """The upstream stopped sending bytes for the configured read timeout."""
+
+
 # Provider error codes are untrusted strings, not a public protocol.  Only
 # exact values named here may influence a user-facing classification; the raw
 # value remains on ``TransportError.error_code`` for private diagnostics.
@@ -100,6 +118,14 @@ def llm_failure_code(exc: BaseException) -> str | None:
     small vocabulary returned here without parsing exception prose.
     """
 
+    if isinstance(exc, LLMDeadlineExceeded):
+        return "llm_deadline_exceeded"
+    if isinstance(exc, LLMResponseTooLarge):
+        return "llm_response_too_large"
+    if isinstance(exc, StreamTimeoutError):
+        return "llm_stream_timeout"
+    if isinstance(exc, StreamReadError):
+        return "llm_stream_interrupted"
     raw_code = getattr(exc, "error_code", None)
     code = raw_code if type(raw_code) is str else ""
     if code in _REQUEST_BURST_CODES:

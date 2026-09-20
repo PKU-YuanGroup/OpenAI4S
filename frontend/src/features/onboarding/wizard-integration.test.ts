@@ -94,6 +94,22 @@ describe("existing-profile Wizard continuation", () => {
     mocks.setStatus.mockReset();
   });
 
+
+  it("refreshes an edited profile's model identity before entering the test step", async () => {
+    mocks.activateExistingModelProfile.mockResolvedValueOnce({
+      ...mocks.status,
+      profiles: [{ id: "profile/selected", name: "Edited", provider: "chatgpt", model: "replacement-model", base_url: "http://127.0.0.1:9/v1" }],
+    });
+    findSolidButton(WizardHost())!.props!.onClick!();
+    await vi.waitFor(() => expect(mocks.dispatch).toHaveBeenCalledWith({ type: "next" }));
+    expect(mocks.dispatch).toHaveBeenCalledWith({
+      type: "choosePath",
+      path: { kind: "existing", profileId: "profile/selected", name: "Edited", provider: "chatgpt", model: "replacement-model", baseUrl: "http://127.0.0.1:9/v1" },
+    });
+    const actions = mocks.dispatch.mock.calls.map(([action]) => action.type);
+    expect(actions.indexOf("choosePath")).toBeLessThan(actions.indexOf("next"));
+  });
+
   it("activates the chosen profile before dispatching NEXT", async () => {
     let releaseActivation!: () => void;
     mocks.activateExistingModelProfile.mockImplementationOnce(

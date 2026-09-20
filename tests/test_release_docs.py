@@ -246,10 +246,12 @@ def _macos_asset_defaults_to_omit() -> bool:
 
 
 def test_no_install_doc_sends_a_mac_user_to_the_latest_release_for_a_dmg():
-    """While the release workflow omits the DMG by default, the latest release
-    has no macOS asset. A `macos-arm64.dmg` named a few lines from a
-    `releases/latest` link is a download that is not there. A proximity window
-    rather than one line, because the two sat on adjacent wrapped lines."""
+    """While the release workflow omits the DMG by default, a release it
+    produces has no macOS asset. v0.3.0's preview image was attached by hand,
+    so `releases/latest` carries a DMG only until the next workflow release. A
+    `macos-arm64.dmg` named a few lines from a `releases/latest` link is a
+    download that will not be there. A proximity window rather than one line,
+    because the two sat on adjacent wrapped lines."""
     if not _macos_asset_defaults_to_omit():
         pytest.skip("release.yml publishes a DMG by default again")
     offenders = []
@@ -264,12 +266,24 @@ def test_no_install_doc_sends_a_mac_user_to_the_latest_release_for_a_dmg():
     assert not offenders, f"DMG download pointed at the latest release: {offenders}"
 
 
+def test_install_docs_pin_the_v030_preview_image_to_its_release_page():
+    """The other half of the rule above: a doc that names the v0.3.0 image has
+    to say where it is, and that is the pinned release page."""
+    for path in USER_INSTALL_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "OpenAI4S-0.3.0-macos-arm64.dmg" in text, path.name
+        assert "/releases/tag/v0.3.0" in text, path.name
+        assert "ad-hoc" in text, path.name
+
+
 def test_platforms_does_not_claim_a_notarized_dmg_ships():
     if not _macos_asset_defaults_to_omit():
         pytest.skip("release.yml publishes a DMG by default again")
     text = _normalised(ROOT / "docs" / "platforms.md")
     assert "macOS ships as a signed, notarized" not in text
-    assert "v0.3.0 publishes no DMG" in text
+    assert "No release has met this gate" in text
+    assert "v0.3.0's image is an ad-hoc-signed preview" in text
+    assert "v0.3.0 publishes no DMG" not in text
 
 
 #: Wording that defers a package to a later release, per README half.

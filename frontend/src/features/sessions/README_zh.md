@@ -31,6 +31,11 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |
 | [`paging.test.ts`](paging.test.ts) | 分页常量、会话排序、走页/去重、仪表盘过滤。 |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`、`SESSION_MAX_PAGES=50`、排序/走页/过滤。 |
+| [`navigation.ts`](navigation.ts) | 视图代际与同步的目录清理。刻意不承担列表读取归属：列表读取以所属项目为界。 |
+| [`copy.ts`](copy.ts) | 目录读取失败与重试的双语文案。 |
+| [`load.navigation.test.ts`](load.navigation.test.ts) | 会话/文件夹/分页乱序、按项目划分的读取归属、读取失败及自动打开归属。 |
+| [`actions.export.test.ts`](actions.export.test.ts) | Markdown 导出要求读取成功及结构有效，并固定会话标题。 |
+| [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。 |
 | [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。 |
 | [`static-i18n-ownership.test.ts`](static-i18n-ownership.test.ts) | 代码写入会话标题或当前项目名之后，迟到的语言分块重绘和切换语言都不会把它改回“会话”/“项目”；标题输入框失焦即提交，那次重绘曾把服务端的会话名改掉。 |
 | [`transcript.ts`](transcript.ts) | `renderStored`、引用芯片、空会话 starter、消息动作。计划模式行与 `messages/list.ts` 渲染方式一致（`messages/planPrompt.ts`）。 |

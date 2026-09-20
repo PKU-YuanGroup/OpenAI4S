@@ -17,7 +17,7 @@ from .models import LLMError, MissingCredentialError
 from .providers import _WIRE_DISPATCH
 from .registry import PROVIDERS, provider_spec
 from .tooling import _canonical_tool_specs
-from .transport import bind_call_context
+from .transport import CallState, bind_call_context
 
 
 def supports_vision(provider: str) -> bool:
@@ -75,75 +75,119 @@ def chat(
     should_cancel=None,
     post_json,
     post_sse,
+    call_state: CallState | None = None,
 ) -> dict[str, Any]:
     """Route one normalized request through the configured provider adapter."""
-    spec = provider_spec(cfg.provider)
-    base = cfg.base_url or spec["base_url"]
-    model = cfg.model or spec["model"]
-    capabilities = get_model_capabilities(cfg.provider, model, base_url=base)
-    if not cfg.api_key and not capabilities.local_endpoint:
-        raise MissingCredentialError(
-            f"no API key configured for provider {cfg.provider!r}: set the "
-            f"OPENAI4S_{cfg.provider.upper()}_API_KEY (or generic OPENAI4S_LLM_API_KEY) "
-            f"environment variable, or add it to a .env file at the repo root. "
-            f"See .env.example."
+    try:
+        spec = provider_spec(cfg.provider)
+        base = cfg.base_url or spec["base_url"]
+        model = cfg.model or spec["model"]
+        capabilities = get_model_capabilities(cfg.provider, model, base_url=base)
+        if not cfg.api_key and not capabilities.local_endpoint:
+            raise MissingCredentialError(
+                f"no API key configured for provider {cfg.provider!r}: set the "
+                f"OPENAI4S_{cfg.provider.upper()}_API_KEY (or generic OPENAI4S_LLM_API_KEY) "
+                f"environment variable, or add it to a .env file at the repo root. "
+                f"See .env.example."
+            )
+        _guard_vision(cfg.provider, messages, capabilities=capabilities)
+        validate_model_request(
+            cfg.provider,
+            model,
+            base_url=base,
+            parallel_tool_calls=bool(parallel_tool_calls),
+            vision=any(
+                _is_parts(message.get("content"))
+                and any(part.get("type") == "image" for part in message["content"])
+                for message in messages
+            ),
+            streaming=on_delta is not None,
+            max_output_tokens=max_tokens,
         )
-    _guard_vision(cfg.provider, messages, capabilities=capabilities)
-    validate_model_request(
-        cfg.provider,
-        model,
-        base_url=base,
-        parallel_tool_calls=bool(parallel_tool_calls),
-        vision=any(
-            _is_parts(message.get("content"))
-            and any(part.get("type") == "image" for part in message["content"])
-            for message in messages
-        ),
-        streaming=on_delta is not None,
-        max_output_tokens=max_tokens,
-    )
-    wire = spec["wire"]
-    caller = _WIRE_DISPATCH[wire]
-    # Local auto-discovery establishes only OpenAI wire compatibility. Until a
-    # deployment/model capability override explicitly enables tool calling,
-    # keep that request on the Code-as-Action path instead of sending an
-    # unsupported schema and failing the whole turn.
-    canonical_tools = _canonical_tool_specs(tools) if capabilities.tool_calling else []
-    if canonical_tools and not capabilities.strict_tool_schema:
-        canonical_tools = [
-            {**declaration, "strict": False} for declaration in canonical_tools
-        ]
-    effective_parallel = parallel_tool_calls
-    if canonical_tools and effective_parallel is None:
-        effective_parallel = capabilities.parallel_tool_calls
-    if not canonical_tools:
-        effective_parallel = None
-    bound_json = bind_call_context(
-        post_json, provider=cfg.provider, should_cancel=should_cancel
-    )
-    bound_sse = bind_call_context(
-        post_sse, provider=cfg.provider, should_cancel=should_cancel
-    )
-    # `responses` is SSE-only; `gemini` has no streaming adapter. The two wires
-    # that stream *and* keep a blocking fallback need both transports.
-    transport_args = {"post_sse": bound_sse}
-    if wire in ("openai", "anthropic"):
-        transport_args["post_json"] = bound_json
-    elif wire == "gemini":
-        transport_args = {"post_json": bound_json}
-    reply = caller(
-        messages,
-        cfg,
-        base,
-        model,
-        max_tokens,
-        temperature,
-        stop,
-        on_delta=on_delta,
-        tools=canonical_tools,
-        tool_choice=tool_choice,
-        parallel_tool_calls=effective_parallel,
-        **transport_args,
-    )
+        wire = spec["wire"]
+        caller = _WIRE_DISPATCH[wire]
+        # Local auto-discovery establishes only OpenAI wire compatibility. Until a
+        # deployment/model capability override explicitly enables tool calling,
+        # keep that request on the Code-as-Action path instead of sending an
+        # unsupported schema and failing the whole turn.
+        canonical_tools = (
+            _canonical_tool_specs(tools) if capabilities.tool_calling else []
+        )
+        if canonical_tools and not capabilities.strict_tool_schema:
+            canonical_tools = [
+                {**declaration, "strict": False} for declaration in canonical_tools
+            ]
+        effective_parallel = parallel_tool_calls
+        if canonical_tools and effective_parallel is None:
+            effective_parallel = capabilities.parallel_tool_calls
+        if not canonical_tools:
+            effective_parallel = None
+        state = (
+            call_state
+            or getattr(should_cancel, "call_state", None)
+            or CallState(
+                should_cancel=should_cancel, total_timeout_s=cfg.total_timeout_s
+            )
+        )
+        context = dict(
+            provider=cfg.provider, should_cancel=state.should_cancel, call_state=state
+        )
+        bound_json = bind_call_context(post_json, **context)
+        bound_sse = bind_call_context(post_sse, **context)
+        # `responses` is SSE-only; `gemini` has no streaming adapter. The two wires
+        # that stream *and* keep a blocking fallback need both transports.
+        transport_args = {"post_sse": bound_sse}
+        if wire in ("openai", "anthropic"):
+            transport_args["post_json"] = bound_json
+        elif wire == "gemini":
+            transport_args = {"post_json": bound_json}
+    except Exception as error:
+        error.llm_not_started = True
+        raise
+    raw_usage = None
+    if "post_json" in transport_args:
+        send_json = transport_args["post_json"]
+
+        def json_with_evidence(*args, **context):
+            nonlocal raw_usage
+            body = bind_call_context(send_json, **context)(*args)
+            if isinstance(body, dict):
+                raw_usage = body.get("usageMetadata" if wire == "gemini" else "usage")
+            return body
+
+        transport_args["post_json"] = json_with_evidence
+    try:
+        reply = caller(
+            messages,
+            cfg,
+            base,
+            model,
+            max_tokens,
+            temperature,
+            stop,
+            on_delta=on_delta,
+            tools=canonical_tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=effective_parallel,
+            **transport_args,
+        )
+    except Exception as error:
+        # Not started means: no bytes left this process AND nothing came back.
+        # The old `state.attempts and not state.sent` reported a failure raised
+        # BEFORE the first attempt was counted -- `check_send` finding the total
+        # deadline already spent, which `deadline_error` does not flag itself --
+        # as *started*. A failed call's usage is attested-but-empty, so that
+        # answer becomes two `llm_*_unknown` rows, and `check_quota` refuses the
+        # whole window on their mere presence with nothing able to clear them.
+        # `not state.sent` alone is the opposite error: an injected transport
+        # never sets `sent`, so a reply that demonstrably arrived (it carries
+        # counters) would read as free. Observed usage is that evidence.
+        evidence = getattr(error, "usage", None)
+        observed = evidence if evidence is not None else raw_usage
+        error.llm_not_started = getattr(error, "llm_not_started", False) or (
+            not state.sent and not observed
+        )
+        error.usage = normalize_usage(observed, capabilities.usage_mapping)
+        raise
     reply["usage"] = normalize_usage(reply.get("usage"), capabilities.usage_mapping)
     return reply

@@ -1,6 +1,7 @@
 /** Restored messages, empty-session chips, and @-ref chips. app.js:7220-7409, 7766-7787. */
 
 import { renderMd } from "../md/render";
+import { failureMeta } from "../messages/failure";
 import { planModeRequestText, planSeed, planSeedMarker } from "../messages/planPrompt";
 import { cancelledIdentity, stoppedMarker } from "../messages/stopped";
 import { publicText } from "../scrub/scrub";
@@ -84,10 +85,11 @@ export function renderStored(m: ChatMessage, target?: ParentNode | null): HTMLEl
     const md = el("div", "md");
     md.innerHTML = renderMd(text);
     w.appendChild(md);
-    if (m.failure && m.failure.request_id) {
-      const meta = callLane("failureMeta", m.failure);
-      if (meta instanceof Node) w.appendChild(meta);
-    }
+    // Imported, not `callLane("failureMeta", ...)`: no lane ever assigned that
+    // window name, so the older-page renderer silently dropped the whole
+    // failure row -- the support id, and now the Continue button too. This is
+    // the same call `messages/list.ts` makes for a first-page row.
+    if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
     const review = m.review_status || (m.metadata && m.metadata.review_status);
     const rec = review && typeof review === "object" ? (review as Record<string, unknown>) : null;
     const reviewStatus = rec ? rec.status || review : review;

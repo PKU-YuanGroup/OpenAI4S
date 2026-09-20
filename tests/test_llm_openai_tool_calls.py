@@ -527,27 +527,29 @@ def _assert_stream_fallback(monkeypatch, fake_sse):
     assert len(cap.calls) == 1
 
 
-def test_openai_empty_stream_falls_back_before_any_semantic_event(monkeypatch):
-    def empty_sse(url, payload, headers, timeout, on_event):
-        return None
+@pytest.mark.parametrize("kind", ["empty", "read_error"])
+def test_openai_uncertain_stream_failure_is_not_replayed(monkeypatch, kind):
+    cap = _install(monkeypatch, _text_body("must not replay"))
 
-    _assert_stream_fallback(monkeypatch, empty_sse)
+    def broken_sse(*args):
+        if kind == "read_error":
+            raise llm.LLMError("connection reset while reading stream")
+
+    monkeypatch.setattr(llm.transport, "post_sse", broken_sse)
+    with pytest.raises(llm.LLMError):
+        llm.chat(
+            [{"role": "user", "content": "Hello."}], _cfg(), on_delta=lambda _text: None
+        )
+    assert cap.calls == []
 
 
-def test_openai_stream_read_error_falls_back_before_first_event(monkeypatch):
-    def broken_sse(url, payload, headers, timeout, on_event):
-        raise llm.LLMError("connection reset while reading stream")
-
-    _assert_stream_fallback(monkeypatch, broken_sse)
-
-
-@pytest.mark.parametrize("status", [400, 404, 405, 406, 415, 422, 501])
-def test_openai_nonretryable_stream_compatibility_refusal_falls_back_once(
+@pytest.mark.parametrize("status", [400, 422])
+def test_openai_explicit_stream_compatibility_refusal_falls_back_once(
     monkeypatch, status
 ):
     def unsupported(*_args):
         raise llm.TransportError(
-            "streaming request shape unsupported", status=status, retryable=False
+            "unsupported stream", status=status, error_code="streaming_not_supported"
         )
 
     _assert_stream_fallback(monkeypatch, unsupported)

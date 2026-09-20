@@ -18,6 +18,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`test_live_ark_calls.py`](test_live_ark_calls.py) | 显式 live_llm Ark 流式停止与下一调用恢复；凭据通过继承描述符传递、输出脱敏凭证，不进入离线 CI。 |
+| [`test_llm_usage_evidence.py`](test_llm_usage_evidence.py) | 原始用量证据、未知计量、安全错误投影与旧调用结算回归。 |
+| [`test_llm_resource_bounds.py`](test_llm_resource_bounds.py) | 本地 HTTP 总期限、空闲、DNS、字节上限、原生终态和文本背压回归。 |
 | [`test_windows_launcher.ps1`](test_windows_launcher.ps1) | 原生 PowerShell 5.1 启动器契约：用户发行版选择、数据归属保留与准备步骤的显式身份。在 Windows CI 中运行，不进入 WSL。 |
 | [`test_wsl_parity.py`](test_wsl_parity.py) | WSL 适配层、DPAPI 传输、科学命令重定位、默认 UI 资源与失败安装保留的离线回归。 |
 | [`conftest.py`](conftest.py) | 建立 import 路径，给每个测试一份独立的数据目录，配好 fake LLM 的配置与 key，用完清理 `Store`，并存放共享的 pytest fixture。它还会把这套 suite 本该度量、而不是从运行者那里继承来的 posture 钉死：`OPENAI4S_UNATTENDED_APPROVAL=deny`、`OPENAI4S_SECRET_STORE=plaintext`（这样没有任何测试会写进开发者的登录钥匙串）、`OPENAI4S_NOTEBOOK_REPL=0`、把 git-ignored `.env` 里可能带进来的 share 与 MCP 超时变量清空，以及把遥测 endpoint 指向 `https://127.0.0.1:1/`——最后这条不是假想中的卫生问题：曾有一个 benchmark 用例给自己授予了同意，于是每台开发机和每个 CI runner 都真的向线上 endpoint POST 了一个全新的安装 id。最后，当设置了 `OPENAI4S_CAPTURE_SCHEMAS` 时它会装上响应形状记录器，并在每个 `stubbed_backend` 测试前后暂停它。 |
@@ -427,7 +430,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_startup_no_implicit_install.py`](test_startup_no_implicit_install.py) | `serve` 只诊断环境，绝不修改它。 |
 | [`test_startup_no_implicit_side_effects.py`](test_startup_no_implicit_side_effects.py) | 全新数据目录上启动：不建立任何出站连接、不拉起任何子进程、不执行任何 cell、不落任何会话——在 `socket.connect` 与 `subprocess.Popen` 两个边界上设卡，并以 `OPENAI4S_SEED_DEMO=1` 作为正向对照。 |
 | [`test_unstarted_worker_admission.py`](test_unstarted_worker_admission.py) | 线程根本没起来的 worker，不能把整个会话一直占着；而且这套回滚本身出错时也得撑住：ticket 要释放，job 要真正终结而不是只从登记表里抹掉，plan 行要回到它自己那条路线还能重新认领的状态，并且整个过程不依赖去渲染一个可能拒绝被渲染的异常。 |
-| [`test_update_contributors.py`](test_update_contributors.py) | Community Contributors 生成器会把已公开署名的非 commit 贡献者保留在按提交数排序的 API 用户之后，按登录名大小写无关地去重，并拒绝同时出现在排除名单里的署名登录名；API 返回空时仍会失败即拒绝，不会把贡献者墙改写成只剩维护名单。头像临时刷新失败时会保留该现有贡献者已提交的 PNG，同时继续清理已离开的身份，并如实报告本次刷新了 0 张而不是给出一个看起来正常的数字。断言直接写出署名登录名字面量——从被测常量反推出来的期望，在该常量为空时同样会通过。另外钉住两处链接完整性回归：登录名大小写与已提交文件名不一致时，文件会被保留、并回退到远端头像，而不是为一个刚被清理掉的文件写出本地 `<img src>`；以及未鉴权的 `github.com/<login>.png` 回退路径不会把仓库 token 带过那次跨主机跳转。 |
+| [`test_update_contributors.py`](test_update_contributors.py) | Community Contributors 生成器会把已公开署名的非 commit 贡献者保留在按提交数排序的 API 用户之后，按登录名大小写无关地去重，并拒绝同时出现在排除名单里的署名登录名；API 返回空时仍会失败即拒绝，不会把贡献者墙改写成只剩维护名单。头像临时刷新失败时会保留该现有贡献者已提交的 PNG，同时继续清理已离开的身份，并如实报告本次刷新了 0 张而不是给出一个看起来正常的数字。断言直接写出署名登录名字面量——从被测常量反推出来的期望，在该常量为空时同样会通过。另外钉住两处链接完整性回归：登录名大小写与已提交文件名不一致时，文件会被保留，并按清理后实际存活的文件名出链，而不是按登录名推断出的名字；以及未鉴权的 `github.com/<login>.png` 回退路径不会把仓库 token 带过那次跨主机跳转。新增的离线刷新场景在临时 Git 仓库中运行真实目录 README 门禁：预置头像已纳入跟踪，刷新结果先暂存再检查；覆盖新增、移除、下载失败及文件名大小写变化后的双语头像清单（刷新成功时沿用已提交的文件名写法，不会并排新建一个仅大小写不同的文件），并验证重复运行结果稳定。任一语言的清单文档缺失或标记非法时，运行会在鉴权、网络访问和写入之前停止；根 README 贡献者墙多出第二对标记时同样如此——否则就会一份墙被改写、另一份被跳过。四份待更新 README 都先写好临时文件再替换，并保留原有权限；在最后一次暂存写入中注入写入错误或中断，所有原始文档均保持完整，临时文件也会清理；被杀进程留下的临时文件，下一次写入会扫掉，没有任何文档变化时则由清理步骤扫掉。 |
 | [`test_diagnostic_archive_boundary.py`](test_diagnostic_archive_boundary.py) | 可分享的诊断 ZIP 里不会带出任何未知内容：归档边界默认拒绝，结构化日志行只保留通过校验的元数据，非结构化行只保留条数、分类和指纹。 |
 | [`test_diagnostics.py`](test_diagnostics.py) | 诊断包可以安全贴进公开 issue，包括夹在日志句子中间的 token。 |
 | [`test_diagnostics_routes.py`](test_diagnostics_routes.py) | Web 诊断路由：未认证 401、成员 403（同一状态码/大小/文件名，绝不是 404 或 429）、管理员 200；页面加载 GET 不新增网络连接、子进程或 Store/config/bundle 写入；ZIP 对 canary 零命中；下载完成、断连、异常三条路径临时文件都回到基线。 |
@@ -476,3 +479,11 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_citation_metadata.py`](test_citation_metadata.py) | 论文引用写了三份：两份 README 各有一段 BibTeX，根目录 `CITATION.cff` 里还有一份 `preferred-citation`，GitHub 的“Cite this repository”按钮渲染的就是这一份。README 的两段按 BibTeX 语义比较而不是逐字节比较，所以保护性花括号、字段顺序和换行都可以改；每段必须恰好包含 title、author、year、eprint、archivePrefix、primaryClass、url 这几个字段。CFF 必须是 `cff-version: 1.2.0`，标题、作者及顺序、年份和 arXiv 链接都与 BibTeX 相同，带上 arXiv DOI，并且只有一个标识符，写明 eprint 和主分类。其余检查依照 GitHub 文档点名的 ruby-cff：引用类型必须是 `generic`，它会渲染成与 README 一致的 `@misc`；“OpenAI4S Community”必须是唯一的 `name:` 机构条目，因为写成 given-names 加 family-names 会被渲染成“Community, OpenAI4S”；个人作者只能用 given-names 和 family-names，不能有 particle、suffix 或 alias。任何会改变 GitHub 渲染结果的字段（`repository-code`、`month`、`status`、`notes`、页码、日期）都不能出现在 `preferred-citation` 里，其中 `repository-code` 会把 arXiv 链接替换成仓库链接。软件本身的顶层作者渲染出的姓名必须与论文作者一致，license、abstract、keywords 和仓库地址必须与 `pyproject.toml` 一致。文件里不能有 `version` 或 `date-released`，免得它变成一个会过期的发布版本号钉点。 |
 | [`test_response_contract_coverage.py`](test_response_contract_coverage.py) | 每个对外 route 都有响应契约，而且这份契约就是该 route 真正产出的那份——与服务端脱节的覆盖文件描述的是一个没人在发布的产品。 |
 | [`test_response_contract_downloads.py`](test_response_contract_downloads.py) | 成功时返回字节的那几条 route，以及唯一一处没套信封的拒绝。notebook 导出、Session 包和 artifact 下载此前都被固化成 `kinds: ["json"], statuses: [404]`：无参扫描没有东西可要，而四个未实现的动词照样产出那个 404，于是覆盖门把一个下载端点算作已覆盖，客户端真正依赖的东西却哪里都没写下来。`PATCH\|POST\|PUT /annotations/<id>` 用 `{"annotation": null}` 回 404，是这张表面上唯一落在 PublicFailure 信封之外的拒绝，前端 `api()`（它用 `j.error` 构造错误）因此报出一个什么都没说的失败。 |
+
+- [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
+
+- [`browser_files.mjs`](browser_files.mjs): 真实 Files 控件、125 项分页、组合筛选、实时刷新、延迟会话读取和可选复用真实 Ark 产物；三个引擎矩阵共用。
+
+- [`browser_navigation.mjs`](browser_navigation.mjs): 真实项目导航、会话/文件夹响应乱序、分页归属、失败或畸形读取后的重试及连续新建会话意图与失败恢复，三个引擎共用。
+
+- [`browser_provenance.mjs`](browser_provenance.mjs): 生产溯源控件、只读重试、失败不下载、固定版本导出与精确生产者链接；三引擎矩阵共用。

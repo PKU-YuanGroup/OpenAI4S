@@ -34,7 +34,7 @@
 | `science-connectors.md` | `science_search` 背后默认的七个公开科学数据库，以及三个由 Stage 10 开关管控的数据源：各自的接口、学科范围，以及归一化后返回的记录字段。另有并列记述的两个火山引擎托管面 —— 豆包搜索 Custom（首选的托管网页搜索，其产品检查刻意不设兜底）和固定的 `volcengine-datapro` MCP Streamable HTTP 专业数据集连接器 —— 二者共用的 Agent Plan Key 都经 SecretBroker 保管，仅在拼装每个出站请求的那一刻才解析出来。 |
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
-| `startup-guide.md` | 双语 macOS 上手全流程：从 PyPI 安装（v0.3.0 不发布 `.dmg`）或使用 v0.2.0 预览镜像及其 Gatekeeper 步骤、配置模型，以及在 UI 里用一个 Agent Plan Key 授权豆包搜索；Tavily/免密钥搜索保留为备用。 |
+| `startup-guide.md` | 双语 macOS 上手全流程：安装 v0.3.0 预览镜像（Apple Silicon，ad-hoc 签名）及其 Gatekeeper 步骤，或从 PyPI 安装、配置模型，以及在 UI 里用一个 Agent Plan Key 授权豆包搜索；Tavily/免密钥搜索保留为备用。 |
 | `upgrading.md` | 从 0.2.x 升级到 0.3.0：首次启动前备份 `openai4s.db`（schema 从 27 升到 32，迁移成功后会删除自己的升级前副本）、为什么不支持退回 0.2.x、现在总是必需的访问令牌，以及升级用户会遇到的其他变化。 |
 | `upgrading_zh.md` | 0.2.x 到 0.3.0 升级指南的中文版。 |
 | `team-server.md` / `team-server_zh.md` | 多用户模式的运维页：开什么、按什么顺序开、每个开关到底暴露了什么。里面所有东西默认都是关的，所以默认安装仍是它一直以来的那个单用户工作台（INV-1）。它对两件最容易搞错的事说得很直白——团队模式加的是账号而不是"可以暴露"；relay 也不是访问实验室服务器的第三条路（它发布的是单个会话的脱敏投影，不是工作台）。 |
@@ -48,8 +48,11 @@
 | `v02-decisions.md` | nextgen 改进提案第 8 节里那些待定决策的所有者签署答复，2026-07-20 冻结。依赖其中任何一条的工作，在答案被记录到一个 reviewer 查得到的地方之前不得启动。每一行还写明这个选择放弃了什么——代价看不见的决策，后来会被悄悄推翻。|
 | `v020-linux-release-prep.md` | v0.2.0 Linux 半边的维护者材料：发布说明草稿，以及产出桌面 tarball、wheel、sdist 所需的系统软件包与完整命令。它不发布。中文对应文件是 `v020-linux-release-prep_zh.md`。 |
 | `v020-linux-release-prep_zh.md` | v0.2.0 Linux 桌面发布准备材料的中文对应文件。 |
-| `v03-decisions.md` | v0.3 的所有者签署答复，2026-07-26 冻结，包含推翻 v0.2「每个 Phase 一个大 PR」的那一条，以及本版本据以衡量的验收口径。它还用一张表列出所有无法从工作副本验证的事项——GitHub Actions 的真实执行、Developer ID 证书、公证、PyPI OIDC、实机浏览器、Linux CI——好让它们不出现在「已验证」一栏是有意为之，而不是疏漏。2026-09-14 的修订记录了 v0.3.0 发布相关的决策：不发布 DMG（D11）、把 crosswalk 中唯一处于 open 状态的 P0 行 R2/P0-03 作为已声明的已知限制予以豁免（D12-W1）、发布 Windows/WSL2 zip（D13），以及发布 npm Skills 包 0.3.0（D14）。 |
+| `v03-decisions.md` | v0.3 的所有者签署答复，2026-07-26 冻结，包含推翻 v0.2「每个 Phase 一个大 PR」的那一条，以及本版本据以衡量的验收口径。它还用一张表列出所有无法从工作副本验证的事项——GitHub Actions 的真实执行、Developer ID 证书、公证、PyPI OIDC、实机浏览器、Linux CI——好让它们不出现在「已验证」一栏是有意为之，而不是疏漏。2026-09-14 的修订记录了 v0.3.0 发布相关的决策：不发布 DMG（D11；2026-09-17 改为附带 ad-hoc 签名的预览镜像）、把 crosswalk 中唯一处于 open 状态的 P0 行 R2/P0-03 作为已声明的已知限制予以豁免（D12-W1）、发布 Windows/WSL2 zip（D13），以及发布 npm Skills 包 0.3.0（D14）。 |
 | `next-version-progress.md` | v0.3 的逐项事实记录：什么落地了、在哪个提交、以及那一列真正承重的内容——为证明每个新测试确实会失败，把什么缺陷放了回去。不会失败的测试什么也没测，而存在一个同名的类不构成完成证据。凡是证明所需的那次运行需要本仓库没有的机器，一律标 `Implemented but unverified` 并写明缺的是哪一次运行。|
+| `next-improvements-20260914.md` | 本轮 next 分支 T0–T9 顺序执行记录、验收状态与真实 Ark 请求及用量证据。 |
+| `pre-upgrade-snapshot-design.md` / `pre-upgrade-snapshot-design_zh.md` | P2-01 准备：一份已校验预升级 DB 快照、私有有界发布、独立目录恢复边界及未来故障验收；不改变运行时或迁移。 |
+| `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 准备：HTTP／请求头／上传／WS 分阶段预算、有界准入与状态余量、真实连接释放和本地故障验收；不启用新配额或期限。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 

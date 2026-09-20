@@ -2,6 +2,9 @@ import { field } from "./signal-field";
 
 /** S.artifacts — app.js:120 */
 export const artifacts = field(() => [] as unknown[]);
+/** Session owning the accepted REST/event snapshot; separate from Files filters. */
+export const artifactsFrameId = field(() => null as string | null);
+export const artifactsFrameGeneration = field(() => 0);
 /** S.dockArtifact — app.js:120 */
 export const dockArtifact = field(() => null as unknown);
 /** S.filesScope — app.js:120 */

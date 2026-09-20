@@ -1,6 +1,7 @@
 /** Session title, menus, share dialog, import/export. app.js:7411-7793. */
 
 import { t } from "../../i18n";
+import { validateSessionArtifacts } from "../artifacts/validation";
 import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
@@ -602,13 +603,14 @@ export function moveToFolderAt(anchor: Element, fid: string): void {
 }
 
 export async function exportSession(fid: string): Promise<void> {
+  const frame = (sessions.value as SessionLike[]).find((x) => x.id === fid);
+  const title = frame?.name || frame?.task_summary || t("conv.title.default");
   try {
     const [d, arts] = await Promise.all([
       fetchAllMessages(fid),
-      api(`/frames/${fid}/artifacts`).catch(() => []),
+      api(`/frames/${encodeURIComponent(fid)}/artifacts`).then((value) => validateSessionArtifacts(value, fid)),
     ]);
-    const f = (sessions.value as SessionLike[]).find((x) => x.id === fid) || {};
-    let md = "# " + (f.name || f.task_summary || t("conv.title.default")) + "\n\n";
+    let md = "# " + title + "\n\n";
     if (d.complete === false) md += "> " + t("conv.exportTruncated") + "\n\n";
     (d.messages || []).forEach((m) => {
       const who = m.role === "user" ? "🧑 User" : "🤖 Assistant";
@@ -617,7 +619,7 @@ export async function exportSession(fid: string): Promise<void> {
         : (m.content as string) || "";
       md += `## ${who}\n\n${txt}\n\n`;
     });
-    const artList = (arts || []) as Array<{ filename?: string; content_type?: string }>;
+    const artList = arts;
     if (artList.length) {
       md += "## 产物 Artifacts\n\n";
       artList.forEach((a) => {
@@ -628,7 +630,7 @@ export async function exportSession(fid: string): Promise<void> {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = (f.name || f.task_summary || "session").replace(/[^\w一-龥-]+/g, "_") + ".md";
+    link.download = title.replace(/[^\w一-龥-]+/g, "_") + ".md";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     hint(t("toast.exportedMarkdown"));

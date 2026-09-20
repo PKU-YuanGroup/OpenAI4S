@@ -1334,6 +1334,8 @@ def _summary_chunk(
     max_tokens: int,
     cap: int | None,
     should_cancel: Callable[[], bool] | None = None,
+    quota_gate: Callable[[], None] | None = None,
+    usage_sink: Callable[[Any], None] | None = None,
 ) -> str:
     """One chunk summary; a truncated reply gets one retry at double budget.
 
@@ -1348,23 +1350,29 @@ def _summary_chunk(
     extra: dict[str, Any] = {}
     if should_cancel is not None:
         extra["should_cancel"] = should_cancel
-    reply = chat(
-        request,
-        cfg.llm,
-        max_tokens=max_tokens,
-        temperature=_SUMMARY_TEMPERATURE,
-        **extra,
-    )
+
+    def _billed(**kwargs: Any) -> dict:
+        # Compaction is the largest unmetered burst the daemon makes: a wide
+        # context admits several chunks, each with a retry, all carrying
+        # ~48k-token prompts, and all of it used to precede the turn's own
+        # gated call without being counted or checked.
+        if quota_gate is not None:
+            quota_gate()
+        try:
+            reply = chat(request, cfg.llm, temperature=_SUMMARY_TEMPERATURE, **kwargs)
+        except BaseException as error:
+            if usage_sink is not None and not getattr(error, "llm_not_started", False):
+                usage_sink(getattr(error, "usage", None))
+            raise
+        if usage_sink is not None:
+            usage_sink(reply.get("usage"))
+        return reply
+
+    reply = _billed(max_tokens=max_tokens, **extra)
     if _summary_truncated(reply):
         retry = min(2 * max_tokens, cap) if cap else 2 * max_tokens
         if retry > max_tokens:
-            reply = chat(
-                request,
-                cfg.llm,
-                max_tokens=retry,
-                temperature=_SUMMARY_TEMPERATURE,
-                **extra,
-            )
+            reply = _billed(max_tokens=retry, **extra)
     return _require_usable_summary(reply)
 
 
@@ -1384,6 +1392,8 @@ def compact(
     context_budget: int | None = None,
     workspace: Path | str | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    quota_gate: Callable[[], None] | None = None,
+    usage_sink: Callable[[Any], None] | None = None,
 ) -> list[dict]:
     """Return a shorter, replay-safe message list or a no-op projection.
 
@@ -1457,6 +1467,8 @@ def compact(
             max_tokens,
             bound,
             should_cancel,
+            quota_gate,
+            usage_sink,
         )
         prev = raw_summary
     # Idempotent like the ledger restore: a handoff that already carries the

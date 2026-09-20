@@ -7085,6 +7085,150 @@ def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_p
     assert len(notices) == 1, "the notice is streamed exactly once"
 
 
+@pytest.mark.stubbed_backend
+def test_a_budget_stop_keeps_the_partial_prose_it_interrupted(monkeypatch, tmp_path):
+    """A budget refusal cuts the reply the same way an upstream interruption does.
+
+    `except AutoBudgetDenied` *returns* the stop reason instead of raising, so
+    it never falls through to the handler below it -- the one that flushes the
+    prose already on screen and discards the half-streamed code draft. Without
+    its own flush the text the user watched arrive was dropped on reopen.
+    """
+    from openai4s.storage.auto_mode import AutoBudgetDenied
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def fake_ensure(st):
+        if not st.booted:
+            st.dispatcher = SimpleNamespace(last_output=None)
+            st.messages = [{"role": "system", "content": "sys"}]
+            st.booted = True
+
+    def denied_chat(messages, cfg, on_delta=None, **kwargs):
+        on_delta("Visible partial answer.\n```python\nprint(")
+        raise AutoBudgetDenied(
+            "budget_measurement_unavailable", "adapter token usage is not verifiable"
+        )
+
+    monkeypatch.setattr(gateway_mod, "chat", denied_chat)
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+
+    runner.run_message(fid, "default", "give me an answer")
+    messages = store.list_messages(fid)
+    assert any(
+        m["content"].strip() == "Visible partial answer." for m in messages
+    ), "the prose the user already saw must survive the budget stop"
+    assert not any("print(" in str(m.get("content")) for m in messages)
+    assert any(
+        e.get("type") == "notebook_cell_draft" and e.get("status") == "discarded"
+        for e in hub.events
+    ), "the half-streamed cell draft must be withdrawn, not left running"
+    runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_stream_timeout_preserves_prose_and_can_continue_after_history_restore(
+    monkeypatch, tmp_path
+):
+    from openai4s.agent.ledger import restore_action_history
+    from openai4s.llm.transport import post_sse
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = runner.store
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+    attempts = []
+
+    class Interrupted:
+        closed = False
+
+        def __iter__(self):
+            yield b'data: {"text":"Visible partial answer.\\n```python\\nprint("}\n'
+            yield b"\n"
+            raise TimeoutError("private upstream detail")
+
+        def close(self):
+            self.closed = True
+
+    stream = Interrupted()
+
+    def urlopen(*args, **kwargs):
+        attempts.append(1)
+        return stream
+
+    def fake_ensure(st):
+        if not st.booted:
+            st.dispatcher = SimpleNamespace(last_output=None)
+            st.messages = [{"role": "system", "content": "sys"}]
+            st.booted = True
+
+    def stalled_chat(messages, cfg, on_delta=None, **kwargs):
+        post_sse("https://x.invalid", {}, {}, 1, lambda event: on_delta(event["text"]))
+
+    # `openai4s.llm.transport._urlopen`, not `urllib.request.urlopen`: the
+    # transport opens through the shared deadline watchdog now, so patching the
+    # stdlib function leaves this test making a real DNS lookup for x.invalid
+    # and asserting the connection error instead of the stream timeout.
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    monkeypatch.setattr(gateway_mod, "chat", stalled_chat)
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner, "_execute_and_log", lambda *a, **k: pytest.fail("partial cell executed")
+    )
+
+    result = runner.run_message(fid, "default", "give me an answer")
+    assert result["status"] == "failed"
+    assert result["code"] == "llm_stream_timeout"
+    assert result["output_committed"] is True
+    assert len(attempts) == 1
+    assert stream.closed
+    messages = store.list_messages(fid)
+    assert any(m["content"].strip() == "Visible partial answer." for m in messages)
+    assert "private upstream detail" not in json.dumps(messages)
+    assert "could not be reached" not in messages[-1]["content"]
+    assert hub.events[-1]["code"] == "llm_stream_timeout"
+    assert any(
+        e.get("type") == "notebook_cell_draft" and e.get("status") == "discarded"
+        for e in hub.events
+    )
+
+    restored = restore_action_history(store, fid)
+    assert restored[-1]["role"] == "system"
+    assert "unfinished" in restored[-1]["content"]
+    assert not any("print(" in str(m.get("content")) for m in restored)
+    state = runner._state(fid, "default")
+    state.messages = [{"role": "system", "content": "sys"}, *restored]
+
+    def finish(messages, cfg, on_delta=None, **kwargs):
+        assert any(m == restored[-1] for m in messages)
+        arguments = {
+            "summary": "Recovered answer.",
+            "completion_bullets": ["Answered the question"],
+        }
+        call = {
+            "id": "recovered-final",
+            "wire_id": "recovered-final",
+            "name": "finalize_response",
+            "arguments": arguments,
+            "raw_arguments": json.dumps(arguments),
+            "ordinal": 0,
+        }
+        return {"content": "", "tool_calls": [call], "usage": {}}
+
+    monkeypatch.setattr(gateway_mod, "chat", finish)
+    continued = runner.run_message(fid, "default", "continue")
+    assert continued["status"] == "completed"
+    assert len(attempts) == 1
+    runner.close()
+
+
 @pytest.mark.parametrize("surface", ["lineage", "environment"])
 def test_exact_artifact_provenance_routes_keep_the_requested_version(tmp_path, surface):
     import sys
@@ -7307,5 +7451,47 @@ def test_bytes_route_honours_an_explicit_version_without_latest_fallback(tmp_pat
         handler._query = lambda: {}
         handler._api("GET", f"/artifacts/{aid}")
         assert sends[-1][:2] == (200, b"v2-longer")
+    finally:
+        runner.close()
+
+
+def test_the_session_dispatcher_gets_the_key_the_install_configures(
+    tmp_path, monkeypatch
+):
+    """The dispatcher is built once per session from the BOOT config, and on the
+    documented install that config has no key: it is entered in Customize →
+    Models and lives in settings. So everything the dispatcher owns that reaches
+    a provider was dead there — `host.llm` raised MissingCredentialError, and
+    the injection screener's nuanced pass returned "not injected" without
+    calling a model, leaving `OPENAI4S_SAFETY=llm` with only its static regex.
+
+    `_wire_delegation` already resolved the config for delegated children ("so
+    delegated specialists inherit the currently selected model"); the session's
+    own ports did not get the same treatment. Refreshed per turn, not frozen at
+    construction, so a model changed mid-session reaches them.
+    """
+    monkeypatch.delenv("OPENAI4S_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="ark", api_key=""),
+        max_turns=1,
+    )
+    assert cfg.llm.api_key == "", "the boot Config must carry no key here"
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    try:
+        runner.store.set_secret_setting("llm_api_key", "settings-key", scope="llm")
+        root = runner.store.new_frame(kind="turn", project_id="p")
+        st = runner._state(root, "default")
+        dispatcher = runner._ensure_runtime(st)
+        assert dispatcher.cfg.llm.api_key == "settings-key"
+        # The kernel's own LLM port reads through the same attribute.
+        assert dispatcher._llm_service._config().llm.api_key == "settings-key"
+
+        # ...and a key changed mid-session reaches the next turn, because this
+        # refresh sits beside the per-turn delegation rewire rather than at
+        # construction.
+        runner.store.set_secret_setting("llm_api_key", "rotated-key", scope="llm")
+        assert runner._ensure_runtime(st).cfg.llm.api_key == "rotated-key"
     finally:
         runner.close()

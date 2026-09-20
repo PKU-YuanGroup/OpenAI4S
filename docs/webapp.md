@@ -200,3 +200,57 @@ deterministic Notebook Cells without an LLM key:
 
 Network-unavailable steps are skipped and reported; demo data is never
 fabricated.
+
+### Conditional text editing / 文本条件编辑
+
+The text editor reads a fixed version and verifies its SHA-256 before enabling
+Save. Each write carries that baseline version; a concurrent update produces a
+conflict instead of overwriting newer content. A lost or malformed save response
+keeps the draft and checks version facts using reads only. Even matching current
+bytes do not identify which request wrote them, and the UI never resends an
+unconfirmed save automatically. Historical version tabs remain read-only.
+
+Drafts live only in the current page's memory, keyed by session, artifact and
+baseline version: at most 10 drafts and 8 MiB of original plus edited UTF-8 text.
+Oversized files remain read-only. Tab/session changes, real-time refreshes and
+failed saves retain drafts. Files → Retained drafts remains available after source
+file/session deletion, with selectable text and explicit discard controls.
+Closing an editor retains its draft; discard-and-close frees a slot. The page
+asks before leaving with unsaved or unconfirmed work. Cancelling a browser reload
+preserves memory; accepting it or terminating the browser destroys that memory,
+so save or copy first. Nothing is written to browser persistent storage.
+
+文本编辑器先读取固定版本并核对 SHA-256，才允许保存。每次保存携带原始版本；
+并发更新会返回冲突，避免覆盖新内容。保存响应丢失或格式错误时保留草稿，只读核对
+版本事实；即使当前内容相同，也不能确认是哪次请求写入，因此不会自动重发保存。
+历史固定版本标签始终只读。
+
+草稿仅保留在当前页面内存，按会话、产物和基线版本隔离，最多 10 份，原文及修改
+文本的 UTF-8 总量最多 8 MiB；超大文件只读。切标签、切会话、实时刷新和保存失败
+均保留草稿。Files 中的「保留的草稿」即使在源文件或会话删除后仍可访问，支持选择
+复制及明确放弃。关闭编辑器保留草稿，「放弃并关闭」释放名额。有未保存或结果未知
+的修改时离开页面会提示；取消浏览器刷新保留内存，明确继续刷新或终止浏览器会清空
+内存，须先保存或复制。草稿不写入浏览器持久化存储。
+
+Ship the backend, frontend source and committed Vite dist together, and roll
+back that same set together; no schema or migration change is involved.
+后端、前端源码与已提交 Vite dist 必须配套交付和整套回退；不涉及 schema 或迁移修改。
+
+
+### Files filtering and pages / 文件筛选与分页
+
+Files combines filename, content-type and Uploaded/Generated filters. The cards,
+displayed count, empty message and Load more all describe the same result. A
+session starts at 50 files and adds 50 per click; changing any filter or the
+session/scope starts a new first page. Refresh preserves the number of requested
+slots, including a partially filled final page. Hidden files stay excluded and
+distinct artifact IDs remain distinct even when their names match. Project scope
+keeps the server's artifact-index order and pagination, with hidden rows excluded
+before the page limit. Late responses and
+artifact events from a previous session cannot replace the current cards.
+
+Files 可组合文件名、内容类型及上传/生成来源筛选。卡片、显示数量、空状态和
+「加载更多」基于同一结果。会话首次显示 50 项，每次再加载 50 项；改变筛选、
+会话或范围会重置第一页。刷新保留已请求的容量，包括尚未填满的最后一页。
+隐藏文件不显示，同名但不同 ID 的产物不合并；项目范围沿用服务端索引顺序，并在分页前排除隐藏记录。
+上一会话的迟到响应和产物事件不能覆盖当前卡片。

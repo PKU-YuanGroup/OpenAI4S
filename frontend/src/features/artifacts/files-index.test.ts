@@ -1,21 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { artifacts as artifactsSignal, filesScope, projectArtifacts } from "../../stores/artifacts";
-import { project } from "../../stores/session";
+import { artifacts as artifactsSignal, artifactsFrameId, filesScope, projectArtifacts } from "../../stores/artifacts";
+import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { setArtifactsFetch } from "./api";
 import {
   browseFiles,
   filterArtifactsClient,
   filesGridArtifacts,
+  setFilesContentType,
   setFilesOrigin,
+  visibleArtifacts,
   setFilesQuery,
 } from "./files-index";
 import { jsonResponse } from "./http-stub";
+import { loadArtifacts } from "./load";
+import { upsertArtifactFromEvent } from "../ws/handlers";
+import { artifactCreatedSideEffects } from "./events";
 import {
   filesCursorFilter,
   filesHasMore,
   filesIndexError,
   filesIndexItems,
+  filesIndexLoading,
+  filesLoadedLimit,
   filesIndexMode,
   filesIndexReq,
   filesNextCursor,
@@ -264,6 +271,8 @@ describe("M-03 Files index (artifact-index, no array fallback)", () => {
 
   it("frame scope filters the session array locally", async () => {
     filesScope.value = "frame";
+    currentId.value = "frame-a";
+    artifactsFrameId.value = currentId.value;
     artifactsSignal.value = [
       row({ id: "a", filename: "keep.csv" }),
       row({ id: "b", filename: "skip.png" }),
@@ -272,6 +281,175 @@ describe("M-03 Files index (artifact-index, no array fallback)", () => {
     await browseFiles({ reset: true });
     expect(filesIndexItems.value.map((a) => a.id)).toEqual(["a"]);
     expect(filesHasMore.value).toBe(false);
+  });
+
+  it("paints 125 frame artifacts as 50, 50, 25 without changing conversation visibility", async () => {
+    currentId.value = "frame-a";
+    artifactsFrameId.value = currentId.value;
+    artifactsSignal.value = make500().slice(0, 125);
+    await browseFiles({ reset: true });
+    expect(filesGridArtifacts()).toHaveLength(50);
+    expect(visibleArtifacts()).toHaveLength(125);
+    expect(filesNextCursor.value).toBe("50");
+    await browseFiles({ loadMore: true });
+    expect(filesGridArtifacts()).toHaveLength(100);
+    expect(filesNextCursor.value).toBe("100");
+    await browseFiles({ loadMore: true });
+    expect(filesGridArtifacts()).toHaveLength(125);
+    expect(new Set(filesGridArtifacts().map((a) => a.id)).size).toBe(125);
+    expect(filesHasMore.value).toBe(false);
+    expect(filesNextCursor.value).toBeNull();
+  });
+
+  it("populates the first filtered page when artifacts initially load with the dock closed", async () => {
+    currentId.value = "frame-a";
+    setFilesQuery("report");
+    setFilesContentType("text/csv");
+    setFilesOrigin("uploaded");
+    setArtifactsFetch(async () => jsonResponse(make500().slice(0, 125)));
+    await loadArtifacts("frame-a");
+    expect(filesIndexItems.value).toHaveLength(13);
+    expect(filesGridArtifacts().every((a) => a.filename === "report.csv" && a.is_user_upload)).toBe(true);
+    expect(filesHasMore.value).toBe(false);
+  });
+
+  it("refreshes the loaded frame pages from current rows without duplicate IDs", async () => {
+    currentId.value = "frame-a";
+    let rows = make500().slice(0, 125);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("frame-a");
+    await browseFiles({ reset: true });
+    await browseFiles({ loadMore: true });
+    rows = [row({ id: "new", priority: 2 }), ...rows];
+    await loadArtifacts("frame-a");
+    expect(filesGridArtifacts()).toHaveLength(100);
+    expect(filesGridArtifacts()[0]?.id).toBe("new");
+    expect(new Set(filesGridArtifacts().map((a) => a.id)).size).toBe(100);
+    await browseFiles({ loadMore: true });
+    expect(filesGridArtifacts()).toHaveLength(126);
+    expect(new Set(filesGridArtifacts().map((a) => a.id)).size).toBe(126);
+  });
+
+  it("retains loaded page capacity when the last page used to be partial", async () => {
+    currentId.value = "frame-a";
+    let rows = make500().slice(0, 125);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("frame-a");
+    await browseFiles({ reset: true });
+    await browseFiles({ loadMore: true });
+    await browseFiles({ loadMore: true });
+    rows = [row({ id: "new", priority: 2 }), ...rows];
+    await loadArtifacts("frame-a");
+    expect(filesIndexItems.value).toHaveLength(126);
+    expect(filesHasMore.value).toBe(false);
+  });
+
+  it("cannot paint the previous session or append from its cursor while the new read is pending", async () => {
+    currentId.value = "frame-a";
+    artifactsFrameId.value = currentId.value;
+    artifactsSignal.value = make500().slice(0, 125);
+    await browseFiles({ reset: true });
+    await browseFiles({ loadMore: true });
+    currentId.value = "frame-b";
+    expect(filesGridArtifacts()).toEqual([]);
+    artifactsFrameId.value = "frame-b";
+    artifactsSignal.value = make500().slice(0, 80).map((a) => ({ ...a, id: "b-" + a.id }));
+    await browseFiles({ loadMore: true });
+    expect(filesGridArtifacts()).toHaveLength(50);
+    expect(filesNextCursor.value).toBe("50");
+    expect(filesGridArtifacts().every((a) => a.id.startsWith("b-"))).toBe(true);
+  });
+
+  it("cannot rebrand the old array while the new session read is pending", async () => {
+    currentId.value = "a";
+    artifactsFrameId.value = "a";
+    artifactsSignal.value = make500().slice(0, 125);
+    await browseFiles({ reset: true });
+    let release!: (rows: ArtifactRow[]) => void;
+    const pending = new Promise<ArtifactRow[]>((resolve) => { release = resolve; });
+    setArtifactsFetch(async () => jsonResponse(await pending));
+    currentId.value = "b";
+    const loading = loadArtifacts("b");
+    setFilesQuery("report");
+    await browseFiles({ reset: true });
+    await browseFiles({ loadMore: true });
+    expect(filesGridArtifacts()).toEqual([]);
+    expect(filesHasMore.value).toBe(false);
+    expect(filesNextCursor.value).toBeNull();
+    release([row({ id: "b-file", filename: "report.csv" })]);
+    await loading;
+    expect(filesGridArtifacts().map((a) => a.id)).toEqual(["b-file"]);
+  });
+
+  it("rejects a late old visit to the same session and does not relabel its snapshot", async () => {
+    currentId.value = "a";
+    artifactsFrameId.value = "a";
+    artifactsSignal.value = [row({ id: "old" })];
+    await browseFiles({ reset: true });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    setArtifactsFetch(async () => { await pending; return jsonResponse([row({ id: "late-old" })]); });
+    const old = loadArtifacts("a");
+    currentId.value = "b"; _openGen.value += 1;
+    currentId.value = "a"; _openGen.value += 1;
+    setFilesQuery("old");
+    await browseFiles({ reset: true });
+    expect(filesGridArtifacts()).toEqual([]);
+    release(); await old;
+    expect(filesGridArtifacts()).toEqual([]);
+    expect(artifactsSignal.value).toEqual([row({ id: "old" })]);
+  });
+
+  it("recomputes in-place events, rejects the old root, and accepts a current-root child", async () => {
+    currentId.value = "b";
+    artifactsFrameId.value = "b";
+    artifactsSignal.value = make500().slice(0, 125);
+    await browseFiles({ reset: true });
+    await browseFiles({ loadMore: true });
+    const emit = (event: Parameters<typeof upsertArtifactFromEvent>[0]) => {
+      upsertArtifactFromEvent(event);
+      artifactCreatedSideEffects(event);
+    };
+    emit({ type: "artifact_created", root_frame_id: "a", artifact: row({ id: "foreign", priority: 10 }) });
+    expect(filesGridArtifacts().some((a) => a.id === "foreign")).toBe(false);
+    const child = { type: "artifact_created", root_frame_id: "b", frame_id: "child", artifact: row({ id: "child-file", priority: 2 }) };
+    emit(child); emit(child);
+    expect(filesGridArtifacts()).toHaveLength(100);
+    expect(filesGridArtifacts()[0]?.id).toBe("child-file");
+    expect(new Set(filesGridArtifacts().map((a) => a.id)).size).toBe(100);
+    emit({ ...child, artifact: row({ id: "child-file", priority: -1 }) });
+    expect(filesGridArtifacts()).toHaveLength(100);
+    expect(filesGridArtifacts().some((a) => a.id === "child-file")).toBe(false);
+  });
+
+  it("keeps three-page capacity after shrinking and growing the snapshot", async () => {
+    currentId.value = "a";
+    let rows = make500().slice(0, 125);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("a");
+    await browseFiles({ loadMore: true });
+    await browseFiles({ loadMore: true });
+    rows = rows.slice(0, 20);
+    await loadArtifacts("a");
+    expect(filesGridArtifacts()).toHaveLength(20);
+    rows = make500().slice(0, 160);
+    await loadArtifacts("a");
+    expect(filesGridArtifacts()).toHaveLength(150);
+    expect(filesNextCursor.value).toBe("150");
+    expect(filesHasMore.value).toBe(true);
+  });
+
+  it("clears card and cursor eligibility after the last session is removed", async () => {
+    currentId.value = "a";
+    artifactsFrameId.value = "a";
+    artifactsSignal.value = make500().slice(0, 125);
+    await browseFiles({ reset: true });
+    currentId.value = null;
+    artifactsSignal.value = [];
+    expect(filesGridArtifacts()).toEqual([]);
+    await browseFiles({ loadMore: true });
+    expect(filesHasMore.value).toBe(false);
+    expect(filesNextCursor.value).toBeNull();
   });
 
   it("origin setter drops the cursor", () => {
@@ -287,5 +465,77 @@ describe("M-03 Files index (artifact-index, no array fallback)", () => {
     resetFilesIndexState();
     expect(filesIndexReq.value).toBeGreaterThan(n);
     expect(filesIndexItems.value).toEqual([]);
+  });
+});
+
+
+describe("project refresh capacity and ownership", () => {
+  beforeEach(() => { resetStoreFields(); resetFilesIndexState(); filesScope.value = "project"; project.value = "p"; });
+  afterEach(() => setArtifactsFetch(null));
+
+  it("preserves requested capacity through 125 → 20 → 160 and uses only index pages", async () => {
+    let rows = make500().slice(0, 125);
+    const reads: number[] = [];
+    setArtifactsFetch(async (url) => {
+      expect(url).toContain("/projects/p/artifact-index?");
+      const params = new URL(url, "https://fixture.invalid").searchParams;
+      const start = Number(params.get("cursor") || 0);
+      const limit = Number(params.get("limit"));
+      reads.push(start);
+      const end = Math.min(start + limit, rows.length);
+      return jsonResponse({ artifacts: rows.slice(start, end), next_cursor: end < rows.length ? String(end) : null, has_more: end < rows.length });
+    });
+    await browseFiles({ reset: true });
+    await browseFiles({ loadMore: true });
+    await browseFiles({ loadMore: true });
+    expect(filesGridArtifacts()).toHaveLength(125);
+    rows = make500().slice(0, 20);
+    await browseFiles({ refresh: true });
+    expect(filesGridArtifacts()).toHaveLength(20);
+    expect(filesLoadedLimit.value).toBe(150);
+    rows = make500().slice(0, 160); reads.length = 0;
+    await browseFiles({ refresh: true });
+    expect(filesGridArtifacts()).toHaveLength(150);
+    expect(reads).toEqual([0, 50, 100]);
+    expect(filesHasMore.value).toBe(true);
+  });
+
+  it.each(["filter", "frame"])("rejects the old second refresh page after a %s change", async (change) => {
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    filesLoadedLimit.value = 150;
+    // Establish the fingerprint without depending on a magic encoded identity.
+    setArtifactsFetch(async () => jsonResponse({ artifacts: [row({ id: "initial" })], next_cursor: "50", has_more: true }));
+    await browseFiles({ reset: true }); filesLoadedLimit.value = 150;
+    setArtifactsFetch(async (url) => {
+      if (url.includes("q=keep")) return jsonResponse({ artifacts: [row({ id: "keep" })], next_cursor: null, has_more: false });
+      if (url.includes("cursor=")) { started(); await gate; }
+      return jsonResponse({ artifacts: make500().slice(url.includes("cursor=") ? 50 : 0, url.includes("cursor=") ? 100 : 50), next_cursor: "50", has_more: true });
+    });
+    const old = browseFiles({ refresh: true }); await waiting;
+    if (change === "filter") setFilesQuery("keep");
+    else { filesScope.value = "frame"; currentId.value = "f"; artifactsFrameId.value = "f"; artifactsSignal.value = [row({ id: "keep" })]; }
+    await browseFiles({ reset: true }); release(); await old;
+    expect(filesGridArtifacts().map((a) => a.id)).toEqual(["keep"]);
+    expect(filesIndexLoading.value).toBe(false);
+    expect(filesIndexError.value).toBeNull();
+  });
+
+  it.each(["repeated cursor", "zero progress"])("fails finitely on %s during refresh", async (fault) => {
+    let reads = 0;
+    setArtifactsFetch(async () => jsonResponse({ artifacts: [row({ id: "initial" })], next_cursor: null, has_more: false }));
+    await browseFiles({ reset: true }); filesLoadedLimit.value = 150;
+    setArtifactsFetch(async () => {
+      reads += 1;
+      return jsonResponse({ artifacts: fault === "zero progress" ? [] : [row({ id: String(reads) })], next_cursor: "same", has_more: true });
+    });
+    await browseFiles({ refresh: true });
+    expect(reads).toBe(fault === "zero progress" ? 1 : 2);
+    expect(filesIndexMode.value).toBe("error");
+    expect(filesGridArtifacts()).toEqual([]);
+    expect(filesHasMore.value).toBe(false);
+    expect(filesIndexLoading.value).toBe(false);
   });
 });

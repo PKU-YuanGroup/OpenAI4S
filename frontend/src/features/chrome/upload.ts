@@ -54,7 +54,7 @@ export interface UploadFailure {
  * `opened` never rejects; a failure in the opening work cannot retract a
  * destination the bytes are already bound to.
  */
-export type UploadCreation = Promise<string> & { opened: Promise<void> };
+export type UploadCreation = Promise<string> & { opened: Promise<void>; navigationGen: number };
 
 export const UPLOAD_STATE: {
   pending: Set<UploadBatch>;
@@ -100,8 +100,8 @@ export function createUploadSession(
   const shared = !(options && options.fresh);
   const key = projectId ? `project:${projectId}` : "project:<none>";
   const existing = shared ? UPLOAD_STATE.creations.get(key) : null;
-  if (existing) return existing;
   const navigationGen = _openGen.value || 0;
+  if (existing && existing.navigationGen === navigationGen) return existing;
   // Callers wait for the destination, not for the conversation to finish
   // opening: the id is published as soon as POST /frames answers, and the
   // opening work lives on a separate chained promise. Resolving only after
@@ -121,6 +121,7 @@ export function createUploadSession(
     if (!frameId) throw new Error("session creation returned no id");
     return frameId;
   })() as UploadCreation;
+  frameReady.navigationGen = navigationGen;
   frameReady.opened = frameReady
     .then(async (frameId) => {
       // The upload began with no conversation. Open the one it created only
@@ -169,11 +170,12 @@ export async function adoptCreatedFrame(
     openConversation?: ((fid: string, pid?: string | null) => Promise<unknown> | unknown) | null;
   } = {},
 ): Promise<void> {
+  const navigationGen = _openGen.value;
   currentId.value = frameId;
   sub(frameId);
   const loadSessions = fns.loadSessions ?? hostFn("loadSessions");
   if (isReady(loadSessions)) await loadSessions();
-  if (currentId.value === frameId && (project.value || null) === (projectId || null)) {
+  if (_openGen.value === navigationGen && currentId.value === frameId && (project.value || null) === (projectId || null)) {
     const openConversation = fns.openConversation ?? hostFn("openConversation");
     if (isReady(openConversation)) await openConversation(frameId, projectId);
   }

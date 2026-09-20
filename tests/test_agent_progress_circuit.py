@@ -492,6 +492,45 @@ def test_new_external_user_message_resets_epoch(tmp_path):
     store.close()
 
 
+def test_no_progress_continuation_explains_the_loop_in_live_and_restored_history(
+    tmp_path,
+):
+    from openai4s.agent.ledger import restore_action_history
+
+    store = Store(tmp_path / "continue.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-loop")
+    user = {"role": "user", "content": "inspect the files"}
+    ledger.append_user(user)
+    model = FakeModel(_native_replies(3))
+    executor = CountingExecutor()
+    result = AgentEngine(model, executor, event_sink=ledger).run([user])
+
+    assert result.stop_reason == "no_progress"
+    guidance = result.messages[-1]
+    assert guidance["role"] == "system"
+    assert "list_dir" in guidance["content"]
+    assert "different approach" in guidance["content"]
+    assert "Do not repeat" in guidance["content"]
+    restored = restore_action_history(store, root)
+    assert restored[-1] == guidance
+    assert len([m for m in restored if m["role"] == "tool"]) == 3
+
+    followup = {"role": "user", "content": "continue"}
+    RuntimeActionLedger(store, root, "turn-continue").append_user(followup)
+    state = RunState(restore_action_history(store, root), max_turns=1)
+    attach_progress_circuit(state, restore_progress_circuit(store, root))
+    next_model = FakeModel(
+        _native_replies(1, name="read_file", arguments={"path": "README.md"})
+    )
+    AgentEngine(next_model, executor).run(state)
+    assert next_model.calls[0][-2:] == [guidance, followup]
+    assert (
+        len(executor.dispatched) == 4
+    ), "restoring must not replay the three earlier calls"
+    store.close()
+
+
 def test_cancel_wins_over_an_already_tripped_circuit():
     class Cancelled:
         def cancelled(self):

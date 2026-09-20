@@ -138,10 +138,11 @@ _BINARY_EXT = (
 class ArtifactOperationError(Exception):
     """An artifact mutation that the HTTP layer can map to a response."""
 
-    def __init__(self, code: int, message: str) -> None:
+    def __init__(self, code: int, message: str, error_code: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.error_code = error_code
 
 
 class ArtifactSession(Protocol):
@@ -2172,6 +2173,7 @@ class ArtifactManager:
         artifact_id: str,
         content: str,
         *,
+        expected_version_id: str | None = None,
         broadcast: Broadcast | None = None,
     ) -> dict:
         """Serialize the complete exact edit decision and publication."""
@@ -2180,6 +2182,7 @@ class ArtifactManager:
             return self._edit_locked(
                 artifact_id,
                 content,
+                expected_version_id=expected_version_id,
                 broadcast=broadcast,
             )
 
@@ -2188,12 +2191,22 @@ class ArtifactManager:
         artifact_id: str,
         content: str,
         *,
+        expected_version_id: str | None = None,
         broadcast: Broadcast | None = None,
     ) -> dict:
         """Save edited text as a new version without changing its live path."""
         artifact = self.store.get_artifact(artifact_id)
         if not artifact:
             raise ArtifactOperationError(404, "artifact not found")
+        # Even an unchanged edit can materialize a missing snapshot. Compare
+        # the head under the shared writer lock before any such side effect.
+        if (
+            expected_version_id is not None
+            and artifact.get("latest_version_id") != expected_version_id
+        ):
+            raise ArtifactOperationError(
+                409, "artifact version changed", "artifact_version_conflict"
+            )
         if not is_text_editable(artifact.get("filename"), artifact.get("content_type")):
             raise ArtifactOperationError(415, "artifact is not text-editable")
 

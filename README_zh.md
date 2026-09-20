@@ -74,7 +74,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
-- **`2026-09`** 🧭 **`v0.3.0` —— 新工作台，以及第一个 Windows 安装包** —— Preact/TypeScript 工作台取代 `app.js` 单体成为默认 UI，本次 release 也在 Linux tarball 之外首次发布 **Windows/WSL2 zip**。每个本地守护进程现在都要求访问令牌：`OPENAI4S_REQUIRE_TOKEN=0` 这个 loopback 豁免已被移除。交互式 HTML 报告运行在独立的沙箱源上；Notebook cell 保留自己产出的精确 Artifact 版本；长上下文压缩真正落地，并能在重启后恢复；委派的子代理继承父会话的环境，并留下持久、可导出的 cell 记录；Auto Mode 以原子方式准入预算，并会停下没有进展的运行。单细胞 RNA 分析 Skill 让总数达到 604。本版本**没有 macOS 磁盘镜像**，请改用 PyPI 安装。数据库 schema 从 27 升到 32，首次启动前请先阅读 **[从 0.2.x 升级](docs/upgrading_zh.md)**。
+- **`2026-09`** 🧭 **`v0.3.0` —— 新工作台，以及第一个 Windows 安装包** —— Preact/TypeScript 工作台取代 `app.js` 单体成为默认 UI，本次 release 也在 Linux tarball 之外首次发布 **Windows/WSL2 zip**。每个本地守护进程现在都要求访问令牌：`OPENAI4S_REQUIRE_TOKEN=0` 这个 loopback 豁免已被移除。交互式 HTML 报告运行在独立的沙箱源上；Notebook cell 保留自己产出的精确 Artifact 版本；长上下文压缩真正落地，并能在重启后恢复；委派的子代理继承父会话的环境，并留下持久、可导出的 cell 记录；Auto Mode 以原子方式准入预算，并会停下没有进展的运行。单细胞 RNA 分析 Skill 让总数达到 604。Apple Silicon 的 **macOS 镜像**是 ad-hoc 签名的预览版，未经公证。数据库 schema 从 27 升到 32，首次启动前请先阅读 **[从 0.2.x 升级](docs/upgrading_zh.md)**。
 - **`2026-08-24`** 🚀 **`v0.2.0` —— 多平台发布** —— 一个 release，两个桌面安装包：Apple Silicon **`.dmg`** 与内嵌同一套 Python 与科学栈的可移动 **Linux `x86_64` tarball**（Windows/WSL2 zip 已构建、正在稳定化，将随后续版本发布）。底层新增：带 Guardian 审查边界的 **Auto Mode**、诚实的**完成证据对账**（崩溃的 cell 不再可能渲染成干净的成功）、**MCP Streamable HTTP** 传输（含火山引擎 DataPro 连接器与豆包联网搜索）、**Anthropic Messages SSE 流式**、锁定的 **561 个 bioSkills 配方集合**（共 603 个 Skill，可用 `npx` 装到任何地方）、工作台的轨迹账本视图、Docker/Kubernetes 部署、`openai4s --version`，以及让运行中的 R cell 在每个平台都能可靠中断的信号修复系列。
 - **`2026-08-04`** 🔭 **`main` —— 通往 `v0.2.0` 的路上** —— **只读会话共享**（经出站 relay 隧道，`openai4s share` / `openai4s relay`）、**七个规范化的公共数据库连接器**（检索结果自带来源与时间）、带版本的 **`/api/v1`** 接口（keyset 分页、统一错误信封、可续传的 WebSocket 游标）、**环境即事务**（`openai4s env plan|apply|rollback`）、脱敏的 `doctor` / `diagnostics` 支持包、默认关闭且可撤销的遥测、逆合成规划 Skill，以及一套 **10 workflow / 20 case 的基准**——它跑在真实的 Store、内核与 dispatcher 上。Linux 与 Windows 桌面包在此构建并验证——Linux 包随上面的 `v0.2.0` 发布，Windows 包将随后续版本发布。
 - **`2026-07-15`** 🍎 **`v0.1.0` —— macOS 应用** —— 一键、免工具链的 Apple Silicon `.dmg`，内嵌 Python 与完整默认内核科学栈（rdkit · scanpy · 单细胞栈），并支持 PyPI 安装（`pip install openai4s`）与自动化发布。**第一次用？→ [上手指南](docs/startup-guide.md)。**
@@ -145,7 +145,7 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ### macOS
 
 > [!NOTE]
-> **`v0.3.0` 不发布 macOS 磁盘镜像。** 发布流程只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它。这些凭据目前还不存在，所以本次选择不带镜像，而不是发布一个未签名的镜像。在 Mac 上请按下面的方式从 PyPI 安装，或使用上面的源码方式运行。旧的 **v0.2.0 预览镜像**仍可从 [v0.2.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.2.0)下载（不是最新 Release）。它运行的是 0.2.0，不包含 0.3.0 的任何改动，并且不能打开已被 0.3.0 升级过的数据目录（见 [从 0.2.x 升级](docs/upgrading_zh.md)）。
+> **`v0.3.0` 附带的是 macOS 预览镜像，不是经过公证的镜像。** [v0.3.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0)上的 `OpenAI4S-0.3.0-macos-arm64.dmg` 仅支持 Apple Silicon，只做了 ad-hoc 签名、未经公证，所以第一次打开会被 Gatekeeper 拦下，处理步骤见[上手指南](docs/startup-guide.md#zh)。它是在发布流程之外构建并挂上去的：发布流程仍然只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它，而这些凭据目前还不存在。请使用这个固定页面，不要去最新 Release 里找，因为由发布流程产出的 release 不带镜像。Intel Mac，或不想运行未公证的应用时，请按下面的方式从 PyPI 安装，或使用上面的源码方式运行。如果之前用的是 v0.2.0 应用，请先阅读[从 0.2.x 升级](docs/upgrading_zh.md)：0.3.0 会升级数据目录，之后 0.2.0 不能再打开它。
 
 请从 PyPI 安装到一个单独的虚拟环境中。Apple Silicon 与 Intel 都适用，需要 Python 3.10 或更新版本：
 
@@ -237,7 +237,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 | 文档 | 内容 |
 |---|---|
-| [**上手指南**](docs/startup-guide.md#zh) | macOS 全流程：从 PyPI 安装（v0.3.0 不发布 `.dmg`）或使用 v0.2.0 预览镜像、配置模型，以及用一个 Agent Plan Key 授权豆包搜索（Tavily/免密钥备用） |
+| [**上手指南**](docs/startup-guide.md#zh) | macOS 全流程：安装 v0.3.0 预览镜像（Apple Silicon，ad-hoc 签名，含 Gatekeeper 步骤）或从 PyPI 安装、配置模型，以及用一个 Agent Plan Key 授权豆包搜索（Tavily/免密钥备用） |
 | [**从 0.2.x 升级**](docs/upgrading_zh.md) | 在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
@@ -276,7 +276,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 ### 下一步
 
-- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布，但 `v0.3.0` 没有 macOS 镜像，而且只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
+- [ ] **经过公证的 macOS 镜像与 arm64 安装包。** Linux 安装包自 `v0.2.0` 起发布，Windows/WSL2 安装包自 `v0.3.0` 起发布，但 macOS 镜像仍是 ad-hoc 签名的预览版，首次打开会被 Gatekeeper 拦下，Linux 与 Windows 也只发布 `x86_64`。有了 Developer ID 签名并经过公证的 `.dmg`，再加上 arm64 Linux 与 Windows on ARM 安装包，每个受支持的平台才都能免工具链安装。
 - [ ] **NVIDIA 科学计算套件** —— 在现有 NVIDIA NIM 集成之外，把 **BioNeMo**（生物分子基础模型）与 **Parabricks**（GPU 加速的基因组学流水线）作为一等公民接入 Skill 与 BYOC 后端。
 - [ ] 本地 GPU 模型服务,让结构/设计类 Skill 无需远程计算即可运行。
 - [ ] SSH + NVIDIA NIM 之外的更多 BYOC 提供方(Modal / SLURM)。
@@ -354,11 +354,14 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 <a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
 <a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
+<a href="https://github.com/CyrusAuyeung" title="CyrusAuyeung"><img src=".github/contributors/CyrusAuyeung.png" width="64" height="64" alt="CyrusAuyeung" /></a>
 <a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
-<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
-<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
-<a href="https://github.com/WenyuLiang" title="WenyuLiang"><img src=".github/contributors/WenyuLiang.png" width="64" height="64" alt="WenyuLiang" /></a>
 <a href="https://github.com/ClarenceYC" title="ClarenceYC"><img src=".github/contributors/ClarenceYC.png" width="64" height="64" alt="ClarenceYC" /></a>
+<a href="https://github.com/muzimu217" title="muzimu217"><img src=".github/contributors/muzimu217.png" width="64" height="64" alt="muzimu217" /></a>
+<a href="https://github.com/WenyuLiang" title="WenyuLiang"><img src=".github/contributors/WenyuLiang.png" width="64" height="64" alt="WenyuLiang" /></a>
+<a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
+<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
+<a href="https://github.com/ChampionZhong" title="ChampionZhong"><img src=".github/contributors/ChampionZhong.png" width="64" height="64" alt="ChampionZhong" /></a>
 <a href="https://github.com/cursoragent" title="cursoragent"><img src=".github/contributors/cursoragent.png" width="64" height="64" alt="cursoragent" /></a>
 <a href="https://github.com/yusowa0716" title="yusowa0716"><img src=".github/contributors/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
 <a href="https://github.com/riiiiiiin" title="riiiiiiin"><img src=".github/contributors/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>
@@ -366,7 +369,7 @@ uv run pre-commit run --all-files   # 全量格式化 + lint
 <a href="https://github.com/stau-7001" title="stau-7001"><img src=".github/contributors/stau-7001.png" width="64" height="64" alt="stau-7001" /></a>
 <a href="https://github.com/EQSTLab" title="EQSTLab"><img src=".github/contributors/EQSTLab.png" width="64" height="64" alt="EQSTLab" /></a>
 <a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
-<a href="https://github.com/ChampionZhong" title="ChampionZhong"><img src=".github/contributors/ChampionZhong.png" width="64" height="64" alt="ChampionZhong" /></a>
+<a href="https://github.com/Pandasama2025" title="Pandasama2025"><img src=".github/contributors/Pandasama2025.png" width="64" height="64" alt="Pandasama2025" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>由 <code>scripts/update_contributors.py</code> 每日根据 GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">贡献者图谱</a>与维护中的公开署名名单自动生成。</sub>

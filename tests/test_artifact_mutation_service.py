@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -62,6 +64,76 @@ def raised_operation(call, code: int, message: str) -> None:
     assert caught.value.code == code
     assert caught.value.message == message
     assert str(caught.value) == message
+
+
+@pytest.mark.parametrize("content", ["original", "changed"])
+def test_conditional_edit_conflict_has_no_delta_even_without_snapshot(
+    tmp_path, content
+):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("notes.txt", b"original", "text/plain")
+    before = copy.deepcopy(harness.store.get_artifact(first["artifact_id"]))
+    versions = copy.deepcopy(harness.store.list_versions(first["artifact_id"]))
+    meta = copy.deepcopy(harness.store.version_meta(first["version_id"]))
+    with pytest.raises(ArtifactOperationError) as caught:
+        harness.manager.edit(
+            first["artifact_id"], content, expected_version_id="stale-version"
+        )
+    assert caught.value.code == 409
+    assert caught.value.error_code == "artifact_version_conflict"
+    assert harness.store.get_artifact(first["artifact_id"]) == before
+    assert harness.store.list_versions(first["artifact_id"]) == versions
+    assert harness.store.version_meta(first["version_id"]) == meta
+    assert (harness.workspace / "notes.txt").read_bytes() == b"original"
+    assert harness.events == []
+
+
+def test_conditional_edit_serializes_competing_writers_and_valid_noop(tmp_path):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("notes.txt", b"original", "text/plain")
+    other = ArtifactManager(
+        data_dir=harness.cfg.data_dir,
+        store=harness.store,
+        workspace_for=lambda _frame: harness.workspace,
+        broadcast=lambda frame, event: harness.events.append((frame, event)),
+        guess_content_type=lambda _name: "text/plain",
+        checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    barrier = threading.Barrier(2)
+
+    def write(manager, content):
+        barrier.wait(timeout=5)
+        try:
+            return manager.edit(
+                first["artifact_id"], content, expected_version_id=first["version_id"]
+            )
+        except ArtifactOperationError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [
+            pool.submit(write, manager, content)
+            for manager, content in [(harness.manager, "one"), (other, "two")]
+        ]
+        results = [future.result(timeout=10) for future in pending]
+    successes = [result for result in results if isinstance(result, dict)]
+    failures = [
+        result for result in results if isinstance(result, ArtifactOperationError)
+    ]
+    assert len(successes) == len(failures) == 1
+    assert failures[0].error_code == "artifact_version_conflict"
+    assert len(harness.store.list_versions(first["artifact_id"])) == 2
+    assert len(harness.events) == 1
+    latest = successes[0]["version_id"]
+    unchanged = harness.manager.edit(
+        first["artifact_id"],
+        (harness.workspace / "notes.txt").read_text(),
+        expected_version_id=latest,
+    )
+    assert unchanged["unchanged"] is True
+    assert unchanged["version_id"] == latest
+    assert len(harness.store.list_versions(first["artifact_id"])) == 2
+    assert len(harness.events) == 1
 
 
 def test_edit_versions_live_text_and_preserves_exact_event_shape(tmp_path):

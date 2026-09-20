@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping, TypeAlias
 
+from openai4s.llm.usage import copy_usage
+
 from .actions import Action, NativeToolCall
 
 Message: TypeAlias = dict[str, Any]
@@ -87,7 +89,7 @@ class ModelReply:
             if wire_state:
                 assistant_source["wire_state"] = wire_state
         usage_value = value.get("usage")
-        usage = dict(usage_value) if isinstance(usage_value, Mapping) else {}
+        usage = copy_usage(usage_value)
         known = {
             "content",
             "reasoning",

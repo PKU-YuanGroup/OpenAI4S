@@ -22,7 +22,10 @@ from openai4s.execution.attempts import (
     attempt_state_for_exception,
     attempt_state_for_result,
 )
+from openai4s.llm.models import LLMDeadlineExceeded
+from openai4s.llm.transport import CallState, bind_call_context
 from openai4s.observability import carry_context
+from openai4s.storage.governance import QuotaExceeded
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
@@ -66,6 +69,7 @@ from .finalize import (
     note_execution_evidence,
 )
 from .models import ExecutionOutcome, ModelReply, RunState
+from .stream_buffer import TextBuffer
 
 LogFn = Callable[..., None]
 
@@ -271,11 +275,18 @@ class _CancelProbe:
     untouched to ``post_sse``.
     """
 
-    __slots__ = ("_probe", "abort_stream")
+    __slots__ = ("_probe", "abort_stream", "call_state")
 
-    def __init__(self, probe: Callable[[], bool], *, abort_stream: bool) -> None:
+    def __init__(
+        self,
+        probe: Callable[[], bool],
+        *,
+        abort_stream: bool,
+        call_state: CallState | None = None,
+    ) -> None:
         self._probe = probe
         self.abort_stream = abort_stream
+        self.call_state = call_state
 
     def __call__(self) -> bool:
         return self._probe()
@@ -365,11 +376,6 @@ class ChatModel:
             # session state still describes the turn making this call.
             kwargs["call_context"] = dict(self.call_context())
         copied_messages = [dict(message) for message in messages]
-        if self.cancellation is None:
-            if self.stream:
-                kwargs["on_delta"] = on_delta
-            return self.chat_fn(copied_messages, self.cfg, **kwargs)
-
         # ``urllib`` cannot close a response which is blocked in another
         # thread. Running the provider call in a daemon thread still lets the
         # owning Agent turn stop immediately: a streaming request ends at its
@@ -389,13 +395,17 @@ class ChatModel:
         report_lock = threading.Lock()
         reported = False
         outcome: dict[str, Any] = {}
-        deltas: queue.Queue[str] = queue.Queue()
+        call_state = CallState(
+            total_timeout_s=getattr(self.cfg, "total_timeout_s", 600.0)
+        )
 
         def is_cancelled() -> bool:
             if cancelled.is_set():
                 return True
             try:
-                requested = bool(self.cancellation.cancelled())
+                requested = self.cancellation is not None and bool(
+                    self.cancellation.cancelled()
+                )
             except Exception:  # noqa: BLE001 - cancellation telemetry is fail-soft
                 requested = False
             if requested:
@@ -404,6 +414,8 @@ class ChatModel:
 
         if is_cancelled():
             return _cancelled_model_reply()
+
+        deltas = TextBuffer(cancelled=is_cancelled, remaining=call_state.remaining)
 
         _PROVIDER_CALL_BUDGET.admit(self.call_scope)
         detached_call = _PROVIDER_CALL_BUDGET.track(self.call_scope)
@@ -416,31 +428,63 @@ class ChatModel:
             # one. Read the latch itself, not ``is_cancelled()``: the provider
             # thread's ``finally`` must not pull the shared Event into this.
             if (
-                not cancelled.is_set()
+                (not cancelled.is_set() and "error" not in outcome)
                 or self.abandoned_reply is None
-                or "reply" not in outcome
+                or not ("reply" in outcome or "error" in outcome)
             ):
+                return
+            if "reply" not in outcome and getattr(
+                outcome.get("error"), "llm_not_started", False
+            ):
+                # Local validation and pre-provider quota denials did not bill.
                 return
             with report_lock:
                 if reported:
                     return
                 reported = True
                 sink = self.abandoned_reply
-                reply = outcome["reply"]
+                reply = outcome.get(
+                    "reply", {"usage": getattr(outcome.get("error"), "usage", None)}
+                )
             # Handed off rather than called here: this runs from the provider
             # thread's ``finally`` as often as from the owning turn, and the
             # sink writes to Store and the action ledger.
-            _LATE_ACCOUNTING.submit(sink, reply)
+            detached_call.detach()
+
+            def account_and_release(value):
+                try:
+                    sink(value)
+                finally:
+                    detached_call.settle()
+
+            try:
+                _LATE_ACCOUNTING.submit(account_and_release, reply)
+            except BaseException:  # noqa: BLE001 - accounting is fail-soft
+                # ``reported`` is already latched, so neither ``settle_unreported``
+                # call site can return this slot any more. A submit that never
+                # started its sink (``Thread.start`` under process pressure is
+                # the realistic one) must not hold one for the process lifetime
+                # -- nor fail the turn: this also runs on the owning thread.
+                detached_call.settle()
+                _LOG.exception("failed to queue an abandoned model reply")
+
+        def settle_unreported() -> None:
+            with report_lock:
+                if not reported:
+                    detached_call.settle()
 
         def abandon() -> Mapping[str, Any]:
             # Latch before inspecting outcome: the provider may be between
             # storing its reply and running its accounting callback.
             cancelled.set()
+            deltas.close()
             # The owning turn is about to return while the request may still be
             # blocked in urllib. From here it is a detached call and counts
             # against the budget until its socket finally closes.
             detached_call.detach()
             report_abandoned_reply()
+            if finished.is_set():
+                settle_unreported()
             return _cancelled_model_reply()
 
         if self.stream:
@@ -454,8 +498,11 @@ class ChatModel:
 
             kwargs["on_delta"] = emit_delta
         kwargs["should_cancel"] = _CancelProbe(
-            is_cancelled, abort_stream=not self.drain_cancelled_stream
+            is_cancelled,
+            abort_stream=not self.drain_cancelled_stream,
+            call_state=call_state,
         )
+        call_state.should_cancel = kwargs["should_cancel"]
 
         def invoke() -> None:
             try:
@@ -476,10 +523,13 @@ class ChatModel:
                 # charged, settled or tripped by a call it never made.
                 if is_cancelled():
                     return
-                outcome["reply"] = self.chat_fn(
+                invoke_kwargs = dict(kwargs)
+                probe = invoke_kwargs.pop("should_cancel")
+                chat_fn = bind_call_context(self.chat_fn, should_cancel=probe)
+                outcome["reply"] = chat_fn(
                     copied_messages,
                     self.cfg,
-                    **kwargs,
+                    **invoke_kwargs,
                 )
             except BaseException as error:  # propagate on the owning turn
                 outcome["error"] = error
@@ -488,7 +538,8 @@ class ChatModel:
                     report_abandoned_reply()
                 finally:
                     finished.set()
-                    detached_call.settle()
+                    if cancelled.is_set():
+                        settle_unreported()
 
         provider_thread = threading.Thread(
             target=carry_context(invoke),
@@ -503,6 +554,11 @@ class ChatModel:
         while True:
             if is_cancelled():
                 return abandon()
+            try:
+                call_state.remaining(getattr(self.cfg, "provider", None))
+            except LLMDeadlineExceeded:
+                abandon()
+                raise
             if self.stream:
                 try:
                     delta = deltas.get(timeout=0.05)
@@ -525,6 +581,7 @@ class ChatModel:
                 break
         if is_cancelled():
             return abandon()
+        settle_unreported()
         if "error" in outcome:
             raise outcome["error"]
         return outcome["reply"]
@@ -569,6 +626,11 @@ class CompactionPolicy:
     # Polled between summary chunks and handed to each summary ``chat()``;
     # the engine's own cancellation seam never reaches those calls.
     should_cancel: Callable[[], bool] | None = None
+    # Who may spend, and where the spend is recorded. Injected like every other
+    # seam here so a bare CompactionPolicy (CLI, delegation, tests) stays inert:
+    # the summarizer must never be stricter than the turn it serves.
+    quota_gate: Callable[[], None] | None = None
+    usage_sink: Callable[[Any], None] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS
@@ -699,7 +761,17 @@ class CompactionPolicy:
                 context_budget=context_budget,
                 workspace=workspace,
                 should_cancel=self.should_cancel,
+                quota_gate=self.quota_gate,
+                usage_sink=self.usage_sink,
             )
+        except QuotaExceeded as error:
+            # A quota window is a transient state of the ACCOUNT, not a defect
+            # in compaction. Counted as a failure it would trip the breaker at
+            # `max_failure_attempts` and disable compaction for the rest of an
+            # otherwise healthy run, long after the window reopened.
+            state.metadata["last_compaction_error"] = str(error)[:500]
+            self.log(f"[compaction refused] {error}")
+            return messages, before
         except CompactionCancelled as error:
             # The user stopped the run; that is not a compaction failure and
             # must not count toward the breaker.

@@ -37,6 +37,21 @@ import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
 
+// One mapping from a saved profile row to the path it selects. The reducer keys
+// receipt invalidation on these identity fields, so two hand-written copies that
+// drift (one trims `base_url`, one does not) read as a model change.
+function pathFromProfile(profile: Profile): PathChoice {
+  const id = asString(profile.id);
+  return {
+    kind: "existing",
+    profileId: id,
+    provider: asString(profile.provider),
+    model: asString(profile.model),
+    baseUrl: asString(profile.base_url),
+    name: asString(profile.name || id),
+  };
+}
+
 function stepLabel(step: RequiredStep): string {
   return ot("onboarding.step." + step);
 }
@@ -106,16 +121,7 @@ function PathStep({
                   name="onb-profile"
                   checked={selected}
                   disabled={busy}
-                  onChange={() =>
-                    onChoose({
-                      kind: "existing",
-                      profileId: id,
-                      provider: asString(p.provider),
-                      model: asString(p.model),
-                      baseUrl: asString(p.base_url),
-                      name: asString(p.name || p.id),
-                    })
-                  }
+                  onChange={() => onChoose(pathFromProfile(p))}
                 />
                 <span>
                   {asString(p.name || p.id)}
@@ -213,8 +219,13 @@ function PathStep({
             class="cust-input"
             value={state.path.model}
             onInput={(e) =>
+              // An edited model is no longer the profile that was saved: Next
+              // saves a new one. Keeping the saved id let Test (reached through
+              // the checklist) probe the *old* model and file its receipt under
+              // the new name.
               onChoose({
                 ...state.path!,
+                profileId: "",
                 model: (e.currentTarget as HTMLInputElement).value,
               })
             }
@@ -346,6 +357,11 @@ export function WizardHost() {
     setTesting(false);
   };
 
+  const choosePath = (path: PathChoice) => {
+    leaveTest();
+    dispatch({ type: "choosePath", path });
+  };
+
   const onSkip = async () => {
     leaveTest();
     setBusy(true);
@@ -390,8 +406,9 @@ export function WizardHost() {
       const created = await saveModelProfile(body);
       const id = asString(created.id);
       if (id) await activateModelProfile(id);
+      if (!alive.current) return;
       const chosen = { ...path, profileId: id };
-      dispatch({ type: "choosePath", path: chosen });
+      choosePath(chosen);
       const refreshed = await fetchOnboarding();
       if (!alive.current) return;
       setStatus(refreshed);
@@ -404,7 +421,20 @@ export function WizardHost() {
   };
 
   const onTest = async () => {
-    const id = state.path?.profileId || status?.active_id || "";
+    // The receipt is filed under `state.path`, so that is the profile to probe.
+    // Falling back to the active profile whenever the path had no id measured
+    // some *other* model -- an unsaved local choice reached through the
+    // checklist showed a cloud profile's capabilities as its own, and spent a
+    // provider request on a profile nobody picked on this screen. With no path
+    // at all, the active profile becomes the path first, then is probed.
+    let id = state.path?.profileId || "";
+    if (!state.path && status?.active_id) {
+      const active = status.profiles.find((profile) => asString(profile.id) === status.active_id);
+      if (active) {
+        choosePath(pathFromProfile(active));
+        id = status.active_id;
+      }
+    }
     if (!id) {
       dispatch({ type: "fail", message: ot("onboarding.test.needProfile"), requestId: "" });
       return;
@@ -422,6 +452,7 @@ export function WizardHost() {
         receipt: readCapabilityReceipt(result.capability_receipt),
         detail: result.reachable === true ? "" : detail,
         reachable: result.reachable === true,
+        profileId: id,
       });
       if (result.reachable !== true) {
         dispatch({
@@ -439,6 +470,7 @@ export function WizardHost() {
         receipt: state.receipt,
         detail: next.message,
         reachable: false,
+        profileId: id,
       });
     } finally {
       if (current()) setTesting(false);
@@ -455,6 +487,10 @@ export function WizardHost() {
     try {
       const refreshed = await activateExistingModelProfile(id);
       if (!alive.current) return;
+      // The saved profile may have been edited since the wizard listed it.
+      // Refresh the identity too, so the old model's receipt cannot survive.
+      const selected = refreshed.profiles.find((profile) => asString(profile.id) === id);
+      if (selected) choosePath(pathFromProfile(selected));
       setStatus(refreshed);
       dispatch({ type: "next" });
     } catch (error) {
@@ -557,7 +593,7 @@ export function WizardHost() {
                 status={status}
                 state={state}
                 busy={busy}
-                onChoose={(path) => dispatch({ type: "choosePath", path })}
+                onChoose={choosePath}
                 onSaveNew={onSaveNew}
               />
             ) : null}

@@ -333,13 +333,24 @@ def test_every_new_string_is_in_both_languages():
 
 @pytest.fixture
 def no_backoff(monkeypatch):
-    """Retries still happen; only the sleeps between them are skipped."""
+    """Retries still happen; only the sleeps between them are skipped.
+
+    ``monotonic`` is the real clock: the transport reads it for the logical
+    call's total deadline, so a namespace carrying only ``sleep`` turned every
+    connect failure into an ``AttributeError`` the probe reported as "internal
+    error" -- the exact misreport these tests exist to catch.
+    """
+    import time as real_time
     import types
 
     from openai4s.llm import transport
 
     slept: list[float] = []
-    monkeypatch.setattr(transport, "time", types.SimpleNamespace(sleep=slept.append))
+    monkeypatch.setattr(
+        transport,
+        "time",
+        types.SimpleNamespace(sleep=slept.append, monotonic=real_time.monotonic),
+    )
     return slept
 
 
@@ -411,11 +422,15 @@ def test_an_unreachable_endpoint_is_named_and_not_probed_twice(
 
     attempts: list[str] = []
 
-    def _unreachable(request, timeout=None):
+    def _unreachable(request, **_kwargs):
         attempts.append(request.full_url)
         raise urllib.error.URLError(reason)
 
-    monkeypatch.setattr(transport.urllib.request, "urlopen", _unreachable)
+    # `_urlopen` is the transport's documented injectable open seam; the real
+    # path goes through the shared deadline watchdog rather than
+    # `urllib.request.urlopen`, so patching that module function stopped
+    # intercepting anything.
+    monkeypatch.setattr(transport, "_urlopen", _unreachable)
     runner, call = api
     profile_id = _profile_at(call, "http://127.0.0.1:9/v1")
     result = call("POST", f"/model-profiles/{profile_id}/probe")

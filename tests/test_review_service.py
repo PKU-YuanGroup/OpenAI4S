@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from openai4s.config import LLMConfig
+from openai4s.llm import normalize_usage
+from openai4s.llm.usage import copy_usage, measured_total
 from openai4s.server.reviews import ReviewPorts, ReviewService
 
 
@@ -154,6 +156,25 @@ class HeldThreads:
 
     def run(self, index=0):
         self.created[index]["target"]()
+
+
+def _provider_usage(input_tokens, output_tokens):
+    """The usage a real reviewer call returns.
+
+    ``review.review_evidence`` gets its counters from ``chat``, which attests
+    them at the wire seam with ``normalize_usage``, and then projects them with
+    ``copy_usage``. A fake that returns a bare dict skips that seam, and a bare
+    dict carries no provenance -- so a meter refuses it rather than certifying
+    numbers nothing attested. Each test below pairs its charge with that
+    refusal.
+    """
+    return copy_usage(
+        normalize_usage(
+            {"input_tokens": input_tokens, "output_tokens": output_tokens},
+            "chatgpt",
+        ),
+        {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    )
 
 
 def _service(
@@ -354,7 +375,7 @@ def test_run_builds_evidence_persists_usage_and_streams_exact_steps(tmp_path):
             "verdict": "pass",
             "summary": "No issues found",
             "issues": [],
-            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "usage": _provider_usage(11, 3),
             "model": cfg.model,
         }
 
@@ -392,6 +413,27 @@ def test_run_builds_evidence_persists_usage_and_streams_exact_steps(tmp_path):
     assert [event["status"] for event in events] == ["running", "done"]
     assert threads.created[0]["name"] == "openai4s-review-call-frame"
     assert threads.created[0]["daemon"] is True
+
+    # Paired negative for the charge above: a second review reporting the same
+    # numbers as a bare dict never passed the attestation seam, so the frame
+    # counters must record nothing rather than certify what no one measured.
+    reviews["call"] = lambda _evidence, cfg: {
+        "verdict": "pass",
+        "summary": "No issues found",
+        "issues": [],
+        "usage": {"input_tokens": 11, "output_tokens": 3},
+        "model": cfg.model,
+    }
+    service.run(
+        state,
+        events.append,
+        user_text="Create a report",
+        assistant_text="Report created",
+        artifact_versions_before={"old": "v1"},
+        cell_count_before=1,
+        step_count_before=0,
+    )
+    assert store.tokens == [("frame", 11, 3), ("frame", 0, 0)]
 
 
 def test_run_honors_pre_provider_cancel_without_starting_provider():
@@ -458,7 +500,11 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     def slow_review(_evidence, _cfg):
         started.set()
         assert release.wait(3)
-        return {"verdict": "pass", "summary": "No issues found", "usage": {}}
+        return {
+            "verdict": "pass",
+            "summary": "No issues found",
+            "usage": _provider_usage(11, 3),
+        }
 
     service, store, state, events, _jobs, _reviews = _service(
         review_box={"call": slow_review}
@@ -487,6 +533,7 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     assert service.call_inflight("frame") is True
     assert store.steps[0]["output"]["provider_call"] == "finishing"
 
+    state.cancel.clear()  # next turn must not erase the old call identity
     release.set()
     deadline = time.time() + 2
     while time.time() < deadline and service.call_inflight("frame"):
@@ -494,6 +541,11 @@ def test_cancelled_provider_finishes_asynchronously_and_blocks_duplicates():
     assert service.call_inflight("frame") is False
     assert store.steps[0]["output"]["provider_call"] == "finished"
     assert events[-1]["summary"] == "Review cancelled"
+
+    assert store.tokens == [("frame", 11, 3)]
+    # Paired negative: the charge above holds because the fake's usage is
+    # attested, not because the counters look plausible.
+    assert measured_total({"input_tokens": 11, "output_tokens": 3}) is None
 
 
 def test_submit_manual_review_preserves_status_tail_and_job_pruning():
@@ -617,7 +669,7 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
             "verdict": "pass",
             "summary": "No issues found",
             "issues": [],
-            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "usage": _provider_usage(11, 3),
             "model": cfg.model,
         }
         service.run(
@@ -636,5 +688,109 @@ def test_a_review_advances_the_governance_ledger(tmp_path):
         }
         assert totals.get("llm_input_tokens") == 11, totals
         assert totals.get("llm_output_tokens") == 3, totals
+
+        # Paired negative: an unattested reply must not fill the same limit.
+        # The ledger records the refusal as a VISIBLE row and the charged
+        # totals stay where the attested call left them.
+        #
+        # `llm_review_unmeasured`, not `llm_*_unknown`: the Reviewer runs on a
+        # deliberately different model, so a provider the DAEMON picked
+        # answering without a usage block would otherwise refuse the member's
+        # whole quota window -- `check_quota` refuses on the mere presence of
+        # an `*_unknown` row -- while the member's own traffic is perfectly
+        # measurable. Same answer the session titler got, for the same reason.
+        reviews["call"] = lambda _evidence, cfg: {
+            "verdict": "pass",
+            "summary": "No issues found",
+            "issues": [],
+            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "model": cfg.model,
+        }
+        service.run(
+            state,
+            events.append,
+            user_text="Create a report",
+            assistant_text="Report created",
+            artifact_versions_before={},
+            cell_count_before=0,
+            step_count_before=0,
+        )
+        totals = {
+            row["kind"]: row["total"]
+            for row in store.governance.usage_summary(user_id=user["id"])
+        }
+        assert totals.get("llm_input_tokens") == 11, totals
+        assert totals.get("llm_output_tokens") == 3, totals
+        assert totals.get("llm_review_unmeasured") == 2, totals
+        assert "llm_input_tokens_unknown" not in totals, totals
+        assert "llm_output_tokens_unknown" not in totals, totals
+        # The consequence, not just the row name: the window still admits.
+        store.governance.check_quota(
+            user_id=user["id"], project_id="p", kind="llm_input_tokens"
+        )
+    finally:
+        store.close()
+
+
+def test_a_host_side_review_refusal_does_not_lock_the_quota_window(tmp_path):
+    """`ReviewError` is raised twice BEFORE the provider is contacted: the
+    evidence packet could not be bounded, or it omitted changed artifacts.
+    `ReviewService` meters unless the error says the call never started, and
+    `ReviewError` did not say so -- so a host-side refusal was accounted as a
+    completed call carrying no counters, which is not an over-charge but a
+    `*_unknown` row, and `check_quota` refuses the whole window on its
+    presence. `ReviewService` caps `changed` at 64 while still counting the
+    total, so a turn touching 65 artifacts took that raise every time: a member
+    locked out of their own session with zero real spend.
+
+    Asserted on the real Store against a real `check_quota`, because both the
+    row and the refusal are database facts."""
+    from openai4s.review import ReviewError
+    from openai4s.store import get_store
+
+    store = get_store(str(tmp_path / "state.db"))
+    try:
+        user = store.team.create_user(username="alice", password="pw", role="member")
+        fid = store.new_frame(kind="turn", project_id="p")
+        store.team.set_session_owner(fid, user["id"], project_id="p")
+        store.governance.set_quota(
+            scope="user",
+            scope_id=user["id"],
+            kind="llm_input_tokens",
+            limit_amount=1_000_000,
+            window="day",
+        )
+
+        threads = ImmediateThreads()
+        review_box = {}
+        service, _store, state, events, _jobs, reviews = _service(
+            store, review_box=review_box, thread_factory=threads
+        )
+        state.root_frame_id = fid
+
+        def _refuse(_evidence, _cfg):
+            raise ReviewError("review evidence omitted changed artifacts")
+
+        reviews["call"] = _refuse
+        service.run(
+            state,
+            events.append,
+            user_text="Create a report",
+            assistant_text="Report created",
+            artifact_versions_before={},
+            cell_count_before=0,
+            step_count_before=0,
+        )
+
+        totals = {
+            row["kind"]: row["total"]
+            for row in store.governance.usage_summary(user_id=user["id"])
+        }
+        assert "llm_input_tokens_unknown" not in totals, totals
+        assert "llm_output_tokens_unknown" not in totals, totals
+        # The consequence, not just the row: the window still admits.
+        store.governance.check_quota(
+            user_id=user["id"], project_id="p", kind="llm_input_tokens"
+        )
     finally:
         store.close()

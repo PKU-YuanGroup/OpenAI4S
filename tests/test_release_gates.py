@@ -1535,6 +1535,270 @@ def test_the_linux_bundle_ships_the_resources_only_a_runtime_check_would_miss():
     assert "cross-build" in build.lower()
 
 
+def _desktop_string_value(value: str) -> str:
+    """Decode the desktop-file string layer (Desktop Entry spec section 4)."""
+    escapes = {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
+    decoded = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            index += 1
+            assert index < len(value), "incomplete desktop string escape"
+            char = escapes[value[index]]
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def _desktop_launcher_argv(value: str) -> list[str]:
+    """Parse executable arguments using section 7, not shell quoting rules.
+
+    Quoting is undone after the string layer, and field codes are expanded
+    last. This launcher takes no file/URL arguments, so only literal %% is
+    permitted; treating %F in an unpack path as files is a broken launch.
+
+    This is the specification's reading order, not a desktop's. GLib (since
+    2.36) and KIO both check that the Exec program exists *before* they expand
+    %%, so a path containing a percent sign decodes correctly here and is still
+    dropped by GNOME and KDE -- which is why install.sh warns about one and the
+    test below asserts that it does.
+    """
+    command = _desktop_string_value(value)
+    reserved = "\t\n\r\"'\\><~|&;$*?#()`"
+    arguments = []
+    index = 0
+    while index < len(command):
+        if command[index] == " ":
+            index += 1
+            continue
+        argument = []
+        if command[index] == '"':
+            index += 1
+            while index < len(command) and command[index] != '"':
+                char = command[index]
+                if char == "\\":
+                    index += 1
+                    assert index < len(command), "incomplete Exec argument escape"
+                    char = command[index]
+                    assert char in '\\"`$', "invalid Exec argument escape"
+                else:
+                    assert char not in "`$", "unescaped character in quoted argument"
+                argument.append(char)
+                index += 1
+            assert index < len(command), "unterminated Exec argument quote"
+            index += 1
+            assert index == len(command) or command[index] == " "
+        else:
+            while index < len(command) and command[index] != " ":
+                assert command[index] not in reserved, "unquoted reserved character"
+                argument.append(command[index])
+                index += 1
+        arguments.append("".join(argument))
+    argv = []
+    for decoded in arguments:
+        expanded = []
+        index = 0
+        while index < len(decoded):
+            char = decoded[index]
+            if char == "%":
+                index += 1
+                assert (
+                    index < len(decoded) and decoded[index] == "%"
+                ), "the executable path contains an unescaped desktop field code"
+            expanded.append(char)
+            index += 1
+        argv.append("".join(expanded))
+    return argv
+
+
+def _generated_linux_bundle(tmp_path, directory, themed_icon):
+    """A bundle directory written by the shipped step-6 generator, not installed."""
+    bash = shutil.which("bash")
+    if bash is None or os.name != "posix":
+        pytest.skip("Linux installer requires a POSIX host with Bash")
+    app = tmp_path / directory
+    (app / "bin").mkdir(parents=True)
+    (app / "runtime" / "bin").mkdir(parents=True)
+    (app / "runtime" / "bin" / "python3").symlink_to(sys.executable)
+    for relative, output in (("OpenAI4S", "desktop"), ("bin/openai4s", "cli")):
+        script = app / relative
+        script.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+        script.chmod(0o755)
+    icon = app / "share/icons/hicolor/512x512/apps/openai4s.png"
+    if themed_icon:
+        icon.parent.mkdir(parents=True)
+        icon.write_bytes(b"test icon")
+
+    home = tmp_path / "home $user & quoted"
+    data = home / "share\\name %F"
+    bins = home / "bin overrides"
+    user_data = home / ".openai4s" / "keep.txt"
+    user_data.parent.mkdir(parents=True)
+    user_data.write_text("saved session", encoding="utf-8")
+    env = {
+        **os.environ,
+        "APPDIR": str(app),
+        "APP_NAME": "OpenAI4S",
+        "APP_NAME_LOWER": "openai4s",
+        "HOME": str(home),
+        "XDG_BIN_HOME": str(bins),
+        "XDG_DATA_HOME": str(data),
+    }
+    build = (ROOT / "scripts" / "build_linux_bundle.sh").read_text("utf-8")
+    start = build.index('echo "-- [6/10]')
+    end = build.index("# 7) icons.", start)
+    subprocess.run(
+        [bash, "-c", build[start:end]], env=env, check=True, capture_output=True
+    )
+    return app, env, data, bins, user_data
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [
+        "ordinary-bundle",
+        "bundle with spaces",
+        "bundle $HOME 'single' \"double\" \\backslash %F %% & | `tick` ;<>~*?#()",
+        "bundle @APPDIR@ @ICON@",
+    ],
+)
+@pytest.mark.parametrize("themed_icon", [True, False])
+def test_linux_installer_launches_from_relocated_paths(
+    tmp_path, directory, themed_icon
+):
+    """Run the shipped generator and installer, then launch the rendered Exec."""
+    app, env, data, bins, user_data = _generated_linux_bundle(
+        tmp_path, directory, themed_icon
+    )
+    icon = app / "share/icons/hicolor/512x512/apps/openai4s.png"
+    installed = subprocess.run(
+        [str(app / "install.sh")], env=env, check=True, capture_output=True
+    )
+    # Escaping cannot make a percent sign launch from a GLib or KIO menu (see
+    # `_desktop_launcher_argv`), so the installer has to say so -- and only then.
+    assert (b"path contains '%'" in installed.stderr) == ("%" in directory)
+
+    desktop = data / "applications/openai4s.desktop"
+    fields = dict(
+        line.split("=", 1)
+        for line in desktop.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    argv = _desktop_launcher_argv(fields["Exec"])
+    assert argv == [str(app.resolve() / "OpenAI4S")]
+    assert subprocess.check_output(argv, env=env, text=True).strip() == "desktop"
+    assert _desktop_string_value(fields["Icon"]) == (
+        "openai4s" if themed_icon else str(icon.resolve())
+    )
+    cli = bins / "openai4s"
+    assert cli.resolve() == (app / "bin/openai4s").resolve()
+    assert subprocess.check_output([str(cli)], env=env, text=True).strip() == "cli"
+    if themed_icon:
+        assert (data / "icons/hicolor/512x512/apps/openai4s.png").read_bytes() == (
+            b"test icon"
+        )
+
+    subprocess.run(
+        [str(app / "uninstall.sh")], env=env, check=True, capture_output=True
+    )
+    assert not desktop.exists()
+    assert not cli.is_symlink()
+    assert not (data / "icons/hicolor/512x512/apps/openai4s.png").exists()
+    assert user_data.read_text(encoding="utf-8") == "saved session"
+
+
+def test_linux_installer_refuses_a_template_it_cannot_fill(tmp_path):
+    """Whole-line replacement that matches nothing has to fail, not pass through.
+
+    The renderer looks each template line up by exact text. A line that drifted
+    from its key -- an argument appended to Exec, a renamed launcher -- was
+    written out unchanged with exit 0, installing a menu entry that launches the
+    literal string `@APPDIR@`; the bundle verifier's substring checks still pass
+    such a template.
+    """
+    app, env, data, _bins, _user_data = _generated_linux_bundle(
+        tmp_path, "drifted bundle", True
+    )
+    template = app / "share/applications/openai4s.desktop.in"
+    template.write_text(
+        template.read_text("utf-8").replace(
+            "Exec=@APPDIR@/OpenAI4S", "Exec=@APPDIR@/OpenAI4S %U"
+        ),
+        encoding="utf-8",
+    )
+    installed = subprocess.run([str(app / "install.sh")], env=env, capture_output=True)
+    assert installed.returncode != 0
+    assert b"Exec=@APPDIR@/OpenAI4S" in installed.stderr
+    assert not (data / "applications/openai4s.desktop").exists()
+
+
+def test_linux_installer_carries_a_legacy_encoded_path_through(tmp_path):
+    """`sed` was byte-transparent; the renderer that replaced it has to be too.
+
+    argv reaches Python surrogate-escaped. Writing that back as strict UTF-8
+    raised -- after `write_text` had already opened the destination, so a
+    re-install under a legacy-encoded directory left the working menu entry at
+    zero bytes and aborted with the CLI link and icons half installed. Only the
+    rendering program is run here: APFS will not create such a directory, and
+    argv carries the bytes on every POSIX host.
+    """
+    app, _env, _data, _bins, _user_data = _generated_linux_bundle(
+        tmp_path, "legacy bundle", True
+    )
+    installer = (app / "install.sh").read_text("utf-8")
+    program = installer.split("<<'DESKTOP_ENTRY'\n", 1)[1].split(
+        "\nDESKTOP_ENTRY\n", 1
+    )[0]
+    destination = tmp_path / "rendered.desktop"
+    destination.write_text("the previous, working entry\n", encoding="utf-8")
+    icon = b"/home/j\xfcrgen/icons/openai4s.png"
+
+    subprocess.run(
+        [sys.executable, "-I", "-", str(app), icon, str(destination)],
+        input=program.encode("utf-8"),
+        check=True,
+        capture_output=True,
+    )
+    assert b"Icon=" + icon + b"\n" in destination.read_bytes()
+
+
+def test_the_linux_verifier_runs_the_installer_it_ships(tmp_path):
+    """The bundle gate executes install.sh; a static read cannot see it fail.
+
+    install.sh renders the menu entry with the *bundled* interpreter. The
+    verifier already ran that interpreter and never ran the installer, so an
+    installer that could not start it, or a template it could no longer fill,
+    shipped with every gate green. The generated bundle here stands in for the
+    unpacked archive; on the release runner the same check meets the real one.
+    """
+    verifier = _load_script("verify_linux_bundle")
+    app, _env, _data, _bins, _user_data = _generated_linux_bundle(
+        tmp_path, "bundle with spaces", True
+    )
+    verifier._check_installer_runs(app)
+
+    # A template line the renderer has no key for: substring checks still pass.
+    template = app / "share/applications/openai4s.desktop.in"
+    shipped = template.read_text("utf-8")
+    template.write_text(
+        shipped.replace("Exec=@APPDIR@/OpenAI4S", "Exec=@APPDIR@/OpenAI4S %U"),
+        encoding="utf-8",
+    )
+    verifier._check_desktop_entry(app)
+    with pytest.raises(verifier.BundleCheckError, match="did not run against"):
+        verifier._check_installer_runs(app)
+    template.write_text(shipped, encoding="utf-8")
+
+    # An embedded interpreter that will not start for the installer.
+    runtime = app / "runtime" / "bin" / "python3"
+    runtime.unlink()
+    runtime.write_text("#!/bin/sh\necho 'no isolated mode here' >&2\nexit 1\n", "utf-8")
+    runtime.chmod(0o755)
+    with pytest.raises(verifier.BundleCheckError, match="no isolated mode here"):
+        verifier._check_installer_runs(app)
+
+
 def test_the_windows_package_has_no_native_windows_execution_path():
     """Both halves, because either alone is satisfiable by a broken package."""
     launcher = (ROOT / "scripts" / "windows" / "openai4s.ps1").read_text("utf-8")

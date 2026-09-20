@@ -91,6 +91,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts import release_gates, release_receipts  # noqa: E402
+from scripts.release_consistency import (  # noqa: E402
+    PROVENANCE_NAME,
+    SBOM_NAME,
+    evidence_bundle_name,
+    stopped_evidence_name,
+    verify_release_consistency,
+)
 from scripts.release_gates import GateManifestError  # noqa: E402
 
 
@@ -125,9 +132,10 @@ def _sandbox_posture(
     }
 
 
-#: One name, because the writer and the collector disagreeing about it is
-#: exactly how the SBOM came to be built on every release and carried on none.
-SBOM_NAME = "sbom.cdx.json"
+#: `SBOM_NAME` and `PROVENANCE_NAME` are defined once, in `release_consistency`,
+#: and imported above: the writer and the collector disagreeing about the name
+#: is exactly how the SBOM came to be built on every release and carried on
+#: none, and the consistency gate is now a third reader of the same names.
 
 
 #: Where the default Web UI shell (`webui/dist/index.html`) loads its bundle
@@ -1085,10 +1093,24 @@ class Pipeline:
         if self.dry_run:
             self.assets = [self.assets_dir / f"openai4s-{self.version}.whl"]
             return StepResult("assets", True, "would collect built assets")
+        # This pipeline's own bundles are outputs, not inputs. Both are `.zip`
+        # files carrying this version, so a retry in the same directory -- after
+        # a failed upload, or any stopped run -- collected them as distributions:
+        # they became provenance subjects and SBOM references with no build
+        # receipt behind them, and the consistency check before upload then
+        # refused the retry while telling the operator to restore assets nobody
+        # had touched. `step_evidence` re-seals the first; the second is a
+        # diagnostic record and never ships.
+        generated = {
+            evidence_bundle_name(self.version),
+            stopped_evidence_name(self.version),
+        }
         candidates = sorted(
             path
             for path in self.assets_dir.glob("*")
-            if path.is_file() and path.suffix in DISTRIBUTION_SUFFIXES
+            if path.is_file()
+            and path.suffix in DISTRIBUTION_SUFFIXES
+            and path.name not in generated
         )
         # A distribution whose version is not exactly this release's is a
         # leftover from another build — belt to the `step_build` clear's
@@ -1477,7 +1499,7 @@ class Pipeline:
 
     def step_provenance(self) -> StepResult:
         if self.dry_run:
-            return StepResult("provenance", True, "would write provenance.intoto.json")
+            return StepResult("provenance", True, f"would write {PROVENANCE_NAME}")
         commit = ""
         completed = self._run(["git", "rev-parse", "HEAD"])
         if completed.returncode == 0:
@@ -1488,7 +1510,7 @@ class Pipeline:
             version=self.version,
             source={"uri": uri, "digest": {"sha1": commit}},
         )
-        target = self.assets_dir / "provenance.intoto.json"
+        target = self.assets_dir / PROVENANCE_NAME
         target.write_text(json.dumps(document, indent=2, sort_keys=True), "utf-8")
         self.assets.append(target)
         return StepResult(
@@ -1533,7 +1555,7 @@ class Pipeline:
                 # release has no SBOM" rather than "the collector asked for the
                 # wrong name".
                 self.assets_dir / SBOM_NAME,
-                self.assets_dir / "provenance.intoto.json",
+                self.assets_dir / PROVENANCE_NAME,
                 *sorted(
                     self.assets_dir.glob(
                         f"{release_receipts.BUILD_RECEIPT_PREFIX}*.json"
@@ -1543,7 +1565,7 @@ class Pipeline:
             )
             if path.is_file()
         ]
-        destination = self.assets_dir / f"openai4s-{self.version}-evidence.zip"
+        destination = self.assets_dir / evidence_bundle_name(self.version)
         try:
             manifest = seal_evidence_bundle(destination, payload, files=carried)
         except Exception as error:  # noqa: BLE001
@@ -1823,6 +1845,7 @@ class Pipeline:
             return StepResult(
                 "upload", True, f"would upload {len(self.assets)} asset(s)"
             )
+        self._verify_consistency(self.assets)
         completed = self._gh(
             [
                 "release",
@@ -2002,10 +2025,10 @@ class Pipeline:
         exactly. ``SHA256SUMS`` is still cross-checked, so a disagreement between
         the two is itself a refusal rather than a silent preference.
 
-        Without an attestation (a hand-run ``--only publish``) this falls back to
-        the old self-referential check and says so, because refusing outright
-        would remove the documented manual recovery path -- but it is a weaker
-        claim and is reported as one.
+        A hand-run ``--only publish`` without an attestation still checks the
+        complete sealed evidence chain and shared Windows/Linux payload. It
+        cannot establish an independent staging baseline, but refreshing a
+        mutable SHA256SUMS alone must never make stale evidence acceptable.
         """
         completed = self._gh(
             ["release", "view", f"v{self.version}", "--json", "assets"]
@@ -2095,7 +2118,32 @@ class Pipeline:
                         f"digest ({actual[:12]} != {digest[:12]}); refusing to "
                         f"publish"
                     )
+            # `checked` holds the digest of every one of these files, taken in
+            # the loop above; the gate does not read them all a second time.
+            self._verify_consistency(
+                [Path(temp) / name for name in expected], digests=checked
+            )
         return checked
+
+    def _verify_consistency(
+        self, assets: Sequence[Path], *, digests: Mapping[str, str] | None = None
+    ) -> None:
+        try:
+            verify_release_consistency(
+                assets,
+                version=self.version,
+                required_kinds=required_receipt_kinds(assets),
+                # The flags as given, not `_frozen_sha()`: with no flag that is
+                # this checkout's HEAD, which says nothing about the draft. When
+                # a SHA or a run id *was* supplied, the sealed chain has to
+                # agree with it -- staging holds its receipts to both, and
+                # accepting the flag here only to ignore it is not that check.
+                expected_sha=self.source_sha or "",
+                workflow_run_id=self.workflow_run_id or "",
+                digests=digests,
+            )
+        except release_receipts.ReceiptError as error:
+            raise ReleaseError(str(error)) from error
 
     def step_publish(self) -> StepResult:
         """The last cross-channel step: flip the draft public.
@@ -2269,9 +2317,7 @@ class Pipeline:
             # the artifacts would be a dry run with a side effect.
             return
         try:
-            destination = (
-                self.assets_dir / f"openai4s-{self.version}-evidence-stopped.zip"
-            )
+            destination = self.assets_dir / stopped_evidence_name(self.version)
             seal_evidence_bundle(destination, dict(report))
         except Exception as error:  # noqa: BLE001
             print(f"[release] could not seal the stopped run's evidence: {error}")

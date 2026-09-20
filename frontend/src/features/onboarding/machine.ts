@@ -77,6 +77,8 @@ export type WizardAction =
       receipt: WizardReceipt | null;
       detail: string;
       reachable: boolean;
+      /** The profile the probe actually measured. */
+      profileId?: string;
     }
   | { type: "fail"; message: string; requestId: string }
   | { type: "clearError" }
@@ -139,13 +141,25 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
         surface: "wizard",
         complete: false,
       };
-    case "choosePath":
+    case "choosePath": {
+      const path = takePath(action.path);
+      // A receipt belongs to this exact model selection, not its display name
+      // or whether a saved cloud profile is now selected as an existing one.
+      const changed = !state.path ||
+        state.path.profileId !== path.profileId ||
+        state.path.provider !== path.provider ||
+        state.path.model !== path.model ||
+        state.path.baseUrl !== path.baseUrl;
       return {
         ...state,
-        path: takePath(action.path),
-        decided: withDecided(state, "path"),
+        path,
+        decided: withDecided(state, "path").filter((step) => !changed || step !== "test"),
+        receipt: changed ? null : state.receipt,
+        probeDetail: changed ? "" : state.probeDetail,
+        testClicked: changed ? false : state.testClicked,
         error: null,
       };
+    }
     case "goto":
       return {
         ...state,
@@ -197,6 +211,12 @@ export function reduceWizard(state: WizardState, action: WizardAction): WizardSt
         probeDetail: "",
       };
     case "testResult":
+      // The receipt is filed under `state.path`, so it has to have been
+      // measured for it. Clearing on an identity change covers what is already
+      // stored; this covers what is still arriving, whoever sent it.
+      if (action.profileId !== undefined && action.profileId !== (state.path?.profileId ?? "")) {
+        return state;
+      }
       return {
         ...state,
         receipt: action.receipt,

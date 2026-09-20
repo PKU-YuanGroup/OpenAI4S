@@ -6,7 +6,7 @@
 
 ## 1. 先备份数据库
 
-0.3.0 中第一个打开数据库的命令会把 `<data_dir>/openai4s.db` 从 schema **27** 迁移到 schema **32**。启动守护进程和运行 `openai4s run` 都会触发迁移。`openai4s doctor` 不会：它不以写方式打开数据库，只读取 schema 版本，把待进行的升级报告为警告（因此退出码不为 0），数据库保持不变。`openai4s diagnostics` 也不会：它生成的诊断包在 `report.json` 里记录待进行的升级，数据库同样保持不变。数据目录默认是 `~/.openai4s`，除非用 `OPENAI4S_DATA_DIR` 指定了别的位置。`pip` 安装、Linux tarball 和 v0.2.0 macOS 应用都使用这个默认位置。
+0.3.0 中第一个打开数据库的命令会把 `<data_dir>/openai4s.db` 从 schema **27** 迁移到 schema **32**。启动守护进程和运行 `openai4s run` 都会触发迁移。`openai4s doctor` 不会：它不以写方式打开数据库，只读取 schema 版本，把待进行的升级报告为警告（因此退出码不为 0），数据库保持不变。`openai4s diagnostics` 也不会：它生成的诊断包在 `report.json` 里记录待进行的升级，数据库同样保持不变。数据目录默认是 `~/.openai4s`，除非用 `OPENAI4S_DATA_DIR` 指定了别的位置。`pip` 安装、Linux tarball 和 macOS 应用都使用这个默认位置。
 
 迁移开始前会先把数据库复制为 `openai4s.db.v27.bak`。迁移失败时保留这份副本，**迁移成功后会删除它**。所以一次正常的升级之后，不会留下任何 0.2.x 数据库的副本。
 
@@ -66,5 +66,5 @@ cp -a ~/.openai4s-0.2-backup ~/.openai4s
 * **`openai4s run` 的退出码。** 只有当运行提交了结果时，命令才以 `0` 退出。因其他原因停止的运行（例如达到轮数上限、没有进展或被取消）以 `3` 退出。`--json` 输出里仍然带有 `stop_reason`。把「运行结束」一律当作成功的脚本应改为检查退出码。运行开始之前就被拒绝时同样以 `2` 退出：任务为空、`--allow-test-command` 无效、显式代码模式下没有任何途径能授权它的测试命令，或它不会打开的数据库，即比当前版本新的数据库（`future_schema`）或升级失败的数据库（`migration_failed`，见第 1 节）。加 `--json` 时，错误和 code 会打印在 stdout。
 * **`openai4s stop` 等得更久。** 0.2.x 只等守护进程大约 5 秒，之后就报告失败，或在加了 `--force` 时发送 SIGKILL。0.3.0 最多会先等 `--timeout`（默认 30 秒）。守护进程过了最初 5 秒仍未退出时，才会在 stderr 打印一行 `shutting down…` 并继续等待；在那之前就退出的，只打印 `daemon stopped`。依赖短等待的脚本可以传 `--timeout 5`（旧的 SIGKILL 行为再加 `--force`）。
 * **容器镜像。** 镜像使用 Python 3.14，而 0.2.0 镜像使用 3.12。如果你扩展过镜像，或在运行中的容器里安装过包，请针对 3.14 重新构建或重新安装。
-* **没有 macOS 磁盘镜像。** v0.3.0 不发布 `.dmg`。在 Mac 上请从 PyPI 安装（见 [上手指南](startup-guide.md#zh)）。v0.2.0 应用仍能打开 0.2.x 的数据目录，但第 2 节同样适用于它：不要让它打开已被 0.3.0 升级过的数据目录。
+* **macOS 磁盘镜像是预览版。** v0.3.0 附带一个面向 Apple Silicon、只做了 ad-hoc 签名且未经公证的 `.dmg`；Intel Mac 请从 PyPI 安装（见 [上手指南](startup-guide.md#zh)）。用它替换 v0.2.0 应用后，首次启动就会升级数据目录，所以请先备份。v0.2.0 应用仍能打开 0.2.x 的数据目录，但第 2 节同样适用于它：不要让它打开已被 0.3.0 升级过的数据目录。
 * **Skill 安装器。** npm 包 `@pku-yuangroup/openai4s-skills@0.2.0` 仍可安装，包含 603 个 Skill；仓库和 0.3.0 wheel 带有 604 个。

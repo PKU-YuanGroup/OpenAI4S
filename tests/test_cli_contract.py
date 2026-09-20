@@ -709,7 +709,28 @@ def test_run_that_did_not_complete_exits_non_zero_with_its_result_intact(
         assert f"=== stop_reason: {stop_reason} ===" in out
 
 
-def _scripted_cli_run(tmp_path, monkeypatch, replies, *, max_turns):
+#: The counters every scripted reply below reports, before attestation.
+_REPLY_COUNTERS = {"prompt_tokens": 11, "completion_tokens": 3}
+
+
+def _attested_reply_usage():
+    """The usage a real provider reply carries by the time the loop sees it.
+
+    ``llm.chat`` runs every reply through ``normalize_usage`` before returning
+    it, and that call is the seam that attests the counters -- only an attested
+    value may be charged to a frame. A fake that hands the loop a bare dict is
+    skipping the seam, not modelling a provider, so it must not be metered;
+    each test below pairs its row with that refusal. The provider id is a real
+    one because attestation resolves a wire's usage mapping, while the config's
+    ``deepseek`` is the suite-wide fake; both read the same OpenAI-compatible
+    ``prompt_tokens``/``completion_tokens`` shape this reply uses.
+    """
+    from openai4s.llm import normalize_usage
+
+    return normalize_usage(dict(_REPLY_COUNTERS), "chatgpt")
+
+
+def _scripted_cli_run(tmp_path, monkeypatch, replies, *, max_turns, usage=None):
     """Drive the real ``main(["run", ...])`` and real Agent on a scripted chat."""
     import openai4s.agent.loop as loop_mod
     from openai4s.config import Config, LLMConfig
@@ -721,13 +742,14 @@ def _scripted_cli_run(tmp_path, monkeypatch, replies, *, max_turns):
         max_turns=max_turns,
     )
     pending = list(replies)
+    reply_usage = _attested_reply_usage() if usage is None else usage
 
     def chat(messages, cfg, **kwargs):
         del messages, cfg, kwargs
         return {
             "content": pending.pop(0) if pending else "Still thinking.",
             "reasoning": None,
-            "usage": {"prompt_tokens": 11, "completion_tokens": 3},
+            "usage": reply_usage,
             "finish_reason": "stop",
             "raw": {},
         }
@@ -751,6 +773,8 @@ def _only_frame_row(cfg):
 def test_real_cli_run_hitting_max_turns_exits_3_and_closes_its_frame_failed(
     tmp_path, monkeypatch, capsys
 ):
+    from openai4s.llm.usage import measured_usage
+
     module, cfg = _scripted_cli_run(
         tmp_path, monkeypatch, ["Still thinking."] * 4, max_turns=2
     )
@@ -760,11 +784,17 @@ def test_real_cli_run_hitting_max_turns_exits_3_and_closes_its_frame_failed(
     assert status == 3
     assert json.loads(capsys.readouterr().out)["stop_reason"] == "max_turns"
     assert _only_frame_row(cfg) == ("failed", 22, 6)
+    # Paired negative: the identical counters as a bare dict are refused by the
+    # very call the frame meter makes, so the row above is evidence of the
+    # attestation and not of a key scan that would charge anything dict-shaped.
+    assert dict(measured_usage(dict(_REPLY_COUNTERS))) == {}
 
 
 def test_real_cli_run_that_submits_exits_0_and_closes_its_frame_done(
     tmp_path, monkeypatch, capsys
 ):
+    from openai4s.llm.usage import measured_usage
+
     module, cfg = _scripted_cli_run(
         tmp_path,
         monkeypatch,
@@ -777,6 +807,32 @@ def test_real_cli_run_that_submits_exits_0_and_closes_its_frame_done(
     assert status == 0
     assert json.loads(capsys.readouterr().out)["stop_reason"] == "submitted"
     assert _only_frame_row(cfg) == ("done", 11, 3)
+    # Paired negative, as above: unattested counters of the same shape charge
+    # nothing, which is what makes 11/3 a measurement rather than a key scan.
+    assert dict(measured_usage(dict(_REPLY_COUNTERS))) == {}
+
+
+def test_a_reply_whose_usage_was_never_attested_charges_the_frame_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """The same run, with the bare dict a fake (or a stripped copy of a real
+    reply) would carry: the frame closes ``done`` and is charged 0/0. Trusting
+    it would certify counters nothing measured, so the CLI meter fails closed
+    and the run instead shows up unknown in the governance ledger."""
+
+    module, cfg = _scripted_cli_run(
+        tmp_path,
+        monkeypatch,
+        ["```python\nhost.submit_output({'summary': 'ok'}, ['Computed it'])\n```"],
+        max_turns=3,
+        usage=dict(_REPLY_COUNTERS),
+    )
+
+    status = module.main(["run", "--json", "submit once"])
+
+    assert status == 0
+    assert json.loads(capsys.readouterr().out)["stop_reason"] == "submitted"
+    assert _only_frame_row(cfg) == ("done", 0, 0)
 
 
 @pytest.mark.parametrize("task", ["", "   ", "\n\t "])

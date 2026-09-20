@@ -8,6 +8,7 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`failure.ts`](failure.ts) | 实时与重开会话共用的失败提示；流式中断或重复动作停止后提供显式继续入口。 |
 | [`cardState.ts`](cardState.ts) | 实时活动卡片的状态：新的单元卡片显示进度图标（而非成功对勾）并记录 `producing_cell_id`；`notebook_cell_finished`（由 Notebook 的处理器转发）把该卡片标为失败（x 图标、错误色边条、"失败 · N 行"）、成功或已停止；`turnDone` 把仍在运行的卡片收尾为中性的"已结束"。单元结束后，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"，单元自带标题保留。功能内文案。 |
 | [`copy.ts`](copy.ts) | 当前UI所属的双语历史恢复文案；不改自动提取的语言文件。 |
 | [`components.tsx`](components.tsx) | `MessageList`（`#messages` / `#jump-pill`）、消息宿主外的可访问历史状态/重试入口，以及 `StreamingPre`。 |

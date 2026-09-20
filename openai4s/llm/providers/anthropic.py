@@ -7,8 +7,10 @@ import os
 from typing import Any
 
 from ..messages import _anthropic_messages
-from ..models import LLMError
+from ..models import LLMError, TransportError, status_is_retryable
 from ..tooling import _apply_anthropic_tools, _assistant_message, _normalized_tool_call
+from ..transport import bind_call_context, streaming_refused
+from ..usage import RawUsage
 
 _ANTHROPIC_VERSION = "2023-06-01"
 
@@ -57,7 +59,7 @@ def _chat_anthropic(
                 url, dict(payload), headers, cfg, on_delta, post_sse=post_sse
             )
         except _StreamStartError:
-            pass
+            post_json = bind_call_context(post_json, max_attempts=1)
     body = post_json(url, payload, headers, cfg.timeout_s)
     try:
         blocks = body["content"]
@@ -92,7 +94,7 @@ def _chat_anthropic(
 
 
 class _StreamStartError(Exception):
-    """The stream failed before an event, so a blocking retry is safe."""
+    """An endpoint explicitly refused streaming before semantic output."""
 
 
 def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> dict:
@@ -102,8 +104,9 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
         "blocks": {},
         "usage": {},
         "finish": None,
-        "started": False,
         "terminal": False,
+        "usage_final": False,
+        "output_committed": False,
     }
 
     def _block(index: int) -> dict[str, Any]:
@@ -114,24 +117,46 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
             return
         try:
             on_delta(piece)
+        except LLMError:
+            raise
         except Exception:  # noqa: BLE001 - a UI callback must not kill the stream
             pass
 
-    def _on_event(evt: dict) -> None:
+    def _on_event(evt: dict) -> bool | None:
         event_type = evt.get("type")
         if event_type == "error" or evt.get("error"):
-            state["started"] = True
             error = evt.get("error")
             detail = error.get("message") if isinstance(error, dict) else error
-            raise LLMError(f"Anthropic stream error: {detail or evt}")
+            code = (
+                error.get("type") or error.get("code")
+                if isinstance(error, dict)
+                else None
+            )
+            status = (
+                {"overloaded_error": 503, "rate_limit_error": 429}.get(code)
+                if isinstance(code, str)
+                else None
+            )
+            raise TransportError(
+                f"Anthropic stream error: {detail or evt}",
+                provider=cfg.provider,
+                operation="post_sse",
+                status=status,
+                error_code=code if isinstance(code, str) else None,
+                retryable=status_is_retryable(status),
+                output_committed=bool(state["output_committed"]),
+            )
         if event_type == "ping":
             return
-        state["started"] = True
         if event_type == "message_start":
             message = evt.get("message") or {}
             state["usage"].update(message.get("usage") or {})
+            state["output_committed"] |= bool(message.get("usage"))
             return
         if event_type == "content_block_start":
+            # Even an initially empty block establishes an ordered content
+            # identity. Replaying it would retain state from a prior attempt.
+            state["output_committed"] = True
             index = int(evt.get("index", 0))
             raw = evt.get("content_block") or {}
             kind = raw.get("type")
@@ -164,6 +189,7 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
                 state["blocks"][index] = dict(raw)
             return
         if event_type == "content_block_delta":
+            state["output_committed"] = True
             index = int(evt.get("index", 0))
             delta = evt.get("delta") or {}
             kind = delta.get("type")
@@ -182,25 +208,41 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
                 block["signature"] = delta["signature"]
             return
         if event_type == "message_delta":
+            state["output_committed"] = True
             delta = evt.get("delta") or {}
             if delta.get("stop_reason") is not None:
                 state["finish"] = delta["stop_reason"]
             state["usage"].update(evt.get("usage") or {})
+            # Latched, like every other flag here: `message_delta` repeats, and
+            # a later one without `usage` used to clear a measurement an
+            # earlier one had legitimately established.
+            state["usage_final"] |= (
+                bool(evt.get("usage")) and delta.get("stop_reason") is not None
+            )
             return
         if event_type == "message_stop":
+            state["output_committed"] = True
             state["terminal"] = True
+            return True
 
-    timeout = max(cfg.timeout_s, 60.0)
+    timeout = cfg.timeout_s
     try:
         post_sse(url, payload, headers, timeout, _on_event)
-    except LLMError:
-        if not state["started"]:
-            raise _StreamStartError()
+    except LLMError as exc:
+        exc.usage = RawUsage(state["usage"], final=state["usage_final"])
+        if isinstance(exc, TransportError):
+            exc.output_committed |= bool(state["output_committed"])
+        if (
+            isinstance(exc, TransportError)
+            and not state["output_committed"]
+            and streaming_refused(exc)
+        ):
+            raise _StreamStartError() from exc
         raise
     if not state["terminal"]:
-        if not state["started"]:
-            raise _StreamStartError()
-        raise LLMError("Anthropic stream ended before message_stop")
+        error = LLMError("Anthropic stream ended before message_stop")
+        error.usage = RawUsage(state["usage"], final=state["usage_final"])
+        raise error
 
     blocks: list[dict[str, Any]] = []
     # Arguments to normalize, per tool_use block, paired with that block's
@@ -256,7 +298,7 @@ def _chat_anthropic_stream(url, payload, headers, cfg, on_delta, *, post_sse) ->
     return {
         "content": text,
         "reasoning": None,
-        "usage": state["usage"],
+        "usage": RawUsage(state["usage"], final=state["usage_final"]),
         "finish_reason": "tool_calls" if calls else provider_finish,
         "provider_finish_reason": provider_finish,
         "tool_calls": calls,

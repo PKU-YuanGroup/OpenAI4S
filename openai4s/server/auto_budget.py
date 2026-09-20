@@ -99,6 +99,11 @@ TERMINAL_USER_TRUTH = {
     "budget_exhausted": "Paused · Budget exhausted",
     "loop_detected": "Paused/Blocked · Loop detected",
     "budget_measurement_unavailable": "无法验证 token 预算",
+    # The team quota refused the Reviewer's own provider call. It belongs in
+    # this table rather than beside it: `is_completion_disguise` only guards
+    # reasons listed here, so a terminal outside it could be presented with a
+    # completion status and read as a passed review.
+    "quota_exceeded": "Paused · Team quota exhausted",
 }
 _COMPLETION_STATUSES = frozenset(
     {"verified", "completed", "completed_with_issues", "pass"}
@@ -155,25 +160,95 @@ def finding_set_digest(fingerprints: Any) -> str:
 def verifiable_token_usage(usage: Any) -> int | None:
     """Return a non-negative token total only when the adapter usage is exact."""
 
-    if not isinstance(usage, Mapping):
+    from openai4s.llm.usage import measured_total
+
+    return measured_total(usage)
+
+
+def token_upper_bound_parts(
+    adapter_cfg: Any,
+    *,
+    messages: Any = None,
+    tools: Any = None,
+    max_tokens: int | None = None,
+) -> tuple[int, int, int] | None:
+    """The per-attempt ``(prompt, completion, attempts)`` ``token_upper_bound`` sums.
+
+    Split out because the two consumers need different things from the same
+    arithmetic. The Auto Budget reserves a hard TOTAL spend ceiling, so it wants
+    every attempt. A per-kind quota gate charges ``llm_input_tokens`` and
+    ``llm_output_tokens`` separately, and comparing a combined figure against
+    either limit over-refuses -- a 100-byte prompt with ``max_tokens=4000``
+    would be refused by a 1000-token INPUT quota it never threatened.
+
+    Returns None when the parts are not separable: an adapter that publishes
+    only ``total_token_upper_bound`` has no split to offer, and saying so is
+    better than inventing one.
+    """
+
+    def value(name: str) -> Any:
+        if isinstance(adapter_cfg, Mapping):
+            return adapter_cfg.get(name)
+        return getattr(adapter_cfg, name, None)
+
+    provider = value("provider")
+    if provider:
+        from openai4s.llm.registry import provider_spec
+
+        try:
+            if provider_spec(provider)["wire"] == "responses":
+                return None
+        except (LookupError, ValueError, RuntimeError):
+            pass  # injected adapters retain their explicit bound contract
+    attempts = value("provider_attempt_upper_bound")
+    if attempts is None:
+        from openai4s.llm.transport import DEFAULT_MAX_ATTEMPTS
+
+        attempts = DEFAULT_MAX_ATTEMPTS
+    if type(attempts) is not int or attempts <= 0:
         return None
-    prompt = usage.get("prompt_tokens")
-    if type(prompt) is not int:
-        prompt = usage.get("input_tokens")
-    completion = usage.get("completion_tokens")
-    if type(completion) is not int:
-        completion = usage.get("output_tokens")
-    total = usage.get("total_tokens")
+    prompt = value("input_token_upper_bound")
+    completion = max_tokens if max_tokens is not None else value("max_tokens")
     if (
         type(prompt) is int
-        and type(completion) is int
         and prompt >= 0
-        and completion >= 0
+        and type(completion) is int
+        and completion > 0
     ):
-        return prompt + completion
-    if type(total) is int and total >= 0:
-        return total
-    return None
+        return (prompt, completion, attempts)
+    if messages is None or type(completion) is not int or completion <= 0:
+        return None
+    request = {"messages": messages, "tools": tools or []}
+    try:
+        encoded = json.dumps(
+            request,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+
+    # Iterative, with an explicit stack. The recursive form raised
+    # `RecursionError` past roughly 500 levels of nesting -- and the caller
+    # that prices a quota reservation reads ANY raise as "unpriceable", which
+    # it then treats as free. So a cell could put a deeply nested value in a
+    # message key the adapters drop and buy a whole unmetered fan-out: measured
+    # at 32 concurrent calls and 1280 tokens through a 100-token window. Note
+    # the raise was never `json.dumps` -- the C encoder serialises depth 5000
+    # without complaint -- it was this count.
+    total = 0
+    stack: list[Any] = [request]
+    while stack:
+        item = stack.pop()
+        total += 1
+        if isinstance(item, Mapping):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+
+    return (len(encoded) + (64 * total) + 1024, completion, attempts)
 
 
 def token_upper_bound(
@@ -193,6 +268,10 @@ def token_upper_bound(
     audited attempt ceiling. Non-JSON request content fails closed before
     provider spend. Model-catalog context sizes are deliberately not used: a
     provider default is not proof about the exact configured endpoint.
+
+    The arithmetic lives in :func:`token_upper_bound_parts`; this is its sum,
+    plus the one case that has no parts -- an adapter publishing an audited
+    ``total_token_upper_bound`` directly.
     """
 
     def value(name: str) -> Any:
@@ -202,51 +281,25 @@ def token_upper_bound(
 
     total = value("total_token_upper_bound")
     if type(total) is int and total > 0:
+        # Checked before the parts, and before the wire check, exactly as it
+        # was: an adapter that states its own ceiling is authoritative.
+        provider = value("provider")
+        if provider:
+            from openai4s.llm.registry import provider_spec
+
+            try:
+                if provider_spec(provider)["wire"] == "responses":
+                    return None
+            except (LookupError, ValueError, RuntimeError):
+                pass
         return total
-    attempts = value("provider_attempt_upper_bound")
-    if attempts is None:
-        # Exact production transport ceiling: first request + two bounded
-        # retries. Reserving one prompt for a three-attempt transport would not
-        # be a hard spend ceiling after an ambiguous/lost response.
-        from openai4s.llm.transport import DEFAULT_MAX_ATTEMPTS
-
-        attempts = DEFAULT_MAX_ATTEMPTS
-    if type(attempts) is not int or attempts <= 0:
+    parts = token_upper_bound_parts(
+        adapter_cfg, messages=messages, tools=tools, max_tokens=max_tokens
+    )
+    if parts is None:
         return None
-    prompt = value("input_token_upper_bound")
-    completion = max_tokens if max_tokens is not None else value("max_tokens")
-    if (
-        type(prompt) is int
-        and prompt >= 0
-        and type(completion) is int
-        and completion > 0
-    ):
-        return (prompt + completion) * attempts
-    if messages is None or type(completion) is not int or completion <= 0:
-        return None
-    request = {"messages": messages, "tools": tools or []}
-    try:
-        encoded = json.dumps(
-            request,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError):
-        return None
-
-    def nodes(item: Any) -> int:
-        if isinstance(item, Mapping):
-            return 1 + sum(nodes(child) for child in item.values())
-        if isinstance(item, (list, tuple)):
-            return 1 + sum(nodes(child) for child in item)
-        return 1
-
-    request_bound = (
-        len(encoded) + (64 * nodes(request)) + 1024 + completion
-    ) * attempts
-    return request_bound
+    prompt, completion, attempts = parts
+    return (prompt + completion) * attempts
 
 
 def inspect_budget_wiring() -> dict[str, Any]:
@@ -566,7 +619,11 @@ class AutoBudgetAdmission:
         elapsed = max(0, (now - started_at) // 1000) if started_at else 0
         token_limit = int(state.get("computed_extra_token_limit") or 0)
         token_used = sum(
-            int(item.get("committed_amount") or item.get("reserved_amount") or 0)
+            (
+                int(item.get("committed_amount") or 0)
+                if item.get("state") == "committed"
+                else int(item.get("reserved_amount") or 0)
+            )
             for item in reservations
             if item.get("consumer") == "token"
             and item.get("state") in {"committed", "consumed", "unknown"}

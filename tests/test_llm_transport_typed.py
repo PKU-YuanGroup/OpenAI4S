@@ -25,12 +25,13 @@ import pytest
 
 from openai4s.llm.models import (
     LLMError,
+    StreamTimeoutError,
     TransportError,
     llm_failure_code,
     parse_retry_after,
     status_is_retryable,
 )
-from openai4s.llm.transport import post_json, post_sse
+from openai4s.llm.transport import _retry_loop, post_json, post_sse
 
 
 class _Recorder:
@@ -53,18 +54,10 @@ def _http_error(code, body=b"{}", headers=None):
     )
 
 
-class _Resp:
-    def __init__(self, body: bytes):
-        self._body = body
-
-    def read(self):
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
+class _Resp(io.BytesIO):
+    def __init__(self, body):
+        super().__init__(body)
+        self.headers = {}
 
 
 # --------------------------------------------------------------------------
@@ -79,7 +72,7 @@ def test_http_error_preserves_status_headers_and_retry_after(monkeypatch):
         {"Retry-After": "3", "x-request-id": "req-77"},
     )
     monkeypatch.setattr(
-        "urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(err)
+        "openai4s.llm.transport._urlopen", lambda *a, **k: (_ for _ in ()).throw(err)
     )
     with pytest.raises(TransportError) as e:
         post_json("https://x.invalid/v1", {}, {}, 5, provider="ark", max_attempts=1)
@@ -169,7 +162,7 @@ def test_auth_failure_raises_immediately(monkeypatch):
         calls.append(1)
         raise _http_error(401, b'{"error":"bad key"}')
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     sleeper = _Recorder()
     with pytest.raises(TransportError) as e:
         post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
@@ -219,7 +212,7 @@ def test_429_is_retried_and_recovers(monkeypatch):
             raise _http_error(429, b"{}", {"Retry-After": "2"})
         return _Resp(b'{"ok":true}')
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     sleeper = _Recorder()
     out = post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
     assert out == {"ok": True}
@@ -236,7 +229,7 @@ def test_retry_after_overrides_the_computed_backoff(monkeypatch):
             raise _http_error(429, b"{}", {"Retry-After": "2"})
         return _Resp(b"{}")
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     sleeper = _Recorder()
     post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
     assert sleeper.slept == [2.0]
@@ -253,7 +246,7 @@ def test_backoff_is_jittered_when_no_retry_after(monkeypatch):
             raise _http_error(503)
         return _Resp(b"{}")
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     sleeper = _Recorder()
     post_json("https://x.invalid", {}, {}, 5, sleep=sleeper)
     assert len(sleeper.slept) == 2
@@ -281,7 +274,7 @@ def test_request_burst_uses_slower_strictly_positive_exponential_jitter(
         jitter_ranges.append((low, high))
         return (low + high) / 2.0
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     monkeypatch.setattr("openai4s.llm.transport.random.uniform", jitter)
     sleeper = _Recorder()
 
@@ -300,7 +293,7 @@ def test_attempts_are_bounded(monkeypatch):
         calls.append(1)
         raise _http_error(503)
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     with pytest.raises(TransportError):
         post_json("https://x.invalid", {}, {}, 5, max_attempts=3, sleep=_Recorder())
     assert len(calls) == 3
@@ -313,7 +306,7 @@ def test_retry_budget_stops_an_absurd_retry_after(monkeypatch):
     def urlopen(*a, **k):
         raise _http_error(429, b"{}", {"Retry-After": "300"})
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     sleeper = _Recorder()
     with pytest.raises(TransportError) as e:
         post_json("https://x.invalid", {}, {}, 5, retry_budget=30, sleep=sleeper)
@@ -327,7 +320,7 @@ def test_cancellation_is_honored_between_attempts(monkeypatch):
     def urlopen(*a, **k):
         raise _http_error(503)
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     with pytest.raises(TransportError) as e:
         post_json(
             "https://x.invalid",
@@ -347,10 +340,10 @@ def test_connection_error_is_retryable(monkeypatch):
     def urlopen(*a, **k):
         state.append(1)
         if len(state) == 1:
-            raise urllib.error.URLError("connection refused")
+            raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
         return _Resp(b'{"ok":1}')
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     assert post_json("https://x.invalid", {}, {}, 5, sleep=_Recorder()) == {"ok": 1}
 
 
@@ -369,14 +362,23 @@ def test_sse_connect_failure_is_retried(monkeypatch):
             raise _http_error(503)
         return iter([b'data: {"delta":"hi"}\n', b"\n"])
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     seen = []
     post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
     assert seen == [{"delta": "hi"}]
     assert len(state) == 2
 
 
-def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (TimeoutError("private timeout detail"), "llm_stream_timeout"),
+        (ConnectionResetError("stream died mid-flight"), "llm_stream_interrupted"),
+    ],
+)
+def test_sse_failure_after_committed_output_is_never_retried(
+    monkeypatch, failure, code
+):
     """The rule that keeps the retry honest: the caller has already seen these
     bytes, so replaying the request would emit them twice."""
 
@@ -384,7 +386,7 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         def __iter__(self):
             yield b'data: {"delta":"committed"}\n'
             yield b"\n"
-            raise ConnectionResetError("stream died mid-flight")
+            raise failure
 
         def close(self):
             pass
@@ -395,17 +397,155 @@ def test_sse_failure_after_committed_output_is_never_retried(monkeypatch):
         calls.append(1)
         return _Stream()
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     seen = []
     with pytest.raises(TransportError) as e:
         post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
     assert e.value.output_committed is True
     assert e.value.retryable is False
+    assert llm_failure_code(e.value) == code
     assert len(calls) == 1, "a committed stream must not be replayed"
     assert seen == [{"delta": "committed"}]
 
 
-def test_sse_read_failure_before_any_event_is_retryable(monkeypatch):
+def test_sse_event_handler_failure_is_not_an_upstream_interruption(monkeypatch):
+    """The read loop's handler also covers ``on_event``. A local bug there
+    must not be classified as the stream being cut: that class offers the user
+    a continuation, which would only reproduce the same local error."""
+
+    class _Stream:
+        def __iter__(self):
+            yield b'data: {"delta":"committed"}\n'
+            yield b"\n"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", lambda *a, **k: _Stream())
+
+    def broken_handler(event):
+        raise KeyError("private handler detail")
+
+    with pytest.raises(TransportError) as e:
+        post_sse("https://x.invalid", {}, {}, 5, broken_handler, sleep=_Recorder())
+    assert llm_failure_code(e.value) is None
+    assert e.value.output_committed is True
+    assert e.value.retryable is False
+    assert "private handler detail" not in str(e.value)
+
+
+def test_a_whole_response_read_that_stalls_is_also_a_stream_timeout(monkeypatch):
+    """An idle stall is the same failure whether or not streaming is on.
+
+    `_read_timeout`'s non-total branch is literally "LLM response idle timeout",
+    which is what `StreamTimeoutError` names. Left as a bare `TransportError` it
+    had no failure code, so the recovery note and the Continue button were
+    missing on the whole-response wire -- for the same upstream behaviour that
+    gets both on SSE.
+    """
+
+    class _Stalls:
+        headers: dict[str, str] = {}
+
+        def read1(self, *_a):
+            raise TimeoutError("upstream went quiet mid-body")
+
+        def read(self, *_a):  # pragma: no cover - read1 is preferred
+            raise TimeoutError("upstream went quiet mid-body")
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", lambda *a, **k: _Stalls())
+    with pytest.raises(TransportError) as e:
+        post_json("https://x.invalid", {}, {}, 5, max_attempts=1, sleep=_Recorder())
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+    assert e.value.retryable is False
+
+
+def test_the_budget_rewrap_keeps_the_error_class():
+    """A retry given up for budget must not be downgraded to a plain
+    ``TransportError``: the recovery path keys on the failure code, and a
+    rewrap that dropped the class silently disabled it.
+
+    Driven through ``_retry_loop`` rather than ``post_sse`` because this branch
+    vetoes the replay of an uncommitted stream read failure outright (see
+    ``test_sse_timeout_keeps_its_code_when_the_call_gives_up``), so no stream
+    error reaches the budget branch from the public entry point. The rewrap
+    still has to preserve the class of whatever error does reach it.
+    """
+
+    def attempt():
+        raise StreamTimeoutError(
+            "upstream went quiet",
+            provider="p",
+            operation="post_sse",
+            retryable=True,
+            retry_after=300.0,
+        )
+
+    with pytest.raises(StreamTimeoutError) as e:
+        _retry_loop(
+            attempt,
+            provider="p",
+            operation="post_sse",
+            max_attempts=3,
+            base_backoff=1.0,
+            max_backoff=60.0,
+            retry_budget=0.0,
+            sleep=_Recorder(),
+        )
+    assert "retry budget" in str(e.value)
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+
+
+def test_sse_timeout_keeps_its_code_when_the_call_gives_up(monkeypatch):
+    """A stream timeout must keep its classification however the call ends.
+
+    Upstream asserted this against the retry-budget rewrap. Here the call gives
+    up one step earlier -- an uncommitted read failure cannot prove the POST
+    never reached the provider, so it is not replayed at all -- and the caller
+    must still see ``llm_stream_timeout``, which is what the recovery path
+    keys on to offer a continuation.
+    """
+
+    class _Stream:
+        def __iter__(self):
+            raise TimeoutError("no first byte")
+            yield  # pragma: no cover
+
+        def close(self):
+            pass
+
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        return _Stream()
+
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
+    with pytest.raises(TransportError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            lambda event: None,
+            retry_budget=0.0,
+            sleep=_Recorder(),
+        )
+    assert llm_failure_code(e.value) == "llm_stream_timeout"
+    assert e.value.retryable is False
+    assert calls == [1], "an uncommitted stream read failure is not replayed"
+
+
+def test_sse_read_failure_before_any_event_is_not_replayed(monkeypatch):
     class _Stream:
         def __iter__(self):
             raise ConnectionResetError("died before any event")
@@ -422,10 +562,13 @@ def test_sse_read_failure_before_any_event_is_retryable(monkeypatch):
             return _Stream()
         return iter([b'data: {"delta":"ok"}\n', b"\n"])
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     seen = []
-    post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
-    assert seen == [{"delta": "ok"}]
+    with pytest.raises(TransportError) as raised:
+        post_sse("https://x.invalid", {}, {}, 5, seen.append, sleep=_Recorder())
+    assert not raised.value.retryable
+    assert len(calls) == 1
+    assert seen == []
 
 
 # --------------------------------------------------------------------------
@@ -527,7 +670,7 @@ def test_sse_stops_reading_at_the_next_event_once_cancelled(monkeypatch):
         calls.append(1)
         return _Stream()
 
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", urlopen)
     seen = []
     stop = []
 
@@ -549,7 +692,7 @@ def test_sse_stops_reading_at_the_next_event_once_cancelled(monkeypatch):
     assert e.value.retryable is False
     assert e.value.output_committed is True
     assert seen == [{"delta": "chunk-1"}], "a delta was delivered after Stop"
-    assert pulled == [1, 2], "the stream was read past the event that observed Stop"
+    assert pulled == [1], "Stop must prevent reading another event"
     assert closed == [True], "the response was not closed"
     assert len(calls) == 1
 
@@ -574,13 +717,13 @@ def test_sse_drains_a_cancelled_stream_when_the_probe_says_so(monkeypatch):
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+    monkeypatch.setattr("openai4s.llm.transport._urlopen", lambda *a, **k: _Stream())
 
     class _Probe:
         abort_stream = False
 
         def __call__(self):
-            return True  # Stop landed before the first event
+            return bool(seen)  # Stop lands after the first event, not before send
 
     seen = []
     post_sse(
