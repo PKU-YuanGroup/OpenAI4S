@@ -66,6 +66,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | [`storage/`](./storage/) | Focused SQLite repositories used through `Store`, and the versioned migration runner behind them. |
 | [`benchmark/`](./benchmark/) | The runner for the versioned science-workflow benchmark whose manifests live in [`workflows/`](../workflows/README.md). Every step drives production code — the real Store, kernel manager, host dispatcher and compute manager — and only what cannot run offline is injected: the model, the network, and a package manager. A declared outcome is part of the contract, so a case expecting `failure` fails on a clean run. |
 | [`tools/`](./tools/) | Class-based provider-native control tools. Each one carries its own schema. Around them sit the registry, the dynamic-tool lifecycle, and compatibility support for fenced calls. |
+| [`judgment/`](./judgment/) | Experimental, default-off semantic judgment layer: typed questions, the backend port, flag resolution, and disclosure copy. No runtime wiring in this package yet. |
 
 ## Change rules
 

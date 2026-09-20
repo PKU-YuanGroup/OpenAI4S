@@ -66,6 +66,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`storage/`](./storage/) | 通过 `Store` 使用的聚焦 SQLite 仓储，以及它们背后带版本的 migration runner。 |
 | [`benchmark/`](./benchmark/) | 带版本的科学工作流基准的 runner，清单在 [`workflows/`](../workflows/README_zh.md)。每一步都驱动生产代码——真实的 Store、kernel manager、host dispatcher 与 compute manager——只有离线跑不了的才被注入：模型、网络、包管理器。声明的结果是契约的一部分，所以期望 `failure` 的用例在跑出干净成功时判失败。 |
 | [`tools/`](./tools/) | 基于类的供应商原生控制工具。每个工具自带 schema。围着它们的是注册表、动态工具生命周期，以及对 fenced 调用的兼容支持。 |
+| [`judgment/`](./judgment/) | 实验性、默认关闭的语义判断层：带类型的问题、后端端口、开关解析和披露文案。本包此时还没有运行时接线。 |
 
 ## 修改规则
 

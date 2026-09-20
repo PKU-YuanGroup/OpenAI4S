@@ -55,6 +55,8 @@
 | `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 准备：HTTP／请求头／上传／WS 分阶段预算、有界准入与状态余量、真实连接释放和本地故障验收；不启用新配额或期限。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
+| `experimental-judgment.md` | 默认关闭的实验性语义判断层（TypeSafe Jev）设计契约：目标、开关、披露与带类型的后端端口。 |
+| `experimental-judgment_zh.md` | 实验性判断层设计契约的中文正文。 |
 
 ## 在架构中的位置
 

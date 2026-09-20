@@ -1,0 +1,1797 @@
+[
+  {
+    "description": "List entries in one workspace directory only. For the Skill catalog, use list_skills.",
+    "name": "list_dir",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Directory to list, relative to the workspace (default '.').",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Read a UTF-8 text file from the workspace, optionally a line window.",
+    "name": "read_text_file",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of lines to return.",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "0-based first line to return.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "File to read.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "description": "Create or overwrite a workspace file with the given content.",
+    "name": "write_file",
+    "parameters": {
+      "properties": {
+        "content": {
+          "description": "Full file contents.",
+          "type": "string"
+        },
+        "path": {
+          "description": "File to write.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    }
+  },
+  {
+    "description": "Find workspace files by glob pattern, e.g. '**/*.csv'.",
+    "name": "glob_files",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Directory to glob under (default the workspace root).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Glob pattern.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "description": "Regex-search the contents of workspace files.",
+    "name": "content_search",
+    "parameters": {
+      "properties": {
+        "include": {
+          "description": "Glob limiting which files are searched, e.g. '*.py'. Applied recursively, like the unfiltered search.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory to search under (default the workspace root).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Regular expression.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "description": "Replace an exact string in a workspace file (unique unless replace_all).",
+    "name": "edit_file",
+    "parameters": {
+      "properties": {
+        "new_string": {
+          "description": "Replacement text.",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "Exact text to replace (must be unique unless replace_all).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "File to edit.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "replace_all": {
+          "description": "Replace every occurrence instead of requiring uniqueness.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ]
+    }
+  },
+  {
+    "description": "List the prebuilt runtime environments (optionally check package coverage).",
+    "name": "env_list",
+    "parameters": {
+      "properties": {
+        "packages": {
+          "description": "Package names to check per-environment coverage for.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Queue a switch of the kernel to a named prebuilt environment.",
+    "name": "env_use",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Prebuilt environment to switch to.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "description": "Install extra packages into the current kernel (pip).",
+    "name": "env_create",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Optional environment label.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "packages": {
+          "description": "Package names to install.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
+      },
+      "required": [
+        "packages"
+      ]
+    }
+  },
+  {
+    "description": "Live web search; uses Doubao Search when an Agent Plan Key is configured, otherwise the built-in fallback engines. Returns {title, url, snippet}.",
+    "name": "web_search",
+    "parameters": {
+      "properties": {
+        "num_results": {
+          "description": "Maximum results to return (default 8).",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Seconds to wait before giving up (default 20).",
+          "maximum": 120,
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "description": "Download a URL to a file in the workspace. Use for binary or archive content that web_fetch cannot represent as text.",
+    "name": "web_download",
+    "parameters": {
+      "properties": {
+        "max_bytes": {
+          "description": "Refuse a body larger than this (default 67108864).",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Workspace-relative destination file.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Seconds to wait before giving up (default 60).",
+          "type": "number"
+        },
+        "url": {
+          "description": "URL to download.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_agent": {
+          "description": "Override the User-Agent. Some scholarly APIs serve their polite pool only to callers that send a contactable one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "path"
+      ]
+    }
+  },
+  {
+    "description": "Fetch a URL and return its content as markdown/text/html/json.",
+    "name": "web_fetch",
+    "parameters": {
+      "properties": {
+        "format": {
+          "description": "One of markdown|text|html|json (default markdown).",
+          "enum": [
+            "markdown",
+            "text",
+            "html",
+            "json"
+          ],
+          "type": "string"
+        },
+        "max_chars": {
+          "description": "Truncate the returned content to this many characters.",
+          "maximum": 1000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "method": {
+          "description": "HEAD asks only whether the resource exists, without downloading it.",
+          "enum": [
+            "GET",
+            "HEAD"
+          ],
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Seconds to wait before giving up (default 30).",
+          "maximum": 120,
+          "minimum": 1,
+          "type": "number"
+        },
+        "url": {
+          "description": "URL to fetch.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user_agent": {
+          "description": "Override the User-Agent. Some scholarly APIs serve their polite pool only to callers that send a contactable one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  },
+  {
+    "description": "List structured public scientific databases, query hints, and filters.",
+    "name": "science_list_dbs",
+    "parameters": {
+      "properties": {
+        "domain": {
+          "description": "Optional discipline filter (default all).",
+          "enum": [
+            "all",
+            "biology",
+            "chemistry",
+            "literature",
+            "ml",
+            "physics"
+          ],
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Search one supported scientific database and return normalized typed records.",
+    "name": "science_search",
+    "parameters": {
+      "properties": {
+        "cursor": {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        "database": {
+          "enum": [
+            "uniprot",
+            "pdb",
+            "ensembl",
+            "chembl",
+            "pubchem",
+            "arxiv",
+            "openalex",
+            "clinvar",
+            "pubmed",
+            "clinicaltrials"
+          ],
+          "type": "string"
+        },
+        "filters": {
+          "additionalProperties": false,
+          "properties": {
+            "organism_id": {
+              "maxLength": 30,
+              "type": "string"
+            },
+            "species": {
+              "maxLength": 80,
+              "type": "string"
+            },
+            "work_type": {
+              "maxLength": 50,
+              "type": "string"
+            },
+            "year_from": {
+              "maximum": 3000,
+              "minimum": 1000,
+              "type": "integer"
+            },
+            "year_to": {
+              "maximum": 3000,
+              "minimum": 1000,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeout": {
+          "maximum": 120,
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "database",
+        "query"
+      ]
+    }
+  },
+  {
+    "description": "Search hidden control-tool capability groups and activate matching tools for this session.",
+    "name": "search_capabilities",
+    "parameters": {
+      "properties": {
+        "query": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "description": "Return an overview with the exact total count, curated Skill names, and one id/size summary per bundled collection. To enumerate a collection, call again with collection=<id> and offset=0; call load_skill for each returned name, then continue at every returned next_offset while that field is present. Do not use workspace file tools.",
+    "name": "list_skills",
+    "parameters": {
+      "properties": {
+        "collection": {
+          "description": "Enumerate this collection's Skill names instead.",
+          "type": "string"
+        },
+        "offset": {
+          "description": "Start index when paging a collection listing.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Find relevant Skills and load their full recipes on demand.",
+    "name": "search_skills",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "description": "Maximum matching recipes to return (default 5).",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Keywords describing the needed method or workflow.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "description": "Load one Skill's complete SKILL.md guidance by name.",
+    "name": "load_skill",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Skill name from the available-skill catalog.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "description": "Read one file inside a Skill's directory by relative path (e.g. references/data_contracts.md, examples/config.yaml). Use this for the reference documents a loaded SKILL.md tells you to read; use load_skill for the SKILL.md recipe itself. Do not use workspace file tools — a Skill directory is not in the workspace.",
+    "name": "read_skill_file",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Skill name from the available-skill catalog.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "Path relative to the Skill directory. Defaults to SKILL.md; must stay inside the Skill directory.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "description": "Inspect the active version and safe manifest for one Skill scope.",
+    "name": "skill_status",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Exact declared Skill name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "Personal library or the current project overlay.",
+          "enum": [
+            "personal",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "scope"
+      ]
+    }
+  },
+  {
+    "description": "List immutable versions and install/publish/rollback events.",
+    "name": "skill_history",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "description": "Maximum lifecycle events to return (default 50).",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Exact declared Skill name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "Personal library or the current project overlay.",
+          "enum": [
+            "personal",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "scope"
+      ]
+    }
+  },
+  {
+    "description": "Roll back a writable personal/project Skill to a retained version. Bundled Skills are immutable.",
+    "name": "rollback_skill_version",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Exact declared Skill name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "description": "Personal library or the current project overlay.",
+          "enum": [
+            "personal",
+            "project"
+          ],
+          "type": "string"
+        },
+        "version_id": {
+          "description": "Exact version_id returned by skill_history.",
+          "maxLength": 71,
+          "minLength": 71,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "scope",
+        "version_id"
+      ]
+    }
+  },
+  {
+    "description": "List or search versioned artifacts and their metadata.",
+    "name": "list_artifacts",
+    "parameters": {
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "content_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "filename": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "project_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "root_frame_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "search": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Read exact metadata for one session artifact and its latest or specified immutable version.",
+    "name": "get_artifact_metadata",
+    "parameters": {
+      "properties": {
+        "artifact_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version_id": {
+          "description": "Omit to inspect the current Artifact version.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ]
+    }
+  },
+  {
+    "description": "List immutable versions for one session-owned artifact.",
+    "name": "list_artifact_versions",
+    "parameters": {
+      "properties": {
+        "artifact_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ]
+    }
+  },
+  {
+    "description": "Register an existing workspace file as a versioned artifact.",
+    "name": "save_artifact",
+    "parameters": {
+      "properties": {
+        "content_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "filename": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "input_version_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 500,
+          "type": "array"
+        },
+        "path": {
+          "description": "Existing workspace file to register.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "priority": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "description": "Restore a historical immutable artifact snapshot into the workspace as a new version, preserving all prior versions and lineage.",
+    "name": "restore_artifact_version",
+    "parameters": {
+      "properties": {
+        "artifact_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version_id": {
+          "description": "Historical source version to copy and restore.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "version_id"
+      ]
+    }
+  },
+  {
+    "description": "List readable Store tables and their columns.",
+    "name": "query_schema",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Run a bounded read-only SQL SELECT or CTE over allowlisted Store tables.",
+    "name": "query",
+    "parameters": {
+      "properties": {
+        "df": {
+          "description": "Return columns plus row arrays instead of objects.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Maximum rows returned.",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "params": {
+          "description": "Positional SQLite parameters.",
+          "items": {},
+          "maxItems": 1000,
+          "type": "array"
+        },
+        "sql": {
+          "description": "A read-only SELECT or CTE statement.",
+          "maxLength": 100000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "sql"
+      ]
+    }
+  },
+  {
+    "description": "Browse, search, or inspect persisted agent/session frames.",
+    "name": "frames",
+    "parameters": {
+      "properties": {
+        "frame_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "page": {
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "page_size": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "pattern": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "project_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "roots_only": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "processing",
+            "done",
+            "failed",
+            "awaiting_user_response"
+          ],
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Get provenance and direct inputs for one artifact version.",
+    "name": "lineage_get",
+    "parameters": {
+      "properties": {
+        "version_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "version_id"
+      ]
+    }
+  },
+  {
+    "description": "Traverse upstream or downstream artifact-version lineage.",
+    "name": "lineage_graph",
+    "parameters": {
+      "properties": {
+        "direction": {
+          "enum": [
+            "up",
+            "down"
+          ],
+          "type": "string"
+        },
+        "max_depth": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_nodes": {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "version_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "version_id"
+      ]
+    }
+  },
+  {
+    "description": "Read the current session's lightweight task list.",
+    "name": "read_todos",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Replace the session task list with explicit progress states.",
+    "name": "write_todos",
+    "parameters": {
+      "properties": {
+        "todos": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "priority": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed",
+                  "cancelled"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
+      },
+      "required": [
+        "todos"
+      ]
+    }
+  },
+  {
+    "description": "Read the approved plan and its live step states.",
+    "name": "read_plan",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Read the current session's evidence-review configuration and bounded review verdict history.",
+    "name": "review_status",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Update one step of the approved plan with observed progress.",
+    "name": "update_plan_step",
+    "parameters": {
+      "properties": {
+        "note": {
+          "maxLength": 4000,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed",
+            "failed",
+            "skipped"
+          ],
+          "type": "string"
+        },
+        "step_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "status"
+      ]
+    }
+  },
+  {
+    "description": "Inspect the current session's branch, checkpoint, and recovery state.",
+    "name": "session_status",
+    "parameters": {
+      "properties": {
+        "checkpoint_limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Create an immutable checkpoint of the current scientific session.",
+    "name": "create_checkpoint",
+    "parameters": {
+      "properties": {
+        "expected_head": {
+          "description": "Optional compare-and-swap checkpoint head.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Fork the current session from exactly one checkpoint, Cell, or message cursor into an isolated view-only branch.",
+    "name": "fork_session",
+    "parameters": {
+      "properties": {
+        "from_cell_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "from_checkpoint_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "from_message_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Preview the exact workspace, Notebook, Artifact, and state changes for reverting to a checkpoint; this never applies the revert.",
+    "name": "revert_preview",
+    "parameters": {
+      "properties": {
+        "checkpoint_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_id"
+      ]
+    }
+  },
+  {
+    "description": "List unresolved human-approval requests for the current session.",
+    "name": "pending_permissions",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Delegate one self-contained task to a sub-agent or specialist.",
+    "name": "delegate_task",
+    "parameters": {
+      "properties": {
+        "capabilities": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "context_summary": {
+          "maxLength": 20000,
+          "type": "string"
+        },
+        "max_steps": {
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_turns": {
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Optional enabled specialist profile name.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "permissions": {
+          "additionalProperties": {
+            "enum": [
+              "allow",
+              "ask",
+              "deny"
+            ],
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "request": {
+          "description": "Self-contained task with inputs and desired output.",
+          "maxLength": 100000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "require_artifacts": {
+          "description": "Artifact filenames (exact, or trailing-star globs) the child must produce; missing ones downgrade its task_status to at most partial.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "type": "array"
+        },
+        "retries": {
+          "description": "Re-run a partial/blocked/failed child up to this many times (clamped to 0-2, default 0; wait=true only).",
+          "type": "integer"
+        },
+        "steps": {
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "unrestricted": {
+          "type": "boolean"
+        },
+        "wait": {
+          "description": "Wait for completion (default true).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "request"
+      ]
+    }
+  },
+  {
+    "description": "List direct sub-agent children and their current states.",
+    "name": "list_children",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Collect child results within one total waiting budget; timeout does not stop children.",
+    "name": "collect_children",
+    "parameters": {
+      "properties": {
+        "child_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "timeout": {
+          "maximum": 3600,
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Cancel one running direct sub-agent child by exact ID.",
+    "name": "stop_child",
+    "parameters": {
+      "properties": {
+        "child_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "child_id"
+      ]
+    }
+  },
+  {
+    "description": "Send steering context to one running direct sub-agent child.",
+    "name": "send_child_message",
+    "parameters": {
+      "properties": {
+        "child_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "child_id",
+        "message"
+      ]
+    }
+  },
+  {
+    "description": "Submit a long-running Python cell to an independent background job.",
+    "name": "exec_background",
+    "parameters": {
+      "properties": {
+        "code": {
+          "maxLength": 200000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    }
+  },
+  {
+    "description": "List background execution jobs and their current states.",
+    "name": "exec_list",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Read accumulated stdout and status for one background job.",
+    "name": "exec_peek",
+    "parameters": {
+      "properties": {
+        "exec_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "exec_id"
+      ]
+    }
+  },
+  {
+    "description": "Interrupt one running background job by exact execution ID.",
+    "name": "exec_interrupt",
+    "parameters": {
+      "properties": {
+        "exec_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "exec_id"
+      ]
+    }
+  },
+  {
+    "description": "List enabled MCP connector servers.",
+    "name": "list_mcp_servers",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "List tools exposed by one enabled MCP server.",
+    "name": "list_mcp_tools",
+    "parameters": {
+      "properties": {
+        "server": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "server"
+      ]
+    }
+  },
+  {
+    "description": "List resources exposed by one configured MCP server.",
+    "name": "list_mcp_resources",
+    "parameters": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque nextCursor returned by the previous page.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "server": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "server"
+      ]
+    }
+  },
+  {
+    "description": "Read one URI-addressed resource from an enabled MCP server.",
+    "name": "read_mcp_resource",
+    "parameters": {
+      "properties": {
+        "server": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "uri": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "uri"
+      ]
+    }
+  },
+  {
+    "description": "List reusable prompts exposed by one configured MCP server.",
+    "name": "list_mcp_prompts",
+    "parameters": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque nextCursor returned by the previous page.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "server": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "server"
+      ]
+    }
+  },
+  {
+    "description": "Render one named prompt from an enabled MCP server.",
+    "name": "get_mcp_prompt",
+    "parameters": {
+      "properties": {
+        "arguments": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "server": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "name"
+      ]
+    }
+  },
+  {
+    "description": "Invoke one named tool on an enabled MCP connector server.",
+    "name": "call_mcp_tool",
+    "parameters": {
+      "properties": {
+        "args": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "server": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tool": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "tool"
+      ]
+    }
+  },
+  {
+    "description": "Request human approval for outbound access to one domain.",
+    "name": "request_network_access",
+    "parameters": {
+      "properties": {
+        "domain": {
+          "description": "Domain only, for example example.org.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain"
+      ]
+    }
+  },
+  {
+    "description": "Import an existing local checkpoint or model asset into the session workspace and compute its SHA-256 before backend bring-up.",
+    "name": "stage_model_asset",
+    "parameters": {
+      "properties": {
+        "asset_name": {
+          "description": "Portable staged filename; defaults to source basename.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expected_sha256": {
+          "description": "Optional independently known digest.",
+          "maxLength": 64,
+          "minLength": 64,
+          "type": "string"
+        },
+        "source_path": {
+          "description": "Existing local file path supplied by the user.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_path"
+      ]
+    }
+  },
+  {
+    "description": "Inspect local GPUs separately from configured SSH GPU hosts and model backend readiness.",
+    "name": "accelerator_status",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Inspect configured remote GPU hosts and verified capabilities.",
+    "name": "remote_gpu_status",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Register a remote service only after its structured probe succeeds.",
+    "name": "register_remote_capability",
+    "parameters": {
+      "properties": {
+        "alias": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "capability": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "engine": {
+          "type": "string"
+        },
+        "invoke": {
+          "type": "string"
+        },
+        "markers": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "notes": {
+          "maxLength": 10000,
+          "type": "string"
+        },
+        "probe": {
+          "additionalProperties": false,
+          "properties": {
+            "binary": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "path_exists",
+                "executable_exists"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "script": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "alias",
+        "capability",
+        "probe"
+      ]
+    }
+  },
+  {
+    "description": "Submit one bounded remote-compute job to an existing provider. Use the returned job_id with compute_result or compute_cancel.",
+    "name": "compute_submit",
+    "parameters": {
+      "properties": {
+        "command": {
+          "description": "Remote job script executed by the selected provider.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent": {
+          "description": "Short human-readable purpose shown for approval.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "description": "Registered target such as ssh:lab or byoc:nvidia.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "description": "Optional remote runtime limit (at most seven days).",
+          "maximum": 604800,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "provider",
+        "command",
+        "intent"
+      ]
+    }
+  },
+  {
+    "description": "Inspect remote-compute capacity and live-job counts for this session.",
+    "name": "compute_status",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Read one remote job's current or terminal result and harvest ready outputs.",
+    "name": "compute_result",
+    "parameters": {
+      "properties": {
+        "job_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "job_id"
+      ]
+    }
+  },
+  {
+    "description": "Cancel one exact running remote-compute job.",
+    "name": "compute_cancel",
+    "parameters": {
+      "properties": {
+        "job_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "job_id"
+      ]
+    }
+  },
+  {
+    "description": "Release a remote-compute provider handle and close its listed job handles.",
+    "name": "compute_close",
+    "parameters": {
+      "properties": {
+        "job_ids": {
+          "description": "Exact job handles owned by this provider handle.",
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "provider": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "job_ids"
+      ]
+    }
+  },
+  {
+    "description": "Define and smoke-test a sandboxed tool for this session.",
+    "name": "define_dynamic_tool",
+    "parameters": {
+      "properties": {
+        "description": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "implementation": {
+          "description": "Python defining exactly execute(args).",
+          "maxLength": 100000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "input_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "smoke_args": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "ttl_s": {
+          "maximum": 86400,
+          "minimum": 0.001,
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "output_schema",
+        "implementation"
+      ]
+    }
+  },
+  {
+    "description": "List active session dynamic-tool manifests without source code.",
+    "name": "list_dynamic_tools",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Promote a session dynamic tool after explicit human approval.",
+    "name": "promote_dynamic_tool",
+    "parameters": {
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "project",
+            "global"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "scope"
+      ]
+    }
+  },
+  {
+    "description": "List project/global Dynamic Tool versions, active pointers, and audit events.",
+    "name": "list_dynamic_tool_versions",
+    "parameters": {
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "project",
+            "global"
+          ],
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Activate one immutable project/global Dynamic Tool version.",
+    "name": "activate_dynamic_tool_version",
+    "parameters": {
+      "properties": {
+        "manifest_id": {
+          "maxLength": 68,
+          "minLength": 68,
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "project",
+            "global"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "scope",
+        "manifest_id"
+      ]
+    }
+  },
+  {
+    "description": "Roll back to the previously active project/global Dynamic Tool version.",
+    "name": "rollback_dynamic_tool_version",
+    "parameters": {
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "project",
+            "global"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "scope"
+      ]
+    }
+  }
+]

@@ -57,6 +57,8 @@ and the internal plans in this directory are not published by that site.
 | `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 preparation: separate HTTP/header/upload/WS clocks, bounded admission and status headroom, actual connection release, and local fault acceptance; no new runtime quotas or deadlines. |
 | `webapp.md` | Web workbench concepts, projections, status, and operator-facing behavior. |
 | `webshare.md` | Web sharing: the read-only snapshot + outbound relay tunnel, deployment, and the trust model. |
+| `experimental-judgment.md` | Design contract for the default-off experimental semantic judgment layer (TypeSafe Jev): goals, flags, disclosure, and the typed backend port. |
+| `experimental-judgment_zh.md` | Chinese counterpart of the experimental judgment-layer design contract. |
 
 ## Where this fits
 
