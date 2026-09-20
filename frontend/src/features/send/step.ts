@@ -21,6 +21,7 @@ import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
 import { hint } from "../sessions/chrome";
 import { publicList } from "../timeline/sanitize";
+import { appendSemanticSkillSearch } from "../judgment/chips";
 import { icon, iconEl } from "./icon";
 
 export type Step = {
@@ -443,6 +444,7 @@ export function stepBody(step: Step): HTMLElement {
     return box;
   }
   if (k === "skill") {
+    if (appendSemanticSkillSearch(box, out)) return box;
     if (out.content) {
       const md = el("div", "md s-skill");
       md.innerHTML = renderMd(String(out.content));

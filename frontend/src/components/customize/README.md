@@ -28,6 +28,8 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`index.ts`](index.ts) | Re-exports `Customize`. |
 | [`ui.tsx`](ui.tsx) | Shared `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`. |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | `useTimerLease` / `useAlive` bound to unmount. |
+| [`ExperimentsTab.tsx`](ExperimentsTab.tsx) | Experimental semantic-judgment block on General: disclosure, capability toggles, TypeSafe key, connection probe. |
+| [`ExperimentsTab.test.tsx`](ExperimentsTab.test.tsx) | Disclosure must be acknowledged before enable; `env_off` disables toggles; key is never echoed; probe shows ok / unavailable / disabled. |
 
 ## Subdirectories
 
