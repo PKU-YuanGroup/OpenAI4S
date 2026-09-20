@@ -294,3 +294,31 @@ Also open: `format_tool_result` shows the model the lexical `results` only, so
 suggestions are model-visible exactly when lexical search found nothing. That
 inconsistency is a product decision, not a defect, and is recorded for the
 maintainer.
+
+#### W2 rework — 2026-09-20
+
+W2-A's rework `7edc1cc6` merged as `891c7ef6`. `SearchSkillsTool.execute` now
+reserves the semantic envelope's share before fitting lexical hits, and
+`fit_to_budget` takes an optional `budget` so the capability-off path is
+untouched. When the envelope still cannot hold a single suggestion the payload
+carries `semantic_truncated: true` and a status of `ok` becomes `uncertain`,
+so "the budget ate them" is no longer indistinguishable from a genuine
+abstention.
+
+Verified on the merged tree against the loopback fake, with the same query
+that produced the defect: `suggest_skills` yields 3 suggestions and all 3 now
+survive `execute` beside 5 lexical hits, rendering to 44,723 characters
+against the 50,000 limit, and the step card carries both. Forcing the envelope
+past the limit reproduces the new signal — at a 600-character limit 2 of 3
+suggestions survive with `semantic_truncated: true`, and at 300 the status
+drops to `uncertain` with none.
+
+Integration fix `07f0e9a8` corrects the reserve's docstring: it claimed a cap
+at `output_limit // 8` "so a large envelope cannot starve the result list",
+while the code takes `max(needed, cap)` — a floor. The conclusion holds at the
+real limit; the named mechanism was not the implemented one. Behaviour
+unchanged.
+
+New for later waves: the enabled payload may carry `semantic_truncated`, and
+`uncertain` can now mean the budget dropped the suggestions rather than the
+model hedging. A genuine abstention is `ok` with an empty list and no such key.
