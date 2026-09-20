@@ -187,3 +187,45 @@ token；Service 层截断并打标。计数、算术、日期比较全部在代�
 W1 待办：子能力开关已能解析，但还没有任何调用方，也还没有传输层；
 `tests/conftest.py` 目前不会清除 `OPENAI4S_*JUDGMENT*` 变量——一旦 W1 接上运行时，
 开发者本机 export 的总开关会污染离线套件。
+
+### W1 — 2026-09-20
+
+按顺序把三个分支合进 `feat/judgment`：`w1-a-transport`（`b753f40d` →
+`0c9d37a0`）、`w1-b-host-service`（`52f36188` → `e8ed3ade`）、
+`w1-c-settings-egress-gateway`（`00b0c63e` → `c077bba3`）。这一层现在有了
+纯标准库的 TypeSafe 传输与严格响应校验、loopback 假端点、`host.judge` 背后的
+`JudgmentService`，以及 `/api/v1/experimental/judgment` 设置面和 doctor 检查。
+
+冲突只有 README 和登记表的追加行，按追加顺序取并集。W1-C 的合并里有一处语义
+解决：它给延迟 import 的 `JudgmentService` 加的 `# type: ignore[import-not-found]`
+在 W1-B 合入后变成无用 ignore，而 mypy 拒绝无用 ignore。
+
+集成修正 `560c8f6f` 补上了三处单个分支看不见的接缝。`JudgmentService._store`
+无条件调用 provider，而网关传进来的是本次请求的 Store 实例，于是总开关一开，
+`POST /experimental/judgment/test` 就在路由里抛
+`TypeError: 'Store' object is not callable`——W1-B 的测试一律传 lambda，
+W1-C 的路由测试又把 probe 打了桩，两边都照不到。`BackendReply.fake` 停在传输层，
+来自 loopback 假端点的答案被当作真实后端答案记录和审计。W1-C 的 ImportError
+兜底会把真正的导入失败报成一句体面的 `unconfigured`。
+`tests/test_judgment_w1_integration.py` 覆盖这三点，且其中每一条断言在没有该修正时都是红的。
+
+集成修正 `a586e533`：探针路由的冻结形状把 `error_code` 收窄成了 `null`，
+因为套件里唯一没打桩的调用走的是默认关闭路径。而只要开关打开又没配 key，
+该路由就会返回 `"unconfigured"`，所以现在套件把两种状态都引出来，形状是二者的并集。
+
+用 loopback 假端点在隔离数据目录下做了端到端：服务的 `probe()` 和一次三题
+（Noul、Choice、Score）的 `run()` 返回 `ok` 且 `fake: true`，重复调用命中缓存；
+真实 kernel cell 里经真实传输层调用 `host.judge("system.probe", …)`；
+以及对运行中的 daemon 依次测 `GET` / `PUT` / `POST …/test`，探针 5 毫秒返回 `ok`。
+通过 `OPENAI4S_TYPESAFE_API_KEY` 提供的 key 没有出现在数据目录下的任何文件里，
+假端点的请求日志只记 `path`、`headers` 和 `body`，完全没有 `Authorization`。
+`PUT {"clear_api_key": true}` 会同时清掉 Store 行和钥匙串条目。
+
+`openai4s doctor` 在关闭时报告 `disabled (experimental, default off)`，
+开启且有 key 时报告 `enabled (typesafe/jev-1.13.0)`，缺 key 或
+`api.typesafe.ai` 不在强制 allowlist 内时给出 warn。
+
+W2 待办：`tests/conftest.py` 仍不清除 `OPENAI4S_*JUDGMENT*`，而现在已经有运行时
+路径会让它泄漏进来。`host.judge` 刻意不在 `GATEABLE_TOOLS`、`_SCREENED_METHODS`
+和 `_m_capabilities()` 里。dispatcher 信封的 `log_host_call(method="judge")`
+仍会记下原始 state，尽管命名审计事件 `judgment` 不记。

@@ -210,3 +210,53 @@ Open for W1: capability flags are resolved but nothing consumes them, no
 transport exists, and `tests/conftest.py` does not yet purge
 `OPENAI4S_*JUDGMENT*` variables — a developer who exports the master switch
 will leak it into the offline suite once W1 wires a runtime path.
+
+### W1 — 2026-09-20
+
+Merged three branches into `feat/judgment` in order: `w1-a-transport`
+(`b753f40d` → `0c9d37a0`), `w1-b-host-service` (`52f36188` → `e8ed3ade`), and
+`w1-c-settings-egress-gateway` (`00b0c63e` → `c077bba3`). The layer now has a
+stdlib TypeSafe transport with strict response validation, a loopback fake
+endpoint, `JudgmentService` behind `host.judge`, and the
+`/api/v1/experimental/judgment` settings surface with a doctor check.
+
+Conflicts were README and registry appends only, resolved as unions in append
+order. One semantic resolution inside the W1-C merge: its
+`# type: ignore[import-not-found]` on the deferred `JudgmentService` import
+became unused once W1-B was merged, and mypy refuses an unused ignore.
+
+Integration fix `560c8f6f` closed three seams no single branch could see.
+`JudgmentService._store` called its provider unconditionally while the gateway
+hands over the request's Store, so `POST /experimental/judgment/test` raised
+`TypeError: 'Store' object is not callable` inside the route as soon as the
+master switch was on; W1-B's tests always passed a lambda and W1-C's route test
+stubbed the probe away. `BackendReply.fake` stopped at the transport, so an
+answer from the loopback fake was reported and audited as a real one. And
+W1-C's ImportError fallback would have reported a genuine import failure as a
+tidy `unconfigured`. `tests/test_judgment_w1_integration.py` covers all three
+and every assertion in it fails without the fix.
+
+Integration fix `a586e533`: the frozen shape for the probe route had narrowed
+`error_code` to `null`, because the only unstubbed call in the suite hit the
+default-off path. The route returns `"unconfigured"` whenever the switch is on
+without a key, so the suite now elicits both and the shape is the union.
+
+Verified end to end against the loopback fake on an isolated data directory:
+service `probe()` and a three-question `run()` (Noul, Choice, Score) returning
+`ok` with `fake: true` and a cache hit on repeat; `host.judge("system.probe",
+…)` from a real kernel cell through the real transport; and `GET` / `PUT` /
+`POST …/test` against a running daemon, where the probe answered `ok` in 5 ms.
+A key supplied through `OPENAI4S_TYPESAFE_API_KEY` appeared in no file under
+the data directory, and the fake's request log records `path`, `headers` and
+`body` with no `Authorization` at all. `PUT {"clear_api_key": true}` removed
+both the Store row and the keychain item.
+
+`openai4s doctor` reports `disabled (experimental, default off)` when off,
+`enabled (typesafe/jev-1.13.0)` when on with a key, and warns without a key or
+when `api.typesafe.ai` is outside an enforced allowlist.
+
+Open for W2: `tests/conftest.py` still does not purge `OPENAI4S_*JUDGMENT*`,
+and a runtime path now exists for it to leak into. `host.judge` is deliberately
+absent from `GATEABLE_TOOLS`, `_SCREENED_METHODS` and `_m_capabilities()`. The
+dispatcher envelope's `log_host_call(method="judge")` still records the raw
+state even though the named `judgment` audit event does not.
