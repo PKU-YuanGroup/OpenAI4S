@@ -480,6 +480,8 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_response_contract_coverage.py`](test_response_contract_coverage.py) | 每个对外 route 都有响应契约，而且这份契约就是该 route 真正产出的那份——与服务端脱节的覆盖文件描述的是一个没人在发布的产品。 |
 | [`test_response_contract_downloads.py`](test_response_contract_downloads.py) | 成功时返回字节的那几条 route，以及唯一一处没套信封的拒绝。notebook 导出、Session 包和 artifact 下载此前都被固化成 `kinds: ["json"], statuses: [404]`：无参扫描没有东西可要，而四个未实现的动词照样产出那个 404，于是覆盖门把一个下载端点算作已覆盖，客户端真正依赖的东西却哪里都没写下来。`PATCH\|POST\|PUT /annotations/<id>` 用 `{"annotation": null}` 回 404，是这张表面上唯一落在 PublicFailure 信封之外的拒绝，前端 `api()`（它用 `j.error` 构造错误）因此报出一个什么都没说的失败。 |
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | 在任何实验性判断层代码落地之前，把 Skill 系统提示、`search_skills` 中英文结果、原生工具 schema，以及 heuristic 模式下 `classify_code` 的判决冻结成逐字节快照。默认关闭路径必须继续与这些 fixtures 一致。 |
+| [`test_judgment_types.py`](test_judgment_types.py) | Noul/Choice/Score 的构造边界、`to_api()` 形态、可 JSON 序列化的 `to_dict()`，以及 `NullBackend` 永远抛 `disabled`。 |
+| [`test_judgment_flags.py`](test_judgment_flags.py) | 三态 env 解析、非法值、六条优先级、总开关关闭、缺失/版本不对的披露确认，以及 env=1 不要求确认。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

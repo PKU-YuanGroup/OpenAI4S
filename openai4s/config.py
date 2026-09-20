@@ -289,6 +289,26 @@ def _strict_env_flag(name: str, default: bool = False) -> bool:
     raise ValueError(f"invalid {name}: expected one of {choices}")
 
 
+def _strict_env_tristate(name: str) -> bool | None:
+    """Read a three-state flag: unset → None; known true/false; anything else errors.
+
+    Used by experimental judgment so an explicit env value can override the
+    Store, while leaving the variable unset still means "consult the Store /
+    default off".  The vocabulary is the same as :func:`_strict_env_flag`.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value in _STRICT_TRUE_VALUES:
+        return True
+    if value in _STRICT_FALSE_VALUES:
+        return False
+    choices = ", ".join(sorted(_STRICT_TRUE_VALUES | _STRICT_FALSE_VALUES))
+    raise ValueError(f"invalid {name}: expected one of {choices}")
+
+
 def _strict_env_choice(name: str, default: str, allowed: frozenset[str]) -> str:
     """Read and validate a closed-vocabulary environment setting."""
 
@@ -718,6 +738,89 @@ class RoadmapFeatureFlags:
                 raise ValueError(f"{name} must be a bool")
 
 
+_JUDGMENT_PROVIDERS = frozenset(("typesafe", "llm"))
+_JUDGMENT_DEFAULT_MODEL = "jev-1.13.0"
+
+
+def _judgment_model() -> str:
+    raw = os.environ.get("OPENAI4S_JUDGMENT_MODEL")
+    if raw is None:
+        return _JUDGMENT_DEFAULT_MODEL
+    value = raw.strip()
+    if not value:
+        raise ValueError(
+            "invalid OPENAI4S_JUDGMENT_MODEL: expected a non-empty model id"
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class ExperimentalJudgmentFlags:
+    """Default-off experimental semantic judgment layer (TypeSafe Jev).
+
+    Capability fields are tri-state: ``None`` means unset (consult Store /
+    default off).  An explicit env value is a kill switch or a headless enable
+    and wins over the Store.  Typos such as ``flase`` raise rather than
+    silently enabling the feature.
+    """
+
+    master: bool | None = field(
+        default_factory=lambda: _strict_env_tristate("OPENAI4S_EXPERIMENTAL_JUDGMENT")
+    )
+    skill_suggest: bool | None = field(
+        default_factory=lambda: _strict_env_tristate("OPENAI4S_JUDGMENT_SKILL_SUGGEST")
+    )
+    literature_check: bool | None = field(
+        default_factory=lambda: _strict_env_tristate("OPENAI4S_JUDGMENT_LITERATURE")
+    )
+    text_features: bool | None = field(
+        default_factory=lambda: _strict_env_tristate("OPENAI4S_JUDGMENT_TEXT_FEATURES")
+    )
+    safety_shadow: bool | None = field(
+        default_factory=lambda: _strict_env_tristate("OPENAI4S_JUDGMENT_SAFETY_SHADOW")
+    )
+    task_mode_shadow: bool | None = field(
+        default_factory=lambda: _strict_env_tristate(
+            "OPENAI4S_JUDGMENT_TASK_MODE_SHADOW"
+        )
+    )
+    provider: str = field(
+        default_factory=lambda: _strict_env_choice(
+            "OPENAI4S_JUDGMENT_PROVIDER", "typesafe", _JUDGMENT_PROVIDERS
+        )
+    )
+    model: str = field(default_factory=_judgment_model)
+    timeout_s: float = field(
+        default_factory=lambda: _strict_env_float(
+            "OPENAI4S_JUDGMENT_TIMEOUT_S", 3.0, minimum=0.1, maximum=30.0
+        )
+    )
+
+    def __post_init__(self) -> None:
+        for name in (
+            "master",
+            "skill_suggest",
+            "literature_check",
+            "text_features",
+            "safety_shadow",
+            "task_mode_shadow",
+        ):
+            value = getattr(self, name)
+            if value is not None and type(value) is not bool:
+                raise ValueError(f"{name} must be a bool or None")
+        if self.provider not in _JUDGMENT_PROVIDERS:
+            allowed = ", ".join(sorted(_JUDGMENT_PROVIDERS))
+            raise ValueError(f"invalid provider: expected one of {allowed}")
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ValueError("model must be a non-empty string")
+        timeout = self.timeout_s
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("timeout_s must be a finite number in [0.1, 30]")
+        timeout_f = float(timeout)
+        if not math.isfinite(timeout_f) or not 0.1 <= timeout_f <= 30.0:
+            raise ValueError("timeout_s must be a finite number in [0.1, 30]")
+
+
 _RESULT_REVIEW_MODES = frozenset(("off", "review_only", "auto_fix"))
 _APPROVAL_REVIEWERS = frozenset(("user", "auto_review"))
 GUARDIAN_BUDGET_FIELDS = frozenset(
@@ -1018,6 +1121,9 @@ class Config:
     # preserves the literal Origin.netloc == Host check.
     trusted_proxy_origins: tuple[str, ...] = field(
         default_factory=_trusted_proxy_origins
+    )
+    experimental_judgment: ExperimentalJudgmentFlags = field(
+        default_factory=ExperimentalJudgmentFlags
     )
 
     def ensure_dirs(self) -> None:

@@ -342,6 +342,42 @@ def test_urlopen_guard_fires_if_anything_calls_it() -> None:
         urllib.request.urlopen("https://example.invalid")  # type: ignore[arg-type]
 
 
+def test_default_config_judgment_flags_are_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openai4s.config import Config
+    from openai4s.judgment.disclosure import CAPABILITIES
+    from openai4s.judgment.flags import resolve
+
+    for name in (
+        "OPENAI4S_EXPERIMENTAL_JUDGMENT",
+        "OPENAI4S_JUDGMENT_SKILL_SUGGEST",
+        "OPENAI4S_JUDGMENT_LITERATURE",
+        "OPENAI4S_JUDGMENT_TEXT_FEATURES",
+        "OPENAI4S_JUDGMENT_SAFETY_SHADOW",
+        "OPENAI4S_JUDGMENT_TASK_MODE_SHADOW",
+        "OPENAI4S_JUDGMENT_PROVIDER",
+        "OPENAI4S_JUDGMENT_MODEL",
+        "OPENAI4S_JUDGMENT_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    cfg = Config(data_dir=tmp_path / "openai4s-data", skills_dir=_SKILLS_DIR)
+    flags = cfg.experimental_judgment
+    assert flags.master is None
+    assert flags.skill_suggest is None
+    assert flags.literature_check is None
+    assert flags.text_features is None
+    assert flags.safety_shadow is None
+    assert flags.task_mode_shadow is None
+    assert flags.provider == "typesafe"
+    assert flags.model == "jev-1.13.0"
+    assert flags.timeout_s == 3.0
+    effective = resolve(cfg, None)
+    assert effective.master.enabled is False
+    for name in CAPABILITIES:
+        assert getattr(effective, name).enabled is False
+
+
 if __name__ == "__main__":
     capture()
     print(f"wrote snapshots under {_FIXTURE_DIR}")
