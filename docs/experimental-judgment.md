@@ -144,9 +144,11 @@ Questions are frozen dataclasses in `openai4s/judgment/types.py`:
 - `Score`: 2–10 ordered levels. `to_api()` puts levels in `criteria` as a
   list.
 
-`Answer` carries `kind`, `value`, optional `probabilities` / `confidence`
-(Noul has neither). `JudgmentResult` is the Host RPC value; `to_dict()` is
-JSON-only. `BackendReply` is the transport reply: raw answers, usage,
+`Answer` carries `kind`, `value`, optional `probabilities` / `confidence`.
+A Noul answer is rejected if it carries either: Jev answers a Noul with
+P(yes) alone, and a field the backend never fills must not be representable.
+`value` is a number for `noul` / `score` and the selected option name for
+`choice`. `JudgmentResult` is the Host RPC value; `to_dict()` is JSON-only. `BackendReply` is the transport reply: raw answers, usage,
 echoed model, `request_id` (or `None`).
 
 Cache key (later):

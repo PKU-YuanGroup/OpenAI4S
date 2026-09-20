@@ -201,3 +201,30 @@ def test_backend_error_accepts_declared_codes(code: str) -> None:
 def test_backend_error_rejects_unknown_code() -> None:
     with pytest.raises(ValueError, match="invalid backend error code"):
         BackendError("nope", "x")
+
+
+def test_noul_answer_rejects_probabilities_and_confidence() -> None:
+    """Jev answers a Noul with P(yes) alone (plan 5.3 / 5.4).
+
+    Added by MERGE-W0: the type used to accept both fields silently, so a
+    later wave could read a confidence the backend never sent.
+    """
+
+    with pytest.raises(ValueError, match="no probabilities and no confidence"):
+        Answer(kind="noul", value=0.4, confidence=0.9)
+    with pytest.raises(ValueError, match="no probabilities and no confidence"):
+        Answer(kind="noul", value=0.4, probabilities={"true": 0.4, "false": 0.6})
+
+
+def test_answer_value_type_matches_kind() -> None:
+    with pytest.raises(ValueError, match="P\\(yes\\)"):
+        Answer(kind="noul", value="yes")
+    with pytest.raises(ValueError, match="selected option name"):
+        Answer(kind="choice", value=0.5, probabilities={"a": 1.0}, confidence=0.5)
+    with pytest.raises(ValueError, match="probability-weighted level"):
+        Answer(kind="score", value="2", probabilities={"0": 0.5, "1": 0.5})
+    # Booleans are not numbers here: True would silently read as level 1.
+    with pytest.raises(ValueError, match="P\\(yes\\)"):
+        Answer(kind="noul", value=True)
+    assert Answer(kind="noul", value=0).value == 0
+    assert Answer(kind="score", value=1.5, confidence=0.6).value == 1.5

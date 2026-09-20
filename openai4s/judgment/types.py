@@ -146,6 +146,24 @@ class Answer:
         if self.kind not in ("noul", "choice", "score"):
             raise ValueError(f"invalid answer kind: {self.kind!r}")
         object.__setattr__(self, "probabilities", _freeze_mapping(self.probabilities))
+        if self.kind == "noul":
+            # Jev answers a Noul with P(yes) alone: no distribution and no
+            # confidence (plan 5.3 / 5.4). Leaving the fields merely unset
+            # would let a later wave read a number the backend never sent.
+            if self.probabilities is not None or self.confidence is not None:
+                raise ValueError(
+                    "noul answers carry no probabilities and no confidence"
+                )
+            if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+                raise ValueError("noul answer value must be P(yes) as a number")
+        elif self.kind == "choice":
+            if not isinstance(self.value, str) or not self.value.strip():
+                raise ValueError("choice answer value must be the selected option name")
+        else:
+            if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+                raise ValueError(
+                    "score answer value must be the probability-weighted level"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         probabilities = self.probabilities

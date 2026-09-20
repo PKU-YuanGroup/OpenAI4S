@@ -129,9 +129,11 @@ disabled）、`TypeSafeBackend`（后续）、可选 `LlmBackend`（后续，只
   `to_api()` 把选项放进 `criteria`。
 - `Score`：2–10 个有序档位。`to_api()` 把档位作为 `criteria` 列表。
 
-`Answer` 含 `kind`、`value`，以及可选的 `probabilities` / `confidence`
-（Noul 两者都没有）。`JudgmentResult` 是 Host RPC 的返回值；`to_dict()`
-只含 JSON 类型。`BackendReply` 是传输层回包：raw answers、usage、回显的
+`Answer` 含 `kind`、`value`，以及可选的 `probabilities` / `confidence`。
+Noul 的答案带上其中任何一个都会被拒绝：Jev 对 Noul 只返回 P(yes)，
+后端永远不会填的字段不应当可被表示。`value` 在 `noul` / `score` 下是数值，
+在 `choice` 下是选中项的名称。`JudgmentResult` 是 Host RPC 的返回值；
+`to_dict()` 只含 JSON 类型。`BackendReply` 是传输层回包：raw answers、usage、回显的
 model、`request_id`（没有就是 `None`）。
 
 缓存键（后续）：
