@@ -494,6 +494,8 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_w1_integration.py`](test_judgment_w1_integration.py) | W1 三个包之间的接缝：设置路由传进来的 Store 实例能被 `JudgmentService` 接住、默认后端确实是 TypeSafe 传输层，以及来自 loopback 假端点的答案在结果和审计行里都仍然带着 `fake` 标记。 |
 | [`test_judgment_egress.py`](test_judgment_egress.py) | 判断层 egress **报告**：`off` 无补救项；allowlist 且未授权时报告 `blocked_message` 且 `check_url` 抛错；运行时 grant 后放行。不新增 `EGRESS_GROUPS` 分组。 |
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`：默认关闭为信息级、缺 key / allowlist 拦截为 warn，报告中永不出现 TypeSafe key。 |
+| [`test_bioskills_area_index.py`](test_bioskills_area_index.py) | 生成的 bioSkills 领域索引恰好覆盖当前全部成员、没有多余项、每个领域 ≤254 个成员，且 `source_manifest_sha256` 与 `MANIFEST.json` 一致。 |
+| [`test_judgment_skill_suggest.py`](test_judgment_skill_suggest.py) | `SkillService.suggest` 与 `search_skills` 追加字段：specialist allowlist、disabled Skill、显式点名跳过、unavailable 原样返回、默认关闭逐字节相同、中文 query、请求 ≤3、Choice ≤255，以及缓存键含 `policy_version`。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 
