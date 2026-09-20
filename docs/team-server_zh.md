@@ -31,6 +31,8 @@ loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token �
 
 读权限不等于命名空间控制权。对于项目内可见的会话，所有改变 frame 状态的操作都仅限会话属主或管理员：turn 与 review、权限决定、plan、annotation 与 Artifact、分享、checkpoint、分支激活/Revert/恢复、删除，以及 Notebook 执行和生命周期控制。D4 可见性切换特意更严格：只有属主（不包括管理员）能决定是否让自己的 Session 在项目内可读。以 POST 表达的 Revert preview 仍是读取。按资源 id 写入以及在 body 中指定 frame 的上传也继承同一属主规则，因此改变 URL 形状不能把项目可见性变成写权限。释放交互式算力分配同样仅限属主或管理员；请求交互式算力更严格——仅管理员可做——因为调度器使用的是 daemon 身份与站点凭据。通过全局或 frame-scoped kernel 路由安装包也仅管理员可做：即使 frame 属于调用者，两条路由改动的都是实例共享的运行环境。
 
+这条分界由两个不同的谓词实现，而把其中一个错当成另一个是反复出现的误读。`_team_scope_guard` 决定**读**：它按路径匹配 `/frames/{id}/...` 与 `/artifacts/{id}/...`，在 handler 之前执行，会话对调用者不可见就返回 404。`_team_require_session_control` 决定**属主级改动**，并且刻意不出现在读路由上——把它加到某条读路由上不是加固，而是撤销本节所授予的项目内读权限。机制本身、唯一一条排在守卫之前分发的路由，以及钉住这两点的测试，都在 `docs/security.md`。
+
 配额按用户或项目、按种类、按窗口设置：
 
 ```bash

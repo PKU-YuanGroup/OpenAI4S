@@ -13929,7 +13929,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return identity.user_id
 
         def _team_require_session_control(self, root_frame_id: str) -> None:
-            """Keep project read visibility from becoming write authority."""
+            """Keep project read visibility from becoming write authority.
+
+            Deliberately absent from read routes. Its absence on a GET is not a
+            missing check -- `_team_scope_guard` already refused that request by
+            path, before the handler, unless the session is visible to the
+            caller. Adding this predicate to a read revokes the project read the
+            product grants (`team_policy.may_control_session` exists to keep the
+            two apart); `team_policy.is_session_control_mutation` is the closed
+            list of what it does cover. See docs/security.md, "Team mode: read
+            scope and control authority are two different predicates".
+            """
 
             identity = getattr(self, "_team_identity", None)
             if _team_auth is None or identity is None:

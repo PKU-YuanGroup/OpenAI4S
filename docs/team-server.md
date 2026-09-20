@@ -68,6 +68,15 @@ Installing packages through either the global or frame-scoped kernel route
 is also admin only: both mutate a runtime environment shared by the instance,
 even when the frame belongs to the caller.
 
+Two predicates implement that split, and mistaking one for the other is the
+recurring reading error. `_team_scope_guard` decides **reads**: it matches
+`/frames/{id}/...` and `/artifacts/{id}/...` by path, before the handler, and
+404s unless the session is visible to the caller. `_team_require_session_control`
+decides **owner-level mutations** and is deliberately absent from read routes —
+putting it on one revokes the project read this section grants rather than
+hardening it. `docs/security.md` has the mechanism, the one route dispatched
+ahead of the guard, and the tests that pin both.
+
 Quotas are set per user or per project, per kind, per window:
 
 ```bash
