@@ -529,6 +529,94 @@ def test_semantic_reason_fields_are_dropped_first() -> None:
         assert suggestions[0].get("reason_fields") == []
 
 
+def _bio_sized_hits() -> list[dict[str, str]]:
+    # Imported bioSkills docs are ~18k chars; five of them overflow 50k.
+    return [
+        {
+            "name": f"bio-hit-{index}",
+            "description": "annotate single-cell RNA-seq clusters with known markers",
+            "doc": ("cell type annotation recipe. " * 700),
+        }
+        for index in range(5)
+    ]
+
+
+def _three_suggestions() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "single-cell-rna-analysis",
+            "p_fit": 0.91,
+            "choice_prob": 0.61,
+            "confidence": 0.74,
+            "stage": "curated",
+            "reason_fields": ["description", "skill_md_head"],
+            "template_version": "1",
+        },
+        {
+            "name": "bio-single-cell-demo",
+            "p_fit": 0.70,
+            "choice_prob": 0.22,
+            "confidence": 0.70,
+            "stage": "bioskills",
+            "reason_fields": ["description"],
+            "template_version": "1",
+        },
+        {
+            "name": "alpha",
+            "p_fit": 0.55,
+            "choice_prob": 0.11,
+            "confidence": 0.55,
+            "stage": "curated",
+            "reason_fields": ["description"],
+            "template_version": "1",
+        },
+    ]
+
+
+def test_lexical_fill_still_delivers_semantic_suggestions() -> None:
+    """Lexical hits that fill output_limit must still reach the caller."""
+
+    tool = SearchSkillsTool()
+    rows = _bio_sized_hits()
+    suggestions = _three_suggestions()
+    fitted_full = tool.fit_to_budget(rows)
+    prefix = len(f"[Tool: {tool.name}]\n")
+    lexical_body = json.dumps(fitted_full, ensure_ascii=False, indent=2, default=str)
+    assert prefix + len(lexical_body) <= tool.output_limit
+    assert prefix + len(lexical_body) > tool.output_limit - 500
+
+    runtime = FakeRuntime(
+        rows,
+        {"semantic_status": "ok", "semantic_suggestions": suggestions},
+    )
+    out = tool.execute(
+        runtime, {"query": "annotate single-cell RNA-seq clusters", "limit": 5}
+    )
+    assert isinstance(out, dict)
+    assert [row["name"] for row in out["results"]] == [row["name"] for row in rows]
+    assert out["semantic_status"] == "ok"
+    assert len(out["semantic_suggestions"]) == 3
+    assert [item["name"] for item in out["semantic_suggestions"]] == [
+        item["name"] for item in suggestions
+    ]
+    assert not out.get("semantic_truncated")
+    rendered = format_tool_result(tool, out)
+    assert not rendered.endswith("… [truncated]")
+
+
+def test_semantic_status_is_not_ok_when_suggestions_cannot_fit() -> None:
+    tool = SearchSkillsTool(output_limit=400)
+    payload = {
+        "results": [{"name": "alpha", "doc": "x" * 350}],
+        "semantic_status": "ok",
+        "semantic_suggestions": _three_suggestions(),
+    }
+    fitted = tool._fit_semantic(payload)
+    assert fitted["semantic_suggestions"] == []
+    assert fitted.get("semantic_truncated") is True
+    assert fitted["semantic_status"] != "ok"
+
+
 def test_suggest_does_not_run_when_flag_off(tmp_path: Path) -> None:
     backend = ScriptedBackend()
     skills_dir = _tiny_skills(tmp_path)
