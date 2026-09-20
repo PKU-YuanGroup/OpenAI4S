@@ -703,6 +703,76 @@ def _connectors(cfg: Any) -> Check:
     return Check("connectors", OK, detail, facts=facts)
 
 
+def _judgment(cfg: Any) -> Check:
+    """Experimental semantic judgment layer. Configuration only — no network."""
+
+    from openai4s.judgment.flags import resolve
+    from openai4s.judgment.settings import (
+        TYPESAFE_HOST,
+        egress_report,
+        key_is_configured,
+    )
+
+    facts: dict[str, Any] = {"experimental": True}
+    store = _store_for(cfg)
+    flags = resolve(cfg, store)
+    facts["enabled"] = flags.master.enabled
+    facts["source"] = flags.master.source
+    facts["provider"] = flags.provider
+    facts["model"] = flags.model
+    report = egress_report()
+    facts["egress_mode"] = report["mode"]
+    facts["domain_allowed"] = report["domain_allowed"]
+    if not flags.master.enabled:
+        return Check(
+            "judgment",
+            OK,
+            "disabled (experimental, default off)",
+            facts=facts,
+        )
+    try:
+        configured = key_is_configured(store)
+    except Exception as e:  # noqa: BLE001 - a secret-store fault is a finding
+        facts["key_configured"] = False
+        facts["key_store_error"] = type(e).__name__
+        return Check(
+            "judgment",
+            WARN,
+            "enabled, but the TypeSafe API key could not be read",
+            "Retry after the secret store is available, or set "
+            "OPENAI4S_TYPESAFE_API_KEY for headless use.",
+            facts,
+        )
+    facts["key_configured"] = configured
+    if not configured:
+        return Check(
+            "judgment",
+            WARN,
+            "enabled, but no TypeSafe API key is configured",
+            "Set the key in Customize -> Experimental, or set "
+            "OPENAI4S_TYPESAFE_API_KEY.",
+            facts,
+        )
+    if report["mode"] == "allowlist" and not report["domain_allowed"]:
+        remedy = report["remediation"] or (
+            f"Call host.request_network_access(domain={TYPESAFE_HOST!r}) "
+            "to ask the user to approve widening it."
+        )
+        return Check(
+            "judgment",
+            WARN,
+            f"enabled, but {TYPESAFE_HOST} is not on the egress allowlist",
+            remedy,
+            facts,
+        )
+    return Check(
+        "judgment",
+        OK,
+        f"enabled ({flags.provider}/{flags.model})",
+        facts=facts,
+    )
+
+
 def _remote(cfg: Any) -> Check:
     """Can heavy work leave this machine, and is that boundary provable?"""
     facts: dict[str, Any] = {}
@@ -818,6 +888,7 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
     ("disk", _disk),
     ("connectors", _connectors),
     ("remote", _remote),
+    ("judgment", _judgment),
 )
 
 #: Probes `report()` still runs for the CLI, and that a page-load GET must not.

@@ -490,6 +490,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_service.py`](test_judgment_service.py) | `JudgmentService`：关闭时不调后端、每种 `BackendError` 都映射为 `unavailable`、策略 `ok`/`uncertain`、缓存键各分量、同 state 合批、并发上限、截断、usage sink，以及审计事件不含原始 state。 |
 | [`test_judgment_rpc.py`](test_judgment_rpc.py) | 真实 kernel worker 执行 `host.judge("system.probe", …)`；未知模板变成 `RuntimeError`；四种状态都是数据；`judge` 不进权限闸门也不进注入筛查。 |
 | [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder 会录下 `judge`；回放返回 tape 里的结果，且 `urlopen` 零调用。 |
+| [`test_judgment_settings_route.py`](test_judgment_settings_route.py) | 用真实 Store 测 `GET`/`PUT`/`PATCH /experimental/judgment`：key 永不回显、披露版本不对被拒、UI 打开但未确认是 `no_disclosure`、env false 是 `env_off`、清除 key。`POST .../test` 打桩服务并标 `stubbed_backend`。 |
+| [`test_judgment_egress.py`](test_judgment_egress.py) | 判断层 egress **报告**：`off` 无补救项；allowlist 且未授权时报告 `blocked_message` 且 `check_url` 抛错；运行时 grant 后放行。不新增 `EGRESS_GROUPS` 分组。 |
+| [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`：默认关闭为信息级、缺 key / allowlist 拦截为 warn，报告中永不出现 TypeSafe key。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

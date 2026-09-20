@@ -69,6 +69,7 @@ def test_every_probe_reports_without_a_running_daemon(cfg):
         "disk",
         "connectors",
         "remote",
+        "judgment",
     }
     for check in result["checks"]:
         assert check["status"] in (doctor.OK, doctor.WARN, doctor.FAIL)

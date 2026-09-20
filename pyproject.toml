@@ -292,6 +292,7 @@ files = [
     "openai4s/judgment/typesafe.py",
     "openai4s/judgment/validate.py",
     "openai4s/judgment/registry.py",
+    "openai4s/judgment/settings.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

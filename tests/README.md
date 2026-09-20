@@ -490,6 +490,9 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_service.py`](test_judgment_service.py) | `JudgmentService`: disabled skips the backend, every `BackendError` code maps to `unavailable`, policy `ok`/`uncertain`, cache key parts, same-state batching, concurrency cap, truncation, usage sink, and audit events without raw state. |
 | [`test_judgment_rpc.py`](test_judgment_rpc.py) | Real kernel worker `host.judge("system.probe", …)` round-trip; unknown template becomes `RuntimeError`; four statuses are data; `judge` is not gateable or screened. |
 | [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder tapes `judge`; replay returns the taped result with zero `urlopen`. |
+| [`test_judgment_settings_route.py`](test_judgment_settings_route.py) | `GET`/`PUT`/`PATCH /experimental/judgment` against a real Store: key never echoed, wrong disclosure version refused, UI enable without ack is `no_disclosure`, env false is `env_off`, key clear. `POST .../test` with a stubbed service is marked `stubbed_backend`. |
+| [`test_judgment_egress.py`](test_judgment_egress.py) | Judgment egress *report*: `off` has no remediation; allowlist without a grant reports `blocked_message` and `check_url` raises; a runtime grant authorizes. Does not add an `EGRESS_GROUPS` entry. |
+| [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`: default-off is informational, missing key / allowlist block warn, and the TypeSafe key never appears in the report. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 
