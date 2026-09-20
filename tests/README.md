@@ -496,6 +496,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`: default-off is informational, missing key / allowlist block warn, and the TypeSafe key never appears in the report. |
 | [`test_bioskills_area_index.py`](test_bioskills_area_index.py) | The generated bioSkills area index covers every current member, no extras, each area ≤254 members, and `source_manifest_sha256` matches `MANIFEST.json`. |
 | [`test_judgment_skill_suggest.py`](test_judgment_skill_suggest.py) | `SkillService.suggest` and `search_skills` wrapping: specialist allowlist, disabled Skills, explicit-name skip, unavailable passthrough, default-off byte identity, Chinese queries, ≤3 requests, Choice ≤255, and `policy_version` in the cache key. |
+| [`test_judgment_skills_eval.py`](test_judgment_skills_eval.py) | Frozen Skill-suggestion eval: case schema, gold names exist in the loader, every `lang × category × split` stratum is populated, `no_skill` ≥ 20%, test-split lock hash, B2 glossary built from the development split only, hand-crafted metric/bootstrap edges, and a `slow` offline B0+B2 run on `dev`. Never scores `--split test`. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

@@ -1,0 +1,2181 @@
+{
+  "schema_version": 1,
+  "split_seed": 20260920,
+  "n": 200,
+  "notes": "Agent-authored synthetic queries. Gold names were assigned after reading the corresponding SKILL.md descriptions. Do not copy sentences from those files. Human review of at least 20% is required.",
+  "cases": [
+    {
+      "id": "js-en-amb-01",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "predict the structure of this protein sequence, monomer, no model named",
+      "gold": [
+        "alphafold2",
+        "esmfold2",
+        "openfold3"
+      ],
+      "notes": "Unspecified structure predictor.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-amb-02",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "analyse our 10x single-cell dataset",
+      "gold": [
+        "single-cell-rna-analysis",
+        "scvi-tools",
+        "scgpt"
+      ],
+      "notes": "Scanpy vs scVI vs scGPT.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-amb-03",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "dock this compound into the protein",
+      "gold": [
+        "diffdock",
+        "bio-virtual-screening",
+        "boltz"
+      ],
+      "notes": "Pose vs VS vs co-fold.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-amb-04",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "do retrosynthesis on this target",
+      "gold": [
+        "single-step-retrosynthesis",
+        "retrosynthesis_planning",
+        "bio-retrosynthesis"
+      ],
+      "notes": "One-step vs multi-step vs bioSkills recipe.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-amb-05",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "make a figure from the CSV",
+      "gold": [
+        "figure-composer",
+        "figure-style"
+      ],
+      "notes": "Composer vs style.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-amb-06",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "is this claim supported in the literature",
+      "gold": [
+        "literature-review",
+        "pdf-explore"
+      ],
+      "notes": "Search vs attached PDF.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-amb-07",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "redesign the sequence from the backbone",
+      "gold": [
+        "proteinmpnn",
+        "ligandmpnn",
+        "solublempnn"
+      ],
+      "notes": "MPNN family unspecified.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-amb-08",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "call peaks on my ATAC and ChIP BAMs",
+      "gold": [
+        "bio-atac-seq-atac-peak-calling",
+        "bio-chipseq-peak-calling"
+      ],
+      "notes": "Both assays named.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-amb-09",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "profile the taxonomic composition of this metagenome",
+      "gold": [
+        "bio-metagenomics-kraken",
+        "bio-metagenomics-metaphlan"
+      ],
+      "notes": "Kraken2 vs MetaPhlAn.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-amb-10",
+      "lang": "en",
+      "category": "ambiguous",
+      "query": "score whether this mutation is better using a protein language model",
+      "gold": [
+        "fair-esm2",
+        "esmfold2"
+      ],
+      "notes": "ESM-2 vs ESMC bundled with esmfold2.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-01",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "call open-chromatin peaks from an ATAC BAM with MACS3, this is not a ChIP experiment",
+      "gold": [
+        "bio-atac-seq-atac-peak-calling"
+      ],
+      "notes": "ATAC peak calling.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-02",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "narrow TF ChIP peaks with MACS2 and a matched input control",
+      "gold": [
+        "bio-chipseq-peak-calling"
+      ],
+      "notes": "ChIP-seq peak calling.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-03",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "de novo motifs in the peak FASTA, HOMER or MEME-ChIP is fine",
+      "gold": [
+        "bio-chipseq-motif-analysis"
+      ],
+      "notes": "Motif discovery on peaks.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-04",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "two-sample MR from GWAS summaries, IVW plus MR-Egger and a weighted median",
+      "gold": [
+        "bio-causal-genomics-mendelian-randomization"
+      ],
+      "notes": "Two-sample Mendelian randomization.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-05",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "fine-map this GWAS locus to a SuSiE credible set, FINEMAP as a check",
+      "gold": [
+        "bio-causal-genomics-fine-mapping"
+      ],
+      "notes": "Fine-mapping / credible sets.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-06",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "structure-based virtual screen of a vendor library with AutoDock Vina or GNINA",
+      "gold": [
+        "bio-virtual-screening"
+      ],
+      "notes": "Docking VS, not DiffDock pose-on-one-ligand.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-07",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "splice-aware RNA-seq alignment to the genome with STAR, GTF already in hand",
+      "gold": [
+        "bio-read-alignment-star-alignment"
+      ],
+      "notes": "STAR RNA-seq aligner.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-08",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "map WGS paired-end reads with bwa-mem2 before variant calling",
+      "gold": [
+        "bio-read-alignment-bwa-alignment"
+      ],
+      "notes": "bwa-mem2 DNA alignment.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-09",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "DESeq2 Wald test on a bulk RNA-seq count matrix, apeglm shrink the LFCs",
+      "gold": [
+        "bio-differential-expression-deseq2-basics"
+      ],
+      "notes": "DESeq2 basics.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-10",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "quantify transcripts from FASTQ with Salmon selective alignment, skip STAR",
+      "gold": [
+        "bio-rna-quantification-alignment-free-quant"
+      ],
+      "notes": "Salmon/kallisto.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-11",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "germline SNPs with GATK HaplotypeCaller in GVCF mode then joint genotype",
+      "gold": [
+        "bio-gatk-variant-calling"
+      ],
+      "notes": "GATK HC joint calling.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-12",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "haplotype-resolved T2T assembly from PacBio HiFi using hifiasm",
+      "gold": [
+        "bio-genome-assembly-hifi-assembly"
+      ],
+      "notes": "hifiasm HiFi assembly.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-13",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "MAGeCK test on a pooled CRISPR screen after mageck count, two conditions",
+      "gold": [
+        "bio-crispr-screens-mageck-analysis"
+      ],
+      "notes": "MAGeCK RRA.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-14",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "find spatially coherent domains on a Visium slide, cortical layers vs tumor/stroma",
+      "gold": [
+        "bio-spatial-transcriptomics-spatial-domains"
+      ],
+      "notes": "Spatial domains, not scRNA clustering.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-15",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "Kraken2 classify shotgun metagenomic reads then Bracken the abundances",
+      "gold": [
+        "bio-metagenomics-kraken"
+      ],
+      "notes": "Kraken2/Bracken.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-16",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "Bismark-align WGBS reads to a C-to-T converted genome",
+      "gold": [
+        "bio-methylation-bismark-alignment"
+      ],
+      "notes": "Bismark bisulfite alignment.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-17",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "IQ-TREE2 ML tree with ModelFinder and UFBoot2, alignment already trimmed",
+      "gold": [
+        "bio-phylo-modern-tree-inference"
+      ],
+      "notes": "Modern ML phylogenetics.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-bio-18",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "remote NCBI BLAST this unknown CDS through Biopython NCBIWWW",
+      "gold": [
+        "bio-blast-searches"
+      ],
+      "notes": "Remote BLAST.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-19",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "GSEA on a ranked gene list against MSigDB Hallmarks via clusterProfiler",
+      "gold": [
+        "bio-pathway-gsea"
+      ],
+      "notes": "GSEA / clusterProfiler.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-bio-20",
+      "lang": "en",
+      "category": "bioskills_member",
+      "query": "call TAD boundaries from a balanced Hi-C matrix with the diamond insulation score",
+      "gold": [
+        "bio-hi-c-analysis-tad-detection"
+      ],
+      "notes": "TAD insulation, not loops.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-01",
+      "lang": "en",
+      "category": "curated",
+      "query": "fold this monomer with ColabFold's AF2 evoformer, I already have a FASTA and I do not want the AF3-class models",
+      "gold": [
+        "alphafold2"
+      ],
+      "notes": "AF2/ColabFold monomer path.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-02",
+      "lang": "en",
+      "category": "curated",
+      "query": "co-fold a binder against a target with Boltz-2 and turn on the small-molecule affinity head",
+      "gold": [
+        "boltz"
+      ],
+      "notes": "Boltz-2 complexes plus optional affinity.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-03",
+      "lang": "en",
+      "category": "curated",
+      "query": "run Chai-1 on an antibody–antigen FASTA and dump mmCIF plus ipTM",
+      "gold": [
+        "chai1"
+      ],
+      "notes": "Chai-1 co-folding from FASTA.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-04",
+      "lang": "en",
+      "category": "curated",
+      "query": "single-sequence ESMFold2-Fast for a protein plus a CCD ligand, skip the MSA server",
+      "gold": [
+        "esmfold2"
+      ],
+      "notes": "Biohub ESMFold2 / ESMFold2-Fast.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-05",
+      "lang": "en",
+      "category": "curated",
+      "query": "OpenFold3 with the Apache AF3 weights; queries have to be JSON chains not a FASTA file",
+      "gold": [
+        "openfold3"
+      ],
+      "notes": "OpenFold3 InferenceQuerySet JSON.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-06",
+      "lang": "en",
+      "category": "curated",
+      "query": "redesign the protein–protein interface from backbone coordinates only, no ligand in the pocket",
+      "gold": [
+        "proteinmpnn"
+      ],
+      "notes": "ProteinMPNN backbone-only inverse fold.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-07",
+      "lang": "en",
+      "category": "curated",
+      "query": "need inverse folding that actually sees the bound cofactor and the zinc, not the protein-only graph",
+      "gold": [
+        "ligandmpnn"
+      ],
+      "notes": "LigandMPNN for ligand/metal context.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-08",
+      "lang": "en",
+      "category": "curated",
+      "query": "the last MPNN round went to inclusion bodies in E. coli, switch to the soluble-PDB-trained prior",
+      "gold": [
+        "solublempnn"
+      ],
+      "notes": "SolubleMPNN expression-biased prior.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-09",
+      "lang": "en",
+      "category": "curated",
+      "query": "de novo binder backbones with hotspot-conditioned RFdiffusion contigs, sequence design comes later",
+      "gold": [
+        "rfdiffusion"
+      ],
+      "notes": "RFdiffusion backbone generation stage.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-10",
+      "lang": "en",
+      "category": "curated",
+      "query": "extract ESM-2 per-sequence embeddings for a classifier, no structure prediction this round",
+      "gold": [
+        "fair-esm2"
+      ],
+      "notes": "fair-esm2 embeddings / mutation scores.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-11",
+      "lang": "en",
+      "category": "curated",
+      "query": "blind-dock this SMILES into the PDB without drawing a box, I just need ranked poses and a confidence",
+      "gold": [
+        "diffdock"
+      ],
+      "notes": "DiffDock-L blind pose predictor.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-12",
+      "lang": "en",
+      "category": "curated",
+      "query": "Scanpy QC, clustering, and annotation on a human 10x GEX count matrix, not the FASTQ",
+      "gold": [
+        "single-cell-rna-analysis"
+      ],
+      "notes": "Bundled 10x Scanpy workflow.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-13",
+      "lang": "en",
+      "category": "curated",
+      "query": "zero-shot cell-type labels with scGPT on an existing AnnData, I already have the embeddings task in mind",
+      "gold": [
+        "scgpt"
+      ],
+      "notes": "scGPT foundation model, not scVI.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-14",
+      "lang": "en",
+      "category": "curated",
+      "query": "scVI batch correction on raw UMI counts from four donors, keep the integers, no log-normalised input",
+      "gold": [
+        "scvi-tools"
+      ],
+      "notes": "scVI/scANVI on raw counts.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-15",
+      "lang": "en",
+      "category": "curated",
+      "query": "find the seminal papers for this method and verify the DOIs, do not invent citations",
+      "gold": [
+        "literature-review"
+      ],
+      "notes": "Grounded literature retrieval and DOI checks.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-16",
+      "lang": "en",
+      "category": "curated",
+      "query": "the PDF is attached; I need methods vs supplementary compared, not a title-page summary",
+      "gold": [
+        "pdf-explore"
+      ],
+      "notes": "Multi-place PDF reading.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-17",
+      "lang": "en",
+      "category": "curated",
+      "query": "do not rerun the analysis — just tell me whether the figure deck actually supports the abstract's claim",
+      "gold": [
+        "paper-narrative"
+      ],
+      "notes": "Story/verdict audit of figures.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-18",
+      "lang": "en",
+      "category": "curated",
+      "query": "compose a multi-panel journal figure from one-line claim plus the data files, 12-column grid",
+      "gold": [
+        "figure-composer"
+      ],
+      "notes": "Multi-panel composition loop.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-19",
+      "lang": "en",
+      "category": "curated",
+      "query": "before I plot anything, apply the publication font ladder, outward ticks, frameless legend, 300 dpi",
+      "gold": [
+        "figure-style"
+      ],
+      "notes": "Style/legibility helpers.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-20",
+      "lang": "en",
+      "category": "curated",
+      "query": "audit this table for duplicate IDs, target imbalance, and group leakage across splits before we train",
+      "gold": [
+        "audit-dataset"
+      ],
+      "notes": "Pre-training tabular audit.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-21",
+      "lang": "en",
+      "category": "curated",
+      "query": "plan a leakage-safe grouped split by donor, pin the config fingerprint, list baselines and ablations",
+      "gold": [
+        "plan-ml-experiment"
+      ],
+      "notes": "Experiment planning with grouped/chronological splits.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-22",
+      "lang": "en",
+      "category": "curated",
+      "query": "held-out binary classifier: confusion matrix, tie-aware ROC AUC, bootstrap CI, no training-set numbers",
+      "gold": [
+        "evaluate-model"
+      ],
+      "notes": "Held-out metrics with bootstrap CIs.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-23",
+      "lang": "en",
+      "category": "curated",
+      "query": "mean, std, quantiles and Pearson on a plain Python list of numbers, no pandas",
+      "gold": [
+        "example_stats"
+      ],
+      "notes": "Stdlib descriptive stats.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-24",
+      "lang": "en",
+      "category": "curated",
+      "query": "write a sarcopenia indication dossier: population, epi, biology/SOC, regulatory endpoints, landmark trials",
+      "gold": [
+        "indication-dossier"
+      ],
+      "notes": "Five-phase indication dossier.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-25",
+      "lang": "en",
+      "category": "curated",
+      "query": "unmix this noisy Raman spectrum of an unknown mineral mix against the reference library",
+      "gold": [
+        "mineral_spectra_analysis"
+      ],
+      "notes": "Raman residual-peak unmixing.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-26",
+      "lang": "en",
+      "category": "curated",
+      "query": "SAC SAR screen on graphene M–N–C with FAIRChem UMA only; do not return the committed demo dashboard",
+      "gold": [
+        "catalyst_sar_screening"
+      ],
+      "notes": "Locked UMA pipeline, no demo shells.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-27",
+      "lang": "en",
+      "category": "curated",
+      "query": "ADMET-guided GA from seed SMILES with lineage logs and an HTML optimisation history",
+      "gold": [
+        "admet_genetic"
+      ],
+      "notes": "ADMET genetic optimisation workflow.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-28",
+      "lang": "en",
+      "category": "curated",
+      "query": "map atoms across this fully specified reaction with RXNMapper; I am not asking for precursors",
+      "gold": [
+        "reaction-atom-mapping"
+      ],
+      "notes": "Atom mapping only.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-29",
+      "lang": "en",
+      "category": "curated",
+      "query": "rank catalyst / reagent / solvent labels for this closed reaction with the Parrot USPTO checkpoint",
+      "gold": [
+        "reaction-condition-recommendation"
+      ],
+      "notes": "Condition ranking, not a procedure.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-30",
+      "lang": "en",
+      "category": "curated",
+      "query": "ReactionT5 forward: given reactants and reagents, is the intended product in the top-k (round-trip)",
+      "gold": [
+        "reaction-forward-prediction"
+      ],
+      "notes": "Forward prediction / round-trip recovery.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-31",
+      "lang": "en",
+      "category": "curated",
+      "query": "estimate in-domain yield for this complete USPTO-like record; do not treat it as step-success probability",
+      "gold": [
+        "reaction-yield-estimation"
+      ],
+      "notes": "Yield regression, uncalibrated.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-32",
+      "lang": "en",
+      "category": "curated",
+      "query": "multi-step retrosynthesis to purchasable stock with AiZynthFinder, then audit the route tree",
+      "gold": [
+        "retrosynthesis_planning"
+      ],
+      "notes": "Recursive planning to stock.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-33",
+      "lang": "en",
+      "category": "curated",
+      "query": "one-step RetroChimera precursors only — do not recurse and do not call it a full route",
+      "gold": [
+        "single-step-retrosynthesis"
+      ],
+      "notes": "Single-step disconnection ideas.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-curated-34",
+      "lang": "en",
+      "category": "curated",
+      "query": "dispatch to the lab SLURM box over SSH, poll .result(), then harvest the files",
+      "gold": [
+        "remote-compute-ssh"
+      ],
+      "notes": "SSH/SLURM job orchestration.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-35",
+      "lang": "en",
+      "category": "curated",
+      "query": "run the job on NVIDIA NIM via host.compute.create('byoc:nvidia'), hosted gateway is fine",
+      "gold": [
+        "remote-compute-nvidia"
+      ],
+      "notes": "NVIDIA NIM BYOC.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-curated-36",
+      "lang": "en",
+      "category": "curated",
+      "query": "call the registered model endpoint over its native HTTP from the scoped inference kernel",
+      "gold": [
+        "using-model-endpoint"
+      ],
+      "notes": "Endpoint-scoped HTTP client.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-01",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "full binder campaign: RFdiffusion backbones, ProteinMPNN sequences, then an independent co-fold check",
+      "gold": [
+        "rfdiffusion",
+        "proteinmpnn",
+        "boltz"
+      ],
+      "notes": "Backbone → sequence → validation.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-multi-02",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "run the 10x Scanpy recipe first, then scVI on the raw UMIs to integrate donors",
+      "gold": [
+        "single-cell-rna-analysis",
+        "scvi-tools"
+      ],
+      "notes": "Scanpy workflow + scVI.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-03",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "collect and DOI-check the papers, then line up methods in the attached PDF against the claims",
+      "gold": [
+        "literature-review",
+        "pdf-explore"
+      ],
+      "notes": "Search then PDF alignment.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-04",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "apply the publication style ladder, then compose the multi-panel figure from the one-line claim",
+      "gold": [
+        "figure-style",
+        "figure-composer"
+      ],
+      "notes": "Style + composer.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-multi-05",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "audit the table, plan a grouped split, and only then report held-out AUC with bootstrap CIs",
+      "gold": [
+        "audit-dataset",
+        "plan-ml-experiment",
+        "evaluate-model"
+      ],
+      "notes": "Audit / plan / evaluate.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-multi-06",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "RetroChimera one-step ideas, then AiZynthFinder from accepted precursors down to stock",
+      "gold": [
+        "single-step-retrosynthesis",
+        "retrosynthesis_planning"
+      ],
+      "notes": "Single-step then multi-step.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-07",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "STAR-align the RNA-seq library then DESeq2 on the count matrix",
+      "gold": [
+        "bio-read-alignment-star-alignment",
+        "bio-differential-expression-deseq2-basics"
+      ],
+      "notes": "Align + DE.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-multi-08",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "ligand-aware inverse fold of the pocket, then blind-dock the ligand back as a pose sanity check",
+      "gold": [
+        "ligandmpnn",
+        "diffdock"
+      ],
+      "notes": "LigandMPNN + DiffDock.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-multi-09",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "score the mutant library with ESM-2 likelihoods and then run the mutation-enhancement ranking loop",
+      "gold": [
+        "fair-esm2",
+        "protein-mutation-enhancement"
+      ],
+      "notes": "ESM-2 + mutation workflow.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-10",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "bwa-mem2 the WES reads, then GATK HaplotypeCaller GVCFs",
+      "gold": [
+        "bio-read-alignment-bwa-alignment",
+        "bio-gatk-variant-calling"
+      ],
+      "notes": "Map + call.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-11",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "scrub doublets, run scRNA QC/normalisation, then CellTypist/SingleR label transfer",
+      "gold": [
+        "bio-single-cell-doublet-detection",
+        "bio-single-cell-preprocessing",
+        "bio-single-cell-cell-annotation"
+      ],
+      "notes": "Three-step scRNA recipe.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-multi-12",
+      "lang": "en",
+      "category": "multi_skill",
+      "query": "call ChIP peaks then run HOMER motifs on those sequences",
+      "gold": [
+        "bio-chipseq-peak-calling",
+        "bio-chipseq-motif-analysis"
+      ],
+      "notes": "Peaks + motifs.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-01",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "please punch up this abstract so it sounds like Nature, no analyses",
+      "gold": [],
+      "notes": "Copy-editing.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-02",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "explain what a p-value is in plain language, do not compute one",
+      "gold": [],
+      "notes": "Conceptual explanation.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-03",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "draft a one-line note that lab meeting moved to 4pm",
+      "gold": [],
+      "notes": "Scheduling.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-04",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "what's the difference between a Python list and a tuple, tiny example",
+      "gold": [],
+      "notes": "Language trivia.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-05",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "convert 37 C to Fahrenheit",
+      "gold": [],
+      "notes": "Unit conversion.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-06",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "write a polite decline for a review invitation",
+      "gold": [],
+      "notes": "Email.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-07",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "is this TypeError a missing import or a typo? just read the snippet",
+      "gold": [],
+      "notes": "Toy debugging.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-08",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "what does ANOVA stand for, just the expansion",
+      "gold": [],
+      "notes": "Acronym.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-09",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "recommend two intro ML textbooks, do not plan an experiment",
+      "gold": [],
+      "notes": "Book list.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-10",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "how do I point VS Code at a venv",
+      "gold": [],
+      "notes": "Editor setup.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-11",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "rebase vs merge for this tiny feature branch, workflow advice only",
+      "gold": [],
+      "notes": "Git.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-12",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "suggest a variable name for a running mean",
+      "gold": [],
+      "notes": "Naming.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-13",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "what is 1+1",
+      "gold": [],
+      "notes": "Arithmetic.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-14",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "who on the floor orders pipette tips",
+      "gold": [],
+      "notes": "Lab admin.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-15",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "translate this Chinese abstract to English, keep the terms, no literature search",
+      "gold": [],
+      "notes": "Translation.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-16",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "intuition for a Hessian in one sentence",
+      "gold": [],
+      "notes": "Math.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-17",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "this LaTeX equation fails to compile, check the braces",
+      "gold": [],
+      "notes": "LaTeX.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-18",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "write binary search in Python, unrelated to biology",
+      "gold": [],
+      "notes": "CS exercise.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-19",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "polish this postdoc cover letter",
+      "gold": [],
+      "notes": "Career writing.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-20",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "what does a pLDDT of 70 mean, explanation only, do not fold anything",
+      "gold": [],
+      "notes": "Metric explanation.",
+      "split": "dev"
+    },
+    {
+      "id": "js-en-none-21",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "is this reference list AMA or Vancouver",
+      "gold": [],
+      "notes": "Citation style.",
+      "split": "test"
+    },
+    {
+      "id": "js-en-none-22",
+      "lang": "en",
+      "category": "no_skill",
+      "query": "write a haiku about mitochondria, no analysis",
+      "gold": [],
+      "notes": "Creative writing.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-amb-01",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "把这段氨基酸序列的结构预测一下，单体，没说用哪家模型",
+      "gold": [
+        "alphafold2",
+        "esmfold2",
+        "openfold3"
+      ],
+      "notes": "Unspecified folder; AF2/ESMFold2/OpenFold3 are all reasonable monomers.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-amb-02",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "单细胞分析一下我们这批 10x 数据",
+      "gold": [
+        "single-cell-rna-analysis",
+        "scvi-tools",
+        "scgpt"
+      ],
+      "notes": "Could be Scanpy recipe, scVI integration, or scGPT annotation.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-amb-03",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "这个小分子对蛋白对接一下",
+      "gold": [
+        "diffdock",
+        "bio-virtual-screening",
+        "boltz"
+      ],
+      "notes": "Blind pose vs library VS vs co-fold; query does not distinguish.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-amb-04",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "帮我做一下这个分子的逆合成",
+      "gold": [
+        "single-step-retrosynthesis",
+        "retrosynthesis_planning",
+        "bio-retrosynthesis"
+      ],
+      "notes": "One-step vs multi-step vs bioSkills AiZynthFinder recipe.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-amb-05",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "帮我画张图，数据已经在 CSV 里",
+      "gold": [
+        "figure-composer",
+        "figure-style"
+      ],
+      "notes": "Could be composition or just style; bio viz skills also plausible but gold stays curated.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-amb-06",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "查一下这个结论有没有文献支持",
+      "gold": [
+        "literature-review",
+        "pdf-explore"
+      ],
+      "notes": "Web/DOI review vs reading an attached paper.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-amb-07",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "按骨架重新设计序列",
+      "gold": [
+        "proteinmpnn",
+        "ligandmpnn",
+        "solublempnn"
+      ],
+      "notes": "Which MPNN depends on ligand/solubility, unspecified.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-amb-08",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "ATAC 和 ChIP 的 peak 都想叫，我有 BAM",
+      "gold": [
+        "bio-atac-seq-atac-peak-calling",
+        "bio-chipseq-peak-calling"
+      ],
+      "notes": "Two peak-callers; query names both assays.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-amb-09",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "宏基因组分类一下物种组成",
+      "gold": [
+        "bio-metagenomics-kraken",
+        "bio-metagenomics-metaphlan"
+      ],
+      "notes": "Kraken2 vs MetaPhlAn; both are taxonomic profilers.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-amb-10",
+      "lang": "zh",
+      "category": "ambiguous",
+      "query": "蛋白语言模型打个分数，突变好不好",
+      "gold": [
+        "fair-esm2",
+        "esmfold2",
+        "evo2"
+      ],
+      "notes": "ESM-2 vs ESMC-in-esmfold2 vs Evo 2 (DNA); query says 蛋白 so DNA is a stretch — gold stays protein LMs.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-01",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "ATAC-seq 的 BAM 已经对齐好了，想用 MACS3 叫 open chromatin peak，不是 ChIP",
+      "gold": [
+        "bio-atac-seq-atac-peak-calling"
+      ],
+      "notes": "ATAC peak calling (MACS3/MACS2/Genrich), not ChIP-seq.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-02",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "TF ChIP-seq 窄峰，有 input control，想走 MACS2 的 narrow 模式",
+      "gold": [
+        "bio-chipseq-peak-calling"
+      ],
+      "notes": "ChIP-seq peak calling, TF narrow peaks.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-03",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "peak 序列想做 de novo motif，HOMER 或 MEME-ChIP 都行",
+      "gold": [
+        "bio-chipseq-motif-analysis"
+      ],
+      "notes": "HOMER/MEME-ChIP motif discovery on peaks.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-04",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "两套 GWAS summary stats，想做两样本 Mendelian randomization，IVW 加 MR-Egger",
+      "gold": [
+        "bio-causal-genomics-mendelian-randomization"
+      ],
+      "notes": "Two-sample MR from GWAS summaries.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-05",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "GWAS 位点想收成 credible set，准备跑 SuSiE / FINEMAP",
+      "gold": [
+        "bio-causal-genomics-fine-mapping"
+      ],
+      "notes": "Fine-mapping to credible sets.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-06",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "蛋白口袋对着化合物库做结构虚拟筛选，Vina 或 GNINA 都行",
+      "gold": [
+        "bio-virtual-screening"
+      ],
+      "notes": "Structure-based VS (Vina/SMINA/GNINA).",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-07",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "bulk RNA-seq FASTQ 要 splice-aware 比对到基因组，准备用 STAR",
+      "gold": [
+        "bio-read-alignment-star-alignment"
+      ],
+      "notes": "STAR splice-aware RNA-seq alignment.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-08",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "WES 短读要对到参考基因组，bwa-mem2 那条",
+      "gold": [
+        "bio-read-alignment-bwa-alignment"
+      ],
+      "notes": "bwa-mem2 for DNA short reads.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-09",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "bulk RNA-seq 的 count 矩阵，想用 DESeq2 做差异表达，Wald 检验",
+      "gold": [
+        "bio-differential-expression-deseq2-basics"
+      ],
+      "notes": "DESeq2 NB-GLM on bulk counts.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-10",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "不想比对基因组，直接用 Salmon 从 FASTQ 定量转录本",
+      "gold": [
+        "bio-rna-quantification-alignment-free-quant"
+      ],
+      "notes": "Salmon/kallisto alignment-free quantification.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-11",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "germline SNP/indel，走 GATK HaplotypeCaller 再 GVCF joint genotyping",
+      "gold": [
+        "bio-gatk-variant-calling"
+      ],
+      "notes": "GATK HC + GVCF joint calling.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-12",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "PacBio HiFi 做 haplotype-resolved 组装，想用 hifiasm",
+      "gold": [
+        "bio-genome-assembly-hifi-assembly"
+      ],
+      "notes": "hifiasm/verkko HiFi assembly.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-13",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "pooled CRISPR screen，MAGeCK count 完做 mageck test 两点比较",
+      "gold": [
+        "bio-crispr-screens-mageck-analysis"
+      ],
+      "notes": "MAGeCK RRA two-condition workflow.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-14",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "Visium 切片想划空间 domain，皮层分层那种，不是单细胞分群",
+      "gold": [
+        "bio-spatial-transcriptomics-spatial-domains"
+      ],
+      "notes": "Spatial domain detection (Visium/Xenium/etc.).",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-15",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "shotgun metagenome 用 Kraken2 分类再用 Bracken 估丰度",
+      "gold": [
+        "bio-metagenomics-kraken"
+      ],
+      "notes": "Kraken2 + Bracken.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-16",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "WGBS 双硫酸盐短读，Bismark 比对到 C->T 转换后的参考",
+      "gold": [
+        "bio-methylation-bismark-alignment"
+      ],
+      "notes": "Bismark WGBS/RRBS alignment.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-bio-17",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "用 IQ-TREE2 推最大似然树，ModelFinder 选模型，UFBoot2 做支持率",
+      "gold": [
+        "bio-phylo-modern-tree-inference"
+      ],
+      "notes": "IQ-TREE2 / RAxML-NG ML trees.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-18",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "未知蛋白序列拿去 NCBI 远程 BLAST，Biopython NCBIWWW 就行",
+      "gold": [
+        "bio-blast-searches"
+      ],
+      "notes": "Remote NCBI BLAST via Bio.Blast.NCBIWWW.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-19",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "排好序的基因列表做 GSEA，GO/KEGG/MSigDB，clusterProfiler 那套",
+      "gold": [
+        "bio-pathway-gsea"
+      ],
+      "notes": "clusterProfiler GSEA on a ranked gene vector.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-bio-20",
+      "lang": "zh",
+      "category": "bioskills_member",
+      "query": "Hi-C 平衡矩阵上用 insulation score 找 TAD 边界",
+      "gold": [
+        "bio-hi-c-analysis-tad-detection"
+      ],
+      "notes": "cooltools insulation TADs, not loop calling.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-01",
+      "lang": "zh",
+      "category": "curated",
+      "query": "手头就一条 FASTA，想用 ColabFold 把 AF2 单体结构跑出来，别走 AF3 那套",
+      "gold": [
+        "alphafold2"
+      ],
+      "notes": "ColabFold/AF2 monomer is the alphafold2 skill, not OpenFold3/Boltz.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-02",
+      "lang": "zh",
+      "category": "curated",
+      "query": "蛋白和配体要一起 co-fold，想走 Boltz-2 那个开源的 AF3 替代，顺便看亲和力头",
+      "gold": [
+        "boltz"
+      ],
+      "notes": "Boltz-2 is the default open AF3-class co-folder with optional affinity.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-03",
+      "lang": "zh",
+      "category": "curated",
+      "query": "抗体-抗原复合物，想用 Chai-1 从一条 multi-entity FASTA 直接出 mmCIF",
+      "gold": [
+        "chai1"
+      ],
+      "notes": "Chai-1 is the all-atom co-folder with a Python FASTA entry point.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-04",
+      "lang": "zh",
+      "category": "curated",
+      "query": "Biohub 那个 ESMFold2，单序列把蛋白和 CCD 配体一起叠，先别下 MSA",
+      "gold": [
+        "esmfold2"
+      ],
+      "notes": "ESMFold2/ESMFold2-Fast all-atom co-folding from the Biohub release.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-05",
+      "lang": "zh",
+      "category": "curated",
+      "query": "想用 AlQuraishi lab 的 OpenFold3 开源权重复现 AF3，query 走 JSON 不要 FASTA",
+      "gold": [
+        "openfold3"
+      ],
+      "notes": "OpenFold3 takes InferenceQuerySet JSON, not FASTA.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-06",
+      "lang": "zh",
+      "category": "curated",
+      "query": "只有蛋白骨架，界面是蛋白-蛋白，想用 ProteinMPNN 重新设计序列，口袋里没有小分子",
+      "gold": [
+        "proteinmpnn"
+      ],
+      "notes": "Vanilla ProteinMPNN is backbone-only; ligand context belongs on ligandmpnn.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-07",
+      "lang": "zh",
+      "category": "curated",
+      "query": "口袋里绑了小分子，逆折叠时得让模型看见配体原子和金属，别用只看骨架的那个",
+      "gold": [
+        "ligandmpnn"
+      ],
+      "notes": "LigandMPNN sees ligand/NA/metal atoms; ProteinMPNN does not.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-08",
+      "lang": "zh",
+      "category": "curated",
+      "query": "上次 MPNN 序列在大肠杆菌里全进包涵体了，想换成可溶 PDB 上重训的那个先验",
+      "gold": [
+        "solublempnn"
+      ],
+      "notes": "SolubleMPNN is ProteinMPNN retrained on a soluble-PDB subset.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-09",
+      "lang": "zh",
+      "category": "curated",
+      "query": "从零生成 binder 骨架，靶点热点残基已经标好，先出 contig 再交给序列设计",
+      "gold": [
+        "rfdiffusion"
+      ],
+      "notes": "RFdiffusion is backbone generation, not sequence design.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-10",
+      "lang": "zh",
+      "category": "curated",
+      "query": "只想抽 Meta ESM-2 的 per-residue embedding 做下游分类，这轮先不折叠",
+      "gold": [
+        "fair-esm2"
+      ],
+      "notes": "fair-esm2 is ESM-2 embeddings / MLM scores, not a structure predictor.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-11",
+      "lang": "zh",
+      "category": "curated",
+      "query": "蛋白 PDB 和配体 SMILES 都有，想盲对接出 ranked pose，不要事先画 search box",
+      "gold": [
+        "diffdock"
+      ],
+      "notes": "DiffDock-L is blind pose prediction; it does not score binding free energy.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-12",
+      "lang": "zh",
+      "category": "curated",
+      "query": "10x 的人 PBMC count matrix，想按 Scanpy 走一遍 QC、分群和注释，不是从 FASTQ 开始",
+      "gold": [
+        "single-cell-rna-analysis"
+      ],
+      "notes": "Bundled Scanpy 10x GEX workflow after cell calling.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-13",
+      "lang": "zh",
+      "category": "curated",
+      "query": "想用 scGPT 给现成 AnnData 做 zero-shot 细胞类型标注，先出 cell embedding",
+      "gold": [
+        "scgpt"
+      ],
+      "notes": "scGPT is the foundation-model annotator; scVI is the probabilistic VAE.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-14",
+      "lang": "zh",
+      "category": "curated",
+      "query": "好几个 donor 的 raw UMI counts，想用 scVI 做 batch-corrected latent，别用 scGPT",
+      "gold": [
+        "scvi-tools"
+      ],
+      "notes": "scVI/scANVI expect raw integer UMI counts.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-15",
+      "lang": "zh",
+      "category": "curated",
+      "query": "先帮我把这个课题的奠基文献找出来，DOI 要能核验，引用不许瞎编",
+      "gold": [
+        "literature-review"
+      ],
+      "notes": "literature-review owns retrieval plus DOI/retraction checks.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-16",
+      "lang": "zh",
+      "category": "curated",
+      "query": "附件是篇 40 页 PDF，methods 和 supplementary 得对着看，不是只读摘要",
+      "gold": [
+        "pdf-explore"
+      ],
+      "notes": "pdf-explore is for multi-locus reads of an attached document.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-17",
+      "lang": "zh",
+      "category": "curated",
+      "query": "别改分析，就看这组 figure 讲的故事通不通，hook 和 verdict 对不上",
+      "gold": [
+        "paper-narrative"
+      ],
+      "notes": "paper-narrative judges the story the figures tell, not the stats.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-18",
+      "lang": "zh",
+      "category": "curated",
+      "query": "一句话结论加几个数据文件，帮我排一个多面板投稿图，12 列网格那种",
+      "gold": [
+        "figure-composer"
+      ],
+      "notes": "figure-composer composes a multi-panel figure from a claim + data refs.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-19",
+      "lang": "zh",
+      "category": "curated",
+      "query": "画图前先把字号阶梯、向外刻度、无框图例套上，导出 300 dpi",
+      "gold": [
+        "figure-style"
+      ],
+      "notes": "figure-style is the legibility/style layer, not layout composition.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-20",
+      "lang": "zh",
+      "category": "curated",
+      "query": "训练前先审计这张表：重复 ID、分组泄漏、标签不平衡，先别开训",
+      "gold": [
+        "audit-dataset"
+      ],
+      "notes": "Tabular audit before training; leakage and duplicates.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-21",
+      "lang": "zh",
+      "category": "curated",
+      "query": "分类任务想按 donor 做 grouped split，配置要能打确定性指纹，还要写清 baseline",
+      "gold": [
+        "plan-ml-experiment"
+      ],
+      "notes": "plan-ml-experiment is leakage-safe splits and experiment fingerprints.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-22",
+      "lang": "zh",
+      "category": "curated",
+      "query": "二分类模型已经训好，要 confusion matrix、AUC 和 bootstrap 置信区间，只用 held-out",
+      "gold": [
+        "evaluate-model"
+      ],
+      "notes": "evaluate-model is held-out classification/regression metrics.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-23",
+      "lang": "zh",
+      "category": "curated",
+      "query": "就一个 Python list 装的数字，求均值标准差和 Pearson，别上 pandas 也别上 numpy",
+      "gold": [
+        "example_stats"
+      ],
+      "notes": "example_stats is stdlib descriptive stats on plain lists.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-24",
+      "lang": "zh",
+      "category": "curated",
+      "query": "做一份 IPF 的适应症卷宗：患者人群、流行病学、SOC、监管路径和关键试验",
+      "gold": [
+        "indication-dossier"
+      ],
+      "notes": "Indication framed as a patient population, five-phase dossier.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-25",
+      "lang": "zh",
+      "category": "curated",
+      "query": "未知矿物混合物的 Raman 谱，噪声挺大，想对参考库解混残差峰",
+      "gold": [
+        "mineral_spectra_analysis"
+      ],
+      "notes": "Raman mineral unmixing against a reference library.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-26",
+      "lang": "zh",
+      "category": "curated",
+      "query": "石墨烯 M–N–C 单原子催化剂，用 FAIRChem UMA 筛溶解电位和吸附，不要用仓库里那份 demo 结果顶替",
+      "gold": [
+        "catalyst_sar_screening"
+      ],
+      "notes": "Locked UMA SAC SAR screening; demo shells are forbidden as user results.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-27",
+      "lang": "zh",
+      "category": "curated",
+      "query": "从几个 seed SMILES 做 ADMET 导向的遗传算法分子优化，谱系日志要能审计",
+      "gold": [
+        "admet_genetic"
+      ],
+      "notes": "ADMET-AI + RDKit GA loop from seed SMILES.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-28",
+      "lang": "zh",
+      "category": "curated",
+      "query": "反应物和产物都写好了，只想看 RXNMapper 的原子对应，不是逆合成也不是能不能做",
+      "gold": [
+        "reaction-atom-mapping"
+      ],
+      "notes": "Atom mapping for a fully specified reaction; not retrosynthesis.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-29",
+      "lang": "zh",
+      "category": "curated",
+      "query": "反应已经写死，想让 Parrot USPTO 那个 checkpoint 排一下催化剂和溶剂标签",
+      "gold": [
+        "reaction-condition-recommendation"
+      ],
+      "notes": "Condition labels for a fully specified reaction, not a lab SOP.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-30",
+      "lang": "zh",
+      "category": "curated",
+      "query": "反应物加试剂，用 ReactionT5 正向预测产物，想做 round-trip 看目标产物在不在 top-k",
+      "gold": [
+        "reaction-forward-prediction"
+      ],
+      "notes": "Forward product ranking; rank is not feasibility.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-31",
+      "lang": "zh",
+      "category": "curated",
+      "query": "完整反应记录估个 USPTO 域内产率，别把这个数当成路线成败概率去连乘",
+      "gold": [
+        "reaction-yield-estimation"
+      ],
+      "notes": "In-domain yield regression, uncalibrated.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-curated-32",
+      "lang": "zh",
+      "category": "curated",
+      "query": "目标分子到可购买原料，用 AiZynthFinder 做多步搜路线树，再审计一下 route",
+      "gold": [
+        "retrosynthesis_planning"
+      ],
+      "notes": "Multi-step search to stock, not a single disconnection.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-33",
+      "lang": "zh",
+      "category": "curated",
+      "query": "只要 RetroChimera 给的一步前体集合，先别递归，也别说这就是完整合成路线",
+      "gold": [
+        "single-step-retrosynthesis"
+      ],
+      "notes": "One-step precursor sets only.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-34",
+      "lang": "zh",
+      "category": "curated",
+      "query": "作业要丢到实验室 SLURM，走 SSH 那套 submit → poll .result() → harvest",
+      "gold": [
+        "remote-compute-ssh"
+      ],
+      "notes": "SSH/SLURM orchestration, not NVIDIA NIM.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-35",
+      "lang": "zh",
+      "category": "curated",
+      "query": "走 NVIDIA NIM，host.compute.create byoc:nvidia，self_hosted 和 hosted 都能接",
+      "gold": [
+        "remote-compute-nvidia"
+      ],
+      "notes": "NVIDIA NIM BYOC provider skill.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-curated-36",
+      "lang": "zh",
+      "category": "curated",
+      "query": "已经注册好的模型 endpoint，在隔离 kernel 里打它的原生 HTTP，BASE_URL 已经注入",
+      "gold": [
+        "using-model-endpoint"
+      ],
+      "notes": "Scoped HTTP client of a registered model endpoint.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-01",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "binder 设计全流程：先 RFdiffusion 出骨架，ProteinMPNN 填序列，再用独立模型验证复合物",
+      "gold": [
+        "rfdiffusion",
+        "proteinmpnn",
+        "boltz"
+      ],
+      "notes": "Classic design cascade: backbone → sequence → independent co-fold.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-02",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "10x 数据先按 Scanpy 工作流做完，多个 donor 再用 scVI 去 batch",
+      "gold": [
+        "single-cell-rna-analysis",
+        "scvi-tools"
+      ],
+      "notes": "Scanpy descriptive workflow plus scVI integration.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-03",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "先把相关论文找齐核 DOI，再把附件 PDF 的 methods 和正文对上",
+      "gold": [
+        "literature-review",
+        "pdf-explore"
+      ],
+      "notes": "Retrieval plus in-document comparison.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-04",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "投稿图：先套出版字号规则，再按一句话结论排多面板",
+      "gold": [
+        "figure-style",
+        "figure-composer"
+      ],
+      "notes": "Style then composition.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-multi-05",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "建模前审计表格和切分，训完只在 held-out 上报告 AUC 和 CI",
+      "gold": [
+        "audit-dataset",
+        "plan-ml-experiment",
+        "evaluate-model"
+      ],
+      "notes": "Audit → plan splits → evaluate.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-multi-06",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "先用 RetroChimera 拿一步前体，再把接受的候选丢进 AiZynthFinder 搜到原料",
+      "gold": [
+        "single-step-retrosynthesis",
+        "retrosynthesis_planning"
+      ],
+      "notes": "One-step expansion then multi-step search.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-07",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "RNA-seq：STAR 比对完用 DESeq2 做差异，count 用 featureCounts 也行",
+      "gold": [
+        "bio-read-alignment-star-alignment",
+        "bio-differential-expression-deseq2-basics"
+      ],
+      "notes": "Align then DE; featureCounts is adjacent but gold stays at two.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-multi-08",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "口袋逆折叠要看见配体，设计完再用盲对接看 pose 还在不在原位",
+      "gold": [
+        "ligandmpnn",
+        "diffdock"
+      ],
+      "notes": "Ligand-aware design then blind pose check.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-09",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "突变文库先用 ESM-2 打序列效应，再按工作流合并结构和功能分数做下一轮",
+      "gold": [
+        "fair-esm2",
+        "protein-mutation-enhancement"
+      ],
+      "notes": "ESM scoring inside the mutation-enhancement loop.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-multi-10",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "WES：bwa-mem2 比对之后 GATK HaplotypeCaller 叫 germline 变异",
+      "gold": [
+        "bio-read-alignment-bwa-alignment",
+        "bio-gatk-variant-calling"
+      ],
+      "notes": "Map then GATK HC.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-multi-11",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "scRNA 先做 doublet 过滤和常规预处理，再做 reference-based 细胞类型标注",
+      "gold": [
+        "bio-single-cell-doublet-detection",
+        "bio-single-cell-preprocessing",
+        "bio-single-cell-cell-annotation"
+      ],
+      "notes": "Doublet → preprocess → annotate.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-multi-12",
+      "lang": "zh",
+      "category": "multi_skill",
+      "query": "ChIP 先叫峰再做 motif；ATAC 如果只有 BAM 也可以先叫 accessibility peak",
+      "gold": [
+        "bio-chipseq-peak-calling",
+        "bio-chipseq-motif-analysis"
+      ],
+      "notes": "Peak calling plus motif; ATAC is a related distractor.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-01",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "帮我把这段摘要改得更像 Nature 的口吻，不要跑任何分析",
+      "gold": [],
+      "notes": "Writing/editing only.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-02",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "p 值和置信区间到底什么意思，用大白话讲，不用算",
+      "gold": [],
+      "notes": "Conceptual stats explanation.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-03",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "今天组会改到几点？帮我拟一句通知",
+      "gold": [],
+      "notes": "Scheduling/admin.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-04",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "Python 里 list 和 tuple 有什么区别，举个小例子就行",
+      "gold": [],
+      "notes": "Language trivia.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-05",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "把 37°C 换算成华氏度",
+      "gold": [],
+      "notes": "Unit conversion.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-06",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "写一封拒稿后的礼貌回复邮件，中英都行",
+      "gold": [],
+      "notes": "Email drafting.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-07",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "这段 traceback 是语法错误还是没装包？只看代码，别连网",
+      "gold": [],
+      "notes": "Toy debugging, not a scientific skill.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-08",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "CRISPR 这个缩写展开是什么，科普一句就够",
+      "gold": [],
+      "notes": "Acronym expansion, prose enough.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-09",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "推荐几本机器学习入门教材，不要帮我搭实验",
+      "gold": [],
+      "notes": "Book recommendations.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-10",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "VS Code 怎么开 Python 虚拟环境，点哪里",
+      "gold": [],
+      "notes": "Editor setup.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-11",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "git rebase 和 merge 我该怎么选，只讲工作流",
+      "gold": [],
+      "notes": "Git advice.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-12",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "帮我给这个变量起个不丢人的名字：存放均值的那个",
+      "gold": [],
+      "notes": "Naming help.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-13",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "1+1 等于几，认真回答",
+      "gold": [],
+      "notes": "Arithmetic.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-14",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "实验室打印机卡纸了，谁负责订耗材",
+      "gold": [],
+      "notes": "Lab admin, not science.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-15",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "这段中文摘要翻译成英文，保持术语，不要检索文献",
+      "gold": [],
+      "notes": "Translation only.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-16",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "Hessian 矩阵的直觉是什么，一句话",
+      "gold": [],
+      "notes": "Math intuition.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-17",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "这段 LaTeX 公式编译报错，帮我看括号",
+      "gold": [],
+      "notes": "LaTeX debugging.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-18",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "写个纯算法的二分查找，跟生物数据无关",
+      "gold": [],
+      "notes": "CS exercise.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-19",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "cover letter 润色一下，申请博士后用",
+      "gold": [],
+      "notes": "Career writing.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-20",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "什么是 pLDDT，只解释分数含义，不要帮我跑折叠",
+      "gold": [],
+      "notes": "Prose explanation of a metric; running a folder would be unnecessary.",
+      "split": "dev"
+    },
+    {
+      "id": "js-zh-none-21",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "引用格式是 AMA 还是 Vancouver，看这段标点",
+      "gold": [],
+      "notes": "Citation style ID.",
+      "split": "test"
+    },
+    {
+      "id": "js-zh-none-22",
+      "lang": "zh",
+      "category": "no_skill",
+      "query": "用线粒体写一首打油诗，别做分析",
+      "gold": [],
+      "notes": "Creative writing.",
+      "split": "dev"
+    }
+  ]
+}
