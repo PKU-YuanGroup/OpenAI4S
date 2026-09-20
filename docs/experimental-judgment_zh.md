@@ -162,3 +162,28 @@ token；Service 层截断并打标。计数、算术、日期比较全部在代�
 可以含中文。
 
 ## Progress log
+
+### W0 — 2026-09-20
+
+把 `feat/judgment-w0-a-core-contracts`（分支 HEAD `8a861ceb`）合进
+`feat/judgment`，merge commit 是 `cf51bc20`。W0-A 落地了带类型的契约
+（`types.py`、`port.py`）、三态开关解析（`flags.py` 与 `config.py` 里的
+`ExperimentalJudgmentFlags`）、带版本的披露文案，以及改代码之前的默认关闭快照。
+
+合并前核验：快照提交确实是该分支的第一个提交，且只含测试和 fixtures；在基线
+`909cf0ac` 上重跑 `capture()`，四份 fixtures 逐字节一致（10,686 / 403,295 /
+43,854 / 2,556 字节）。`uv run mypy` 检查 12 个文件；在 `judgment/types.py`
+里放一个无注解函数做探针，确认 mypy 会报错。
+
+集成修正 `ab8f7212`：`Answer` 原本允许 `noul` 答案带 `probabilities` 和
+`confidence`，而本文档和 plan 5.3 都写明 Noul 不带这两项。现在两者都会被拒绝，
+并且 `value` 在 `noul` / `score` 下必须是数值、在 `choice` 下必须是选项名。
+两条新回归测试已确认在修复前是红的。
+
+带到后续 wave 的偏离：`JudgmentBackend.evaluate` 是全关键字参数并返回
+`BackendReply`（plan 6 写的是 `RawAnswers`）；总开关走 Store 打开但确认版本过期时，
+`no_disclosure` 记在总开关本身，而不只是记在各子能力上。
+
+W1 待办：子能力开关已能解析，但还没有任何调用方，也还没有传输层；
+`tests/conftest.py` 目前不会清除 `OPENAI4S_*JUDGMENT*` 变量——一旦 W1 接上运行时，
+开发者本机 export 的总开关会污染离线套件。

@@ -180,3 +180,33 @@ authorization. Questions and criteria are written in English; state may
 contain Chinese.
 
 ## Progress log
+
+### W0 — 2026-09-20
+
+Merged `feat/judgment-w0-a-core-contracts` (branch HEAD `8a861ceb`) into
+`feat/judgment` as `cf51bc20`. W0-A landed the typed contract
+(`types.py`, `port.py`), tri-state flag resolution (`flags.py`,
+`ExperimentalJudgmentFlags` in `config.py`), versioned disclosure copy, and
+the pre-change default-off snapshot.
+
+Verified before merging: the snapshot commit is the branch's first commit and
+contains only tests and fixtures; re-running `capture()` on the base commit
+`909cf0ac` reproduced all four fixtures byte for byte (10,686 / 403,295 /
+43,854 / 2,556 bytes). `uv run mypy` checks 12 files, and an untyped-function
+probe in `judgment/types.py` was confirmed to fail it.
+
+Integration fix `ab8f7212`: `Answer` accepted `probabilities` and
+`confidence` on a `noul` answer, which this document and plan 5.3 both say
+a Noul never carries. Both are now rejected, and `value` is pinned to a
+number for `noul` / `score` and to the option name for `choice`. The two
+new regression tests were confirmed to fail against the pre-fix type.
+
+Deviations carried forward: `JudgmentBackend.evaluate` is keyword-only and
+returns `BackendReply` (plan 6 sketched `RawAnswers`); a master switch
+enabled through the Store with a stale acknowledgement reports
+`no_disclosure` on the master flag itself, not only on its capabilities.
+
+Open for W1: capability flags are resolved but nothing consumes them, no
+transport exists, and `tests/conftest.py` does not yet purge
+`OPENAI4S_*JUDGMENT*` variables — a developer who exports the master switch
+will leak it into the offline suite once W1 wires a runtime path.
