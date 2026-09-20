@@ -1,0 +1,8 @@
+{
+  "algorithm": "sha256",
+  "encoding": "utf-8",
+  "n_test": 152,
+  "serialization": "json.dumps(test_cases_sorted_by_id, ensure_ascii=False, separators=(',', ':')) with keys id,lang,perturbation,claim,quote,source,gold_status,gold_relation,split",
+  "sha256": "3108fc59f5631dd9f6335aa0e8b4545fa1e294d502f46fbc7cbf556563014348",
+  "split_seed": 20260920
+}
