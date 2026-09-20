@@ -482,6 +482,10 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | 在任何实验性判断层代码落地之前，把 Skill 系统提示、`search_skills` 中英文结果、原生工具 schema，以及 heuristic 模式下 `classify_code` 的判决冻结成逐字节快照。默认关闭路径必须继续与这些 fixtures 一致。 |
 | [`test_judgment_types.py`](test_judgment_types.py) | Noul/Choice/Score 的构造边界、`to_api()` 形态、可 JSON 序列化的 `to_dict()`、Noul 答案不带概率也不带置信度，以及 `NullBackend` 永远抛 `disabled`。 |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | 三态 env 解析、非法值、六条优先级、总开关关闭、缺失/版本不对的披露确认，以及 env=1 不要求确认。 |
+| [`test_judgment_registry.py`](test_judgment_registry.py) | 模板注册表：内置 `system.probe`、重复 id 拒绝、get/unregister，以及 `allow_custom` 上限。 |
+| [`test_judgment_service.py`](test_judgment_service.py) | `JudgmentService`：关闭时不调后端、每种 `BackendError` 都映射为 `unavailable`、策略 `ok`/`uncertain`、缓存键各分量、同 state 合批、并发上限、截断、usage sink，以及审计事件不含原始 state。 |
+| [`test_judgment_rpc.py`](test_judgment_rpc.py) | 真实 kernel worker 执行 `host.judge("system.probe", …)`；未知模板变成 `RuntimeError`；四种状态都是数据；`judge` 不进权限闸门也不进注入筛查。 |
+| [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder 会录下 `judge`；回放返回 tape 里的结果，且 `urlopen` 零调用。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

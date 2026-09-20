@@ -482,6 +482,10 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | Frozen byte-for-byte snapshot of Skill system context, `search_skills` results (English and Chinese), native tool schemas, and heuristic `classify_code` verdicts, taken before any experimental judgment code landed. The default-off path must keep matching these fixtures. |
 | [`test_judgment_types.py`](test_judgment_types.py) | Construction bounds for Noul/Choice/Score, `to_api()` shapes, JSON `to_dict()`, the Noul answer carrying neither probabilities nor confidence, and `NullBackend` always raising `disabled`. |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | Tri-state env parsing, illegal values, the six precedence rules, master-off, missing/wrong disclosure, and env-on without acknowledgement. |
+| [`test_judgment_registry.py`](test_judgment_registry.py) | Template registry: builtin `system.probe`, duplicate-id refusal, get/unregister, and `allow_custom` limits. |
+| [`test_judgment_service.py`](test_judgment_service.py) | `JudgmentService`: disabled skips the backend, every `BackendError` code maps to `unavailable`, policy `ok`/`uncertain`, cache key parts, same-state batching, concurrency cap, truncation, usage sink, and audit events without raw state. |
+| [`test_judgment_rpc.py`](test_judgment_rpc.py) | Real kernel worker `host.judge("system.probe", …)` round-trip; unknown template becomes `RuntimeError`; four statuses are data; `judge` is not gateable or screened. |
+| [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder tapes `judge`; replay returns the taped result with zero `urlopen`. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

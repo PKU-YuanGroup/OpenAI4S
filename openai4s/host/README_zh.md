@@ -37,6 +37,7 @@ service 可以返回单键的 `{"error": message}` 表示软失败。Python work
 | [`stage10_science.py`](stage10_science.py) | Stage 10 的 ClinVar、PubMed、ClinicalTrials.gov 适配器。默认目录里没有它们；打开 flag 后进入同一套 search 信封，带分页、短缓存、诚实的空结果/429/schema 错误，以及带 provenance 的版本化 Artifact。 |
 | [`session.py`](session.py) | 把控制操作钉死在 dispatcher 当前的 root session 上，任何调用都伸不进另一个会话。checkpoint 和待处理的权限申请始终从 Store 读。branch 与 recovery 状态则来自已挂接的 Web session-domain service，这也是 Web 运行时的常规路径；没有挂接 domain 时，状态投影退回到从 Store 读一份只读的 branch 列表，并把 recovery 报成不可用。涉及文件系统的 checkpoint、fork、revert、recovery 操作，同样委托给这个 domain service。 |
 | [`skills.py`](skills.py) | Skill 的完整生命周期：搜索、读取、编辑、发布、版本化、回滚、删除。作用域决定磁盘上哪个目录拥有这个 Skill；内置 Skill 始终优先于用户 Skill，写入也被限制在 Skill 目录内。团队模式下，所有由 Host 发起的变更都只允许管理员：project 成员资格只授权另一条面向真人的 HTTP 控制边界，不能授权模型为同事植入 `SKILL.md` 指令或 `kernel.py` sidecar。Skill 的三态允许名单也由这里持有并强制，而且读路径和写路径都管：一个被限制在 `["a"]` 的子 Agent，如果还能覆盖、发布或删除 skill `b`，那它改写的就是**父 Agent**接下来会照着执行的那份 recipe。因为允许名单在这个对象上、语料在旁边的 loader 上，有两个视图是从这里渲染而不是从 loader 渲染的：系统 prompt 的那一段，以及内核内的 sidecar 闸门。拿着 [`HostDispatcher.skill_loader`](../host_dispatch.py) 的调用方得到的是未过滤的语料——一个受限子 Agent 的 prompt 里曾因此点名了全部 34 个 Skill。 |
+| [`judgment.py`](judgment.py) | 实验性 `JudgmentService`：模板查找、开关/披露闸门、进程内 LRU 缓存、state 截断、预算准入、后端求值、usage 计量、策略 `ok`/`uncertain`，以及 `probe()` 连接测试。四种状态都是正常返回值；后端失败时不编造答案。 |
 
 ## 控制、安全与失败边界
 

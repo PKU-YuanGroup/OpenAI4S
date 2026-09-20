@@ -23,3 +23,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`port.py`](port.py) | `JudgmentBackend` Protocol、`BackendError` 错误码，以及 `NullBackend`。 |
 | [`flags.py`](flags.py) | `resolve(cfg, store)` 以及 `JUDGMENT_FLAG_PRECEDENCE` 里的六条优先级。Store 访问只读。 |
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`、按能力列出的披露文案、固定事实、`is_acknowledged`。 |
+| [`registry.py`](registry.py) | 模板注册表（`register_template` / `get_template`）以及内置的连接测试模板 `system.probe`。 |

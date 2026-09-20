@@ -25,3 +25,4 @@ and the UI path also requires a current-version disclosure acknowledgement.
 | [`port.py`](port.py) | `JudgmentBackend` Protocol, `BackendError` codes, and `NullBackend`. |
 | [`flags.py`](flags.py) | `resolve(cfg, store)` and the six-rule precedence in `JUDGMENT_FLAG_PRECEDENCE`. Store access is read-only. |
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`, per-capability copy, fixed facts, `is_acknowledged`. |
+| [`registry.py`](registry.py) | Template registry (`register_template` / `get_template`) and the builtin `system.probe` connection-test template. |
