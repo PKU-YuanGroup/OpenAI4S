@@ -184,11 +184,18 @@ class SearchSkillsTool(Tool):
     def _semantic_reserve(self, status: Any, suggestions: list[Any]) -> int:
         """Chars held back for the semantic envelope before fitting hits.
 
-        Suggestions plus ``reason_fields`` are a few hundred characters.
-        Lexical recipes are the side that shortens on demand, so they fit
-        into the remainder. Cap the reserve at ``output_limit // 8`` so a
-        large envelope cannot starve the result list, and so nesting indent
-        cannot eat the reserved slice.
+        Suggestions plus ``reason_fields`` are a few hundred characters --
+        ``reason_fields`` names the fields that were read, not their contents,
+        and the template caps the list at three. Lexical recipes are the side
+        that shortens on demand, so they fit into the remainder.
+
+        ``output_limit // 8`` is a floor, not a ceiling: with suggestions
+        present the reserve is ``max(needed, cap)``, so the envelope wins if
+        it ever needs more than an eighth. At the real 50,000-char limit that
+        is 6,250 reserved against an envelope of a few hundred, and the
+        distinction only shows up at absurdly small limits, where the result
+        list degrades to its identity rows. Without suggestions the reserve is
+        the smaller of the two, since there is nothing to protect.
         """
 
         envelope = {
