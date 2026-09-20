@@ -56,10 +56,12 @@ class JudgmentServiceResult(JudgmentResult):
     """
 
     truncated: bool = False
+    fake: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         payload = super().to_dict()
         payload["truncated"] = bool(self.truncated)
+        payload["fake"] = bool(self.fake)
         return payload
 
 
@@ -331,9 +333,15 @@ class JudgmentService:
         return provider() if callable(provider) else provider
 
     def _store(self) -> Any:
-        if self.store_provider is None:
+        provider = self.store_provider
+        if provider is None:
             return None
-        return self.store_provider()
+        # A Store instance is as valid as a factory here, exactly as
+        # ``_config`` accepts a Config or a callable. The gateway settings
+        # surface hands over the request's Store; the dispatcher hands over a
+        # lambda. Calling one of them unconditionally is a TypeError, and it
+        # is raised inside the route rather than in any package's own tests.
+        return provider() if callable(provider) else provider
 
     def _flags(self) -> EffectiveJudgmentFlags:
         return resolve(self._config(), self._store())
@@ -347,7 +355,7 @@ class JudgmentService:
                 raise BackendError(
                     "unconfigured", "TypeSafeBackend is not available"
                 ) from exc
-            return TypeSafeBackend(self.store_provider)
+            return TypeSafeBackend(self._store)
         if provider == "llm":
             raise BackendError("unconfigured", "llm judgment backend is not available")
         return NullBackend()
@@ -406,6 +414,7 @@ class JudgmentService:
             "probabilities": _probability_map(result.answers),
             "cache_hit": result.cache_hit,
             "truncated": truncated,
+            "fake": bool(getattr(result, "fake", False)),
             "provider": result.provider,
             "model": result.model,
         }
@@ -434,6 +443,7 @@ class JudgmentService:
         cache_hit: bool = False,
         error_code: str | None = None,
         model: str | None = None,
+        fake: bool = False,
     ) -> JudgmentServiceResult:
         flags = prepared.flags
         template = prepared.template
@@ -453,6 +463,7 @@ class JudgmentService:
             cache_hit=cache_hit,
             error_code=error_code,
             truncated=prepared.truncated,
+            fake=fake,
         )
         return result
 
@@ -566,6 +577,7 @@ class JudgmentService:
             usage=usage,
             latency_ms=latency_ms,
             model=reply.model or prepared.flags.model,
+            fake=bool(getattr(reply, "fake", False)),
         )
 
     def _unavailable(

@@ -491,6 +491,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_rpc.py`](test_judgment_rpc.py) | Real kernel worker `host.judge("system.probe", …)` round-trip; unknown template becomes `RuntimeError`; four statuses are data; `judge` is not gateable or screened. |
 | [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder tapes `judge`; replay returns the taped result with zero `urlopen`. |
 | [`test_judgment_settings_route.py`](test_judgment_settings_route.py) | `GET`/`PUT`/`PATCH /experimental/judgment` against a real Store: key never echoed, wrong disclosure version refused, UI enable without ack is `no_disclosure`, env false is `env_off`, key clear. `POST .../test` with a stubbed service is marked `stubbed_backend`. |
+| [`test_judgment_w1_integration.py`](test_judgment_w1_integration.py) | The seams between the three W1 packages: the settings route's Store instance reaching `JudgmentService`, the default backend being the TypeSafe transport, and a loopback-fake answer staying marked `fake` in both the result and the audit row. |
 | [`test_judgment_egress.py`](test_judgment_egress.py) | Judgment egress *report*: `off` has no remediation; allowlist without a grant reports `blocked_message` and `check_url` raises; a runtime grant authorizes. Does not add an `EGRESS_GROUPS` entry. |
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`: default-off is informational, missing key / allowlist block warn, and the TypeSafe key never appears in the report. |
 

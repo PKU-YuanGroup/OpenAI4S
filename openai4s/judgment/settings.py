@@ -305,23 +305,16 @@ def test_connection(service_provider: Any) -> dict[str, Any]:
 def probe_connection(
     cfg: Config, store: JudgmentSettingsStore | None
 ) -> dict[str, Any]:
-    """Build the host service (delayed import) and probe it.
+    """Build the host service (deferred import) and probe it.
 
-    W1-B owns ``JudgmentService``. Until that module is merged, an ImportError
-    is reported as ``unavailable`` / ``unconfigured`` rather than a 500.
+    The import stays inside the function to keep the gateway's import graph
+    flat, not because the module might be missing: W1-B merged it, so an
+    ImportError here is a real defect and must not be reported as a tidy
+    ``unconfigured``.
     """
 
-    try:
-        from openai4s.host.judgment import JudgmentService
-    except ImportError:
-        log.info("JudgmentService is not importable; probe reports unconfigured")
-        flags = resolve(cfg, store)
-        return {
-            "status": "unavailable",
-            "error_code": "unconfigured",
-            "latency_ms": 0,
-            "model": flags.model,
-        }
+    from openai4s.host.judgment import JudgmentService
+
     service = JudgmentService(cfg_provider=cfg, store_provider=store)
     return test_connection(service)
 
