@@ -27,3 +27,4 @@ and the UI path also requires a current-version disclosure acknowledgement.
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`, per-capability copy, fixed facts, `is_acknowledged`. |
 | [`typesafe.py`](typesafe.py) | stdlib TypeSafe System One client (`TypeSafeBackend`). Resolves the key per request, refuses redirects, caps the body at 2 MiB, and retries only 429/529/503 inside one deadline. |
 | [`validate.py`](validate.py) | `parse_response`: exact id set, matching types, in-range probabilities; any violation is `invalid_response` with no partial adoption. |
+| [`registry.py`](registry.py) | Template registry (`register_template` / `get_template`) and the builtin `system.probe` connection-test template. |

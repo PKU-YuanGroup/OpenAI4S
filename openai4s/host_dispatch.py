@@ -1029,6 +1029,14 @@ class HostDispatcher:
             quota_gate=self._llm_quota_gate,
             usage_sink=self._record_llm_usage,
         )
+        from openai4s.host.judgment import JudgmentService
+
+        self._judgment_service = JudgmentService(
+            lambda: self.cfg,
+            lambda: get_store(self.cfg.db_path),
+            usage_sink=self._record_llm_usage,
+            quota_gate=self._llm_quota_gate,
+        )
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
         self.store = get_store(self.cfg.db_path)
@@ -2293,6 +2301,9 @@ class HostDispatcher:
 
     def _m_llm(self, spec: dict) -> Any:
         return self._llm_service.complete(spec)
+
+    def _m_judge(self, spec: dict) -> Any:
+        return self._judgment_service.dispatch(spec)
 
     def _m_current_model(self) -> str:
         return self._llm_service.current_model()

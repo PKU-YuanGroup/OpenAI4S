@@ -486,6 +486,10 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_typesafe.py`](test_judgment_typesafe.py) | In-process fake endpoint plus `OPENAI4S_JUDGMENT_FAKE_ENDPOINT`: three question types, HTTP error mapping and retries, redirect refusal, body cap, missing/priority key, illegal fake URLs, egress block before connect, and the key never appearing in exceptions, logs, or the fake log file. |
 | [`test_judgment_fake_provider.py`](test_judgment_fake_provider.py) | Loopback fake behaviour: Bearer 401, deterministic defaults, scripted answers, `--fail` injection, latency, JSONL log without Authorization, and refused non-loopback bind. |
 | [`test_judgment_typesafe_live.py`](test_judgment_typesafe_live.py) | Marked `network` and `external`. Skips unless a TypeSafe key is configured; sends one Noul, one 3-option Choice, and one 3-level Score to the real API and validates the reply. |
+| [`test_judgment_registry.py`](test_judgment_registry.py) | Template registry: builtin `system.probe`, duplicate-id refusal, get/unregister, and `allow_custom` limits. |
+| [`test_judgment_service.py`](test_judgment_service.py) | `JudgmentService`: disabled skips the backend, every `BackendError` code maps to `unavailable`, policy `ok`/`uncertain`, cache key parts, same-state batching, concurrency cap, truncation, usage sink, and audit events without raw state. |
+| [`test_judgment_rpc.py`](test_judgment_rpc.py) | Real kernel worker `host.judge("system.probe", …)` round-trip; unknown template becomes `RuntimeError`; four statuses are data; `judge` is not gateable or screened. |
+| [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder tapes `judge`; replay returns the taped result with zero `urlopen`. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

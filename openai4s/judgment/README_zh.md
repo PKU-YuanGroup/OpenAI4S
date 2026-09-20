@@ -25,3 +25,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`、按能力列出的披露文案、固定事实、`is_acknowledged`。 |
 | [`typesafe.py`](typesafe.py) | 标准库 TypeSafe System One 客户端（`TypeSafeBackend`）。每次请求取 key、拒绝重定向、响应体上限 2 MiB，只对 429/529/503 在同一时限内重试。 |
 | [`validate.py`](validate.py) | `parse_response`：id 集合必须一致、类型必须匹配、概率必须在范围内；任何一处不合规都是 `invalid_response`，不做部分采纳。 |
+| [`registry.py`](registry.py) | 模板注册表（`register_template` / `get_template`）以及内置的连接测试模板 `system.probe`。 |

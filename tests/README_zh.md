@@ -486,6 +486,10 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_typesafe.py`](test_judgment_typesafe.py) | 进程内假端点加 `OPENAI4S_JUDGMENT_FAKE_ENDPOINT`：三种题型往返、HTTP 错误映射与重试、拒绝重定向、响应体上限、缺 key / key 优先级、非法假端点 URL、出网拦截发生在连接之前，以及 key 永不出现在异常、日志或假端点 log 文件里。 |
 | [`test_judgment_fake_provider.py`](test_judgment_fake_provider.py) | 本机假端点行为：无 Bearer 返回 401、确定性默认答案、脚本化答案、`--fail` 注入、延迟、不含 Authorization 的 JSONL 日志，以及拒绝绑定非 loopback。 |
 | [`test_judgment_typesafe_live.py`](test_judgment_typesafe_live.py) | 打 `network` 和 `external` 标记。未配置 TypeSafe key 则 skip；对真实 API 发一个 Noul、一个 3 选项 Choice、一个 3 档 Score，并用校验器检查返回。 |
+| [`test_judgment_registry.py`](test_judgment_registry.py) | 模板注册表：内置 `system.probe`、重复 id 拒绝、get/unregister，以及 `allow_custom` 上限。 |
+| [`test_judgment_service.py`](test_judgment_service.py) | `JudgmentService`：关闭时不调后端、每种 `BackendError` 都映射为 `unavailable`、策略 `ok`/`uncertain`、缓存键各分量、同 state 合批、并发上限、截断、usage sink，以及审计事件不含原始 state。 |
+| [`test_judgment_rpc.py`](test_judgment_rpc.py) | 真实 kernel worker 执行 `host.judge("system.probe", …)`；未知模板变成 `RuntimeError`；四种状态都是数据；`judge` 不进权限闸门也不进注入筛查。 |
+| [`test_judgment_replay.py`](test_judgment_replay.py) | Recorder 会录下 `judge`；回放返回 tape 里的结果，且 `urlopen` 零调用。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 
