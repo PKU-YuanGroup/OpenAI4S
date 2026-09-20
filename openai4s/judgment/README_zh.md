@@ -27,3 +27,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`validate.py`](validate.py) | `parse_response`：id 集合必须一致、类型必须匹配、概率必须在范围内；任何一处不合规都是 `invalid_response`，不做部分采纳。 |
 | [`registry.py`](registry.py) | 模板注册表（`register_template` / `get_template`）以及内置的连接测试模板 `system.probe`。 |
 | [`settings.py`](settings.py) | 网关和 doctor 用的设置面：`status` / `update` / `probe_connection`，TypeSafe key 走 SecretBroker（不写入 env、不回显），以及「`api.typesafe.ai` 是否已授权」的 egress **报告**。不新增 egress 分组。 |
+| [`templates/`](templates/) | Skill 推荐问题模板（`skills.suggest`）以及生成的 bioSkills 领域索引。 |
