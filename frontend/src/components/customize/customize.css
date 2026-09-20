@@ -42,6 +42,7 @@
   flex: 1;
   overflow: auto;
   padding: 18px 22px;
+  position: relative;
 }
 #cust .cust-nested {
   position: absolute;
