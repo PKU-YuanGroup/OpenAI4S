@@ -25,3 +25,5 @@ and the UI path also requires a current-version disclosure acknowledgement.
 | [`port.py`](port.py) | `JudgmentBackend` Protocol, `BackendError` codes, and `NullBackend`. |
 | [`flags.py`](flags.py) | `resolve(cfg, store)` and the six-rule precedence in `JUDGMENT_FLAG_PRECEDENCE`. Store access is read-only. |
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`, per-capability copy, fixed facts, `is_acknowledged`. |
+| [`typesafe.py`](typesafe.py) | stdlib TypeSafe System One client (`TypeSafeBackend`). Resolves the key per request, refuses redirects, caps the body at 2 MiB, and retries only 429/529/503 inside one deadline. |
+| [`validate.py`](validate.py) | `parse_response`: exact id set, matching types, in-range probabilities; any violation is `invalid_response` with no partial adoption. |

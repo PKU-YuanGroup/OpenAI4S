@@ -6,7 +6,7 @@ nothing in the repository recorded which modules can open an outbound
 connection. "Off by default, and not a single packet leaves the machine" is a
 claim about the whole tree, and it cannot be checked one file at a time.
 
-So the surface is frozen: thirteen modules today, each with a stated reason. A new
+So the surface is frozen: fourteen modules today, each with a stated reason. A new
 one fails this test with its file and line, and the fix is to add it here with a
 justification a reviewer can weigh -- which is the point. Adding a line to this
 table is a decision; adding `urlopen` to a random module is a Tuesday.
@@ -100,6 +100,12 @@ _DECLARED: dict[str, str] = {
         "only for one bounded POST, enforces network and SSRF policy, refuses "
         "redirects, and never projects the outbound authorization header."
     ),
+    "openai4s/judgment/typesafe.py": (
+        "the experimental TypeSafe System One client. One bounded POST to a "
+        "fixed origin, key resolved per request and never copied into process "
+        "global state, redirects refused, body capped, and the feature is "
+        "default-off."
+    ),
     "openai4s/kernel/worker.py": (
         "a worker placed on a compute node dialling back to the daemon that "
         "asked for it (M3b-1). The worker is the client because a compute "
@@ -182,7 +188,7 @@ def test_every_declaration_states_a_reason():
 
 
 def test_the_surface_is_small_enough_to_review():
-    """Thirteen modules is reviewable. If this fails, the question is not how to
+    """Fourteen modules is reviewable. If this fails, the question is not how to
     raise the bound -- it is why the surface grew.
 
     It grew from eleven for two explicit reasons, recorded rather than left to
@@ -190,8 +196,14 @@ def test_the_surface_is_small_enough_to_review():
     places it on a compute node (M3b-1). `benchmark/acceptance.py` makes one
     literal-loopback request to an isolated production Gateway for the Stage 0
     Ketcher route contract. Neither address comes from a cell or model, and the
-    latter's benchmark/browser contracts reject external network traffic."""
-    assert len(_DECLARED) <= 13
+    latter's benchmark/browser contracts reject external network traffic.
+
+    It grew from thirteen for `judgment/typesafe.py`: the experimental TypeSafe
+    System One client. One bounded POST to a fixed origin, modelled on
+    `doubao_search.py`, default-off, with the key never copied into process
+    global state.
+    """
+    assert len(_DECLARED) <= 14
 
 
 def test_the_scan_finds_a_planted_call():

@@ -23,3 +23,5 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`port.py`](port.py) | `JudgmentBackend` Protocol、`BackendError` 错误码，以及 `NullBackend`。 |
 | [`flags.py`](flags.py) | `resolve(cfg, store)` 以及 `JUDGMENT_FLAG_PRECEDENCE` 里的六条优先级。Store 访问只读。 |
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`、按能力列出的披露文案、固定事实、`is_acknowledged`。 |
+| [`typesafe.py`](typesafe.py) | 标准库 TypeSafe System One 客户端（`TypeSafeBackend`）。每次请求取 key、拒绝重定向、响应体上限 2 MiB，只对 429/529/503 在同一时限内重试。 |
+| [`validate.py`](validate.py) | `parse_response`：id 集合必须一致、类型必须匹配、概率必须在范围内；任何一处不合规都是 `invalid_response`，不做部分采纳。 |
