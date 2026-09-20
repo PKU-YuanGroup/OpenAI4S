@@ -29914,7 +29914,10 @@
       "schema": {
         "properties": {
           "error_code": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "latency_ms": {
             "type": "integer"

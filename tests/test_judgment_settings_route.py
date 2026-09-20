@@ -275,6 +275,28 @@ def test_post_test_returns_public_fields(tmp_path):
     _assert_no_secret(body)
 
 
+def test_post_test_reports_a_non_null_error_code(tmp_path, monkeypatch):
+    """Unstubbed, and deliberately in the state that fills ``error_code``.
+
+    Added by MERGE-W1. The frozen response shape is whatever the offline suite
+    elicits, and until this test existed the only unstubbed call hit the
+    default-off path, where ``error_code`` is null. The route can plainly
+    return a string, so freezing ``"type": "null"`` would have described the
+    prober rather than the route -- and the first real deployment answer would
+    have violated its own contract.
+    """
+
+    monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
+    monkeypatch.delenv(ENV_API_KEY, raising=False)
+    handler, replies, _cfg_obj = _handler(tmp_path)
+    handler._api("POST", "/experimental/judgment/test")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["status"] == "unavailable"
+    assert body["error_code"] == "unconfigured"
+    _assert_no_secret(body)
+
+
 @pytest.mark.stubbed_backend
 def test_post_test_uses_stubbed_service(tmp_path, monkeypatch):
     def fake_probe(cfg, store):
