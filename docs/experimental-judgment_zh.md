@@ -229,3 +229,30 @@ W2 待办：`tests/conftest.py` 仍不清除 `OPENAI4S_*JUDGMENT*`，而现在�
 路径会让它泄漏进来。`host.judge` 刻意不在 `GATEABLE_TOOLS`、`_SCREENED_METHODS`
 和 `_m_capabilities()` 里。dispatcher 信封的 `log_host_call(method="judge")`
 仍会记下原始 state，尽管命名审计事件 `judgment` 不记。
+
+### W2 — 2026-09-20
+
+按顺序合入三个分支：`w2-a-skills-backend`（`e491ff89` → `a66674d6`）、
+`w2-c-skills-eval`（`ec8f1536` → `131470b5`）、`w2-b-frontend`（`3ee20db2` →
+`04dd3594`）。`skill_suggest` 打开时 `search_skills` 会带上语义推荐；有了一份
+冻结的 200 条中英文评测集和锁死的测试集划分；Customize → General 多了带逐项
+披露的 Experimental 区块。
+
+集成修正 `76876a59`：`_step_end` 把 `search_skills` 的结果当 list 迭代，
+能力打开后拿到的 dict 只会吐出它的键——工作台步骤卡在有真实词法命中的情况下
+显示 "no match"，推荐 chip 在真实会话里根本没有数据可渲染。W2-A 不拥有这层投影，
+W2-B 的 Vitest fixture 又是直接喂 dict，两边都照不到。现在两种形态都能投影，
+能力关闭时的路径逐字节不变。
+
+用 loopback 假端点核过：能力关闭时 `search_skills` 返回的仍是原来的 list；
+打开时包装结果里的 `results` 与那个 list 逐字节相同。关闭状态下
+`browser_smoke.mjs` 通过，打开并接假端点时 `browser_judgment.mjs` 通过。
+离线开发集评测复现了 W2-C 的数字（B0 top-3 0.859，B2 top-3 0.923）。
+
+遗留，已开返工单给 W2-A：`SearchSkillsTool.execute` 先把词法结果填满整个
+`output_limit`，再加语义信封，于是词法命中一大，推荐就会被整组丢弃，而
+`semantic_status` 仍然报 `ok`。5 条 bioSkills 结果渲染后有 50,123 字符，
+上限是 50,000，`suggest_skills` 确实产出的三条推荐一条都到不了调用方。
+
+另一项遗留：`format_tool_result` 只把词法 `results` 展示给模型，所以只有在词法
+一无所获时模型才看得到推荐。这种不一致是产品决定而不是缺陷，记录在案交给维护者。

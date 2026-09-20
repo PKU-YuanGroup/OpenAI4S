@@ -260,3 +260,37 @@ and a runtime path now exists for it to leak into. `host.judge` is deliberately
 absent from `GATEABLE_TOOLS`, `_SCREENED_METHODS` and `_m_capabilities()`. The
 dispatcher envelope's `log_host_call(method="judge")` still records the raw
 state even though the named `judgment` audit event does not.
+
+### W2 — 2026-09-20
+
+Merged three branches in order: `w2-a-skills-backend` (`e491ff89` →
+`a66674d6`), `w2-c-skills-eval` (`ec8f1536` → `131470b5`), and
+`w2-b-frontend` (`3ee20db2` → `04dd3594`). `search_skills` now carries
+semantic suggestions when `skill_suggest` is on, there is a frozen 200-case
+bilingual evaluation with a locked test split, and Customize → General has an
+Experimental section with per-capability disclosure.
+
+Integration fix `76876a59`: `_step_end` projected a `search_skills` result by
+iterating it as a list, so the wrapped dict yielded its keys — the workbench
+card read "no match" beside real lexical hits and the suggestion chips had
+nothing to render in a real session. W2-A does not own the projection and
+W2-B's Vitest fixtures feed the dict in directly, so neither branch could see
+it. Both shapes are projected now; the capability-off path is byte-identical.
+
+Verified against the loopback fake: with the capability off `search_skills`
+returns the same list it always did, and with it on the wrapper's `results`
+are byte-identical to that list. `browser_smoke.mjs` passes with the switch
+off and `browser_judgment.mjs` passes with it on. The offline dev-split
+evaluation reproduces W2-C's numbers exactly (B0 top-3 0.859, B2 top-3 0.923).
+
+Open, and tracked as a rework ticket for W2-A: `SearchSkillsTool.execute`
+budgets the lexical results to the full `output_limit` before the semantic
+envelope is added, so a query whose lexical hits are large drops every
+suggestion while still reporting `semantic_status: ok`. Five bioSkills rows
+render to 50,123 characters against a 50,000 limit, and three suggestions that
+`suggest_skills` did produce never reach the caller.
+
+Also open: `format_tool_result` shows the model the lexical `results` only, so
+suggestions are model-visible exactly when lexical search found nothing. That
+inconsistency is a product decision, not a defect, and is recorded for the
+maintainer.
