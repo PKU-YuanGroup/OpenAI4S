@@ -54,12 +54,15 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 - [ ] **观察周一的跨生态依赖合批。**
       [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) 把 uv、npm、
-      Docker、pre-commit 和 GitHub Actions 归入统一周一组。已选策略包含大版本、
-      black 和 isort，不使用 allow/ignore 过滤；13 项治理测试与完整 pre-commit
-      均通过，[完整 CI](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34441714995)
+      Docker、pre-commit 和 GitHub Actions 归入统一周一组，npm 条目除根目录的
+      浏览器工具外，还覆盖独立的 `frontend/` 项目。已选策略包含大版本、
+      black 和 isort，不使用 allow/ignore 过滤；14 项治理测试与完整 pre-commit
+      均通过，[完整 CI](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/35495269657)
       也已通过。*做完的标准：* 经代码所有者审查并合入默认分支后，真实 Dependabot
       PR 同时包含多个生态，且再下一个周一仍正常产生更新。配置已准备，尚未取得
-      这两次真实调度结果。
+      这两次真实调度结果。首批真实合批要重点看两件事：`frontend/` 的升级只要改变
+      构建产物，就需要人工把重建后的 `openai4s/server/webui/dist/` 补提交到该分支；
+      以及任何一个生态里出现不可接受的升级，都会让整个 PR 变红。
 
 ## 最近关掉的，记下来免得再查一遍
 

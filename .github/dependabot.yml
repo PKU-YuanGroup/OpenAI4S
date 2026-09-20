@@ -2,6 +2,28 @@ version: 2
 
 # Batch every dependency, including major versions and formatter hooks.
 # Keep updates eligible without allow/ignore filters that could hide fixes.
+#
+# What that costs, kept here because the filters that used to pay it are gone
+# and the batch makes each of these one row of a version table:
+#
+#   * A `psf/black` or `pycqa/isort` major is a style-policy change, not a
+#     version bump. black 23.3.0 -> 26.5.1 reformatted 234 files; isort
+#     8.0.1 -> 9.0.1 reformatted five, two of them the `store.py` and
+#     `kernel/worker.py` facades CLAUDE.md says to edit surgically, and it
+#     opened a disagreement with black that needed a hand-written directive.
+#     Read the reformat, not the rev.
+#   * A GitHub Actions major lands in `release.yml` (`id-token: write`, OIDC
+#     PyPI publish) and `scorecard.yml` (`security-events: write`), where the
+#     only human-readable content of the diff is a `# vX.Y.Z` comment. The
+#     `action-pins` job proves the SHA matches that comment; nothing proves a
+#     major was read. setup-uv 9.0.0 -> 10.0.1 already went through once as
+#     one row of a two-row table.
+#   * A Docker tag "minor" is 3.12 -> 3.14, a different CPython. The exact tag
+#     is pinned in `tests/test_container_deployment.py`, so such a bump
+#     arrives as a red test rather than a digest swap.
+#
+# One red ecosystem reddens the whole batch. Split the offending bump into its
+# own PR rather than merging the batch around it.
 multi-ecosystem-groups:
   weekly-dependencies:
     schedule:
@@ -14,6 +36,18 @@ updates:
     patterns: ["*"]
     multi-ecosystem-group: "weekly-dependencies"
 
+  # `/frontend` is an independent npm project, not a root workspace, so it
+  # needs its own directory here. Note what that implies for the batch:
+  # `browser-smoke`, `browser-stage0` and `browser-team-mode` -- five required
+  # runs, counting browser-smoke's three engines -- each run
+  # `npm run build --prefix frontend` and then
+  # `git diff --exit-code -- openai4s/server/webui/dist`, and Dependabot only
+  # ever edits `frontend/package.json` and its lockfile. Any bump that changes
+  # the emitted bundle -- preact, @preact/signals, vite, @preact/preset-vite,
+  # typescript -- therefore lands red until a human rebuilds the committed
+  # workbench and pushes it onto the branch. That is the same "dist and source
+  # land together" rule the PR template carries, arriving from a bot that
+  # cannot follow it.
   - package-ecosystem: "npm"
     directories:
       - "/"

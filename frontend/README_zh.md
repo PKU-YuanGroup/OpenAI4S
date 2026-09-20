@@ -46,4 +46,10 @@ npm run typecheck    # tsc --noEmit
 
 - 工作台 CSP 是 `script-src 'self' 'wasm-unsafe-eval'`（没有 `unsafe-eval`，也没有 `unsafe-inline`）。禁止运行时模板编译、禁止 Vite 内联脚本 polyfill、禁止 `@vitejs/plugin-legacy`。
 - 不要把前端依赖加进仓库根的 `package.json`。
+- Dependabot 会为这个目录提更新，但它只改 `package.json` 和
+  `package-lock.json`。ci.yml 里的 `browser-smoke`（三个引擎）、`browser-stage0`
+  和 `browser-team-mode` 会重新构建
+  `../openai4s/server/webui/dist/` 并用 `git diff --exit-code` 比对，因此任何会
+  改变产物的升级都会让 CI 变红：把合批分支检出来，在本目录执行
+  `npm ci && npm run build`，再把重建后的 dist 提交到该分支上。
 - 全局样式归 F-21。`src/stores/` 下的 store 文件归 F-05。`compat/window-exports.ts` 归 F-05。

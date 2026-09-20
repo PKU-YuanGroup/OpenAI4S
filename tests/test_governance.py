@@ -88,9 +88,9 @@ def test_every_workflow_pins_every_action_to_a_commit():
     Those name scorecard.yml, fuzz.yml and release.yml. ci.yml -- 42 `uses:`
     lines, the file every contributor's code and every fork PR passes through
     -- and publish-image.yml were pinned by convention only, named by no test
-    at all. Dependabot's `workflow-actions` group rewrites `uses:` lines in
-    every one of them, so a grouped bump landing a mutable tag in an uncovered
-    file reads exactly like a covered one and passes every gate.
+    at all. The weekly multi-ecosystem batch rewrites `uses:` lines in every
+    one of them, so a grouped bump landing a mutable tag in an uncovered file
+    reads exactly like a covered one and passes every gate.
 
     Discovery is a glob rather than a list so a workflow added later is covered
     the day it lands, instead of the day someone remembers to extend a
@@ -245,9 +245,37 @@ DEPENDABOT_ENTRY_KEYS = {
     "versioning-strategy",
 }
 
+DEPENDABOT_CONFIG = ROOT / ".github" / "dependabot.yml"
+
+
+def _dependabot_config():
+    """The parsed `dependabot.yml`, or a skip when PyYAML is absent.
+
+    Four contracts below read the same file; reading it in one place is what
+    keeps a later test from asserting against a path that has moved.
+    """
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load(DEPENDABOT_CONFIG.read_text(encoding="utf-8"))
+
+
+def _entry_directories(entry):
+    """The directories an `updates:` entry covers, as a list.
+
+    `directory` and `directories` are mutually exclusive in the schema, so an
+    entry carrying neither is malformed rather than rooted at `/` -- returning
+    `[None]` for it would launder the mistake into every caller's set.
+    """
+    assert ("directory" in entry) != ("directories" in entry), (
+        f"{entry.get('package-ecosystem')}: exactly one of `directory` / "
+        f"`directories` is required, got {sorted(set(entry) & {'directory', 'directories'})}"
+    )
+    if "directories" in entry:
+        return list(entry["directories"])
+    return [entry["directory"]]
+
 
 def test_dependabot_tracks_uv_hooks_and_workflow_actions():
-    config = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    config = DEPENDABOT_CONFIG.read_text(encoding="utf-8")
 
     assert config.count("package-ecosystem:") == 5
     for ecosystem in (
@@ -270,21 +298,16 @@ def test_dependabot_entries_use_only_schema_keys():
     also appear only once per ecosystem and directory: the options reference
     grants a second entry only for a different `target-branch`.
     """
-    yaml = pytest.importorskip("yaml")
-    updates = yaml.safe_load(
-        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-    )["updates"]
+    updates = _dependabot_config()["updates"]
     for entry in updates:
         assert set(entry) <= DEPENDABOT_ENTRY_KEYS, sorted(
             set(entry) - DEPENDABOT_ENTRY_KEYS
         )
     identities = []
     for entry in updates:
-        assert ("directory" in entry) != ("directories" in entry)
-        directories = entry.get("directories", [entry.get("directory")])
         identities.extend(
             (entry["package-ecosystem"], directory, entry.get("target-branch"))
-            for directory in directories
+            for directory in _entry_directories(entry)
         )
     assert len(identities) == len(set(identities))
 
@@ -319,10 +342,7 @@ def test_dependabot_batches_every_ecosystem_without_filtering_updates():
     selective patterns or old single-ecosystem groups can leave updates out.
     Keep eligibility unrestricted and let one group own the schedule.
     """
-    yaml = pytest.importorskip("yaml")
-    config = yaml.safe_load(
-        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-    )
+    config = _dependabot_config()
     groups = config.get("multi-ecosystem-groups", {})
     assert len(groups) == 1
     group_name, group = next(iter(groups.items()))
@@ -338,8 +358,13 @@ def test_dependabot_batches_every_ecosystem_without_filtering_updates():
     for entry in updates:
         assert entry["multi-ecosystem-group"] == group_name
         assert entry["patterns"] == ["*"]
-        if entry["package-ecosystem"] != "npm":
-            assert entry["directory"] == "/"
+        # The invariant is that every ecosystem covers the repository root,
+        # not that every ecosystem spells it with `directory`. Asserting the
+        # key instead of the coverage left the npm entry -- the only one that
+        # uses `directories` -- with no root assertion at all, and would raise
+        # `KeyError` rather than fail the day a second ecosystem needs a
+        # second directory.
+        assert "/" in _entry_directories(entry), entry["package-ecosystem"]
         for option in ("schedule", "groups", "allow", "ignore", "target-branch"):
             assert option not in entry, (entry["package-ecosystem"], option)
 
@@ -351,28 +376,46 @@ def test_dependabot_covers_every_npm_manifest():
     Inspect tracked manifests so local node_modules and build copies cannot
     inflate coverage, and adding another npm project requires tracking it.
     """
-    yaml = pytest.importorskip("yaml")
-    config = yaml.safe_load(
-        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-    )
-    manifests = subprocess.run(
-        ["git", "ls-files", "-z", "--", "package.json", "**/package.json"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split("\0")
+    config = _dependabot_config()
+    # "Not a git checkout" is an environment, not a governance failure, and
+    # the suite already answers it that way twice -- see the `git ls-files -z`
+    # probe in `test_skills_installer_contract.py` and `_git()` in
+    # `test_plan_crosswalk.py`, both of which skip. `check=True` here turned an
+    # exported tree, or a PATH without git, into a red governance test instead.
+    # Bytes rather than `text=True`: `-z` emits paths, and a runner's locale
+    # must not decide how they decode.
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "package.json", "**/package.json"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            timeout=30,
+        ).stdout.decode("utf-8")
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("not a git checkout")
     manifest_directories = {
-        (Path("/") / Path(path).parent).as_posix() for path in manifests if path
+        (Path("/") / Path(path).parent).as_posix()
+        for path in listed.split("\0")
+        if path
     }
     configured_directories = {
         directory
         for entry in config["updates"]
         if entry["package-ecosystem"] == "npm"
-        for directory in entry.get("directories", [entry.get("directory")])
+        for directory in _entry_directories(entry)
     }
 
     assert manifest_directories
-    assert manifest_directories <= configured_directories, sorted(
-        manifest_directories - configured_directories
-    )
+    # Equality, not containment. Containment passes on a configured directory
+    # that holds no manifest -- a typo, or a project that was deleted -- and
+    # Dependabot reports that only on its own tab, which is the failure this
+    # module exists to make visible offline.
+    assert manifest_directories == configured_directories, {
+        "tracked but not configured": sorted(
+            manifest_directories - configured_directories
+        ),
+        "configured but not tracked": sorted(
+            configured_directories - manifest_directories
+        ),
+    }

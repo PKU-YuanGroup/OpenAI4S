@@ -46,4 +46,10 @@ npm run typecheck    # tsc --noEmit
 
 - Workbench CSP is `script-src 'self' 'wasm-unsafe-eval'` (no `unsafe-eval`, no `unsafe-inline`). No runtime template compiler, no Vite inline-script polyfill, no `@vitejs/plugin-legacy`.
 - Do not add frontend dependencies to the repository-root `package.json`.
+- Dependabot proposes updates for this directory, but it only edits
+  `package.json` and `package-lock.json`. The `browser-smoke` (three engines),
+  `browser-stage0` and `browser-team-mode` jobs rebuild
+  `../openai4s/server/webui/dist/` and `git diff --exit-code` it, so any bump
+  that changes the emitted bundle lands red: check out the batch branch, run
+  `npm ci && npm run build` here, and commit the rebuilt dist onto it.
 - Global CSS is F-21. Store files under `src/stores/` are F-05. `compat/window-exports.ts` is F-05.
