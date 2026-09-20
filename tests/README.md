@@ -482,6 +482,10 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | Frozen byte-for-byte snapshot of Skill system context, `search_skills` results (English and Chinese), native tool schemas, and heuristic `classify_code` verdicts, taken before any experimental judgment code landed. The default-off path must keep matching these fixtures. |
 | [`test_judgment_types.py`](test_judgment_types.py) | Construction bounds for Noul/Choice/Score, `to_api()` shapes, JSON `to_dict()`, the Noul answer carrying neither probabilities nor confidence, and `NullBackend` always raising `disabled`. |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | Tri-state env parsing, illegal values, the six precedence rules, master-off, missing/wrong disclosure, and env-on without acknowledgement. |
+| [`test_judgment_validate.py`](test_judgment_validate.py) | Each `parse_response` rule has a legal case and an illegal case: id set, types, Choice/Noul/Score ranges, probability keys and sums, legend, usage. One violation discards the whole payload. |
+| [`test_judgment_typesafe.py`](test_judgment_typesafe.py) | In-process fake endpoint plus `OPENAI4S_JUDGMENT_FAKE_ENDPOINT`: three question types, HTTP error mapping and retries, redirect refusal, body cap, missing/priority key, illegal fake URLs, egress block before connect, and the key never appearing in exceptions, logs, or the fake log file. |
+| [`test_judgment_fake_provider.py`](test_judgment_fake_provider.py) | Loopback fake behaviour: Bearer 401, deterministic defaults, scripted answers, `--fail` injection, latency, JSONL log without Authorization, and refused non-loopback bind. |
+| [`test_judgment_typesafe_live.py`](test_judgment_typesafe_live.py) | Marked `network` and `external`. Skips unless a TypeSafe key is configured; sends one Noul, one 3-option Choice, and one 3-level Score to the real API and validates the reply. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

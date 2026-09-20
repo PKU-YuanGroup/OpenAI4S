@@ -482,6 +482,10 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | 在任何实验性判断层代码落地之前，把 Skill 系统提示、`search_skills` 中英文结果、原生工具 schema，以及 heuristic 模式下 `classify_code` 的判决冻结成逐字节快照。默认关闭路径必须继续与这些 fixtures 一致。 |
 | [`test_judgment_types.py`](test_judgment_types.py) | Noul/Choice/Score 的构造边界、`to_api()` 形态、可 JSON 序列化的 `to_dict()`、Noul 答案不带概率也不带置信度，以及 `NullBackend` 永远抛 `disabled`。 |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | 三态 env 解析、非法值、六条优先级、总开关关闭、缺失/版本不对的披露确认，以及 env=1 不要求确认。 |
+| [`test_judgment_validate.py`](test_judgment_validate.py) | `parse_response` 每条规则各有合规与不合规用例：id 集合、类型、Choice/Noul/Score 范围、概率键与加和、legend、usage。一处不合规即丢弃整份 payload。 |
+| [`test_judgment_typesafe.py`](test_judgment_typesafe.py) | 进程内假端点加 `OPENAI4S_JUDGMENT_FAKE_ENDPOINT`：三种题型往返、HTTP 错误映射与重试、拒绝重定向、响应体上限、缺 key / key 优先级、非法假端点 URL、出网拦截发生在连接之前，以及 key 永不出现在异常、日志或假端点 log 文件里。 |
+| [`test_judgment_fake_provider.py`](test_judgment_fake_provider.py) | 本机假端点行为：无 Bearer 返回 401、确定性默认答案、脚本化答案、`--fail` 注入、延迟、不含 Authorization 的 JSONL 日志，以及拒绝绑定非 loopback。 |
+| [`test_judgment_typesafe_live.py`](test_judgment_typesafe_live.py) | 打 `network` 和 `external` 标记。未配置 TypeSafe key 则 skip；对真实 API 发一个 Noul、一个 3 选项 Choice、一个 3 档 Score，并用校验器检查返回。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 
