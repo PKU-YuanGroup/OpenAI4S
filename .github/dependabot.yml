@@ -6,18 +6,26 @@ version: 2
 # What that costs, kept here because the filters that used to pay it are gone
 # and the batch makes each of these one row of a version table:
 #
+# Three of them are pinned as tests rather than filtered out here, because a
+# multi-ecosystem job does not run the ordinary ungrouped pass: excluding a
+# dependency from this group would stop updating it, not move it to its own
+# PR. The pin keeps the update flowing and makes the one that has to be read
+# arrive red.
+#
 #   * A `psf/black` or `pycqa/isort` major is a style-policy change, not a
 #     version bump. black 23.3.0 -> 26.5.1 reformatted 234 files; isort
 #     8.0.1 -> 9.0.1 reformatted five, two of them the `store.py` and
 #     `kernel/worker.py` facades CLAUDE.md says to edit surgically, and it
 #     opened a disagreement with black that needed a hand-written directive.
-#     Read the reformat, not the rev.
+#     Pinned by `test_formatter_hooks_pin_their_major_version`. Read the
+#     reformat, then move the pin.
 #   * A GitHub Actions major lands in `release.yml` (`id-token: write`, OIDC
 #     PyPI publish) and `scorecard.yml` (`security-events: write`), where the
-#     only human-readable content of the diff is a `# vX.Y.Z` comment. The
-#     `action-pins` job proves the SHA matches that comment; nothing proves a
-#     major was read. setup-uv 9.0.0 -> 10.0.1 already went through once as
-#     one row of a two-row table.
+#     only human-readable content of the diff is a `# vX.Y.Z` comment, and the
+#     `action-pins` job only proves the SHA matches it. setup-uv 9.0.0 ->
+#     10.0.1 already went through once as one row of a two-row table. Pinned
+#     by `test_privileged_workflows_pin_their_actions_major_version`; ci.yml
+#     is deliberately not pinned.
 #   * A Docker tag "minor" is 3.12 -> 3.14, a different CPython. The exact tag
 #     is pinned in `tests/test_container_deployment.py`, so such a bump
 #     arrives as a red test rather than a digest swap.

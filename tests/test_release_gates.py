@@ -70,6 +70,45 @@ def test_source_secret_scan_rejects_credential_files(tmp_path):
     ]
 
 
+def test_source_secret_scan_judges_npmrc_on_content_not_on_its_name(tmp_path):
+    """A committed `.npmrc` may carry npm settings, never an auth directive.
+
+    `frontend/.npmrc` exists to make `engines` enforced rather than advisory,
+    which a name-only rule would have blocked outright -- and a name-only
+    exemption for it would then have let a registry token be added to that same
+    file with nothing failing. Every form npm auth actually takes has to be
+    caught here, including the registry-scoped line that carries no key at all.
+    """
+    scanner = _load_script("source_secret_scan")
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok" / ".npmrc").write_text(
+        "# a comment\nengine-strict=true\naudit-level=high\n", encoding="utf-8"
+    )
+    for index, line in enumerate(
+        (
+            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}",
+            "_auth=Zm9vOmJhcg==",
+            "//npm.pkg.github.com/:_authToken=abc",
+            "_password=hunter2",
+            "email=release@example.com",
+            # No `_auth`, no `token`, and `username` is not at the start of the
+            # line: only the registry-scoped branch catches this one.
+            "//registry.npmjs.org/:username=deploy-bot",
+        )
+    ):
+        bad = tmp_path / f"bad{index}"
+        bad.mkdir()
+        (bad / ".npmrc").write_text(f"engine-strict=true\n{line}\n", encoding="utf-8")
+
+    flagged = {
+        item.path
+        for item in scanner.scan(tmp_path)
+        if item.detector == "credential-file"
+    }
+
+    assert flagged == {f"bad{index}/.npmrc" for index in range(6)}
+
+
 def _metadata(*, dependency: str | None = None, summary: str = "OpenAI4S") -> bytes:
     requires = f"Requires-Dist: {dependency}\n" if dependency else ""
     return (

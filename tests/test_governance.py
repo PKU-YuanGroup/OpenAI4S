@@ -31,6 +31,76 @@ PINNED_ACTION = re.compile(
     r"^\s*-?\s*uses:\s*[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$"
 )
 
+# `owner/repo[/path]` and the major from the `# vX.Y.Z` claim beside it. The
+# claim is what a reviewer reads, so it is what a major pin can be expressed
+# against; `PINNED_ACTION` above is what guarantees the claim is there.
+ACTION_IDENTITY = re.compile(
+    r"^\s*-?\s*uses:\s*(?P<name>[^@\s]+)@[0-9a-f]{40}\s+#\s+v(?P<major>\d+)\."
+)
+
+# The weekly multi-ecosystem batch carries every update type, so a GitHub
+# Actions major now arrives as one row of a five-ecosystem version table whose
+# only human-readable content is a `# vX.Y.Z` comment. That is tolerable for
+# ci.yml. It is not tolerable for these two files: scorecard.yml runs with
+# `security-events: write` and `id-token: write`, and release.yml's publish job
+# holds `id-token: write` for the OIDC PyPI trusted publish plus `contents:
+# write` on three more. A compromised or behaviour-changing major there spends
+# privileges nothing else in the repository has.
+#
+# The `action-pins` job proves the SHA matches the comment. Nothing proved a
+# human read what the major changed -- setup-uv 9.0.0 -> 10.0.1 went through
+# once as one row of a two-row table. This is that proof, in the same shape
+# `test_container_deployment.py` uses for the CPython tag: naming the major
+# here is what makes a major bump a red test someone has to look at, instead of
+# a SHA swap that reads like every other row.
+#
+# The mapping is exact in both directions, so adding an action to one of these
+# workflows also fails here until it is named.
+PRIVILEGED_WORKFLOW_ACTION_MAJORS = {
+    "release.yml": {
+        "actions/checkout": 7,
+        "actions/download-artifact": 8,
+        "actions/upload-artifact": 7,
+        "astral-sh/setup-uv": 10,
+        "pypa/gh-action-pypi-publish": 1,
+    },
+    "scorecard.yml": {
+        "actions/checkout": 7,
+        "actions/upload-artifact": 7,
+        "github/codeql-action/upload-sarif": 4,
+        "ossf/scorecard-action": 2,
+    },
+}
+
+PRE_COMMIT_CONFIG = ROOT / ".pre-commit-config.yaml"
+
+# `- repo: <url>` followed within the same block by `rev: <sha>  # frozen: X.Y.Z`
+# (ruff writes `v0.16.7`, black and isort write bare `26.5.1`).
+FROZEN_HOOK = re.compile(
+    r"^\s*-\s*repo:\s*(?P<repo>\S+)\s*$\n(?:^\s*#.*$\n)*"
+    r"^\s*rev:\s*\S+\s+#\s*frozen:\s*v?(?P<major>\d+)\.",
+    flags=re.MULTILINE,
+)
+
+# The two formatters, and only the two. A bump of either is a style-policy
+# change that rewrites source on every contributor machine (`setup.sh` installs
+# these hooks), not a version bump: black 23.3.0 -> 26.5.1 reformatted 234
+# files, and isort 8.0.1 -> 9.0.1 arrived as one row of a two-row version
+# table, reformatted five -- two of them the `store.py` and `kernel/worker.py`
+# facades CLAUDE.md says to edit surgically -- and opened a disagreement with
+# black that needed a hand-written directive to settle.
+#
+# The old `hook-versions` group kept them out of Dependabot's batch with
+# `exclude-patterns`. The weekly multi-ecosystem group carries every hook, and
+# the exclusion is not simply restorable there: a multi-ecosystem job does not
+# run the ordinary ungrouped pass, so excluding these two would stop updating
+# them rather than move them to their own PR. Pinning the major instead leaves
+# the update flowing and makes the one that has to be read arrive red.
+FROZEN_FORMATTER_MAJORS = {
+    "https://github.com/psf/black": 26,
+    "https://github.com/pycqa/isort": 9,
+}
+
 
 def _uses_lines(name):
     text = (WORKFLOWS / name).read_text(encoding="utf-8")
@@ -116,6 +186,59 @@ def test_every_workflow_pins_every_action_to_a_commit():
             moving[name] = offenders
 
     assert moving == {}
+
+
+@pytest.mark.parametrize("name", sorted(PRIVILEGED_WORKFLOW_ACTION_MAJORS))
+def test_privileged_workflows_pin_their_actions_major_version(name):
+    """A major in an OIDC/security-events workflow cannot ride a version table.
+
+    The weekly batch includes major versions by design, and for most of the
+    tree that is the right trade. These two workflows are the exception: the
+    diff of an action major is a SHA and a `# vX.Y.Z` comment, and the thing it
+    changes runs with `id-token: write` or `security-events: write`. Pinning the
+    major here turns that row into a failing required check, so the bump has to
+    be split out and read rather than merged as one line of a table.
+    """
+    expected = PRIVILEGED_WORKFLOW_ACTION_MAJORS[name]
+    found = {}
+    for line in _uses_lines(name):
+        match = ACTION_IDENTITY.match(line)
+        assert match, line.strip()
+        found[match.group("name")] = int(match.group("major"))
+
+    assert found == expected, {
+        "unpinned or moved": sorted(set(found) - set(expected)),
+        "pinned but absent": sorted(set(expected) - set(found)),
+        "major changed": {
+            action: (expected[action], major)
+            for action, major in found.items()
+            if action in expected and major != expected[action]
+        },
+    }
+
+
+def test_formatter_hooks_pin_their_major_version():
+    """black and isort cannot arrive as one row of the Monday batch.
+
+    Every other hook may: the rule sets are pinned in `pyproject.toml`, so a
+    bump is inert against them. A formatter major is the exception -- it is a
+    style-policy change that `setup.sh` then installs on every contributor
+    machine -- and `.pre-commit-config.yaml` carries no other signal that
+    distinguishes it from a patch. Reading the reformat is the review; this pin
+    is what forces it to happen.
+    """
+    text = PRE_COMMIT_CONFIG.read_text(encoding="utf-8")
+    majors = {
+        match.group("repo"): int(match.group("major"))
+        for match in FROZEN_HOOK.finditer(text)
+    }
+
+    assert set(FROZEN_FORMATTER_MAJORS) <= set(majors), sorted(
+        set(FROZEN_FORMATTER_MAJORS) - set(majors)
+    )
+    assert {
+        repo: majors[repo] for repo in FROZEN_FORMATTER_MAJORS
+    } == FROZEN_FORMATTER_MAJORS
 
 
 def test_pr_ci_resolves_every_action_version_comment_with_pinact():

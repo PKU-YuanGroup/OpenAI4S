@@ -68,7 +68,11 @@ is a factual record of the v0.3 plan and is validated by
       npm, Docker, pre-commit and GitHub Actions to one Monday group, and the
       npm entry covers the independent `frontend/` project as well as the root
       browser tooling. The selected policy includes major versions, black and
-      isort, with no allow/ignore filters. Its 14 governance tests and full
+      isort, with no allow/ignore filters; the majors that must not merge as one
+      row of a version table -- the two formatter hooks, and the actions in the
+      two workflows holding `id-token: write` / `security-events: write` -- are
+      pinned as governance tests instead, so the bump arrives red rather than
+      filtered out of the update stream. Its 17 governance tests and full
       pre-commit checks pass, as does its
       [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/35495269657).
       *Done when:* after code-owner review and default-branch merge, a

@@ -56,7 +56,10 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
       [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) 把 uv、npm、
       Docker、pre-commit 和 GitHub Actions 归入统一周一组，npm 条目除根目录的
       浏览器工具外，还覆盖独立的 `frontend/` 项目。已选策略包含大版本、
-      black 和 isort，不使用 allow/ignore 过滤；14 项治理测试与完整 pre-commit
+      black 和 isort，不使用 allow/ignore 过滤；那些不能作为版本表里一行合掉的大
+      版本——两个格式化 hook，以及持有 `id-token: write` / `security-events: write`
+      的两个 workflow 所用的 action——改为用治理测试钉住主版本号，于是升级会以红灯
+      形式到达，而不是被排除在更新流之外；17 项治理测试与完整 pre-commit
       均通过，[完整 CI](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/35495269657)
       也已通过。*做完的标准：* 经代码所有者审查并合入默认分支后，真实 Dependabot
       PR 同时包含多个生态，且再下一个周一仍正常产生更新。配置已准备，尚未取得
