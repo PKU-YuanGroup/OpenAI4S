@@ -888,11 +888,24 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         return ({"todos": todos}, _plural(len(todos), "step"))
     if kind == "skill":
         if method == "search_skills":
-            names = [s.get("name") for s in (result or []) if isinstance(s, dict)]
-            return (
-                {"skills": names},
-                ", ".join(n for n in names[:4] if n) or "no match",
-            )
+            # Two shapes reach this card. With the experimental skill_suggest
+            # capability off, the tool returns the lexical list it always
+            # returned. With it on, W2-A wraps that list in
+            # {results, semantic_status, semantic_suggestions}, and iterating
+            # the dict yielded its keys -- so the card read "no match" beside
+            # real hits and the suggestion chips had nothing to render.
+            rows = result if isinstance(result, list) else (r.get("results") or [])
+            names = [s.get("name") for s in rows if isinstance(s, dict)]
+            card: dict[str, Any] = {"skills": names}
+            summary = ", ".join(n for n in names[:4] if n) or "no match"
+            status = r.get("semantic_status")
+            suggestions = r.get("semantic_suggestions")
+            if status is not None or suggestions:
+                card["semantic_status"] = status
+                card["semantic_suggestions"] = list(suggestions or [])
+                if not names and suggestions:
+                    summary = _plural(len(suggestions), "suggestion")
+            return (card, summary)
         if method == "skills_status":
             return (
                 {
