@@ -1132,7 +1132,9 @@ class HostDispatcher:
             capability_scope=self._current_capability_scope,
             specialist_enabled=self._specialist_enabled,
         )
-        self._skill_service = SkillService(self.cfg)
+        self._skill_service = SkillService(
+            self.cfg, judgment_service=self._judgment_service
+        )
         self._skills = self._skill_service.loader  # private compatibility alias
         self.set_capability_scope(self.frame_id)
         self._credential_service = CredentialService()
@@ -3168,6 +3170,9 @@ class HostDispatcher:
     # --- skills: retrieval (progressive disclosure) ----------------------
     def _m_search_skills(self, spec: dict) -> list:
         return self._skill_service.search(spec)
+
+    def _m_suggest_skills(self, spec: dict) -> dict:
+        return self._skill_service.suggest(spec if isinstance(spec, dict) else {})
 
     def _m_list_skills(self) -> list:
         """Native-tool source; its Tool projects this catalog to count/names."""
