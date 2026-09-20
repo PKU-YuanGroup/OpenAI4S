@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -277,10 +278,14 @@ def test_dependabot_entries_use_only_schema_keys():
         assert set(entry) <= DEPENDABOT_ENTRY_KEYS, sorted(
             set(entry) - DEPENDABOT_ENTRY_KEYS
         )
-    identities = [
-        (entry["package-ecosystem"], entry.get("directory"), entry.get("target-branch"))
-        for entry in updates
-    ]
+    identities = []
+    for entry in updates:
+        assert ("directory" in entry) != ("directories" in entry)
+        directories = entry.get("directories", [entry.get("directory")])
+        identities.extend(
+            (entry["package-ecosystem"], directory, entry.get("target-branch"))
+            for directory in directories
+        )
     assert len(identities) == len(set(identities))
 
 
@@ -333,6 +338,41 @@ def test_dependabot_batches_every_ecosystem_without_filtering_updates():
     for entry in updates:
         assert entry["multi-ecosystem-group"] == group_name
         assert entry["patterns"] == ["*"]
-        assert entry["directory"] == "/"
+        if entry["package-ecosystem"] != "npm":
+            assert entry["directory"] == "/"
         for option in ("schedule", "groups", "allow", "ignore", "target-branch"):
             assert option not in entry, (entry["package-ecosystem"], option)
+
+
+def test_dependabot_covers_every_npm_manifest():
+    """The frontend is an independent npm project, not a root workspace.
+
+    A root-only npm entry silently misses its runtime and build dependencies.
+    Inspect tracked manifests so local node_modules and build copies cannot
+    inflate coverage, and adding another npm project requires tracking it.
+    """
+    yaml = pytest.importorskip("yaml")
+    config = yaml.safe_load(
+        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    )
+    manifests = subprocess.run(
+        ["git", "ls-files", "-z", "--", "package.json", "**/package.json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    manifest_directories = {
+        (Path("/") / Path(path).parent).as_posix() for path in manifests if path
+    }
+    configured_directories = {
+        directory
+        for entry in config["updates"]
+        if entry["package-ecosystem"] == "npm"
+        for directory in entry.get("directories", [entry.get("directory")])
+    }
+
+    assert manifest_directories
+    assert manifest_directories <= configured_directories, sorted(
+        manifest_directories - configured_directories
+    )

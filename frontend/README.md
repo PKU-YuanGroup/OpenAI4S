@@ -30,6 +30,9 @@ The workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vite + V
 
 ## Commands
 
+Use Node.js 22.12+ on the 22.x line, 24.x, or 26+ to run the Vitest 5
+toolchain. CI uses Node 22. The root Skill installer has its own Node requirement.
+
 ```bash
 cd frontend
 npm ci

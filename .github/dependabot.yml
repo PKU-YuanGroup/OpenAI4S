@@ -15,7 +15,9 @@ updates:
     multi-ecosystem-group: "weekly-dependencies"
 
   - package-ecosystem: "npm"
-    directory: "/"
+    directories:
+      - "/"
+      - "/frontend"
     patterns: ["*"]
     multi-ecosystem-group: "weekly-dependencies"
 

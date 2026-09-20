@@ -30,6 +30,9 @@
 
 ## 命令
 
+Vitest 5 工具链需要 Node.js 22.x（至少 22.12）、24.x 或 26 及以上版本。
+CI 使用 Node 22；仓库根目录的 Skill 安装器有独立的 Node 版本要求。
+
 ```bash
 cd frontend
 npm ci

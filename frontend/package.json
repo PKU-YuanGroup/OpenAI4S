@@ -5,7 +5,7 @@
   "type": "module",
   "description": "OpenAI4S workbench frontend (Preact 10 + signals + TypeScript + Vite).",
   "engines": {
-    "node": ">=18"
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
   },
   "scripts": {
     "dev": "vite",
