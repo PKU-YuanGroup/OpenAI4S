@@ -482,6 +482,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | 在任何实验性判断层代码落地之前，把 Skill 系统提示、`search_skills` 中英文结果、原生工具 schema，以及 heuristic 模式下 `classify_code` 的判决冻结成逐字节快照。默认关闭路径必须继续与这些 fixtures 一致。 |
 | [`test_judgment_types.py`](test_judgment_types.py) | Noul/Choice/Score 的构造边界、`to_api()` 形态、可 JSON 序列化的 `to_dict()`、Noul 答案不带概率也不带置信度，以及 `NullBackend` 永远抛 `disabled`。 |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | 三态 env 解析、非法值、六条优先级、总开关关闭、缺失/版本不对的披露确认，以及 env=1 不要求确认。 |
+| [`test_judgment_settings_route.py`](test_judgment_settings_route.py) | 用真实 Store 测 `GET`/`PUT`/`PATCH /experimental/judgment`：key 永不回显、披露版本不对被拒、UI 打开但未确认是 `no_disclosure`、env false 是 `env_off`、清除 key。`POST .../test` 打桩服务并标 `stubbed_backend`。 |
+| [`test_judgment_egress.py`](test_judgment_egress.py) | 判断层 egress **报告**：`off` 无补救项；allowlist 且未授权时报告 `blocked_message` 且 `check_url` 抛错；运行时 grant 后放行。不新增 `EGRESS_GROUPS` 分组。 |
+| [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`：默认关闭为信息级、缺 key / allowlist 拦截为 warn，报告中永不出现 TypeSafe key。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

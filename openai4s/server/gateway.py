@@ -19336,6 +19336,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
 
+            # ---- experimental judgment (settings, key, connection test) ----
+            if sub == "/experimental/judgment":
+                from openai4s.judgment.settings import SettingsError, status, update
+
+                if method in ("PUT", "PATCH"):
+                    try:
+                        update(store, self._body())
+                    except SettingsError as error:
+                        raise GatewayError(400, str(error), error.error_code) from error
+                elif method != "GET":
+                    raise GatewayError(405, "method not allowed")
+                self._json(status(cfg, store))
+                return
+            if sub == "/experimental/judgment/test":
+                if method != "POST":
+                    raise GatewayError(405, "method not allowed")
+                from openai4s.judgment.settings import probe_connection
+
+                self._json(probe_connection(cfg, store))
+                return
+
             self._json({"error": "not found", "path": sub, "method": method}, 404)
 
         # ---- payload builders ------------------------------------------

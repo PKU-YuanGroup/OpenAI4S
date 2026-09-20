@@ -23,3 +23,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`port.py`](port.py) | `JudgmentBackend` Protocol、`BackendError` 错误码，以及 `NullBackend`。 |
 | [`flags.py`](flags.py) | `resolve(cfg, store)` 以及 `JUDGMENT_FLAG_PRECEDENCE` 里的六条优先级。Store 访问只读。 |
 | [`disclosure.py`](disclosure.py) | `DISCLOSURE_VERSION`、按能力列出的披露文案、固定事实、`is_acknowledged`。 |
+| [`settings.py`](settings.py) | 网关和 doctor 用的设置面：`status` / `update` / `probe_connection`，TypeSafe key 走 SecretBroker（不写入 env、不回显），以及「`api.typesafe.ai` 是否已授权」的 egress **报告**。不新增 egress 分组。 |

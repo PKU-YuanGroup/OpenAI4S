@@ -482,6 +482,9 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_default_off.py`](test_judgment_default_off.py) | Frozen byte-for-byte snapshot of Skill system context, `search_skills` results (English and Chinese), native tool schemas, and heuristic `classify_code` verdicts, taken before any experimental judgment code landed. The default-off path must keep matching these fixtures. |
 | [`test_judgment_types.py`](test_judgment_types.py) | Construction bounds for Noul/Choice/Score, `to_api()` shapes, JSON `to_dict()`, the Noul answer carrying neither probabilities nor confidence, and `NullBackend` always raising `disabled`. |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | Tri-state env parsing, illegal values, the six precedence rules, master-off, missing/wrong disclosure, and env-on without acknowledgement. |
+| [`test_judgment_settings_route.py`](test_judgment_settings_route.py) | `GET`/`PUT`/`PATCH /experimental/judgment` against a real Store: key never echoed, wrong disclosure version refused, UI enable without ack is `no_disclosure`, env false is `env_off`, key clear. `POST .../test` with a stubbed service is marked `stubbed_backend`. |
+| [`test_judgment_egress.py`](test_judgment_egress.py) | Judgment egress *report*: `off` has no remediation; allowlist without a grant reports `blocked_message` and `check_url` raises; a runtime grant authorizes. Does not add an `EGRESS_GROUPS` entry. |
+| [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`: default-off is informational, missing key / allowlist block warn, and the TypeSafe key never appears in the report. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 
