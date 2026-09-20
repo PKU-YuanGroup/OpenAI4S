@@ -47,6 +47,8 @@ Six of the layers around Code-as-Action live in this package — code classifica
 
 ## Operational cautions
 
+- The three LLM-backed screeners are metered but never gated, and their spend is charged to `llm_screening_*`, outside `ENFORCED_QUOTA_KINDS`. Refusing a screen would not save its tokens; it would run the Cell, or hand the model the tool output, with the screen switched off. So a control that cannot be refused must not be able to refuse anything either — the injection scan's prompt is 16 KB of text an attacker chose, and charging that to an enforcing quota would let a crafted page consume a member's window through the control meant to protect them.
+- On the Web daemon these screeners must be handed the session's *resolved* LLM config, not the boot one. Both read `cfg.llm.api_key` and fail open when it is empty, and on the documented install it is always empty because the key lives in settings — so a screener handed the boot Config reports a pass it never performed.
 - Never infer from configuration that a worker is sandboxed; read the runtime's measured `SandboxStatus` and its warning. A successful self-test is a statement about one backend and one policy, not a claim of complete containment.
 - The sandbox's raw-network rule and Host/application egress policy are distinct. Allowing one does not authorize the other.
 - A control is only as strong as the question its test asks. The BYOC home denial was checked by a probe that reads a file's *contents*, so `stat()` and `getxattr()` kept serving what `open()` refused until each was probed on its own. When tightening a rule here, measure inside the region a later allow re-grants — not only inside the region that was already denied, where the answer comes out right for the wrong reason.

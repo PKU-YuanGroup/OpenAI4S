@@ -21,16 +21,29 @@ The retry policy is deliberately narrow:
 from __future__ import annotations
 
 import functools
+import http.client
 import inspect
 import json
 import random
+import socket
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from typing import Any
 
+from openai4s.http_deadline import (
+    HTTPExchangeDeadline,
+    HTTPExchangeTimeout,
+    read_body_capped,
+    response_body_exhausted,
+    socket_timeout_setter,
+)
+
 from .models import (
+    LLMDeadlineExceeded,
     LLMError,
+    LLMResponseTooLarge,
     StreamReadError,
     StreamTimeoutError,
     TransportError,
@@ -82,6 +95,108 @@ REQUEST_BURST_BASE_BACKOFF = 4.0
 # Ceiling on time spent sleeping across a call. A provider may advertise a
 # 300s Retry-After; honouring that inside one turn would look like a hang.
 DEFAULT_RETRY_BUDGET = 30.0
+MAX_JSON_BYTES = 32 * 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
+MAX_SSE_LINE_BYTES = 1024 * 1024
+MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024
+MAX_SSE_BYTES = 64 * 1024 * 1024
+
+
+@dataclass
+class CallState:
+    """One logical chat's send, backoff and cancellation budget.
+
+    The JSON compatibility attempt shares this state with the original SSE
+    request. It is never stored on a reusable config or cancellation probe.
+    """
+
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    retry_budget: float = DEFAULT_RETRY_BUDGET
+    should_cancel: Any = None
+    attempts: int = 0
+    sent: bool = False
+    spent: float = 0.0
+    last_error: TransportError | None = None
+    total_timeout_s: float = 600.0
+    deadline: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.deadline = time.monotonic() + self.total_timeout_s
+
+    def remaining(self, provider: str | None = None, operation: str = "chat") -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise self.deadline_error(provider, operation)
+        return remaining
+
+    def deadline_error(
+        self, provider: str | None, operation: str
+    ) -> LLMDeadlineExceeded:
+        prior = self.last_error
+        return LLMDeadlineExceeded(
+            "LLM logical call exceeded its total deadline",
+            provider=prior.provider if prior is not None else provider,
+            operation=operation,
+            status=prior.status if prior is not None else None,
+            headers=prior.headers if prior is not None else None,
+            request_id=prior.request_id if prior is not None else None,
+            body=prior.body if prior is not None else None,
+            output_committed=prior.output_committed if prior is not None else False,
+        )
+
+    def check_send(self, provider: str | None, operation: str) -> None:
+        if self.should_cancel is not None and self.should_cancel():
+            raise self.failure("cancelled before send", provider, operation)
+        self.remaining(provider, operation)
+        if self.attempts >= self.max_attempts:
+            if self.last_error is not None:
+                raise self.last_error
+            raise self.failure("send budget exhausted", provider, operation)
+
+    def failure(
+        self, reason: str, provider: str | None, operation: str
+    ) -> TransportError:
+        err = self.last_error
+        failure = TransportError(
+            f"{err or 'LLM request'} ({reason})",
+            provider=err.provider if err is not None else provider,
+            operation=err.operation if err is not None else operation,
+            status=err.status if err is not None else None,
+            error_code=err.error_code if err is not None else None,
+            headers=err.headers if err is not None else None,
+            request_id=err.request_id if err is not None else None,
+            retry_after=err.retry_after if err is not None else None,
+            output_committed=err.output_committed if err is not None else False,
+            body=err.body if err is not None else None,
+            retryable=False,
+        )
+
+        failure.llm_not_started = not self.sent
+        return failure
+
+
+def streaming_refused(error: TransportError) -> bool:
+    """Only an explicit structured refusal of `stream` permits compatibility."""
+    if error.status not in (400, 422) or error.retryable or error.output_committed:
+        return False
+    try:
+        body = json.loads(error.body or "")
+    except (ValueError, TypeError):
+        body = None
+    detail = body.get("error", body) if isinstance(body, dict) else None
+    named = detail.get("param") if isinstance(detail, dict) else None
+    if isinstance(detail, dict) and "param" in detail and named != "stream":
+        return False
+    if error.error_code == "streaming_not_supported":
+        return True
+    # The `code` vocabulary is not a protocol. OpenAI leaves `code` null on its
+    # canonical unsupported-parameter body and Anthropic reports only
+    # `invalid_request_error` through `type`, so keying on an allowlist of
+    # codes made this gate unreachable for both -- including the whole
+    # `_StreamStartError` branch in the Anthropic adapter. A body that names
+    # `stream` as the offending parameter *is* the explicit structured refusal
+    # this function exists to recognise, whatever it calls the code.
+    return named == "stream"
 
 
 def _header_dict(e: urllib.error.HTTPError) -> dict[str, str]:
@@ -118,14 +233,113 @@ def _error_code(body: str) -> str | None:
     return str(code) if code else None
 
 
+def _response_error(kind, message, response, *, provider, operation):
+    headers = {
+        k.lower(): v for k, v in (getattr(response, "headers", None) or {}).items()
+    }
+    return kind(
+        message,
+        provider=provider,
+        operation=operation,
+        status=getattr(response, "status", getattr(response, "code", None)),
+        headers=headers,
+        request_id=_request_id(headers),
+    )
+
+
+def _read_timeout(response, exchange, state, *, provider, operation):
+    total = exchange.expired or time.monotonic() >= state.deadline
+    return _response_error(
+        # The non-total branch IS "the upstream stopped sending bytes for the
+        # configured read timeout" -- the condition `StreamTimeoutError` was
+        # introduced for. Classifying it keeps the recovery affordance on the
+        # whole-response wire too, instead of only where SSE happens to be on.
+        LLMDeadlineExceeded if total else StreamTimeoutError,
+        (
+            "LLM logical call exceeded its total deadline"
+            if total
+            else "LLM response idle timeout"
+        ),
+        response,
+        provider=provider,
+        operation=operation,
+    )
+
+
+def _read_body(response, limit, exchange, state, *, provider, operation):
+    return read_body_capped(
+        response,
+        limit=limit,
+        exchange=exchange,
+        on_timeout=lambda: _read_timeout(
+            response, exchange, state, provider=provider, operation=operation
+        ),
+        on_oversize=lambda: _response_error(
+            LLMResponseTooLarge,
+            "LLM response exceeds its byte limit",
+            response,
+            provider=provider,
+            operation=operation,
+        ),
+        on_truncated=lambda: _response_error(
+            TransportError,
+            "LLM response body was truncated",
+            response,
+            provider=provider,
+            operation=operation,
+        ),
+    )
+
+
+def _urlopen(request, *, timeout, exchange):
+    """The injectable open seam; real HTTP always uses the shared watchdog."""
+    del timeout
+    return exchange.open(exchange.build_opener(), request)
+
+
+def _exchange(state, timeout, provider, operation):
+    def before_send(phase):
+        if state.should_cancel is not None and state.should_cancel():
+            raise state.failure("cancelled before send", provider, operation)
+        state.remaining(provider, operation)
+        if phase == "send":
+            state.sent = True
+
+    exchange = HTTPExchangeDeadline(
+        state.remaining(provider, operation),
+        idle_timeout=timeout,
+        before_send=before_send,
+    )
+    exchange.deadline = state.deadline
+    return exchange
+
+
 def _http_error(
-    e: urllib.error.HTTPError, *, provider: str | None, operation: str
+    e: urllib.error.HTTPError,
+    *,
+    provider: str | None,
+    operation: str,
+    exchange: HTTPExchangeDeadline,
+    state: CallState,
 ) -> TransportError:
     body = ""
     try:
-        body = e.read().decode("utf-8", "replace")
+        exchange.register_response(e)
+        body = _read_body(
+            e, MAX_ERROR_BYTES, exchange, state, provider=provider, operation=operation
+        ).decode("utf-8", "replace")
+    except LLMResponseTooLarge:
+        body = f"[response body omitted: exceeds {MAX_ERROR_BYTES} bytes]"
+    except LLMDeadlineExceeded:
+        raise
     except Exception:  # noqa: BLE001 - a body we cannot read must not mask the status
-        pass
+        if exchange.expired or time.monotonic() >= state.deadline:
+            raise _read_timeout(
+                e, exchange, state, provider=provider, operation=operation
+            ) from None
+        body = "[response body unavailable]"
+    finally:
+        e.close()
     headers = _header_dict(e)
     return TransportError(
         f"LLM HTTP {e.code}: {body}",
@@ -141,16 +355,25 @@ def _http_error(
     )
 
 
+#: Structured reasons that can only come from the connect phase. Prose is not
+#: one of them: a `URLError("connection refused")` is a string, not evidence.
+_CONNECT_PHASE_REASONS = (ConnectionRefusedError, socket.gaierror, TimeoutError)
+
+
 def _url_error(
-    e: urllib.error.URLError, *, provider: str | None, operation: str
+    e: urllib.error.URLError, *, provider: str | None, operation: str, sent: bool
 ) -> TransportError:
     return TransportError(
         f"LLM connection error: {e.reason}",
         provider=provider,
         operation=operation,
-        # Never reached the server, so nothing was committed and a replay is
-        # safe. This is the one case where "no response" implies retryable.
-        retryable=True,
+        # `URLError` wraps both "never left this machine" and "timed out or was
+        # reset after the POST was written". `state.sent` is the discriminator
+        # the transport already tracks (`_DeadlineSend.send` latches it at the
+        # byte boundary), so a refused connection, an unresolved host and a
+        # *connect* timeout stay replayable while anything after the write, and
+        # any reason that is only prose, does not.
+        retryable=not sent and isinstance(e.reason, _CONNECT_PHASE_REASONS),
     )
 
 
@@ -210,6 +433,7 @@ def _retry_loop(
     retry_budget: float,
     should_cancel=None,
     sleep=None,
+    call_state: CallState | None = None,
 ):  # noqa: C901
     # Resolved per call, not captured as a default: a default argument is
     # evaluated once at def time, which would pin the original time.sleep and
@@ -221,25 +445,31 @@ def _retry_loop(
     # turn parked for the full five minutes with nothing able to interrupt it —
     # and the only test for it cancelled *before* the wait began, which is the
     # case that already worked.
-    spent = 0.0
+    state = call_state or CallState(
+        max_attempts=max_attempts,
+        retry_budget=retry_budget,
+        should_cancel=should_cancel,
+    )
     for attempt in range(1, max_attempts + 1):
+        state.check_send(provider, operation)
+        state.attempts += 1
         try:
             return attempt_fn()
         except TransportError as err:
-            last = err
+            state.last_error = err
             if not err.retryable or err.output_committed:
                 raise
-            if attempt >= max_attempts:
+            if attempt >= max_attempts or state.attempts >= state.max_attempts:
                 raise
-            delay = _sleep_for(err, attempt, base_backoff, max_backoff)
-            if spent + delay > retry_budget:
+            delay = _sleep_for(err, state.attempts, base_backoff, max_backoff)
+            if state.spent + delay > min(retry_budget, state.retry_budget):
                 # Report the real reason rather than silently giving up: a
                 # 300s Retry-After is a legitimate answer that this call is
                 # simply not allowed to wait out.
                 # ``type(err)``: a stream read failure keeps its class, and
                 # with it the stable failure code the recovery path keys on.
                 raise type(err)(
-                    f"{last} (retry budget of {retry_budget}s exhausted; the "
+                    f"{err} (retry budget of {min(retry_budget, state.retry_budget)}s exhausted; the "
                     f"provider asked for {delay:.1f}s more)",
                     provider=provider,
                     operation=operation,
@@ -249,26 +479,20 @@ def _retry_loop(
                     request_id=err.request_id,
                     retryable=True,
                     retry_after=err.retry_after,
+                    output_committed=err.output_committed,
                     body=err.body,
                 ) from err
-            if should_cancel is not None and should_cancel():
-                raise TransportError(
-                    f"{last} (cancelled before retry)",
-                    provider=provider,
-                    operation=operation,
-                    status=err.status,
-                    retryable=False,
+            remaining = state.remaining(provider, operation)
+            deadline_limited = delay >= remaining
+            delay = min(delay, remaining)
+            if _wait(delay, do_sleep, state.should_cancel):
+                raise state.failure(
+                    "cancelled before retry", provider, operation
                 ) from err
-            _wait(delay, do_sleep, should_cancel)
-            spent += delay
-            if should_cancel is not None and should_cancel():
-                raise TransportError(
-                    f"{last} (cancelled before retry)",
-                    provider=provider,
-                    operation=operation,
-                    status=err.status,
-                    retryable=False,
-                ) from err
+            state.spent += delay
+            if deadline_limited:
+                raise state.deadline_error(provider, operation) from err
+            state.remaining(provider, operation)
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -283,6 +507,7 @@ def post_json(
     retry_budget: float = DEFAULT_RETRY_BUDGET,
     should_cancel=None,
     sleep=None,
+    call_state: CallState | None = None,
 ) -> dict:
     """POST JSON and decode the whole response.
 
@@ -290,16 +515,60 @@ def post_json(
     once it is complete, so a replayed attempt cannot duplicate output.
     """
     data = json.dumps(payload).encode("utf-8")
+    state = call_state or CallState(
+        max_attempts=max_attempts,
+        retry_budget=retry_budget,
+        should_cancel=should_cancel,
+    )
 
     def attempt() -> dict:
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            raise _http_error(e, provider=provider, operation="post_json") from e
+            with _exchange(state, timeout, provider, "post_json") as exchange:
+                try:
+                    resp = _urlopen(
+                        req, timeout=exchange.io_timeout(), exchange=exchange
+                    )
+                except urllib.error.HTTPError as e:
+                    state.sent = True
+                    raise _http_error(
+                        e,
+                        provider=provider,
+                        operation="post_json",
+                        exchange=exchange,
+                        state=state,
+                    ) from e
+                state.sent = True
+                with resp:
+                    body = _read_body(
+                        resp,
+                        MAX_JSON_BYTES,
+                        exchange,
+                        state,
+                        provider=provider,
+                        operation="post_json",
+                    )
+                    try:
+                        result = json.loads(body.decode("utf-8"))
+                    except (ValueError, UnicodeError) as error:
+                        raise LLMError("LLM response contained invalid JSON") from error
+                    state.remaining(provider, "post_json")
+                    return result
+        except HTTPExchangeTimeout as e:
+            raise state.deadline_error(provider, "post_json") from e
         except urllib.error.URLError as e:
-            raise _url_error(e, provider=provider, operation="post_json") from e
+            state.remaining(provider, "post_json")
+            raise _url_error(
+                e, provider=provider, operation="post_json", sent=state.sent
+            ) from e
+        except (OSError, http.client.HTTPException) as error:
+            state.remaining(provider, "post_json")
+            raise TransportError(
+                "LLM connection or response headers failed",
+                provider=provider,
+                operation="post_json",
+                retryable=False,
+            ) from error
 
     return _retry_loop(
         attempt,
@@ -311,6 +580,7 @@ def post_json(
         retry_budget=retry_budget,
         should_cancel=should_cancel,
         sleep=sleep,
+        call_state=state,
     )
 
 
@@ -332,6 +602,7 @@ def post_sse(
     retry_budget: float = DEFAULT_RETRY_BUDGET,
     should_cancel=None,
     sleep=None,
+    call_state: CallState | None = None,
 ) -> None:
     """POST and decode a Server-Sent-Events stream.
 
@@ -345,16 +616,53 @@ def post_sse(
     raised as-is.
     """
     data = json.dumps(payload).encode("utf-8")
+    state = call_state or CallState(
+        max_attempts=max_attempts,
+        retry_budget=retry_budget,
+        should_cancel=should_cancel,
+    )
 
     def attempt() -> None:
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
-            resp = urllib.request.urlopen(req, timeout=timeout)
-        except urllib.error.HTTPError as e:
-            raise _http_error(e, provider=provider, operation="post_sse") from e
+            with _exchange(state, timeout, provider, "post_sse") as exchange:
+                try:
+                    resp = _urlopen(
+                        req, timeout=exchange.io_timeout(), exchange=exchange
+                    )
+                except urllib.error.HTTPError as e:
+                    state.sent = True
+                    raise _http_error(
+                        e,
+                        provider=provider,
+                        operation="post_sse",
+                        exchange=exchange,
+                        state=state,
+                    ) from e
+                state.sent = True
+                _consume(
+                    resp,
+                    on_event,
+                    provider=provider,
+                    should_cancel=state.should_cancel,
+                    exchange=exchange,
+                    call_state=state,
+                )
+        except HTTPExchangeTimeout as e:
+            raise state.deadline_error(provider, "post_sse") from e
         except urllib.error.URLError as e:
-            raise _url_error(e, provider=provider, operation="post_sse") from e
-        _consume(resp, on_event, provider=provider, should_cancel=should_cancel)
+            state.remaining(provider, "post_sse")
+            raise _url_error(
+                e, provider=provider, operation="post_sse", sent=state.sent
+            ) from e
+        except (OSError, http.client.HTTPException) as error:
+            state.remaining(provider, "post_sse")
+            raise TransportError(
+                "LLM connection or response headers failed",
+                provider=provider,
+                operation="post_sse",
+                retryable=False,
+            ) from error
 
     return _retry_loop(
         attempt,
@@ -366,12 +674,23 @@ def post_sse(
         retry_budget=retry_budget,
         should_cancel=should_cancel,
         sleep=sleep,
+        call_state=state,
     )
 
 
-def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> None:
+def _consume(
+    resp,
+    on_event,
+    *,
+    provider: str | None,
+    should_cancel=None,
+    exchange: HTTPExchangeDeadline,
+    call_state: CallState,
+) -> None:
     data_lines: list[str] = []
     committed = False
+    total_bytes = 0
+    event_bytes = 0
 
     # Two policies, chosen by the caller through the probe it hands over:
     # abort the stream at the next event (the default -- frees the thread,
@@ -390,14 +709,16 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
         except Exception:  # noqa: BLE001 - cancellation telemetry is fail-soft
             return False
 
-    def dispatch() -> None:
+    def dispatch() -> bool:
         nonlocal committed
         if not data_lines:
-            return
+            return False
         chunk = "\n".join(data_lines).strip()
         data_lines.clear()
-        if not chunk or chunk == "[DONE]":
-            return
+        if chunk == "[DONE]":
+            return True
+        if not chunk:
+            return False
         # Stop reaches a live stream here, once per event. Until it did, a
         # cancelled streaming call kept its thread, its socket and the
         # provider's generation (and bill) running to the end of the reply --
@@ -423,7 +744,7 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
             raise LLMError("LLM event stream yielded a non-object JSON event")
         committed = True
         try:
-            on_event(event)
+            stop = on_event(event)
         except LLMError:
             raise
         except Exception as e:  # noqa: BLE001 - a handler bug is not a read failure
@@ -438,13 +759,112 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
                 retryable=False,
                 output_committed=True,
             ) from e
+        return stop is True
+
+    def check_read() -> None:
+        call_state.remaining(provider, "post_sse")
+        if cancelled():
+            raise TransportError(
+                "LLM event stream abandoned: the caller cancelled mid-stream",
+                provider=provider,
+                operation="post_sse",
+                output_committed=committed,
+            )
+
+    def lines():
+        nonlocal total_bytes
+        read_once = getattr(resp, "read1", None)
+        if not callable(read_once):
+            # Historical injected SSE readers are iterable line fixtures.
+            iterator = iter(resp)
+            while True:
+                check_read()
+                raw = next(iterator, b"")
+                if not raw:
+                    break
+                total_bytes += len(raw)
+                yield raw
+            return
+        pending = bytearray()
+        arm = socket_timeout_setter(resp)
+        while not response_body_exhausted(resp):
+            check_read()
+            try:
+                if arm is not None:
+                    arm(exchange.io_timeout())
+                chunk = read_once(min(8192, MAX_SSE_BYTES - total_bytes + 1))
+            except Exception:
+                if exchange.expired or time.monotonic() >= call_state.deadline:
+                    raise _read_timeout(
+                        resp,
+                        exchange,
+                        call_state,
+                        provider=provider,
+                        operation="post_sse",
+                    ) from None
+                raise
+            check_read()
+            if not chunk:
+                if exchange.expired:
+                    raise _read_timeout(
+                        resp,
+                        exchange,
+                        call_state,
+                        provider=provider,
+                        operation="post_sse",
+                    )
+                break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_SSE_BYTES:
+                raise _response_error(
+                    LLMResponseTooLarge,
+                    "LLM event stream exceeds its total byte limit",
+                    resp,
+                    provider=provider,
+                    operation="post_sse",
+                )
+            pending.extend(chunk)
+            while True:
+                end = pending.find(b"\n")
+                if end < 0:
+                    if len(pending) > MAX_SSE_LINE_BYTES:
+                        raise _response_error(
+                            LLMResponseTooLarge,
+                            "LLM event stream exceeds its line byte limit",
+                            resp,
+                            provider=provider,
+                            operation="post_sse",
+                        )
+                    break
+                raw = bytes(pending[: end + 1])
+                del pending[: end + 1]
+                yield raw
+        if pending:
+            yield bytes(pending)
 
     try:
         try:
-            for raw in resp:
+            check_read()
+            for raw in lines():
+                check_read()
+                event_bytes += len(raw)
+                if (
+                    len(raw) > MAX_SSE_LINE_BYTES
+                    or total_bytes > MAX_SSE_BYTES
+                    or event_bytes > MAX_SSE_EVENT_BYTES
+                ):
+                    raise _response_error(
+                        LLMResponseTooLarge,
+                        "LLM event stream exceeds its byte limit",
+                        resp,
+                        provider=provider,
+                        operation="post_sse",
+                    )
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if not line:
-                    dispatch()
+                    event_bytes = 0
+                    if dispatch():
+                        return
                     continue
                 if line.startswith(":"):
                     continue
@@ -452,11 +872,31 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
                     value = line[5:]
                     data_lines.append(value[1:] if value.startswith(" ") else value)
             dispatch()
+        except TransportError as err:
+            if isinstance(err, (LLMDeadlineExceeded, LLMResponseTooLarge)):
+                err.output_committed |= committed
+            # An HTTP-200 SSE response may carry the failure in an event.
+            # Preserve its HTTP evidence just as for an HTTPError response,
+            # without replacing fields explicitly supplied by the adapter.
+            response_headers = getattr(resp, "headers", None)
+            if response_headers is not None:
+                err.headers = {
+                    **{k.lower(): v for k, v in response_headers.items()},
+                    **err.headers,
+                }
+                if err.request_id is None:
+                    err.request_id = _request_id(err.headers)
+                if err.retry_after is None:
+                    err.retry_after = parse_retry_after(err.headers.get("retry-after"))
+            raise
         except LLMError:
             raise
         except Exception as e:  # noqa: BLE001 - normalize transport read failures
-            # A mid-stream read failure after events were delivered must not be
-            # replayed: the caller already saw partial output.
+            # A read failure cannot prove the provider did not receive the
+            # POST, even when no event has arrived. Never transparently replay.
+            # The class is still the typed one: the recovery path keys on the
+            # failure code to offer the user a continuation, which is a
+            # deliberate re-ask, not a transparent replay.
             error_type = (
                 StreamTimeoutError if isinstance(e, TimeoutError) else StreamReadError
             )
@@ -464,7 +904,7 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
                 f"LLM event stream read error: {e}",
                 provider=provider,
                 operation="post_sse",
-                retryable=not committed,
+                retryable=False,
                 output_committed=committed,
             ) from e
     finally:

@@ -10,6 +10,8 @@ import {
   _titleName,
   currentId,
   folders,
+  foldersLoading,
+  foldersLoadError,
   project,
   projects,
   projectsHasMore,
@@ -19,12 +21,16 @@ import {
   sessionPages,
   sessions,
   sessionsHasMore,
+  sessionsLoading,
+  sessionsLoadError,
 } from "../../stores/session";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys, hint, openMenu } from "./chrome";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
+import { sessionCopy } from "./copy";
+import { resetSessionDirectory } from "./navigation";
 import {
   DATE_BUCKET_KEYS,
   SESSION_MAX_PAGES,
@@ -211,8 +217,20 @@ export async function loadProjects(opts?: { append?: boolean; q?: string }): Pro
   }
 }
 
+let foldersRequest = 0;
+let sessionsRequest = 0;
+export type SessionRead = { status: "loaded" | "error" | "superseded"; rows: SessionLike[] };
+type ListOwner = () => boolean;
+type SessionFlight = {
+  owner: ListOwner; promise: Promise<SessionRead>; want: number; more: boolean;
+  pending: boolean; replaced: Promise<void>; supersede: () => void;
+};
+let latestSessionRead: SessionFlight | null = null;
+
 export function invalidateFolders(): void {
+  foldersRequest++;
   _foldersFor.value = null;
+  foldersLoading.value = false;
 }
 
 // A list read belongs to the project it was issued for, and to nothing else.
@@ -221,93 +239,147 @@ export function invalidateFolders(): void {
 // refresh after a delete, a rename, a send or a WS frame_update was dropped the
 // moment the user clicked another row -- and nothing re-issues it, because
 // openConversation reloads only an empty list.
-const listScope = (): (() => boolean) => {
+const listScope = (): ListOwner => {
   const pid = project.value;
   return () => project.value === pid;
 };
 
 export async function loadFolders(): Promise<void> {
   const pid = project.value;
-  const current = listScope();
+  const request = ++foldersRequest;
+  const scope = listScope();
+  const current = () => scope() && request === foldersRequest;
   if (!pid) {
     folders.value = [];
     _foldersFor.value = null;
+    foldersLoading.value = false;
+    foldersLoadError.value = false;
     return;
   }
-  if (_foldersFor.value === pid && folders.value) return;
+  if (_foldersFor.value === pid && folders.value) {
+    // Answering from cache still ends any read this call superseded, whose own
+    // `finally` will not fire once `foldersRequest` moved past it.
+    foldersLoading.value = false;
+    return;
+  }
+  foldersLoading.value = true;
+  foldersLoadError.value = false;
   try {
-    const d = (await api(`/projects/${pid}/folders`)) as { folders?: unknown[] } | null;
+    const data = await api(`/projects/${encodeURIComponent(pid)}/folders`) as { folders?: unknown[] } | null;
     if (!current()) return;
-    folders.value = (d && d.folders) || [];
+    if (!data || !Array.isArray(data.folders) || data.folders.some((row) =>
+      !row || typeof row !== "object" || typeof (row as { folder_id?: unknown }).folder_id !== "string")) {
+      throw new Error("invalid folders response");
+    }
+    folders.value = data.folders;
     _foldersFor.value = pid;
   } catch {
     if (!current()) return;
-    folders.value = [];
+    // An unread list is not an empty one: keep whatever was confirmed and say
+    // the read failed, so renderSessions can offer Retry instead of "no rows".
+    foldersLoadError.value = true;
+  } finally {
+    if (current()) {
+      foldersLoading.value = false;
+      renderSessions();
+    }
   }
 }
 
-export async function loadSessions(): Promise<void> {
+export function loadSessions(options: { more?: boolean } = {}): Promise<SessionRead> {
   const pid = project.value;
-  const current = listScope();
-  const scope = pid ? `&project_id=${encodeURIComponent(pid)}` : "";
-  if (_sessionScope.value !== (pid || "")) {
-    _sessionScope.value = pid || "";
-    sessionPages.value = 1;
-  }
-  const want = sessionWalkBudget(sessionPages.value || 1);
-  const state = emptySessionWalk();
-  let cursor: string | null = null;
-  try {
-    while (state.walked < want) {
-      const f = (await api(
-        `/frames?limit=${SESSION_PAGE_SIZE}${scope}` +
-          (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""),
-      )) as {
-        frames?: SessionLike[];
-        has_more?: boolean;
-        next_cursor?: string | null;
-      } | null;
-      if (!current()) return;
-      const step = absorbSessionPage(state, f);
-      if (step.stop) break;
-      cursor = step.cursor;
-    }
-    sessions.value = state.rows;
-    sessionPages.value = Math.max(1, state.walked);
-    sessionsHasMore.value = state.hasMore;
-  } catch {
-    if (!current()) return;
-    sessions.value = [];
-    sessionPages.value = 1;
-    sessionsHasMore.value = false;
-  }
-  await loadFolders();
-  if (!current()) return;
+  const request = ++sessionsRequest;
+  const scope = listScope();
+  const current = () => scope() && request === sessionsRequest;
+  if (_sessionScope.value !== (pid || "")) resetSessionDirectory();
+  const previous = latestSessionRead;
+  const continuing = previous?.pending && previous.owner() ? previous : null;
+  const want = Math.max(sessionWalkBudget((sessionPages.value || 1) + (options.more ? 1 : 0)), continuing?.want || 1);
+  const more = !!options.more || !!continuing?.more;
+  const query = pid ? `&project_id=${encodeURIComponent(pid)}` : "";
+  sessionsLoading.value = true;
+  sessionsLoadError.value = false;
+  _sessionsLoadingMore.value = more;
   renderSessions();
-  syncCurrentTitle();
-  const dash = $("#dashboard");
-  if (dash && !dash.classList.contains("hidden")) binds.loadDashboard();
+  const promise = (async (): Promise<SessionRead> => {
+    const state = emptySessionWalk();
+    let cursor: string | null = null;
+    try {
+      while (state.walked < want) {
+        const data = await api(`/frames?limit=${SESSION_PAGE_SIZE}${query}` +
+          (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "")) as {
+            frames?: SessionLike[]; has_more?: boolean; next_cursor?: string | null;
+          } | null;
+        if (!current()) return { status: "superseded", rows: [] };
+        if (!data || !Array.isArray(data.frames) || data.frames.some((row) =>
+          !row || typeof row !== "object" || typeof row.id !== "string") ||
+          (data.has_more != null && typeof data.has_more !== "boolean") ||
+          (data.has_more && (typeof data.next_cursor !== "string" || !data.next_cursor))) {
+          throw new Error("invalid sessions response");
+        }
+        const step = absorbSessionPage(state, data);
+        if (step.stop) break;
+        cursor = step.cursor;
+      }
+      sessions.value = state.rows;
+      sessionPages.value = Math.max(1, state.walked);
+      sessionsHasMore.value = state.hasMore;
+      await loadFolders();
+      if (!current()) return { status: "superseded", rows: [] };
+      syncCurrentTitle();
+      const dash = $("#dashboard");
+      if (dash && !dash.classList.contains("hidden")) binds.loadDashboard();
+      return { status: "loaded", rows: state.rows };
+    } catch {
+      if (!current()) return { status: "superseded", rows: [] };
+      // Keep confirmed rows and the page budget; a failed read is not empty.
+      sessionsLoadError.value = true;
+      return { status: "error", rows: [] };
+    } finally {
+      if (current()) {
+        sessionsLoading.value = false;
+        _sessionsLoadingMore.value = false;
+        renderSessions();
+      }
+    }
+  })();
+  let supersede!: () => void;
+  const replaced = new Promise<void>((resolve) => { supersede = resolve; });
+  const flight: SessionFlight = { owner: scope, promise, want, more, pending: true, replaced, supersede };
+  const settle = () => { flight.pending = false; };
+  void promise.then(settle, settle);
+  latestSessionRead = flight;
+  previous?.supersede();
+  return promise;
+}
+
+/** Follow a newer read in the SAME project without sending another GET. */
+export async function loadSessionsForScope(owner: ListOwner): Promise<SessionRead> {
+  void loadSessions();
+  let flight = latestSessionRead!;
+  for (;;) {
+    const result = await Promise.race([
+      flight.promise,
+      flight.replaced.then((): SessionRead => ({ status: "superseded", rows: [] })),
+    ]);
+    if (!owner()) return { status: "superseded", rows: [] };
+    const latest = latestSessionRead;
+    if (!latest || !latest.owner() || latest === flight) return result;
+    flight = latest;
+  }
+}
+
+export function sessionListScope(): ListOwner {
+  return listScope();
 }
 
 export async function loadMoreSessions(): Promise<void> {
-  if (
-    !canLoadMoreSessions({
-      loadingMore: !!_sessionsLoadingMore.value,
-      hasMore: !!sessionsHasMore.value,
-      sessionPages: sessionPages.value || 1,
-    })
-  ) {
-    return;
-  }
-  _sessionsLoadingMore.value = true;
-  sessionPages.value = (sessionPages.value || 1) + 1;
-  renderSessions();
-  try {
-    await loadSessions();
-  } finally {
-    _sessionsLoadingMore.value = false;
-    renderSessions();
-  }
+  if (!canLoadMoreSessions({
+    loadingMore: sessionsLoading.value || _sessionsLoadingMore.value,
+    hasMore: sessionsHasMore.value,
+    sessionPages: sessionPages.value || 1,
+  })) return;
+  await loadSessions({ more: true });
 }
 
 export function syncCurrentTitle(): void {
@@ -329,6 +401,7 @@ export function sessionRow(f: SessionLike): HTMLElement {
     "div",
     "session" + (f.id === currentId.value ? " active" : "") + (f.running ? " running" : ""),
   );
+  if (f.id) d.dataset.frameId = f.id;
   d.appendChild(el("div", "s-dot"));
   d.appendChild(el("div", "s-name", f.name || f.task_summary || t("session.untitled")));
   if (f.running) {
@@ -373,8 +446,24 @@ export function renderSessions(): void {
   let ss = sessions.value as SessionLike[];
   if (project.value) ss = sessionsInProject(ss, project.value);
   ss = sortSessionsByUpdatedAt(ss);
-  const folderRows = (folders.value || []) as Array<{ folder_id: string; name: string }>;
+  const folderRows = (_foldersFor.value === project.value ? folders.value : []) as Array<{ folder_id: string; name: string }>;
+  const readNotice = (kind: "sessions" | "folders") => {
+    const notice = el("div", "side-label", sessionCopy(kind === "sessions" ? "sessionsError" : "foldersError"));
+    notice.setAttribute("role", "alert");
+    notice.dataset.readError = kind;
+    const retry = el("button", "outline-btn small", sessionCopy("retry"));
+    retry.type = "button";
+    retry.onclick = () => { void (kind === "sessions" ? loadSessions() : loadFolders()); };
+    notice.appendChild(retry);
+    list.appendChild(notice);
+  };
+  if (sessionsLoadError.value) readNotice("sessions");
+  if (foldersLoadError.value) readNotice("folders");
+  if ((sessionsLoading.value || foldersLoading.value) && !ss.length) {
+    list.appendChild(el("div", "side-label", t("common.loading")));
+  }
   if (!ss.length && !folderRows.length) {
+    if (sessionsLoading.value || foldersLoading.value || sessionsLoadError.value || foldersLoadError.value) return;
     list.appendChild(el("div", "side-label", t("session.empty.label")));
     return;
   }

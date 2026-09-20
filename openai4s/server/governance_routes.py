@@ -64,6 +64,9 @@ _QUOTA_SET = contract.RouteSpec(
 _QUOTA_DELETE = contract.RouteSpec(
     "team.quotas.delete", "DELETE", r"/team/quotas", mutates=True
 )
+_QUOTA_UNKNOWN_CLEAR = contract.RouteSpec(
+    "team.quotas.unknown.clear", "POST", r"/team/quotas/unknown/clear", mutates=True
+)
 
 ROUTES = contract.validate_routes(
     (
@@ -82,6 +85,7 @@ ROUTES = contract.validate_routes(
         _QUOTAS,
         _QUOTA_SET,
         _QUOTA_DELETE,
+        _QUOTA_UNKNOWN_CLEAR,
     )
 )
 
@@ -320,6 +324,27 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
             detail=f"{body.get('kind')}={body.get('limit_amount')}/{body.get('window')}",
         )
         self._json({"ok": True})
+        return True
+    if _QUOTA_UNKNOWN_CLEAR.match(method, sub):
+        # `check_quota` refuses a window on the mere presence of an
+        # `llm_*_unknown` row, and the ledger is append-only. Without this the
+        # only way out of a window closed by one unattested reply was to delete
+        # the quota — removing the cap to clear a bookkeeping artifact. This
+        # clears the markers and nothing else: every measured row stays, so the
+        # numeric limit applies again immediately.
+        body = self._body()
+        try:
+            cleared = store.governance.clear_unknown_usage(
+                scope=str(body.get("scope") or ""),
+                scope_id=str(body.get("scope_id") or ""),
+                kind=str(body.get("kind") or ""),
+                window=str(body.get("window") or ""),
+                actor=_actor(self),
+            )
+        except (ValueError, TypeError) as e:
+            self._json({"error": str(e), "code": "invalid_quota"}, 400)
+            return True
+        self._json({"ok": True, "cleared": cleared})
         return True
     if _QUOTA_DELETE.match(method, sub):
         body = self._body()

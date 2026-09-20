@@ -9,20 +9,23 @@ import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
 import { isReady } from "../compat/stub";
-import { api, apiErrorText, bytes, fetchArtifactText } from "../features/artifacts/api";
+import { api, apiErrorText, bytes } from "../features/artifacts/api";
 import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
+import { validateArtifactVersions } from "../features/artifacts/validation";
+import { validateLineage } from "../features/execution/validation";
 import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
 import { viewerVersionState } from "../features/artifacts/state";
 import type { ArtifactRow } from "../features/artifacts/types";
-import { closeTab } from "../features/artifacts/ui";
+import { closeTab, openViewer } from "../features/artifacts/ui";
+import { detachArtifactEditor, renderArtifactEditor } from "../features/artifacts/editor-view";
 import {
   decorateViewerWithProvenance,
   renderProvenanceInto,
 } from "../features/execution/provenance";
-import { bindEditorAutocomplete, edacTeardown } from "../features/autocomplete/editor";
+import { edacTeardown } from "../features/autocomplete/editor";
 import { openModalEl } from "../features/chrome/modal";
 import { hint, openMenu, type MenuItem } from "../features/sessions/chrome";
 import { ago } from "../features/sessions/dom";
@@ -112,6 +115,7 @@ export function openArtifact(a: ArtifactRow): void {
 }
 
 export function editArtifact(a: ArtifactRow): void {
+  if (a._exactVersion || !isTextEditable(a)) return;
   _editing.value = a.id;
   renderViewer();
 }
@@ -144,63 +148,6 @@ async function deleteArtifact(a: ArtifactRow): Promise<void> {
   }
 }
 
-function renderArtifactEditor(body: HTMLElement, a: ArtifactRow): void {
-  const bar = el("div", "edit-bar");
-  bar.appendChild(el("span", "edit-label", translate("editor.label", a.filename || "")));
-  const save = el("button", "solid-btn small", translate("common.save"));
-  const cancel = el("button", "outline-btn small", translate("common.cancel"));
-  const acts = el("div", "edit-acts");
-  acts.appendChild(cancel);
-  acts.appendChild(save);
-  bar.appendChild(acts);
-  body.appendChild(bar);
-  const ta = el("textarea", "edit-area");
-  ta.spellcheck = false;
-  ta.value = translate("common.loading");
-  ta.disabled = true;
-  body.appendChild(ta);
-  const pop = el("div", "edit-ac hidden");
-  body.appendChild(pop);
-  bindEditorAutocomplete(ta, a);
-  fetchArtifactText(artUrl(a))
-    .then((text) => {
-      ta.value = text;
-      ta.disabled = false;
-      ta.focus();
-    })
-    .catch(() => {
-      ta.value = translate("viewer.renderer.error");
-      ta.disabled = true;
-      save.disabled = true;
-    });
-  cancel.onclick = () => {
-    _editing.value = null;
-    renderViewer();
-  };
-  save.onclick = async () => {
-    save.disabled = true;
-    save.textContent = translate("common.saving");
-    try {
-      const edited = (await api(`/artifacts/${a.id}/edit`, {
-        method: "POST",
-        body: JSON.stringify({ content: ta.value }),
-      })) as { version_id?: string } | null;
-      syncArtifactVersion({ id: a.id, version_id: edited && edited.version_id }, true);
-      _editing.value = null;
-      const bust = _artBust.value || {};
-      bust[a.id] = Date.now();
-      hint(translate("artifact.saved", a.filename || ""));
-      if (currentId.value) void loadArtifacts(currentId.value);
-      if (provMode.value) callWindow("showProvenance", dockArtifact.value || a);
-      else renderViewer();
-    } catch (e) {
-      save.disabled = false;
-      save.textContent = translate("common.save");
-      hint(translate("artifact.save.err", apiErrorText(e)), true);
-    }
-  };
-}
-
 async function setArtPriority(a: ArtifactRow, p: number, closeAfter?: boolean): Promise<void> {
   try {
     await api(`/artifacts/${a.id}/priority`, { method: "POST", body: JSON.stringify({ priority: p }) });
@@ -215,26 +162,26 @@ async function setArtPriority(a: ArtifactRow, p: number, closeAfter?: boolean): 
 
 async function exportMetadata(a: ArtifactRow): Promise<void> {
   try {
+    const target = artifactMetadataTarget({ ...a });
     const [versions, lineage] = await Promise.all([
-      api(`/artifacts/${a.id}/versions`).catch(() => ({ versions: [] })),
-      api(artifactMetadataUrl(a, "lineage")).catch((error: unknown) => { if (artifactMetadataTarget(a)._exactVersion) throw error; return {}; }),
+      api(`/artifacts/${encodeURIComponent(target.id)}/versions`).then((value) => validateArtifactVersions(value, target.id)),
+      api(artifactMetadataUrl(target, "lineage")).then((value) => validateLineage(value, target)),
     ]);
-    const verRec = versions && typeof versions === "object" ? (versions as { versions?: unknown }) : {};
     const meta = {
-      id: a.id,
-      version_id: a._exactVersion ? a.version_id : null,
-      filename: a.filename,
-      content_type: a.content_type,
-      size_bytes: a.size_bytes,
-      priority: a.priority || 0,
-      versions: verRec.versions || [],
+      id: target.id,
+      version_id: target._exactVersion ? target.version_id : null,
+      filename: target.filename,
+      content_type: target.content_type,
+      size_bytes: target.size_bytes,
+      priority: target.priority || 0,
+      versions,
       lineage,
     };
     const blob = new Blob([JSON.stringify(meta, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = (a.filename || "artifact") + ".metadata.json";
+    link.download = (target.filename || "artifact") + ".metadata.json";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     hint(translate("artifact.metadataExported"));
@@ -439,6 +386,7 @@ export function renderViewer(): void {
   const v = document.getElementById("dock-viewer");
   if (!v) return;
   edacTeardown();
+  detachArtifactEditor();
   v.innerHTML = "";
   if (!a) {
     v.appendChild(el("div", "dock-empty", translate("viewer.empty")));
@@ -500,7 +448,38 @@ export function renderViewer(): void {
   molTeardown();
   const body = el("div", "viewer-body");
   v.appendChild(body);
-  if (_editing.value === a.id) renderArtifactEditor(body, a);
-  else renderArtifactBody(body, a);
+  if (_editing.value === a.id && !a._exactVersion) {
+    const sessionId = currentId.value || "";
+    const artifactId = a.id;
+    const active = () => {
+      const current = dockArtifact.value as ArtifactRow | null;
+      return currentId.value === sessionId && current?.id === artifactId &&
+        !current?._exactVersion && _editing.value === artifactId;
+    };
+    renderArtifactEditor(body, a, {
+      sessionId,
+      active,
+      close: () => { _editing.value = null; renderViewer(); },
+      reload: () => {
+        // A new load resolves the current head. Never reuse the stale baseline.
+        const current = dockArtifact.value;
+        if (current) dockArtifact.value = { ...current, version_id: undefined, latest_version_id: undefined };
+        renderViewer();
+      },
+      saved: (versionId) => {
+        syncArtifactVersion({ id: artifactId, version_id: versionId }, true);
+        _editing.value = null;
+        _artBust.value = { ..._artBust.value, [artifactId]: Date.now() };
+        hint(translate("artifact.saved", a.filename || ""));
+        if (sessionId) void loadArtifacts(sessionId);
+        // The lineage cache is keyed on the pre-save row, so renderViewer on
+        // its own repaints the previous version's provenance. Only
+        // showProvenance bumps _lineageReq and starts a fresh read.
+        if (provMode.value) callWindow("showProvenance", dockArtifact.value || a);
+        else renderViewer();
+      },
+      latest: (row) => { void openViewer(row); },
+    });
+  } else renderArtifactBody(body, a);
   decorateViewerWithProvenance();
 }

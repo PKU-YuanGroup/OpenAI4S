@@ -1,3 +1,4 @@
+import { beginNavigation } from "./navigation";
 /** Home dashboard. app.js:6616-6764, 2685. */
 
 import { LANG, t } from "../../i18n";
@@ -408,7 +409,7 @@ export function showDashboard(): void {
   // openConversation mid-load would paint into the hidden workspace and arm a
   // resume watchdog that then exits stale on its first tick, stranding the
   // composer disabled behind a spinner nothing clears.
-  _openGen.value = (_openGen.value || 0) + 1;
+  beginNavigation();
   $("#workspace")?.classList.add("hidden");
   $("#dashboard")?.classList.remove("hidden");
   currentId.value = null;

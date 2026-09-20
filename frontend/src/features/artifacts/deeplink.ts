@@ -91,11 +91,13 @@ export async function resolveArtifactVersion(
       artifact: {
         ...artifact,
         version_id: exact.version_id,
-        filename: exact.filename ?? artifact.filename,
+        filename: exact.filename,
         _exactVersion: true,
-        size_bytes: exact.size_bytes ?? artifact.size_bytes,
-        content_type: exact.content_type ?? artifact.content_type,
-        checksum: exact.checksum ?? artifact.checksum,
+        size_bytes: exact.size_bytes,
+        content_type: exact.content_type,
+        checksum: exact.checksum,
+        producing_cell_id: exact.producing_cell_id,
+        created_at: exact.created_at,
       },
       versionId: exact.version_id,
     };

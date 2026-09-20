@@ -20,6 +20,7 @@ The outer loop reaches for its foreground inner-loop kernel manager only when th
 
 | File | Responsibility |
 | --- | --- |
+| [`stream_buffer.py`](stream_buffer.py) | UTF-8 byte-bounded text handoff with cancellation and deadline-aware backpressure. |
 | [`recovery.py`](./recovery.py) | Bounded continuation context for interrupted streams and no-progress stops, shared by live history and ledger reconstruction; never replays an action. |
 | [`__init__.py`](./__init__.py) | The package surface: the Engine, the local `Agent` facade and `run_task`, the result values, and the finalization helpers. |
 | [`actions.py`](./actions.py) | The one place a reply becomes an action. It normalizes native calls and recognizes Python/R fences; where both appear, the native calls win. A `finalize_response` is picked out as the Engine finalizer only when it is the sole native call. Both outer loops route through this module, so they cannot drift apart. |

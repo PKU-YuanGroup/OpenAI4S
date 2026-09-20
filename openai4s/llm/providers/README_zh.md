@@ -13,9 +13,9 @@ wire adapter 是 [`../client.py`](../client.py) 之下的叶子模块。endpoint
 | 文件 | 职责 |
 | --- | --- |
 | [`__init__.py`](./__init__.py) | 把每个 wire 名字（`openai`、`anthropic`、`gemini`、`responses`）映射到对应的 adapter 函数。这张内部 dispatch 表就是本模块的全部内容。 |
-| [`anthropic.py`](./anthropic.py) | Anthropic Messages 这条 wire。它把 system 消息提到顶层 `system` 字段，应用原生工具与 tool choice，再把返回的 content block 读成文本、标准化的工具调用和 usage。调用方传了 delta 回调时走流式，从事件序列里重建 content block；只有流在吐出第一个事件之前就失败，才退回阻塞式请求。不认识的 content block 原样透传，因为 `wire_state` 会被当作下一轮的 assistant 内容回放。 |
+| [`anthropic.py`](./anthropic.py) | Anthropic Messages wire：提取 system 指令、应用原生工具，并从流事件重建文本、工具与 usage。未知内容块保留原始 wire 身份。结构化容量错误共享 transport 重试预算；任何内容块、delta 或 usage 均阻止透明重发。仅 HTTP 400/422 明确拒绝 `stream` 时，允许在同一最多三次发送预算内执行一次非流式兼容请求。 |
 | [`gemini.py`](./gemini.py) | 构造 Gemini `generateContent` 请求，映射 system 指令、历史消息和工具声明。返回后取第一个 candidate，从中解析出文本、function call 和 usage。 |
-| [`openai.py`](./openai.py) | OpenAI-compatible Chat Completions 这条 wire。调用方传了 delta 回调时逐 token 流式输出。HTTP 200 流里携带的 error 事件只按一份精确的 provider 错误码允许名单判定——绝不看消息正文——并作为带 HTTP 等价状态码的类型化 `TransportError` 抛出，交给 transport 那套有界重试策略；任何重放之前，本次尝试尚未提交的状态都会先被丢弃。阻塞式回退是给根本不实现 SSE 的端点留的兼容路径，不是第二份重试预算：只有流在吐出第一个事件之前失败、且失败不是类型化的鉴权、容量或连接错误时才会走；已经吐过 token 之后再出错，一律直接抛出，不再重试。 |
+| [`openai.py`](./openai.py) | OpenAI-compatible Chat Completions wire：从 SSE 拼接文本、reasoning、工具与 usage。结构化容量错误保留响应头并使用共享重试状态；语义输出阻止重发。仅 HTTP 400/422 的 `streaming_not_supported`，或带 `param: stream` 的 `unsupported_parameter` / `unknown_parameter` 允许一次非流式兼容请求。显式参数矛盾、不确定断流、空流和普通错误文案均不触发降级。 |
 | [`responses.py`](./responses.py) | OpenAI Responses 这条 wire，始终走 SSE。它负责 input 与工具的映射，从 output item 事件里拼出文本和 function call 参数；流在 `response.completed` 之前结束即视为失败。 |
 
 ## 适配器契约

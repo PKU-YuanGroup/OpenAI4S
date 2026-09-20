@@ -1,3 +1,4 @@
+import { artifactsFrameId } from "../../stores/artifacts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
 import { _liveCell, liveCells } from "../../stores/notebook";
@@ -200,6 +201,7 @@ describe("WS protocol handlers", () => {
     const row: Record<string, unknown> = { id: "art1", filename: "old.png" };
     const list = [row];
     artifacts.value = list;
+    artifactsFrameId.value = currentId.value;
     const exactKey = "/api/v1/artifacts/versions/v1/old.png";
     _tbl.value = { "old.png:1": "cached", [exactKey]: "fixed v1", other: "keep" };
 

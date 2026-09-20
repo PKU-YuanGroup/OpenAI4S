@@ -626,6 +626,49 @@ The remote-compute worker (`openai4s_compute_provider`) loads an untrusted-ish p
 
 Because stage 1 cannot know the provider's declared prefixes before importing it, the baseline is what enforces the name-based rule at provider import time; the provider-specific prefixes are folded in at stage 2, before the credential is read. Non-secret operational vars the worker needs (e.g. `OPENAI4S_HOST_NETNS_INO` for the confinement probe, `HTTP_PROXY`/`HTTPS_PROXY`) do not match either rule and survive. This is enforced by synthetic-secret import-time and prologue tests in `tests/test_compute_nvidia.py`.
 
+### Team mode: read scope and control authority are two different predicates
+
+Frame- and artifact-addressed routes are guarded by their **path**, once, before
+the handler runs. `_team_scope_guard` (`openai4s/server/gateway.py`, called from
+`_api`) matches `_TEAM_SCOPE_FRAME` = `/frames/([^/]+)(?:/.*)?` and
+`_TEAM_SCOPE_ARTIFACT` = `/artifacts/([^/]+)(?:/.*)?`, resolves the **root**
+frame, and answers **404** — not 403 — unless `store.team.session_visible_to`
+allows the caller. 404 because which sessions exist is itself the protected
+information; the root because a child frame id must not answer differently from
+its root. An admin read of a private session passes and writes one
+`admin_read_private` audit row **per view**.
+
+Every route under those two prefixes inherits that check, including ones whose
+own handler contains no authorization code at all — `GET /frames/{id}/messages`,
+`/execution-log`, `/artifacts`, `/action-timeline`. **Reading one handler and
+finding no check inside it is therefore not evidence that the route is
+unguarded.** There is one route deliberately dispatched ahead of the guard,
+`POST /frames/{id}/visibility`, because only the owner (not an admin) may change
+visibility; it enforces that inline and returns the same 404. The sub-routers
+dispatched before the guard claim other prefixes (`/team/`, `/orchestration`,
+`/sessions/`, `/files`, `/attention`), so they cannot shadow a `/frames/` or
+`/artifacts/` path. For artifact **bytes** the path guard is a first line only:
+`_team_guard_served_artifact` inside `_serve_artifact` is the authoritative
+check, because a version- or filename-addressed serve resolves its session from
+metadata rather than from the URL.
+
+`_team_require_session_control` is a **different predicate** and is deliberately
+not on read routes. It asks whether a principal may perform owner-level
+lifecycle mutations, and `team_policy.may_control_session` exists to keep
+project visibility from becoming write authority. Adding it to a read route does
+not harden that route, it revokes a read the product grants: a project member
+reading a teammate's project-visible session would get 403, and the workbench's
+own session view calls those same routes. Which methods and paths count as
+control mutations is a closed list in `team_policy.is_session_control_mutation`.
+
+None of the above is load-bearing because it is written here. It is pinned by
+`tests/test_team_session_ownership.py::test_cross_user_read_is_404_not_403` (the
+scope guard, over a real socket),
+`::test_a_project_member_may_read_a_project_visible_session` (the read the
+control predicate would revoke, plus the owner taking it back), and
+`tests/test_team_governance.py` (the control-mutation list). See
+`docs/team-server.md` §2 for the policy those predicates implement.
+
 ## Remote access
 
 The daemon binds `127.0.0.1` by default. Reach the UI over an SSH tunnel — **never** expose `0.0.0.0` on an untrusted network:

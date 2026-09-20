@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from openai4s.config import Config
+
+
+def _priceable(value: Any) -> Any:
+    """A copy of `value` that `json.dumps(allow_nan=False)` will accept.
+
+    Routed through json itself rather than a recursive walk. The first attempt
+    at this recursed over the structure and raised `RecursionError` on a deeply
+    nested message -- inventing a brand new "unpriceable" path, and therefore a
+    brand new bypass, out of the fix for the last one. `json.dumps` handles
+    that same input, so mirroring it cannot fail where the pricer succeeds.
+
+    `parse_constant` is json's own hook for exactly the three tokens
+    `allow_nan=False` rejects. Each becomes its quoted name, which is longer
+    than the bare token, so the byte bound over the copy is never smaller than
+    the real payload would have produced.
+    """
+    return json.loads(json.dumps(value, default=repr), parse_constant=str)
 
 
 class LLMService:
@@ -19,12 +37,25 @@ class LLMService:
         one_call: Callable[[dict], str] | None = None,
         fanout_cap: int | Callable[[], int] = 32,
         executor_factory: Callable[..., Any] = ThreadPoolExecutor,
+        quota_gate: Callable[..., None] | None = None,
+        usage_sink: Callable[[Any], None] | None = None,
     ) -> None:
         self.config = config
         self.chat_call = chat_call
         self.one_call = one_call
         self.fanout_cap = fanout_cap
         self.executor_factory = executor_factory
+        # The two halves the daemon owns and this service must not implement:
+        # who may spend, and where the spend is recorded. Both are injected so
+        # a bare LLMService (CLI, tests) stays inert.
+        self.quota_gate = quota_gate
+        self.usage_sink = usage_sink
+        # The in-flight ledger deliberately does NOT live here. It is keyed by
+        # the session owner, in `storage.governance`, because that is what the
+        # quota is keyed by: `host.delegate` gives every child its own
+        # dispatcher and so its own LLMService, and a per-instance total let
+        # each one see an empty window. Measured linear, 1/2/4/8 calls for
+        # 1/2/4/8 dispatchers. `quota_gate` returns the release.
 
     def _config(self) -> Config:
         return self.config() if callable(self.config) else self.config
@@ -39,14 +70,137 @@ class LLMService:
 
         return chat(*args, **kwargs)
 
+    def _projected(self, spec: dict, config: Config) -> tuple[float, float]:
+        """This request's pre-spend upper bound, split per quota kind.
+
+        Split rather than combined: comparing one figure against either limit
+        over-refuses, and a quota that turns away work it was never going to
+        cost is its own defect. Unknown bounds are 0, which leaves the gate
+        exactly as strong as it was before -- honest, rather than a guess
+        wearing a limit's name. The responses wire is the live case: the bound
+        declines to certify it, so a fan-out there is admitted exactly as it
+        was before this gate existed.
+        """
+        from openai4s.server.auto_budget import token_upper_bound_parts
+
+        # Price what the wire will SEND, not what the spec asked for. Every
+        # adapter resolves the cap as `max_tokens or cfg.max_tokens`, so a
+        # spec asking for 0 still sends the configured cap -- while the bound
+        # reads 0 as "no completion" and declines to price the call at all.
+        # A cell could therefore reserve nothing by asking for nothing:
+        # measured at `max_tokens: 0` putting all 32 fan-out items through a
+        # 100-token window again, the whole overshoot back in one field.
+        # The same `type(x) is int` test the pricer applies, so the two cannot
+        # disagree about what a cap is. They did: `type(True) is int` is False
+        # while the wire validator's `isinstance(True, int)` is True, so
+        # `max_tokens: true` priced as unpriceable and was waved through to the
+        # provider -- 32 calls and 1280 tokens against a 100-token window.
+        # Anything that is not a positive int is priced at the configured cap,
+        # which is also what every adapter's `max_tokens or cfg.max_tokens`
+        # sends for a falsy one.
+        requested = spec.get("max_tokens")
+        completion = (
+            requested
+            if type(requested) is int and requested > 0
+            else getattr(config.llm, "max_tokens", None)
+        )
+        messages = spec.get("messages") or []
+        try:
+            parts = token_upper_bound_parts(
+                config.llm, messages=messages, max_tokens=completion
+            )
+            if parts is None:
+                # Retried on a JSON-safe copy. The bound refuses a request it
+                # cannot serialise EXACTLY -- `allow_nan=False` -- because the
+                # Auto Budget needs a hard ceiling. This gate needs only an
+                # upper bound, and the adapters drop the very keys that make a
+                # message unserialisable, so bounding the raw messages
+                # over-estimates rather than under.
+                #
+                # "Unpriceable" was cell-controllable and therefore free: a
+                # single extra key holding `float("nan")` rides a `host_call`
+                # frame intact (the kernel writes frames with json's default
+                # `allow_nan=True`), makes every sibling claim nothing, and
+                # puts all 32 fan-out items through a 100-token window again.
+                #
+                # This retry closes the `allow_nan` shape only. The surface is
+                # wider than that -- the bound can also RAISE, and the blanket
+                # `except` below reads any raise as free -- which is why the
+                # slot in `_admit` exists and why the node count in
+                # `token_upper_bound_parts` had to stop recursing.
+                parts = token_upper_bound_parts(
+                    config.llm,
+                    messages=_priceable(messages),
+                    max_tokens=completion,
+                )
+        except Exception:  # noqa: BLE001 - an unpriceable call is not refused
+            parts = None
+        if parts is None:
+            return (0.0, 0.0)
+        prompt, completion, attempts = parts
+        return (float(prompt * attempts), float(completion * attempts))
+
+    def _admit(self, spec: dict, config: Config) -> Callable[[], None] | None:
+        """Gate this request, and return the release the caller must run."""
+        if self.quota_gate is None:
+            return None
+        promised = self._projected(spec, config)
+        release = self.quota_gate(
+            projected_input=promised[0],
+            projected_output=promised[1],
+            # The promise has to outlive the call it covers. `total_timeout_s`
+            # is the whole call's deadline, retries included, and it is
+            # configurable to 3600 -- a fixed TTL below that expired a live
+            # promise and handed the next fan-out an unspent-looking window.
+            ttl_s=getattr(config.llm, "total_timeout_s", None),
+        )
+        return release if callable(release) else None
+
+    def _release(self, release: Callable[[], None] | None) -> None:
+        if release is None:
+            return
+        try:
+            release()
+        except Exception:  # noqa: BLE001 - a failed release must not fail the call
+            pass
+
     def one(self, spec: dict) -> str:
         config = self._config()
-        response = self._chat(
-            spec.get("messages") or [],
-            config.llm,
-            max_tokens=spec.get("max_tokens"),
-            temperature=spec.get("temperature"),
-        )
+        # Before the request, not after: a refusal must not have spent anything.
+        # Outside the metering try below, because a swallowed gate is not a gate.
+        reservation = self._admit(spec, config)
+        try:
+            try:
+                response = self._chat(
+                    spec.get("messages") or [],
+                    config.llm,
+                    max_tokens=spec.get("max_tokens"),
+                    temperature=spec.get("temperature"),
+                )
+            except BaseException as error:
+                # A call that reached the provider was billed even though it
+                # raised. `llm.chat` attaches the evidence for exactly this.
+                if self.usage_sink is not None and not getattr(
+                    error, "llm_not_started", False
+                ):
+                    self.usage_sink(getattr(error, "usage", None))
+                raise
+            # `host.llm` used to project `content` out and drop the whole
+            # reply, so a cell's own LLM spend reached no frame counter, no
+            # governance ledger and no budget -- the widest of the daemon's
+            # unmetered ports, at up to LLM_FANOUT_CAP billed requests per call.
+            if self.usage_sink is not None:
+                self.usage_sink(response.get("usage"))
+        finally:
+            # After the sink, not before it. The release used to sit in a
+            # `finally` that ran while the ledger row was still unwritten,
+            # leaving a window where the spend was in neither place and a
+            # sibling admitted against a window that had already been spent.
+            #
+            # And on every exit path, so a promise cannot outlive its request:
+            # a leaked promise would shrink the window for the rest of the
+            # daemon's life, which is worse than the overshoot it prevents.
+            self._release(reservation)
         return response.get("content", "")
 
     def _complete_one(self, spec: dict) -> str:

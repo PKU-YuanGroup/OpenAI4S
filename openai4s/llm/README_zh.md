@@ -14,6 +14,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| [`usage.py`](usage.py) | 内部原始用量证据与严格计量，保持公开 JSON 字段形状。 |
 | [`__init__.py`](./__init__.py) | 包的 facade，也是当初从单模块拆成包却没弄坏任何调用方的原因。它对外导出配置、能力、registry、`LLMError` 和 `chat`。`_post_json` 和 `_post_sse` 是有意留在模块全局的：离线测试和其他集成正是替换这两个名字来拦截 wire 的。它们会把一份调用上下文——这次在跟哪个 provider 说话、用户是否已经按下停止——经 `bind_call_context` 往下传，而后者只绑定目标真正接受的关键字参数，所以那些集成注入进来的四参数 transport 依旧照常工作，而不是让一次本该成功的调用抛 `TypeError`。 |
 | [`capabilities.py`](./capabilities.py) | 每个 provider 和模型被声明支持什么。provider 基线、部署级 override 和精确到模型的 override 会解析成一条带缓存的记录；`validate_model_request` 会直接拒掉那些模型根本没声明过的能力请求，而不是把它送到 wire 上等着失败。同一条记录还负责把各家的 usage 字段映射成统一的 token 计数，成本也由此估算。override 只存在于当前进程，这个模块不碰任何文件。 |
 | [`catalog.py`](./catalog.py) | 模型 profile preset，线程安全，只存在于当前进程。它不关心底层是哪种 wire。 |
@@ -22,7 +23,7 @@
 | [`models.py`](./models.py) | 定义 `LLMError`：所有 transport 和 provider 抛出的唯一标准化错误；以及它下面的 `TransportError`——一次证据完整的 HTTP 失败：状态码、provider 的 error code、header、request id、`Retry-After`，还有那个不论状态码看起来多可重试都能一票否决重试的 `output_committed`。以前每个失败都被压成一句 f-string，于是不去解析英文就分不出 429 和 401，什么都重试不了。它继承 `LLMError`，因此已有的 `except LLMError` 不用改，想要细节的调用方自己取。`llm_failure_code` 只把精确、封闭的结构化供应商信号映射为本地公开错误码；它既不解析供应商文案，也不把供应商原始 code 对外发布。`status_is_retryable` 与 `parse_retry_after`（秒数或 HTTP-date，绝不返回负值）也一并放在这里。 |
 | [`registry.py`](./registry.py) | 当前进程里有哪些 provider，以及每个 provider 是什么：wire、base URL、API key 的环境变量名、默认模型、能力绑定。注册要过校验（`base_url` 必须是绝对的 http(s) 地址，且不能把凭据写在里面），内置 provider 既不能被替换，也不能被删除。 |
 | [`tooling.py`](./tooling.py) | 原生工具的契约集中在这里，好让任何 wire adapter 都不必去 import 工具 registry。声明先被规范成统一的 name/description/schema 形式，再渲染成各 wire 的工具 schema 和 tool choice。回传的调用会被标准化成共用形状；参数解不出来时，会以 `parse_error` 挂在这次调用上，而不是被丢掉。 |
-| [`transport.py`](./transport.py) | 包里唯一开 socket 的地方：用 `urllib` 做 JSON POST 和 SSE 解码，不依赖任何 provider SDK。HTTP 错误和连接错误都以 `TransportError` 抛出——正是这一点才让重试成为可能；即使结构化错误藏在 HTTP 200 的 SSE 事件里，也会保留同一条类型化路径。重试策略刻意收得很窄：只有什么都没提交出去的请求才可以重放（整份响应的 POST 可以，已经把事件交给调用方的流不行），并且只共享一份有上限的尝试预算；服务器给了 `Retry-After` 就压过算出来的延时；取消是在等待*过程中*轮询的，而不是只在等待前后各看一眼；再加一个总预算，免得一个五分钟的 `Retry-After` 把一整轮悄无声息地挂在那里。突发保护错误会使用带正值下限、较慢的指数 jitter；流式重试耗尽后不会再开启一份新的非流式重试预算。流里非空却不是合法 JSON 的事件会直接抛错，而不是跳过——因为被丢掉的那个事件可能正是一次工具调用；错误文本里的原始片段会被截断。 |
+| [`transport.py`](./transport.py) | 基于 urllib 的标准库 JSON/SSE 传输。client.chat 创建的 CallState 在流式与至多一次兼容 POST 之间共享最多三次发送、退避开销和取消状态；每次发送前检查取消。只有结构化连接拒绝，或尚无语义输出的可重试拒绝允许重发；不确定读取失败不重发。流内错误保留响应头、请求编号和 Retry-After；非空非法 JSON 事件显式失败。旧四参数 JSON、五参数 SSE 注入保持兼容。 |
 | [`resolve.py`](./resolve.py) | 「用哪个模型、哪个 key、哪个端点」的唯一答案，请求路径与 `openai4s doctor` 用的是同一份。进程配置先叠上 store 里 Customize → Models 的设置，再叠上会话自己钉住的模型，因此诊断不会把一个真实 turn 能正常解析的配置报成坏的——daemon 是刻意不带 key 启动的。一旦 provider 被覆盖，上一个 provider 那份具体的 base URL、模型和 key 会被清掉而不是继承下来，否则请求就会带着错的凭据发到错的端点。`is_loopback_endpoint` 也在这里：Ollama、LM Studio、vLLM 和 llama.cpp 都在 loopback 上说 OpenAI-compatible wire，它们的「鉴权」就是外面根本连不到，所以要求它们给出 key 等于把一套能用的安装报成故障——而且只认字面上的 loopback 地址，因为一个今天恰好解析到 127.0.0.1 的主机名，并不构成稳定的授权依据。 |
 
 ## 子目录

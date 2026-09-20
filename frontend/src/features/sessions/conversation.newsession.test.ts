@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const wsMock = vi.hoisted(() => ({ sub: vi.fn(), unsub: vi.fn() }));
 const notebookMock = vi.hoisted(() => ({ resetNotebookCellCaches: vi.fn() }));
+const recoveryMock = vi.hoisted(() => ({ recoverConversation: vi.fn(async () => {}), callLane: vi.fn(), hint: vi.fn() }));
 const openMock = vi.hoisted(() => ({
   openConversation: vi.fn(async (fid: string) => {
     openMock.opened.push(fid);
@@ -19,20 +20,25 @@ const openMock = vi.hoisted(() => ({
 const loadMock = vi.hoisted(() => ({
   loadSessions: vi.fn(async () => {}),
   loadProjects: vi.fn(async () => {}),
+  loadSessionsForScope: vi.fn(async () => ({ status: "loaded" })),
+  // A list read is scoped to its project, not to the view generation, so the
+  // scope is an opaque predicate rather than a navigation token.
+  sessionListScope: vi.fn(() => () => true),
 }));
 
 vi.mock("../ws/connect", () => wsMock);
 vi.mock("../notebook/chrome", () => notebookMock);
-vi.mock("../messages/open", () => ({ openConversation: openMock.openConversation }));
+vi.mock("../messages/open", () => ({ openConversation: openMock.openConversation, recoverConversation: recoveryMock.recoverConversation }));
+vi.mock("./lane", () => ({ callLane: recoveryMock.callLane }));
 vi.mock("./load", () => loadMock);
 vi.mock("./dashboard", () => ({ showDashboard: vi.fn(), showWorkspace: vi.fn() }));
 vi.mock("./projects", () => ({ renderProjMenu: vi.fn() }));
-vi.mock("./chrome", () => ({ hint: vi.fn() }));
+vi.mock("./chrome", () => ({ hint: recoveryMock.hint }));
 
-import { currentId, project } from "../../stores/session";
+import { _msgEarlierLoading, _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { UPLOAD_STATE } from "../chrome/upload";
-import { newSession } from "./conversation";
+import { newSession, routeInitialView } from "./conversation";
 
 function stubDom(): void {
   const workspace = { classList: { contains: () => false } };
@@ -62,7 +68,16 @@ describe("newSession", () => {
     wsMock.sub.mockClear();
     wsMock.unsub.mockClear();
     notebookMock.resetNotebookCellCaches.mockClear();
-    openMock.openConversation.mockClear();
+    loadMock.loadProjects.mockReset().mockResolvedValue(undefined);
+    loadMock.loadSessions.mockReset().mockResolvedValue(undefined);
+    loadMock.loadSessionsForScope.mockReset().mockResolvedValue({ status: "loaded" });
+    recoveryMock.recoverConversation.mockReset().mockResolvedValue(undefined);
+    recoveryMock.callLane.mockReset();
+    recoveryMock.hint.mockReset();
+    openMock.openConversation.mockReset().mockImplementation(async (fid) => {
+      _openGen.value++;
+      openMock.opened.push(fid);
+    });
     openMock.opened.length = 0;
     stubDom();
   });
@@ -93,5 +108,117 @@ describe("newSession", () => {
     expect(openMock.opened).toEqual(["frame_B"]);
     expect(currentId.value).toBe("frame_B");
     expect(wsMock.unsub).not.toHaveBeenCalled();
+  });
+
+  it("a late accepted creation cannot adopt after A→B→A", async () => {
+    currentId.value = "previous"; project.value = "A";
+    let answer!: (value: unknown) => void;
+    vi.stubGlobal("fetch", () => new Promise((resolve) => { answer = resolve; }));
+    const creation = newSession();
+    project.value = "B"; _openGen.value++;
+    project.value = "A"; _openGen.value++;
+    answer({ ok: true, status: 200, text: async () => JSON.stringify({ id: "accepted" }) });
+    await creation;
+    expect(currentId.value).toBe("previous");
+    expect(openMock.openConversation).not.toHaveBeenCalled();
+    expect(wsMock.unsub).not.toHaveBeenCalled();
+  });
+
+  it("adoption parked on directory read cannot reopen after another visit", async () => {
+    currentId.value = "previous"; project.value = "A";
+    let finish!: () => void;
+    loadMock.loadSessions.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const creation = newSession();
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(currentId.value).toBe("frame_B");
+    _openGen.value += 2; // Same project and published frame, different visit.
+    finish(); await creation;
+    expect(openMock.openConversation).not.toHaveBeenCalled();
+  });
+
+  it("shared adoption still awaits opened when the opener advances navigation", async () => {
+    project.value = "A";
+    let finish!: () => void;
+    openMock.openConversation.mockImplementationOnce(async () => {
+      _openGen.value++;
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+    let settled = false;
+    const creation = newSession("A").then(() => { settled = true; });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(openMock.openConversation).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    finish(); await creation;
+    expect(currentId.value).toBe("frame_B");
+  });
+
+  it.each(["first read", "second creation"])("a later New-session intent wins when %s finishes first", async (order) => {
+    currentId.value = "previous"; project.value = "A";
+    const answers: Array<(value: unknown) => void> = [];
+    vi.stubGlobal("fetch", () => new Promise((resolve) => { answers.push(resolve); }));
+    let finishFirstRead!: () => void;
+    loadMock.loadSessions.mockReturnValueOnce(new Promise((resolve) => { finishFirstRead = resolve; }));
+    const response = (id: string) => ({ ok: true, status: 200, text: async () => JSON.stringify({ id }) });
+    const first = newSession();
+    answers[0]!(response("first"));
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(currentId.value).toBe("first");
+    const second = newSession();
+    expect(answers).toHaveLength(2); // Both accepted New clicks are distinct.
+    if (order === "first read") {
+      finishFirstRead(); await first;
+      answers[1]!(response("second")); await second;
+    } else {
+      answers[1]!(response("second")); await second;
+      finishFirstRead(); await first;
+    }
+    expect(currentId.value).toBe("second");
+    expect(openMock.opened).toEqual(["second"]);
+  });
+
+  it("a failed fresh intent recovers the retained frame using only reads", async () => {
+    currentId.value = "previous"; project.value = "B";
+    _msgEarlierLoading.value = true;
+    const before = _openGen.value;
+    recoveryMock.recoverConversation.mockImplementationOnce(async () => { recoveryMock.hint(""); });
+    const fetch = vi.fn(async () => ({ ok: false, status: 503, text: async () => JSON.stringify({ error: "unavailable" }) }));
+    vi.stubGlobal("fetch", fetch);
+    await newSession();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(currentId.value).toBe("previous");
+    expect(_openGen.value).toBeGreaterThan(before);
+    expect(_msgEarlierLoading.value).toBe(false);
+    expect(loadMock.loadSessionsForScope).toHaveBeenCalledOnce();
+    expect(recoveryMock.recoverConversation).toHaveBeenCalledWith("previous", before + 1);
+    expect(recoveryMock.callLane).toHaveBeenCalledWith("loadArtifacts", "previous");
+    expect(recoveryMock.hint).toHaveBeenLastCalledWith(expect.stringContaining("unavailable"), true);
+    expect(openMock.opened).toEqual([]);
+    expect(wsMock.unsub).not.toHaveBeenCalled();
+  });
+
+  it("a deep link parked on metadata cannot reopen after Home", async () => {
+    vi.stubGlobal("location", { pathname: "/projects/A/frames/old" });
+    let finish!: () => void;
+    loadMock.loadProjects.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const routing = routeInitialView();
+    _openGen.value++; currentId.value = null;
+    finish(); await routing;
+    expect(openMock.openConversation).not.toHaveBeenCalled();
+    expect(loadMock.loadSessions).not.toHaveBeenCalled();
+  });
+
+  it("a failed intent's delayed recovery cannot post its error into a newer visit", async () => {
+    currentId.value = "previous"; project.value = "A";
+    let finish!: () => void;
+    recoveryMock.recoverConversation.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 503, text: async () => JSON.stringify({ error: "old failure" }) }));
+    const creation = newSession();
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(recoveryMock.recoverConversation).toHaveBeenCalledOnce();
+    _openGen.value++; project.value = "B"; currentId.value = "newer";
+    recoveryMock.hint.mockClear();
+    finish(); await creation;
+    expect(recoveryMock.hint).not.toHaveBeenCalled();
+    expect(currentId.value).toBe("newer");
   });
 });

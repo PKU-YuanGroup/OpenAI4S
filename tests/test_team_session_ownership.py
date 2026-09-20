@@ -127,6 +127,99 @@ def test_cross_user_read_is_404_not_403(daemon):
         assert status == 404, (path, raw[:200])
 
 
+def _api_body() -> str:
+    """The source of `SessionHTTPHandler._api`, which owns route dispatch."""
+    root = Path(__file__).resolve().parents[1]
+    lines = (root / "openai4s" / "server" / "gateway.py").read_text().split("\n")
+    start = next(
+        i for i, line in enumerate(lines) if line.strip().startswith("def _api(self")
+    )
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    for i in range(start + 1, len(lines)):
+        stripped = lines[i].lstrip()
+        if stripped.startswith("def ") and len(lines[i]) - len(stripped) <= indent:
+            return "\n".join(lines[start:i])
+    return "\n".join(lines[start:])
+
+
+def test_every_frame_route_is_behind_the_scope_guard():
+    """The guard is one call for all of them, so a route can escape it only by
+    being dispatched earlier -- which no `/frames/` route may do.
+
+    `_team_scope_guard` is what actually refuses a cross-user read of
+    `/frames/{id}/messages`, `/execution-log`, `/artifacts` and every other
+    frame subroute; their handlers contain no authorization code of their own.
+    That is fine while the guard runs first, and invisible once it does not: a
+    new route or sub-router placed above the call would be reachable by anybody
+    logged in, and every handler would still look exactly as it does now.
+
+    The one deliberate exception is the D4 visibility toggle, which must be
+    owner-only rather than visible-only, so it is checked inline instead.
+    """
+    body = _api_body()
+    guard = body.index("self._team_scope_guard(")
+    before = body[:guard]
+
+    routed_early = [
+        line.strip()
+        for line in before.split("\n")
+        if ("/frames/" in line or "/artifacts/" in line) and "re.fullmatch" in line
+    ]
+    assert routed_early == [
+        'm = re.fullmatch(r"/frames/([^/]+)/visibility", sub)'
+    ], routed_early
+
+    # Sub-routers claim a prefix rather than a literal path, so the same
+    # question has to be asked of each one dispatched before the guard.
+    import importlib
+    import re as _re
+
+    modules = _re.findall(r"(\w+_routes)\.handle\(", before)
+    assert modules, "the sub-router dispatch moved; this guard must follow it"
+    for name in sorted(set(modules)):
+        module = importlib.import_module(f"openai4s.server.{name}")
+        prefix = str(getattr(module, "_PATH_PREFIX", None) or getattr(module, "_PATH"))
+        assert not prefix.startswith(("/frames", "/artifacts")), (name, prefix)
+
+
+def test_a_project_member_may_read_a_project_visible_session(daemon):
+    """Project visibility is deliberately broader than ownership, and this is
+    the route where that shows.
+
+    `may_control_session` says it in words -- "Project visibility ... can make a
+    session readable, but it must not let another project member cancel the
+    owner's scheduler allocation" -- and `GET /frames/{id}/messages` is pinned
+    as *not* a session-control mutation in test_team_governance. A reviewer
+    reading only `_team_require_session_control` sees no guard on this route and
+    concludes it is unguarded; the guard is `_team_scope_guard`, which matches
+    every `/frames/{id}/...` path and answers 404 unless the caller may see the
+    session. Adding the control predicate here would 403 the read below, which
+    the artifact provenance panel and the main session view both depend on.
+    """
+    a = _login(daemon, "alice", "fake-pw-a")
+    b = _login(daemon, "bob", "fake-pw-b")
+    fid_a = _create_session(daemon, a)
+    bob_id = daemon.store.team.get_user_by_username("bob")["id"]
+    daemon.store.governance.set_member(_project_id(daemon), bob_id)
+
+    # Sessions are created `project`-visible (test_creation_records_the_owner).
+    status, raw = _get(daemon.port, f"/api/v1/frames/{fid_a}/messages", cookie=b)
+    assert status == 200, raw[:300]
+    assert _body(raw)["messages"], "the positive control must not be an empty read"
+
+    # ...and the owner can still take it back, on this same route.
+    assert (
+        _post(
+            daemon.port,
+            f"/api/v1/frames/{fid_a}/visibility",
+            {"visibility": "private"},
+            cookie=a,
+        )[0]
+        == 200
+    )
+    assert _get(daemon.port, f"/api/v1/frames/{fid_a}/messages", cookie=b)[0] == 404
+
+
 def test_cross_user_operations_are_refused(daemon):
     a = _login(daemon, "alice", "fake-pw-a")
     b = _login(daemon, "bob", "fake-pw-b")

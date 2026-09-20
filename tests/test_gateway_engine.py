@@ -21,6 +21,8 @@ import openai4s.agent.loop as loop_mod
 import openai4s.kernel.readiness as readiness_mod
 from openai4s.agent.delegation import DelegationError
 from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+from openai4s.llm import normalize_usage
+from openai4s.llm.usage import measured_total
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.execution_views import ExecutionViewService
 from openai4s.storage.snapshots import revert_recovery_setting_key
@@ -691,6 +693,7 @@ def test_external_artifact_mutations_refuse_active_workspace_writers_without_del
             runner.edit_artifact(
                 artifact_id,
                 "must not replace beta",
+                expected_version_id=source_version_id,
                 broadcast=hub.broadcast,
             )
         elif mutation == "restore":
@@ -834,6 +837,7 @@ def test_external_edit_restore_gate_is_always_on_when_stage1_is_disabled(
             runner.edit_artifact(
                 artifact_id,
                 "must not replace beta",
+                expected_version_id=source_version_id,
                 broadcast=hub.broadcast,
             )
         else:
@@ -2121,7 +2125,15 @@ def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
         provider_done.set()
         return {
             "content": "```python\nraise AssertionError('must not run')\n```",
-            "usage": {"prompt_tokens": 13, "completion_tokens": 5},
+            # Attested exactly the way the real wire attests it: `chat()` runs
+            # every provider reply through `normalize_usage`, and this fake
+            # stands in for `chat()` itself.  The counters are in the
+            # OpenAI-compatible shape, so they are attested against that
+            # mapping.  A bare dict here would be an unmeasured reply, which
+            # the meter now refuses (asserted below).
+            "usage": normalize_usage(
+                {"prompt_tokens": 13, "completion_tokens": 5}, "chatgpt"
+            ),
         }
 
     def unexpected_execute(*args, **kwargs):
@@ -2159,6 +2171,10 @@ def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
         frame = runner.store.get_frame(frame_id)
         assert frame["input_tokens"] == 13
         assert frame["output_tokens"] == 5
+        # Paired negative: the charge above rides on the attestation, not on
+        # the counter keys.  The same numbers as a bare dict are refused, so
+        # this test cannot pass by the old key-scan fallback.
+        assert measured_total({"prompt_tokens": 13, "completion_tokens": 5}) is None
     finally:
         release.set()
         runner.close()

@@ -1026,6 +1026,8 @@ class HostDispatcher:
             one_call=lambda spec: self._one_llm(spec),
             fanout_cap=lambda: self.LLM_FANOUT_CAP,
             executor_factory=lambda **kwargs: ThreadPoolExecutor(**kwargs),
+            quota_gate=self._llm_quota_gate,
+            usage_sink=self._record_llm_usage,
         )
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
@@ -2152,7 +2154,13 @@ class HostDispatcher:
         if not text or not text.strip():
             return result
         try:
-            verdict = scan_tool_result(text, source=src, cfg=self.cfg, use_llm=use_llm)
+            verdict = scan_tool_result(
+                text,
+                source=src,
+                cfg=self.cfg,
+                use_llm=use_llm,
+                usage_sink=self._record_screening_usage,
+            )
         except Exception:  # noqa: BLE001 - screening must never break a call
             return result
         if not verdict.injected:
@@ -2187,6 +2195,99 @@ class HostDispatcher:
         return result
 
     # --- llm --------------------------------------------------------------
+    def _llm_quota_gate(
+        self,
+        *,
+        projected_input: float = 0.0,
+        projected_output: float = 0.0,
+        ttl_s: float | None = None,
+    ) -> Any:
+        """Reserve an in-kernel `host.llm` request against the session's window.
+
+        `SessionRunner.enforce_llm_quota`'s own docstring names the rule this
+        port violated: the reviewer "would otherwise be an unmetered,
+        user-triggered way around an exhausted quota". `host.llm` is a third
+        such port and the widest -- one call fans out to LLM_FANOUT_CAP real
+        requests with no per-cell ceiling.
+
+        Returns the release, which `LLMService` runs in a `finally`. The
+        in-flight total behind it is keyed by the session OWNER rather than by
+        this dispatcher, because `host.delegate` gives every child its own
+        dispatcher: a per-object total let each child see an empty window and
+        be admitted against spend its siblings had already promised.
+        """
+        from openai4s.storage.governance import reserve_session_llm_spend
+
+        frame_id = self.frame_id
+        if not frame_id:
+            return None
+        # Re-resolved, never `self.store`: a closed Store generation survives on
+        # the attribute and every query on it raises (see the note above).
+        return reserve_session_llm_spend(
+            get_store(self.cfg.db_path),
+            str(frame_id),
+            projected_input=projected_input,
+            projected_output=projected_output,
+            ttl_s=ttl_s,
+        )
+
+    def _record_llm_usage(self, usage: Any) -> None:
+        """Charge one in-kernel LLM reply to the frame and the quota ledger."""
+        from openai4s.storage.governance import record_session_llm_usage
+
+        frame_id = self.frame_id
+        if not frame_id:
+            return
+        try:
+            store = get_store(self.cfg.db_path)
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            return
+        try:
+            from openai4s.llm.usage import measured_usage
+
+            counters = measured_usage(usage)
+            store.add_frame_tokens(
+                str(frame_id),
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+        record_session_llm_usage(store, str(frame_id), usage)
+
+    def _record_screening_usage(self, usage: Any) -> None:
+        """Charge a pre-execution screener's tokens to this frame.
+
+        Separate from `_record_llm_usage` in one respect that matters: an
+        unmeasured screening call must not be able to refuse the member's next
+        turn. `record_screening_llm_usage` names the non-enforcing kind.
+        """
+        from openai4s.storage.governance import record_screening_llm_usage
+
+        frame_id = self.frame_id
+        if not frame_id:
+            return
+        # Re-resolved once, never `self.store`: a closed Store generation
+        # survives on the attribute and every query on it raises. Once, not
+        # twice: the second `get_store` was the one statement in this method
+        # that could raise, and it sat outside the try guarding the first.
+        try:
+            store = get_store(self.cfg.db_path)
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            return
+        try:
+            from openai4s.llm.usage import measured_usage
+
+            counters = measured_usage(usage)
+            store.add_frame_tokens(
+                str(frame_id),
+                input_tokens=int(counters.get("input_tokens", 0) or 0),
+                output_tokens=int(counters.get("output_tokens", 0) or 0),
+            )
+        except Exception:  # noqa: BLE001 - metering never breaks the call
+            pass
+        record_screening_llm_usage(store, str(frame_id), usage)
+
     def _one_llm(self, spec: dict) -> str:
         return self._llm_service.one(spec)
 

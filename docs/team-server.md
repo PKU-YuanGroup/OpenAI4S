@@ -68,6 +68,15 @@ Installing packages through either the global or frame-scoped kernel route
 is also admin only: both mutate a runtime environment shared by the instance,
 even when the frame belongs to the caller.
 
+Two predicates implement that split, and mistaking one for the other is the
+recurring reading error. `_team_scope_guard` decides **reads**: it matches
+`/frames/{id}/...` and `/artifacts/{id}/...` by path, before the handler, and
+404s unless the session is visible to the caller. `_team_require_session_control`
+decides **owner-level mutations** and is deliberately absent from read routes —
+putting it on one revokes the project read this section grants rather than
+hardening it. `docs/security.md` has the mechanism, the one route dispatched
+ahead of the guard, and the tests that pin both.
+
 Quotas are set per user or per project, per kind, per window:
 
 ```bash
@@ -77,6 +86,19 @@ curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
 
 Only kinds with a real enforcement point may be set. A limit nobody
 consults is worse than no limit, because somebody will plan around it.
+
+A reply the daemon could not measure is recorded as an `llm_*_unknown`
+marker, and the quota check refuses the window while one is present: spend
+it cannot count is not spend it may ignore. An administrator may clear the
+markers after investigating why they appeared. Measured usage remains
+append-only, so the numeric limit applies again immediately. Clearing the
+markers and recording `usage_unknown_cleared` commit in one transaction;
+an audit failure leaves the markers and quota refusal intact:
+
+```bash
+curl -X POST .../api/v1/team/quotas/unknown/clear -d '{"scope":"user",
+  "scope_id":"...","kind":"llm_input_tokens","window":"month"}'
+```
 
 ## 2b. The file area
 

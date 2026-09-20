@@ -100,6 +100,30 @@ Existing databases with a schema newer than this program supports are refused be
 
 That refusal exists from 0.3.0 on. It does not protect a downgrade to a release that predates it: 0.2.0 and earlier do not check the schema version, so 0.2.0 opens a database that 0.3.0 has migrated to schema 32 without a warning and writes to it. The migration's own pre-upgrade copy (`openai4s.db.v27.bak`) is deleted once the migration succeeds. Users who may roll back must therefore back up `<data_dir>/openai4s.db` before the first 0.3.0 start; [`upgrading.md`](upgrading.md) gives the procedure. Keep every migration additive while 0.2.x installs can still reach an upgraded database, since nothing on the 0.2.x side would refuse a table or column change it does not understand.
 
+The [pre-upgrade snapshot design](pre-upgrade-snapshot-design.md) fixes a future
+one-copy retention and independent-directory restore acceptance contract. It is
+P2 preparation only: successful migrations still attempt to remove their `.bak`
+file, no retained-snapshot feature is enabled, and DB-only recovery does not
+restore workspace bytes, external/keychain/environment-injected credentials or
+external job state. Legacy plaintext credentials stored in SQLite can be present
+in the database copy.
+
+[预升级快照约定](pre-upgrade-snapshot-design_zh.md) 仅完成 P2 保留及独立目录恢复
+的验收准备；当前成功迁移仍尝试删除 `.bak`，未启用快照保留。DB 恢复不包含
+完整工作区字节、外部／钥匙串／环境注入凭据或外部任务状态；SQLite 中的遗留
+明文凭据仍可能存在于数据库副本中。
+
+The [inbound connection design](inbound-connection-design.md) is also P2
+preparation: separate header/body/upload/WS budgets, capacity refusal, status
+headroom and observer detachment are future acceptance requirements. It enables
+no new inbound deadlines or connection quotas. Status reserve does not promise
+immediate service before headers identify a request, and losing an observation
+connection never authorizes task cancellation or resubmission.
+
+[入站连接约定](inbound-connection-design_zh.md) 同样仅为 P2 准备，未启用入站
+期限或连接配额。状态余量不能保证请求头解析前立即可达；观察连接中断不授权
+取消或重提已接受任务。
+
 ## macOS app image
 
 The `.dmg` is a third contract, and neither of the checks above can see it. It

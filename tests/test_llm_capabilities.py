@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from openai4s import llm
+from openai4s.llm.usage import MeasuredUsage
 
 
 @pytest.fixture(autouse=True)
@@ -269,12 +270,18 @@ def test_usage_normalization_tolerates_missing_and_invalid_counters():
 
 
 def test_usage_cost_uses_only_explicit_prices_and_replaces_cache_subsets():
-    usage = {
-        "input_tokens": 1_000_000,
-        "output_tokens": 100_000,
-        "cache_read": 200_000,
-        "cache_write": 100_000,
-    }
+    # Pricing arithmetic over counters a meter has already vetted, which is
+    # exactly what MeasuredUsage states.  A bare dict is deliberately not that
+    # claim, and the paired assertion below keeps this from quietly becoming a
+    # test that charges whatever counters it is handed.
+    usage = MeasuredUsage(
+        {
+            "input_tokens": 1_000_000,
+            "output_tokens": 100_000,
+            "cache_read": 200_000,
+            "cache_write": 100_000,
+        }
+    )
     priced = llm.CostMetadata(
         input_per_million=2.0,
         output_per_million=8.0,
@@ -283,6 +290,10 @@ def test_usage_cost_uses_only_explicit_prices_and_replaces_cache_subsets():
         source="deployment price table",
     )
     assert llm.calculate_usage_cost_usd(usage, priced) == 2.6
+    # Paired negative: the same counters stripped of their verdict -- a plain
+    # dict, which is what dict()/{**}/a JSON round trip leaves behind -- are not
+    # chargeable at any price.
+    assert llm.calculate_usage_cost_usd(dict(usage), priced) is None
     assert llm.calculate_usage_cost_usd(usage, llm.CostMetadata()) is None
     assert (
         llm.calculate_usage_cost_usd(

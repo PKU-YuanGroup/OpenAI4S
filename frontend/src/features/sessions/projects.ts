@@ -9,7 +9,6 @@ import {
   project,
   projects,
   projectsQuery,
-  sessions,
 } from "../../stores/session";
 import { _modalMode } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
@@ -19,8 +18,8 @@ import { showDashboard, showWorkspace } from "./dashboard";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
 import { callLane, hostFn } from "./lane";
-import { loadProjects, loadSessions } from "./load";
-import type { SessionLike } from "./paging";
+import { loadProjects, loadSessions, loadSessionsForScope, sessionListScope } from "./load";
+import { beginNavigation } from "./navigation";
 
 type ProjectLike = {
   project_id?: string;
@@ -303,6 +302,9 @@ let projectFilterVersion = 0;
 export function selectProject(id: string): void {
   projectFilterVersion += 1;
   project.value = id;
+  // The switcher changes the sidebar scope while keeping the open frame open.
+  // Its Files snapshot is project-scoped, so it has to be read again.
+  if (currentId.value) callLane("loadArtifacts", currentId.value);
   $("#proj-menu")?.classList.add("hidden");
   renderProjMenu();
   void loadSessions();
@@ -327,32 +329,44 @@ export async function openProject(id: string): Promise<void> {
   // parked on an await (an upload-created session about to open its
   // conversation, a resume watchdog) sees a stale token and stands down instead
   // of yanking the view back to where it started.
-  const gen = (_openGen.value || 0) + 1;
+  const gen = beginNavigation();
   const filterVersion = projectFilterVersion;
-  _openGen.value = gen;
   await loadProjects();
   if (_openGen.value !== gen || projectFilterVersion !== filterVersion) return reclaimView(gen, filterVersion, false);
   project.value = id;
   showWorkspace();
-  await loadSessions();
+  // Follow a newer read for this same project rather than racing it, and treat
+  // a failed or superseded read as "not known yet" instead of "no sessions":
+  // creating a conversation on a read that never landed is how an existing
+  // project got a stray empty session.
+  const result = await loadSessionsForScope(sessionListScope());
   if (_openGen.value !== gen || projectFilterVersion !== filterVersion || project.value !== id) return reclaimView(gen, filterVersion, true);
   renderProjMenu();
-  const ss = (sessions.value as SessionLike[]).filter((f) => f.project_id === id);
-  const first = ss[0];
+  if (result.status !== "loaded") {
+    // This navigation already retired the visible frame's history and
+    // watchdog reads. A failed directory cannot leave that frame ownerless,
+    // and reopening it would rewrite its address with the sidebar's project.
+    const retained = currentId.value;
+    if (retained) {
+      const { recoverConversation } = await import("../messages/open");
+      if (_openGen.value !== gen || currentId.value !== retained) return;
+      await Promise.allSettled([
+        recoverConversation(retained, gen),
+        Promise.resolve(callLane("loadArtifacts", retained)),
+        Promise.resolve(callLane("loadExecutionLog", retained)),
+        Promise.resolve(callLane("loadWorkbenchState", retained)),
+      ]);
+    }
+    return;
+  }
+  const first = result.rows.find((row) => row.project_id === id);
   // Await the conversation. Fire-and-forget let openProject's callers (routing,
   // dashboard rows, createProject) return before the session existed, so the
   // next navigation raced the open this call had not finished.
   // The child takes its own generation; ownership checks belong before this
   // handoff, not after it.
   if (first?.id) await binds.openConversation(first.id, id);
-  else {
-    // The empty-project path must create its conversation in the project just
-    // opened, not in whatever `project` happens to hold once the shared
-    // creation promise settles.
-    // Read through `binds` at call time: binds.ts holds a no-op placeholder
-    // until conversation.ts installs the real function.
-    await binds.newSession(id);
-  }
+  else await binds.newSession(id);
 }
 
 export async function createProject(
@@ -360,11 +374,16 @@ export async function createProject(
   description: string,
   context: string,
 ): Promise<void> {
+  // A navigation that started while the POST was in flight owns the view now;
+  // this creation must not yank it to the project it just made.
+  const gen = _openGen.value;
   const p = (await api("/projects", {
     method: "POST",
     body: JSON.stringify({ name, description, context }),
   })) as ProjectLike;
+  if (_openGen.value !== gen) return;
   await loadProjects();
+  if (_openGen.value !== gen) return;
   await openProject(p.project_id || p.id || "");
 }
 

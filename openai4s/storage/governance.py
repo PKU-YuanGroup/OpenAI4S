@@ -26,6 +26,8 @@ from __future__ import annotations
 import hashlib
 import secrets
 import sqlite3
+import threading
+import time
 from typing import Any, Callable
 
 from openai4s.storage.migrations import apply_ddl_script
@@ -114,6 +116,8 @@ class QuotaExceeded(Exception):
     """A metered action was refused (M2-6). Carries the standard code."""
 
     code = "QUOTA_EXCEEDED"
+
+    llm_not_started = True
 
     def __init__(self, message: str, *, scope: str, kind: str, window: str):
         super().__init__(message)
@@ -464,6 +468,73 @@ class GovernanceRepository:
             )
             self._connection.commit()
 
+    def clear_unknown_usage(
+        self,
+        *,
+        scope: str,
+        scope_id: str,
+        kind: str,
+        window: str,
+        actor: str = "system",
+    ) -> int:
+        """Retire the ``*_unknown`` rows that are refusing one quota window.
+
+        ``check_quota`` refuses on the mere PRESENCE of an ``llm_*_unknown``
+        row, which is the correct fail-closed answer to "we billed something
+        and cannot say how much" — but the ledger is append-only and nothing
+        else deletes from it, so a single unattested reply closed a window for
+        as long as ``window`` lasts. The only escape was ``delete_quota``:
+        removing the cap to clear a bookkeeping artifact, which is the one
+        outcome a quota exists to prevent.
+
+        This does not forgive spend. It deletes only the ``_unknown`` markers
+        inside the window; every measured row stays, so the numeric limit still
+        applies immediately afterwards. The audit row commits with the clear:
+        an audit failure must leave the unknown-spend evidence and its quota
+        refusal intact. The operator's assertion that they investigated the
+        unmeasured spend is the durable evidence that replaces the markers.
+        """
+        if scope not in ("user", "project"):
+            raise ValueError("scope must be 'user' or 'project'")
+        if window not in _QUOTA_WINDOWS_MS:
+            raise ValueError(f"window must be one of {sorted(_QUOTA_WINDOWS_MS)}")
+        if kind not in (KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS):
+            raise ValueError(
+                f"kind must be one of "
+                f"{sorted((KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS))}; "
+                f"no other kind records an unknown marker"
+            )
+        # The same WHERE `check_quota` refuses on, so clearing cannot leave a
+        # row the gate would still see.
+        column = "user_id" if scope == "user" else "project_id"
+        with self._lock:
+            now = self._clock_ms()
+            since = now - _QUOTA_WINDOWS_MS[window]
+            # Only roll back a transaction this operation successfully began.
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self._connection.execute(
+                    f"DELETE FROM usage_ledger WHERE kind=? AND ts>=? AND {column}=?",
+                    (f"{kind}_unknown", since, scope_id),
+                )
+                cleared = int(cur.rowcount or 0)
+                self._connection.execute(
+                    "INSERT INTO team_audit_log(ts, actor, action, target, detail)"
+                    " VALUES(?,?,?,?,?)",
+                    (
+                        now,
+                        actor,
+                        "usage_unknown_cleared",
+                        f"{scope}:{scope_id}",
+                        f"{kind}/{window} cleared={cleared}",
+                    ),
+                )
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+        return cleared
+
     def delete_quota(
         self, *, scope: str, scope_id: str, kind: str, window: str
     ) -> bool:
@@ -487,11 +558,27 @@ class GovernanceRepository:
             for r in rows
         ]
 
-    def check_quota(self, *, user_id: str, project_id: str | None, kind: str) -> None:
+    def check_quota(
+        self,
+        *,
+        user_id: str,
+        project_id: str | None,
+        kind: str,
+        projected: float = 0.0,
+    ) -> None:
         """Raise :class:`QuotaExceeded` when a metered action must be refused.
 
         Consumption is measured from the ledger over a sliding window. A
         limit of 0 means "none allowed". No quota rows -> allowed.
+
+        ``projected`` is spend a caller is ABOUT to commit and that no ledger
+        row can describe yet, counted as though it were already recorded. The
+        ledger is written only after a call returns, so without it a caller
+        that starts N requests concurrently gets N independent "yes" answers
+        from the same pre-spend state: measured at 32 concurrent `host.llm`
+        fan-out items putting 1280 tokens through a 100-token window, where a
+        serialised caller is refused on its fourth. Defaults to 0, which is
+        exactly the previous behaviour.
         """
         with self._lock:
             rows = self._connection.execute(
@@ -509,12 +596,24 @@ class GovernanceRepository:
                     where, param = "user_id=?", user_id
                 else:
                     where, param = "project_id=?", scope_id
+                if kind in (KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS):
+                    unknown = self._connection.execute(
+                        f"SELECT 1 FROM usage_ledger WHERE kind=? AND ts>=? AND {where} LIMIT 1",
+                        (f"{kind}_unknown", since, param),
+                    ).fetchone()
+                    if unknown:
+                        raise QuotaExceeded(
+                            f"{scope} {kind} usage is unknown for this quota window",
+                            scope=str(scope),
+                            kind=str(kind),
+                            window=str(window),
+                        )
                 used = self._connection.execute(
                     f"SELECT COALESCE(SUM(amount), 0) FROM usage_ledger"
                     f" WHERE kind=? AND ts>=? AND {where}",
                     (kind, since, param),
                 ).fetchone()[0]
-                if float(used) >= float(limit_amount):
+                if float(used) + float(projected) >= float(limit_amount):
                     raise QuotaExceeded(
                         f"{scope} {kind} quota exhausted"
                         f" ({used:g}/{limit_amount:g} per {window})",
@@ -538,11 +637,389 @@ __all__ = [
 ]
 
 
-def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+#: Pre-spend promises, keyed by the SESSION OWNER -- the same identity the
+#: quota is keyed by. It lived on the `LLMService` instance first, which is a
+#: different key: `host.delegate` gives every child its own dispatcher and so
+#: its own service, and each one then saw an empty in-flight total and was
+#: admitted against the same unspent window. Measured linear, 1/2/4/8 calls for
+#: 1/2/4/8 dispatchers, up to the 48-child fanout cap.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: dict[tuple[str, str, str], list[list[float]]] = {}
+#: A promise this old is treated as lost rather than held. Releases run in a
+#: `finally`, so this is for the case a `finally` cannot cover -- a killed
+#: thread. Without it a single lost release would shrink a TEAM's window until
+#: the daemon restarted, which is the trade this codebase has already refused
+#: once: a claim outliving its operation is worse than the overshoot it stops.
+#:
+#: Derived from the caller's own deadline, never fixed. It was a flat 900s,
+#: and `LLMConfig.total_timeout_s` validates up to 3600: on an install that
+#: raised it, a promise expired while its provider request was still running,
+#: the window read as unspent, and the `finally` release then removed nothing.
+#: A TTL shorter than the call it covers is not a safety net, it is the bug.
+_INFLIGHT_TTL_FLOOR_S = 900.0
+#: Slack between the call's deadline and its promise expiring, so the release
+#: always wins the race against the sweep.
+_INFLIGHT_TTL_MARGIN_S = 120.0
+
+
+def _inflight_ttl(ttl_s: float | None) -> float:
+    try:
+        requested = float(ttl_s or 0.0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested <= 0:
+        return _INFLIGHT_TTL_FLOOR_S
+    return max(_INFLIGHT_TTL_FLOOR_S, requested + _INFLIGHT_TTL_MARGIN_S)
+
+
+#: One unpriceable call at a time per owner, for the same reason.
+_SOLO_LOCK = threading.Lock()
+_SOLO: dict[tuple[str, str], threading.Semaphore] = {}
+
+
+def _live_total(key: tuple[str, str, str], now: float) -> float:
+    entries = _INFLIGHT.get(key)
+    if not entries:
+        return 0.0
+    entries[:] = [entry for entry in entries if entry[0] > now]
+    if not entries:
+        _INFLIGHT.pop(key, None)
+        return 0.0
+    return sum(entry[1] for entry in entries)
+
+
+def _solo_slot(user_id: str, project: str) -> threading.Semaphore:
+    with _SOLO_LOCK:
+        return _SOLO.setdefault((user_id, project), threading.Semaphore(1))
+
+
+def _resolve_owner(store: Any, frame_id: str) -> tuple[Any, Any, str, str] | None:
+    """(governance, team, user_id, project) for a frame, or None when inert."""
+    governance = getattr(store, "governance", None)
+    team = getattr(store, "team", None)
+    if governance is None or team is None:
+        return None
+    try:
+        scope = store.resolve_frame_scope(frame_id)
+        root = scope["root_frame_id"]
+        owner = team.session_owner(root)
+    except Exception:  # noqa: BLE001 - a broken lookup reads as unowned
+        return None
+    if owner is None:
+        return None  # single-user and unowned sessions stay inert (INV-1)
+    return (
+        governance,
+        team,
+        str(owner["user_id"]),
+        str(owner["project_id"] or scope.get("project_id") or ""),
+    )
+
+
+def _check(
+    governance: Any,
+    team: Any,
+    user_id: str,
+    project: str,
+    amounts: tuple[float, float],
+) -> None:
+    """The frozen contract: a broken check admits and audits, only QuotaExceeded escapes."""
+    try:
+        for kind, amount in (
+            (KIND_LLM_INPUT_TOKENS, amounts[0]),
+            (KIND_LLM_OUTPUT_TOKENS, amounts[1]),
+        ):
+            governance.check_quota(
+                user_id=user_id,
+                project_id=project or None,
+                kind=kind,
+                projected=amount,
+            )
+    except QuotaExceeded:
+        raise
+    except Exception as error:  # noqa: BLE001
+        try:
+            team.audit(
+                actor=user_id,
+                action="quota_check_failed",
+                detail=str(error)[:200],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def reserve_session_llm_spend(
+    store: Any,
+    frame_id: str,
+    *,
+    projected_input: float = 0.0,
+    projected_output: float = 0.0,
+    ttl_s: float | None = None,
+) -> Callable[[], None]:
+    """Gate a request against the ledger PLUS this owner's unrecorded promises.
+
+    Returns the release, which the caller MUST run in a `finally`. Inert
+    without an owner row, so a single-user daemon and the CLI are unchanged.
+
+    The check sees what OTHER requests have promised, never the caller's own
+    bound: these bounds carry a wire allowance and the transport's retry
+    ceiling, so charging a call for itself would price one 40-token request at
+    ~3.8k and let a 100-token window admit nothing at all.
+
+    A request nobody could price promises nothing, so it takes this owner's
+    single slot instead and runs alone -- otherwise "unpriceable" is free, and
+    making a request unpriceable has been cell-controllable three times.
+    """
+    resolved = _resolve_owner(store, frame_id)
+    if resolved is None:
+        return _noop
+    governance, team, user_id, project = resolved
+    unpriced = not projected_input and not projected_output
+    slot = _solo_slot(user_id, project) if unpriced else None
+    if slot is not None:
+        slot.acquire()
+    try:
+        now = time.monotonic()
+        deadline = now + _inflight_ttl(ttl_s)
+        claims: list[tuple[tuple[str, str, str], list[float]]] = []
+        with _INFLIGHT_LOCK:
+            # Check and claim under one lock, or two callers read the same
+            # pending total and both add to it.
+            _check(
+                governance,
+                team,
+                user_id,
+                project,
+                (
+                    _live_total((user_id, project, KIND_LLM_INPUT_TOKENS), now),
+                    _live_total((user_id, project, KIND_LLM_OUTPUT_TOKENS), now),
+                ),
+            )
+            for kind, amount in (
+                (KIND_LLM_INPUT_TOKENS, float(projected_input)),
+                (KIND_LLM_OUTPUT_TOKENS, float(projected_output)),
+            ):
+                if amount <= 0:
+                    continue
+                key = (user_id, project, kind)
+                entry = [deadline, amount]
+                _INFLIGHT.setdefault(key, []).append(entry)
+                claims.append((key, entry))
+    except BaseException:
+        # A refusal must not keep the slot. It did, in one revision of the
+        # per-instance version: every later unpriceable call then blocked
+        # forever, a port dead for the life of the daemon.
+        if slot is not None:
+            slot.release()
+        raise
+
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        with _INFLIGHT_LOCK:
+            for key, entry in claims:
+                entries = _INFLIGHT.get(key)
+                if not entries:
+                    continue
+                try:
+                    entries.remove(entry)
+                except ValueError:
+                    pass
+                if not entries:
+                    _INFLIGHT.pop(key, None)
+        if slot is not None:
+            slot.release()
+
+    return release
+
+
+def _noop() -> None:
+    return None
+
+
+def enforce_session_llm_quota(
+    store: Any,
+    frame_id: str,
+    *,
+    projected_input: float = 0.0,
+    projected_output: float = 0.0,
+) -> None:
+    """The pre-call LLM quota gate, for entry points outside ``SessionRunner``.
+
+    ``SessionRunner.enforce_llm_quota`` is bound to a Web session and looks the
+    owner up by the id it is handed. This one resolves the frame to its session
+    root first, because its callers -- the in-kernel ``host.llm`` loop and the
+    context summarizer -- run under a *delegated child's* frame as often as
+    under the root, and an unresolved child has no owner row at all. Gating on
+    the resolved root is the difference between the gate applying to a fan-out
+    and silently not applying to it.
+
+    ``projected_*`` are the caller's pre-spend upper bounds for THIS request,
+    charged per kind. Split per kind on purpose: a combined figure compared
+    against either limit over-refuses -- a 100-byte prompt with
+    ``max_tokens=4000`` would be turned away by a 1000-token INPUT quota it
+    never threatened.
+
+    Frozen decision, shared with its sibling: a *broken* check admits and
+    audits -- availability over bookkeeping. Only ``QuotaExceeded`` escapes.
+    """
+    governance = getattr(store, "governance", None)
+    team = getattr(store, "team", None)
+    if governance is None or team is None:
+        return
+    try:
+        scope = store.resolve_frame_scope(frame_id)
+        root = scope["root_frame_id"]
+        owner = team.session_owner(root)
+    except Exception:  # noqa: BLE001 - a broken lookup reads as unowned
+        return
+    if owner is None:
+        return  # single-user and unowned sessions stay inert (INV-1)
+    project = owner["project_id"] or scope.get("project_id")
+    try:
+        for kind, amount in (
+            (KIND_LLM_INPUT_TOKENS, projected_input),
+            (KIND_LLM_OUTPUT_TOKENS, projected_output),
+        ):
+            governance.check_quota(
+                user_id=owner["user_id"],
+                project_id=project,
+                kind=kind,
+                projected=amount,
+            )
+    except QuotaExceeded:
+        raise
+    except Exception as error:  # noqa: BLE001
+        try:
+            team.audit(
+                actor=owner["user_id"],
+                action="quota_check_failed",
+                detail=str(error)[:200],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def record_principal_llm_usage(
+    store: Any, user_id: str | None, usage: Any, *, prefix: str
+) -> None:
+    """Attribute spend that belongs to a person but to no session.
+
+    The capability probe is the case: a real billed request with no frame to
+    charge. ``prefix`` names a kind outside ``ENFORCED_QUOTA_KINDS``, so the
+    spend is visible in ``/team/usage`` and can never refuse anything -- a
+    probe that could close its own window would go dark exactly when an
+    operator is diagnosing what broke it.
+    """
+    try:
+        from openai4s.llm.usage import measured_usage
+
+        counters = measured_usage(usage)
+        governance = getattr(store, "governance", None)
+        if governance is None or not user_id:
+            return
+        for suffix, key in (
+            ("input_tokens", "input_tokens"),
+            ("output_tokens", "output_tokens"),
+        ):
+            amount = counters.get(key)
+            if amount:
+                governance.record_usage(
+                    user_id=user_id,
+                    kind=f"{prefix}_{suffix}",
+                    amount=float(amount),
+                )
+    except Exception:  # noqa: BLE001 - metering never breaks the call it meters
+        pass
+
+
+def record_review_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+    """Charge a Reviewer call, without letting an unmeasurable one lock a window.
+
+    Measured tokens go to the enforced kinds: a review is real spend, not
+    cosmetic overhead like a session title. What is different is where the
+    tokens come from. The Reviewer deliberately runs on a DIFFERENT model --
+    independence from the producing Agent is the point -- so its provider is
+    one the daemon picked, not one the member chose. A provider that answers
+    without a usage block therefore writes ``llm_*_unknown`` against a member
+    whose own traffic is perfectly measurable, and ``check_quota`` refuses
+    their whole window on its presence. Being locked out of your session
+    because the *reviewer's* endpoint is terse is not a bookkeeping
+    inconvenience; it is an outage with no diagnosis attached.
+
+    Visible and non-enforcing is the same answer the session titler got, for
+    the same structural reason: the member cannot choose, refuse, or even see
+    the endpoint whose silence would refuse them.
+    """
+    record_session_llm_usage(
+        store, root_frame_id, usage, unmeasured_kind="llm_review_unmeasured"
+    )
+
+
+def record_screening_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+    """Charge a security screener's tokens without letting it refuse anything.
+
+    The three pre-execution screeners -- the code classifier, the injection
+    scan and the biosecurity trajectory screen -- are real billed provider
+    calls the member never asked for, and until now none of them reached a
+    ledger at all. They are metered here rather than through
+    ``record_session_llm_usage`` directly because of the one thing a screener
+    must never be able to do.
+
+    BOTH halves stay outside ``ENFORCED_QUOTA_KINDS``, which is the whole
+    reason this is a separate function. The screeners are deliberately never
+    GATED -- a quota refusal there would not save the tokens, it would execute
+    the cell, or hand the model the tool output, with the screen switched off.
+    A charge that can refuse but cannot be refused is the worst of both: the
+    member is denied their next turn for spend they never requested and could
+    not have avoided. Worse for the injection scan, whose prompt is 16 KB of
+    text an attacker chose: a page that makes the agent fetch enough of it
+    would consume a member's window through a control meant to protect them.
+
+    So measured screening tokens record ``llm_screening_input_tokens`` /
+    ``llm_screening_output_tokens`` -- visible in ``/team/usage``, able to
+    refuse nothing -- which is the shape ``record_principal_llm_usage`` already
+    uses for the capability probe, and for the same stated reason: a call that
+    could close its own window would go dark exactly when an operator is
+    diagnosing what broke it.
+
+    The unmeasured case needs its own name for a second reason.
+    ``check_quota`` refuses an entire window on the mere presence of an
+    ``llm_*_unknown`` row, and a provider that answers without a usage block
+    is enough to mint one.
+    """
+    record_session_llm_usage(
+        store,
+        root_frame_id,
+        usage,
+        unmeasured_kind="llm_screening_unmeasured",
+        kind_prefix="llm_screening",
+    )
+
+
+def record_session_llm_usage(
+    store: Any,
+    root_frame_id: str,
+    usage: Any,
+    *,
+    unmeasured_kind: str | None = None,
+    kind_prefix: str = "llm",
+) -> None:
     """Charge one provider call's tokens to the session's owner (M2-5).
 
     The single metering hook for every LLM call the daemon makes on a
-    session's behalf. It exists as a function rather than as code inside
+    SESSION's behalf: the turn ledger, the reviewer, the in-kernel
+    ``host.llm`` inner loop, the context summarizer and the session titler.
+    A call with no session does not come here -- the capability probe
+    attributes to the acting principal through ``record_principal_llm_usage``
+    instead. Keep that list honest rather than letting this sentence grow
+    back into a claim the code does not carry: it was false for four real,
+    billed call sites before they were wired.
+
+    It exists as a function rather than as code inside
     the turn ledger because the reviewer reaches the provider through its
     own port, and it was billing only the legacy per-frame counters -- so a
     member could run reviews forever without the ledger the quota check
@@ -552,9 +1029,13 @@ def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None
     With no ownership row it reads and never writes (INV-1). Metering must
     never break the call it meters, so every failure here is swallowed.
     """
-    if not usage:
-        return
     try:
+        # Inside the try, not above it: reading the evidence off a
+        # caller-supplied usage object is metering work like the rest, and the
+        # contract above is that none of it may fail the call it meters.
+        from openai4s.llm.usage import measured_usage
+
+        counters = measured_usage(usage)
         governance = getattr(store, "governance", None)
         team = getattr(store, "team", None)
         if governance is None or team is None:
@@ -566,11 +1047,23 @@ def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None
             return
         project = owner["project_id"] or scope.get("project_id")
         for kind, key in (
-            ("llm_input_tokens", "input_tokens"),
-            ("llm_output_tokens", "output_tokens"),
+            (f"{kind_prefix}_input_tokens", "input_tokens"),
+            (f"{kind_prefix}_output_tokens", "output_tokens"),
         ):
-            amount = usage.get(key) or 0
-            if amount:
+            amount = counters.get(key)
+            if amount is None:
+                # `*_unknown` is lockout-grade: `check_quota` refuses the whole
+                # window on its presence. `unmeasured_kind` names a kind outside
+                # ENFORCED_QUOTA_KINDS instead, for daemon overhead that should
+                # be VISIBLE without being able to refuse a member's next turn.
+                governance.record_usage(
+                    user_id=owner["user_id"],
+                    kind=unmeasured_kind or f"{kind}_unknown",
+                    amount=1,
+                    project_id=project,
+                    ref=root,
+                )
+            elif amount:
                 governance.record_usage(
                     user_id=owner["user_id"],
                     kind=kind,

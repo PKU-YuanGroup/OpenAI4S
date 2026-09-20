@@ -31,6 +31,8 @@ loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token �
 
 读权限不等于命名空间控制权。对于项目内可见的会话，所有改变 frame 状态的操作都仅限会话属主或管理员：turn 与 review、权限决定、plan、annotation 与 Artifact、分享、checkpoint、分支激活/Revert/恢复、删除，以及 Notebook 执行和生命周期控制。D4 可见性切换特意更严格：只有属主（不包括管理员）能决定是否让自己的 Session 在项目内可读。以 POST 表达的 Revert preview 仍是读取。按资源 id 写入以及在 body 中指定 frame 的上传也继承同一属主规则，因此改变 URL 形状不能把项目可见性变成写权限。释放交互式算力分配同样仅限属主或管理员；请求交互式算力更严格——仅管理员可做——因为调度器使用的是 daemon 身份与站点凭据。通过全局或 frame-scoped kernel 路由安装包也仅管理员可做：即使 frame 属于调用者，两条路由改动的都是实例共享的运行环境。
 
+这条分界由两个不同的谓词实现，而把其中一个错当成另一个是反复出现的误读。`_team_scope_guard` 决定**读**：它按路径匹配 `/frames/{id}/...` 与 `/artifacts/{id}/...`，在 handler 之前执行，会话对调用者不可见就返回 404。`_team_require_session_control` 决定**属主级改动**，并且刻意不出现在读路由上——把它加到某条读路由上不是加固，而是撤销本节所授予的项目内读权限。机制本身、唯一一条排在守卫之前分发的路由，以及钉住这两点的测试，都在 `docs/security.md`。
+
 配额按用户或项目、按种类、按窗口设置：
 
 ```bash
@@ -39,6 +41,16 @@ curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
 ```
 
 只有存在真实执行点的 kind 才允许设置。一个没人查的限额比没有限额更糟，因为总会有人按它做计划。
+
+守护进程无法计量的回复会记为 `llm_*_unknown` 标记，只要窗口内存在这样的标记，
+配额检查就会拒绝：无法统计的花费不等于可以忽略的花费。管理员查清标记出现的原因后
+可以清除它们。已计量的用量记录保持只追加，数值上限随即重新生效。清除标记与写入
+`usage_unknown_cleared` 审计记录在同一事务中提交；审计失败会保留标记和配额拒绝状态：
+
+```bash
+curl -X POST .../api/v1/team/quotas/unknown/clear -d '{"scope":"user",
+  "scope_id":"...","kind":"llm_input_tokens","window":"month"}'
+```
 
 ## 2b. 文件区
 

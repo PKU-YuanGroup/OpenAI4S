@@ -350,22 +350,46 @@ def render(
     *,
     max_tokens: int = 512,
     temperature: float = 0.2,
+    quota_gate=None,
+    usage_sink=None,
     **ctx: str,
 ) -> str:
     """Run a micro-prompt as a one-shot fork LLM call, returning the text.
 
     Lazy-imports chat() to keep this module import-light (usable inside the
     control kernel without pulling the network client until actually invoked).
+
+    `quota_gate` and `usage_sink` are the seams every other provider call site
+    in the tree carries: who may spend, and where the spend is recorded.
+    Nothing calls `render()` today -- it is a helper waiting for a caller --
+    so they are inert and this changes no behaviour. They are here because the
+    alternative is the failure this codebase keeps repeating: a mechanism
+    wired to some of its call sites, so the next one added is silently free.
+    A caller with a session supplies both; a caller without one (the CLI, a
+    test) passes neither and stays inert.
+
+    Declared before `**ctx` on purpose: an explicit keyword-only name binds
+    first, so neither reaches `build()` as a prompt-template variable.
     """
     from openai4s.llm import chat
+    from openai4s.llm.usage import charge_call
 
-    res = chat(
-        [
-            {"role": "system", "content": build(name, **ctx)},
-            {"role": "user", "content": user_content},
-        ],
-        cfg.llm,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+    # Before the request, not after: a refusal must not have spent anything.
+    # Outside the try below, because a swallowed gate is not a gate.
+    if quota_gate is not None:
+        quota_gate()
+    try:
+        res = chat(
+            [
+                {"role": "system", "content": build(name, **ctx)},
+                {"role": "user", "content": user_content},
+            ],
+            cfg.llm,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    except BaseException as error:
+        charge_call(usage_sink, error)
+        raise
+    charge_call(usage_sink, res)
     return res.get("content", "") or ""
