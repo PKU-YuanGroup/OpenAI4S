@@ -29,3 +29,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`settings.py`](settings.py) | 网关和 doctor 用的设置面：`status` / `update` / `probe_connection`，TypeSafe key 走 SecretBroker（不写入 env、不回显），以及「`api.typesafe.ai` 是否已授权」的 egress **报告**。不新增 egress 分组。 |
 | [`templates/`](templates/) | Skill 推荐问题模板（`skills.suggest`）以及生成的 bioSkills 领域索引。 |
 | [`shadow.py`](shadow.py) | 有界安全影子队列：2 个守护线程、队列满则丢弃、`judgment_shadow` 审计不含原始代码、`stats()`。 |
+| [`task_mode_shadow.py`](task_mode_shadow.py) | `task_mode.classify` 的有界后台影子通道。永不改变 `resolve_task_mode` 的返回值，也不把原始请求写进审计。 |

@@ -299,6 +299,8 @@ files = [
     "openai4s/judgment/templates/literature.py",
     "openai4s/judgment/shadow.py",
     "openai4s/judgment/templates/safety.py",
+    "openai4s/judgment/templates/task_mode.py",
+    "openai4s/judgment/task_mode_shadow.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true
