@@ -1,22 +1,27 @@
+"""Offline unit tests for the target_druggability_screening skill."""
+
+from __future__ import annotations
+
+import importlib
 import sys
-from pathlib import Path
 
 import pytest
 
 from openai4s.config import get_config
 from openai4s.skills_loader import SkillLoader
 
-skills_dir = str(get_config().skills_dir)
-if skills_dir not in sys.path:
-    sys.path.insert(0, skills_dir)
 
-from target_druggability_screening.kernel import (
-    calculate_smiles_descriptors,
-    evaluate_lipinski,
-    format_dossier,
-    rank_candidates,
-    score_lead,
-)
+@pytest.fixture(scope="module", autouse=True)
+def _skills_on_path():
+    path = str(get_config().skills_dir)
+    sys.path.insert(0, path)
+    yield
+    if path in sys.path:
+        sys.path.remove(path)
+
+
+def _kernel():
+    return importlib.import_module("target_druggability_screening.kernel")
 
 
 def test_target_druggability_skill_is_discovered():
@@ -36,7 +41,7 @@ def test_target_druggability_skill_is_discovered():
 def test_calculate_smiles_descriptors():
     # Aspirin: C9H8O4, MW ~ 180.16
     aspirin = "CC(=O)Oc1ccccc1C(=O)O"
-    desc = calculate_smiles_descriptors(aspirin)
+    desc = _kernel().calculate_smiles_descriptors(aspirin)
 
     assert 170.0 < desc["molecular_weight"] < 195.0
     assert desc["heavy_atom_count"] == 13
@@ -44,7 +49,7 @@ def test_calculate_smiles_descriptors():
     assert desc["hbd"] >= 1
 
     # Empty SMILES defense
-    empty_desc = calculate_smiles_descriptors("")
+    empty_desc = _kernel().calculate_smiles_descriptors("")
     assert empty_desc["molecular_weight"] == 0.0
     assert empty_desc["heavy_atom_count"] == 0
 
@@ -52,7 +57,7 @@ def test_calculate_smiles_descriptors():
 def test_evaluate_lipinski_rule_of_5():
     # Drug-like molecule (Aspirin)
     aspirin = "CC(=O)Oc1ccccc1C(=O)O"
-    res = evaluate_lipinski(aspirin)
+    res = _kernel().evaluate_lipinski(aspirin)
     assert res["pass_rule_of_5"] is True
     assert res["violations_count"] == 0
 
@@ -63,7 +68,7 @@ def test_evaluate_lipinski_rule_of_5():
         "hba": 15,
         "rotatable_bonds": 12,
     }
-    viol_res = evaluate_lipinski(violator_desc)
+    viol_res = _kernel().evaluate_lipinski(violator_desc)
     assert viol_res["pass_rule_of_5"] is False
     assert viol_res["violations_count"] == 3
     assert any("MW > 500" in v for v in viol_res["violations"])
@@ -73,11 +78,13 @@ def test_evaluate_lipinski_rule_of_5():
 
 def test_score_lead_potency_and_rules():
     # Sub-10 nM with clean Lipinski
-    high_score = score_lead(5.0, "Ki", lipinski_pass=True, violations_count=0)
+    high_score = _kernel().score_lead(5.0, "Ki", lipinski_pass=True, violations_count=0)
     assert high_score == 100.0  # 60 + 40
 
     # Micromolar binder with Lipinski violation
-    low_score = score_lead(5000.0, "IC50", lipinski_pass=False, violations_count=2)
+    low_score = _kernel().score_lead(
+        5000.0, "IC50", lipinski_pass=False, violations_count=2
+    )
     assert low_score < 30.0
 
 
@@ -110,7 +117,7 @@ def test_rank_candidates_prioritization():
         },
     ]
 
-    ranked = rank_candidates(mock_ligands, top_k=5)
+    ranked = _kernel().rank_candidates(mock_ligands, top_k=5)
     assert len(ranked) == 2
     # The potent ligand should rank first
     assert ranked[0]["id"] == "potent_1"
@@ -149,7 +156,7 @@ def test_format_dossier_markdown_assembly():
         }
     ]
 
-    dossier = format_dossier("CDK4", ppi_mock, leads_mock)
+    dossier = _kernel().format_dossier("CDK4", ppi_mock, leads_mock)
 
     assert "# Target Druggability & Lead Candidate Screening: CDK4" in dossier
     assert "MDM2" in dossier
