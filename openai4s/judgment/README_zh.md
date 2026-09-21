@@ -28,3 +28,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`registry.py`](registry.py) | 模板注册表（`register_template` / `get_template`）以及内置的连接测试模板 `system.probe`。 |
 | [`settings.py`](settings.py) | 网关和 doctor 用的设置面：`status` / `update` / `probe_connection`，TypeSafe key 走 SecretBroker（不写入 env、不回显），以及「`api.typesafe.ai` 是否已授权」的 egress **报告**。不新增 egress 分组。 |
 | [`templates/`](templates/) | Skill 推荐问题模板（`skills.suggest`）以及生成的 bioSkills 领域索引。 |
+| [`llm_backend.py`](llm_backend.py) | 可选 `LlmBackend`：用已配置的主模型经 `chat()` 回答同样的类型化问题。只能通过 `OPENAI4S_JUDGMENT_PROVIDER=llm` 显式选择，永不作为 TypeSafe 失败时的静默回退。结果标记 `calibrated=False`。 |

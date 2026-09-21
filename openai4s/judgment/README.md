@@ -30,3 +30,4 @@ and the UI path also requires a current-version disclosure acknowledgement.
 | [`registry.py`](registry.py) | Template registry (`register_template` / `get_template`) and the builtin `system.probe` connection-test template. |
 | [`settings.py`](settings.py) | Settings surface for the gateway and doctor: `status` / `update` / `probe_connection`, TypeSafe key via SecretBroker (never env, never echoed), and an egress *report* of whether `api.typesafe.ai` is already authorized. Does not add an egress group. |
 | [`templates/`](templates/) | Skill-suggestion question templates (`skills.suggest`) and the generated bioSkills area index. |
+| [`llm_backend.py`](llm_backend.py) | Optional `LlmBackend`: the configured main model answers the same typed questions via `chat()`. Selected only by `OPENAI4S_JUDGMENT_PROVIDER=llm`; never a silent TypeSafe fallback. Results carry `calibrated=False`. |

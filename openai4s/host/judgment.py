@@ -357,7 +357,13 @@ class JudgmentService:
                 ) from exc
             return TypeSafeBackend(self._store)
         if provider == "llm":
-            raise BackendError("unconfigured", "llm judgment backend is not available")
+            try:
+                from openai4s.judgment.llm_backend import LlmBackend
+            except ImportError as exc:
+                raise BackendError(
+                    "unconfigured", "llm judgment backend is not available"
+                ) from exc
+            return LlmBackend(self.cfg_provider, usage_sink=self.usage_sink)
         return NullBackend()
 
     def _backend(self, flags: EffectiveJudgmentFlags) -> JudgmentBackend:
