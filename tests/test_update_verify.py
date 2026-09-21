@@ -709,7 +709,7 @@ def _report(version=VERSION, schema=32):
 
 
 def test_the_probe_runs_the_new_code_and_then_doctor(tmp_path):
-    run = _runner(_report(), _Done())
+    run = _runner(_report(), _doctor_report())
     result = verify.probe_installation("/usr/bin/python3", VERSION, 32, runner=run)
     assert result == {
         "version": VERSION,
@@ -717,16 +717,9 @@ def test_the_probe_runs_the_new_code_and_then_doctor(tmp_path):
         "interpreter": "/usr/bin/python3",
         "doctor_ok": True,
     }
-    assert run.calls[0][0][:3] == ["/usr/bin/python3", "-P", "-s"]
-    assert run.calls[1][0] == [
-        "/usr/bin/python3",
-        "-P",
-        "-s",
-        "-m",
-        "openai4s",
-        "doctor",
-        "--json",
-    ]
+    assert run.calls[0][0][:3] == ["/usr/bin/python3", "-s", "-c"]
+    assert run.calls[1][0][:3] == ["/usr/bin/python3", "-s", "-c"]
+    assert "doctor" in run.calls[1][0][3]
     # A throwaway data directory, never the running one.
     assert run.calls[0][1]["OPENAI4S_DATA_DIR"] != run.calls[0][1].get("HOME", "")
 
@@ -919,3 +912,242 @@ def test_every_refusal_code_this_module_raises_is_declared():
     }
     assert raised
     assert raised <= set(verify.REFUSAL_CODES)
+
+
+def _link(name, target, kind=tarfile.SYMTYPE):
+    member = tarfile.TarInfo(name)
+    member.type = kind
+    member.linkname = target
+    return member
+
+
+@pytest.mark.parametrize("target", ["../outside", "dir/../../outside"])
+def test_tar_hardlink_targets_are_relative_to_the_archive_root(tmp_path, target):
+    path = _tar_with(tmp_path, _link("deep/inside/link", target, tarfile.LNKTYPE))
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.validate_tar(path)
+    assert caught.value.code == "archive_member_unsafe"
+
+
+def test_tar_symlink_resolution_checks_the_whole_chain(tmp_path):
+    path = _tar_with(
+        tmp_path,
+        _link("dir/up", ".."),
+        _link("escape", "dir/up/../outside"),
+    )
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.validate_tar(path)
+    assert caught.value.code == "archive_member_unsafe"
+
+
+def test_safe_tar_link_chains_and_root_relative_hardlinks_remain_supported(tmp_path):
+    path = _tar_with(
+        tmp_path,
+        tarfile.TarInfo("runtime/python3.12"),
+        _link("runtime/python3", "python3.12"),
+        _link("runtime/python", "python3"),
+        _link("bin/python", "runtime/python3.12", tarfile.LNKTYPE),
+    )
+    assert len(verify.validate_tar(path)) == 4
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [_link("alias", "inside"), tarfile.TarInfo("alias/file")],
+        [_link("loop-a", "loop-b"), _link("loop-b", "loop-a")],
+        [tarfile.TarInfo("same"), _link("same", "inside")],
+        [_link("inside/link", "..\\outside")],
+    ],
+)
+def test_ambiguous_tar_link_layouts_are_refused(tmp_path, members):
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.validate_tar(_tar_with(tmp_path, *members))
+    assert caught.value.code == "archive_member_unsafe"
+
+
+def test_wheel_extraction_refuses_a_destination_with_existing_links(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (target / "openai4s").symlink_to(victim, target_is_directory=True)
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.extract_wheel(_wheel(tmp_path), target)
+    assert caught.value.code == "archive_member_unsafe"
+    assert list(victim.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "version_header", ["", "Version: 9.9.9\n", f"Version: {VERSION}\nVersion: 9.9.9\n"]
+)
+def test_wheel_metadata_version_must_match_the_requested_release(
+    tmp_path, version_header
+):
+    path = _wheel(
+        tmp_path, metadata=f"Metadata-Version: 2.1\nName: openai4s\n{version_header}"
+    )
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.wheel_structure(path, VERSION)
+    assert caught.value.code == "wheel_version_mismatch"
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        'extra == "science" or python_version >= "3.10"',
+        'extra == ""',
+        'os_name == "extra == science"',
+    ],
+)
+def test_a_mention_of_extra_does_not_make_a_runtime_dependency_optional(
+    tmp_path, marker
+):
+    path = _wheel(
+        tmp_path,
+        metadata=(
+            f"Metadata-Version: 2.1\nName: openai4s\nVersion: {VERSION}\n"
+            f"Requires-Dist: unwanted; {marker}\n"
+        ),
+    )
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.wheel_structure(path, VERSION)
+    assert caught.value.code == "wheel_dependencies"
+
+
+def _doctor_report(status="ok", checks=None):
+    import json
+
+    checks = checks or [
+        {"name": "data", "status": "ok"},
+        {"name": "connectors", "status": status},
+    ]
+    return _Done(
+        returncode={"ok": 0, "warn": 1, "fail": 2}[status],
+        stdout=json.dumps({"status": status, "checks": checks}),
+    )
+
+
+@pytest.mark.parametrize("schema", [float("inf"), 32.5, "32", True])
+def test_probe_schema_requires_an_actual_json_integer(schema):
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.probe_installation(
+            "unused",
+            VERSION,
+            32,
+            runner=_runner(_report(schema=schema), _doctor_report()),
+        )
+    assert caught.value.code == "probe_failed"
+
+
+def test_probe_accepts_the_expected_offline_doctor_warning():
+    result = verify.probe_installation(
+        "unused", VERSION, 32, runner=_runner(_report(), _doctor_report("warn"))
+    )
+    assert result["doctor_ok"] is True
+
+
+@pytest.mark.parametrize("stdout", ["", "[]", "{}", '{"status":"ok","checks":[]}'])
+def test_probe_requires_a_real_doctor_report_even_after_exit_zero(stdout):
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.probe_installation(
+            "unused", VERSION, 32, runner=_runner(_report(), _Done(stdout=stdout))
+        )
+    assert caught.value.code == "probe_failed"
+
+
+def test_probe_runs_a_real_child_on_every_supported_python(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    staged = tmp_path / "staged"
+    package = staged / "openai4s"
+    (package / "storage").mkdir(parents=True)
+    (package / "__init__.py").write_text(f'__version__ = "{VERSION}"\n')
+    (package / "storage" / "__init__.py").write_text("")
+    (package / "storage" / "migrations.py").write_text("SCHEMA_VERSION = 32\n")
+    report = _doctor_report("warn").stdout
+    (package / "__main__.py").write_text(
+        "import os, sys\n"
+        "assert sys.argv[1:] == ['doctor', '--json']\n"
+        "assert os.environ['OPENAI4S_ALLOW_NETWORK'] == '0'\n"
+        f"print({report!r})\n"
+        "raise SystemExit(1)\n"
+    )
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    (caller / "openai4s.py").write_text(
+        "raise AssertionError('imported the working directory')\n"
+    )
+    monkeypatch.chdir(caller)
+    result = verify.probe_installation(
+        sys.executable, VERSION, 32, pythonpath=str(staged)
+    )
+    assert result["version"] == VERSION
+    assert result["doctor_ok"] is True
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        'python_version >= "3.11" and extra == "singlecell"',
+        'extra == "science" or extra == "singlecell"',
+        '"science" == extra',
+    ],
+)
+def test_compound_extra_only_dependencies_remain_supported(tmp_path, marker):
+    path = _wheel(
+        tmp_path,
+        metadata=(
+            f"Metadata-Version: 2.1\nName: openai4s\nVersion: {VERSION}\n"
+            f"Requires-Dist: optional; {marker}\n"
+        ),
+    )
+    assert verify.wheel_structure(path, VERSION).version == VERSION
+
+
+def test_probe_refuses_an_installed_copy_outside_the_staged_payload(tmp_path):
+    import json
+
+    result = _Done(
+        stdout=json.dumps(
+            {
+                "version": VERSION,
+                "schema_version": 32,
+                "file": str(tmp_path / "installed" / "openai4s" / "__init__.py"),
+            }
+        )
+    )
+    run = _runner(result, _doctor_report())
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.probe_installation(
+            "unused", VERSION, 32, pythonpath=str(tmp_path / "staged"), runner=run
+        )
+    assert caught.value.code == "probe_failed"
+    assert len(run.calls) == 1
+
+
+def test_probe_does_not_accept_a_scratch_store_failure_as_an_offline_warning():
+    checks = [
+        {"name": "data", "status": "ok"},
+        {
+            "name": "connectors",
+            "status": "warn",
+            "facts": {"connector_store_error": "schema initialization failed"},
+        },
+    ]
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.probe_installation(
+            "unused",
+            VERSION,
+            32,
+            runner=_runner(_report(), _doctor_report("warn", checks)),
+        )
+    assert caught.value.code == "probe_failed"
+
+
+def test_probe_refuses_undecodable_child_output():
+    error = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.probe_installation("unused", VERSION, 32, runner=_runner(error))
+    assert caught.value.code == "probe_failed"

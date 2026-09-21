@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+本阶段提供安装渠道识别、版本发现和载荷校验。apply 事务、CLI 与 HTTP 路由属于后续工作，当前尚未提供。
+
 `openai4s update` 负责替换这个 daemon 正在跑的代码，同时不丢它攒下来的历史与配置。后半句才是难的，而难在哪里这个仓库早就写下来过：[`../storage/migrations.py`](../storage/migrations.py) 里的 migration 只能向前、没有反向步骤，旧的二进制在每一个入口都会拒绝更新过的数据库，而 migration runner 在升级提交的那一刻就删掉了自己的升级前副本。这个包里的一切，都是围着一个原语做的管道：一份由更新器自己拿、并且自己留着的、独立的升级前快照。
 
 这里没有任何东西能从一个 turn 到达。任何 `Tool` 子类、任何 `host.*` 能力、任何 Skill 都不得 import 这个包：一个能从模型 turn 到达的安装器，会把每一次 prompt 注入都变成持久化的代码执行。这个包的 import 也被构造成很便宜——[`__init__.py`](__init__.py) 用 PEP 562 的模块级 `__getattr__` 解析全部公开名字、模块层不 import 任何东西，于是 `import openai4s.update` 既不会拉进事务，也不会打开 socket。
@@ -23,6 +25,17 @@
 | [`channel.py`](channel.py) | `detect(cfg) -> Channel`，按顺序解析：显式的 `OPENAI4S_CHANNEL`、容器、macOS `.app`、WSL 托管 bundle、Linux 可重定位 bundle、源码 checkout、venv、unknown。容器探针看四个正向信号而不是两个：containerd 和 CRI-O——也就是 Kubernetes 真正跑的东西——既不写 `/.dockerenv` 也不写 `/run/.containerenv`，而一个以 root 跑的 Pod 里 site-packages 是可写的，于是 venv 探针会命中，更新会落进一个下次重启就丢掉的镜像层。每一个分支都把命中的探针和做出判断的绝对路径记进 `Channel.evidence`；它是管理员可见的，`as_dict()` 默认不带它，除非调用方明确要。`require_self_update` 是拒绝一个被拒绝渠道的唯一地方。 |
 | [`discovery.py`](discovery.py) | `check(cfg)` 及其周边词汇：`STATUSES`（三个成员）、`REASONS`（冻结的失败码）、`ReleaseSource` 接缝、`SHA256SUMS` 解析、不依赖 `packaging` 的版本比较、`OPENAI4S_UPDATE_INDEX` 的校验，以及 `<data_dir>/updates/check.json` 的 6 小时缓存（失败后的重试间隔要短得多）。失败会覆盖缓存——`retry_after_at` 正是那个阻止「网断了就每次都重拨」的东西——所以失败文档里会带上最近一次**真是答案**的答案，放在 `previous` 下；这就是界面能打出「上次已知 0.4.0，三小时前查的」的依据。`OPENAI4S_UPDATE_SOURCE=offline` 会在读缓存之前、解析 source 之前就短路。 |
 | [`verify.py`](verify.py) | `REFUSAL_CODES`、摘要文法、`Witnesses`/`agree`/`digest_for`、`validate_zip`/`validate_tar`、`wheel_structure`、`extract_wheel`、`rehash`，以及 `probe_installation`。`Witnesses` 被封了口，只有 `agree()` 能造出来——这正是让那条顺序规则变成结构性的原因：`SHA256SUMS` 里某个 bundle 的摘要，只有在 wheel 已经和 PyPI 对上之后才会被采信。 |
+
+严格发现模式（`allow_single_witness=False`）始终重新获取摘要证人，即使已有普通检查的缓存。每个缓存写入者使用独立、仅所有者可读写的临时文件。只有元数据指向实际加载的包时，才能据此识别可写的安装渠道。
+
+归档校验解析 tar 链接链，并以归档根目录解释硬链接目标；拒绝重复路径、循环链接和位于链接下的成员。解压必须使用空暂存目录，wheel 解压函数会自行执行这项检查。wheel 元数据必须声明目标版本，依赖条件即使包含布尔表达式，也必须以选择非空 extra 为前提。
+
+执行探针兼容 Python 3.10 及以上，排除调用者工作目录和用户 site，并确认实际导入了指定的暂存包。探针使用无需凭据的回环模型配置并禁用联网。有效诊断报告中的离线或可选运行环境警告可以通过；失败检查和临时数据库错误仍会拒绝载荷。
+
+## 计划中的后续模块（当前尚未提供）
+
+| 文件 | 计划职责 |
+| --- | --- |
 | `store.py` | `<data_dir>/updates/` 下的持久化更新仓：flock、暂存的载荷、各代、journal，以及 `prune`。 |
 | `preserve.py` | 换代时要活下来的东西——升级前的数据库快照、配置、Skill，以及有多少恢复检查点处于风险中。 |
 | `apply.py` | `plan`、`apply_update`、`rollback` 和 `recover`：事务的阶段顺序、它那套分三种情况的回滚判定过程，以及它的各种拒绝。 |

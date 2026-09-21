@@ -1225,3 +1225,94 @@ def test_a_detail_is_one_line_and_bounded():
     assert reason == "unknown"
     assert "\n" not in detail
     assert len(detail) <= 240
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("first_sums", [_sums_text(), urllib.error.URLError("down")])
+def test_apply_grade_check_rechecks_witnesses_after_a_cached_read(
+    online, tmp_path, clock, first_sums
+):
+    source = online(_Source(sums=first_sums))
+    first = discovery.check(_Cfg(tmp_path), running=RUNNING, clock=clock)
+    assert first["status"] == "update_available"
+    source._sums = urllib.error.URLError("still down")
+    strict = discovery.check(
+        _Cfg(tmp_path), running=RUNNING, clock=clock, allow_single_witness=False
+    )
+    assert strict["cached"] is False
+    assert strict["status"] == "unknown"
+    assert strict["reason"] == "unreachable"
+    assert source.calls.count("sums") == 2
+
+
+def test_cache_publication_does_not_follow_a_leftover_temporary_symlink(tmp_path):
+    path = tmp_path / "updates" / "check.json"
+    path.parent.mkdir()
+    victim = tmp_path / "operator-data"
+    victim.write_text("keep me")
+    path.with_suffix(".json.tmp").symlink_to(victim)
+    assert discovery.write_cache(path, {"status": "unknown"})
+    assert victim.read_text() == "keep me"
+    assert json.loads(path.read_text()) == {"status": "unknown"}
+
+
+def test_simultaneous_cache_writers_publish_complete_documents(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ready = Barrier(2)
+    original = discovery.json.dump
+
+    def together(*args, **kwargs):
+        ready.wait(timeout=10)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(discovery.json, "dump", together)
+    path = tmp_path / "updates" / "check.json"
+    documents = [{"detail": "a" * 100}, {"detail": "b" * 10000}]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda doc: discovery.write_cache(path, doc), documents)
+        )
+    assert results == [True, True]
+    assert json.loads(path.read_text()) in documents
+
+
+@pytest.mark.parametrize(
+    "index", ["https://[", "https://example.org:bad", "https://example.org:99999"]
+)
+def test_malformed_index_authorities_are_named_refusals(index, monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
+    monkeypatch.setenv("OPENAI4S_UPDATE_INDEX", index)
+    answer = discovery.check(_Cfg(tmp_path), running=RUNNING)
+    assert answer["status"] == "unknown"
+    assert answer["reason"] == "bad_index"
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "version", ["9" * 5000 + ".0.0", "١.٢.٣"], ids=["oversized", "unicode"]
+)
+def test_hostile_release_versions_are_malformed_not_tracebacks(
+    online, tmp_path, version
+):
+    online(_Source(project=_project_doc(version)))
+    answer = discovery.check(_Cfg(tmp_path), running=RUNNING)
+    assert answer["status"] == "unknown"
+    assert answer["reason"] == "malformed"
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        "http://user:synthetic-password@example.org",
+        "https://example.org?token=synthetic-password",
+        "https://example.org#synthetic-password",
+    ],
+)
+def test_bad_index_errors_do_not_echo_credentials(index, monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
+    monkeypatch.setenv("OPENAI4S_UPDATE_INDEX", index)
+    answer = discovery.check(_Cfg(tmp_path), running=RUNNING)
+    assert answer["reason"] == "bad_index"
+    assert "synthetic-password" not in json.dumps(answer)

@@ -27,10 +27,10 @@ and `agree` refuses. For **an artifact only `SHA256SUMS` describes** — the
 Linux bundle, the Windows zip, the DMG — it defeats a *wholesale-forged release
 page*, and nothing finer: somebody who can rewrite one genuine release's assets
 can replace the bundle and its manifest line while leaving the wheel line
-honest, and `digest_for` will then hand that digest back. The ordering rule is
-what makes the forgery cost a second compromise instead of none; closing the
-rest needs a signature over the manifest, which this change does not claim to
-have. WP2 consumes `digest_for` for exactly those artifacts, so it inherits
+honest, and `digest_for` will then hand that digest back. The ordering rule detects
+whole-manifest substitutions; it does not add a second digest witness for a
+manifest-only artifact. Closing the rest needs a signature over the manifest,
+which this change does not claim to have. WP2 consumes `digest_for` for exactly those artifacts, so it inherits
 this limit and not a stronger one.
 
 It does **not** defeat a compromise of this repository in any case, because
@@ -54,6 +54,7 @@ would not save us from a wheel whose own `openai4s/__init__.py` is the attack.
 
 from __future__ import annotations
 
+import ast
 import email.parser
 import hashlib
 import os
@@ -101,7 +102,7 @@ REFUSAL_CODES: tuple[str, ...] = (
 #: under ``<data_dir>/updates/`` and a segment of a download URL.
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
-_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+\Z")
+_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+\Z")
 
 #: Paths every openai4s wheel must carry. This is a **copy** of
 #: `scripts/verify_release_artifacts._WHEEL_REQUIRED`, because `scripts/` is not
@@ -184,8 +185,9 @@ def normalize_digest(text: object, *, what: str = "digest") -> str:
 
 
 def is_version(text: object) -> bool:
-    """Whether ``text`` matches the release tag grammar `^\\d+\\.\\d+\\.\\d+$`."""
-    return isinstance(text, str) and bool(_VERSION_RE.match(text))
+    """Whether ``text`` is a bounded ASCII ``X.Y.Z`` release version."""
+    # Bound both integer conversion and downstream URL/path construction.
+    return isinstance(text, str) and len(text) <= 128 and bool(_VERSION_RE.match(text))
 
 
 def rehash(path: "os.PathLike[str] | str", *, chunk: int = 1024 * 1024) -> str:
@@ -417,6 +419,8 @@ def _check_member_name(name: str) -> PurePosixPath:
     if re.match(r"^[A-Za-z]:", name):
         raise _refuse_member(name, "drive-letter absolute path")
     pure = PurePosixPath(name)
+    if not pure.parts:
+        raise _refuse_member(name, "empty normalized path")
     if pure.is_absolute():
         raise _refuse_member(name, "absolute path")
     if any(part == ".." for part in pure.parts):
@@ -429,12 +433,15 @@ def _check_mode(name: str, mode: int) -> None:
         raise _refuse_member(name, "the setuid or setgid bit")
 
 
-def _check_link_target(name: str, target: str) -> None:
+def _check_link_target(name: str, target: str, *, hardlink: bool = False) -> None:
+    if "\\" in target or "\x00" in target:
+        raise _refuse_member(name, "a backslash or NUL in the link target")
     if not target:
         raise _refuse_member(name, "an empty link target")
     if target.startswith("/") or re.match(r"^[A-Za-z]:", target):
         raise _refuse_member(name, f"an absolute link target {target!r}")
-    resolved = PurePosixPath(name).parent
+    # tar hardlinks name a member from the archive root, unlike symlinks.
+    resolved = PurePosixPath(".") if hardlink else PurePosixPath(name).parent
     for part in PurePosixPath(target).parts:
         if part == "..":
             if resolved == PurePosixPath("."):
@@ -487,18 +494,68 @@ def validate_zip(path: "os.PathLike[str] | str") -> tuple[str, ...]:
     return tuple(names)
 
 
+def _validate_tar_links(members: Mapping[str, tarfile.TarInfo]) -> None:
+    """Resolve links together, including aliases followed by '..'.
+
+    This is checked against the complete namespace, so archive order cannot
+    turn a previously checked directory into a link. Extraction must use an
+    empty staging directory; pre-existing filesystem links are not described
+    by an archive's member table.
+    """
+    links = {
+        name: member
+        for name, member in members.items()
+        if member.issym() or member.islnk()
+    }
+    for name, member in members.items():
+        if any(str(parent) in links for parent in PurePosixPath(name).parents):
+            raise _refuse_member(name, "a member nested underneath a link")
+        if name not in links:
+            continue
+        resolved = [] if member.islnk() else list(PurePosixPath(name).parent.parts)
+        pending = list(reversed(PurePosixPath(member.linkname).parts))
+        hops = 0
+        while pending:
+            part = pending.pop()
+            if part == "..":
+                if not resolved:
+                    raise _refuse_member(name, "a link chain escaping the root")
+                resolved.pop()
+                continue
+            if part == ".":
+                continue
+            resolved.append(part)
+            linked = links.get("/".join(resolved))
+            if linked is None:
+                continue
+            hops += 1
+            if hops > 40:
+                raise _refuse_member(name, "a cyclic or excessive link chain")
+            if linked.islnk():
+                resolved.clear()
+            else:
+                resolved.pop()
+            pending.extend(reversed(PurePosixPath(linked.linkname).parts))
+
+
 def validate_tar(path: "os.PathLike[str] | str") -> tuple[str, ...]:
-    """The same walk for a tarball, plus the entry kinds a zip cannot carry."""
+    """Validate a tarball for extraction into an empty staging directory."""
     names: list[str] = []
+    members: dict[str, tarfile.TarInfo] = {}
     total = 0
     with tarfile.open(os.fspath(path), "r:*") as archive:
         for member in archive:
-            _check_member_name(member.name)
+            canonical = str(_check_member_name(member.name))
+            if canonical in members:
+                raise _refuse_member(member.name, "a duplicate member path")
+            members[canonical] = member
             _check_mode(member.name, int(member.mode or 0))
             if member.ischr() or member.isblk() or member.isfifo():
                 raise _refuse_member(member.name, "a device or FIFO entry")
             if member.issym() or member.islnk():
-                _check_link_target(member.name, member.linkname)
+                _check_link_target(
+                    member.name, member.linkname, hardlink=member.islnk()
+                )
             elif not (member.isfile() or member.isdir()):
                 raise _refuse_member(member.name, "not a regular file")
             total += int(member.size or 0)
@@ -509,6 +566,7 @@ def validate_tar(path: "os.PathLike[str] | str") -> tuple[str, ...]:
                     f"{MAX_UNPACKED_BYTES} uncompressed bytes",
                 )
             names.append(member.name)
+    _validate_tar_links(members)
     return tuple(names)
 
 
@@ -535,8 +593,47 @@ def _wheel_declared_version(source: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _requires_extra(marker: str) -> bool:
+    """Prove that a marker is false without a selected extra.
+
+    Unknown comparisons are conservatively possibly true. Only equality with
+    a nonempty extra proves a false branch; boolean and/or preserve that proof.
+    Unsupported marker syntax is refused rather than guessed.
+    """
+    try:
+        expression = ast.parse(marker.strip(), mode="eval").body
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+
+    def may_apply(node: ast.AST) -> bool:
+        if isinstance(node, ast.BoolOp):
+            values = [may_apply(value) for value in node.values]
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+        if (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], ast.Eq)
+        ):
+            left, right = node.left, node.comparators[0]
+            if isinstance(right, ast.Name):
+                left, right = right, left
+            if (
+                isinstance(left, ast.Name)
+                and left.id == "extra"
+                and isinstance(right, ast.Constant)
+            ):
+                if isinstance(right.value, str) and right.value:
+                    return False
+        return True
+
+    try:
+        return not may_apply(expression)
+    except RecursionError:
+        return False
+
+
 def _non_extra_requirements(metadata: str) -> list[str]:
-    """`Requires-Dist` lines with no `extra ==` marker.
+    """`Requires-Dist` lines not proven conditional on a selected extra.
 
     `pyproject.toml` declares `dependencies = []`, so there must be none. This
     re-enforces at install time what the release gate enforces at release time,
@@ -551,7 +648,7 @@ def _non_extra_requirements(metadata: str) -> list[str]:
         if not requirement:
             continue
         _, separator, marker = requirement.partition(";")
-        if separator and re.search(r"\bextra\s*==", marker):
+        if separator and _requires_extra(marker):
             continue
         hard.append(requirement)
     return hard
@@ -614,6 +711,12 @@ def wheel_structure(
             "wheel_structure",
             f"{wheel_path.name} METADATA names {parsed.get('Name')!r}, not openai4s",
         )
+    versions = parsed.get_all("Version") or []
+    if len(versions) != 1 or versions[0].strip() != version:
+        raise UpdateRefusal(
+            "wheel_version_mismatch",
+            f"{wheel_path.name} METADATA must declare exactly Version: {version}",
+        )
     hard = _non_extra_requirements(metadata)
     if hard:
         raise UpdateRefusal(
@@ -643,6 +746,13 @@ def extract_wheel(
     wheel_path = Path(os.fspath(path))
     target = Path(os.fspath(destination))
     validate_zip(wheel_path)
+    if target.is_symlink() or (
+        target.exists() and (not target.is_dir() or any(target.iterdir()))
+    ):
+        raise UpdateRefusal(
+            "archive_member_unsafe",
+            "wheel extraction requires an empty, non-symlink staging directory",
+        )
     target.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(wheel_path) as archive:
         archive.extractall(target)
@@ -687,13 +797,28 @@ _PROBE_ENV_PINNED = {
     "OPENAI4S_NO_OPEN": "1",
     "PYTHONNOUSERSITE": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
+    # Exercise the model-config path without copying a credential or dialling.
+    # A blank scratch Store otherwise makes every valid install fail doctor.
+    "OPENAI4S_LLM_PROVIDER": "openai_responses",
+    "OPENAI4S_LLM_BASE_URL": "http://127.0.0.1:1/v1",
+    "OPENAI4S_LLM_MODEL": "update-probe",
 }
 
+# -P is unavailable on Python 3.10. With -c, index zero is the implicit
+# working directory; remove it before importing any payload or runpy code.
+_PROBE_BOOTSTRAP = "import sys; sys.path.pop(0)\n"
+_DOCTOR_SCRIPT = (
+    _PROBE_BOOTSTRAP
+    + "import runpy\n"
+    + "sys.argv = ['openai4s', 'doctor', '--json']\n"
+    + "runpy.run_module('openai4s', run_name='__main__')\n"
+)
+
 _PROBE_SCRIPT = (
-    "import json, openai4s\n"
+    _PROBE_BOOTSTRAP + "import json, openai4s\n"
     "from openai4s.storage import migrations\n"
     "print(json.dumps({'version': openai4s.__version__, "
-    "'schema_version': int(migrations.SCHEMA_VERSION), "
+    "'schema_version': migrations.SCHEMA_VERSION, "
     "'file': openai4s.__file__}))\n"
 )
 
@@ -738,6 +863,7 @@ def _default_runner(
         timeout=timeout,
         check=False,
         stdin=subprocess.DEVNULL,
+        cwd=Path(env["OPENAI4S_DATA_DIR"]).parent,
     )
 
 
@@ -760,21 +886,24 @@ def probe_installation(
     Two children against a throwaway ``OPENAI4S_DATA_DIR``:
 
     1. import it and print its `__version__` and `SCHEMA_VERSION`;
-    2. `-m openai4s doctor --json`, which must exit 0.
+    2. `openai4s doctor --json`, which must return a valid ok/warn report.
+       Offline connectors and missing optional runtimes are expected warnings;
+       any failed check still refuses the installation.
 
     Neither child is given ``-I`` or ``-E``, and that is deliberate rather than
     an oversight: both imply ignoring ``PYTHON*``, which would discard the
     ``PYTHONPATH`` that makes the venv probe possible at all — the wheel is
     extracted and run *without being installed*. The isolation those flags would
     have given is achieved by the environment instead, which `probe_environment`
-    builds from an allowlist, and ``-P -s`` still keep the working directory and
-    the user site out of ``sys.path``.
+    builds from an allowlist. A fixed bootstrap removes the implicit working
+    directory on every supported Python (including 3.10, which has no ``-P``),
+    and ``-s`` excludes the user site. The child runs in the scratch directory.
     """
     run = runner or _default_runner
     python = os.fspath(interpreter)
     with tempfile.TemporaryDirectory(prefix="openai4s-update-probe-") as scratch:
         env = probe_environment(Path(scratch) / "data", pythonpath=pythonpath)
-        import_argv = [python, "-P", "-s", "-c", _PROBE_SCRIPT]
+        import_argv = [python, "-s", "-c", _PROBE_SCRIPT]
         try:
             imported = run(import_argv, env, timeout)
         except subprocess.TimeoutExpired:
@@ -782,9 +911,9 @@ def probe_installation(
                 "probe_timeout",
                 f"the new code did not import within {timeout:g}s",
             ) from None
-        except OSError as error:
+        except (OSError, UnicodeError) as error:
             raise UpdateRefusal(
-                "probe_failed", f"could not start {python}: {error}"
+                "probe_failed", f"could not run {python}: {error}"
             ) from error
         if int(getattr(imported, "returncode", 1)) != 0:
             raise UpdateRefusal(
@@ -796,7 +925,7 @@ def probe_installation(
 
         try:
             reported = _json.loads(str(getattr(imported, "stdout", "")).strip())
-        except ValueError as error:
+        except (ValueError, RecursionError) as error:
             raise UpdateRefusal(
                 "probe_failed",
                 "the import probe printed something that is not JSON: "
@@ -823,21 +952,33 @@ def probe_installation(
                 f"the new code reports version {reported.get('version')!r}, "
                 f"expected {version}",
             )
-        # `int()` on the same untrusted document: a non-numeric or non-scalar
-        # schema version is the probe failing to answer, not a ValueError.
+        # Coercion would accept fractional versions and booleans, and can
+        # raise OverflowError for JSON's nonstandard Infinity value.
         raw_schema = reported.get("schema_version")
-        try:
-            reported_schema = int(raw_schema)
-        except (TypeError, ValueError):
-            reported_schema = -1
-        if reported_schema != int(schema_version):
+        if type(raw_schema) is not int or raw_schema != schema_version:
             raise UpdateRefusal(
                 "probe_failed",
                 f"the new code reports schema version "
                 f"{raw_schema!r}, expected {schema_version}",
             )
 
-        doctor_argv = [python, "-P", "-s", "-m", "openai4s", "doctor", "--json"]
+        if pythonpath:
+            loaded_file = reported.get("file")
+            expected_files = {
+                (Path(part) / "openai4s" / "__init__.py").resolve()
+                for part in pythonpath.split(os.pathsep)
+                if part
+            }
+            if (
+                not isinstance(loaded_file, str)
+                or Path(loaded_file).resolve() not in expected_files
+            ):
+                raise UpdateRefusal(
+                    "probe_failed",
+                    "the probe imported openai4s outside the staged payload",
+                )
+        reported_schema = raw_schema
+        doctor_argv = [python, "-s", "-c", _DOCTOR_SCRIPT]
         try:
             doctor = run(doctor_argv, env, timeout)
         except subprocess.TimeoutExpired:
@@ -845,15 +986,44 @@ def probe_installation(
                 "probe_timeout",
                 f"`openai4s doctor --json` did not finish within {timeout:g}s",
             ) from None
-        except OSError as error:
+        except (OSError, UnicodeError) as error:
             raise UpdateRefusal(
-                "probe_failed", f"could not start {python}: {error}"
+                "probe_failed", f"could not run {python}: {error}"
             ) from error
-        if int(getattr(doctor, "returncode", 1)) != 0:
+        doctor_code = int(getattr(doctor, "returncode", -1))
+        if doctor_code not in (0, 1):
             raise UpdateRefusal(
                 "probe_failed",
                 "`openai4s doctor --json` refused the new installation: "
                 + _tail(getattr(doctor, "stderr", "") or getattr(doctor, "stdout", "")),
+            )
+        try:
+            diagnosis = _json.loads(str(getattr(doctor, "stdout", "")))
+        except (ValueError, RecursionError):
+            diagnosis = None
+        checks = diagnosis.get("checks") if isinstance(diagnosis, dict) else None
+        valid_checks = (
+            isinstance(checks, list)
+            and bool(checks)
+            and all(
+                isinstance(item, dict) and item.get("status") in ("ok", "warn")
+                for item in checks
+            )
+            and any(
+                item.get("name") == "data" and item.get("status") == "ok"
+                for item in checks
+            )
+            and not any(
+                isinstance(item.get("facts"), dict)
+                and "connector_store_error" in item["facts"]
+                for item in checks
+            )
+        )
+        expected_status = "warn" if doctor_code == 1 else "ok"
+        if not valid_checks or diagnosis.get("status") != expected_status:
+            raise UpdateRefusal(
+                "probe_failed",
+                "doctor did not return a valid successful diagnostic report",
             )
     return {
         "version": reported.get("version"),

@@ -429,7 +429,12 @@ def _probe_venv(_data_dir: Path | None = None) -> tuple[Path | None, list[str]] 
         from importlib.metadata import distribution
 
         try:
-            distribution("openai4s")
+            installed = distribution("openai4s")
+            # Metadata elsewhere on sys.path is not evidence about this copy.
+            # In particular, an editable install or PYTHONPATH can shadow an
+            # installed wheel while pip would update a different directory.
+            if Path(installed.locate_file("openai4s")).resolve() != _PACKAGE_ROOT:
+                return None
         except Exception:  # noqa: BLE001 - PackageNotFoundError and friends
             return None
         evidence.append("distribution=openai4s")

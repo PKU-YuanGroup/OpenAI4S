@@ -276,10 +276,20 @@ def resolved_index() -> str:
 
 
 def _validate_index(raw: str) -> str:
-    parsed = urllib.parse.urlsplit(raw)
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        parsed.port  # Validate malformed and out-of-range ports too.
+    except ValueError as error:
+        raise UpdateError(
+            "OPENAI4S_UPDATE_INDEX has a malformed URL authority"
+        ) from error
+    if any(char.isspace() or ord(char) < 32 for char in raw):
+        raise UpdateError(
+            "OPENAI4S_UPDATE_INDEX must not contain whitespace or controls"
+        )
     if parsed.scheme != "https":
         raise UpdateError(
-            f"OPENAI4S_UPDATE_INDEX must be an https URL, not {raw!r}; plain "
+            "OPENAI4S_UPDATE_INDEX must be an https URL; plain "
             "HTTP would let anything on the path choose the version we install"
         )
     if "@" in parsed.netloc:
@@ -288,11 +298,11 @@ def _validate_index(raw: str) -> str:
             "a credential in an index URL is logged, echoed and cached"
         )
     if not parsed.hostname:
-        raise UpdateError(f"OPENAI4S_UPDATE_INDEX names no host: {raw!r}")
+        raise UpdateError("OPENAI4S_UPDATE_INDEX names no host")
     if parsed.query or parsed.fragment:
         raise UpdateError(
             "OPENAI4S_UPDATE_INDEX must be a bare origin and path, with no "
-            f"query or fragment: {raw!r}"
+            "query or fragment"
         )
     return raw.rstrip("/")
 
@@ -528,11 +538,17 @@ def write_cache(path: "os.PathLike[str] | str", document: Mapping[str, Any]) -> 
     from openai4s.security.permissions import fsync_dir, harden_dir, harden_file
 
     target = Path(os.fspath(path))
-    temporary = target.with_name(target.name + ".tmp")
+    temporary: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         harden_dir(target.parent)
-        with open(temporary, "w", encoding="utf-8") as handle:
+        # Each writer owns an exclusive, already-0600 inode. A fixed .tmp
+        # name can follow a leftover symlink or be shared by concurrent checks.
+        fd, name = tempfile.mkstemp(
+            prefix=target.name + ".", suffix=".tmp", dir=target.parent
+        )
+        temporary = Path(name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(dict(document), handle, ensure_ascii=False, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
@@ -542,11 +558,13 @@ def write_cache(path: "os.PathLike[str] | str", document: Mapping[str, Any]) -> 
         harden_file(target)
         return True
     except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
         return False
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def previous_known(cached: Mapping[str, Any] | None, running: str, index: str) -> dict:
@@ -879,7 +897,9 @@ def check(
     freshness arithmetic instead of sleeping. ``allow_single_witness`` is True
     here because a *read* must still report a new version when github.com is
     unreachable — it records the weaker trust line rather than pretending.
-    `apply` passes False, where a missing witness installs nothing.
+    `apply` passes False, where a missing witness installs nothing. Strict
+    checks always fetch fresh witnesses: a cached read may have used only one
+    witness, and even a previously agreed release may since have been yanked.
 
     Returns the document `_document` describes. It never raises for a network
     failure, a malformed document or a witness disagreement; each of those is a
@@ -947,7 +967,12 @@ def check(
     # Read unconditionally, `refresh` included: a forced re-check that fails
     # must still be able to say what the last known answer was.
     cached = read_cache(path)
-    if not refresh and cached is not None and _fresh(cached, now, version, index):
+    if (
+        allow_single_witness
+        and not refresh
+        and cached is not None
+        and _fresh(cached, now, version, index)
+    ):
         # Rebuilt through `_document` rather than returned as it was stored, so
         # a cache written by an older build cannot hand a caller a document
         # missing a key the current shape promises is always there.

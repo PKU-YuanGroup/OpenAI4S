@@ -632,3 +632,24 @@ def test_this_worktree_detects_as_a_source_checkout():
     found = channel.detect()
     assert found.id == "source"
     assert found.self_update is False
+
+
+@pytest.mark.parametrize("same_tree", [False, True])
+def test_distribution_metadata_must_describe_the_loaded_package(
+    monkeypatch, tmp_path, same_tree
+):
+    import importlib.metadata as metadata
+
+    loaded = _plant_package(tmp_path / "loaded")
+    installed = loaded if same_tree else _plant_package(tmp_path / "installed")
+    _pin_root(monkeypatch, loaded)
+    monkeypatch.setattr(channel, "_purelib", lambda: tmp_path / "elsewhere")
+
+    class Distribution:
+        def locate_file(self, name):
+            return installed.parent / name
+
+    monkeypatch.setattr(metadata, "distribution", lambda _name: Distribution())
+    found = channel.detect()
+    assert found.id == ("venv" if same_tree else "unknown")
+    assert found.self_update is same_tree
