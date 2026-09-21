@@ -75,7 +75,7 @@ PRIVILEGED_WORKFLOW_ACTION_MAJORS = {
 PRE_COMMIT_CONFIG = ROOT / ".pre-commit-config.yaml"
 
 # `- repo: <url>` followed within the same block by `rev: <sha>  # frozen: X.Y.Z`
-# (ruff writes `v0.16.7`, black and isort write bare `26.5.1`).
+# (ruff writes `v0.16.8`, black and isort write bare `26.5.1`).
 FROZEN_HOOK = re.compile(
     r"^\s*-\s*repo:\s*(?P<repo>\S+)\s*$\n(?:^\s*#.*$\n)*"
     r"^\s*rev:\s*\S+\s+#\s*frozen:\s*v?(?P<major>\d+)\.",
