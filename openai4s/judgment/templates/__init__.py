@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import literature as literature
 from . import skills as skills
 
-__all__ = ["skills"]
+__all__ = ["literature", "skills"]
