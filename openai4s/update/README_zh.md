@@ -26,7 +26,7 @@
 | [`discovery.py`](discovery.py) | `check(cfg)` 及其周边词汇：`STATUSES`（三个成员）、`REASONS`（冻结的失败码）、`ReleaseSource` 接缝、`SHA256SUMS` 解析、不依赖 `packaging` 的版本比较、`OPENAI4S_UPDATE_INDEX` 的校验，以及 `<data_dir>/updates/check.json` 的 6 小时缓存（失败后的重试间隔要短得多）。失败会覆盖缓存——`retry_after_at` 正是那个阻止「网断了就每次都重拨」的东西——所以失败文档里会带上最近一次**真是答案**的答案，放在 `previous` 下；这就是界面能打出「上次已知 0.4.0，三小时前查的」的依据。`OPENAI4S_UPDATE_SOURCE=offline` 会在读缓存之前、解析 source 之前就短路。 |
 | [`verify.py`](verify.py) | `REFUSAL_CODES`、摘要文法、`Witnesses`/`agree`/`digest_for`、`validate_zip`/`validate_tar`、`wheel_structure`、`extract_wheel`、`rehash`，以及 `probe_installation`。`Witnesses` 被封了口，只有 `agree()` 能造出来——这正是让那条顺序规则变成结构性的原因：`SHA256SUMS` 里某个 bundle 的摘要，只有在 wheel 已经和 PyPI 对上之后才会被采信。 |
 
-严格发现模式（`allow_single_witness=False`）始终重新获取摘要证人，即使已有普通检查的缓存。每个缓存写入者使用独立、仅所有者可读写的临时文件。只有元数据指向实际加载的包时，才能据此识别可写的安装渠道。
+严格发现模式（`allow_single_witness=False`）始终重新获取摘要证人，即使已有普通检查的缓存。每个缓存写入者使用独立、仅所有者可读写的临时文件。只有元数据指向实际加载的包时，才能据此识别可写的安装渠道。两个 bundle 探针都要求实际加载的包位于候选根目录自己的 `src/openai4s` 位置，上级目录中的标记文件或符号链接别名不能授权更新另一棵目录树。解释器的 site-packages 探针同样只接受直接安装位置，不接受任意嵌套副本。实际加载包旁边的 Git 标记会阻止全部自更新探针，包括目录名恰好为 `src` 的源码树，以及元数据指向本目录的 editable 安装。
 
 归档校验解析 tar 链接链，并以归档根目录解释硬链接目标；拒绝重复路径、循环链接和位于链接下的成员。解压必须使用空暂存目录，wheel 解压函数会自行执行这项检查。wheel 元数据必须声明目标版本，依赖条件即使包含布尔表达式，也必须以选择非空 extra 为前提。
 

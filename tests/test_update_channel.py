@@ -653,3 +653,123 @@ def test_distribution_metadata_must_describe_the_loaded_package(
     found = channel.detect()
     assert found.id == ("venv" if same_tree else "unknown")
     assert found.self_update is same_tree
+
+
+@pytest.mark.parametrize("install", ["source", "venv"])
+@pytest.mark.parametrize(
+    "alias", [False, True], ids=["unrelated-package", "symlink-to-loaded-package"]
+)
+def test_ancestor_landmarks_cannot_reclassify_the_loaded_install(
+    tmp_path, monkeypatch, install, alias
+):
+    ancestor = tmp_path / "home"
+    site = ancestor / ("checkout" if install == "source" else "venv/lib/site-packages")
+    package = _plant_package(site)
+    _pin_root(monkeypatch, package)
+    monkeypatch.setattr(
+        channel, "_purelib", lambda: site if install == "venv" else None
+    )
+    if install == "source":
+        (site / ".git").write_text("gitdir: elsewhere\n")
+        (site / "pyproject.toml").write_text('[project]\nname = "openai4s"\n')
+    (ancestor / "VERSION").write_text("0.3.0\n")
+    (ancestor / "runtime/bin").mkdir(parents=True)
+    (ancestor / "runtime/bin/python3").touch()
+    if alias:
+        (ancestor / "src").mkdir()
+        (ancestor / "src/openai4s").symlink_to(package, target_is_directory=True)
+    else:
+        _plant_package(ancestor / "src")
+    found = channel.detect()
+    assert found.id == install
+    assert found.install_root == site
+    assert found.self_update is (install == "venv")
+
+
+@pytest.mark.parametrize("install", ["source", "unmanaged"])
+@pytest.mark.parametrize("signal", ["wsl", "bundle-id"])
+def test_managed_bundle_requires_its_own_loaded_src_package(
+    tmp_path, monkeypatch, signal, install
+):
+    bundled_package = _plant_bundle(tmp_path)
+    bundle = bundled_package.parents[1]
+    site = bundle / "workspace"
+    _pin_root(monkeypatch, _plant_package(site))
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(channel, "_purelib", lambda: None)
+
+    def absent(_name):
+        raise metadata.PackageNotFoundError("openai4s")
+
+    monkeypatch.setattr(metadata, "distribution", absent)
+    if install == "source":
+        (site / ".git").write_text("gitdir: elsewhere\n")
+        (site / "pyproject.toml").write_text('[project]\nname = "openai4s"\n')
+    (bundle / "VERSION").write_text("0.3.0\n")
+    (bundle / "runtime/bin").mkdir(parents=True)
+    (bundle / "runtime/bin/python3").touch()
+    monkeypatch.setattr(channel, "_is_wsl", lambda: signal == "wsl")
+    if signal == "bundle-id":
+        monkeypatch.setenv("OPENAI4S_BUNDLE_ID", bundle.name)
+    found = channel.detect()
+    assert found.id == ("source" if install == "source" else "unknown")
+    assert found.install_root == (site if install == "source" else None)
+    assert found.self_update is False
+
+
+def test_a_nested_tree_is_not_the_interpreters_site_package(tmp_path, monkeypatch):
+    import importlib.metadata as metadata
+
+    site = tmp_path / "site-packages"
+    package = _plant_package(site / "unmanaged-copy")
+    _pin_root(monkeypatch, package)
+    monkeypatch.setattr(channel, "_purelib", lambda: site)
+
+    def absent(_name):
+        raise metadata.PackageNotFoundError("openai4s")
+
+    monkeypatch.setattr(metadata, "distribution", absent)
+    found = channel.detect()
+    assert found.id == "unknown"
+    assert found.self_update is False
+
+
+@pytest.mark.parametrize("kind", ["linux", "wsl"])
+def test_a_checkout_named_src_is_not_a_bundle(tmp_path, monkeypatch, kind):
+    package = _plant_bundle(tmp_path)
+    site = package.parent
+    bundle = site.parent
+    _pin_root(monkeypatch, package)
+    (site / ".git").write_text("gitdir: elsewhere\n")
+    (site / "pyproject.toml").write_text('[project]\nname = "openai4s"\n')
+    (bundle / "VERSION").write_text("0.3.0\n")
+    (bundle / "runtime/bin").mkdir(parents=True)
+    (bundle / "runtime/bin/python3").touch()
+    monkeypatch.setattr(channel, "_is_wsl", lambda: kind == "wsl")
+    found = channel.detect()
+    assert found.id == "source"
+    assert found.install_root == site
+    assert found.self_update is False
+
+
+def test_editable_checkout_metadata_cannot_override_git_ownership(
+    tmp_path, monkeypatch
+):
+    import importlib.metadata as metadata
+
+    site = tmp_path / "editable"
+    package = _plant_package(site)
+    _pin_root(monkeypatch, package)
+    (site / ".git").write_text("gitdir: elsewhere\n")
+    (site / "pyproject.toml").write_text(
+        '[project]\nname = "openai4s" # valid TOML comment\n'
+    )
+    monkeypatch.setattr(channel, "_purelib", lambda: tmp_path / "site-packages")
+
+    class Distribution:
+        def locate_file(self, name):
+            return site / name
+
+    monkeypatch.setattr(metadata, "distribution", lambda _name: Distribution())
+    assert channel.detect().self_update is False

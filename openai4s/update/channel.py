@@ -239,16 +239,6 @@ def _purelib() -> Path | None:
         return None
 
 
-def _under(child: Path, parent: Path | None) -> bool:
-    if parent is None:
-        return False
-    try:
-        child.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
 def _declares_openai4s(pyproject: Path) -> bool:
     """Whether `pyproject.toml` is *this* project's.
 
@@ -366,7 +356,13 @@ def _probe_managed_bundle(
     like once bootstrap.sh has installed it: either `OPENAI4S_BUNDLE_ID` is
     exported (bootstrap.sh is its only writer) or this is a WSL distribution.
     """
+    # A checkout named src can resemble the bundle layout exactly. Its git
+    # ownership still forbids self-update, regardless of ancestor landmarks.
+    if _exists(str(_PACKAGE_ROOT.parent / ".git")):
+        return None
     for candidate in _PACKAGE_ROOT.parents:
+        if _PACKAGE_ROOT != candidate / "src" / "openai4s":
+            continue
         if candidate.parent.name != "app":
             continue
         if not _BUNDLE_DIR_RE.match(candidate.name):
@@ -389,7 +385,16 @@ def _probe_linux_bundle(
     _data_dir: Path | None = None,
 ) -> tuple[Path | None, list[str]] | None:
     """The relocatable bundle: `VERSION`, `runtime/bin/python3`, `src/openai4s`."""
+    # A checkout named src can resemble the bundle layout exactly. Its git
+    # ownership still forbids self-update, regardless of ancestor landmarks.
+    if _exists(str(_PACKAGE_ROOT.parent / ".git")):
+        return None
     for candidate in _PACKAGE_ROOT.parents:
+        # _PACKAGE_ROOT is already resolved. Do not resolve the candidate's
+        # src path: an ancestor can plant a symlink back to the loaded package.
+        # Its landmarks still do not make it the installation we are running.
+        if _PACKAGE_ROOT != candidate / "src" / "openai4s":
+            continue
         if not _exists(str(candidate / "VERSION")):
             continue
         if not _exists(str(candidate / "runtime" / "bin" / "python3")):
@@ -420,10 +425,14 @@ def _probe_source(
 
 
 def _probe_venv(_data_dir: Path | None = None) -> tuple[Path | None, list[str]] | None:
+    # An editable checkout may have matching distribution metadata. It is not
+    # a self-updatable install even when the project-name probe cannot read it.
+    if _exists(str(_PACKAGE_ROOT.parent / ".git")):
+        return None
     purelib = _purelib()
     site_dir = _PACKAGE_ROOT.parent
     evidence: list[str] = []
-    if _under(_PACKAGE_ROOT, purelib):
+    if site_dir == purelib:
         evidence.append(f"purelib={purelib}")
     else:
         from importlib.metadata import distribution
