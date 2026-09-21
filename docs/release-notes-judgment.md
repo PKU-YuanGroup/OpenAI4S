@@ -18,3 +18,8 @@ and recording-only safety / task-mode shadows, behind
 `OPENAI4S_EXPERIMENTAL_JUDGMENT` and per-capability flags. Kill switch:
 `OPENAI4S_EXPERIMENTAL_JUDGMENT=0`. Operator guide:
 [docs/experimental-judgment.md](experimental-judgment.md).
+
+`OPENAI4S_JUDGMENT_PROVIDER=llm` answers the same typed questions with your
+configured main model instead of TypeSafe. Those results are marked
+`calibrated: false`, and the default stays `typesafe`: a TypeSafe failure is
+reported as unavailable and never falls back to the LLM silently.
