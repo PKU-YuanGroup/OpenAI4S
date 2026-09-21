@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
-
 # Approximate atomic weights for common elements in drug-like small molecules.
 _ATOMIC_WEIGHTS: Mapping[str, float] = {
     "C": 12.011,
@@ -44,9 +43,6 @@ def calculate_smiles_descriptors(smiles: str) -> dict[str, Any]:
             "rotatable_bonds": 0,
             "smiles": clean_smiles,
         }
-
-    # Remove stereochemical markers and isotope markers for structural counting
-    sanitized = re.sub(r"\[([^\]]+)\]", r"\1", clean_smiles)
 
     # 1. Molecular Weight Estimation
     mw = 0.0
@@ -89,7 +85,9 @@ def calculate_smiles_descriptors(smiles: str) -> dict[str, Any]:
 
     # 4. Rotatable Bonds (approximate single bonds between non-ring heavy atoms)
     # Simple estimate: occurrences of acyclic single bonds between heavy atoms
-    non_ring_single_bonds = len(re.findall(r"[A-Za-z]-[A-Za-z]|CC|CN|CO|CS", clean_smiles))
+    non_ring_single_bonds = len(
+        re.findall(r"[A-Za-z]-[A-Za-z]|CC|CN|CO|CS", clean_smiles)
+    )
     rotatable = max(0, min(non_ring_single_bonds // 2, 20))
 
     return {
@@ -119,7 +117,11 @@ def evaluate_lipinski(
     else:
         desc = dict(descriptors_or_smiles)
 
-    mw = mw_override if mw_override is not None else float(desc.get("molecular_weight", 0.0))
+    mw = (
+        mw_override
+        if mw_override is not None
+        else float(desc.get("molecular_weight", 0.0))
+    )
     hbd = int(desc.get("hbd", 0))
     hba = int(desc.get("hba", 0))
 
@@ -253,12 +255,14 @@ def format_dossier(
         "",
         "## Executive Summary",
         "",
-        summary_text
-        if summary_text
-        else (
-            f"Evaluation of target **{target}** indicates strong therapeutic relevance with "
-            f"{len(ppi_records)} observed functional PPI partners and {len(ranked_leads)} "
-            "prioritized small-molecule chemical binders."
+        (
+            summary_text
+            if summary_text
+            else (
+                f"Evaluation of target **{target}** indicates strong therapeutic relevance with "
+                f"{len(ppi_records)} observed functional PPI partners and {len(ranked_leads)} "
+                "prioritized small-molecule chemical binders."
+            )
         ),
         "",
         "---",
@@ -286,7 +290,9 @@ def format_dossier(
             channels.append("CoExpression")
         channel_str = ", ".join(channels) if channels else "Functional"
 
-        lines.append(f"| `{partner}` | {string_id} | {score_str} | {escore_str} | {channel_str} |")
+        lines.append(
+            f"| `{partner}` | {string_id} | {score_str} | {escore_str} | {channel_str} |"
+        )
 
     lines.extend(
         [
@@ -305,11 +311,17 @@ def format_dossier(
         aff_type = lead.get("affinity_type") or "Affinity"
         aff_raw = lead.get("affinity_raw") or "-"
         lip = lead.get("lipinski") or {}
-        pass_r5 = "✅ Pass" if lip.get("pass_rule_of_5") else f"⚠️ {lip.get('violations_count')} violations"
+        pass_r5 = (
+            "✅ Pass"
+            if lip.get("pass_rule_of_5")
+            else f"⚠️ {lip.get('violations_count')} violations"
+        )
         mw = lip.get("molecular_weight", 0.0)
         score = lead.get("score", 0.0)
         pmid = lead.get("pmid")
-        ref_str = f"[PMID {pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid})" if pmid else "-"
+        ref_str = (
+            f"[PMID {pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid})" if pmid else "-"
+        )
 
         lines.append(
             f"| {rank} | [{lid}]({lead.get('url', '#')}) | {aff_type}: {aff_raw} nM | "

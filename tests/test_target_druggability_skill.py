@@ -139,7 +139,11 @@ def test_format_dossier_markdown_assembly():
             "url": "https://www.bindingdb.org/entry/81430",
             "affinity_type": "Ki",
             "affinity_raw": "9.1",
-            "lipinski": {"pass_rule_of_5": True, "violations_count": 0, "molecular_weight": 380.5},
+            "lipinski": {
+                "pass_rule_of_5": True,
+                "violations_count": 0,
+                "molecular_weight": 380.5,
+            },
             "score": 95.0,
             "pmid": "21035734",
         }
