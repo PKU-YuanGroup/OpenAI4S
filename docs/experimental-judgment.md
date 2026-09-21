@@ -322,3 +322,46 @@ unchanged.
 New for later waves: the enabled payload may carry `semantic_truncated`, and
 `uncertain` can now mean the budget dropped the suggestions rather than the
 model hedging. A genuine abstention is `ok` with an empty list and no such key.
+
+### W3 — 2026-09-20
+
+Merged `w3-a-literature-skill` (`0cab84ab` → `547e63d2`) and
+`w3-b-literature-eval` (`bc845b21` → `165eef9f`). `literature-review` gains
+`screen_passages` and `check_claims`, backed by the `literature.screen` and
+`literature.claim` templates; a frozen 304-pair bilingual evaluation over
+open-access excerpts sits beside them, with its test half locked by digest.
+
+The default-off snapshot changed for the first time, and only where it had to:
+`tests/fixtures/judgment_default_off/search.json` carries each Skill's `doc`,
+and the new SKILL.md section is part of `literature-review`'s. Verified before
+accepting it — one query's results changed, one Skill within it, one field,
+2,072 characters added and none removed, with the old text still a substring
+of the new. The other three fixtures are untouched.
+
+Integration fix `1b1cc9d3`: templates register as an import side effect, and
+W3-A put that import in `JudgmentService.dispatch`, which covers `host.judge`
+and nothing else. `JudgmentService.run` — the path the evaluation's host shim
+takes — raised `unknown template: literature.claim` in a fresh interpreter.
+Moved to `registry.get_template`, the one function every caller already goes
+through. W4's feature and safety templates now need no call-site import.
+
+Integration fix `05b34283`: `tests/conftest.py` now purges every
+`OPENAI4S_*JUDGMENT*` switch per test, alongside the rollout flags. The key
+and model variables stay covered by the existing `*API_KEY` / `*MODEL`
+patterns, which is why live judgment tests read `OPENAI4S_JUDGMENT_LIVE_KEY`.
+
+The host_only boundary left open since W1 is now verified, and the two halves
+need different setups. Against the real endpoint, a bound Skill declaring
+`api.typesafe.ai` reaches it while one declaring only another domain is
+refused with `egress_blocked` before any connection. Against the loopback
+fake, neither is refused: the transport skips `egress.check_url` entirely when
+the fake endpoint is configured, so the Skill's narrowing does not apply
+there. That path is loopback-only and gated on a test variable, so it widens
+nothing in production — but it means this boundary cannot be tested with the
+fake endpoint on.
+
+`check_claims` was driven from a real kernel cell against the fake endpoint
+until every status appeared: `verified`, `contradicted`, `unsupported`,
+`uncertain`, `numeric_mismatch` and `not_found_needs_review`. A locate failure
+makes no backend call at all, and a numeric mismatch overrides a semantic
+`supports` — the numbers are compared in code, as the design requires.

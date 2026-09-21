@@ -279,3 +279,39 @@ W2-A 的返工 `7edc1cc6` 以 `891c7ef6` 合入。`SearchSkillsTool.execute` 现
 给后续 wave 的新增约定：能力开启时的返回值可能带 `semantic_truncated`，
 并且 `uncertain` 现在也可能表示预算丢掉了推荐，而不是模型犹豫。
 真正的弃权是 `ok` + 空列表 + 没有这个键。
+
+### W3 — 2026-09-20
+
+合入 `w3-a-literature-skill`（`0cab84ab` → `547e63d2`）和
+`w3-b-literature-eval`（`bc845b21` → `165eef9f`）。`literature-review` 增加了
+`screen_passages` 和 `check_claims`，背后是 `literature.screen` 与
+`literature.claim` 两个模板；旁边是一份基于开放获取片段的 304 对中英文冻结评测，
+测试集那一半用摘要锁死。
+
+默认关闭快照第一次发生变化，而且只变在它不得不变的地方：
+`tests/fixtures/judgment_default_off/search.json` 里存着每个 Skill 的 `doc`，
+新增的 SKILL.md 小节正是 `literature-review` 的一部分。接受之前核过——
+只有一条查询的结果变了，其中只有一个 Skill、只有一个字段，新增 2,072 字符、
+删除 0 字符，旧正文仍是新正文的子串。另外三份 fixture 一个字节没动。
+
+集成修正 `1b1cc9d3`：模板靠 import 副作用注册，而 W3-A 把这个 import 放在
+`JudgmentService.dispatch` 里，那只覆盖 `host.judge` 一条路。
+`JudgmentService.run`——评测的 host shim 走的正是这条——在全新解释器里会抛
+`unknown template: literature.claim`。已移到每个调用方本来就要经过的
+`registry.get_template`。W4 的 features 和 safety 模板因此不再需要各自补一行 import。
+
+集成修正 `05b34283`：`tests/conftest.py` 现在会逐测试清除所有
+`OPENAI4S_*JUDGMENT*` 开关，与 rollout flags 并列。key 和 model 变量仍由既有的
+`*API_KEY` / `*MODEL` 规则覆盖——这正是 live 判断测试改读
+`OPENAI4S_JUDGMENT_LIVE_KEY` 的原因。
+
+W1 起遗留的 host_only 边界现在验过了，而且两半需要不同的环境。对着真实端点，
+声明了 `api.typesafe.ai` 的 Skill 能连通，只声明别的域名的 Skill 在发出连接之前
+就被 `egress_blocked` 拒绝。对着 loopback 假端点，两者都不会被拒：配置了假端点时
+传输层整条跳过 `egress.check_url`，Skill 的收窄因此不生效。那条路径只绑 loopback
+且由测试变量控制，生产环境不会因此放宽——但这意味着**这条边界不能在假端点下测**。
+
+`check_claims` 在真实 kernel cell 里对着假端点跑到全部状态出现为止：
+`verified`、`contradicted`、`unsupported`、`uncertain`、`numeric_mismatch`、
+`not_found_needs_review`。定位失败时完全不调用后端；数值不匹配会压过语义上的
+`supports`——数字在代码里比，正如设计要求的那样。
