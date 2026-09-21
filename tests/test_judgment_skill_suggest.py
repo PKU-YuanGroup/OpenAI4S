@@ -647,3 +647,28 @@ def test_is_explicit_request_helpers() -> None:
     )
     assert skill_templates.is_explicit_request("host.load_skill(alpha)", names)
     assert not skill_templates.is_explicit_request("please cluster these cells", names)
+
+
+def test_suggest_reports_the_tokens_it_was_billed_for(tmp_path: Path) -> None:
+    """Added by the live evaluation. `suggest` reported how many requests it
+    made and how long they took, but not their usage, so every live J1/J2 run
+    was scored at 0 input tokens and $0. The scripted backend bills 8 input
+    tokens per call; the payload must carry that sum, and a repeat served from
+    the cache sends nothing and must not be billed twice.
+    """
+
+    backend = ScriptedBackend()
+    service = _service(tmp_path, backend)
+    query = "帮我对这批单细胞数据做细胞类型注释"
+    first = service.suggest({"query": query})
+    assert first["requests"] >= 1
+    assert first["usage"] == {
+        "input_tokens": 8 * len(backend.calls),
+        "output_tokens": 0,
+    }
+    assert first["usage"]["input_tokens"] > 0
+
+    calls_before = len(backend.calls)
+    again = service.suggest({"query": query})
+    assert len(backend.calls) == calls_before, "the repeat must be a cache hit"
+    assert again["usage"] == {"input_tokens": 0, "output_tokens": 0}

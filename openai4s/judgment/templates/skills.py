@@ -179,6 +179,7 @@ def empty_payload(
         "latency_ms": int(latency_ms),
         "error_code": error_code,
         "candidate_truncated": bool(candidate_truncated),
+        "usage": {"input_tokens": 0, "output_tokens": 0},
     }
 
 
@@ -444,6 +445,18 @@ def suggest(
     bound = max(1, min(MAX_REQUESTS, int(max_requests)))
     requests = 0
     truncated = False
+    # Billed tokens across the up-to-three backend calls. The payload already
+    # reported how many requests it made and how long they took, but not what
+    # they cost, so a live evaluation scored every J1/J2 run at $0. A cache
+    # hit sent nothing and is not counted.
+    usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def charge(result: Any) -> None:
+        if getattr(result, "cache_hit", False):
+            return
+        for key in usage:
+            usage[key] += int((getattr(result, "usage", None) or {}).get(key) or 0)
+
     state = {
         "request": request,
         "catalog_note": ("Candidates are OpenAI4S Skills available in this session."),
@@ -462,6 +475,7 @@ def suggest(
             error_code=error_code,
             candidate_truncated=truncated,
         )
+        payload["usage"] = dict(usage)
         if suggestions:
             payload["semantic_suggestions"] = suggestions[:MAX_SUGGESTIONS]
         return payload
@@ -501,6 +515,7 @@ def suggest(
         scope=scope,
     )
     requests += 1
+    charge(first)
     if first.status == "unavailable":
         return finish("unavailable", error_code=first.error_code)
     if first.status == "disabled":
@@ -557,6 +572,7 @@ def suggest(
                 scope=scope,
             )
             requests += 1
+            charge(second)
             if second.status == "unavailable":
                 return finish("unavailable", error_code=second.error_code)
             if second.status == "disabled":
@@ -619,6 +635,7 @@ def suggest(
         scope=scope,
     )
     requests += 1
+    charge(third)
     if third.status == "unavailable":
         return finish("unavailable", error_code=third.error_code)
     if third.status == "disabled":
