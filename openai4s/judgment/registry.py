@@ -128,9 +128,40 @@ def register_template(
     return template
 
 
+_BUNDLED_LOADED = False
+
+
+def _load_bundled_templates() -> None:
+    """Import the bundled template package once, on first lookup.
+
+    Templates register as an import side effect, so a lookup in a process
+    that has not imported them answers "unknown template" for a template the
+    build ships. Every caller reaches the registry through this function, so
+    it is the one place the import has to happen: doing it at each call site
+    instead means the next one to be written is the one that forgets --
+    `JudgmentService.run` did, and only `dispatch` had the import.
+
+    Deferred rather than a module-level import: the template modules import
+    this module to register, so importing them at the top would be a cycle.
+    """
+
+    global _BUNDLED_LOADED
+    if _BUNDLED_LOADED:
+        return
+    _BUNDLED_LOADED = True  # set first: a template module that looks up a
+    # template while registering must not recurse into this import.
+    try:
+        import openai4s.judgment.templates  # noqa: F401
+    except ImportError:
+        # A build without the bundled templates still serves system.probe and
+        # anything registered at runtime.
+        pass
+
+
 def get_template(template_id: str) -> Template:
     """Return a registered template or raise KeyError."""
 
+    _load_bundled_templates()
     with _LOCK:
         try:
             return _TEMPLATES[template_id]

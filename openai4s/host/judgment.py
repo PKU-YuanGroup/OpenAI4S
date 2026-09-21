@@ -761,10 +761,6 @@ class JudgmentService:
 
         if spec is None or not isinstance(spec, Mapping):
             return {"error": "judge spec must be an object"}
-        # Bundled templates register on import. skills.suggest is imported by
-        # SkillService; literature.* is reached only through host.judge.
-        import openai4s.judgment.templates  # noqa: F401
-
         template_id = spec.get("template")
         if not isinstance(template_id, str) or not template_id.strip():
             return {"error": "judge requires a template id"}

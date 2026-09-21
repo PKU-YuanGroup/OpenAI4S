@@ -494,6 +494,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_settings_route.py`](test_judgment_settings_route.py) | 用真实 Store 测 `GET`/`PUT`/`PATCH /experimental/judgment`：key 永不回显、披露版本不对被拒、UI 打开但未确认是 `no_disclosure`、env false 是 `env_off`、清除 key。`POST .../test` 打桩服务并标 `stubbed_backend`。 |
 | [`test_judgment_w1_integration.py`](test_judgment_w1_integration.py) | W1 三个包之间的接缝：设置路由传进来的 Store 实例能被 `JudgmentService` 接住、默认后端确实是 TypeSafe 传输层，以及来自 loopback 假端点的答案在结果和审计行里都仍然带着 `fake` 标记。 |
 | [`test_judgment_w2_integration.py`](test_judgment_w2_integration.py) | `search_skills` 的 `_step_end` 投影：能力关闭时的 list 投影与原来完全一致；能力开启时包装后的 dict 既保留词法命中名，又把 `semantic_status` 和 `semantic_suggestions` 带到工作台步骤卡。 |
+| [`test_judgment_w3_integration.py`](test_judgment_w3_integration.py) | 捆绑模板在全新解释器里能被解析，包括不经过 `dispatch` 的 `JudgmentService.run` 这条路。探针跑在子进程里，因为套件内部通常已经有别的测试 import 过模板包了。 |
 | [`test_judgment_egress.py`](test_judgment_egress.py) | 判断层 egress **报告**：`off` 无补救项；allowlist 且未授权时报告 `blocked_message` 且 `check_url` 抛错；运行时 grant 后放行。不新增 `EGRESS_GROUPS` 分组。 |
 | [`test_judgment_doctor.py`](test_judgment_doctor.py) | `doctor._judgment`：默认关闭为信息级、缺 key / allowlist 拦截为 warn，报告中永不出现 TypeSafe key。 |
 | [`test_bioskills_area_index.py`](test_bioskills_area_index.py) | 生成的 bioSkills 领域索引恰好覆盖当前全部成员、没有多余项、每个领域 ≤254 个成员，且 `source_manifest_sha256` 与 `MANIFEST.json` 一致。 |
