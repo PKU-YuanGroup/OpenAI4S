@@ -422,3 +422,31 @@ import 本身都还在，所以模板照常注册、什么都没报错。现在�
 把同一套机制实现了两遍，而且 `shadow.submit("task_mode", …)` 本来就能套进现有签名——
 但 W4-B 的测试从它自己的通道 import 了八个符号，并且对另一套 `stats()` 契约断言了 18 次。
 合并它们意味着由合并者重写另一个包的验证面，那比这点重复更糟。方案记在 W5 的待办里。
+
+### W5 — 2026-09-21
+
+合入 `w5-a-docs-release`（`3cdb34d9` → `3e8001c7`）：本文档成为操作说明，新增
+`docs/experimental-judgment-removal.md` 和 `docs/release-notes-judgment.md`，
+并在 `configuration.md`、`security.md`、`skills.md` 和两份根 README 里各加了一节。
+
+发布验证。本机能跑的独立 CI 门禁全部通过：冻结响应形状、路由契约、`uv build` 之后的
+`verify_release_artifacts.py`（wheel 里带着 `openai4s/judgment/` 的全部 23 个文件、
+bioSkills 领域索引和 `skills/text-features/`）、npm 包检查（605 个 Skill，6.5 MB），
+以及开关关闭时的 `browser_smoke.mjs` 和开关打开时的 `browser_judgment.mjs`。
+`container_smoke.sh` 没有跑：本机没有 Docker，由 CI 执行。
+
+默认关闭在全新数据目录上确认：`GET /api/v1/experimental/judgment` 报告总开关关闭、
+来源 `default`，每项能力关闭、来源 `master_off`。在这个 daemon 上跑完一次真实浏览器会话——
+7 个 frame、109 次 host 调用、12 次 cell 执行——数据库 82 张表里没有任何一行含 "judgment"，
+daemon 日志里也没有。
+
+移除已演练。在一次性分支 `chore/judgment-removal-dryrun`（从未合并、从未推送）上照清单执行：
+删除 138 个文件、32,696 行。目录文档门禁报告 166 个目录、1,590 个文件，与 W5-A 自己的演练一致；
+完整离线套件以 9,621 条测试通过——少了 330 条，正是判断层自己的测试。有两处修正写回了清单：
+literature-review 的 SKILL.md 里那节实验内容是文件的**最后一节**，后面没有别的标题；
+它的 TypeSafe `third_party` 条目紧贴在 frontmatter 的闭合 `---` 之上，一直切到「下一个条目」
+就会把分隔符一起删掉，loader 随即把这个 Skill 的网络模式报成 `unknown`。
+
+集成修正：`b67e6902` 补完了 W4 的精选数调整里计数契约没有钉住的那一行 README_zh；
+`a8389209` 修正了移除清单；`f85d3b95` 在发布说明里补上显式的 LLM 后端——
+说明列出了每项能力，却漏了这个选项。

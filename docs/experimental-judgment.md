@@ -538,3 +538,41 @@ tests import eight symbols from its channel and assert on a different
 `stats()` contract 18 times. Folding them means the merger rewriting another
 package's verification surface, which is worse than the duplication. A plan is
 recorded for W5.
+
+### W5 — 2026-09-21
+
+Merged `w5-a-docs-release` (`3cdb34d9` → `3e8001c7`): this document became
+the operator guide, and `docs/experimental-judgment-removal.md` and
+`docs/release-notes-judgment.md` were added, with sections in
+`configuration.md`, `security.md`, `skills.md` and both root READMEs.
+
+Release verification. Every standalone CI gate that can run on this machine
+passed: the frozen response shapes, the route contract, `uv build` followed by
+`verify_release_artifacts.py` (the wheel carries all 23 files of
+`openai4s/judgment/`, the bioSkills area index, and `skills/text-features/`),
+the npm package check (605 Skills, 6.5 MB), `browser_smoke.mjs` with the
+switch off and `browser_judgment.mjs` with it on. `container_smoke.sh` was not
+run: there is no Docker on this machine. CI runs it.
+
+Default-off, confirmed on a brand-new data directory: `GET
+/api/v1/experimental/judgment` reports the master switch off with source
+`default` and every capability off with source `master_off`. A real browser
+session on that daemon — 7 frames, 109 host calls, 12 cell executions — left
+no row containing "judgment" in any of the database's 82 tables, and nothing
+in the daemon log.
+
+Removal, rehearsed. The list was followed on the throwaway branch
+`chore/judgment-removal-dryrun` (never merged, never pushed): 138 files,
+32,696 lines deleted. The directory-README gate reports 166 directories and
+1,590 files, matching W5-A's own rehearsal, and the full offline suite passes
+at 9,621 tests — 330 fewer, the judgment suites themselves. Two corrections
+went back into the list: the experimental section of literature-review's
+SKILL.md is the file's last section, not one followed by another heading, and
+its TypeSafe `third_party` entry sits directly above the frontmatter's closing
+`---`, so a cut that runs to the next entry deletes the delimiter and the
+loader reports the Skill's network mode as `unknown`.
+
+Integration fixes: `b67e6902` finished W4's curated-count bump in the one
+README_zh row the count contract does not pin; `a8389209` corrected the
+removal list; `f85d3b95` added the explicit LLM backend to the release notes,
+which listed every capability but not that option.
