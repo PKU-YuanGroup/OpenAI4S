@@ -14,3 +14,4 @@
 | [`skills.py`](skills.py) | `skills.suggest` Skill 推荐：fan-out、bioSkills 展开、精排三个阶段。 |
 | [`bioskills_areas.json`](bioskills_areas.json) | 生成的领域索引（55 个领域、561 个成员），给 bioSkills 展开阶段用。用 `uv run python scripts/build_bioskills_area_index.py` 重新生成。 |
 | [`literature.py`](literature.py) | `literature.screen`（片段 Noul）和 `literature.claim`（supports / contradicts / insufficient）。原文定位和数值单位比较留在 literature-review sidecar 里做。 |
+| [`safety.py`](safety.py) | `safety.code`（7 类攻击 Noul）、`safety.injection`、`safety.trajectory`（ALLOW/ESCALATE/BLOCK）、`safety.bio_prescan`。一致率阈值写在模块顶部。 |

@@ -30,3 +30,4 @@ and the UI path also requires a current-version disclosure acknowledgement.
 | [`registry.py`](registry.py) | Template registry (`register_template` / `get_template`) and the builtin `system.probe` connection-test template. |
 | [`settings.py`](settings.py) | Settings surface for the gateway and doctor: `status` / `update` / `probe_connection`, TypeSafe key via SecretBroker (never env, never echoed), and an egress *report* of whether `api.typesafe.ai` is already authorized. Does not add an egress group. |
 | [`templates/`](templates/) | Skill-suggestion question templates (`skills.suggest`) and the generated bioSkills area index. |
+| [`shadow.py`](shadow.py) | Bounded safety-shadow queue: two daemon workers, drop-when-full, `judgment_shadow` audit without raw code, `stats()`. |
