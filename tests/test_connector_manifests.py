@@ -46,6 +46,7 @@ _PROBE = {
     "chembl": ("chembl", "www.ebi.ac.uk", "aspirin"),
     "pubchem": ("pubchem", "pubchem.ncbi.nlm.nih.gov", "aspirin"),
     "arxiv": ("arxiv", "export.arxiv.org", "electron"),
+    "string": ("string", "string-db.org", "TP53"),
 }
 
 

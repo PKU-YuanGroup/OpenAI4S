@@ -15,6 +15,7 @@ records without scraping provider-specific pages.
 | `pubchem` | PubChem PUG REST | chemistry | CID and computed compound properties |
 | `arxiv` | arXiv Atom API | ML, physics, literature | preprint metadata, authors, categories, abstract |
 | `openalex` | OpenAlex Works API | multidisciplinary literature | work, DOI, authors, concepts, citations, OA state |
+| `string` | STRING REST API | biology | protein-protein interactions, partner, confidence scores |
 | `clinvar` | ClinVar E-utilities (Stage 10 flag) | biology | variant accession, interpretation, gene |
 | `pubmed` | PubMed E-utilities (Stage 10 flag) | literature | PMID, title, journal, date |
 | `clinicaltrials` | ClinicalTrials.gov API v2 (Stage 10 flag) | biology, literature | NCT id, title, status |
@@ -73,6 +74,7 @@ Source-specific filters are intentionally bounded:
 
 - `organism_id` for UniProt;
 - `species` for an exact Ensembl gene-symbol lookup (default `homo_sapiens`);
+- `species` (NCBI taxon ID or slug, default `9606`) and `required_score` (0–1000) for STRING;
 - `year_from`, `year_to`, and `work_type` for OpenAlex.
 
 arXiv and OpenAlex return cursors. Other first-batch connectors are bounded
