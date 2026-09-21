@@ -1,43 +1,98 @@
 # 实验性语义判断层
 
-这是仓库内「实验性」（默认关闭）语义判断层的设计正文，对应计划 §1、§4、§5。
-运行时接线、HTTP、UI 和模板在后续 wave 落地；本文是它们要实现的契约。
+**实验性。默认关闭。Early access。** 第一个厂商：TypeSafe Jev（`jev-1.13.0`）。
+需要自备 TypeSafe API key。服务托管在美国。
 
-## 状态
+这是仓库内语义判断层的操作说明。维护者如果要删除这项实验，请按
+[experimental-judgment-removal.md](experimental-judgment-removal.md) 做。
+开关名和环境变量也写在 [configuration.md](configuration.md)。外发数据见
+[security.md](security.md)。
 
-实验性。默认关闭。第一个厂商：TypeSafe Jev（`jev-1.13.0`）。核心代码保持
-只用标准库；以官方 HTTP 契约为准，不依赖 `typesafe-sdk`。
+英文正文：[experimental-judgment.md](experimental-judgment.md)。
 
-## 目标与非目标
+## 它是什么
 
-**目标。** 把散落的关键词规则和「让 LLM 返回 JSON 判决」替换成有类型、带概率、
-可记录、可评测、可回放的判断步骤，并放在实验开关后面。
+一个放在实验开关后面、厂商中立的**语义判断层**。它把现在散落在关键词规则和
+「让 LLM 返回 JSON 判决」里的离散判断，变成有类型、带概率、可记录、可评测、
+可回放的步骤。kernel cell 通过已注册模板调用
+`host.judge(template, state, **params)`。控制面挂载点（Skill 检索、安全筛查、
+任务模式检测）走同一个 Host 服务。
 
-首批能力，全部默认关闭：
+问题类型是 `Noul`（P(yes)）、`Choice`（2–255 个选项）或 `Score`（2–10 个有序档位）。
+每次调用都把四种状态当作普通数据返回：`ok`、`uncertain`、`unavailable`、
+`disabled`。缺 key、出网被拦、超时都是带 `error_code` 的 `unavailable`。
+这一层绝不编造默认分数。
 
-| 代号 | 能力 | 形态 | 发布状态 |
-| --- | --- | --- | --- |
-| `skill_suggest` | Skill 推荐（中英文语义匹配） | 给 `search_skills` 追加字段，只作推荐 | 实验性，默认关闭 |
-| `literature_check` | 文献片段筛选 + 结论与引用核验 | `literature-review` Skill 的 helper | 实验性，默认关闭 |
-| `text_features` | 可解释文本特征工程 | 新 Skill | 实验性，默认关闭 |
-| `safety_shadow` | 代码门 / 注入 / 生物安全的影子判定 | 只记录分歧，不改变任何判决 | 实验性，默认关闭 |
-| `task_mode_shadow` | 任务模式判定的影子记录 | 只记录，不绑定交付要求 | 实验性，默认关闭 |
+核心代码只用标准库。以官方 HTTP 契约为准，不依赖 `typesafe-sdk`。默认后端
+POST 到 `https://api.typesafe.ai/v1/systemone`。模型 id 钉死为 `jev-1.13.0`
+（不用 `jev-latest`）。输入 **$0.042 / 百万 token**，输出免费。
 
-**本次实验明确不做的事**
+## 它不是什么
 
 - 不替代主模型做规划、代码生成、解释或写作。Jev 不生成文本。
-- 不让 Jev **执行**任何安全判决。安全相关一律只做 shadow；进入 enforcement 另开计划。
-- 不做大小模型级联。`host.llm` 目前没有按请求选模型的受控接口。
-- 不处理图像或结构文件。Jev 只接受文本；其他模态要先转成待判断的文本。
+- 不**执行**任何安全判决。`safety_shadow` 只记录与现有分类器、注入扫描、
+  生物安全筛查的分歧。那三个函数仍然返回影子提交之前就算好的判决。
+- 不把检测到的任务模式绑定到交付要求。`task_mode_shadow` 只记录；
+  `resolve_task_mode` 仍然返回规则结果。
+- 不处理图像或结构文件。Jev 只接受文本。其他模态要先转成待判断的文本。
+- 不把 `api.typesafe.ai` 加进出网白名单目录。allowlist 模式下仍要你自己授权，
+  和其他目的地一样（`host.request_network_access(domain="api.typesafe.ai")`）。
+- 不会在 TypeSafe 失败时静默退回主模型。`provider=llm` 必须显式选择，
+  并且每条结果都标 `calibrated=false`。
 
-## 发布设计
+## 能力
 
-### 开关、优先级与默认值
+五项全部默认关闭。总开关也必须打开。走 UI 打开某一项时，还要对该项做
+当前版本的数据披露确认。
 
-`ExperimentalJudgmentFlags` 挂在 `Config` 的 `experimental_judgment` 上。
-能力字段是三态（`bool | None`），由 `_strict_env_tristate` 读取：未设置是
-`None`，真/假词汇与 `_STRICT_TRUE_VALUES` / `_STRICT_FALSE_VALUES` 相同，
-其他拼写（包括 `flase`）抛 `ValueError`。
+| 代号 | 做什么 | 发给 `api.typesafe.ai` 的内容 |
+| --- | --- | --- |
+| `skill_suggest` | 给 `search_skills` 追加语义推荐。词法命中保持原样。工作台显示成实验性 chip（名称、`p_fit`、confidence），不和词法列表混排。最多 3 条。显式点名某个 Skill 时跳过判断（`skipped_explicit`）。 | 用户当前请求文本；当前 scope 内候选 Skill 的名称、描述和 `SKILL.md` 开头片段 |
+| `literature_check` | `literature-review` Skill 上的 `screen_passages` 和 `check_claims`。引文定位和数字/单位比较在代码里做。`host.judge` 只问语义关系。`supports` 只表示源文本支持这句话，并不表示这句话在科学上已被证明。`not_found` 不是造假的证据。 | 研究问题、论文片段、待核验结论 |
+| `text_features` | 新 Skill `text-features`。主模型提出 Noul/Score 问题；`host.judge("features.custom", …)` 对选中的每一行作答；`audit-dataset` / `plan-ml-experiment` / `evaluate-model` 在开发集上拟合，测试集冻结后评一次。特征保留来源问题和测量误差，不是人工金标准。`unavailable` 的行填 NaN，不填默认值。 | 用户选中的数据行文本 |
+| `safety_shadow` | 挂在 `classify_code`、`scan_tool_result` 和生物安全轨迹筛查（`looks_biosecurity_relevant` / `screen_trajectory`）旁边的影子判定。外发风险最高。 | 待执行的代码 cell、工具返回的内容片段、会话轨迹摘要 |
+| `task_mode_shadow` | `resolve_task_mode` 的影子记录。显式 `--mode` / `task_mode` 不会提交。 | 用户请求文本 |
+
+对应开关关闭时，这些路径返回 `disabled`（两条影子通道则不启动 worker），不发请求。
+
+## 如何开启
+
+### 界面
+
+1. 打开 **Customize → General**。Experimental 区块就在这个标签页上
+   （`data-judgment`）。
+2. 打开总开关。披露对话框会列出每一项能力、会发送什么数据，以及下面的托管事实。
+   `safety_shadow` 单独标成外发风险最高。
+3. 勾选你打算用的每一项，然后确认。确认写入
+   `experimental.judgment.disclosure_ack = {version, capabilities, acked_at}`，
+   版本是 `DISCLOSURE_VERSION`（`2026-09-20`）。改了披露文案就升版本，需要重新确认。
+4. 粘贴 TypeSafe API key 并保存。已保存的密钥不会回显；界面只显示「已配置 /
+   未配置」。清除会同时删掉 Store 行和钥匙串条目。
+5. 打开各项能力开关。后端和模型是只读的（除非你用环境变量覆盖，否则是
+   `typesafe` / `jev-1.13.0`）。
+6. **测试连接**会发一个不含用户数据的固定探针
+   （`POST /api/v1/experimental/judgment/test`）。结果是
+   `ok` / `unavailable` / `disabled`，外加 `error_code` 和 `latency_ms`。
+
+如果总开关的环境变量是显式 false，这个页面上的开关全部置灰。UI 改不回来。
+
+### 环境变量（CLI、headless、CI）
+
+```bash
+export OPENAI4S_EXPERIMENTAL_JUDGMENT=1
+export OPENAI4S_JUDGMENT_SKILL_SUGGEST=1          # 可选，按能力打开
+export OPENAI4S_JUDGMENT_LITERATURE=1
+export OPENAI4S_JUDGMENT_TEXT_FEATURES=1
+export OPENAI4S_JUDGMENT_SAFETY_SHADOW=1
+export OPENAI4S_JUDGMENT_TASK_MODE_SHADOW=1
+export OPENAI4S_TYPESAFE_API_KEY=...              # headless；永不记入日志
+```
+
+走环境变量打开时，视为 operator 已知情，启动时打一条 warning。不要求 Store 里的披露确认。
+
+`Config` 在构造时快照环境变量。先 `Config(...)` 再 `export` 不会打开能力；需要新建一个 `Config`。
+
+封闭词表（`0`/`1`、`false`/`true`、`no`/`yes`、`off`/`on`）。拼错（例如 `flase`）会抛 `ValueError`，而不会打开任何东西。
 
 | 开关 | 环境变量 | Store setting | 默认 |
 | --- | --- | --- | --- |
@@ -47,119 +102,136 @@
 | 文本特征 | `OPENAI4S_JUDGMENT_TEXT_FEATURES` | `experimental.judgment.capabilities.text_features` | 关 |
 | 安全影子 | `OPENAI4S_JUDGMENT_SAFETY_SHADOW` | `experimental.judgment.capabilities.safety_shadow` | 关 |
 | 任务模式影子 | `OPENAI4S_JUDGMENT_TASK_MODE_SHADOW` | `experimental.judgment.capabilities.task_mode_shadow` | 关 |
-| 后端 | `OPENAI4S_JUDGMENT_PROVIDER` | `experimental.judgment.provider` | `typesafe`（后续可选 `llm`） |
-| 模型 | `OPENAI4S_JUDGMENT_MODEL` | `experimental.judgment.model` | `jev-1.13.0`（钉死版本，不用 `jev-latest`） |
+| 后端 | `OPENAI4S_JUDGMENT_PROVIDER` | `experimental.judgment.provider` | `typesafe`（`llm` 须显式选择） |
+| 模型 | `OPENAI4S_JUDGMENT_MODEL` | `experimental.judgment.model` | `jev-1.13.0` |
 | 超时 | `OPENAI4S_JUDGMENT_TIMEOUT_S` | — | `3.0` 秒（0.1–30） |
-| Key | `OPENAI4S_TYPESAFE_API_KEY`（headless） | secret `typesafe_api_key`，scope 为 `judgment` | 无 |
+| Key | `OPENAI4S_TYPESAFE_API_KEY` | secret `typesafe_api_key`，scope 为 `judgment` | 无 |
+| 审计原始 state | — | `experimental.judgment.audit_raw_state` | 关 |
 
-生效开关（`openai4s.judgment.flags.resolve`）遵循
-`JUDGMENT_FLAG_PRECEDENCE`：
+生效开关（`openai4s.judgment.flags.resolve`）遵循 `JUDGMENT_FLAG_PRECEDENCE`：
 
-1. env 显式为 false → **强制关闭**（kill switch，UI 改不回来）。
-2. env 显式为 true → 打开（CLI / headless / CI live 测试）。
+1. env 显式为 false → 强制关闭（kill switch，UI 改不回来）。
+2. env 显式为 true → 打开。
 3. 其余情况看 Store setting。
 4. 都没有 → 关闭。
-5. 总开关关闭时，所有子能力一律关闭。
-6. 走 UI 路径打开时，还要求**当前版本**的数据披露确认，否则按关闭处理。走 env 路径打开时，默认视为 operator 已知情，启动时打一条 warning 日志。
+5. 总开关关闭时，所有子能力一律关闭（`master_off`）。
+6. 走 UI 路径打开时，还要求**当前版本**的披露确认；否则记为 `no_disclosure`，按关闭处理。
 
-### UI
+TypeSafe key 每次请求前经 SecretBroker 取用。客户端不会把它写进 `os.environ`，
+不会在 JSON 或日志里回显，也不会注入 kernel 环境。
 
-Customize → General（或独立的 Experimental 标签）将提供总开关、带披露说明的
-分项开关、只读的后端和模型、key 输入/清除、连接测试，以及状态行
-（`disabled` / `ok` / `unavailable`）。语义 Skill 推荐显示成实验性 chip，
-不和词法结果混排。UI 由后续 wave 实现。
+REST（鉴权与 `/search/config` 相同）：
 
-### 「默认关闭」保证
+- `GET /api/v1/experimental/judgment` — 开关、来源、provider、model、
+  `key_configured`（只有布尔值）、披露版本与确认、egress 报告。
+- `PUT /api/v1/experimental/judgment` — `enabled`、`capabilities`、
+  `acknowledge`、`api_key`、`clear_api_key`。
+- `POST /api/v1/experimental/judgment/test` — 连接测试。
 
-没有显式打开实验开关时，行为、系统提示词、工具 schema、工具结果、网关响应
-schema 和 harness golden trace 都必须逐字节不变。
-`tests/test_judgment_default_off.py` 冻结了 Skill `system_context`、
-`search_skills` 结果、`REGISTRY` schema，以及 heuristic 模式下
-`classify_code` 的判决。这份快照是在本层任何产品代码落地之前抓取的。
+## 如何关闭
 
-### 数据披露
+Kill switch 是总开关环境变量的显式 false：
 
-文案写在 `openai4s/judgment/disclosure.py`，版本号
-`DISCLOSURE_VERSION = "2026-09-20"`。改了文本就升版本，要求重新确认。
-按能力列出的、发给 `api.typesafe.ai` 的内容：
+```bash
+export OPENAI4S_EXPERIMENTAL_JUDGMENT=0
+```
 
-| 能力 | 外发内容 |
+这会强制关闭所有子能力。环境变量未设置时，关掉 UI 总开关或清掉 Store setting
+同样关闭这一层。总开关关闭时，`host.judge` 返回 `disabled`，不调用传输层。
+
+在 Customize → General 点「清除」，或 `PUT {"clear_api_key": true}`。
+Headless：取消设置 `OPENAI4S_TYPESAFE_API_KEY`。
+
+## 如何查看状态
+
+**界面。** Customize → General → Experimental。区块显示每项开关的来源
+（`env_off` / `env_on` / `setting` / `default` / `master_off` /
+`no_disclosure`）、key 是否已配置、provider、model、egress 模式，以及
+`api.typesafe.ai` 是否已经授权。测试连接把 `ok` / `unavailable` / `disabled`
+写到 `[data-judgment-test-result]`。
+
+**`openai4s doctor`。** 检查项名称是 `judgment`。它不发起网络连接，也永不打印 key。
+
+| 情形 | Doctor 行 |
 | --- | --- |
-| `skill_suggest` | 用户当前请求文本；scope 内候选 Skill 的名称、描述和 `SKILL.md` 开头片段 |
-| `literature_check` | 研究问题、论文片段、待核验结论 |
-| `text_features` | 用户选中的数据行文本 |
-| `safety_shadow` | 待执行的代码 cell、工具返回的内容片段、会话轨迹摘要（风险最高，UI 上单独强调） |
-| `task_mode_shadow` | 用户请求文本 |
+| 默认 / 总开关关闭 | `[ok] judgment  disabled (experimental, default off)` |
+| 开启且有 key、egress 正常 | `[ok] judgment  enabled (typesafe/jev-1.13.0)` |
+| 开启但没有 key | `[warn] judgment  enabled, but no TypeSafe API key is configured` |
+| 开启且 allowlist 未授权 | `[warn] judgment  enabled, but api.typesafe.ai is not on the egress allowlist` |
 
-固定事实：服务托管在美国；隐私政策承诺不用输入训练模型，但**没有写明保留期限**；
-零数据保留（ZDR）只对企业账户开放。敏感数据不要开启。
+**审计事件。** Host 上成功和失败的运行都会发命名事件 `judgment`
+（`openai4s.observability.log_event`），字段包括 purpose、模板 id 和版本、
+status、`error_code`、usage、延迟、`state_sha256`、完整概率、`cache_hit`、
+`truncated`、`fake`、provider、model。原始 state 默认不落，只有
+`experimental.judgment.audit_raw_state` 为真时才落。影子通道发
+`judgment_shadow`，字段是 `kind`、`existing_verdict`、`shadow_answers`、
+`agree`、`status`、`latency_ms`、`state_sha256`——没有代码原文，也没有请求文本。
 
-确认记录写入
-`experimental.judgment.disclosure_ack = {version, capabilities, acked_at}`。
+dispatcher 信封 `log_host_call(method="judge")` 仍会记下 RPC spec，包括 state。
+那是和命名事件 `judgment` 分开的另一处审计面。
+
 Session package 导出时可附带 `judgment_manifest.json`（用过的能力、后端、
-模型、模板版本、调用次数和 token 数），**不含 key**。
+模型、模板版本、调用次数和 token 数）。**不含 key**。
 
-### 毕业与移除
+## 托管、隐私、价格
 
-每项能力单独毕业：预先登记的测试集质量门槛、国内网络附加 p95 延迟门槛、
-连续一个发布周期没有相关 P0/P1，以及维护者签字。`safety_shadow` 毕业也只是
-保留 shadow，进入 enforcement 必须另写计划。
+打开这一层之前先看清楚，敏感实验数据尤其如此：
 
-移除只需四步：删掉 `openai4s/judgment/`、`host/judgment.py`、
-`sdk/judgment.py`；删掉各挂载点的 `if flags...:` 分支；删掉 UI 区块；
-去掉 `[tool.mypy] files` 里追加的几行。没有 egress 分组要删。
+- TypeSafe Jev 服务**托管在美国**。
+- 隐私政策承诺**不用输入训练模型**。
+- 隐私政策**没有写明保留期限**。
+- **零数据保留（ZDR）只对企业账户开放。**
+- TypeSafe Jev 目前是 **early access**（需要排 waitlist）。离线开发用 loopback
+  假端点；没有 key 时 OpenAI4S 的其余部分不受影响。
+- 输入 **$0.042 / 百万 token**，输出免费。用量仍然走与 `host.llm` 相同的预算准入。
+- **敏感数据不要开启。**
 
-## 目标架构
+披露文案写在 `openai4s/judgment/disclosure.py`。
 
-### 调用链
+## 已知限制
 
-控制面挂载点（Skill 检索，以及后续的 shadow）和 kernel 的 `host.judge` RPC
-都进入 `JudgmentService`，再调用 `JudgmentBackend`：`NullBackend`（永远
-disabled）、`TypeSafeBackend`（后续）、可选 `LlmBackend`（后续，只能显式选择，
-`calibrated=false`）。API key 永远不进入 kernel 环境。
+这些是 Jev 和本实验的性质，不是临时缺陷：
 
-### 数据契约
+- question 的 key 不会发给模型。每条 `instructions` 必须自成一体，并写明引用的 `state` 字段。
+- Choice 最多 255 个选项。更大的目录要先收窄（Skill 推荐会按 bioSkills 领域分层）。
+- Noul 只返回 P(yes)，没有 confidence。
+- Score 有 2–10 档，并保留完整分布。相同均值可能来自完全不同的分布，要保留分布。
+- confidence 由概率分布算出来，不等于正确率。阈值按模板、按语言在开发集上校准。
+- state 加最长问题上限 32k token。Service 层截断并打上 `truncated`。
+- 计数、算术、数值接近度、日期比较全部在代码里做。只把离散的语义问题交给 Jev。
+- 对抗性内容能左右答案。安全相关只做 shadow。置信度永远不能作为授权依据。
+- 英文问题和 criteria 效果最好，CJK 较弱。模板用英文写；state 可以含中文。评测按语言分开报告。
+- 限流（250k token/s、1200 请求/分钟）和 429/529 重试都在总时长预算内（默认 3 秒）。不同 state 的 Host 并发上限是 4。
+- SDK 变动快。本仓库只依赖 HTTP 契约；校验失败就丢弃整份 payload。
+- 本树还没有收集 Jev 在冻结评测集上的 live 数字。毕业要等这些运行、国内网络 p95，以及维护者签字。在那之前把它当实验，而不是词法检索或 DOI 核验的替代。
+- `format_tool_result` 在词法 `search_skills` 列表非空时仍然只把词法列表给模型看。实验性 chip 是工作台投影。词法一无所获时，模型才能在工具观察里看到语义推荐。
+- 两条影子队列（`shadow.py` 和 `task_mode_shadow.py`）仍是两个模块。默认关闭时不启动线程。
 
-问题类型是 `openai4s/judgment/types.py` 里的 frozen dataclass：
+## 毕业标准
 
-- `Noul`：`instructions` 非空；`criteria` 为 `None` 或恰好包含 `true` 和
-  `false`。`to_api()` 生成 `{"type":"noul","instructions":...}`，没有
-  criteria 时省略该键。
-- `Choice`：2–255 个选项，选项名为非空字符串；description 可以是字符串或对象。
-  `to_api()` 把选项放进 `criteria`。
-- `Score`：2–10 个有序档位。`to_api()` 把档位作为 `criteria` 列表。
+每项能力单独毕业。去掉 Experimental 徽标需要同时满足：
 
-`Answer` 含 `kind`、`value`，以及可选的 `probabilities` / `confidence`。
-Noul 的答案带上其中任何一个都会被拒绝：Jev 对 Noul 只返回 P(yes)，
-后端永远不会填的字段不应当可被表示。`value` 在 `noul` / `score` 下是数值，
-在 `choice` 下是选中项的名称。`JudgmentResult` 是 Host RPC 的返回值；
-`to_dict()` 只含 JSON 类型。`BackendReply` 是传输层回包：raw answers、usage、回显的
-model、`request_id`（没有就是 `None`）。
+1. 在预先登记的测试集上达到**打开测试集之前就写下来的**质量门槛；
+2. 从国内网络测得的附加 p95 延迟在门槛以内；
+3. 连续一个发布周期没有归到本层的 P0/P1；
+4. 维护者签字。
 
-缓存键（后续）：
-`(provider, model, template_id, template_version, policy_version, state_sha256, candidate_versions_hash, scope_id)`。
-回放一律用录制的结果。
+`safety_shadow` 毕业也只是保留 shadow，进入 enforcement 必须另写计划。
 
-### 状态语义
+评测协议里的占位门槛（开 `--split test` 之前要冻结）：`skill_suggest` 错误推荐率相对词法 B0 至少降低 30%，中文 top-3 召回至少 0.7，国内附加 p95 至多 1.5 s；`literature_check` 高置信错误至多 3%，人工复核比例至多 30%，总成本不高于 LLM 对照。
 
-| 状态 | 含义 |
-| --- | --- |
-| `disabled` | 开关关闭，或走 UI 路径但还没做当前版本的披露确认。**不发请求。** |
-| `unavailable` | 没配 key、网络或超时、401/429/529 在预算内仍失败、响应不合法、被 egress 拦截。**绝不编造默认分数。** `answers` 为空，`error_code` 必填。 |
-| `uncertain` | 请求成功，但模板策略判定为不确定。答案照常返回，由调用方决定怎么处理。 |
-| `ok` | 请求成功，并且通过了策略。 |
+## FAQ
 
-`host.judge` 把以上四种状态都当作正常返回值。只有调用方式本身出错（未知模板、
-参数不合法）才走单键 `{"error": msg}` 软失败。
+### 国内网络怎么办？
 
-### 实现必须遵守的 Jev 约束
+没有内置中继。客户端直连 `api.typesafe.ai`。可以像其他标准库 `urllib` 客户端一样，在进程环境里放 HTTPS 代理。`OPENAI4S_EGRESS=allowlist` 模式下，用 `host.request_network_access` 授权 `api.typesafe.ai`（Network 面板没有判断层分组可开——v1.3 从未新增分组）。预期延迟更高、`unavailable` 更多；调用方已经把该状态当成「没有推荐 / 需要复核」，而不是崩溃。在你实际使用的网络上测 p95，再决定这一层能不能承重。
 
-question 的 key 不会发给模型，所以每条 `instructions` 必须自成一体，并写明
-引用的 `state` 字段。Choice 最多 255 个选项。Noul 只返回 P(yes)。Score 有
-2–10 档，并保留完整分布。confidence 不等于正确率。state 加最长问题上限 32k
-token；Service 层截断并打标。计数、算术、日期比较全部在代码里做。安全相关
-只做 shadow；置信度永远不能作为授权依据。问题和 criteria 用英文写；state
-可以含中文。
+### 能不能不用 TypeSafe？
+
+可以。设 `OPENAI4S_JUDGMENT_PROVIDER=llm`（或 Store setting
+`experimental.judgment.provider=llm`）。当前配置的主模型回答同一套带类型的问题。
+每条结果都是 `calibrated=false`。TypeSafe 失败会变成 `unavailable`，**不会**去调
+`chat()`。把它当作显式对照基线，而不是 Jev 概率的即插即用替代。
 
 ## Progress log
 

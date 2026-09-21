@@ -122,6 +122,14 @@ A capability map of the current tree — what is implemented and reachable, plan
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
 | **Ops, safety & release** | `/api/v1` and a startup credential · Seatbelt/bubblewrap sandbox adapters with visible degraded and fail-closed modes · durable approvals that deny by default when unattended · redacted diagnostics · revocable telemetry · environments as a transaction · a 13-workflow/46-case benchmark against the real Store, kernels, and dispatcher · a staged release pipeline that verifies artifacts before anything becomes public |
 
+### Experimental features
+
+A default-off **semantic judgment layer** (TypeSafe Jev) can add Skill
+suggestions, literature claim checks, text-feature engineering, and
+recording-only safety / task-mode shadows. It stays off until you enable it,
+needs your own TypeSafe key, and sends text to a service hosted in the United
+States. → [Experimental semantic judgment](docs/experimental-judgment.md)
+
 ---
 
 ## 🎬 Demo
@@ -264,6 +272,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | [**Supported platforms**](docs/platforms.md) | the per-OS support tiers and why native Windows refuses to start a kernel |
 | [**Windows / WSL2**](docs/windows-wsl.md) | Ubuntu 24.04 installation, sandbox checks, lifecycle commands, mainland mirrors, and localhost proxy behavior |
 | [**Security**](docs/security.md) | defense-in-depth safety layers & remote-access notes |
+| [**Experimental semantic judgment**](docs/experimental-judgment.md) | default-off TypeSafe Jev layer: how to enable and disable it, what each capability sends, kill switch, doctor/audit status |
 
 ---
 
