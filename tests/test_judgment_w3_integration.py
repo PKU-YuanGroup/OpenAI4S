@@ -101,3 +101,30 @@ def test_the_offline_suite_never_inherits_an_exported_judgment_switch() -> None:
     effective = resolve(Config(), None)
     assert effective.master.enabled is False
     assert effective.provider == "typesafe"
+
+
+def test_the_template_package_exports_every_module_it_imports() -> None:
+    """`__all__` must not drift from the imports beneath it.
+
+    Added by MERGE-W4. Four branches each appended an import and rewrote
+    `__all__`; resolving that as a union left three `__all__` assignments in
+    the file, and the last one silently won, dropping two names. The imports
+    still registered their templates, so nothing failed -- which is why this
+    needs its own assertion.
+    """
+
+    import openai4s.judgment.templates as templates
+
+    exported = set(templates.__all__)
+    assert len(templates.__all__) == len(exported), "duplicate names in __all__"
+    assert sorted(templates.__all__) == templates.__all__, "__all__ is not sorted"
+    for name in exported:
+        assert hasattr(templates, name), f"{name} is exported but not imported"
+    source = __import__("pathlib").Path(templates.__file__).read_text(encoding="utf-8")
+    assert source.count("__all__") == 1, "more than one __all__ assignment"
+    imported = {
+        line.split(" as ")[-1].strip()
+        for line in source.splitlines()
+        if line.startswith("from . import ")
+    }
+    assert imported == exported, f"imports {imported} != __all__ {exported}"

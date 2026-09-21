@@ -8,6 +8,4 @@ from . import safety as safety
 from . import skills as skills
 from . import task_mode as task_mode
 
-__all__ = ["literature", "safety", "skills"]
-__all__ = ["literature", "skills", "task_mode"]
-__all__ = ["features", "literature", "skills"]
+__all__ = ["features", "literature", "safety", "skills", "task_mode"]
