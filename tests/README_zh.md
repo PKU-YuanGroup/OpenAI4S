@@ -502,6 +502,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_skills_eval.py`](test_judgment_skills_eval.py) | 冻结的 Skill 推荐评测：数据集 schema、gold 名都存在于 loader、每个 `lang × category × split` 分层都有样本、`no_skill` ≥ 20%、测试集锁哈希、B2 词典只来自开发集、手写指标/bootstrap 边界，以及标 `slow` 的开发集 B0+B2 离线跑通。从不对 `--split test` 打分。 |
 | [`test_literature_judgment.py`](test_literature_judgment.py) | 文献 `screen_passages` / `check_claims`：NFKC/引号/连字符定位、精确与模糊匹配、数值和单位冲突、全部结论状态（含 `disabled`）、已有 sidecar 函数不变，以及对着 loopback 假端点的 kernel cell 往返。 |
 | [`test_judgment_literature_eval.py`](test_judgment_literature_eval.py) | 冻结的文献结论核验评测：数据集 schema、每条都有 CC 许可证和 DOI、每个 `lang × perturbation × split` 分层都有样本、测试集锁哈希、手写指标/bootstrap 边界、离线 CODE 对数字改动和编造引文的检出，以及 W3-A 未合并时跳过的 kernel 数值比较。从不对 `--split test` 打分。 |
+| [`test_judgment_safety_shadow.py`](test_judgment_safety_shadow.py) | 安全影子：语料在开关关闭/开启、heuristic 与 mock llm 下判决完全相同；假后端 sleep 5 秒时 `classify_code` 不阻塞；后端异常不外泄；队列满丢弃、`stats()`、审计不含原始代码。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

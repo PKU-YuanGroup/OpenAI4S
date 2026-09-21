@@ -714,6 +714,12 @@ def _judgment(cfg: Any) -> Check:
     )
 
     facts: dict[str, Any] = {"experimental": True}
+    try:
+        from openai4s.judgment.shadow import stats as shadow_stats
+
+        facts["safety_shadow"] = shadow_stats()
+    except Exception:
+        pass
     store = _store_for(cfg)
     flags = resolve(cfg, store)
     facts["enabled"] = flags.master.enabled
