@@ -383,6 +383,39 @@ def _http_get(
         return body, final_url, content_type
 
 
+def fetch_json(
+    url: str,
+    *,
+    timeout: float = 10.0,
+    max_bytes: int = 4 * 1024 * 1024,
+) -> dict:
+    """Fetch a URL and return its body as a JSON object.
+
+    Public because the updater needs a JSON read and must not open its own
+    socket to get one: `tests/test_egress_surface.py` freezes the set of
+    modules that may name an outbound primitive, and `_open_http_response` is
+    the only path in the tree that follows redirects *manually* so the egress
+    allowlist and the SSRF guard apply to every hop. Both of the updater's
+    sources redirect, so a client that follows redirects internally checks the
+    first hop and trusts the rest.
+
+    Deliberately thin. A non-2xx answer is whatever `_open_http_response`
+    raises for it (``urllib.error.HTTPError``, or ``requests``' own error when
+    that path is taken) rather than a status in the return value, because a
+    caller that has to remember to check a status code is a caller that will
+    parse an error page as data. A body that is not a JSON *object* raises
+    ``ValueError``, for the same reason: a top-level list or string reaching
+    code that expects a mapping fails later and further away.
+    """
+    body, _final_url, _ctype = _http_get(url, timeout=timeout, max_bytes=max_bytes)
+    document = json.loads(body.decode("utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError(
+            f"expected a JSON object from {url!r}, got {type(document).__name__}"
+        )
+    return document
+
+
 # --------------------------------------------------------------------------- #
 #  HTML -> text / markdown
 # --------------------------------------------------------------------------- #
