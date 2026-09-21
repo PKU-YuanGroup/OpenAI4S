@@ -95,10 +95,14 @@ tests/test_text_features_skill.py
 
 - `capabilities.network.domains`: remove `api.typesafe.ai`.
 - `metadata.third_party`: remove the TypeSafe entry and the comment
-  `# Experimental literature_check: …`.
-- Delete the section `## Semantic evidence check (experimental)` (from that
-  heading through the `check_claims` example and the status-field paragraph).
-  `## Style pass before saving` stays.
+  `# Experimental literature_check: …`. That entry is the **last** one in the
+  frontmatter, directly above the closing `---`. Delete its lines only; a
+  block-level cut that runs to "the next entry" runs through the delimiter,
+  and the loader then reads the whole file as body and reports the Skill's
+  network mode as `unknown` (`tests/test_skill_network_contract.py` fails).
+- Delete the section `## Semantic evidence check (experimental)`. It is the
+  **last** section of the file, so delete from that heading to end of file.
+  `## Style pass before saving` comes *before* it and stays.
 
 ## 3. Surgical hooks (file + function + hook)
 
