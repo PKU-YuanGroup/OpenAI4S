@@ -586,3 +586,48 @@ def test_backend_error_does_not_raise_from_helper(kernel_mod) -> None:
         {"s1": {"text": "HbA1c fell by 1.1 percentage points versus placebo."}},
     )
     assert checked[0]["status"] == "uncertain"
+
+
+def test_check_claims_rows_carry_the_billed_usage(kernel_mod) -> None:
+    """Added by the live evaluation. The claim-check evaluation sums `usage`
+    over rows, but the rows never carried it, so every live run was scored at
+    0 input tokens and $0. A row that reached the backend carries what it
+    cost; a locate failure never reached it and carries nothing; a cache hit
+    sent nothing and must not be billed again.
+    """
+
+    source = "HbA1c fell by 1.1 percentage points versus placebo in the treated arm."
+    sources = {"s1": {"text": source, "version_id": "ver-1"}}
+    judged = {
+        "claim_id": "judged",
+        "claim": "HbA1c fell versus placebo.",
+        "quote": "HbA1c fell by 1.1 percentage points",
+        "source_id": "s1",
+    }
+    missing = {
+        "claim_id": "missing",
+        "claim": "Mortality halved.",
+        "quote": "mortality halved in the same cohort",
+        "source_id": "s1",
+    }
+    cached = dict(judged, claim_id="cached")
+
+    billed = dict(
+        _choice_result("supports"),
+        usage={"input_tokens": 311, "output_tokens": 9},
+        latency_ms=180,
+        cache_hit=False,
+    )
+    repeat = dict(billed, cache_hit=True)
+    host = FakeHost([billed, repeat])
+    kernel_mod.lr_sdk = lambda: host
+    rows = {
+        row["claim_id"]: row
+        for row in kernel_mod.check_claims([judged, missing, cached], sources)
+    }
+
+    assert rows["judged"]["usage"] == {"input_tokens": 311, "output_tokens": 9}
+    assert rows["judged"]["latency_ms"] == 180
+    assert rows["missing"]["status"] == "not_found_needs_review"
+    assert rows["missing"]["usage"] == {}
+    assert rows["cached"]["usage"] == {}

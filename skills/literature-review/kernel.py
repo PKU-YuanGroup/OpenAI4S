@@ -820,6 +820,8 @@ def _empty_claim_row(
     numeric: dict | None = None,
     error_code: object = None,
     template_version: object = None,
+    usage: dict | None = None,
+    latency_ms: object = None,
 ) -> dict:
     return {
         "claim_id": claim_id,
@@ -834,6 +836,11 @@ def _empty_claim_row(
         "status": status,
         "numeric": numeric,
         "error_code": error_code,
+        # What the judgment cost and how long it took. A row that never reached
+        # the backend (locate failure, disabled) carries empty usage, so a
+        # caller summing cost over rows gets the billed total, not zero.
+        "usage": dict(usage or {}),
+        "latency_ms": latency_ms,
     }
 
 
@@ -926,6 +933,8 @@ def check_claims(
                 error_code=judged.get("error_code"),
                 template_version=judged.get("template_version")
                 or CLAIM_TEMPLATE_VERSION,
+                usage=judged.get("usage") if not judged.get("cache_hit") else {},
+                latency_ms=judged.get("latency_ms"),
             )
         )
     return rows
