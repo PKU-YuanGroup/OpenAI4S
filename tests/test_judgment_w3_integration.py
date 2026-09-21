@@ -66,3 +66,38 @@ def test_run_resolves_a_bundled_template_without_going_through_dispatch() -> Non
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert "unknown template" not in proc.stderr
     assert proc.stdout.startswith("STATUS unavailable"), proc.stdout
+
+
+def test_the_offline_suite_never_inherits_an_exported_judgment_switch() -> None:
+    """An opt-in experiment must not activate because a developer exported it.
+
+    Added by MERGE-W3, the promise carried since W1. Every capability flag,
+    the provider, the timeout and the fake endpoint are purged per test, the
+    same way the rollout flags are. The key variables are already covered by
+    `_LLM_ENV_LEAK`'s `*API_KEY` / `*MODEL` patterns -- deliberately, so the
+    offline suite can never see a real one.
+    """
+
+    import os
+
+    from openai4s.config import Config
+    from openai4s.judgment.flags import resolve
+
+    for name in (
+        "OPENAI4S_EXPERIMENTAL_JUDGMENT",
+        "OPENAI4S_JUDGMENT_SKILL_SUGGEST",
+        "OPENAI4S_JUDGMENT_LITERATURE",
+        "OPENAI4S_JUDGMENT_TEXT_FEATURES",
+        "OPENAI4S_JUDGMENT_SAFETY_SHADOW",
+        "OPENAI4S_JUDGMENT_TASK_MODE_SHADOW",
+        "OPENAI4S_JUDGMENT_PROVIDER",
+        "OPENAI4S_JUDGMENT_TIMEOUT_S",
+        "OPENAI4S_JUDGMENT_FAKE_ENDPOINT",
+        "OPENAI4S_TYPESAFE_API_KEY",
+        "OPENAI4S_JUDGMENT_MODEL",
+    ):
+        assert name not in os.environ, f"{name} leaked into the offline suite"
+
+    effective = resolve(Config(), None)
+    assert effective.master.enabled is False
+    assert effective.provider == "typesafe"
