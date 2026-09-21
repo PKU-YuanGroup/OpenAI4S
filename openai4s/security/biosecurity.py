@@ -100,9 +100,18 @@ class ScreenVerdict:
 
 def looks_biosecurity_relevant(text: str) -> bool:
     """Cheap gate: is this text worth a trajectory screen at all?"""
-    if not text:
-        return False
-    return _BIO_TRIGGERS.search(text) is not None
+    hit = bool(text) and _BIO_TRIGGERS.search(text) is not None
+    try:
+        from openai4s.judgment.shadow import submit
+
+        submit(
+            "bio_prescan",
+            state={"text": (text or "")[:20000]},
+            existing_verdict=bool(hit),
+        )
+    except Exception:
+        pass
+    return hit
 
 
 def screen_trajectory(
@@ -123,6 +132,30 @@ def screen_trajectory(
                     no biosecurity screen at all — the one failure this layer
                     exists to prevent.
     """
+    verdict = _screen_trajectory(user_text, agent_actions, cfg, usage_sink=usage_sink)
+    try:
+        from openai4s.judgment.shadow import submit
+
+        submit(
+            "trajectory",
+            state={
+                "user_text": (user_text or "")[:8000],
+                "agent_actions": (agent_actions or "")[:12000],
+            },
+            existing_verdict=verdict.decision,
+        )
+    except Exception:
+        pass
+    return verdict
+
+
+def _screen_trajectory(
+    user_text: str,
+    agent_actions: str,
+    cfg,
+    *,
+    usage_sink: Callable[[Any], None] | None = None,
+) -> ScreenVerdict:
     combined = f"{user_text}\n{agent_actions}"
     if not looks_biosecurity_relevant(combined):
         return ScreenVerdict(

@@ -342,6 +342,27 @@ def classify_code(
     only: this screener is never gated, because refusing it would not save the
     tokens, it would execute the cell unscreened.
     """
+    verdict = _classify_code(code, cfg, mode=mode, usage_sink=usage_sink)
+    try:
+        from openai4s.judgment.shadow import submit
+
+        submit(
+            "code",
+            state={"code": (code or "")[:20000]},
+            existing_verdict=verdict.decision,
+        )
+    except Exception:
+        pass
+    return verdict
+
+
+def _classify_code(
+    code: str,
+    cfg=None,
+    *,
+    mode: str | None = None,
+    usage_sink: Callable[[Any], None] | None = None,
+) -> Verdict:
     if not code or not code.strip():
         return Verdict("SAFE", source="fast-path")
 
