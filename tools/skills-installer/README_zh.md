@@ -21,7 +21,7 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 （604 个 Skill：43 个精选 + 561 个 bioSkills），使用跟随默认分支的 GitHub 写法：
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # 43 个精选 Skill
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # 44 个精选 Skill
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定版第三方配方
 ```
 
@@ -60,6 +60,6 @@ tarball 的 SHA-256——不是 commit SHA，因为把分支解析成 commit 是
 
 ## 它处在什么位置
 
-对 OpenAI4S 用户来说这个命令基本是多余的：本检出源码构建的 wheel 已经带上了全部 604 个 Skill，
+对 OpenAI4S 用户来说这个命令基本是多余的：本检出源码构建的 wheel 已经带上了全部 605 个 Skill，
 而 `openai4s/skills_loader/loader.py` 让自带 Skill 优先于 `<data_dir>/user-skills`
 中的同名者。它存在的理由是反方向——把这些配方送到不是 OpenAI4S 的 agent 面前。

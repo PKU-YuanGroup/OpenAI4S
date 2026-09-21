@@ -26,10 +26,13 @@ npx github:PKU-YuanGroup/OpenAI4S install target_druggability_screening --target
 to anywhere you name. The resolved absolute path is printed before anything is
 written there, and `--dry-run` stops at that plan. A reinstall refuses to
 overwrite a copy you have edited or one it did not install, and `uninstall`
-removes only the files it wrote.
+removes only the files it wrote. For a recipe included in the npm release,
+`npx @pku-yuangroup/openai4s-skills install target_druggability_screening --target claude`
+installs the published copy. The npm catalog can differ from this repository.
 
 Without Node, take the directory itself — and turn it into a `.zip` if an upload
-field wants one:
+field wants one. The tarball is the whole repository (over 100 MB), and the pipe
+is a POSIX shell recipe (macOS, Linux, WSL) that extracts only this directory:
 
 ```bash
 curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
@@ -37,9 +40,16 @@ curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/mai
 python3 -m zipfile -c target_druggability_screening.zip target_druggability_screening
 ```
 
-If you already run OpenAI4S there is nothing to install — the wheel
-ships every bundled Skill, and a bundled Skill takes precedence over a
-same-named copy in `<data_dir>/user-skills`.
+The click-through form of that same download is the
+[repository zip](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip),
+which is also the route to take on Windows: extract it and copy
+`skills/target_druggability_screening/` out
+(`unzip main.zip 'OpenAI4S-main/skills/target_druggability_screening/*'` unpacks
+only that directory). If you already run OpenAI4S there is nothing to install —
+the wheel ships every bundled Skill, and a bundled Skill takes precedence over a
+same-named copy in `<data_dir>/user-skills`. Targets, provenance, and what the
+installer refuses to do:
+[`tools/skills-installer/`](../../tools/skills-installer/README.md).
 
 ## Files
 

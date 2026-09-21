@@ -26,7 +26,7 @@ is a factual record of the v0.3 plan and is validated by
       A fresh npm cache in an empty directory outside any checkout ran
       `npx @pku-yuangroup/openai4s-skills@0.2.0 list --offline` successfully:
       42 curated + 561 bioSkills, 2,212 packaged files / 6.4 MiB. Organization
-      installation docs are synchronized. The current source tree has 604
+      installation docs are synchronized. The current source tree has 605
       Skills; `single-cell-rna-analysis` is not part of npm 0.2.0 and its
       documentation retains the GitHub installation path.
 
