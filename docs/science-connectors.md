@@ -74,12 +74,39 @@ Source-specific filters are intentionally bounded:
 
 - `organism_id` for UniProt;
 - `species` for an exact Ensembl gene-symbol lookup (default `homo_sapiens`);
-- `species` (NCBI taxon ID or slug, default `9606`) and `required_score` (0–1000) for STRING;
+- `species` (positive NCBI taxon ID or supported slug, default `9606`),
+  `required_score` (integer, 0–1000), and `network_type` (`functional` by
+  default, or `physical`) for STRING;
 - `year_from`, `year_to`, and `work_type` for OpenAlex.
 
 arXiv and OpenAlex return cursors. Other first-batch connectors are bounded
 single-page searches. PubChem uses its exact name/synonym endpoint rather than
 claiming fuzzy text-search semantics.
+
+### STRING interaction partners
+
+STRING queries use the fixed `https://string-db.org/api/json/interaction_partners`
+endpoint. Supply one protein symbol or STRING identifier per line, for example
+`host.science.search("string", "TP53\nCDK2", filters={"required_score": 700})`.
+As described in the [STRING API documentation](https://en.string-db.org/help/api/),
+this retrieves partners of the submitted proteins; it does not restrict the
+result to edges within the submitted set. The upstream limit applies per
+protein; OpenAI4S also caps the total returned records at `limit` in upstream
+order, with no pagination. Larger sets should be queried one protein at a time
+if every input needs coverage.
+
+Supported species aliases are `homo_sapiens`/`human`, `mus_musculus`/`mouse`,
+`rattus_norvegicus`/`rat`, `danio_rerio`/`zebrafish`,
+`drosophila_melanogaster`/`fruitfly`, `caenorhabditis_elegans`/`worm`, and
+`saccharomyces_cerevisiae`/`yeast`; other species require their numeric taxon ID.
+Each interaction `id` joins the two sorted STRING IDs with `--`. Attributes
+retain both endpoints, the selected network type, the combined confidence and
+all seven evidence-channel scores, including `phylogenetic_score` (`pscore`).
+Response confidence scores use the upstream 0–1 scale, while the request's
+`required_score` uses 0–1000. Functional associations do not by themselves
+establish physical binding; select `network_type="physical"` explicitly when
+that network is required. An empty JSON array is a valid empty result; blank,
+null, and malformed responses are errors.
 
 ## Safety and failure behavior
 

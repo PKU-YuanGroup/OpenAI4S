@@ -196,10 +196,12 @@ MANIFESTS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
         id="string",
         probe_query="TP53",
-        required=((EACH, "stringId_B"),),
+        required=((EACH, "stringId_A"), (EACH, "stringId_B")),
         expected=(
+            (EACH, "preferredName_A"),
             (EACH, "preferredName_B"),
             (EACH, "score"),
+            (EACH, "pscore"),
         ),
     ),
 )

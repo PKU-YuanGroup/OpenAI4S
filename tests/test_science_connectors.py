@@ -9,6 +9,8 @@ import pytest
 
 from openai4s.host.science import ScienceConnectorError, ScienceConnectorService
 
+pytestmark = pytest.mark.stubbed_backend
+
 ARXIV_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom"
       xmlns:arxiv="http://arxiv.org/schemas/atom">
@@ -151,7 +153,7 @@ class FakeFetch:
             "string",
             "TP53",
             {"species": "homo_sapiens", "required_score": 400},
-            "MDM2",
+            "9606.ENSP00000266970--9606.ENSP00000269305",
             "interaction",
         ),
     ],
@@ -302,7 +304,7 @@ def test_string_interaction_scoring_and_attributes():
     assert result["database"] == "string"
     assert result["count"] == 1
     record = result["results"][0]
-    assert record["id"] == "MDM2"
+    assert record["id"] == "9606.ENSP00000266970--9606.ENSP00000269305"
     assert record["type"] == "interaction"
     assert "score: 0.994" in record["title"]
     assert record["url"] == "https://string-db.org/network/9606.ENSP00000269305"
@@ -316,6 +318,8 @@ def test_string_interaction_scoring_and_attributes():
     assert attrs["database_score"] is None or attrs["database_score"] == 0
     assert attrs["textmining_score"] == 0.985
     assert attrs["coexpression_score"] == 0.098
+    assert attrs["phylogenetic_score"] == 0
+    assert attrs["network_type"] == "functional"
     assert attrs["taxon_id"] == 9606
 
 
@@ -339,7 +343,9 @@ def test_string_species_slug_mapping_and_filters():
         service.search("string", "TP53", filters={"species": "invalid_alien_species"})
 
     # Test invalid required_score
-    with pytest.raises(ScienceConnectorError, match="required_score must be between 0 and 1000"):
+    with pytest.raises(
+        ScienceConnectorError, match="required_score must be between 0 and 1000"
+    ):
         service.search("string", "TP53", filters={"required_score": 2000})
 
 
@@ -349,6 +355,133 @@ def test_string_empty_result_and_schema_error():
     assert res["count"] == 0
     assert res["results"] == []
 
-    service_malformed = ScienceConnectorService(lambda *_args: json.dumps({"error": "unknown"}))
-    with pytest.raises(ScienceConnectorError, match="STRING returned an unexpected result schema"):
+    service_malformed = ScienceConnectorService(
+        lambda *_args: json.dumps({"error": "unknown"})
+    )
+    with pytest.raises(
+        ScienceConnectorError, match="STRING returned an unexpected result schema"
+    ):
         service_malformed.search("string", "TP53")
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r", "\r\n"])
+def test_string_preserves_multiple_identifiers_in_request_and_provenance(separator):
+    fetch = FakeFetch()
+    result = ScienceConnectorService(fetch).search(
+        "string", f" TP53 {separator} CDK2 {separator}", limit=2
+    )
+    params = urllib.parse.parse_qs(urllib.parse.urlsplit(fetch.calls[0][0]).query)
+    assert params["identifiers"] == ["TP53\nCDK2"]
+    assert result["query"] == result["provenance"]["query"] == "TP53\nCDK2"
+    assert params["limit"] == ["2"]
+
+
+def test_string_interaction_ids_use_both_endpoints_and_survive_label_changes():
+    first = RESPONSES["string-db.org"][0]
+    another_source = {**first, "stringId_A": "9606.ENSP00000350283"}
+    renamed = {**first, "preferredName_A": "P53", "preferredName_B": "HDM2"}
+    reversed_edge = {
+        **first,
+        "stringId_A": first["stringId_B"],
+        "stringId_B": first["stringId_A"],
+        "preferredName_A": first["preferredName_B"],
+        "preferredName_B": first["preferredName_A"],
+    }
+
+    def record(row):
+        service = ScienceConnectorService(lambda *_args: json.dumps([row]))
+        return service.search("string", "TP53")["results"][0]
+
+    original = record(first)
+    assert original["id"] != record(another_source)["id"]
+    assert original["id"] == record(renamed)["id"] == record(reversed_edge)["id"]
+
+
+@pytest.mark.parametrize("field", ["stringId_A", "stringId_B"])
+def test_string_drops_rows_without_both_interaction_endpoints(field):
+    row = {**RESPONSES["string-db.org"][0], field: None}
+    service = ScienceConnectorService(lambda *_args: json.dumps([row]))
+    assert service.search("string", "TP53")["results"] == []
+
+
+@pytest.mark.parametrize(
+    "score", [True, False, 0.9, -0.1, 1000.1, float("inf"), "nan", "700.5"]
+)
+def test_string_rejects_noninteger_threshold_before_fetch(score):
+    fetch = FakeFetch()
+    with pytest.raises(
+        ScienceConnectorError, match="required_score must be an integer"
+    ):
+        ScienceConnectorService(fetch).search(
+            "string", "TP53", filters={"required_score": score}
+        )
+    assert fetch.calls == []
+
+
+@pytest.mark.parametrize("threshold", [0, 1000, "700"])
+def test_string_keeps_threshold_bounds_on_the_upstream_scale(threshold):
+    fetch = FakeFetch()
+    result = ScienceConnectorService(fetch).search(
+        "string", "TP53", filters={"required_score": threshold}
+    )
+    params = urllib.parse.parse_qs(urllib.parse.urlsplit(fetch.calls[0][0]).query)
+    assert params["required_score"] == [str(threshold)]
+    assert result["provenance"]["filters"]["required_score"] == int(threshold)
+
+
+@pytest.mark.parametrize("score", [0, 1])
+def test_string_preserves_integer_confidence_scores(score):
+    row = {**RESPONSES["string-db.org"][0], "score": score, "pscore": 0.5}
+    result = ScienceConnectorService(lambda *_args: json.dumps([row])).search(
+        "string", "TP53"
+    )
+    record = result["results"][0]
+    assert f"score: {score:.3f}" in record["title"]
+    assert record["attributes"]["score"] == score
+    assert record["attributes"]["phylogenetic_score"] == 0.5
+
+
+@pytest.mark.parametrize("raw", ["", " ", "null", "{}", "not-json"])
+def test_string_does_not_treat_malformed_response_as_no_matches(raw):
+    with pytest.raises(ScienceConnectorError):
+        ScienceConnectorService(lambda *_args: raw).search("string", "TP53")
+
+
+def test_string_physical_network_selection_is_explicit():
+    fetch = FakeFetch()
+    result = ScienceConnectorService(fetch).search(
+        "string", "TP53", filters={"network_type": "physical"}
+    )
+    params = urllib.parse.parse_qs(urllib.parse.urlsplit(fetch.calls[0][0]).query)
+    assert params["network_type"] == ["physical"]
+    assert result["results"][0]["attributes"]["network_type"] == "physical"
+    assert result["results"][0]["url"].endswith("?network_type=physical")
+    assert result["provenance"]["filters"]["network_type"] == "physical"
+    with pytest.raises(
+        ScienceConnectorError, match="network_type must be functional or physical"
+    ):
+        ScienceConnectorService(fetch).search(
+            "string", "TP53", filters={"network_type": "other"}
+        )
+    assert len(fetch.calls) == 1
+
+
+@pytest.mark.parametrize("species", [0, "0", -1, "９６０６", True, "alien"])
+def test_string_rejects_invalid_taxon_ids_before_fetch(species):
+    fetch = FakeFetch()
+    with pytest.raises(ScienceConnectorError, match="not a valid NCBI taxonomy id"):
+        ScienceConnectorService(fetch).search(
+            "string", "TP53", filters={"species": species}
+        )
+    assert fetch.calls == []
+
+
+def test_string_caps_total_records_across_multiple_inputs():
+    rows = [
+        {**RESPONSES["string-db.org"][0], "stringId_B": f"9606.partner{index}"}
+        for index in range(4)
+    ]
+    service = ScienceConnectorService(lambda *_args: json.dumps(rows))
+    result = service.search("string", "TP53\nCDK2", limit=2)
+    assert result["count"] == len(result["results"]) == 2
+    assert result["next_cursor"] is None

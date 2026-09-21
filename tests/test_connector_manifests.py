@@ -37,6 +37,8 @@ from openai4s.host.science import DATABASES, ScienceConnectorService
 # The same offline fixtures the connector tests use, keyed by host.
 from tests.test_science_connectors import ARXIV_XML, RESPONSES
 
+pytestmark = pytest.mark.stubbed_backend
+
 # manifest id -> (database id, probe host, a query that hits the fixture)
 _PROBE = {
     "uniprot": ("uniprot", "rest.uniprot.org", "insulin"),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from openai4s.sdk.host import _Host
+from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.registry import get_tool
 from openai4s.tools.science import ScienceListDatabasesTool, ScienceSearchTool
 
@@ -31,6 +32,34 @@ def test_science_catalog_executes_without_network():
     result = ScienceListDatabasesTool().execute(None, {"domain": "chemistry"})
 
     assert {item["id"] for item in result["databases"]} >= {"chembl", "pubchem"}
+
+
+def test_string_catalog_and_control_schema_expose_network_selection():
+    catalog = ScienceListDatabasesTool().execute(None, {"domain": "biology"})
+    string = next(item for item in catalog["databases"] if item["id"] == "string")
+    assert set(string["filters"]) == {"species", "required_score", "network_type"}
+    search = ScienceSearchTool()
+    args = {
+        "database": "string",
+        "query": "TP53",
+        "filters": {"network_type": "physical", "required_score": 700},
+    }
+    assert search.validation_error(args) is None
+    args["filters"]["network_type"] = "unknown"
+    assert search.validation_error(args)
+
+
+def test_string_is_discoverable_and_activates_science_tools():
+    catalog = SessionToolCatalog()
+    result = catalog.search_capabilities("STRING")
+    assert "science" in {group["id"] for group in result["matched_groups"]}
+    for request in (
+        "Search STRING database for TP53",
+        "查询蛋白互作",
+        "string-db TP53",
+    ):
+        specs = SessionToolCatalog().specs_for([{"role": "user", "content": request}])
+        assert {"science_search", "science_list_dbs"} <= {spec.name for spec in specs}
 
 
 def test_host_science_sdk_encodes_only_top_level_wire_fields():

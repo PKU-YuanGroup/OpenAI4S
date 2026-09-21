@@ -96,6 +96,7 @@ def test_allowlist_permits_science_and_package_domains(monkeypatch):
     for d in (
         "ncbi.nlm.nih.gov",
         "uniprot.org",
+        "string-db.org",
         "rcsb.org",
         "ebi.ac.uk",
         "arxiv.org",
@@ -140,6 +141,8 @@ def test_allowlist_blocks_lookalikes_and_general_saas(monkeypatch):
     # the boundary dot keeps a lookalike from matching a permitted suffix
     assert not egress.domain_allowed("evilncbi.nlm.nih.gov")
     assert not egress.domain_allowed("ncbi.nlm.nih.gov.attacker.tld")
+    assert not egress.domain_allowed("evilstring-db.org")
+    assert not egress.domain_allowed("string-db.org.attacker.tld")
     # generic news / social / SaaS are not on the science allowlist
     assert not egress.domain_allowed("news.ycombinator.com")
     assert not egress.domain_allowed("hooks.slack.com")
