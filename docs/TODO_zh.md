@@ -22,7 +22,7 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
       在仓库外空目录使用全新 npm 缓存运行
       `npx @pku-yuangroup/openai4s-skills@0.2.0 list --offline` 成功：42 个精选
       加 561 个 bioSkills，包内共 2,212 个文件 / 6.4 MiB。组织包安装说明已同步。
-      当前源码树有 604 个 Skill；`single-cell-rna-analysis` 不在 npm 0.2.0 中，
+      当前源码树有 605 个 Skill；`single-cell-rna-analysis` 不在 npm 0.2.0 中，
       其文档保留 GitHub 安装入口。
 
 - [ ] **冻结六个 retrosynthesis 生产数据集。**

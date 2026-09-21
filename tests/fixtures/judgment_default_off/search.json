@@ -7,7 +7,7 @@
       "import": null,
       "name": "bio-differential-expression-de-visualization",
       "origin": "openai4s",
-      "score": 15.61,
+      "score": 15.62,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -20,7 +20,7 @@
       "import": null,
       "name": "bio-data-visualization-volcano-and-ma-plots",
       "origin": "openai4s",
-      "score": 13.82,
+      "score": 13.83,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -33,7 +33,7 @@
       "import": null,
       "name": "bio-differential-expression-de-results",
       "origin": "openai4s",
-      "score": 9.13,
+      "score": 9.14,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -46,7 +46,7 @@
       "import": null,
       "name": "bio-differential-expression-deseq2-basics",
       "origin": "openai4s",
-      "score": 9.13,
+      "score": 9.14,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -59,7 +59,7 @@
       "import": null,
       "name": "bio-small-rna-seq-differential-mirna",
       "origin": "openai4s",
-      "score": 9.13,
+      "score": 9.14,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -74,7 +74,7 @@
       "import": "import importlib; k = importlib.import_module(\"literature-review.kernel\") # 'literature-review' isn't a valid identifier; import * won't work",
       "name": "literature-review",
       "origin": "openai4s",
-      "score": 11.76,
+      "score": 11.77,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -87,7 +87,7 @@
       "import": null,
       "name": "bio-genome-assembly-contamination-detection",
       "origin": "openai4s",
-      "score": 8.46,
+      "score": 8.43,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -100,7 +100,7 @@
       "import": null,
       "name": "reaction-yield-estimation",
       "origin": "openai4s",
-      "score": 6.77,
+      "score": 6.75,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -113,7 +113,7 @@
       "import": null,
       "name": "bio-virtual-screening",
       "origin": "openai4s",
-      "score": 6.77,
+      "score": 6.75,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -126,7 +126,7 @@
       "import": "from retrosynthesis_planning.kernel import * # or: import retrosynthesis_planning.kernel as k",
       "name": "retrosynthesis_planning",
       "origin": "openai4s",
-      "score": 5.98,
+      "score": 5.97,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -141,7 +141,7 @@
       "import": null,
       "name": "diffdock",
       "origin": "openai4s",
-      "score": 19.33,
+      "score": 19.34,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -154,7 +154,7 @@
       "import": null,
       "name": "bio-ml-docking-rescoring",
       "origin": "openai4s",
-      "score": 18.6,
+      "score": 18.61,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -167,7 +167,7 @@
       "import": null,
       "name": "bio-structural-biology-binding-site-detection",
       "origin": "openai4s",
-      "score": 16.05,
+      "score": 16.06,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -180,7 +180,7 @@
       "import": null,
       "name": "bio-virtual-screening",
       "origin": "openai4s",
-      "score": 14.46,
+      "score": 14.47,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -193,7 +193,7 @@
       "import": null,
       "name": "bio-structural-biology-structure-preparation",
       "origin": "openai4s",
-      "score": 14.3,
+      "score": 14.31,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -208,7 +208,7 @@
       "import": null,
       "name": "boltz",
       "origin": "openai4s",
-      "score": 9.08,
+      "score": 9.09,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -221,7 +221,7 @@
       "import": null,
       "name": "chai1",
       "origin": "openai4s",
-      "score": 9.08,
+      "score": 9.09,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -234,7 +234,7 @@
       "import": null,
       "name": "bio-structural-biology-modern-structure-prediction",
       "origin": "openai4s",
-      "score": 8.77,
+      "score": 8.79,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -247,7 +247,7 @@
       "import": null,
       "name": "bio-isoform-switching",
       "origin": "openai4s",
-      "score": 8.43,
+      "score": 8.44,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -260,7 +260,7 @@
       "import": null,
       "name": "openfold3",
       "origin": "openai4s",
-      "score": 8.18,
+      "score": 8.19,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -275,7 +275,7 @@
       "import": "import importlib; k = importlib.import_module(\"single-cell-rna-analysis.kernel\") # 'single-cell-rna-analysis' isn't a valid identifier; import * won't work",
       "name": "single-cell-rna-analysis",
       "origin": "openai4s",
-      "score": 10.33,
+      "score": 10.35,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -288,7 +288,7 @@
       "import": null,
       "name": "bio-single-cell-clustering",
       "origin": "openai4s",
-      "score": 8.71,
+      "score": 8.73,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -301,7 +301,7 @@
       "import": null,
       "name": "bio-single-cell-cell-annotation",
       "origin": "openai4s",
-      "score": 8.03,
+      "score": 8.05,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -314,7 +314,7 @@
       "import": null,
       "name": "bio-single-cell-markers-annotation",
       "origin": "openai4s",
-      "score": 8.03,
+      "score": 8.05,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -327,7 +327,7 @@
       "import": null,
       "name": "bio-expression-matrix-normalization",
       "origin": "openai4s",
-      "score": 6.78,
+      "score": 6.8,
       "sidecar_gate": {
         "error": null,
         "ok": true

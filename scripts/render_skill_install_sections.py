@@ -43,7 +43,7 @@ INDEX_EXAMPLES = ("alphafold2", "boltz")
 COLLECTION_EXAMPLE_MEMBER = {"bioskills": "bio-differential-expression-deseq2-basics"}
 
 #: Recipes added after npm 0.2.0; do not advertise unavailable npm installs.
-NPM_020_UNAVAILABLE_SKILLS = frozenset({"single-cell-rna-analysis"})
+NPM_020_UNAVAILABLE_SKILLS = frozenset({"single-cell-rna-analysis", "text-features"})
 
 #: npm releases of `@pku-yuangroup/openai4s-skills` that are on the registry.
 #: Every `openai4s-skills@X.Y.Z` pin in the docs must name one of these, and

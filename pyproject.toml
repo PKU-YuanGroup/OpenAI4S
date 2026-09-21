@@ -297,6 +297,7 @@ files = [
     "openai4s/judgment/templates/__init__.py",
     "openai4s/judgment/templates/skills.py",
     "openai4s/judgment/templates/literature.py",
+    "openai4s/judgment/templates/features.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true
