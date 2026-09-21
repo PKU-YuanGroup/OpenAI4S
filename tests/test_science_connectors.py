@@ -118,6 +118,21 @@ RESPONSES = {
             "tscore": 0.985,
         }
     ],
+    "www.bindingdb.org": {
+        "getLindsByUniprotsResponse": {
+            "affinities": [
+                {
+                    "query": "Cyclin-dependent kinase 4",
+                    "monomerid": "81430",
+                    "smile": "CNc1nc(C)c(s1)-c1ccnc(Nc2cccc(c2)S(N)(=O)=O)n1",
+                    "affinity_type": "Ki",
+                    "affinity": "9.1",
+                    "pmid": "21035734",
+                    "doi": "10.1016/j.chembiol.2010.07.016",
+                }
+            ]
+        }
+    },
 }
 
 
@@ -155,6 +170,13 @@ class FakeFetch:
             {"species": "homo_sapiens", "required_score": 400},
             "9606.ENSP00000266970--9606.ENSP00000269305",
             "interaction",
+        ),
+        (
+            "bindingdb",
+            "P11802",
+            {"cutoff": 100},
+            "81430",
+            "bioactivity",
         ),
     ],
 )
@@ -523,3 +545,95 @@ def test_string_absent_optional_scores_are_not_invented(value):
     assert "experimental_score" not in attrs
     assert "phylogenetic_score" not in attrs
     assert attrs["score"] == 0.994
+
+
+def test_bindingdb_bioactivity_parsing_and_attributes():
+    fetch = FakeFetch()
+    service = ScienceConnectorService(fetch)
+
+    result = service.search("bindingdb", "P11802", limit=5)
+
+    assert result["database"] == "bindingdb"
+    assert result["count"] == 1
+    record = result["results"][0]
+    assert record["id"] == "81430"
+    assert record["type"] == "bioactivity"
+    assert "Ki: 9.1 nM" in record["title"]
+    assert "Cyclin-dependent kinase 4" in record["title"]
+    assert (
+        record["url"]
+        == "https://www.bindingdb.org/bind/chemsearch/marvin/MolStructure.jsp?monomerid=81430"
+    )
+    attrs = record["attributes"]
+    assert attrs["monomer_id"] == "81430"
+    assert attrs["target_name"] == "Cyclin-dependent kinase 4"
+    assert attrs["affinity_type"] == "Ki"
+    assert attrs["affinity_value"] == 9.1
+    assert attrs["affinity_raw"] == "9.1"
+    assert attrs["smiles"] == "CNc1nc(C)c(s1)-c1ccnc(Nc2cccc(c2)S(N)(=O)=O)n1"
+    assert attrs["pmid"] == "21035734"
+    assert attrs["doi"] == "10.1016/j.chembiol.2010.07.016"
+
+
+def test_bindingdb_pdb_query_routing_and_affinity_filtering():
+    pdb_response = {
+        "getLindsByPDBsResponse": {
+            "affinities": [
+                {
+                    "query": "Kit",
+                    "monomerid": "1001",
+                    "smile": "CCC",
+                    "affinity_type": "IC50",
+                    "affinity": "5.5",
+                },
+                {
+                    "query": "Kit",
+                    "monomerid": "1002",
+                    "smile": "CCCl",
+                    "affinity_type": "Ki",
+                    "affinity": "12.0",
+                },
+            ]
+        }
+    }
+    calls = []
+
+    def fake_fetch(url, *args):
+        calls.append(url)
+        return json.dumps(pdb_response)
+
+    service = ScienceConnectorService(fake_fetch)
+
+    res = service.search(
+        "bindingdb", "1T46", filters={"cutoff": 50, "affinity_type": "IC50"}
+    )
+    assert "getLigandsByPDBs" in calls[0]
+    assert "pdb=1T46" in calls[0]
+    assert "cutoff=50" in calls[0]
+    assert res["count"] == 1
+    assert res["results"][0]["id"] == "1001"
+    assert res["results"][0]["attributes"]["affinity_type"] == "IC50"
+
+
+def test_bindingdb_empty_result_and_schema_validation():
+    service_empty = ScienceConnectorService(
+        lambda *_args: json.dumps({"getLindsByUniprotsResponse": {"affinities": []}})
+    )
+    res = service_empty.search("bindingdb", "P99999")
+    assert res["count"] == 0
+    assert res["results"] == []
+
+    service_bad1 = ScienceConnectorService(lambda *_args: "[]")
+    with pytest.raises(
+        ScienceConnectorError, match="BindingDB returned an unexpected result schema"
+    ):
+        service_bad1.search("bindingdb", "P11802")
+
+    fetch = FakeFetch()
+    service = ScienceConnectorService(fetch)
+    with pytest.raises(ScienceConnectorError, match="cutoff must be a positive number in nM"):
+        service.search("bindingdb", "P11802", filters={"cutoff": -10})
+
+    with pytest.raises(ScienceConnectorError, match="affinity_type must be one of"):
+        service.search("bindingdb", "P11802", filters={"affinity_type": "UNKNOWN"})
+

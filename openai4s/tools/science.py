@@ -81,6 +81,7 @@ class ScienceSearchTool(Tool):
                     "arxiv",
                     "openalex",
                     "string",
+                    "bindingdb",
                     "clinvar",
                     "pubmed",
                     "clinicaltrials",
@@ -105,6 +106,11 @@ class ScienceSearchTool(Tool):
                     "network_type": {
                         "type": "string",
                         "enum": ["functional", "physical"],
+                    },
+                    "cutoff": {"type": "number", "minimum": 0.001},
+                    "affinity_type": {
+                        "type": "string",
+                        "enum": ["Ki", "IC50", "Kd", "EC50"],
                     },
                 },
                 "additionalProperties": False,
