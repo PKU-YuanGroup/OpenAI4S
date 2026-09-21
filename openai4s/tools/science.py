@@ -80,6 +80,7 @@ class ScienceSearchTool(Tool):
                     "pubchem",
                     "arxiv",
                     "openalex",
+                    "string",
                     "clinvar",
                     "pubmed",
                     "clinicaltrials",
@@ -96,6 +97,15 @@ class ScienceSearchTool(Tool):
                     "year_from": {"type": "integer", "minimum": 1000, "maximum": 3000},
                     "year_to": {"type": "integer", "minimum": 1000, "maximum": 3000},
                     "work_type": {"type": "string", "maxLength": 50},
+                    "required_score": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                    },
+                    "network_type": {
+                        "type": "string",
+                        "enum": ["functional", "physical"],
+                    },
                 },
                 "additionalProperties": False,
             },

@@ -105,11 +105,30 @@ DATABASES: tuple[ScienceDatabase, ...] = (
         "Title, abstract, author, concept, DOI, or general scholarly text.",
         ("year_from", "year_to", "work_type"),
     ),
+    ScienceDatabase(
+        "string",
+        "STRING",
+        "Protein-protein interactions, functional associations, and confidence scores.",
+        ("biology",),
+        "interaction",
+        "Protein symbols or identifiers, one per line (e.g. TP53); returns interaction partners.",
+        ("species", "required_score", "network_type"),
+    ),
 )
 
 _DATABASE_BY_ID = {database.id: database for database in DATABASES}
 _DOMAINS = frozenset({"all", "biology", "chemistry", "literature", "ml", "physics"})
-_FILTERS = frozenset({"organism_id", "species", "year_from", "year_to", "work_type"})
+_FILTERS = frozenset(
+    {
+        "organism_id",
+        "species",
+        "year_from",
+        "year_to",
+        "work_type",
+        "required_score",
+        "network_type",
+    }
+)
 _SPECIES = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _MAX_RESPONSE_CHARS = 5_000_000
 
@@ -185,7 +204,18 @@ class ScienceConnectorService:
             raise ScienceConnectorError(
                 f"unknown scientific database {database_id!r}; choose one of: " + known
             )
-        normalized_query = " ".join(str(query or "").split())
+        raw_query = str(query or "")
+        if database_id == "string":
+            # STRING uses line breaks as identifier separators. The prose
+            # normalization used by other sources would merge a protein set
+            # into one unresolved identifier before the adapter saw it.
+            normalized_query = "\n".join(
+                " ".join(line.split())
+                for line in raw_query.splitlines()
+                if line.strip()
+            )
+        else:
+            normalized_query = " ".join(raw_query.split())
         if not normalized_query:
             raise ScienceConnectorError("science query must not be empty")
         if len(normalized_query) > 500:
@@ -284,6 +314,20 @@ class ScienceConnectorService:
         if values.get("year_from") and values.get("year_to"):
             if values["year_from"] > values["year_to"]:
                 raise ScienceConnectorError("year_from must not exceed year_to")
+        if "required_score" in values and values["required_score"] not in (None, ""):
+            score = values["required_score"]
+            if isinstance(score, bool) or not isinstance(score, (int, str)):
+                raise ScienceConnectorError("required_score must be an integer")
+            try:
+                values["required_score"] = int(score)
+            except (TypeError, ValueError) as exc:
+                raise ScienceConnectorError(
+                    "required_score must be an integer"
+                ) from exc
+            if not 0 <= values["required_score"] <= 1000:
+                raise ScienceConnectorError("required_score must be between 0 and 1000")
+        if values.get("network_type") not in (None, "", "functional", "physical"):
+            raise ScienceConnectorError("network_type must be functional or physical")
         return values
 
     @staticmethod
@@ -721,6 +765,112 @@ class ScienceConnectorService:
         meta = payload.get("meta") or {}
         next_cursor = _string(meta.get("next_cursor"), 2000)
         return results, next_cursor, url
+
+    def _search_string(self, query, limit, cursor, filters, timeout):
+        del cursor
+        species_raw = str(filters.get("species", "9606")).strip().lower()
+        species_map = {
+            "homo_sapiens": "9606",
+            "human": "9606",
+            "mus_musculus": "10090",
+            "mouse": "10090",
+            "rattus_norvegicus": "10116",
+            "rat": "10116",
+            "danio_rerio": "7955",
+            "zebrafish": "7955",
+            "drosophila_melanogaster": "7227",
+            "fruitfly": "7227",
+            "caenorhabditis_elegans": "6239",
+            "worm": "6239",
+            "saccharomyces_cerevisiae": "4932",
+            "yeast": "4932",
+        }
+        species_id = species_map.get(species_raw, species_raw)
+        if not re.fullmatch(r"[1-9][0-9]{0,79}", species_id):
+            raise ScienceConnectorError(
+                f"species {species_raw!r} is not a valid NCBI taxonomy id or known species slug"
+            )
+
+        network_type = filters.get("network_type") or "functional"
+        params: dict[str, Any] = {
+            "identifiers": query,
+            "species": species_id,
+            "limit": limit,
+            "network_type": network_type,
+            "caller_identity": "OpenAI4S",
+        }
+        if "required_score" in filters and filters["required_score"] not in (None, ""):
+            params["required_score"] = filters["required_score"]
+
+        encoded = urllib.parse.urlencode(params)
+        url = f"https://string-db.org/api/json/interaction_partners?{encoded}"
+        payload = self._json(url, timeout)
+        if not isinstance(payload, list):
+            raise ScienceConnectorError("STRING returned an unexpected result schema")
+
+        results = []
+        for row in payload[:limit]:
+            if not isinstance(row, dict):
+                continue
+            string_id_a = _string(row.get("stringId_A"))
+            string_id_b = _string(row.get("stringId_B"))
+            if not string_id_a or not string_id_b:
+                continue
+            partner = _string(row.get("preferredName_B"))
+            # An undirected interaction is identified by both stable STRING
+            # endpoints, independently of labels or query orientation.
+            identifier = "--".join(sorted((string_id_a, string_id_b)))
+            source_name = _string(row.get("preferredName_A")) or string_id_a
+            score = _string_score(row, "score")
+            score_str = f" (score: {score:.3f})" if score is not None else ""
+            title = f"Interaction: {source_name} - {partner or string_id_b}{score_str}"
+            canonical_url = f"https://string-db.org/network/{urllib.parse.quote(string_id_a, safe='')}"
+            if network_type == "physical":
+                canonical_url += "?network_type=physical"
+            results.append(
+                _record(
+                    identifier,
+                    title,
+                    canonical_url,
+                    "interaction",
+                    {
+                        "source_protein": source_name,
+                        "partner_protein": partner or None,
+                        "partner_string_id": string_id_b,
+                        "source_string_id": string_id_a,
+                        "network_type": network_type,
+                        "score": score,
+                        "experimental_score": _string_score(row, "escore"),
+                        "database_score": _string_score(row, "dscore"),
+                        "textmining_score": _string_score(row, "tscore"),
+                        "coexpression_score": _string_score(row, "ascore"),
+                        "neighborhood_score": _string_score(row, "nscore"),
+                        "fusion_score": _string_score(row, "fscore"),
+                        "phylogenetic_score": _string_score(row, "pscore"),
+                        "taxon_id": row.get("ncbiTaxonId"),
+                    },
+                )
+            )
+        return results, "", url
+
+
+def _string_score(row: Mapping[str, Any], field: str) -> float | int | None:
+    """Validate STRING confidence without turning missing evidence into zero."""
+    value = row.get(field)
+    if value in (None, ""):
+        return None
+    error = f"STRING {field} must be a finite confidence score between 0 and 1"
+    if isinstance(value, bool):
+        raise ScienceConnectorError(error)
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScienceConnectorError(error) from exc
+    # The closed interval also excludes NaN and infinities, which Python's
+    # permissive JSON encoder would otherwise publish as invalid JSON tokens.
+    if not 0 <= score <= 1:
+        raise ScienceConnectorError(error)
+    return int(score) if score.is_integer() else score
 
 
 def _combined_digest(responses: list[dict[str, Any]]) -> str | None:
