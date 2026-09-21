@@ -106,7 +106,10 @@ Response confidence scores use the upstream 0–1 scale, while the request's
 `required_score` uses 0–1000. Functional associations do not by themselves
 establish physical binding; select `network_type="physical"` explicitly when
 that network is required. An empty JSON array is a valid empty result; blank,
-null, and malformed responses are errors.
+null, and malformed responses are errors. Every provided confidence score must
+be finite and within 0–1; booleans, nonnumeric values, and out-of-range scores
+are rejected as schema errors. Missing optional scores remain omitted rather
+than being replaced with zero.
 
 ## Safety and failure behavior
 

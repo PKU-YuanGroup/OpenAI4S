@@ -485,3 +485,41 @@ def test_string_caps_total_records_across_multiple_inputs():
     result = service.search("string", "TP53\nCDK2", limit=2)
     assert result["count"] == len(result["results"]) == 2
     assert result["next_cursor"] is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["score", "nscore", "fscore", "pscore", "ascore", "escore", "dscore", "tscore"],
+)
+@pytest.mark.parametrize(
+    "value", ["NaN", "Infinity", "-Infinity", -0.1, 1.5, True, False, "invalid", []]
+)
+def test_string_rejects_invalid_upstream_confidence_scores(field, value):
+    # Valid JSON can still encode non-finite scores as strings. Converting
+    # those to float would emit invalid JSON and unusable scientific evidence.
+    row = {**RESPONSES["string-db.org"][0], field: value}
+    body = json.dumps([row], allow_nan=False)
+    service = ScienceConnectorService(lambda *_args: body)
+    with pytest.raises(ScienceConnectorError, match=rf"STRING.*{field}.*0.*1"):
+        service.search("string", "TP53")
+
+
+@pytest.mark.parametrize("value", [0, 1, 0.994, "0.5"])
+def test_string_valid_scores_remain_numeric_and_json_serializable(value):
+    row = {**RESPONSES["string-db.org"][0], "score": value, "escore": value}
+    service = ScienceConnectorService(lambda *_args: json.dumps([row]))
+    result = service.search("string", "TP53")
+    attrs = result["results"][0]["attributes"]
+    assert attrs["score"] == attrs["experimental_score"] == float(value)
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_string_absent_optional_scores_are_not_invented(value):
+    row = {**RESPONSES["string-db.org"][0], "escore": value}
+    del row["pscore"]
+    service = ScienceConnectorService(lambda *_args: json.dumps([row]))
+    attrs = service.search("string", "TP53")["results"][0]["attributes"]
+    assert "experimental_score" not in attrs
+    assert "phylogenetic_score" not in attrs
+    assert attrs["score"] == 0.994

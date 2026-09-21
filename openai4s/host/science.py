@@ -821,7 +821,7 @@ class ScienceConnectorService:
             # endpoints, independently of labels or query orientation.
             identifier = "--".join(sorted((string_id_a, string_id_b)))
             source_name = _string(row.get("preferredName_A")) or string_id_a
-            score = _number(row.get("score"))
+            score = _string_score(row, "score")
             score_str = f" (score: {score:.3f})" if score is not None else ""
             title = f"Interaction: {source_name} - {partner or string_id_b}{score_str}"
             canonical_url = f"https://string-db.org/network/{urllib.parse.quote(string_id_a, safe='')}"
@@ -840,18 +840,37 @@ class ScienceConnectorService:
                         "source_string_id": string_id_a,
                         "network_type": network_type,
                         "score": score,
-                        "experimental_score": _number(row.get("escore")),
-                        "database_score": _number(row.get("dscore")),
-                        "textmining_score": _number(row.get("tscore")),
-                        "coexpression_score": _number(row.get("ascore")),
-                        "neighborhood_score": _number(row.get("nscore")),
-                        "fusion_score": _number(row.get("fscore")),
-                        "phylogenetic_score": _number(row.get("pscore")),
+                        "experimental_score": _string_score(row, "escore"),
+                        "database_score": _string_score(row, "dscore"),
+                        "textmining_score": _string_score(row, "tscore"),
+                        "coexpression_score": _string_score(row, "ascore"),
+                        "neighborhood_score": _string_score(row, "nscore"),
+                        "fusion_score": _string_score(row, "fscore"),
+                        "phylogenetic_score": _string_score(row, "pscore"),
                         "taxon_id": row.get("ncbiTaxonId"),
                     },
                 )
             )
         return results, "", url
+
+
+def _string_score(row: Mapping[str, Any], field: str) -> float | int | None:
+    """Validate STRING confidence without turning missing evidence into zero."""
+    value = row.get(field)
+    if value in (None, ""):
+        return None
+    error = f"STRING {field} must be a finite confidence score between 0 and 1"
+    if isinstance(value, bool):
+        raise ScienceConnectorError(error)
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScienceConnectorError(error) from exc
+    # The closed interval also excludes NaN and infinities, which Python's
+    # permissive JSON encoder would otherwise publish as invalid JSON tokens.
+    if not 0 <= score <= 1:
+        raise ScienceConnectorError(error)
+    return int(score) if score.is_integer() else score
 
 
 def _combined_digest(responses: list[dict[str, Any]]) -> str | None:

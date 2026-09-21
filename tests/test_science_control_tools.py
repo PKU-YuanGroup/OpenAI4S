@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from openai4s.sdk.host import _Host
 from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.registry import get_tool
@@ -60,6 +64,20 @@ def test_string_is_discoverable_and_activates_science_tools():
     ):
         specs = SessionToolCatalog().specs_for([{"role": "user", "content": request}])
         assert {"science_search", "science_list_dbs"} <= {spec.name for spec in specs}
+
+
+@pytest.mark.stubbed_backend
+def test_string_invalid_score_returns_a_bounded_tool_error(monkeypatch):
+    from openai4s import webtools
+
+    row = {"stringId_A": "9606.query", "stringId_B": "9606.partner", "score": "NaN"}
+    monkeypatch.setattr(
+        webtools, "web_fetch", lambda *_args, **_kwargs: {"content": json.dumps([row])}
+    )
+    result = ScienceSearchTool().execute(None, {"database": "string", "query": "TP53"})
+    assert set(result) == {"error"}
+    assert "score" in result["error"]
+    json.dumps(result, allow_nan=False)
 
 
 def test_host_science_sdk_encodes_only_top_level_wire_fields():
