@@ -365,3 +365,48 @@ until every status appeared: `verified`, `contradicted`, `unsupported`,
 `uncertain`, `numeric_mismatch` and `not_found_needs_review`. A locate failure
 makes no backend call at all, and a numeric mismatch overrides a semantic
 `supports` — the numbers are compared in code, as the design requires.
+
+### W4 — 2026-09-20
+
+Merged four independent branches: `w4-a-safety-shadow` (`4dcd92ca`),
+`w4-b-task-mode-shadow` (`59bf9dcd`), `w4-c-text-features-skill`
+(`82337fed`) and `w4-d-llm-backend` (`9381e4c9`). Shadow judgment now runs
+beside the code classifier, the injection scanner, the trajectory screener and
+the task-mode rule; a `text-features` Skill turns free text into calibrated
+features; and `provider=llm` selects an explicitly uncalibrated LLM backend.
+
+The three safety screeners keep their verdicts. Each public function computes
+the verdict through the original body, submits the shadow inside a
+`try/except` that swallows everything, and returns the same object — there is
+no branch on the shadow answer anywhere. The selected safety suite gives
+identical results in all four combinations of `OPENAI4S_SAFETY` and the shadow
+switch: 146 passed, 1 skipped each time, within a second of each other.
+
+Both shadow channels are inert by default: a process that imports them, runs
+`classify_code` and `resolve_task_mode` still has one thread and zero
+submissions. Driving a submission through with a marker in the code confirms
+the audit carries `kind`, `existing_verdict`, `shadow_answers`, `agree`,
+`status`, `latency_ms` and `state_sha256` — and not the code.
+
+Integration fix `927cb277`: four branches each appended an import to
+`templates/__init__.py` and rewrote `__all__`. Resolving those conflicts as a
+union — correct for the append-only README tables beside them — left three
+`__all__` assignments, and the last one won, dropping `safety` and
+`task_mode`. The imports survived, so every template still registered and
+nothing failed. One `__all__` now, with a test pinning it to the imports.
+
+The default-off snapshot moved again, and the delta is worth stating exactly:
+adding one Skill to a 605-item corpus shifts the corpus-normalised relevance
+`score` by at most 0.03. No query changed its hit set or its order, no Skill
+entered or left a result set, and `score` is the only field that changed on an
+existing row. `system_context.json` gained exactly one line; the tool-schema
+and classifier fixtures are untouched, which is the evidence that wrapping
+three security functions changed nothing observable.
+
+Not done, deliberately: the two shadow channels remain separate modules.
+`shadow.py` and `task_mode_shadow.py` implement the same pattern twice, and
+`shadow.submit("task_mode", …)` would fit its existing signature — but W4-B's
+tests import eight symbols from its channel and assert on a different
+`stats()` contract 18 times. Folding them means the merger rewriting another
+package's verification surface, which is worse than the duplication. A plan is
+recorded for W5.

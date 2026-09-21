@@ -315,3 +315,38 @@ W1 起遗留的 host_only 边界现在验过了，而且两半需要不同的环
 `verified`、`contradicted`、`unsupported`、`uncertain`、`numeric_mismatch`、
 `not_found_needs_review`。定位失败时完全不调用后端；数值不匹配会压过语义上的
 `supports`——数字在代码里比，正如设计要求的那样。
+
+### W4 — 2026-09-20
+
+合入四个互相独立的分支：`w4-a-safety-shadow`（`4dcd92ca`）、
+`w4-b-task-mode-shadow`（`59bf9dcd`）、`w4-c-text-features-skill`（`82337fed`）、
+`w4-d-llm-backend`（`9381e4c9`）。影子判定现在与代码分类器、注入扫描、轨迹筛查
+和任务模式规则并行运行；`text-features` Skill 把自由文本变成校准特征；
+`provider=llm` 会选到一个明确标记为未校准的 LLM 后端。
+
+三处安全判决没有变。每个公开函数都是先用原来的函数体算出判决，再在一个吞掉
+所有异常的 `try/except` 里提交影子，然后**返回同一个对象**——代码里没有任何一处
+基于影子答案的分支。选中的安全套件在 `OPENAI4S_SAFETY` × 影子开关的四种组合下
+结果完全一致：每次都是 146 passed, 1 skipped，耗时相差不到一秒。
+
+两条影子通道在默认关闭时都是惰性的：一个 import 了它们、跑过 `classify_code`
+和 `resolve_task_mode` 的进程仍然只有一个线程、零提交。带标记的代码真实提交一次之后，
+审计里有 `kind`、`existing_verdict`、`shadow_answers`、`agree`、`status`、
+`latency_ms`、`state_sha256`——没有代码原文。
+
+集成修正 `927cb277`：四个分支各自往 `templates/__init__.py` 追加了一行 import 并重写了
+`__all__`。把这些冲突按并集解决——对旁边那些只追加的 README 表格是对的——
+结果文件里留下了三个 `__all__` 赋值，最后一个生效，`safety` 和 `task_mode` 被丢掉了。
+import 本身都还在，所以模板照常注册、什么都没报错。现在只有一个 `__all__`，
+并有一条测试把它和下面的 import 钉在一起。
+
+默认关闭快照又动了，这次的差异值得精确说明：往 605 个成员的语料里加一个 Skill，
+会让按语料归一化的相关性 `score` 最多偏移 0.03。没有任何查询的命中集合或顺序发生变化，
+没有 Skill 进入或离开任何结果集，已有行上唯一变化的字段就是 `score`。
+`system_context.json` 只多了一行；工具 schema 和分类器那两份 fixture 一个字节没动——
+这正是「包装三个安全函数没有改变任何可观察行为」的证据。
+
+**刻意没做**：两条影子通道仍是两个模块。`shadow.py` 和 `task_mode_shadow.py`
+把同一套机制实现了两遍，而且 `shadow.submit("task_mode", …)` 本来就能套进现有签名——
+但 W4-B 的测试从它自己的通道 import 了八个符号，并且对另一套 `stats()` 契约断言了 18 次。
+合并它们意味着由合并者重写另一个包的验证面，那比这点重复更糟。方案记在 W5 的待办里。
