@@ -249,7 +249,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
 | [**模型后端 bring-up**](docs/model-backend-bringup_zh.md) | 本地/远程 GPU 选择、checkpoint staging、真实推理 canary 准入与 connector 可移植性 |
-| [**Skills**](docs/skills.md) | 43 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |
+| [**Skills**](docs/skills.md) | 44 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |
 | [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
 | [**科学连接器**](docs/science-connectors.md) | 七个公共数据库、各自的过滤条件与检索溯源 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、Action Timeline、只读 Notebook、Artifact 与实现状态 |
