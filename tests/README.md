@@ -505,6 +505,7 @@ Put a focused regression assertion here. Put reusable scripted scenarios, fake p
 | [`test_judgment_safety_shadow.py`](test_judgment_safety_shadow.py) | Safety shadow: corpus verdicts identical with the switch off and on (heuristic and mocked llm), classify_code stays non-blocking against a 5s fake backend, backend exceptions never escape, queue-full drops, `stats()`, and audit events carry no raw code. |
 | [`test_judgment_task_mode_shadow.py`](test_judgment_task_mode_shadow.py) | Task-mode shadow: ≥30-request identity with the switch off and on, a 5s fake backend must not delay `resolve_task_mode`, explicit `--mode` / `task_mode` selections are not submitted, and the `judgment_shadow` audit row never carries the raw request. |
 | [`test_text_features_skill.py`](test_text_features_skill.py) | `features.custom` limit checks (kind, count, instruction length, state size), `featurize` column shape and NaN handling, Score normalization to [0, 1], test-split isolation until freeze, loader/sidecar/capability, and a kernel-cell round-trip against the loopback fake. |
+| [`test_judgment_llm_backend.py`](test_judgment_llm_backend.py) | Optional `LlmBackend`: three question types, non-JSON output, probabilities that do not sum to 1, unknown choice names, `charge_call` metering, `calibrated=False`, and a typesafe `unavailable` path that never calls `chat()`. |
 
 - [`browser_editor.mjs`](browser_editor.mjs): Real conditional-editor actions, delayed reads, conflicts, lost saves, and refresh protection; shared by the browser matrix.
 

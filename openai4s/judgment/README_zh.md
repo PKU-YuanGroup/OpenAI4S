@@ -30,3 +30,4 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`templates/`](templates/) | Skill 推荐问题模板（`skills.suggest`）以及生成的 bioSkills 领域索引。 |
 | [`shadow.py`](shadow.py) | 有界安全影子队列：2 个守护线程、队列满则丢弃、`judgment_shadow` 审计不含原始代码、`stats()`。 |
 | [`task_mode_shadow.py`](task_mode_shadow.py) | `task_mode.classify` 的有界后台影子通道。永不改变 `resolve_task_mode` 的返回值，也不把原始请求写进审计。 |
+| [`llm_backend.py`](llm_backend.py) | 可选 `LlmBackend`：用已配置的主模型经 `chat()` 回答同样的类型化问题。只能通过 `OPENAI4S_JUDGMENT_PROVIDER=llm` 显式选择，永不作为 TypeSafe 失败时的静默回退。结果标记 `calibrated=False`。 |

@@ -302,6 +302,7 @@ files = [
     "openai4s/judgment/templates/task_mode.py",
     "openai4s/judgment/task_mode_shadow.py",
     "openai4s/judgment/templates/features.py",
+    "openai4s/judgment/llm_backend.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

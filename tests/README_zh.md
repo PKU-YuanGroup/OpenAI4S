@@ -505,6 +505,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_safety_shadow.py`](test_judgment_safety_shadow.py) | 安全影子：语料在开关关闭/开启、heuristic 与 mock llm 下判决完全相同；假后端 sleep 5 秒时 `classify_code` 不阻塞；后端异常不外泄；队列满丢弃、`stats()`、审计不含原始代码。 |
 | [`test_judgment_task_mode_shadow.py`](test_judgment_task_mode_shadow.py) | 任务模式影子：≥30 条请求在开关关闭和开启时 `resolve_task_mode` 返回值逐条相同、假后端 sleep 5 秒不拖慢返回、显式 `--mode` / `task_mode` 不提交，且 `judgment_shadow` 审计不含原始请求文本。 |
 | [`test_text_features_skill.py`](test_text_features_skill.py) | `features.custom` 的限制校验（题型、题数、instructions 长度、state 大小）、`featurize` 的列形状与 NaN、Score 归一化到 [0,1]、冻结前测试集隔离、loader/sidecar/capability，以及对着 loopback 假端点的 kernel cell 往返。 |
+| [`test_judgment_llm_backend.py`](test_judgment_llm_backend.py) | 可选 `LlmBackend`：三种题型解析、非 JSON 输出、概率之和不为 1、选项名不在集合里、`charge_call` 计量、`calibrated=False`，以及 typesafe 抛 `unavailable` 时从不调用 `chat()`。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

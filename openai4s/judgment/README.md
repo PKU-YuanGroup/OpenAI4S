@@ -32,3 +32,4 @@ and the UI path also requires a current-version disclosure acknowledgement.
 | [`templates/`](templates/) | Skill-suggestion question templates (`skills.suggest`) and the generated bioSkills area index. |
 | [`shadow.py`](shadow.py) | Bounded safety-shadow queue: two daemon workers, drop-when-full, `judgment_shadow` audit without raw code, `stats()`. |
 | [`task_mode_shadow.py`](task_mode_shadow.py) | Bounded background channel for `task_mode.classify` shadow records. Never changes `resolve_task_mode` returns and never logs the raw request. |
+| [`llm_backend.py`](llm_backend.py) | Optional `LlmBackend`: the configured main model answers the same typed questions via `chat()`. Selected only by `OPENAI4S_JUDGMENT_PROVIDER=llm`; never a silent TypeSafe fallback. Results carry `calibrated=False`. |
