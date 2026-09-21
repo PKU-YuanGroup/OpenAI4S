@@ -66,6 +66,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 | [`storage/`](./storage/) | Focused SQLite repositories used through `Store`, and the versioned migration runner behind them. |
 | [`benchmark/`](./benchmark/) | The runner for the versioned science-workflow benchmark whose manifests live in [`workflows/`](../workflows/README.md). Every step drives production code — the real Store, kernel manager, host dispatcher and compute manager — and only what cannot run offline is injected: the model, the network, and a package manager. A declared outcome is part of the contract, so a case expecting `failure` fails on a clean run. |
 | [`tools/`](./tools/) | Class-based provider-native control tools. Each one carries its own schema. Around them sit the registry, the dynamic-tool lifecycle, and compatibility support for fenced calls. |
+| [`update/`](./update/) | The online updater: which install channel this is, whether a newer release exists, what has to be true about a payload before anything is replaced, and the apply transaction around an independent pre-update snapshot. Nothing here is reachable from a turn, the package imports nothing at module scope, and its whole outbound surface is `webtools` — no module in it names an outbound primitive. A failure is reported as `unknown`; it is never reported as "up to date". |
 
 ## Change rules
 
