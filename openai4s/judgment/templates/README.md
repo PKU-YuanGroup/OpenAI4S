@@ -17,3 +17,4 @@ them.
 | [`literature.py`](literature.py) | `literature.screen` (passage Nouls) and `literature.claim` (supports / contradicts / insufficient). Quote location and number/unit comparison stay in the literature-review sidecar. |
 | [`safety.py`](safety.py) | `safety.code` (7 attack Nouls), `safety.injection`, `safety.trajectory` (ALLOW/ESCALATE/BLOCK), `safety.bio_prescan`. Tunable agreement bands live at the top. |
 | [`task_mode.py`](task_mode.py) | `task_mode.classify`: one Choice among `analysis_run` / `reusable_pipeline` / `codebase_change` with structured `{what, not_for, examples}` criteria. Recording-only; never binds completion evidence. |
+| [`features.py`](features.py) | `features.custom`: caller-supplied Noul/Score questions for text featurization (`allow_custom`, max 24 questions, 400-character instructions, 8000-character state). |

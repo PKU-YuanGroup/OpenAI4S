@@ -101,7 +101,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 604 bundled Skills** — 43 curated OpenAI4S recipes for GPU/model science, research workflows, and platform operations, plus all 561 recipes from the pinned MIT-licensed GPTomics/bioSkills collection. Skills are **recipes of code**, not JSON schemas; the large third-party collection is searched on demand and occupies only one always-on prompt line. User-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **🔬 605 bundled Skills** — 44 curated OpenAI4S recipes for GPU/model science, research workflows, and platform operations, plus all 561 recipes from the pinned MIT-licensed GPTomics/bioSkills collection. Skills are **recipes of code**, not JSON schemas; the large third-party collection is searched on demand and occupies only one always-on prompt line. User-authored Skills stay under the data directory and cannot shadow bundled trust.
 - **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 - **🔗 Read-only session sharing** — publish a session as a snapshot anyone with the link can view and import, through a relay **you** run. The daemon never binds a public port; it dials out. Memories, permission state, and keys never leave, and residual secrets fail the publish closed. → [Web sharing](docs/webshare.md)
 - **🔎 Source-attributed retrieval** — seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex). Retrieved records carry where they came from and when, without the API key that fetched them.
@@ -116,7 +116,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 | plane | what's implemented |
 |---|---|
 | **Control & orchestration** | class-based native `Tool`s · append-only Action Ledger · plan/review with a durable state machine · context compaction that archives the raw slices it summarizes · concurrent sub-agent delegation (fanout 48, depth 4) a user can stop mid-flight · enforced Specialist allowlists a child cannot widen · MCP connectors · cross-session memory |
-| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 604 Skills (43 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
+| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 605 Skills (44 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
 | **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
@@ -219,7 +219,7 @@ Release images are published to GitHub Packages as `ghcr.io/pku-yuangroup/openai
 
 ### 🧩 Take the Skills anywhere (`npx`)
 
-The 604 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
+The 605 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
 
 ```bash
 npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
@@ -229,16 +229,16 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 list
 npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (604 Skills: 43 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
+`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (605 Skills: 44 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 44 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned bioinformatics recipes
 ```
 
 Both sources use the same target and overwrite rules. `--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written there, and `--dry-run` stops at that plan. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited or one it did not install, and an uninstall removes only files it wrote. Every curated Skill page and the collection root under [`skills/`](skills/) carry an **Install** section with their own name already filled in, so you can install from whichever page you landed on.
 
-If you already run OpenAI4S from this checkout, you already have all 604 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
+If you already run OpenAI4S from this checkout, you already have all 605 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
 
 ---
 
@@ -253,7 +253,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
 | [**Model backend bring-up**](docs/model-backend-bringup.md) | local/remote GPU selection, checkpoint staging, real-inference canary admission, and connector portability |
-| [**Skills**](docs/skills.md) | 43 curated Skills + 561 pinned bioSkills + how to write your own |
+| [**Skills**](docs/skills.md) | 44 curated Skills + 561 pinned bioSkills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Science connectors**](docs/science-connectors.md) | the seven public databases, their filters, and retrieval provenance |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |

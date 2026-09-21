@@ -16,3 +16,4 @@
 | [`literature.py`](literature.py) | `literature.screen`（片段 Noul）和 `literature.claim`（supports / contradicts / insufficient）。原文定位和数值单位比较留在 literature-review sidecar 里做。 |
 | [`safety.py`](safety.py) | `safety.code`（7 类攻击 Noul）、`safety.injection`、`safety.trajectory`（ALLOW/ESCALATE/BLOCK）、`safety.bio_prescan`。一致率阈值写在模块顶部。 |
 | [`task_mode.py`](task_mode.py) | `task_mode.classify`：在 `analysis_run` / `reusable_pipeline` / `codebase_change` 中三选一，选项描述为结构化的 `{what, not_for, examples}`。只做记录，不绑定交付证据。 |
+| [`features.py`](features.py) | `features.custom`：由调用方提供的 Noul/Score 题目，用于文本特征（`allow_custom`，每次最多 24 题，instructions ≤400 字符，state ≤8000 字符）。 |

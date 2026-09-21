@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 604 bundled Skills: 43 curated OpenAI4S recipes plus the 561
+This tree exposes 605 bundled Skills: 44 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
@@ -99,6 +99,7 @@ refuses to do:
 | [`single-step-retrosynthesis/`](single-step-retrosynthesis/) | RetroChimera one-step precursor proposals through the existing isolated, manifest-checked Syntheseus adapter. It deliberately stops before stock search or recursive route planning. |
 | [`using-model-endpoint/`](using-model-endpoint/) | Documents a planned endpoint-scoped inference workflow: a Python kernel whose egress is scoped to one registered endpoint, with `BASE_URL` preloaded and no job lifecycle. The current Host implements endpoint registration and probes, but does not wire this provider into `ComputeManager` or create the scoped kernel yet. |
 | [`volcengine-datapro/`](volcengine-datapro/) | A deliberately narrow MCP recipe for professional-dataset search: discover `dataPro_search`, make the real query call, and accept only an integer structured result code of zero as usable. Tool discovery alone is never an authentication verdict. |
+| [`text-features/`](text-features/) | Experimental text feature engineering: the main model proposes Noul/Score questions, TypeSafe Jev turns each selected row into calibrated numeric columns, and the sidecar reuses `audit-dataset` / `plan-ml-experiment` / `evaluate-model` so the test split is judged once after freeze. Features keep their source question and are not a human gold standard. |
 
 ## Where this fits
 
