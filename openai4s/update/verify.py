@@ -969,10 +969,17 @@ def probe_installation(
                 for part in pythonpath.split(os.pathsep)
                 if part
             }
-            if (
-                not isinstance(loaded_file, str)
-                or Path(loaded_file).resolve() not in expected_files
-            ):
+            try:
+                loaded_path = (
+                    Path(loaded_file).resolve()
+                    if isinstance(loaded_file, str)
+                    else None
+                )
+            except (OSError, ValueError, RuntimeError):
+                # This path comes from the child's JSON too: NUL bytes and
+                # symlink loops must remain refusals, not resolver tracebacks.
+                loaded_path = None
+            if loaded_path not in expected_files:
                 raise UpdateRefusal(
                     "probe_failed",
                     "the probe imported openai4s outside the staged payload",

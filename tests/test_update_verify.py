@@ -1151,3 +1151,19 @@ def test_probe_refuses_undecodable_child_output():
     with pytest.raises(UpdateRefusal) as caught:
         verify.probe_installation("unused", VERSION, 32, runner=_runner(error))
     assert caught.value.code == "probe_failed"
+
+
+@pytest.mark.parametrize("loaded_file", [None, "\x00", "bad\ud800path"])
+def test_probe_refuses_malformed_import_paths(tmp_path, loaded_file):
+    import json
+
+    report = _Done(
+        stdout=json.dumps(
+            {"version": VERSION, "schema_version": 32, "file": loaded_file}
+        )
+    )
+    with pytest.raises(UpdateRefusal) as caught:
+        verify.probe_installation(
+            "unused", VERSION, 32, pythonpath=str(tmp_path), runner=_runner(report)
+        )
+    assert caught.value.code == "probe_failed"
