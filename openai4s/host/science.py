@@ -878,8 +878,15 @@ class ScienceConnectorService:
                 raise ScienceConnectorError("cutoff must be a positive number in nM")
 
         affinity_type_filter = str(filters.get("affinity_type") or "").strip().upper()
-        if affinity_type_filter and affinity_type_filter not in {"KI", "IC50", "KD", "EC50"}:
-            raise ScienceConnectorError("affinity_type must be one of: Ki, IC50, Kd, EC50")
+        if affinity_type_filter and affinity_type_filter not in {
+            "KI",
+            "IC50",
+            "KD",
+            "EC50",
+        }:
+            raise ScienceConnectorError(
+                "affinity_type must be one of: Ki, IC50, Kd, EC50"
+            )
 
         clean_query = query.strip()
         is_pdb = bool(re.fullmatch(r"[0-9][A-Za-z0-9]{3}", clean_query))
@@ -907,7 +914,9 @@ class ScienceConnectorService:
 
         payload = self._json(url, timeout)
         if not isinstance(payload, dict):
-            raise ScienceConnectorError("BindingDB returned an unexpected result schema")
+            raise ScienceConnectorError(
+                "BindingDB returned an unexpected result schema"
+            )
 
         resp_obj = payload.get(container_key)
         if resp_obj is None:
@@ -915,7 +924,9 @@ class ScienceConnectorService:
                 "getLindsByPDBsResponse"
             )
         if not isinstance(resp_obj, dict):
-            raise ScienceConnectorError("BindingDB returned an unexpected result schema")
+            raise ScienceConnectorError(
+                "BindingDB returned an unexpected result schema"
+            )
 
         affinities = resp_obj.get("affinities")
         if affinities is None:
@@ -923,7 +934,9 @@ class ScienceConnectorService:
         if isinstance(affinities, dict):
             affinities = [affinities]
         elif not isinstance(affinities, list):
-            raise ScienceConnectorError("BindingDB returned an unexpected result schema")
+            raise ScienceConnectorError(
+                "BindingDB returned an unexpected result schema"
+            )
 
         results = []
         for row in affinities:

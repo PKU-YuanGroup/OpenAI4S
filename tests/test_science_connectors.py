@@ -631,9 +631,10 @@ def test_bindingdb_empty_result_and_schema_validation():
 
     fetch = FakeFetch()
     service = ScienceConnectorService(fetch)
-    with pytest.raises(ScienceConnectorError, match="cutoff must be a positive number in nM"):
+    with pytest.raises(
+        ScienceConnectorError, match="cutoff must be a positive number in nM"
+    ):
         service.search("bindingdb", "P11802", filters={"cutoff": -10})
 
     with pytest.raises(ScienceConnectorError, match="affinity_type must be one of"):
         service.search("bindingdb", "P11802", filters={"affinity_type": "UNKNOWN"})
-
