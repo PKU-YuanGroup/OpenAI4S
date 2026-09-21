@@ -111,6 +111,13 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
 | **运维、安全与发布** | `/api/v1` 与启动凭据 · Seatbelt/bubblewrap 沙箱适配器，降级与 fail-closed 状态显式呈现 · 无人值守时默认拒绝的持久审批 · 脱敏诊断 · 可撤销遥测 · 环境即事务 · 跑在真实 Store、内核与 dispatcher 上的 13 workflow/46 case 基准 · 公开前先验证产物的分阶段发布流水线 |
 
+### 实验特性
+
+默认关闭的**语义判断层**（TypeSafe Jev）可以做 Skill 推荐、文献结论核验、
+文本特征工程，以及只记录、不改判决的安全 / 任务模式影子。未打开时不生效，
+需要自备 TypeSafe key，发送的文本会到托管在美国的服务。
+→ [实验性语义判断层](docs/experimental-judgment_zh.md)
+
 ---
 
 ## 🎬 效果演示
@@ -253,6 +260,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | [**平台支持**](docs/platforms.md) | 各操作系统的支持等级，以及原生 Windows 为何拒绝启动内核 |
 | [**Windows / WSL2**](docs/windows-wsl.md) | Ubuntu 24.04 安装、沙箱自检、生命周期命令、国内镜像与 localhost 代理说明 |
 | [**安全**](docs/security.md) | 纵深防御安全层与远程访问说明 |
+| [**实验性语义判断层**](docs/experimental-judgment_zh.md) | 默认关闭的 TypeSafe Jev 层：如何开关、每项能力会发送什么、kill switch、doctor / 审计状态 |
 
 ---
 

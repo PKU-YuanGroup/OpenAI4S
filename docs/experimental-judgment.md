@@ -1,48 +1,122 @@
 # Experimental semantic judgment layer
 
-This is the in-tree design for the **experimental** (default-off) semantic
-judgment layer. It is the formal record of plan §1, §4, and §5. Runtime
-wiring, HTTP, UI, and templates land in later waves; this document is the
-contract they implement.
+**Experimental. Default off. Early access.** First vendor: TypeSafe Jev
+(`jev-1.13.0`). Bring your own TypeSafe API key. The service is hosted in the
+United States.
 
-## Status
+This is the operator guide for the in-tree semantic judgment layer. A
+maintainer who needs to delete the experiment should follow
+[experimental-judgment-removal.md](experimental-judgment-removal.md). Flag
+names and environment variables are also listed in
+[configuration.md](configuration.md). Outbound data is summarised in
+[security.md](security.md).
 
-Experimental. Default off. First vendor: TypeSafe Jev (`jev-1.13.0`). Core
-code stays stdlib-only; the official HTTP contract is the source of truth,
-not `typesafe-sdk`.
+Chinese counterpart: [experimental-judgment_zh.md](experimental-judgment_zh.md).
 
-## Goals and non-goals
+## What it is
 
-**Goal.** Replace scattered keyword rules and "ask the LLM for a JSON
-verdict" with typed, probabilistic, recorded, evaluable, replayable judgment
-steps, behind an experimental flag.
+A vendor-neutral **semantic judgment layer** behind experimental flags. It
+turns discrete judgments that today live in keyword rules or "ask the LLM for
+a JSON verdict" into typed, probabilistic, recorded, evaluable, replayable
+steps. Kernel cells reach it through `host.judge(template, state, **params)`
+on a registered template. Control-plane hooks (Skill search, safety screens,
+task-mode detection) call the same Host service.
 
-First capabilities, all default-off:
+Questions are `Noul` (P(yes)), `Choice` (2–255 options), or `Score` (2–10
+ordered levels). Every call returns one of four statuses as ordinary data:
+`ok`, `uncertain`, `unavailable`, `disabled`. A missing key, a blocked
+egress, or a timeout is `unavailable` with an `error_code`. The layer never
+invents a default score.
 
-| Id | Capability | Shape | Release status |
-| --- | --- | --- | --- |
-| `skill_suggest` | Skill recommendation (zh/en semantic match) | Extra fields on `search_skills`; recommendation only | Experimental, default off |
-| `literature_check` | Passage screening + claim/citation check | Helper on the `literature-review` Skill | Experimental, default off |
-| `text_features` | Interpretable text feature engineering | New Skill | Experimental, default off |
-| `safety_shadow` | Shadow judgment on code-gate / injection / biosecurity | Record disagreement only; never change a verdict | Experimental, default off |
-| `task_mode_shadow` | Shadow record of task-mode classification | Record only; never bind delivery requirements | Experimental, default off |
+Core code stays stdlib-only. The official HTTP contract is the source of
+truth, not `typesafe-sdk`. The default backend POSTs to
+`https://api.typesafe.ai/v1/systemone`. The model id is pinned to
+`jev-1.13.0` (not `jev-latest`). Input is billed at **$0.042 per million
+tokens**; output is free.
 
-**Non-goals for this experiment**
+## What it is not
 
-- Do not replace the main model for planning, code generation, explanation, or writing. Jev does not generate text.
-- Do not let Jev *execute* a safety decision. Safety stays shadow; enforcement is a separate plan.
-- No small/large model cascade. `host.llm` has no per-request model profile yet.
-- No images or structure files. Jev takes text; other modalities must be converted first.
+- It does not replace the main model for planning, code generation,
+  explanation, or writing. Jev does not generate text.
+- It does not *execute* a safety decision. `safety_shadow` only records
+  disagreement with the existing classifier, injection scanner, and
+  biosecurity screener. Those three functions still return the verdict they
+  computed before the shadow ran.
+- It does not bind a detected task mode to delivery requirements.
+  `task_mode_shadow` records; `resolve_task_mode` still returns the rule
+  result.
+- It does not handle images or structure files. Jev takes text. Other
+  modalities have to be converted first.
+- It does not add `api.typesafe.ai` to the built-in egress catalog. In
+  allowlist mode you still grant that host yourself, the same way as any
+  other destination (`host.request_network_access(domain="api.typesafe.ai")`).
+- It does not silently fall back from TypeSafe to the main LLM. `provider=llm`
+  is an explicit choice and marks every result `calibrated=false`.
 
-## Release design
+## Capabilities
 
-### Flags, precedence, defaults
+All five are default-off. The master switch must also be on. Enabling a
+capability through the UI requires a current-version data-disclosure
+acknowledgement for that capability.
 
-`ExperimentalJudgmentFlags` lives on `Config` as `experimental_judgment`.
-Capability fields are tri-state (`bool | None`) via `_strict_env_tristate`:
-unset is `None`, the true/false vocabulary matches `_STRICT_TRUE_VALUES` /
-`_STRICT_FALSE_VALUES`, and any other spelling (including `flase`) raises
-`ValueError`.
+| Id | What it does | What is sent to `api.typesafe.ai` |
+| --- | --- | --- |
+| `skill_suggest` | Semantic Skill recommendations on `search_skills`. Lexical hits stay as they were. The workbench shows them as experimental chips (name, `p_fit`, confidence), not mixed into the lexical list. At most three suggestions. An explicit Skill name skips judgment (`skipped_explicit`). | Current user request text; in-scope candidate Skill names, descriptions, and `SKILL.md` opening fragments |
+| `literature_check` | `screen_passages` and `check_claims` on the `literature-review` Skill. Quote location and number/unit comparison run in code. `host.judge` is asked only about semantic relationship. `supports` means the source text supports this sentence; it is not a proof that the sentence is scientifically true. `not_found` is not evidence of fabrication. | Research question, paper passages, claims to check |
+| `text_features` | New `text-features` Skill. The main model proposes Noul/Score questions; `host.judge("features.custom", …)` answers each selected row; `audit-dataset` / `plan-ml-experiment` / `evaluate-model` fit on a development split and score the frozen test split once. Features keep their source question and measurement error. They are not a human gold standard. Unavailable rows are NaN, not a default. | User-selected data-row text |
+| `safety_shadow` | Shadow judgment beside `classify_code`, `scan_tool_result`, and the biosecurity trajectory screen (`looks_biosecurity_relevant` / `screen_trajectory`). Highest outbound risk. | Pending code cell, fragments of tool results, a session trajectory summary |
+| `task_mode_shadow` | Shadow record of `resolve_task_mode`. An explicit `--mode` / `task_mode` selection is not submitted. | User request text |
+
+When the corresponding flag is off, each of those paths returns `disabled`
+(or, for the two shadows, does not start a worker) and sends no request.
+
+## How to enable
+
+### UI
+
+1. Open **Customize → General**. The Experimental block is on that tab
+   (`data-judgment`).
+2. Turn on the master switch. A disclosure dialog lists every capability,
+   what it sends, and the hosting facts below. `safety_shadow` is marked
+   separately as the highest outbound risk.
+3. Check every capability you intend to use, then confirm. The
+   acknowledgement is stored as
+   `experimental.judgment.disclosure_ack = {version, capabilities, acked_at}`
+   for `DISCLOSURE_VERSION` (`2026-09-20`). Changing the disclosure text
+   bumps the version and requires a fresh acknowledgement.
+4. Paste a TypeSafe API key and save. The field never echoes a saved key;
+   the UI shows Configured / Not configured only. Clear removes the Store
+   row and the keychain item.
+5. Turn on individual capability switches. Backend and model are read-only
+   (`typesafe` / `jev-1.13.0` unless you overrode them by environment).
+6. **Test connection** sends a fixed probe that contains no user data
+   (`POST /api/v1/experimental/judgment/test`). The result is
+   `ok` / `unavailable` / `disabled`, plus `error_code` and `latency_ms`.
+
+If the master environment variable is an explicit false, every switch on
+this page is greyed out. The UI cannot override a kill switch.
+
+### Environment (CLI, headless, CI)
+
+```bash
+export OPENAI4S_EXPERIMENTAL_JUDGMENT=1
+export OPENAI4S_JUDGMENT_SKILL_SUGGEST=1          # optional, per capability
+export OPENAI4S_JUDGMENT_LITERATURE=1
+export OPENAI4S_JUDGMENT_TEXT_FEATURES=1
+export OPENAI4S_JUDGMENT_SAFETY_SHADOW=1
+export OPENAI4S_JUDGMENT_TASK_MODE_SHADOW=1
+export OPENAI4S_TYPESAFE_API_KEY=...              # headless; never logged
+```
+
+An environment enable treats the operator as already informed and logs a
+warning at startup. It does not require a Store disclosure acknowledgement.
+
+`Config` snapshots environment flags at construction. Exporting a variable
+after `Config(...)` has been built does not turn a capability on; build a
+new `Config`.
+
+Closed vocabularies (`0`/`1`, `false`/`true`, `no`/`yes`, `off`/`on`). A
+typo such as `flase` raises `ValueError` rather than enabling anything.
 
 | Switch | Environment variable | Store setting | Default |
 | --- | --- | --- | --- |
@@ -52,132 +126,186 @@ unset is `None`, the true/false vocabulary matches `_STRICT_TRUE_VALUES` /
 | Text features | `OPENAI4S_JUDGMENT_TEXT_FEATURES` | `experimental.judgment.capabilities.text_features` | off |
 | Safety shadow | `OPENAI4S_JUDGMENT_SAFETY_SHADOW` | `experimental.judgment.capabilities.safety_shadow` | off |
 | Task-mode shadow | `OPENAI4S_JUDGMENT_TASK_MODE_SHADOW` | `experimental.judgment.capabilities.task_mode_shadow` | off |
-| Backend | `OPENAI4S_JUDGMENT_PROVIDER` | `experimental.judgment.provider` | `typesafe` (optional `llm` later) |
-| Model | `OPENAI4S_JUDGMENT_MODEL` | `experimental.judgment.model` | `jev-1.13.0` (pinned; not `jev-latest`) |
+| Backend | `OPENAI4S_JUDGMENT_PROVIDER` | `experimental.judgment.provider` | `typesafe` (`llm` is explicit) |
+| Model | `OPENAI4S_JUDGMENT_MODEL` | `experimental.judgment.model` | `jev-1.13.0` |
 | Timeout | `OPENAI4S_JUDGMENT_TIMEOUT_S` | — | `3.0` seconds (0.1–30) |
-| API key | `OPENAI4S_TYPESAFE_API_KEY` (headless) | secret `typesafe_api_key`, scope `judgment` | none |
+| API key | `OPENAI4S_TYPESAFE_API_KEY` | secret `typesafe_api_key`, scope `judgment` | none |
+| Audit raw state | — | `experimental.judgment.audit_raw_state` | off |
 
 Effective flags (`openai4s.judgment.flags.resolve`) follow
 `JUDGMENT_FLAG_PRECEDENCE`:
 
 1. Env explicitly false → force off (kill switch; the UI cannot override it).
-2. Env explicitly true → on (CLI / headless / CI live tests).
+2. Env explicitly true → on.
 3. Otherwise consult the Store setting.
 4. If neither is set → off.
-5. When the master switch is off, every capability is off.
-6. Enabling via the UI path also requires a **current-version** data-disclosure acknowledgement; otherwise the capability is treated as off. Enabling via env treats the operator as informed and logs a warning at startup.
+5. When the master switch is off, every capability is off (`master_off`).
+6. Enabling via the UI path also requires a **current-version** disclosure
+   acknowledgement; otherwise the flag is `no_disclosure` and treated as off.
 
-### UI
+The TypeSafe key is resolved per request through SecretBroker. It is never
+copied into `os.environ` by the client, never echoed in JSON or logs, and
+never injected into the kernel environment.
 
-Customize → General (or a dedicated Experimental tab) will expose the master
-switch, per-capability switches with the disclosure text, read-only backend
-and model, key input/clear, a connection probe, and a status line
-(`disabled` / `ok` / `unavailable`). Semantic Skill suggestions render as
-experimental chips, not mixed into lexical hits. That UI is a later wave.
+REST (same auth as `/search/config`):
 
-### Default-off guarantee
+- `GET /api/v1/experimental/judgment` — flags, source, provider, model,
+  `key_configured` (boolean only), disclosure version and ack, egress
+  report.
+- `PUT /api/v1/experimental/judgment` — `enabled`, `capabilities`,
+  `acknowledge`, `api_key`, `clear_api_key`.
+- `POST /api/v1/experimental/judgment/test` — connection probe.
 
-With no experimental switch on, behaviour, system prompt, tool schemas, tool
-results, gateway response schemas, and harness golden traces stay
-byte-identical. `tests/test_judgment_default_off.py` freezes Skill
-`system_context`, `search_skills` results, `REGISTRY` schemas, and heuristic
-`classify_code` verdicts. The snapshot was captured before any product code
-for this layer landed.
+## How to disable
 
-### Data disclosure
+The kill switch is an explicit false on the master environment variable:
 
-Copy lives in `openai4s/judgment/disclosure.py` with
-`DISCLOSURE_VERSION = "2026-09-20"`. Changing the text bumps the version and
-requires a fresh acknowledgement. Per capability, this is what is sent to
-`api.typesafe.ai`:
+```bash
+export OPENAI4S_EXPERIMENTAL_JUDGMENT=0
+```
 
-| Capability | Payload |
+That forces every capability off. Turning the UI master switch off, or
+clearing the Store setting, also disables the layer when the environment
+variable is unset. With the master off, `host.judge` returns `disabled`
+and the transport is not called.
+
+Clear the key from Customize → General (Clear) or
+`PUT {"clear_api_key": true}`. Headless: unset `OPENAI4S_TYPESAFE_API_KEY`.
+
+## How to see status
+
+**UI.** Customize → General → Experimental. The block shows each flag's
+source (`env_off` / `env_on` / `setting` / `default` / `master_off` /
+`no_disclosure`), whether a key is configured, provider, model, egress
+mode, and whether `api.typesafe.ai` is already authorized. Test connection
+writes `ok` / `unavailable` / `disabled` into
+`[data-judgment-test-result]`.
+
+**`openai4s doctor`.** Check name `judgment`. It does not open a network
+connection and never prints the key.
+
+| Situation | Doctor line |
 | --- | --- |
-| `skill_suggest` | Current user request; in-scope candidate Skill names, descriptions, and `SKILL.md` opening fragments |
-| `literature_check` | Research question, paper passages, claims to check |
-| `text_features` | User-selected data-row text |
-| `safety_shadow` | Pending code cell, tool-result fragments, session trajectory summary (highest risk; UI must emphasise this) |
-| `task_mode_shadow` | User request text |
+| Default / master off | `[ok] judgment  disabled (experimental, default off)` |
+| On, key present, egress ok | `[ok] judgment  enabled (typesafe/jev-1.13.0)` |
+| On, no key | `[warn] judgment  enabled, but no TypeSafe API key is configured` |
+| On, allowlist without grant | `[warn] judgment  enabled, but api.typesafe.ai is not on the egress allowlist` |
 
-Fixed facts: the service is hosted in the United States; the privacy policy
-says inputs are not used to train models, but it does **not** state a
-retention period; Zero Data Retention is enterprise-only. Do not enable this
-for sensitive data.
+**Audit events.** Successful and failed Host runs emit a named `judgment`
+event (`openai4s.observability.log_event`) with purpose, template id and
+version, status, `error_code`, usage, latency, `state_sha256`, full
+probabilities, `cache_hit`, `truncated`, `fake`, provider, and model. Raw
+state is omitted unless `experimental.judgment.audit_raw_state` is true.
+Shadow channels emit `judgment_shadow` with `kind`, `existing_verdict`,
+`shadow_answers`, `agree`, `status`, `latency_ms`, and `state_sha256` —
+not the code or the request text.
 
-The acknowledgement is stored as
-`experimental.judgment.disclosure_ack = {version, capabilities, acked_at}`.
+The dispatcher envelope `log_host_call(method="judge")` still records the
+RPC spec, including state. That is a separate audit surface from the named
+`judgment` event.
+
 A session package export may attach `judgment_manifest.json` (capabilities
-used, backend, model, template versions, call/token counts) and must never
-include the key.
+used, backend, model, template versions, call and token counts). It must
+never include the key.
 
-### Graduation and removal
+## Hosting, privacy, price
 
-Each capability graduates independently: pre-registered test-set quality
-bar, domestic p95 latency bar, one release cycle without related P0/P1, and
-a maintainer sign-off. `safety_shadow` graduating still means shadow, not
-enforcement.
+Write these down before you enable the layer, including for sensitive
+lab data:
 
-Removal is four steps: delete `openai4s/judgment/`, `host/judgment.py`,
-`sdk/judgment.py`; delete the `if flags...` mounts; delete the UI block;
-drop the extra `[tool.mypy] files` lines. There is no egress group to
-remove.
+- The TypeSafe Jev service is **hosted in the United States**.
+- The privacy policy states that **inputs are not used to train models**.
+- The privacy policy **does not specify a retention period**.
+- **Zero Data Retention (ZDR) is enterprise accounts only.**
+- TypeSafe Jev is **early access** (waitlist). Offline development uses a
+  loopback fake; a missing key leaves the rest of OpenAI4S unchanged.
+- Input is **$0.042 per million tokens**; output is free. Usage still goes
+  through the same budget admission as `host.llm`.
+- **Do not enable this for sensitive data.**
 
-## Architecture
+Disclosure copy lives in `openai4s/judgment/disclosure.py`.
 
-### Call chain
+## Known limitations
 
-Control-plane hooks (Skill search, later shadows) and kernel `host.judge`
-RPC both reach `JudgmentService`, which talks to a `JudgmentBackend`:
-`NullBackend` (always disabled), `TypeSafeBackend` (later), optional
-`LlmBackend` (later, explicit only, `calibrated=false`). The API key never
-enters the kernel environment.
+These are properties of Jev and of this experiment, not temporary bugs:
 
-### Data contract
+- Question keys are not sent to the model. Each `instructions` string has
+  to be self-contained and name the `state` field it reads.
+- Choice is at most 255 options. Catalogs larger than that are narrowed
+  first (Skill suggestion fans out through bioSkills areas).
+- Noul returns P(yes) only, with no confidence.
+- Score is 2–10 levels with a full distribution. The same mean can come
+  from very different distributions; keep the distribution.
+- Confidence is computed from the probability distribution. It is not
+  accuracy. Thresholds are calibrated per template and language on a
+  development split.
+- State plus the longest question is capped at 32k tokens. The service
+  truncates and marks `truncated`.
+- Counting, arithmetic, numeric closeness, and date comparison stay in
+  code. Jev is asked only discrete semantic questions.
+- Adversarial text can steer answers. Safety stays shadow. Confidence is
+  never authorization.
+- English questions and criteria work best; CJK is weaker. Templates are
+  written in English; state may contain Chinese. Evaluations report
+  languages separately.
+- Rate limits (250k tokens/s, 1200 requests/minute) and 429/529 retries
+  sit inside a total time budget (default 3s). Host concurrency for
+  distinct states is capped at 4.
+- The SDK has moved quickly. This tree depends on the HTTP contract and
+  rejects a whole payload on any validation failure.
+- Live quality numbers for Jev on the frozen eval sets have not been
+  collected in this tree. Graduation waits on those runs, a domestic p95
+  measurement, and a maintainer sign-off. Until then treat the layer as
+  an experiment, not a replacement for lexical search or DOI verification.
+- `format_tool_result` still shows the model the lexical `search_skills`
+  list when that list is non-empty. Experimental chips are a workbench
+  projection. The model sees semantic suggestions in the tool observation
+  when lexical search returned nothing.
+- Two shadow queues (`shadow.py` and `task_mode_shadow.py`) run as
+  separate modules. Default-off, they start no threads.
 
-Questions are frozen dataclasses in `openai4s/judgment/types.py`:
+## Graduation criteria
 
-- `Noul`: non-empty `instructions`; `criteria` is `None` or exactly
-  `{true, false}`. `to_api()` emits `{"type":"noul","instructions":...}` and
-  omits `criteria` when absent.
-- `Choice`: 2–255 options with non-empty names; descriptions are strings or
-  objects. `to_api()` puts options in `criteria`.
-- `Score`: 2–10 ordered levels. `to_api()` puts levels in `criteria` as a
-  list.
+Each capability graduates on its own. Removing the Experimental badge
+requires all of:
 
-`Answer` carries `kind`, `value`, optional `probabilities` / `confidence`.
-A Noul answer is rejected if it carries either: Jev answers a Noul with
-P(yes) alone, and a field the backend never fills must not be representable.
-`value` is a number for `noul` / `score` and the selected option name for
-`choice`. `JudgmentResult` is the Host RPC value; `to_dict()` is JSON-only. `BackendReply` is the transport reply: raw answers, usage,
-echoed model, `request_id` (or `None`).
+1. The pre-registered test set meets the quality bar that was written down
+   **before** that test set was opened.
+2. Added p95 latency from a domestic (mainland China) network stays inside
+   the stated bar.
+3. One release cycle with no P0/P1 issue attributed to this layer.
+4. A maintainer sign-off.
 
-Cache key (later):
-`(provider, model, template_id, template_version, policy_version, state_sha256, candidate_versions_hash, scope_id)`.
-Replay always uses the recorded result.
+`safety_shadow` graduating still means shadow, not enforcement. Enforcement
+needs a separate plan.
 
-### Status semantics
+Placeholder bars recorded with the eval protocol (to be frozen before any
+`--split test` run): `skill_suggest` error-recommendation rate at least 30%
+relative lower than lexical B0, Chinese top-3 recall at least 0.7, domestic
+added p95 at most 1.5 s; `literature_check` high-confidence error at most
+3%, human-review share at most 30%, total cost no higher than the LLM
+control.
 
-| Status | Meaning |
-| --- | --- |
-| `disabled` | Flag off, or UI path without current disclosure. **No request is sent.** |
-| `unavailable` | Missing key, network/timeout, 401/429/529 exhausted, invalid response, egress blocked. **Never invent default scores.** `answers` empty; `error_code` required. |
-| `uncertain` | Request succeeded; template policy is uncertain. Answers are returned; the caller decides. |
-| `ok` | Request succeeded and passed policy. |
+## FAQ
 
-`host.judge` treats all four as normal return values. Only a bad call
-(unknown template, bad arguments) uses the single-key `{"error": msg}` soft
-failure.
+### Can I use this from a mainland China network?
 
-### Jev constraints that the implementation must honour
+There is no built-in relay. The client talks to `api.typesafe.ai`. You can
+put an HTTPS proxy in the process environment the same way as for any other
+stdlib `urllib` client. In `OPENAI4S_EGRESS=allowlist` mode, grant
+`api.typesafe.ai` with `host.request_network_access` (the Network panel has
+no judgment group to toggle — v1.3 never added one). Expect extra latency
+and more `unavailable` results; callers already treat that status as "no
+recommendation / needs review" rather than a crash. Measure p95 on the
+network you will actually use before treating the layer as load-bearing.
 
-Question keys are not sent to the model, so each `instructions` string must
-be self-contained and name the `state` field it reads. Choice is at most 255
-options. Noul returns P(yes) only. Score is 2–10 levels with a full
-distribution. Confidence is not accuracy. State + longest question ≤ 32k
-tokens; the service truncates and marks it. Counting, arithmetic, and date
-comparison stay in code. Safety stays shadow; confidence is never
-authorization. Questions and criteria are written in English; state may
-contain Chinese.
+### Can I run this without TypeSafe?
+
+Yes. Set `OPENAI4S_JUDGMENT_PROVIDER=llm` (or the Store setting
+`experimental.judgment.provider=llm`). The configured main model answers
+the same typed questions. Every result is `calibrated=false`. TypeSafe
+failures become `unavailable`; they never call `chat()`. Use this as an
+explicit control baseline, not as a drop-in for Jev probabilities.
 
 ## Progress log
 

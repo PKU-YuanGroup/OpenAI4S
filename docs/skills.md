@@ -53,6 +53,22 @@ configured `dataPro_search` MCP tool. Discovery is not an authentication check;
 only an integer `raw.structuredContent.code` of zero from a real search call is
 treated as usable.
 
+### Experimental judgment
+
+A default-off [semantic judgment layer](experimental-judgment.md) can send
+Skill text, paper passages, or selected data rows to TypeSafe Jev
+(`api.typesafe.ai`, hosted in the United States) when you enable it under
+Customize → General and acknowledge the disclosure. Affected Skills:
+
+| Skill | What changes when the matching capability is on |
+| --- | --- |
+| *(all searchable Skills)* | `skill_suggest` appends up to three semantic recommendations on `search_skills`. Lexical hits are unchanged. The workbench shows experimental chips. |
+| `literature-review` | `literature_check` adds `screen_passages` and `check_claims`. Quote location and number/unit comparison stay in the sidecar. `verify_dois` / `crossref_lookup` / `search_openalex` / `expand_citations` / `extract_dois` / `style_pass` are unchanged. Frontmatter lists `api.typesafe.ai` as `host_only`. |
+| `text-features` | New Skill. `text_features` turns selected row text into calibrated Noul/Score columns via `host.judge("features.custom", …)`, then reuses `audit-dataset`, `plan-ml-experiment`, and `evaluate-model`. Features are not a human gold standard. Frontmatter lists `api.typesafe.ai` as `host_only`. |
+
+When the capability is off, those helpers return `status: "disabled"` and send
+nothing. `OPENAI4S_EXPERIMENTAL_JUDGMENT=0` is the kill switch.
+
 ## Writing a Skill
 
 1. Create `skills/<name>/SKILL.md` with a short YAML frontmatter (`name`, `description`, optional `origin`, `category`, `requirements: [gpu]`) followed by a body of **runnable code examples**.
