@@ -15,3 +15,4 @@ them.
 | [`skills.py`](skills.py) | `skills.suggest` Skill recommendation: fan-out, bioSkills expand, and fit stages. |
 | [`bioskills_areas.json`](bioskills_areas.json) | Generated area index (55 areas, 561 members) consumed by the bioSkills expand stage. Rebuild with `uv run python scripts/build_bioskills_area_index.py`. |
 | [`literature.py`](literature.py) | `literature.screen` (passage Nouls) and `literature.claim` (supports / contradicts / insufficient). Quote location and number/unit comparison stay in the literature-review sidecar. |
+| [`task_mode.py`](task_mode.py) | `task_mode.classify`: one Choice among `analysis_run` / `reusable_pipeline` / `codebase_change` with structured `{what, not_for, examples}` criteria. Recording-only; never binds completion evidence. |
