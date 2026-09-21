@@ -204,7 +204,17 @@ def test_privileged_workflows_pin_their_actions_major_version(name):
     for line in _uses_lines(name):
         match = ACTION_IDENTITY.match(line)
         assert match, line.strip()
-        found[match.group("name")] = int(match.group("major"))
+        action = match.group("name")
+        major = int(match.group("major"))
+        # Check each use before reducing to a mapping: a later job using the
+        # approved major must not hide an earlier job's different major.
+        assert major == expected.get(action), (
+            name,
+            action,
+            major,
+            expected.get(action),
+        )
+        found[action] = major
 
     assert found == expected, {
         "unpinned or moved": sorted(set(found) - set(expected)),
@@ -215,6 +225,25 @@ def test_privileged_workflows_pin_their_actions_major_version(name):
             if action in expected and major != expected[action]
         },
     }
+
+
+@pytest.mark.parametrize("occurrence", [0, 1, -1], ids=["first", "middle", "last"])
+def test_privileged_workflow_major_gate_checks_repeated_uses(
+    tmp_path, monkeypatch, occurrence
+):
+    name = "release.yml"
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    matches = list(re.finditer(r"uses: astral-sh/setup-uv@[^\n]+# v(\d+)\.", text))
+    assert len(matches) > 2
+    match = matches[occurrence]
+    changed = (
+        text[: match.start(1)] + str(int(match.group(1)) + 1) + text[match.end(1) :]
+    )
+    (tmp_path / name).write_text(changed, encoding="utf-8")
+    monkeypatch.setitem(globals(), "WORKFLOWS", tmp_path)
+
+    with pytest.raises(AssertionError):
+        test_privileged_workflows_pin_their_actions_major_version(name)
 
 
 def test_formatter_hooks_pin_their_major_version():

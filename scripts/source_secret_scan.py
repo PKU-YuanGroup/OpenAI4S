@@ -54,37 +54,29 @@ _FORBIDDEN_FILENAMES = frozenset(
     {".env", ".npmrc", ".pypirc", "credentials.json", "service-account.json"}
 )
 _ALLOWED_ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
-# An `.npmrc` is forbidden because it is where an npm registry token lives, not
-# because npm config is secret: `engine-strict`, `audit-level` and the rest are
-# ordinary settings a repository may need to commit. Decide on the content, so
-# a committed `.npmrc` that carries no credential passes while the same file
-# fails the moment an auth directive is added to it -- a name-only exemption
-# would have let that edit through.
-#
-# Auth in an `.npmrc` is always written either as a registry-scoped line
-# (`//registry.npmjs.org/:_authToken=...`) or as one of these keys.
-_NPMRC_AUTH_LINE = re.compile(
-    r"""^\s*(?:
-        //                              # any registry-scoped setting
-        |[^=\s]*(?:_auth|_secret|token|password|passwd)
-        |(?:username|email|certfile|keyfile)\s*=
+# Exempt only these policy settings, with closed sets of literal values.
+# A credential-key denylist misses proxy/registry URL userinfo, OTPs, client
+# keys and future auth options. Unknown settings and syntax must still fail
+# the filename gate; extending this allowlist requires deliberate review.
+_NPMRC_POLICY_LINE = re.compile(
+    r"""(?:
+        engine-strict\s*=\s*(?:true|false)
+        |audit-level\s*=\s*(?:info|low|moderate|high|critical|none)
     )""",
-    re.IGNORECASE | re.VERBOSE,
+    re.VERBOSE,
 )
 
 
-def _npmrc_carries_credentials(path: Path) -> bool:
-    """True when an `.npmrc` holds an auth directive, or cannot be read.
-
-    Unreadable is treated as carrying one: this gate fails closed, and the
-    `unreadable-file` finding below reports the same file again anyway.
-    """
+def _npmrc_has_only_policy_settings(path: Path) -> bool:
+    """Allow policy-only config; unreadable or invalid text fails closed."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return True
-    return any(
-        _NPMRC_AUTH_LINE.match(line)
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    if "\0" in text:
+        return False
+    return all(
+        _NPMRC_POLICY_LINE.fullmatch(line.strip())
         for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith((";", "#"))
     )
@@ -172,7 +164,9 @@ def scan(root: Path) -> list[Finding]:
         if (
             (
                 lower_name in _FORBIDDEN_FILENAMES
-                and (lower_name != ".npmrc" or _npmrc_carries_credentials(path))
+                and (
+                    lower_name != ".npmrc" or not _npmrc_has_only_policy_settings(path)
+                )
             )
             or (
                 lower_name.startswith(".env.")
