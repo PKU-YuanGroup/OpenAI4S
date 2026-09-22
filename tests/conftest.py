@@ -25,6 +25,26 @@ os.environ["OPENAI4S_SKIP_DOTENV"] = "1"
 _LLM_ENV_LEAK = re.compile(
     r"^OPENAI4S_(?:LLM_[A-Z0-9_]+|[A-Z0-9_]*(?:BASE_URL|MODEL|API_KEY))$"
 )
+# The experimental judgment layer is the same class of input as the rollout
+# flags below: opt-in, default-off, and read fresh on every Config. A developer
+# who exported the master switch to try it locally must not have the offline
+# suite quietly exercise the enabled path. `OPENAI4S_JUDGMENT_MODEL` and
+# `OPENAI4S_TYPESAFE_API_KEY` are already covered by `_LLM_ENV_LEAK` above
+# (`*MODEL` / `*API_KEY`), which is why live judgment tests read their key from
+# `OPENAI4S_JUDGMENT_LIVE_KEY` instead -- the suite must never see a real one.
+# The fake endpoint is here for a different reason: a leftover value would
+# point every test at whatever is (or is not) listening on that port.
+_JUDGMENT_ENV_LEAK = (
+    "OPENAI4S_EXPERIMENTAL_JUDGMENT",
+    "OPENAI4S_JUDGMENT_SKILL_SUGGEST",
+    "OPENAI4S_JUDGMENT_LITERATURE",
+    "OPENAI4S_JUDGMENT_TEXT_FEATURES",
+    "OPENAI4S_JUDGMENT_SAFETY_SHADOW",
+    "OPENAI4S_JUDGMENT_TASK_MODE_SHADOW",
+    "OPENAI4S_JUDGMENT_PROVIDER",
+    "OPENAI4S_JUDGMENT_TIMEOUT_S",
+    "OPENAI4S_JUDGMENT_FAKE_ENDPOINT",
+)
 _ROADMAP_ENV_LEAK = (
     "OPENAI4S_STAGE1_TRUSTED_DELIVERY",
     "OPENAI4S_STAGE2_AUTO_RUN_STORAGE",
@@ -186,6 +206,8 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # that cover a stage set an explicit Config or set the variable after this
     # fixture has established the off baseline.
     for name in _ROADMAP_ENV_LEAK:
+        monkeypatch.delenv(name, raising=False)
+    for name in _JUDGMENT_ENV_LEAK:
         monkeypatch.delenv(name, raising=False)
     # The provider-native last-resort keys (ANTHROPIC_API_KEY, OPENAI_API_KEY,
     # ...) feed the same resolver: a developer's real export would make a

@@ -12,6 +12,7 @@ capabilities:
       - doi.org
       - pubmed.ncbi.nlm.nih.gov
       - europepmc.org
+      - api.typesafe.ai
 metadata:
   # Non-biomodel: sends user's query (and contact email when configured) to
   # Crossref and OpenAlex for literature lookup.
@@ -29,6 +30,13 @@ metadata:
       name: OpenAlex
       terms_url: https://openalex.org/OpenAlex_termsofservice.pdf
       privacy_url: https://openalex.org/OpenAlex_privacy_policy.pdf
+    # Experimental literature_check: research question, paper passages, and
+    # claims are sent to TypeSafe Jev at api.typesafe.ai when the capability
+    # is enabled in Customize → Experimental. info_url. verified 2026-09-20
+    - kind: service
+      name: TypeSafe
+      info_url: https://docs.typesafe.ai/
+      privacy_url: https://typesafe.ai/legal/privacy-policy
 ---
 
 # Literature review
@@ -78,3 +86,40 @@ Cite inline as a markdown link — `[Author Year](https://doi.org/10.xxxx/xxxxxx
 ## Style pass before saving
 
 Before saving the artifact, run `style_pass(draft)` once on the full markdown. Fix the issues it lists in a single editing pass, then save; do not call it a second time and do not loop until it returns ok. It is a lint, not a gate, and a clean draft on the first pass is normal. It is shipped in this skill's `kernel.py` and auto-loaded; if `style_pass` is not in `dir`, read `kernel.py` from this skill's directory and exec it.
+
+## Semantic evidence check (experimental)
+
+Use these helpers when writing a review from retrieved passages, or when checking that a draft's claims still match the sources they cite. Quote location and number/unit comparison run in code; `host.judge` is asked only about semantic relationship. This is experimental: turn on `literature_check` under Customize → Experimental (the master experimental-judgment switch must also be on). When the capability is off, the helpers return `status: "disabled"` and do not raise; `verify_dois`, `crossref_lookup`, `search_openalex`, `expand_citations`, `extract_dois`, and `style_pass` are unchanged.
+
+`supports` means only that the source text supports this sentence; it does **not** mean the sentence has been scientifically proven. `not_found` is not evidence of fabrication — PDF extraction or OCR can change wording enough that a real quote no longer matches. Numbers and units are compared in code, not by the judge.
+
+Screen retrieved passages. Contradictory evidence is kept, never dropped:
+
+```python
+rows = screen_passages(
+    "Does metformin reduce HbA1c in adults with type 2 diabetes?",
+    [
+        {"text": passage_a, "source_version_id": vid_a, "locator": "p.12"},
+        {"text": passage_b, "source_version_id": vid_b, "locator": "p.18"},
+    ],
+    hypothesis="Metformin lowers HbA1c relative to placebo",
+)
+```
+
+Check claims against the source text they cite:
+
+```python
+results = check_claims(
+    [
+        {
+            "claim_id": "c1",
+            "claim": "Metformin reduced HbA1c by 1.1% versus placebo.",
+            "quote": "HbA1c fell by 1.1 percentage points versus placebo",
+            "source_id": "s1",
+        }
+    ],
+    {"s1": {"text": source_text, "version_id": vid_s1}},
+)
+```
+
+Each `check_claims` row carries `claim_id`, `source_id`, `version_id`, `span`, `match` (`exact` or `fuzzy:<score>`), `relation`, `probabilities`, `confidence`, `template_version`, and `status` (`verified`, `contradicted`, `unsupported`, `not_found_needs_review`, `numeric_mismatch`, `uncertain`, or `disabled`).

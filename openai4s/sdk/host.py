@@ -604,6 +604,18 @@ class _Host:
         spec.setdefault("temperature", temperature)
         return self._call("llm", [spec])
 
+    def judge(self, template: str, state: Any, **params: Any) -> Any:
+        """Typed judgment via a registered template.
+
+        Four statuses (``ok`` / ``uncertain`` / ``unavailable`` / ``disabled``)
+        are normal return values. A questions list is rejected; only a
+        registered template may build what is sent outbound.
+        """
+
+        from openai4s.sdk.judgment import judge as _judge
+
+        return _judge(self._call, template, state, **params)
+
     # --- artifacts / data discovery --------------------------------------
     def artifacts(self, **filters: Any) -> dict:
         """List versioned artifacts (cross-session store). Returns {count, artifacts:[...]}."""

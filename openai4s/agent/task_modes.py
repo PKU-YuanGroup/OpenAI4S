@@ -187,12 +187,20 @@ def resolve_task_mode(
         return _coerce(explicit)
     body = str(text or "")
     if not body.strip():
-        return TaskMode.ANALYSIS_RUN
-    if _qualifies(body, _CODEBASE_TARGETS, _CODEBASE_ACTIONS):
-        return TaskMode.CODEBASE_CHANGE
-    if _qualifies(body, _PIPELINE_TARGETS, _PIPELINE_ACTIONS):
-        return TaskMode.REUSABLE_PIPELINE
-    return TaskMode.ANALYSIS_RUN
+        mode = TaskMode.ANALYSIS_RUN
+    elif _qualifies(body, _CODEBASE_TARGETS, _CODEBASE_ACTIONS):
+        mode = TaskMode.CODEBASE_CHANGE
+    elif _qualifies(body, _PIPELINE_TARGETS, _PIPELINE_ACTIONS):
+        mode = TaskMode.REUSABLE_PIPELINE
+    else:
+        mode = TaskMode.ANALYSIS_RUN
+    try:
+        from openai4s.judgment.task_mode_shadow import submit
+
+        submit(request=body, rule_mode=mode.value, explicit=False)
+    except Exception:  # noqa: BLE001 - shadow must never change the return
+        pass
+    return mode
 
 
 def task_mode_prompt(mode: str | TaskMode, *, explicit: bool = True) -> str:

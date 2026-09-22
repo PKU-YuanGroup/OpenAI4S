@@ -29,3 +29,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`execution/`](execution/) | F-16 executed-code view, variable inspector, Provenance tab, fork 409 presentation. |
 | [`onboarding/`](onboarding/) | M-01 first-run wizard: four-step machine, skip/checklist, capability badges. |
 | [`table/`](table/) | M-04 table Schema / Distribution / Export. B-07 `/table/profile` + `/table/export.csv`; approximate is explicit; flag=0 falls back to the sheet. |
+| [`judgment/`](judgment/) | Experimental semantic-judgment copy and `search_skills` recommendation chips. |

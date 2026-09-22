@@ -148,17 +148,114 @@ class SearchSkillsTool(Tool):
     resource_key_prefix = "skill"
     resource_target_key = "query"
 
-    def execute(self, runtime: ControlToolContext, arguments: dict) -> list:
-        rows = runtime.invoke(
-            self.host_method,
-            {
-                "query": arguments.get("query", ""),
-                "limit": int(arguments.get("limit") or 5),
-            },
-        )
-        return self.fit_to_budget(rows)
+    def execute(self, runtime: ControlToolContext, arguments: dict) -> Any:
+        spec = {
+            "query": arguments.get("query", ""),
+            "limit": int(arguments.get("limit") or 5),
+        }
+        rows = runtime.invoke(self.host_method, spec)
+        semantic = runtime.call_host("suggest_skills", {"query": spec["query"]})
+        if not isinstance(semantic, dict) or "error" in semantic:
+            return self.fit_to_budget(rows)
+        status = semantic.get("semantic_status")
+        if status == "disabled":
+            return self.fit_to_budget(rows)
+        suggestions = list(semantic.get("semantic_suggestions") or [])
+        reserve = self._semantic_reserve(status, suggestions)
+        lexical_budget = max(0, self.output_limit - reserve)
+        fitted = self.fit_to_budget(rows, budget=lexical_budget)
+        payload = {
+            "results": fitted,
+            "semantic_status": status,
+            "semantic_suggestions": suggestions,
+        }
+        return self._fit_semantic(payload)
 
-    def fit_to_budget(self, rows: Any) -> Any:
+    def _tool_rendered_size(self, value: Any) -> int:
+        import json
+
+        prefix_size = len(f"[Tool: {self.name}]\n")
+        try:
+            body = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError):
+            body = str(value)
+        return prefix_size + len(body)
+
+    def _semantic_reserve(self, status: Any, suggestions: list[Any]) -> int:
+        """Chars held back for the semantic envelope before fitting hits.
+
+        Suggestions plus ``reason_fields`` are a few hundred characters --
+        ``reason_fields`` names the fields that were read, not their contents,
+        and the template caps the list at three. Lexical recipes are the side
+        that shortens on demand, so they fit into the remainder.
+
+        ``output_limit // 8`` is a floor, not a ceiling: with suggestions
+        present the reserve is ``max(needed, cap)``, so the envelope wins if
+        it ever needs more than an eighth. At the real 50,000-char limit that
+        is 6,250 reserved against an envelope of a few hundred, and the
+        distinction only shows up at absurdly small limits, where the result
+        list degrades to its identity rows. Without suggestions the reserve is
+        the smaller of the two, since there is nothing to protect.
+        """
+
+        envelope = {
+            "results": [],
+            "semantic_status": status,
+            "semantic_suggestions": suggestions,
+            "semantic_truncated": False,
+        }
+        needed = self._tool_rendered_size(envelope)
+        cap = self.output_limit // 8
+        if cap < 1:
+            return min(needed, self.output_limit)
+        if not suggestions:
+            return min(needed, cap)
+        return min(self.output_limit, max(needed, cap))
+
+    def _mark_semantic_truncated(
+        self, payload: dict[str, Any], suggestions: list[Any]
+    ) -> dict[str, Any]:
+        candidate = {
+            **payload,
+            "semantic_suggestions": suggestions,
+            "semantic_truncated": True,
+        }
+        if not suggestions and candidate.get("semantic_status") == "ok":
+            candidate["semantic_status"] = "uncertain"
+        return candidate
+
+    def _fit_semantic(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep the wrapped search_skills dict inside ``output_limit``.
+
+        Lexical ``results`` are budgeted against the remainder after the
+        semantic envelope's reserve. When the envelope still overflows, drop
+        ``reason_fields`` first, then trailing suggestions. If that removes
+        every suggestion, the status must not stay ``ok``.
+        """
+
+        if self._tool_rendered_size(payload) <= self.output_limit:
+            return payload
+        original = list(payload.get("semantic_suggestions") or [])
+        suggestions = [
+            dict(item) if isinstance(item, dict) else item for item in original
+        ]
+        for index in range(len(suggestions) - 1, -1, -1):
+            item = suggestions[index]
+            if isinstance(item, dict) and item.get("reason_fields"):
+                trimmed = dict(item)
+                trimmed["reason_fields"] = []
+                suggestions[index] = trimmed
+                candidate = {**payload, "semantic_suggestions": suggestions}
+                if self._tool_rendered_size(candidate) <= self.output_limit:
+                    return candidate
+        while suggestions:
+            suggestions.pop()
+            candidate = self._mark_semantic_truncated(payload, suggestions)
+            if self._tool_rendered_size(candidate) <= self.output_limit:
+                return candidate
+        return self._mark_semantic_truncated(payload, [])
+
+    def fit_to_budget(self, rows: Any, budget: int | None = None) -> Any:
         """Shorten the longest recipes instead of losing the last hits.
 
         ``format_tool_result`` truncates the rendered result from the tail, so
@@ -174,6 +271,11 @@ class SearchSkillsTool(Tool):
         if not isinstance(rows, list):
             return rows
 
+        if budget is None:
+            limit = self.output_limit
+        else:
+            limit = min(self.output_limit, max(0, int(budget)))
+
         prefix_size = len(f"[Tool: {self.name}]\n")
 
         def rendered_size(value: Any) -> int:
@@ -183,7 +285,7 @@ class SearchSkillsTool(Tool):
                 body = str(value)
             return prefix_size + len(body)
 
-        if rendered_size(rows) <= self.output_limit:
+        if rendered_size(rows) <= limit:
             return rows
         if any(not isinstance(row, dict) for row in rows):
             return {
@@ -235,12 +337,12 @@ class SearchSkillsTool(Tool):
         # fits. JSON escaping can turn one source character into two (or more),
         # so character-count estimates cannot protect the later formatter.
         shortest = with_cap(0)
-        if rendered_size(shortest) > self.output_limit:
+        if rendered_size(shortest) > limit:
             # Marker prose is expendable; names are not. This rare fallback
             # preserves every result row when metadata plus the pointers fit
             # but repeating the per-row explanation does not.
             shortest = with_cap(0, markers=False)
-        if rendered_size(shortest) > self.output_limit:
+        if rendered_size(shortest) > limit:
             # Search has a maximum of 20 standard rows. If optional metadata is
             # unexpectedly enormous, preserve the ranked identities and an
             # injection-safe load pointer for every hit instead of returning a
@@ -249,7 +351,7 @@ class SearchSkillsTool(Tool):
                 identity_rows(descriptions=True),
                 identity_rows(descriptions=False),
             ):
-                if rendered_size(compact) <= self.output_limit:
+                if rendered_size(compact) <= limit:
                     return compact
             return {
                 "error": f"search_skills returned {len(rows)} hit identities "
@@ -279,7 +381,7 @@ class SearchSkillsTool(Tool):
             while low <= high:
                 cap = (low + high) // 2
                 candidate = with_cap(cap)
-                if rendered_size(candidate) <= self.output_limit:
+                if rendered_size(candidate) <= limit:
                     segment_best = (cap, candidate)
                     low = cap + 1
                 else:

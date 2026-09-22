@@ -888,11 +888,24 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         return ({"todos": todos}, _plural(len(todos), "step"))
     if kind == "skill":
         if method == "search_skills":
-            names = [s.get("name") for s in (result or []) if isinstance(s, dict)]
-            return (
-                {"skills": names},
-                ", ".join(n for n in names[:4] if n) or "no match",
-            )
+            # Two shapes reach this card. With the experimental skill_suggest
+            # capability off, the tool returns the lexical list it always
+            # returned. With it on, W2-A wraps that list in
+            # {results, semantic_status, semantic_suggestions}, and iterating
+            # the dict yielded its keys -- so the card read "no match" beside
+            # real hits and the suggestion chips had nothing to render.
+            rows = result if isinstance(result, list) else (r.get("results") or [])
+            names = [s.get("name") for s in rows if isinstance(s, dict)]
+            card: dict[str, Any] = {"skills": names}
+            summary = ", ".join(n for n in names[:4] if n) or "no match"
+            status = r.get("semantic_status")
+            suggestions = r.get("semantic_suggestions")
+            if status is not None or suggestions:
+                card["semantic_status"] = status
+                card["semantic_suggestions"] = list(suggestions or [])
+                if not names and suggestions:
+                    summary = _plural(len(suggestions), "suggestion")
+            return (card, summary)
         if method == "skills_status":
             return (
                 {
@@ -1029,6 +1042,14 @@ class HostDispatcher:
             quota_gate=self._llm_quota_gate,
             usage_sink=self._record_llm_usage,
         )
+        from openai4s.host.judgment import JudgmentService
+
+        self._judgment_service = JudgmentService(
+            lambda: self.cfg,
+            lambda: get_store(self.cfg.db_path),
+            usage_sink=self._record_llm_usage,
+            quota_gate=self._llm_quota_gate,
+        )
         self.frame_id = frame_id
         self.workspace_path = Path(workspace).resolve() if workspace else None
         self.store = get_store(self.cfg.db_path)
@@ -1124,7 +1145,9 @@ class HostDispatcher:
             capability_scope=self._current_capability_scope,
             specialist_enabled=self._specialist_enabled,
         )
-        self._skill_service = SkillService(self.cfg)
+        self._skill_service = SkillService(
+            self.cfg, judgment_service=self._judgment_service
+        )
         self._skills = self._skill_service.loader  # private compatibility alias
         self.set_capability_scope(self.frame_id)
         self._credential_service = CredentialService()
@@ -1232,6 +1255,7 @@ class HostDispatcher:
                 self.cfg.roadmap_features.stage10_scientific_connectors
             ),
             invoke_control=self._invoke_control_behavior,
+            dispatch_host=lambda method, args: self(method, args, _record=False),
             search_web=self._search_web,
         )
 
@@ -1745,7 +1769,7 @@ class HostDispatcher:
         )
 
     # dispatcher entrypoint ------------------------------------------------
-    def __call__(self, method: str, args: list) -> Any:
+    def __call__(self, method: str, args: list, *, _record: bool = True) -> Any:
         control_tool = get_tool_by_host_method(method)
         dynamic_catalog = None
         handler: Callable[..., Any]
@@ -2046,7 +2070,8 @@ class HostDispatcher:
             # (credentials_set) are never taped — an exported notebook must not
             # carry a plaintext credential.
             if (
-                self.recorder is not None
+                _record
+                and self.recorder is not None
                 and ok
                 and method not in SECRET_ARG_HOST_CALLS
                 and method not in DERIVABLE_HOST_CALLS
@@ -2293,6 +2318,9 @@ class HostDispatcher:
 
     def _m_llm(self, spec: dict) -> Any:
         return self._llm_service.complete(spec)
+
+    def _m_judge(self, spec: dict) -> Any:
+        return self._judgment_service.dispatch(spec)
 
     def _m_current_model(self) -> str:
         return self._llm_service.current_model()
@@ -3157,6 +3185,9 @@ class HostDispatcher:
     # --- skills: retrieval (progressive disclosure) ----------------------
     def _m_search_skills(self, spec: dict) -> list:
         return self._skill_service.search(spec)
+
+    def _m_suggest_skills(self, spec: dict) -> dict:
+        return self._skill_service.suggest(spec if isinstance(spec, dict) else {})
 
     def _m_list_skills(self) -> list:
         """Native-tool source; its Tool projects this catalog to count/names."""

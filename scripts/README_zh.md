@@ -47,6 +47,7 @@ Tool，`openai4s/` 下也没有任何模块会导入它们。
 | `release_receipts.py` | 构建收据与 staging 证明，以及构建 job 调用的 CLI。构建收据把某个 job 的产物绑定到被冻结的源码 SHA，并记录构建机的 OS/架构/解释器，因此 staging 能够检查 wheel 与 DMG 是否来自同一个提交——此前每个 job 各自 checkout 可变 tag，没有任何东西做过比较。staging 证明记录了被暂存资产的精确集合与摘要，并通过 workflow 制品通道传递，因为 `step_publish` 此前是拿 draft 自己的 `SHA256SUMS` 去重新校验 draft：这是一份自我担保的文件，任何能替换资产的人都能在同一动作里把它一起替换。 |
 | `reaudit_crosswalk.py` | 为 [`docs/plan-crosswalk.json`](../docs/plan-crosswalk.json) 里每个 `closed` 行记录它所指证据文件的内容摘要；`--check` 会在任何一份证据变动后拒绝通过。此前 48 个 closed 行中有 25 个所指的测试文件在文档自称的审计点之后又被改过（其中一个跨了 12 个提交），而现有断言全部通过——因为它们检查的是文件“存在”。用内容摘要而不是 commit SHA：做这次重新审计的那个提交，无法在自身内部校验自己的 SHA。 |
 | `capture_response_contract.py` | 配套的另一道门，问的是另一个问题：`capture_response_schemas.py` 冻结的是测试恰好触发到的那些 JSON body 的**形状**，而它冻结的是每条 route 究竟给出**哪一类**回答——json、stream、redirect、binary 还是空——以及配的是哪些状态码。它不会重跑测试套件，而是把清单里的每条 route 不带参数地直接打到真实 handler 与真实 Store 上，于是大多数返回 4xx，而这正是重点：错误响应同样是一种承诺，一条根本驱动不起来的 route 会以「条目缺失」的形式暴露，而不是变成一个填满空值的条目。清单里那种连自身具体化都路由不到的条目会被单独点名，绝不计入覆盖。[`docs/response-contract.json`](../docs/response-contract.json) 是抓取出来的，不是手写的，理由和它的搭档一样：手工维护的一份「这些 route 是流式的」清单，只在写下它的那天是对的，之后就会悄悄变错。抓取时会在临时数据目录里把 `OPENAI4S_SECRET_STORE` 钉成 `plaintext`，因为 `/search/config` 要读凭据，而 `auto` 解析到的是**执行抓取那台机器**上有什么——有钥匙串的笔记本会把这条 route 冻进去，两样都没有的 runner 会跳过它，于是这份产物在除了生成它那台机器之外的所有机器上都显得过期。 |
+| [`build_bioskills_area_index.py`](build_bioskills_area_index.py) | 按 `bio-<area>-` 前缀把 `skills/bioskills/` 的全部成员分组，写入 `openai4s/judgment/templates/bioskills_areas.json`（label、≤200 字描述、成员列表、manifest SHA-256）。确定性：同样的输入永远得到同样的 JSON。 |
 
 ## 子目录
 
