@@ -10,9 +10,9 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel bootstrap finder binds each permitted Skill package to its exact discovered directory, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (604)
+## Bundled Skills (605)
 
-The catalog has two maintenance tiers: 43 curated OpenAI4S Skills and a pinned,
+The catalog has two maintenance tiers: 44 curated OpenAI4S Skills and a pinned,
 read-only import of all 561 MIT-licensed
 [GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
 individually searchable and loadable, but the system prompt represents the
@@ -32,7 +32,7 @@ source commit, conversion rules, license, complete inventory, and per-file
 hashes live at its linked boundary; importing it installs no scientific
 packages and does not imply that every optional tool is ready locally.
 
-### Curated OpenAI4S Skills (43)
+### Curated OpenAI4S Skills (44)
 
 | category | Skills |
 |---|---|
@@ -42,7 +42,7 @@ packages and does not imply that every optional tool is ready locally.
 | **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` · `protein-design-mcp` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
 | **Reaction chemistry** | `reaction-atom-mapping` · `reaction-condition-recommendation` · `reaction-forward-prediction` · `reaction-yield-estimation` · `single-step-retrosynthesis` |
-| **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` |
+| **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` · `target_druggability_screening` |
 | **ML methodology / benchmarks** | `plan-ml-experiment` · `audit-dataset` · `evaluate-model` · `bioprobench` |
 | **Platform** | `remote-compute-nvidia` · `remote-compute-ssh` · `using-model-endpoint` · `volcengine-datapro` |
 
@@ -191,11 +191,11 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. The GitHub form
-follows the repository's default branch, whose current catalog contains 604
-Skills (43 curated + 561 pinned bioSkills):
+follows the repository's default branch, whose current catalog contains 605
+Skills (44 curated + 561 pinned bioSkills):
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 44 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
 ```
 
@@ -234,7 +234,7 @@ absolute paths, `..`, drive letters and NUL are rejected, and a link member
 aborts the extraction rather than being skipped.
 
 **For an OpenAI4S user this is mostly redundant.** A wheel built from this
-checkout ships all 604 Skills and a bundled Skill takes precedence over a same-named one in
+checkout ships all 605 Skills and a bundled Skill takes precedence over a same-named one in
 `<data_dir>/user-skills`. The command exists to put these recipes in front of
 an agent that is not OpenAI4S.
 
