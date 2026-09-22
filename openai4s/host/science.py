@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import urllib.parse
@@ -114,6 +115,15 @@ DATABASES: tuple[ScienceDatabase, ...] = (
         "Protein symbols or identifiers, one per line (e.g. TP53); returns interaction partners.",
         ("species", "required_score", "network_type"),
     ),
+    ScienceDatabase(
+        "bindingdb",
+        "BindingDB",
+        "Experimental drug-target binding affinities (Ki, Kd, IC50, EC50) and ligand structures.",
+        ("biology", "chemistry"),
+        "bioactivity",
+        "UniProt accession (e.g. P11802) or PDB ID (e.g. 1T46); returns binding ligands.",
+        ("cutoff", "affinity_type"),
+    ),
 )
 
 _DATABASE_BY_ID = {database.id: database for database in DATABASES}
@@ -127,6 +137,8 @@ _FILTERS = frozenset(
         "work_type",
         "required_score",
         "network_type",
+        "cutoff",
+        "affinity_type",
     }
 )
 _SPECIES = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
@@ -365,11 +377,18 @@ class ScienceConnectorService:
             return str(payload.get("content") or ""), dict(payload)
         return str(payload or ""), None
 
-    def _json(self, url: str, timeout: float, *, allow_empty: bool = False) -> Any:
+    def _json(
+        self,
+        url: str,
+        timeout: float,
+        *,
+        allow_empty: bool = False,
+        empty_value: Any = None,
+    ) -> Any:
         raw, observed = self._retrieve(url, "json", timeout, _MAX_RESPONSE_CHARS)
         self._observe(url, raw, observed)
         if allow_empty and not raw.strip():
-            return None
+            return empty_value
         try:
             return json.loads(raw)
         except (TypeError, ValueError) as exc:
@@ -852,6 +871,159 @@ class ScienceConnectorService:
                 )
             )
         return results, "", url
+
+    def _search_bindingdb(self, query, limit, cursor, filters, timeout):
+        del cursor
+        cutoff_raw = filters.get("cutoff")
+        cutoff: int | float = 100
+        if cutoff_raw not in (None, ""):
+            try:
+                if isinstance(cutoff_raw, bool):
+                    raise ValueError
+                cutoff_val = float(cutoff_raw)
+                if cutoff_val <= 0 or not math.isfinite(cutoff_val):
+                    raise ValueError
+                cutoff = int(cutoff_val) if cutoff_val.is_integer() else cutoff_val
+            except (TypeError, ValueError, OverflowError):
+                raise ScienceConnectorError("cutoff must be a positive number in nM")
+
+        affinity_type_filter = str(filters.get("affinity_type", "")).strip().upper()
+        if affinity_type_filter and affinity_type_filter not in {
+            "KI",
+            "IC50",
+            "KD",
+            "EC50",
+        }:
+            raise ScienceConnectorError(
+                "affinity_type must be one of: Ki, IC50, Kd, EC50"
+            )
+
+        clean_query = query.strip()
+        is_pdb = bool(re.fullmatch(r"[0-9][A-Za-z0-9]{3}", clean_query))
+        if is_pdb:
+            params = urllib.parse.urlencode(
+                {
+                    "pdb": clean_query.upper(),
+                    "cutoff": cutoff,
+                    "identity": 100,
+                    "response": "application/json",
+                }
+            )
+            url = f"https://www.bindingdb.org/rest/getLigandsByPDBs?{params}"
+            container_key = "getLindsByPDBsResponse"
+        else:
+            params = urllib.parse.urlencode(
+                {
+                    "uniprot": clean_query,
+                    "cutoff": cutoff,
+                    "response": "application/json",
+                }
+            )
+            url = f"https://www.bindingdb.org/rest/getLigandsByUniprots?{params}"
+            container_key = "getLindsByUniprotsResponse"
+
+        # BindingDB documents a blank body for no matches. Keep it distinct
+        # from JSON null or a broken envelope, and retain the response digest.
+        payload = self._json(
+            url,
+            timeout,
+            allow_empty=True,
+            empty_value={container_key: {"affinities": []}},
+        )
+        if not isinstance(payload, dict):
+            raise ScienceConnectorError(
+                "BindingDB returned an unexpected result schema"
+            )
+
+        resp_obj = payload.get(container_key)
+        if not isinstance(resp_obj, dict):
+            raise ScienceConnectorError(
+                "BindingDB returned an unexpected result schema"
+            )
+
+        affinities = resp_obj.get("affinities")
+        if isinstance(affinities, dict):
+            affinities = [affinities]
+        elif not isinstance(affinities, list):
+            raise ScienceConnectorError(
+                "BindingDB returned an unexpected result schema"
+            )
+
+        results = []
+        for row in affinities:
+            if len(results) >= limit:
+                break
+            if not isinstance(row, dict):
+                raise ScienceConnectorError(
+                    "BindingDB returned an unexpected result schema"
+                )
+            monomer_id = _string(row.get("monomerid"))
+            if not monomer_id:
+                continue
+            aff_type = _string(row.get("affinity_type"))
+            if affinity_type_filter and aff_type.upper() != affinity_type_filter:
+                continue
+
+            target_name = _string(row.get("query"))
+            # A SMILES string is a chemical identity, so the prose helper's
+            # 500-character truncation would silently change the molecule.
+            smile = row.get("smile")
+            if smile is not None and not isinstance(smile, str):
+                raise ScienceConnectorError(
+                    "BindingDB returned an unexpected SMILES schema"
+                )
+            aff_raw, aff_val = _bindingdb_affinity(row.get("affinity"))
+            pmid = _string(row.get("pmid"))
+            doi = _string(row.get("doi"))
+
+            aff_desc = f" ({aff_type}: {aff_raw} nM)" if aff_type and aff_raw else ""
+            title = f"BindingDB {monomer_id}{aff_desc} - {target_name or query}"
+            canonical_url = (
+                f"https://www.bindingdb.org/bind/chemsearch/marvin/MolStructure.jsp?monomerid="
+                f"{urllib.parse.quote(monomer_id)}"
+            )
+
+            results.append(
+                _record(
+                    monomer_id,
+                    title,
+                    canonical_url,
+                    "bioactivity",
+                    {
+                        "target_name": target_name,
+                        "monomer_id": monomer_id,
+                        "smiles": smile,
+                        "affinity_type": aff_type,
+                        "affinity_value": aff_val,
+                        "affinity_raw": aff_raw,
+                        "pmid": pmid,
+                        "doi": doi,
+                    },
+                )
+            )
+        return results, "", url
+
+
+def _bindingdb_affinity(value: Any) -> tuple[str, float | int | None]:
+    """Keep qualified measurements as raw evidence, never exact numbers."""
+    if value in (None, ""):
+        return "", None
+    error = "BindingDB affinity must be a finite nonnegative measurement in nM"
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ScienceConnectorError(error)
+    raw = str(value).strip()
+    match = re.fullmatch(
+        r"([<>]=?|[=~≤≥≈])?\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)",
+        raw,
+    )
+    if match is None:
+        raise ScienceConnectorError(error)
+    number = float(match[2])
+    if not math.isfinite(number) or number < 0:
+        raise ScienceConnectorError(error)
+    if match[1] and match[1] != "=":
+        return raw, None
+    return raw, int(number) if number.is_integer() else number
 
 
 def _string_score(row: Mapping[str, Any], field: str) -> float | int | None:

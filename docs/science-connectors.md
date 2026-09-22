@@ -16,6 +16,7 @@ records without scraping provider-specific pages.
 | `arxiv` | arXiv Atom API | ML, physics, literature | preprint metadata, authors, categories, abstract |
 | `openalex` | OpenAlex Works API | multidisciplinary literature | work, DOI, authors, concepts, citations, OA state |
 | `string` | STRING REST API | biology | protein-protein interactions, partner, confidence scores |
+| `bindingdb` | BindingDB REST | biology, chemistry | experimental binding affinity (Ki, Kd, IC50, EC50), SMILES, ligand structure |
 | `clinvar` | ClinVar E-utilities (Stage 10 flag) | biology | variant accession, interpretation, gene |
 | `pubmed` | PubMed E-utilities (Stage 10 flag) | literature | PMID, title, journal, date |
 | `clinicaltrials` | ClinicalTrials.gov API v2 (Stage 10 flag) | biology, literature | NCT id, title, status |
@@ -77,6 +78,8 @@ Source-specific filters are intentionally bounded:
 - `species` (positive NCBI taxon ID or supported slug, default `9606`),
   `required_score` (integer, 0–1000), and `network_type` (`functional` by
   default, or `physical`) for STRING;
+- `cutoff` (finite positive float or integer in nM, default `100`) and
+  `affinity_type` (`Ki`, `IC50`, `Kd`, `EC50`) for BindingDB;
 - `year_from`, `year_to`, and `work_type` for OpenAlex.
 
 arXiv and OpenAlex return cursors. Other first-batch connectors are bounded
@@ -110,6 +113,33 @@ null, and malformed responses are errors. Every provided confidence score must
 be finite and within 0–1; booleans, nonnumeric values, and out-of-range scores
 are rejected as schema errors. Missing optional scores remain omitted rather
 than being replaced with zero.
+
+### BindingDB drug-target binding affinities
+
+BindingDB queries retrieve measured binding affinities ($K_i, K_d, IC_{50}, EC_{50}$)
+and chemical structures of active small molecules. Supply a UniProt accession
+(e.g. `P11802`) or a 4-character PDB identifier (e.g. `1T46`). Queries automatically
+route to either `https://www.bindingdb.org/rest/getLigandsByUniprots` or
+`https://www.bindingdb.org/rest/getLigandsByPDBs`. Use the `cutoff` filter (in nM,
+default 100) to limit results to high-affinity binders, and optional `affinity_type`
+to filter for specific assay measurements (`Ki`, `IC50`, `Kd`, `EC50`).
+The PDB route requires 100% sequence identity; this does not assert that every
+returned ligand is co-crystallized in the queried structure. Results are capped
+at `limit` after affinity-type filtering, in upstream order, without pagination.
+
+Attributes preserve the target name, monomer ID, complete SMILES structure,
+numerical and raw affinity values, and upstream citations (PMID, DOI). Each `id`
+is a ligand monomer ID and can repeat for different measurements or sources.
+Exact numeric affinities must be finite and nonnegative. Qualified values such
+as `<1` retain their raw notation and omit `affinity_value` so a bound is never
+presented as an exact measurement. Missing optional measurements remain omitted.
+
+Empty affinity arrays and the blank no-match body documented by the
+[BindingDB API](https://www.bindingdb.org/rwd/bind/BindingDBRESTfulAPI.jsp)
+represent valid empty results with provenance. Null payloads, missing or
+invalid affinity containers, and non-object rows raise connector errors;
+records without monomer IDs are skipped. BindingDB is discoverable by name and
+its domain is included in the built-in scientific egress allowlist.
 
 ## Safety and failure behavior
 
