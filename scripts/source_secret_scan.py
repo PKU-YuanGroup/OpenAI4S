@@ -54,6 +54,34 @@ _FORBIDDEN_FILENAMES = frozenset(
     {".env", ".npmrc", ".pypirc", "credentials.json", "service-account.json"}
 )
 _ALLOWED_ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
+# Exempt only these policy settings, with closed sets of literal values.
+# A credential-key denylist misses proxy/registry URL userinfo, OTPs, client
+# keys and future auth options. Unknown settings and syntax must still fail
+# the filename gate; extending this allowlist requires deliberate review.
+_NPMRC_POLICY_LINE = re.compile(
+    r"""(?:
+        engine-strict\s*=\s*(?:true|false)
+        |audit-level\s*=\s*(?:info|low|moderate|high|critical|none)
+    )""",
+    re.VERBOSE,
+)
+
+
+def _npmrc_has_only_policy_settings(path: Path) -> bool:
+    """Allow policy-only config; unreadable or invalid text fails closed."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    if "\0" in text:
+        return False
+    return all(
+        _NPMRC_POLICY_LINE.fullmatch(line.strip())
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith((";", "#"))
+    )
+
+
 _FORBIDDEN_SUFFIXES = frozenset({".key", ".p12", ".pfx"})
 _EXCLUDED_PARTS = frozenset(
     {
@@ -134,7 +162,12 @@ def scan(root: Path) -> list[Finding]:
         relative = path.relative_to(root).as_posix()
         lower_name = path.name.casefold()
         if (
-            lower_name in _FORBIDDEN_FILENAMES
+            (
+                lower_name in _FORBIDDEN_FILENAMES
+                and (
+                    lower_name != ".npmrc" or not _npmrc_has_only_policy_settings(path)
+                )
+            )
             or (
                 lower_name.startswith(".env.")
                 and lower_name not in _ALLOWED_ENV_TEMPLATES

@@ -70,6 +70,103 @@ def test_source_secret_scan_rejects_credential_files(tmp_path):
     ]
 
 
+def test_source_secret_scan_judges_npmrc_on_content_not_on_its_name(tmp_path):
+    """A committed `.npmrc` may carry npm settings, never an auth directive.
+
+    `frontend/.npmrc` exists to make `engines` enforced rather than advisory,
+    which a name-only rule would have blocked outright -- and a name-only
+    exemption for it would then have let a registry token be added to that same
+    file with nothing failing. The policy allowlist must keep rejecting these
+    existing auth cases, including credentials supplied through environment variables.
+    """
+    scanner = _load_script("source_secret_scan")
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok" / ".npmrc").write_text(
+        "# a comment\nengine-strict=true\naudit-level=high\n", encoding="utf-8"
+    )
+    for index, line in enumerate(
+        (
+            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}",
+            "_auth=Zm9vOmJhcg==",
+            "//npm.pkg.github.com/:_authToken=abc",
+            "_password=hunter2",
+            "email=release@example.com",
+            # No `_auth`, no `token`, and `username` is not at the start of the
+            # line: only the registry-scoped branch catches this one.
+            "//registry.npmjs.org/:username=deploy-bot",
+        )
+    ):
+        bad = tmp_path / f"bad{index}"
+        bad.mkdir()
+        (bad / ".npmrc").write_text(f"engine-strict=true\n{line}\n", encoding="utf-8")
+
+    flagged = {
+        item.path
+        for item in scanner.scan(tmp_path)
+        if item.detector == "credential-file"
+    }
+
+    assert flagged == {f"bad{index}/.npmrc" for index in range(6)}
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "https-proxy=http://deploy:synthetic-password@proxy.example.invalid",
+        "proxy=http://deploy:synthetic-password@proxy.example.invalid",
+        "registry=https://deploy:synthetic-password@registry.example.invalid",
+        "@scope:registry=https://deploy:synthetic-password@registry.example.invalid",
+        "otp=123456",
+        "_otp=123456",
+        '"otp"=123456',
+        "key=synthetic-private-key",
+        "cert=synthetic-certificate",
+        "key[]=synthetic-private-key",
+        "[credentials]\notp=123456",
+        "engine-strict=${NPM_TOKEN}",
+        "audit-level=npm_" + "z" * 36,
+        "unknown-setting=synthetic-secret",
+    ],
+)
+def test_source_secret_scan_rejects_npmrc_outside_policy_allowlist(
+    tmp_path, capsys, directive
+):
+    scanner = _load_script("source_secret_scan")
+    (tmp_path / ".npmrc").write_text(
+        f"engine-strict=true\n{directive}\n", encoding="utf-8"
+    )
+
+    assert scanner.main(["--root", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert ".npmrc: credential-file" in captured.err
+    assert directive not in captured.err + captured.out
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "# policy only\n; npm comment\n\nengine-strict=true\n",
+        "  engine-strict = false \r\naudit-level = none\r\n",
+        "engine-strict=true\naudit-level=high\n",
+    ],
+)
+def test_source_secret_scan_allows_npmrc_policy_settings(tmp_path, content):
+    scanner = _load_script("source_secret_scan")
+    (tmp_path / ".npmrc").write_text(content, encoding="utf-8")
+
+    assert scanner.scan(tmp_path) == []
+
+
+@pytest.mark.parametrize("invalid_byte", [b"\xff", b"\0"])
+def test_source_secret_scan_rejects_invalid_text_npmrc(tmp_path, invalid_byte):
+    scanner = _load_script("source_secret_scan")
+    (tmp_path / ".npmrc").write_bytes(
+        b"# invalid text: " + invalid_byte + b"\nengine-strict=true\n"
+    )
+
+    assert any(item.detector == "credential-file" for item in scanner.scan(tmp_path))
+
+
 def _metadata(*, dependency: str | None = None, summary: str = "OpenAI4S") -> bytes:
     requires = f"Requires-Dist: {dependency}\n" if dependency else ""
     return (

@@ -59,6 +59,15 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             # handle, and a traceback escaping the dispatcher is not that.
             "ResponseTooLarge",
             "SSRFBlocked",
+            # The updater's JSON read. It is surface rather than debt for the
+            # same reason `guard_url` below is: the alternative was a module
+            # under `openai4s/update/` opening its own connection, and
+            # `tests/test_egress_surface.py` freezes the set of modules allowed
+            # to do that at thirteen. `_open_http_response` is also the only
+            # path in the tree that follows a redirect manually and re-applies
+            # the egress allowlist and the SSRF guard on every hop, which both
+            # of the updater's sources need because both redirect.
+            "fetch_json",
             # The SSRF check itself, not just the exception it raises. Two
             # subsystems apply it now: `_http_get` per redirect hop, and the
             # managed-endpoint readiness probe, whose target URL is

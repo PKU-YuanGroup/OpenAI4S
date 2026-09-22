@@ -18,11 +18,11 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` uses the latest npm release. To use the current
-repository catalog instead (605 Skills: 44 curated + 561 bioSkills), run the
+repository catalog instead (606 Skills: 45 curated + 561 bioSkills), run the
 GitHub form, which follows the default branch:
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 44 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 45 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
 ```
 
@@ -66,7 +66,7 @@ whose answer nothing here checks against the archive it unpacked. Pass
 ## Where this fits
 
 For an OpenAI4S user this command is mostly redundant: a wheel built from this
-checkout ships all 605 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
+checkout ships all 606 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
 precedence over a same-named one in `<data_dir>/user-skills`. Its reason to
 exist is the other direction — putting these recipes in front of an agent that
 is not OpenAI4S.

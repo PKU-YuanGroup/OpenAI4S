@@ -7,7 +7,7 @@
       "import": null,
       "name": "bio-differential-expression-de-visualization",
       "origin": "openai4s",
-      "score": 15.62,
+      "score": 15.64,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -20,7 +20,7 @@
       "import": null,
       "name": "bio-data-visualization-volcano-and-ma-plots",
       "origin": "openai4s",
-      "score": 13.83,
+      "score": 13.85,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -33,7 +33,7 @@
       "import": null,
       "name": "bio-differential-expression-de-results",
       "origin": "openai4s",
-      "score": 9.14,
+      "score": 9.15,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -46,7 +46,7 @@
       "import": null,
       "name": "bio-differential-expression-deseq2-basics",
       "origin": "openai4s",
-      "score": 9.14,
+      "score": 9.15,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -59,7 +59,7 @@
       "import": null,
       "name": "bio-small-rna-seq-differential-mirna",
       "origin": "openai4s",
-      "score": 9.14,
+      "score": 9.15,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -74,7 +74,7 @@
       "import": "import importlib; k = importlib.import_module(\"literature-review.kernel\") # 'literature-review' isn't a valid identifier; import * won't work",
       "name": "literature-review",
       "origin": "openai4s",
-      "score": 11.77,
+      "score": 11.76,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -87,7 +87,7 @@
       "import": null,
       "name": "bio-genome-assembly-contamination-detection",
       "origin": "openai4s",
-      "score": 8.43,
+      "score": 8.4,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -100,7 +100,20 @@
       "import": null,
       "name": "reaction-yield-estimation",
       "origin": "openai4s",
-      "score": 6.75,
+      "score": 6.72,
+      "sidecar_gate": {
+        "error": null,
+        "ok": true
+      }
+    },
+    {
+      "collection": null,
+      "description": "Evidence-attributed target and ligand screening. Retrieves STRING interaction records and BindingDB assay measurements, optionally calculates molecular descriptors with RDKit, and saves a dossier w...",
+      "doc": "# Target Druggability Screening\n\nCompile a preliminary evidence dossier for a protein target. STRING associations\nand BindingDB measurements alone do not establish druggability or therapeutic\nrelevance. This recipe retrieves a limited sample, not an exhaustive search.\n\n## Workflow\n\n1. Confirm the target's **UniProt accession and species**. Resolve a gene name\n   such as CDK4 through `host.science.search(\"uniprot\", ...)` first; review ambiguous\n   matches. BindingDB accepts UniProt accessions or PDB IDs, not arbitrary gene names.\n   Use the same confirmed accession for both searches below.\n2. Retrieve STRING interaction partners with an explicit species. The returned\n   functional associations do not measure physical binding, whole-network hub\n   centrality, or pathway enrichment.\n3. Query BindingDB for one endpoint (`Ki`, `Kd`, `IC50`, or `EC50`) at a time.\n   Even within an endpoint, review assay conditions before comparing values.\n4. Use optional RDKit for molecular weight, calculated logP, HBD, HBA, and\n   rotatable bonds. The Rule of Five uses the first four descriptors, allowing\n   at most one violation. Install the existing `chemistry` extra in the active\n   Python environment (`uv sync --locked --extra chemistry`) to enable this step.\n   No RDKit, missing SMILES, and invalid structures produce **Unknown**, never\n   invented descriptors or a passing verdict. Core imports remain stdlib-only.\n5. Preserve qualified affinities (`<`, `>`, `~`), missing values, citations, and\n   repeated assay records. These are evidence, not distinct confirmed leads.\n   Scores require an exact positive nM measurement and a complete descriptor\n   screen; otherwise they remain **Unscored**. The score is an unvalidated\n   within-endpoint heuristic, not a probability or a biological conclusion.\n6. Save each complete query envelope with its provenance, then save the dossier\n   with lineage to those exact artifact versions. Propagate connector failures;\n   do not replace an error with an empty successful search.\n\n## Interactive / Cell Recipe\n\nRun inside a persistent Python kernel cell. Host connectors mediate all network\nrequests; the sidecar performs no direct networking.\n\n```python\nimport json\nfrom pathlib import Path\n\nfrom target_druggability_screening.kernel import format_dossier, rank_candidates\n\n# Confirm both values before running: this example is human CDK4.\ntarget = \"P11802\"\nspecies = \"9606\"\naffinity_type = \"Ki\"\n\nppi_res = host.science.search(\n    \"string\", target, limit=10, filters={\"species\": species}\n)\nbinding_res = host.science.search(\n    \"bindingdb\", target, limit=20,\n    filters={\"cutoff\": 100, \"affinity_type\": affinity_type},\n)\nranked_leads = rank_candidates(\n    binding_res[\"results\"], top_k=10, affinity_type=affinity_type\n)\n\nsource_versions = []\nfor result in (ppi_res, binding_res):\n    source_path = Path(f\"{target.lower()}-{result['database']}-source.json\")\n    source_path.write_text(json.dumps(result, indent=2, allow_nan=False), encoding=\"utf-8\")\n    saved = host.save_artifact(\n        str(source_path), content_type=\"application/json\", source=result[\"provenance\"]\n    )\n    source_versions.append(saved[\"version_id\"])\n\ndossier_content = format_dossier(\n    target=target,\n    ppi_records=ppi_res[\"results\"],\n    ranked_leads=ranked_leads,\n    provenance=[ppi_res[\"provenance\"], binding_res[\"provenance\"]],\n)\ndossier_path = Path(f\"target-druggability-{target.lower()}.md\")\ndossier_path.write_text(dossier_content, encoding=\"utf-8\")\nartifact = host.save_artifact(\n    str(dossier_path), content_type=\"text/markdown\", input_version_ids=source_versions\n)\nprint(f\"Dossier saved as artifact version: {artifact['version_id']}\")\n```\n\n## Sidecar Functions\n\n- `calculate_smiles_descriptors(smiles)`: Parsed RDKit descriptors and engine\n  version, or a reason for missing/invalid/unavailable chemistry.\n- `evaluate_lipinski(descriptors_or_smiles)`: Four-criterion screen; an incomplete\n  input has `pass_rule_of_5=None`.\n- `score_lead(affinity_val, affinity_type, lipinski_pass, violations_count)`:\n  Exact nM potency contributes 60/50/35/20/5 for <10/<100/<1000/<10000/>=10000.\n  A complete Rule of Five screen contributes 40 (pass) or 15 (fail), minus\n  10 per violation, floored at zero. Unknown inputs return `None`.\n- `rank_candidates(ligands, top_k, affinity_type=...)`: Select one endpoint,\n  rank scored assay records, and retain unscored evidence afterwards. Mixed\n  endpoints without explicit selection raise an error. Repeated assays are\n  retained, so row count is not a distinct-compound count.\n- `format_dossier(target, ppi_records, ranked_leads, provenance=...)`: Report\n  evidence, unknowns, source links, retrieval hashes, and interpretation limits.\n\nDescriptor definitions: [RDKit Lipinski API](https://www.rdkit.org/docs/source/rdkit.Chem.Lipinski.html)\nand [RDKit molecular descriptors](https://www.rdkit.org/docs/GettingStartedInPython.html#list-of-available-descriptors).",
+      "import": "from target_druggability_screening.kernel import * # or: import target_druggability_screening.kernel as k",
+      "name": "target_druggability_screening",
+      "origin": "openai4s",
+      "score": 6.72,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -113,20 +126,7 @@
       "import": null,
       "name": "bio-virtual-screening",
       "origin": "openai4s",
-      "score": 6.75,
-      "sidecar_gate": {
-        "error": null,
-        "ok": true
-      }
-    },
-    {
-      "collection": null,
-      "description": "Search multi-step retrosynthesis routes from a target to stock with AiZynthFinder, then audit and rank route trees. Use for recursive planning, not mapping, forward prediction, conditions, or yield.",
-      "doc": "# Skill: retrosynthesis planning\n\nThis Skill owns one scientific problem: multi-step search from a target molecule\nto a declared purchasable or in-house stock. It also provides engineering review\nfunctions for the returned route trees. It does not redefine single-step\nprediction, forward outcome prediction, atom mapping, condition recommendation,\nor yield estimation as phases of one model.\n\nUse `single-step-retrosynthesis` to inspect a single disconnection directly,\n`reaction-forward-prediction` for round-trip product recovery,\n`reaction-atom-mapping` for changed bonds on a complete reaction,\n`reaction-condition-recommendation` for condition hypotheses, and\n`reaction-yield-estimation` for a bounded yield-screening signal. The audited\ntask/model selection is in `MODEL_TASKS.md`.\n\nThe recommended backend is AiZynthFinder running in a separate environment. This\nskill keeps OpenAI4S core dependency-free: the helper module is pure stdlib and\nuses RDKit from the optional chemistry environment for transparent-background\n2D molecule depictions. On a platform with an RDKit wheel, install both optional\nenvironments before generating visual reports:\n\n```bash\nuv sync --extra science --extra chemistry\n```\n\nFor optional RetroChimera single-step proposals, use `model_deployment.py` to\nverify and safely extract a reviewed public checkpoint, then call it through\n`SyntheseusBackend`; never place model weights in the Skill directory. When a\ncheckpoint must be fetched from a Python cell, use its `download_checkpoint`\nhelper, which routes bytes through `host.web_download`; do not add a raw\n`urllib`, `requests`, or socket download to the Skill.\n\nRDKit is not required to plan, rank, or review routes. If the chemistry extra is\nunavailable on the current platform, omit it; the dashboard falls back to\ntransparent local SVG placeholders while the rest of the skill remains usable.\n\n## Scenario 2 benchmark contract\n\nFor a frozen target set, stock, route budget, and private reference routes, use\n`multistep_benchmark.py`. Call `validate_targets` and `normalize_stock`, run the\nplanner, then pass its complete output through `normalize_planner_outputs` and\n`evaluate_routes`. The verifier recomputes solution state using molecule-OR and\nreaction-AND semantics; a backend `solved=true` flag is never trusted. Preserve\nsearch statistics, termination reason, failed routes, duplicates, and budget\nviolations in the intermediate artifact.\n\n## Scenario GT-codebases\n\nFor any of the six Science Queries, use the same basename across\n`scenarios/queries/`, `scenarios/gt_codebases/`, and\n`scenarios/openai4s_codebases/`. The query is the frozen OpenAI4S input and must\ndescribe every installed public file and field needed to align with the case.\nThe GT entrypoint is a reviewed evaluator reference; never label it as generated\ncode. The generated entrypoint must come from an actual OpenAI4S CLI run, whose\nstatus and hashes are frozen in\n`scenarios/openai4s_codebases/generation_manifest.json`.\n\nInstall the evaluation example with `scenarios/test_cases/install.py`. Run each\ncodebase against only the installed `public/` boundary. Freeze\n`results/intermediate_results.json` before the separate\n`scenarios/test_cases/evaluate.py` process reads `private_evaluator/`. Treat\nbundled cases as protocol smoke tests, never as scientific accuracy evidence.\nConsult `scenarios/test_cases/database_sources.json` and fail closed while a\nproduction dataset is marked `not_frozen`. Missing LLM credentials or failed\ngeneration must remain explicit; copying the GT source into the generated\ndirectory is prohibited.\n\n## Cross-model route admission gate\n\nTreat planner `solved=true` as stock closure, not reaction feasibility. For a\nroute proposed for deeper review, freeze one route before validation and apply\nthese independent checks to every reaction node:\n\n1. map the fixed reactant/product pair and flag low mapping confidence;\n2. generate condition hypotheses as complete joint beams, without inventing\n   temperature or missing slots;\n3. run forward Top-K prediction using a predeclared condition beam and compare\n   canonical products;\n4. preserve invalid products, model disagreement, low policy probability, and\n   low template occurrence as failures rather than reranking them away;\n5. reject or hold the whole route when a critical step lacks forward support.\n\nBounded diagnostics may compare no-condition input with a fixed number of\ncondition beams, but must not search conditions indefinitely until the intended\nproduct appears. Record the tested budget and every result. Never report a\nroute as experimentally ready merely because all leaves are in stock. Do not\nrun a quarantined yield model or use its number to rescue a failed route.\n\n## Path and reproducibility hygiene\n\nKeep public artifacts path-free. Use `OPENAI4S_REPOSITORY`,\n`OPENAI4S_RETRO_MODEL_ROOT`, `OPENAI4S_RETRO_DATA_ROOT`, and\n`OPENAI4S_RETRO_RUN_DIR` at execution time; do not serialize usernames, home\ndirectories, mount points, temporary directories, credentials, or environment\nprefixes into reports. Model manifests should contain logical artifact IDs,\nversions, licenses, sizes, and hashes.\n\nBefore sharing a reproducibility ZIP, use `reproducibility_bundle.py` to scan a\nprepared path-free directory and build a deterministic archive. Include source,\nconfiguration, environment specifications, manifests, summaries, and bounded\nresult JSON. Exclude checkpoints, stocks, caches, credentials, and complete\nbinary environments unless redistribution is explicitly authorized. A binary\nenvironment archive is not a substitute for an environment specification.\n\n## Capability summary\n\nThis skill implements multi-step search plus route-review support:\n\n1. build a reproducible `aizynthcli` command for a target SMILES\n2. load AiZynthFinder JSON exports\n3. normalize backend routes into a stable route schema\n4. rank routes by solved status, score, step count, and precursor count\n5. collect molecule briefs for target, intermediates, stock precursors, and\n   unresolved terminal precursors\n6. call the configured conversation LLM (`host.llm`) for route, molecule, and\n   reaction annotations\n7. render a self-contained HTML dashboard with route ranking, molecule\n   structures, a retrosynthesis knowledge graph (interactive in a downloaded\n   copy — see below), route cards, and a Markdown analyst report\n\n**The knowledge graph is interactive only in a downloaded copy.** Artifact\nHTML is model-authored, so the daemon serves it with `script-src 'none'` inside\na sandbox with no `allow-scripts`, and the Workbench frames previews the same\nway — running it on the origin that holds the session cookie is the one thing\nthat policy exists to prevent. In the Workbench and at `/preview/<id>` the\ndashboard renders its panels, tables and SVG trees but the graph does not draw;\ndownload the file and open it from the filesystem to expand, collapse and\ninspect nodes. The preview says so rather than showing an empty canvas.\n\nThe dashboard is intended for chemist review and route triage. It does not\nclaim experimental validation. Conditions, yield ranges, route verdicts, and\nsafety notes produced by the LLM must be treated as hypotheses until checked\nagainst literature, internal ELN data, vendor availability, and expert review.\n\n## Inputs\n\n- **`target_smiles`** (required) — target molecule as SMILES.\n- **`config_path`** (required for live search) — AiZynthFinder `config.yml`.\n- **`workdir`** (optional) — where to write route JSON, HTML dashboard, and\n  Markdown report. Defaults to the current workspace.\n- **`max_routes`** (optional) — number of ranked routes to visualize; default 10.\n\n## Tools this skill expects\n\n| Purpose | Tool |\n|---|---|\n| Route search | `host.bash` running `conda run -n retro aizynthcli ...` |\n| Molecule lookup | `host.web_fetch` or `host.web_search` using PubChem, vendor pages, or literature |\n| Visualization | `render_route_tree_html(...)` from this skill |\n| Reporting | `build_markdown_report(...)` from this skill |\n\nFor publication-facing visuals, load `figure-style` before finalizing the HTML\nor figures. This skill's dashboard follows the same principles: data-grounded\nlabels, limited semantic colors, explicit uncertainty, CVD-safe distinctions,\nand a render-then-verify QA pass.\n\n## Backend setup\n\nCreate the backend once outside OpenAI4S:\n\n```bash\nMODEL_ROOT=\"$PWD/models\"\nuv run python skills/retrosynthesis_planning/reaction_model_deployment.py plan \\\n  aizynthfinder-4.4.1 --root \"$MODEL_ROOT\"\nconda create --prefix \"$MODEL_ROOT/envs/aizynthfinder-4.4.1\" python=3.11 pip -y\nconda run --prefix \"$MODEL_ROOT/envs/aizynthfinder-4.4.1\" \\\n  python -m pip install \"aizynthfinder[all]==4.4.1\"\nconda run --prefix \"$MODEL_ROOT/envs/aizynthfinder-4.4.1\" \\\n  download_public_data \"$MODEL_ROOT/artifacts/aizynthfinder-4.4.1\"\n```\n\nThe public-data command writes a `config.yml` file. Snapshot the whole policy,\ntemplate, filter, stock, and config tree with `reaction_model_deployment.py\nsnapshot`, and verify that manifest before each benchmark. The registry pins\nAiZynthFinder 4.4.1, its release commit, and the PyPI wheel SHA-256. Public-data\nfiles remain separately versioned artifacts whose terms and hashes must be\nreviewed after download. Keep environments, caches, models, and stock out of git.\n\nThe isolated JSON backend now executes the search directly, so Scenario 2 does\nnot need to scrape the CLI. Supply a manifest whose SHA-256 identifies the whole\nreviewed public-data snapshot:\n\n```python\nfrom retrosynthesis_planning.reaction_model_backends import ReactionModelBackend\n\nplanner = ReactionModelBackend(\n    \"aizynthfinder\",\n    manifest=\"/models/aizynthfinder/model-manifest.json\",\n    python_command=(\"/models/aizynthfinder/env/bin/python\",),\n    timeout_seconds=1800,\n)\nsearch = planner.plan_routes(\n    [{\"target_id\": \"target-01\", \"target_smiles\": \"CC(=O)Oc1ccccc1C(=O)O\"}],\n    config_path=\"/models/aizynthfinder/config.yml\",\n    max_routes=10,\n)\n```\n\nThe result already uses the Scenario 2 boundary: one record per target with\n`routes`, `termination_reason`, and `search_stats`. An individual target failure\nreturns `termination_reason=\"backend_error\"` and a scrubbed diagnostic while\nthe remaining batch continues. The evaluator must still recompute solved state\nwith reaction-AND/molecule-OR semantics; it must not trust backend metadata.\n\n## Import\n\n```python\nfrom retrosynthesis_planning.kernel import (\n    annotate_routes_with_llm,\n    build_aizynth_command,\n    build_host_web_fetch_doi_verifier,\n    build_llm_annotation_prompt,\n    build_markdown_report,\n    build_molecule_structure_src,\n    build_pubchem_query_url,\n    canonicalize_smiles,\n    collect_molecule_briefs,\n    collect_reaction_evidence,\n    collect_reaction_briefs,\n    command_to_shell,\n    load_aizynth_routes,\n    normalize_routes,\n    OpenAI4SLLMReactionEvidenceProvider,\n    rank_routes,\n    render_route_tree_html,\n)\n```\n\n## Workflow\n\n### Phase 1 — Normalize and search\n\nNormalize the target and run AiZynthFinder. Set `MPLCONFIGDIR` to a writable\ntemporary directory when running through the web app so Matplotlib does not\npause on cache creation.\n\n```python\ntarget = canonicalize_smiles(\"CC(=O)Oc1ccccc1C(=O)O\")  # aspirin\ncmd = build_aizynth_command(\n    target,\n    config_path=\"~/Documents/Openai4S/retro_data/config.yml\",\n    output_path=\"aspirin_routes.json\",\n    conda_env=\"retro\",\n)\nhost.bash(\"MPLCONFIGDIR=/private/tmp/aizynth_mpl \" + command_to_shell(cmd))\n```\n\n### Phase 2 — Normalize and rank routes\n\n```python\nroutes = load_aizynth_routes(\"aspirin_routes.json\")\nranked = rank_routes(normalize_routes(routes))\nfor route in ranked[:5]:\n    print(route[\"rank\"], route[\"solved\"], route[\"score\"], route[\"steps\"])\n```\n\n### Phase 3 — Molecule lookup and interpretation\n\nEvery report must explain each target/intermediate/terminal molecule that\nappears in the displayed routes. Use `collect_molecule_briefs(...)` first, then\nquery the key molecules. At minimum, check the target and all top-route terminal\nprecursors in PubChem; for industrial deployment, also check vendors and\nliterature precedent.\n\n```python\nbriefs = collect_molecule_briefs(ranked[:10], target_smiles=target)\nfor brief in briefs:\n    print(brief[\"role\"], brief[\"smiles\"], brief[\"stock_status\"])\n    print(\"query:\", brief[\"pubchem_url\"])\n    print(\"structure:\", build_molecule_structure_src(brief[\"smiles\"]))\n```\n\nUse `host.web_fetch(brief[\"pubchem_url\"])` or `host.web_search(...)` for the\nimportant molecules, then summarize:\n\n- what the molecule is in this route (target, intermediate, stock precursor, or\n  unresolved precursor)\n- whether it is in the selected stock\n- what external lookup confirms or fails to confirm\n- why it matters to the proposed disconnection\n\nFor a concise chemistry narrative, always ask the configured conversation LLM to\nannotate the displayed molecules and reactions before rendering the dashboard:\n\n```python\nannotations = annotate_routes_with_llm(ranked[:8], llm=host.llm, target_smiles=target)\n```\n\n`annotate_routes_with_llm(...)` tolerates the usual conversation-model reply\nshapes: bare JSON, a fenced block, or JSON wrapped in prose. If no JSON can be\nrecovered it warns and returns `{}`, and the dashboard falls back to its own\n\"Route Planning Readout\" instead of failing the render. Check the warning if a\nRoute X card shows the readout rather than \"LLM Route Analysis\".\n\nThe LLM must return a human-readable `reaction_type`, detailed reaction\ndescription, mechanistic rationale, bond changes, plausible conditions,\nexpected yield range, yield rationale, selectivity risks, safety notes, and a\nvalidation plan for each reaction key. It must also return route-level\nannotations for each displayed route: `route_strategy`, `key_disconnections`,\n`reaction_sequence`, `conditions_strategy`, `yield_outlook`, `route_risks`,\n`recommended_next_steps`, and `chemist_verdict`. `render_route_tree_html(...,\nllm=host.llm)` calls the configured conversation LLM before rendering and embeds\nthese annotations directly into each Route X card and the interactive graph\ndetail panel. Treat conditions and yields as hypotheses unless the route export\nor literature lookup provides experimental evidence. If AiZynthFinder reports a\nbackend class such as `0.0 Unrecognized`, do not repeat it as the final reaction\ntype. Use the SMARTS/mapped reaction, policy probability, and LLM/literature\nannotation to explain the disconnection.\n\nFor an industrial decision workflow, attach source-backed evidence separately\nfrom LLM annotations. Retrieve the stable keys first, then pass only evidence\nrecords that identify their source and verification state:\n\n```python\nreaction_briefs = collect_reaction_briefs(ranked[:10])\nfor reaction in reaction_briefs:\n    print(reaction[\"reaction_key\"], reaction[\"template\"])\n\nreaction_evidence = {\n    \"reactions\": {\n        reaction_briefs[0][\"reaction_key\"]: [\n            {\n                \"source_type\": \"literature\",  # literature, patent, internal_eln, reaction_database, vendor\n                \"title\": \"Verified source title\",\n                \"identifier\": \"DOI, patent, ELN run, or database record\",\n                \"url\": \"https://example.org/record\",\n                \"match_level\": \"exact_substrate\",  # exact_substrate, close_analog, reaction_class\n                \"verified\": True,\n                \"conditions\": {\"solvent\": \"...\", \"temperature\": \"...\"},\n                \"yield_range\": \"82-88%\",\n                \"risk_flags\": [\"exothermic quench\"],\n                \"notes\": \"Reviewer-confirmed record.\",\n                \"retrieved_at\": \"2026-07-14\",\n            }\n        ]\n    }\n}\n```\n\nPass `reaction_evidence=reaction_evidence` to `render_route_tree_html(...)`.\nEach route then includes a Step Evidence card, and the same evidence appears in\nthe selected reaction node of the knowledge graph. The displayed coverage score\nis a retrieval-completeness heuristic, not a probability of experimental\nsuccess. LLM-generated conditions and yields never become evidence records\nautomatically.\n\n### Source retrieval with OpenAI4S skills\n\nUse `OpenAI4SLLMReactionEvidenceProvider` when a live evidence sweep is\nappropriate. It explicitly composes the configured conversation model with the\nexisting `host.web_search` and optional `host.web_fetch` skills: the LLM drafts\nreaction-aware search queries, OpenAI4S retrieves the pages, and a second LLM\npass can select **only** returned source IDs. This is intentionally not an\nimplicit tool-call: `host.llm` is a text-completion API, so the provider keeps\nall network activity observable and auditable.\n\nUse `build_host_web_fetch_doi_verifier(...)` when DOI resolution checks are\nappropriate. The adapter routes requests through the auditable\n`host.web_fetch` capability instead of opening raw worker-network connections.\nA resolving DOI does not prove that the paper supports the proposed substrate\nscope. The output is therefore marked as a *retrieved source candidate*,\nreceives capped coverage, and never becomes verified exact-substrate precedent\nwithout reviewer or ELN confirmation.\n\n```python\ndoi_verifier = build_host_web_fetch_doi_verifier(host.web_fetch)\nprovider = OpenAI4SLLMReactionEvidenceProvider(\n    llm=host.llm,\n    search=host.web_search,\n    fetch=host.web_fetch,\n    doi_verifier=doi_verifier,  # optional; omit when DOI checks are not needed\n    max_reactions=10,\n    max_queries_per_reaction=2,\n    results_per_query=5,\n)\nreaction_evidence = collect_reaction_evidence(ranked[:10], [provider])\n```\n\nThe provider never accepts an LLM-supplied URL or title: every card is built\nfrom a retrieved `host.web_search` result. It also never auto-populates\nconditions, yields, or `verified=True`. A chemist should promote a reviewed\ncandidate by adding a source record with explicit scope, conditions, yield, and\nverification status before using it in execution scoring.\n\n### Phase 4 — Visualize and report\n\nThe HTML artifact is a self-contained dashboard: KPI summary, ranked route\ntable, a retrosynthesis knowledge graph, molecule briefs,\ncolor-coded SVG route trees with molecule structure thumbnails, stock precursor\nchips, and a text outline for audit/debugging. The knowledge graph merges\nidentical molecule nodes across displayed routes, preserves AND-OR route\nsemantics, and supports pan, zoom, collapse/expand, node selection, neighbor\nhighlighting, molecule structure display, LLM reaction-type display, backend\nclass audit, policy probability, template details, and rich reaction\ninterpretation with proposed conditions, yield caveats, risk notes, and\nvalidation steps.\n\nAiZynthFinder's normal JSON export contains solved/top route trees, not\nnecessarily every internal MCTS visit. The dashboard therefore visualizes the\nexported route hypotheses as a merged knowledge graph. If the user asks for the\ncomplete internal search tree, export an AiZynthFinder checkpoint/search graph\nfrom the backend and state which graph source was used.\n\nMolecule structures are rendered with RDKit SVG when RDKit is installed in the\nkernel; otherwise the dashboard uses transparent local SVG placeholders. Do not\nuse PubChem PNGs as in-dashboard molecule images; PubChem remains a query link\nfor lookup only. (`build_pubchem_structure_image_url(...)` is still exported for\nexternal reports, but must not be embedded in the dashboard.) Reaction conditions are not predicted by AiZynthFinder route\nplanning; label them as not predicted unless an external condition-prediction,\nliterature lookup, or LLM hypothesis with explicit uncertainty provides\nevidence.\n\n```python\nhtml = render_route_tree_html(\n    ranked,\n    target_smiles=target,\n    max_routes=10,\n    llm=host.llm,\n    reaction_evidence=reaction_evidence,\n)\nreport = build_markdown_report(ranked, target_smiles=target)\n\nhost.write_file(\"aspirin_retrosynthesis.html\", html)\nhost.write_file(\"aspirin_retrosynthesis_report.md\", report)\n```\n\n## Example dashboard\n\nThis skill includes an example dashboard generated from an aspirin route export:\n\n```text\nskills/retrosynthesis_planning/examples/aspirin_retrosynthesis.html\n```\n\nIt is regenerated from committed source data rather than hand-edited:\n\n```bash\nuv run python skills/retrosynthesis_planning/examples/build_example.py\n```\n\n`aspirin_routes.json` holds the route trees and `aspirin_annotations.json` the\ndeterministic demonstration annotations. The committed dashboard is rendered\nwith RDKit depictions. To regenerate it with the same molecule rendering, first\ninstall the science and chemistry extras and then run the build command above.\n\nOpen it directly in a browser, or serve the skill directory locally:\n\n```bash\npython3 -m http.server 9876 --bind 127.0.0.1 -d skills/retrosynthesis_planning\n```\n\nThen visit:\n\n```text\nhttp://127.0.0.1:9876/examples/aspirin_retrosynthesis.html\n```\n\nThe aspirin example demonstrates:\n\n- Route X cards with embedded route-level LLM analysis\n- a retrosynthesis knowledge graph with merged molecule and reaction nodes,\n  interactive in a downloaded copy\n- reaction detail panels with LLM reaction type, proposed conditions, yield\n  caveats, selectivity risks, safety notes, and validation steps\n- Molecule Briefs using RDKit/local SVG visualization rather than PubChem PNGs\n- explicit uncertainty around backend route predictions and LLM-generated\n  chemistry interpretations\n\nThe example annotations are deterministic demonstration text, not experimental\nevidence for aspirin manufacturing conditions.\n\n## Recipe: analyze an existing JSON export\n\n```python\nroutes = load_aizynth_routes(\"routes.json\")\nranked = rank_routes(normalize_routes(routes))\ntarget = (\n    ranked[0][\"tree\"].get(\"smiles\")\n    if ranked and isinstance(ranked[0].get(\"tree\"), dict)\n    else None\n)\nbriefs = collect_molecule_briefs(ranked[:10], target_smiles=target)\n\nfor route in ranked[:5]:\n    print(route[\"rank\"], route[\"solved\"], route[\"score\"], route[\"steps\"])\n    print(\"starting materials:\", \", \".join(route[\"starting_materials\"]))\n\nfor brief in briefs:\n    print(brief[\"role\"], brief[\"smiles\"], brief[\"pubchem_url\"])\n\nhost.write_file(\n    \"routes.html\",\n    render_route_tree_html(ranked, max_routes=10, target_smiles=target, llm=host.llm),\n)\nhost.write_file(\"routes_report.md\", build_markdown_report(ranked))\n```\n\n## Output layout\n\n```\n<workdir>/\n├── <target>_routes.json                 # raw AiZynthFinder output\n├── <target>_retrosynthesis.html         # visual dashboard\n└── <target>_retrosynthesis_report.md    # route rationale + molecule briefs\n```\n\n## Analyst checklist\n\nFor each recommended route, explicitly discuss:\n\n- whether the route reaches purchasable or stock precursors\n- route length and branch complexity\n- the role of every target/intermediate/terminal molecule shown\n- PubChem/vendor/literature lookup status for the target and terminal precursors\n- high-risk disconnections, functional-group compatibility, and stereochemistry\n- missing reaction conditions, yields, purification, or safety information\n- what a synthetic chemist should verify before experimental execution\n\nDo not claim that a predicted route is experimentally validated unless the data\nsource explicitly contains experimental evidence.\n\n## Visual QA\n\nBefore submitting the final answer:\n\n- open the HTML dashboard and check that the route tree is non-empty\n- verify that the route-ranking table and molecule briefs agree with the JSON\n- interact with the knowledge-graph panel: expand/collapse, click molecule\n  nodes, click reaction nodes, and confirm the detail panel explains reaction class,\n  template, policy probability, and condition caveat\n- verify that molecular structures, not only SMILES strings, appear in route\n  nodes and molecule-brief cards\n- confirm that stock precursors and unresolved precursors use distinct colors\n- ensure labels fit within SVG nodes and do not obscure neighboring nodes\n- state any unresolved molecule lookup gaps in the Markdown report",
-      "import": "from retrosynthesis_planning.kernel import * # or: import retrosynthesis_planning.kernel as k",
-      "name": "retrosynthesis_planning",
-      "origin": "openai4s",
-      "score": 5.97,
+      "score": 6.72,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -141,7 +141,7 @@
       "import": null,
       "name": "diffdock",
       "origin": "openai4s",
-      "score": 19.34,
+      "score": 19.27,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -154,7 +154,7 @@
       "import": null,
       "name": "bio-ml-docking-rescoring",
       "origin": "openai4s",
-      "score": 18.61,
+      "score": 18.54,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -167,7 +167,7 @@
       "import": null,
       "name": "bio-structural-biology-binding-site-detection",
       "origin": "openai4s",
-      "score": 16.06,
+      "score": 15.98,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -180,7 +180,7 @@
       "import": null,
       "name": "bio-virtual-screening",
       "origin": "openai4s",
-      "score": 14.47,
+      "score": 14.44,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -193,7 +193,7 @@
       "import": null,
       "name": "bio-structural-biology-structure-preparation",
       "origin": "openai4s",
-      "score": 14.31,
+      "score": 14.29,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -275,7 +275,7 @@
       "import": "import importlib; k = importlib.import_module(\"single-cell-rna-analysis.kernel\") # 'single-cell-rna-analysis' isn't a valid identifier; import * won't work",
       "name": "single-cell-rna-analysis",
       "origin": "openai4s",
-      "score": 10.35,
+      "score": 10.37,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -288,7 +288,7 @@
       "import": null,
       "name": "bio-single-cell-clustering",
       "origin": "openai4s",
-      "score": 8.73,
+      "score": 8.74,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -301,7 +301,7 @@
       "import": null,
       "name": "bio-single-cell-cell-annotation",
       "origin": "openai4s",
-      "score": 8.05,
+      "score": 8.06,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -314,7 +314,7 @@
       "import": null,
       "name": "bio-single-cell-markers-annotation",
       "origin": "openai4s",
-      "score": 8.05,
+      "score": 8.06,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -327,7 +327,7 @@
       "import": null,
       "name": "bio-expression-matrix-normalization",
       "origin": "openai4s",
-      "score": 6.8,
+      "score": 6.81,
       "sidecar_gate": {
         "error": null,
         "ok": true

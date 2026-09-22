@@ -453,3 +453,13 @@ literature-review 的 SKILL.md 里那节实验内容是文件的**最后一节**
 集成修正：`b67e6902` 补完了 W4 的精选数调整里计数契约没有钉住的那一行 README_zh；
 `a8389209` 修正了移除清单；`f85d3b95` 在发布说明里补上显式的 LLM 后端——
 说明列出了每项能力，却漏了这个选项。
+
+### 集成基线 — 2026-09-22
+
+与 `main` 合并后，同时保留 `text-features` 和
+`target_druggability_screening`：共 606 个内置 Skill（45 个精选 + 561 个
+bioSkills），以及 19 个 Python sidecar。默认关闭快照只因独立的目录和连接器
+新增而更新：系统提示增加靶点初筛 Skill；依赖语料的词法分数变化，文献筛选查询
+的五条结果中开始包含该 Skill；`science_search` 的 schema 增加 STRING、
+BindingDB 来源及筛选参数。分类器快照逐字节不变，中文词法查询仍为空。
+这些是目录与 schema 的变化，没有启用语义判断。

@@ -1,8 +1,9 @@
 """Byte-stable snapshot of default-off surfaces the judgment layer must not change.
 
-Captured *before* any product code for the experimental judgment layer lands.
-Later waves compare the same four surfaces against these fixtures; a mismatch
-means the default-off path drifted.
+Initially captured before product code for the experimental judgment layer.
+The catalog and tool-schema fixtures also include the independent main-branch
+additions documented in the operator guide. A mismatch means the default-off
+path drifted from that recorded integration baseline.
 
 Run ``uv run python -c "import tests.test_judgment_default_off as t; t.capture()"``
 to rewrite ``tests/fixtures/judgment_default_off/*.json``.
@@ -313,7 +314,7 @@ def test_default_off_snapshots_match_byte_for_byte(tmp_path: Path) -> None:
     for name in _SNAPSHOT_FILES:
         actual = dump_snapshot(snapshots[name]).encode("utf-8")
         expected = _load_fixture(name)
-        assert actual == expected, f"{name} drifted from the pre-change snapshot"
+        assert actual == expected, f"{name} drifted from the default-off snapshot"
 
 
 def test_chinese_skill_search_is_empty(tmp_path: Path) -> None:

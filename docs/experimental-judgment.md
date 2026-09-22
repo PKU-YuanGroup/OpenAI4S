@@ -581,3 +581,15 @@ Integration fixes: `b67e6902` finished W4's curated-count bump in the one
 README_zh row the count contract does not pin; `a8389209` corrected the
 removal list; `f85d3b95` added the explicit LLM backend to the release notes,
 which listed every capability but not that option.
+
+### Integration baseline — 2026-09-22
+
+The merge with `main` retains both `text-features` and
+`target_druggability_screening`: 606 bundled Skills (45 curated + 561
+bioSkills), with 19 Python sidecars. Default-off snapshots were updated only
+for these independent catalog and connector changes. The system context gains
+the target-screening Skill; corpus-dependent lexical scores change, and the
+literature screening query now includes that Skill in its five results. The
+`science_search` schema gains STRING and BindingDB sources and their filters.
+The classifier snapshot remains byte-identical, and Chinese lexical queries
+remain empty. These are catalog/schema changes, not enabled semantic judgments.

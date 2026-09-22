@@ -80,6 +80,8 @@ class ScienceSearchTool(Tool):
                     "pubchem",
                     "arxiv",
                     "openalex",
+                    "string",
+                    "bindingdb",
                     "clinvar",
                     "pubmed",
                     "clinicaltrials",
@@ -96,6 +98,24 @@ class ScienceSearchTool(Tool):
                     "year_from": {"type": "integer", "minimum": 1000, "maximum": 3000},
                     "year_to": {"type": "integer", "minimum": 1000, "maximum": 3000},
                     "work_type": {"type": "string", "maxLength": 50},
+                    "required_score": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000,
+                    },
+                    "network_type": {
+                        "type": "string",
+                        "enum": ["functional", "physical"],
+                    },
+                    "cutoff": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "BindingDB affinity cutoff in nM; must be strictly positive and finite (default 100).",
+                    },
+                    "affinity_type": {
+                        "type": "string",
+                        "enum": ["Ki", "IC50", "Kd", "EC50"],
+                    },
                 },
                 "additionalProperties": False,
             },

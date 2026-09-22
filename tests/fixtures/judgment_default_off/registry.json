@@ -349,6 +349,8 @@
             "pubchem",
             "arxiv",
             "openalex",
+            "string",
+            "bindingdb",
             "clinvar",
             "pubmed",
             "clinicaltrials"
@@ -358,9 +360,35 @@
         "filters": {
           "additionalProperties": false,
           "properties": {
+            "affinity_type": {
+              "enum": [
+                "Ki",
+                "IC50",
+                "Kd",
+                "EC50"
+              ],
+              "type": "string"
+            },
+            "cutoff": {
+              "description": "BindingDB affinity cutoff in nM; must be strictly positive and finite (default 100).",
+              "minimum": 0,
+              "type": "number"
+            },
+            "network_type": {
+              "enum": [
+                "functional",
+                "physical"
+              ],
+              "type": "string"
+            },
             "organism_id": {
               "maxLength": 30,
               "type": "string"
+            },
+            "required_score": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
             },
             "species": {
               "maxLength": 80,

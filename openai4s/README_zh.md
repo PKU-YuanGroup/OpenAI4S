@@ -66,7 +66,8 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`storage/`](./storage/) | 通过 `Store` 使用的聚焦 SQLite 仓储，以及它们背后带版本的 migration runner。 |
 | [`benchmark/`](./benchmark/) | 带版本的科学工作流基准的 runner，清单在 [`workflows/`](../workflows/README_zh.md)。每一步都驱动生产代码——真实的 Store、kernel manager、host dispatcher 与 compute manager——只有离线跑不了的才被注入：模型、网络、包管理器。声明的结果是契约的一部分，所以期望 `failure` 的用例在跑出干净成功时判失败。 |
 | [`tools/`](./tools/) | 基于类的供应商原生控制工具。每个工具自带 schema。围着它们的是注册表、动态工具生命周期，以及对 fenced 调用的兼容支持。 |
-| [`judgment/`](./judgment/) | 实验性、默认关闭的语义判断层：带类型的问题、后端端口、开关解析和披露文案。本包此时还没有运行时接线。 |
+| [`judgment/`](./judgment/) | 实验性、默认关闭的语义判断层：带类型的问题、已注册模板、TypeSafe 与显式选择的 LLM 后端、开关解析、披露、设置，以及只记录的影子判断。Host RPC 通过 `host/judgment.py` 接线。 |
+| [`update/`](./update/) | 在线更新器：这是哪一种安装渠道、有没有更新的版本、在替换任何东西之前这份载荷必须满足什么，以及围绕一份独立升级前快照展开的 apply 事务。这里没有任何东西能从一个 turn 到达，这个包在模块层不 import 任何东西，它全部的出站面就是 `webtools`——包里没有任何模块写出出站原语。失败一律报成 `unknown`，绝不报成「已是最新」。 |
 
 ## 修改规则
 

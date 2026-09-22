@@ -391,6 +391,19 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_worker_runtime_alias.py`](test_worker_runtime_alias.py) | 六个测试，证明 `openai4s_worker_runtime` 只是一次 re-export：`__all__` 相同、两个名字下是同一批对象、没有影子子模块，也没有自己的入口点。 |
 | [`test_workspace_streaming_budgets.py`](test_workspace_streaming_budgets.py) | 工作区文件工具与 `save_artifact` 背后的内存预算。每个用例都造一个整读必死的稀疏文件，并在调用前后盯住 `tracemalloc`——因为只检查返回窗口的测试，对着「先把整个文件读进来」的实现一样会通过。修复前在测试进程里实测：返回 256 MiB 文件的两行要 768 MiB，grep 一个 64 MiB 文件要 192 MiB，改 32 MiB 文件里的七个字符要 64 MiB，登记一个 64 MiB 产物要 64 MiB。 |
 | [`test_volcengine_connector.py`](test_volcengine_connector.py) | 官方 Ark CLI 边界及其 Gateway 适配：子进程环境中的密钥剥离、掩码 Key 的精确匹配、缺少 Key 与多 Key 不透明选择决策、公开身份与额度投影、单航班登录取消，以及“配置只保存 broker 引用且任何路由响应都不含 Ark 明文 Key 或云端 Key ID”的证明。测试不需要真实访问火山。 |
+| [`test_update_channel.py`](test_update_channel.py) | 这是哪一种安装，以及更新器能不能往里写。分量在反例上，而且每条都做了参数化，让一个布局里的每一个名字都单独吃重：只是名字叫 `*.app` 的目录不是签名包，`Contents`/`Resources`/`src` 任何一个名字不对也不是；两个 runtime 标记文件都没有的 root Kubernetes Pod 仍然是容器（而宿主机自己的 PID 1 cgroup 仍然不是）；可写但并非已安装分发的目录树不是 venv；光有内容寻址的目录树也不算 WSL 托管 bundle（那个形状同时也是 `bootstrap.sh` 装完之后的 Linux bundle）；别人的 `pyproject.toml` 不是这份 checkout；当前 euid 写不动的 site-packages 不是 venv。检测的**纯粹性**也被证明——`socket.connect` 与 `subprocess.Popen` 被换成会让测试失败的版本——因为 `doctor`、CLI 的头几行和一个只读 HTTP 投影都会调它，而三者各有各不能起子进程的理由。 |
+| [`test_update_discovery.py`](test_update_discovery.py) | 有没有更新的版本，以及更常见的——这个答案到底知不知道。模块能产生的每一种失败都被逐一构造出来：网络被关、出站被拒、SSRF、包在 `URLError` 里的超时、429/503、超尺寸响应体、畸形文档、被撤回的版本、证人不一致、证人缺失——并逐一检查它渲染成 `unknown` 而不是 `up_to_date`，因为一个在 DNS 失败时说「已是最新」的更新器会让用户不再去看。此外还有：`OPENAI4S_UPDATE_SOURCE=offline` 这道栓——用「把 `webtools` 本身换成会让测试失败的东西」来证明；对着注入时钟的六小时缓存，以及失败后短得多的重试；还有一次 AST 遍历，断言 `openai4s/update/` 下没有任何模块写出出站原语。 |
+| [`test_update_verify.py`](test_update_verify.py) | 在停任何东西、换任何东西之前，这份载荷必须满足什么。那条顺序规则单独占一节：`SHA256SUMS` 里某个 bundle 的摘要，只有在两个来源都描述的那个 wheel 已经对上之后才被采信——而且这是结构性的，不是写在注释里的：`digest_for` 需要一个 `Witnesses`，而只有 `agree()` 造得出来。一份在 wheel 上对得上、却伪造了 sdist 的清单，照样被拒。执行探针通过注入的 runner 驱动，跑的是一个恶意载荷能打印出来的 stdout——那段 stdout 正来自被判定的那份代码，所以合法但不是对象的 JSON、不是数字的 `schema_version`，都得是拒绝，而不是从「提交前最后一道闸」里漏出来的 `AttributeError`。写这些时抓出三个缺陷，那是其一，还有两个：`$` 也会匹配在结尾换行之前，于是 `"a"*64 + "\n"` 被读成摘要、`"0.4.0\n"` 被读成版本，而那个版本随后会变成目录名和 URL 里的一段；以及，只记录权限位、没有 `S_IFMT` 的成员——`zipfile.writestr` 和 hatchling 产出的都是这种——被当成「不是普通文件」拒掉了。 |
+| `test_update_transaction.py` | apply 事务：让那条安全承诺成立的阶段顺序、崩溃标记，以及分三种情况的回滚判定过程。 |
+| `test_update_preserve.py` | 换代时活下来的东西——独立根目录下的升级前数据库快照、配置，以及处于风险中的恢复检查点计数。 |
+| `test_update_commit_imports.py` | 按渠道的提交，包括这个仓库交过学费的那一支：daemon 自己的 `.venv` 不带 `pip` 模块。 |
+| `test_update_applier.py` | 进程外 applier：固定 argv、由 daemon 自己写出的 plan 文件，以及在动任何东西之前对每个字段的重新校验。 |
+| `test_update_not_agent_reachable.py` | `openai4s/update/` 下的任何东西都不能从 `Tool` 子类、`host.*` 能力或 Skill 到达——用 AST 判定，不靠约定。一个能从 turn 到达的安装器，会把每一次 prompt 注入都变成持久化的代码执行。 |
+| `test_update_cli.py` | `openai4s update` 子命令树及其退出码。 |
+| `test_update_routes.py` | `GET /update` 与需要同意行的 `POST /update/check`，以及 stage/apply 的收束阶梯：每一个动词都只对管理员开放，且任何拒绝路径上都不得出现 `Popen`。 |
+| `test_update_onboarding_consent.py` | 引导式初次运行里只问一次的同意问题，以及非交互式首启时既不问、也不写这一行。 |
+| `test_update_doctor.py` | `openai4s doctor` 在没有 daemon 的情况下报出的渠道与更新两行。 |
+| `test_update_bootstrap_layout_compat.py` | `scripts/windows/bootstrap.sh` 与这个包共同写出的磁盘契约，用真的执行 shell 来断言，而不是匹配字符串。 |
 
 ## 子目录
 
@@ -480,7 +493,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_citation_metadata.py`](test_citation_metadata.py) | 论文引用写了三份：两份 README 各有一段 BibTeX，根目录 `CITATION.cff` 里还有一份 `preferred-citation`，GitHub 的“Cite this repository”按钮渲染的就是这一份。README 的两段按 BibTeX 语义比较而不是逐字节比较，所以保护性花括号、字段顺序和换行都可以改；每段必须恰好包含 title、author、year、eprint、archivePrefix、primaryClass、url 这几个字段。CFF 必须是 `cff-version: 1.2.0`，标题、作者及顺序、年份和 arXiv 链接都与 BibTeX 相同，带上 arXiv DOI，并且只有一个标识符，写明 eprint 和主分类。其余检查依照 GitHub 文档点名的 ruby-cff：引用类型必须是 `generic`，它会渲染成与 README 一致的 `@misc`；“OpenAI4S Community”必须是唯一的 `name:` 机构条目，因为写成 given-names 加 family-names 会被渲染成“Community, OpenAI4S”；个人作者只能用 given-names 和 family-names，不能有 particle、suffix 或 alias。任何会改变 GitHub 渲染结果的字段（`repository-code`、`month`、`status`、`notes`、页码、日期）都不能出现在 `preferred-citation` 里，其中 `repository-code` 会把 arXiv 链接替换成仓库链接。软件本身的顶层作者渲染出的姓名必须与论文作者一致，license、abstract、keywords 和仓库地址必须与 `pyproject.toml` 一致。文件里不能有 `version` 或 `date-released`，免得它变成一个会过期的发布版本号钉点。 |
 | [`test_response_contract_coverage.py`](test_response_contract_coverage.py) | 每个对外 route 都有响应契约，而且这份契约就是该 route 真正产出的那份——与服务端脱节的覆盖文件描述的是一个没人在发布的产品。 |
 | [`test_response_contract_downloads.py`](test_response_contract_downloads.py) | 成功时返回字节的那几条 route，以及唯一一处没套信封的拒绝。notebook 导出、Session 包和 artifact 下载此前都被固化成 `kinds: ["json"], statuses: [404]`：无参扫描没有东西可要，而四个未实现的动词照样产出那个 404，于是覆盖门把一个下载端点算作已覆盖，客户端真正依赖的东西却哪里都没写下来。`PATCH\|POST\|PUT /annotations/<id>` 用 `{"annotation": null}` 回 404，是这张表面上唯一落在 PublicFailure 信封之外的拒绝，前端 `api()`（它用 `j.error` 构造错误）因此报出一个什么都没说的失败。 |
-| [`test_judgment_default_off.py`](test_judgment_default_off.py) | 在任何实验性判断层代码落地之前，把 Skill 系统提示、`search_skills` 中英文结果、原生工具 schema，以及 heuristic 模式下 `classify_code` 的判决冻结成逐字节快照。默认关闭路径必须继续与这些 fixtures 一致。 |
+| [`test_judgment_default_off.py`](test_judgment_default_off.py) | Skill 系统提示、`search_skills` 中英文结果、原生工具 schema，以及 heuristic 模式下 `classify_code` 判决的逐字节默认关闭快照。初始基线在实验代码落地前采集；main 新增目录与工具的差异记录在操作指南中，分类器基线保持不变。 |
 | [`test_judgment_types.py`](test_judgment_types.py) | Noul/Choice/Score 的构造边界、`to_api()` 形态、可 JSON 序列化的 `to_dict()`、Noul 答案不带概率也不带置信度，以及 `NullBackend` 永远抛 `disabled`。 |
 | [`test_judgment_flags.py`](test_judgment_flags.py) | 三态 env 解析、非法值、六条优先级、总开关关闭、缺失/版本不对的披露确认，以及 env=1 不要求确认。 |
 | [`test_judgment_validate.py`](test_judgment_validate.py) | `parse_response` 每条规则各有合规与不合规用例：id 集合、类型、Choice/Noul/Score 范围、概率键与加和、legend、usage。一处不合规即丢弃整份 payload。 |
@@ -506,6 +519,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_judgment_task_mode_shadow.py`](test_judgment_task_mode_shadow.py) | 任务模式影子：≥30 条请求在开关关闭和开启时 `resolve_task_mode` 返回值逐条相同、假后端 sleep 5 秒不拖慢返回、显式 `--mode` / `task_mode` 不提交，且 `judgment_shadow` 审计不含原始请求文本。 |
 | [`test_text_features_skill.py`](test_text_features_skill.py) | `features.custom` 的限制校验（题型、题数、instructions 长度、state 大小）、`featurize` 的列形状与 NaN、Score 归一化到 [0,1]、冻结前测试集隔离、loader/sidecar/capability，以及对着 loopback 假端点的 kernel cell 往返。 |
 | [`test_judgment_llm_backend.py`](test_judgment_llm_backend.py) | 可选 `LlmBackend`：三种题型解析、非 JSON 输出、概率之和不为 1、选项名不在集合里、`charge_call` 计量、`calibrated=False`，以及 typesafe 抛 `unavailable` 时从不调用 `chat()`。 |
+| [`test_target_druggability_skill.py`](test_target_druggability_skill.py) | 靶点初筛离线契约：可选 RDKit 描述符、缺失或限定证据、实验终点隔离、中立报告，以及通过真实 Host 门面、连接器、工件存储与血缘执行文档示例。 |
 
 - [`browser_editor.mjs`](browser_editor.mjs): 真实条件编辑动作、延迟读取、冲突、保存响应丢失和刷新保护；由浏览器矩阵复用。
 

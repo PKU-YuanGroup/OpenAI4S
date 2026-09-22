@@ -155,6 +155,22 @@ os.environ["OPENAI4S_ARKCLI_PATH"] = "/nonexistent/openai4s-offline-arkcli"
 # itself. Port 1 needs root to bind, so nothing can be listening. A test that
 # means to assert the built-in default clears this var explicitly.
 os.environ["OPENAI4S_TELEMETRY_ENDPOINT"] = "https://127.0.0.1:1/v1/events"
+# The updater's release sources are pinned off for the whole suite. This is a
+# mechanism, not a convenience: `openai4s.update.discovery.check` short-circuits
+# on this variable before it reads its cache and before it resolves its source,
+# so no test and no response-shape capture can reach pypi.org or github.com by
+# accident. It is deliberately belt-and-braces with the offline posture above --
+# the check is an *explicit user action* that networking is allowed to perform,
+# so nothing else in the suite would stop it.
+os.environ["OPENAI4S_UPDATE_SOURCE"] = "offline"
+# A developer's mirror must not decide which URL the offline tests assert, and
+# a channel override must not decide what `detect()` answers for the suite.
+for _name in (
+    "OPENAI4S_UPDATE_INDEX",
+    "OPENAI4S_CHANNEL",
+    "OPENAI4S_BUNDLE_ID",
+):
+    os.environ.pop(_name, None)
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -217,6 +233,12 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # must not leave the next one pointed at the real host. See the module-level
     # default for why this is set at all.
     monkeypatch.setenv("OPENAI4S_TELEMETRY_ENDPOINT", "https://127.0.0.1:1/v1/events")
+    # Re-applied per test — see the module-level default. A test that means to
+    # exercise the live discovery path replaces the source seam explicitly;
+    # nothing gets there by forgetting to.
+    monkeypatch.setenv("OPENAI4S_UPDATE_SOURCE", "offline")
+    for name in ("OPENAI4S_UPDATE_INDEX", "OPENAI4S_CHANNEL", "OPENAI4S_BUNDLE_ID"):
+        monkeypatch.delenv(name, raising=False)
     # A developer's git-ignored .env (loaded at import) may configure web sharing;
     # the offline suite must never inherit it (it would try a real relay). The
     # same rule, not the same subject: a machine that sets the MCP deadline

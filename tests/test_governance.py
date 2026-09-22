@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,76 @@ USES_LINE = re.compile(r"^\s*-?\s*uses:")
 PINNED_ACTION = re.compile(
     r"^\s*-?\s*uses:\s*[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$"
 )
+
+# `owner/repo[/path]` and the major from the `# vX.Y.Z` claim beside it. The
+# claim is what a reviewer reads, so it is what a major pin can be expressed
+# against; `PINNED_ACTION` above is what guarantees the claim is there.
+ACTION_IDENTITY = re.compile(
+    r"^\s*-?\s*uses:\s*(?P<name>[^@\s]+)@[0-9a-f]{40}\s+#\s+v(?P<major>\d+)\."
+)
+
+# The weekly multi-ecosystem batch carries every update type, so a GitHub
+# Actions major now arrives as one row of a five-ecosystem version table whose
+# only human-readable content is a `# vX.Y.Z` comment. That is tolerable for
+# ci.yml. It is not tolerable for these two files: scorecard.yml runs with
+# `security-events: write` and `id-token: write`, and release.yml's publish job
+# holds `id-token: write` for the OIDC PyPI trusted publish plus `contents:
+# write` on three more. A compromised or behaviour-changing major there spends
+# privileges nothing else in the repository has.
+#
+# The `action-pins` job proves the SHA matches the comment. Nothing proved a
+# human read what the major changed -- setup-uv 9.0.0 -> 10.0.1 went through
+# once as one row of a two-row table. This is that proof, in the same shape
+# `test_container_deployment.py` uses for the CPython tag: naming the major
+# here is what makes a major bump a red test someone has to look at, instead of
+# a SHA swap that reads like every other row.
+#
+# The mapping is exact in both directions, so adding an action to one of these
+# workflows also fails here until it is named.
+PRIVILEGED_WORKFLOW_ACTION_MAJORS = {
+    "release.yml": {
+        "actions/checkout": 7,
+        "actions/download-artifact": 8,
+        "actions/upload-artifact": 7,
+        "astral-sh/setup-uv": 10,
+        "pypa/gh-action-pypi-publish": 1,
+    },
+    "scorecard.yml": {
+        "actions/checkout": 7,
+        "actions/upload-artifact": 7,
+        "github/codeql-action/upload-sarif": 4,
+        "ossf/scorecard-action": 2,
+    },
+}
+
+PRE_COMMIT_CONFIG = ROOT / ".pre-commit-config.yaml"
+
+# `- repo: <url>` followed within the same block by `rev: <sha>  # frozen: X.Y.Z`
+# (ruff writes `v0.16.8`, black and isort write bare `26.5.1`).
+FROZEN_HOOK = re.compile(
+    r"^\s*-\s*repo:\s*(?P<repo>\S+)\s*$\n(?:^\s*#.*$\n)*"
+    r"^\s*rev:\s*\S+\s+#\s*frozen:\s*v?(?P<major>\d+)\.",
+    flags=re.MULTILINE,
+)
+
+# The two formatters, and only the two. A bump of either is a style-policy
+# change that rewrites source on every contributor machine (`setup.sh` installs
+# these hooks), not a version bump: black 23.3.0 -> 26.5.1 reformatted 234
+# files, and isort 8.0.1 -> 9.0.1 arrived as one row of a two-row version
+# table, reformatted five -- two of them the `store.py` and `kernel/worker.py`
+# facades CLAUDE.md says to edit surgically -- and opened a disagreement with
+# black that needed a hand-written directive to settle.
+#
+# The old `hook-versions` group kept them out of Dependabot's batch with
+# `exclude-patterns`. The weekly multi-ecosystem group carries every hook, and
+# the exclusion is not simply restorable there: a multi-ecosystem job does not
+# run the ordinary ungrouped pass, so excluding these two would stop updating
+# them rather than move them to their own PR. Pinning the major instead leaves
+# the update flowing and makes the one that has to be read arrive red.
+FROZEN_FORMATTER_MAJORS = {
+    "https://github.com/psf/black": 26,
+    "https://github.com/pycqa/isort": 9,
+}
 
 
 def _uses_lines(name):
@@ -87,9 +158,9 @@ def test_every_workflow_pins_every_action_to_a_commit():
     Those name scorecard.yml, fuzz.yml and release.yml. ci.yml -- 42 `uses:`
     lines, the file every contributor's code and every fork PR passes through
     -- and publish-image.yml were pinned by convention only, named by no test
-    at all. Dependabot's `workflow-actions` group rewrites `uses:` lines in
-    every one of them, so a grouped bump landing a mutable tag in an uncovered
-    file reads exactly like a covered one and passes every gate.
+    at all. The weekly multi-ecosystem batch rewrites `uses:` lines in every
+    one of them, so a grouped bump landing a mutable tag in an uncovered file
+    reads exactly like a covered one and passes every gate.
 
     Discovery is a glob rather than a list so a workflow added later is covered
     the day it lands, instead of the day someone remembers to extend a
@@ -115,6 +186,88 @@ def test_every_workflow_pins_every_action_to_a_commit():
             moving[name] = offenders
 
     assert moving == {}
+
+
+@pytest.mark.parametrize("name", sorted(PRIVILEGED_WORKFLOW_ACTION_MAJORS))
+def test_privileged_workflows_pin_their_actions_major_version(name):
+    """A major in an OIDC/security-events workflow cannot ride a version table.
+
+    The weekly batch includes major versions by design, and for most of the
+    tree that is the right trade. These two workflows are the exception: the
+    diff of an action major is a SHA and a `# vX.Y.Z` comment, and the thing it
+    changes runs with `id-token: write` or `security-events: write`. Pinning the
+    major here turns that row into a failing required check, so the bump has to
+    be split out and read rather than merged as one line of a table.
+    """
+    expected = PRIVILEGED_WORKFLOW_ACTION_MAJORS[name]
+    found = {}
+    for line in _uses_lines(name):
+        match = ACTION_IDENTITY.match(line)
+        assert match, line.strip()
+        action = match.group("name")
+        major = int(match.group("major"))
+        # Check each use before reducing to a mapping: a later job using the
+        # approved major must not hide an earlier job's different major.
+        assert major == expected.get(action), (
+            name,
+            action,
+            major,
+            expected.get(action),
+        )
+        found[action] = major
+
+    assert found == expected, {
+        "unpinned or moved": sorted(set(found) - set(expected)),
+        "pinned but absent": sorted(set(expected) - set(found)),
+        "major changed": {
+            action: (expected[action], major)
+            for action, major in found.items()
+            if action in expected and major != expected[action]
+        },
+    }
+
+
+@pytest.mark.parametrize("occurrence", [0, 1, -1], ids=["first", "middle", "last"])
+def test_privileged_workflow_major_gate_checks_repeated_uses(
+    tmp_path, monkeypatch, occurrence
+):
+    name = "release.yml"
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    matches = list(re.finditer(r"uses: astral-sh/setup-uv@[^\n]+# v(\d+)\.", text))
+    assert len(matches) > 2
+    match = matches[occurrence]
+    changed = (
+        text[: match.start(1)] + str(int(match.group(1)) + 1) + text[match.end(1) :]
+    )
+    (tmp_path / name).write_text(changed, encoding="utf-8")
+    monkeypatch.setitem(globals(), "WORKFLOWS", tmp_path)
+
+    with pytest.raises(AssertionError):
+        test_privileged_workflows_pin_their_actions_major_version(name)
+
+
+def test_formatter_hooks_pin_their_major_version():
+    """black and isort cannot arrive as one row of the Monday batch.
+
+    Every other hook may: the rule sets are pinned in `pyproject.toml`, so a
+    bump is inert against them. A formatter major is the exception -- it is a
+    style-policy change that `setup.sh` then installs on every contributor
+    machine -- and `.pre-commit-config.yaml` carries no other signal that
+    distinguishes it from a patch. Reading the reformat is the review; this pin
+    is what forces it to happen.
+    """
+    text = PRE_COMMIT_CONFIG.read_text(encoding="utf-8")
+    majors = {
+        match.group("repo"): int(match.group("major"))
+        for match in FROZEN_HOOK.finditer(text)
+    }
+
+    assert set(FROZEN_FORMATTER_MAJORS) <= set(majors), sorted(
+        set(FROZEN_FORMATTER_MAJORS) - set(majors)
+    )
+    assert {
+        repo: majors[repo] for repo in FROZEN_FORMATTER_MAJORS
+    } == FROZEN_FORMATTER_MAJORS
 
 
 def test_pr_ci_resolves_every_action_version_comment_with_pinact():
@@ -244,9 +397,37 @@ DEPENDABOT_ENTRY_KEYS = {
     "versioning-strategy",
 }
 
+DEPENDABOT_CONFIG = ROOT / ".github" / "dependabot.yml"
+
+
+def _dependabot_config():
+    """The parsed `dependabot.yml`, or a skip when PyYAML is absent.
+
+    Four contracts below read the same file; reading it in one place is what
+    keeps a later test from asserting against a path that has moved.
+    """
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load(DEPENDABOT_CONFIG.read_text(encoding="utf-8"))
+
+
+def _entry_directories(entry):
+    """The directories an `updates:` entry covers, as a list.
+
+    `directory` and `directories` are mutually exclusive in the schema, so an
+    entry carrying neither is malformed rather than rooted at `/` -- returning
+    `[None]` for it would launder the mistake into every caller's set.
+    """
+    assert ("directory" in entry) != ("directories" in entry), (
+        f"{entry.get('package-ecosystem')}: exactly one of `directory` / "
+        f"`directories` is required, got {sorted(set(entry) & {'directory', 'directories'})}"
+    )
+    if "directories" in entry:
+        return list(entry["directories"])
+    return [entry["directory"]]
+
 
 def test_dependabot_tracks_uv_hooks_and_workflow_actions():
-    config = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    config = DEPENDABOT_CONFIG.read_text(encoding="utf-8")
 
     assert config.count("package-ecosystem:") == 5
     for ecosystem in (
@@ -269,18 +450,17 @@ def test_dependabot_entries_use_only_schema_keys():
     also appear only once per ecosystem and directory: the options reference
     grants a second entry only for a different `target-branch`.
     """
-    yaml = pytest.importorskip("yaml")
-    updates = yaml.safe_load(
-        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-    )["updates"]
+    updates = _dependabot_config()["updates"]
     for entry in updates:
         assert set(entry) <= DEPENDABOT_ENTRY_KEYS, sorted(
             set(entry) - DEPENDABOT_ENTRY_KEYS
         )
-    identities = [
-        (entry["package-ecosystem"], entry.get("directory"), entry.get("target-branch"))
-        for entry in updates
-    ]
+    identities = []
+    for entry in updates:
+        identities.extend(
+            (entry["package-ecosystem"], directory, entry.get("target-branch"))
+            for directory in _entry_directories(entry)
+        )
     assert len(identities) == len(set(identities))
 
 
@@ -305,3 +485,89 @@ def test_branch_naming_policy_exempts_dependabot_by_ref_not_by_actor():
 
     assert "startsWith(github.head_ref, 'dependabot/')" in condition
     assert "github.actor" not in condition
+
+
+def test_dependabot_batches_every_ecosystem_without_filtering_updates():
+    """The Monday batch includes majors and formatters without filtering fixes.
+
+    Multi-ecosystem jobs do not run the ordinary ungrouped update pass, so
+    selective patterns or old single-ecosystem groups can leave updates out.
+    Keep eligibility unrestricted and let one group own the schedule.
+    """
+    config = _dependabot_config()
+    groups = config.get("multi-ecosystem-groups", {})
+    assert len(groups) == 1
+    group_name, group = next(iter(groups.items()))
+    assert group == {"schedule": {"interval": "weekly", "day": "monday"}}
+    updates = config["updates"]
+    assert {entry["package-ecosystem"] for entry in updates} == {
+        "uv",
+        "npm",
+        "docker",
+        "pre-commit",
+        "github-actions",
+    }
+    for entry in updates:
+        assert entry["multi-ecosystem-group"] == group_name
+        assert entry["patterns"] == ["*"]
+        # The invariant is that every ecosystem covers the repository root,
+        # not that every ecosystem spells it with `directory`. Asserting the
+        # key instead of the coverage left the npm entry -- the only one that
+        # uses `directories` -- with no root assertion at all, and would raise
+        # `KeyError` rather than fail the day a second ecosystem needs a
+        # second directory.
+        assert "/" in _entry_directories(entry), entry["package-ecosystem"]
+        for option in ("schedule", "groups", "allow", "ignore", "target-branch"):
+            assert option not in entry, (entry["package-ecosystem"], option)
+
+
+def test_dependabot_covers_every_npm_manifest():
+    """The frontend is an independent npm project, not a root workspace.
+
+    A root-only npm entry silently misses its runtime and build dependencies.
+    Inspect tracked manifests so local node_modules and build copies cannot
+    inflate coverage, and adding another npm project requires tracking it.
+    """
+    config = _dependabot_config()
+    # "Not a git checkout" is an environment, not a governance failure, and
+    # the suite already answers it that way twice -- see the `git ls-files -z`
+    # probe in `test_skills_installer_contract.py` and `_git()` in
+    # `test_plan_crosswalk.py`, both of which skip. `check=True` here turned an
+    # exported tree, or a PATH without git, into a red governance test instead.
+    # Bytes rather than `text=True`: `-z` emits paths, and a runner's locale
+    # must not decide how they decode.
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "package.json", "**/package.json"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+            timeout=30,
+        ).stdout.decode("utf-8")
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("not a git checkout")
+    manifest_directories = {
+        (Path("/") / Path(path).parent).as_posix()
+        for path in listed.split("\0")
+        if path
+    }
+    configured_directories = {
+        directory
+        for entry in config["updates"]
+        if entry["package-ecosystem"] == "npm"
+        for directory in _entry_directories(entry)
+    }
+
+    assert manifest_directories
+    # Equality, not containment. Containment passes on a configured directory
+    # that holds no manifest -- a typo, or a project that was deleted -- and
+    # Dependabot reports that only on its own tab, which is the failure this
+    # module exists to make visible offline.
+    assert manifest_directories == configured_directories, {
+        "tracked but not configured": sorted(
+            manifest_directories - configured_directories
+        ),
+        "configured but not tracked": sorted(
+            configured_directories - manifest_directories
+        ),
+    }

@@ -15,6 +15,7 @@ The workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vite + V
 | [`index.html`](index.html) | SPA shell. Head loads `/static/style.css` (same global sheet as the legacy UI; F-21), `/static/theme-bootstrap.js` as a classic (non-module) script so the first paint has `data-theme`, `/static/favicon.js` (10 fps clamp), and `/static/scientific_renderers.js`. The app entry is an external `type="module"` `src=` tag so CSP `script-src 'self'` never has to authorize inline script. |
 | [`package.json`](package.json) | Frontend package: Preact 10, `@preact/signals`, Vite, Vitest, TypeScript. `private: true`. |
 | [`package-lock.json`](package-lock.json) | Lockfile for a deterministic `npm ci` rebuild. CI rebuilds `webui/dist` and `git diff --exit-code`s it. |
+| [`.npmrc`](.npmrc) | `engine-strict=true`, so an install on a Node outside `package.json`'s `engines` range is refused instead of warned about. npm's default is a warning that scrolls past and resurfaces later as an unexplained Vitest or Vite error. |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | Per-item map of old `app.js` line ranges onto new modules. F-03 has no domain kernel; F-04 maps `_serve_index` / package-data / `_WHEEL_REQUIRED`. |
 | [`tsconfig.json`](tsconfig.json) | Strict TypeScript for `src/` (`strict`, `noUncheckedIndexedAccess`, Preact `jsxImportSource`). |
 | [`tsconfig.node.json`](tsconfig.node.json) | Strict TypeScript for `vite.config.ts`. |
@@ -30,6 +31,10 @@ The workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vite + V
 
 ## Commands
 
+Use Node.js 22.12+ on the 22.x line, 24.x, or 26+ to run the Vitest 5
+toolchain; `.npmrc` sets `engine-strict=true`, so `npm ci` refuses anything
+else. CI uses Node 22. The root Skill installer has its own Node requirement.
+
 ```bash
 cd frontend
 npm ci
@@ -43,4 +48,10 @@ npm run typecheck    # tsc --noEmit
 
 - Workbench CSP is `script-src 'self' 'wasm-unsafe-eval'` (no `unsafe-eval`, no `unsafe-inline`). No runtime template compiler, no Vite inline-script polyfill, no `@vitejs/plugin-legacy`.
 - Do not add frontend dependencies to the repository-root `package.json`.
+- Dependabot proposes updates for this directory, but it only edits
+  `package.json` and `package-lock.json`. The `browser-smoke` (three engines),
+  `browser-stage0` and `browser-team-mode` jobs rebuild
+  `../openai4s/server/webui/dist/` and `git diff --exit-code` it, so any bump
+  that changes the emitted bundle lands red: check out the batch branch, run
+  `npm ci && npm run build` here, and commit the rebuilt dist onto it.
 - Global CSS is F-21. Store files under `src/stores/` are F-05. `compat/window-exports.ts` is F-05.

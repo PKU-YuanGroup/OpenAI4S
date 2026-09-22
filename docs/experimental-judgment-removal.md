@@ -138,7 +138,7 @@ Undo these mounts. After the edit, the named function must not import
 | `tests/test_egress_surface.py` | `_DECLARED` | Delete the `"openai4s/judgment/typesafe.py": (...)` entry. |
 | `tests/test_egress_surface.py` | `test_the_surface_is_small_enough_to_review` | Bound `14` → `13`. Delete the paragraph that says the surface grew from thirteen for `judgment/typesafe.py`. |
 | `tests/test_doctor.py` | `test_every_probe_reports_without_a_running_daemon` | Remove `"judgment"` from the expected check-name set. |
-| `tests/test_kernel_recovery.py` | `test_bundled_sidecar_recovery_compatibility_is_explicit` | `assert len(sidecars) == 18` → `17` (deleting `skills/text-features/kernel.py`). |
+| `tests/test_kernel_recovery.py` | `test_bundled_sidecar_recovery_compatibility_is_explicit` | `assert len(sidecars) == 19` → `18` (deleting `skills/text-features/kernel.py`). |
 | `pyproject.toml` | `[tool.setuptools.package-data] openai4s` | Delete `"judgment/templates/*.json"`. |
 | `pyproject.toml` | `[tool.mypy] files` | Delete every `openai4s/judgment/...` path (disclosure through `llm_backend.py`). |
 | `scripts/render_skill_install_sections.py` | `NPM_020_UNAVAILABLE_SKILLS` | Remove `"text-features"` from the frozenset. Keep `"single-cell-rna-analysis"`. |
@@ -207,30 +207,30 @@ Do **not** edit `openai4s/egress.py`. There is no group, no domain, no
 
 ## 7. Skill-count prose (text-features)
 
-Deleting `skills/text-features/` moves the tree 44→43 curated, 605→604
-bundled, sidecar census 18→17. `tests/test_skills_installer_contract.py`
+Deleting `skills/text-features/` moves the tree 45→44 curated, 606→605
+bundled, sidecar census 19→18. `tests/test_skills_installer_contract.py`
 (`test_every_prose_count_matches_the_tree` and
 `test_the_published_description_counts_the_skills_it_actually_ships`) is the
-gate: run it and fix every remaining live 605 / 44 it names. Historical
+gate: run it and fix every remaining live 606 / 45 it names. Historical
 v0.2.0 figures stay as written.
 
-Easy to miss: the parenthetical `(605 Skills: 44 curated + 561 bioSkills)` in
-the root README and installer README; `docs/skills.md` "catalog contains 605"
-and "ships all 605 Skills"; `skills/README*` after 44 has already become 43
-so the combined "605 … 44" string no longer matches; `docs/TODO.md` splits
-`has 605` / `Skills` across two lines.
+Easy to miss: the parenthetical `(606 Skills: 45 curated + 561 bioSkills)` in
+the root README and installer README; `docs/skills.md` "catalog contains 606"
+and "ships all 606 Skills"; `skills/README*` after 45 has already become 44
+so the combined "606 … 45" string no longer matches; `docs/TODO.md` splits
+`has 606` / `Skills` across two lines.
 
 | File | What to change |
 | --- | --- |
-| `package.json` | `"description"`: `605 scientific recipes` → `604` |
-| `README.md` | every live 605 / 44 that `COUNT_SITES` matches, plus the "What ships today" table `605 Skills (44 curated + 561 …)` |
-| `README_zh.md` | matching 605 / 44 sites |
-| `CLAUDE.md` / `AGENTS.md` (same file) | `605 bundled Skills: 44 curated` / `561-recipe` |
-| `docs/skills.md` | `## Bundled Skills (605)`, `44 curated`, `### Curated OpenAI4S Skills (44)`; drop `text-features` from the **ML methodology / benchmarks** cell |
+| `package.json` | `"description"`: `606 scientific recipes` → `605` |
+| `README.md` | every live 606 / 45 that `COUNT_SITES` matches, plus the "What ships today" table `606 Skills (45 curated + 561 …)` |
+| `README_zh.md` | matching 606 / 45 sites |
+| `CLAUDE.md` / `AGENTS.md` (same file) | `606 bundled Skills: 45 curated` / `561-recipe` |
+| `docs/skills.md` | `## Bundled Skills (606)`, `45 curated`, `### Curated OpenAI4S Skills (45)`; drop `text-features` from the **ML methodology / benchmarks** cell |
 | `docs/TODO.md` / `docs/TODO_zh.md` | current-tree Skill count |
 | `skills/README.md` / `skills/README_zh.md` | live totals; delete the [`text-features/`](text-features/) table row |
-| `tools/skills-installer/README.md` / `README_zh.md` | live 605 / 44 sites |
-| `tests/test_kernel_recovery.py` | sidecar census 18 → 17 (already in step 3) |
+| `tools/skills-installer/README.md` / `README_zh.md` | live 606 / 45 sites |
+| `tests/test_kernel_recovery.py` | sidecar census 19 → 18 (already in step 3) |
 
 Drop the "Experimental judgment" subsection and the documentation-table /
 Experimental-features rows added for this layer (root README, `docs/README*`,
