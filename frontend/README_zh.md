@@ -15,6 +15,7 @@
 | [`index.html`](index.html) | SPA 外壳。head 加载 `/static/style.css`（与 legacy UI 同一份全局样式；F-21）、经典脚本（非 module）`/static/theme-bootstrap.js`（第一次绘制就带上 `data-theme`）、`/static/favicon.js`（10 fps 钳制）和 `/static/scientific_renderers.js`。应用入口是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
 | [`package.json`](package.json) | 前端包：Preact 10、`@preact/signals`、Vite、Vitest、TypeScript。`private: true`。 |
 | [`package-lock.json`](package-lock.json) | 锁文件，保证 `npm ci` 重建确定。CI 会重建 `webui/dist` 并 `git diff --exit-code`。 |
+| [`.npmrc`](.npmrc) | `engine-strict=true`：Node 版本不在 `package.json` 的 `engines` 范围内时直接拒绝安装，而不是只警告。npm 默认只警告，那行提示会被刷过去，问题要等到 Vitest 或 Vite 莫名报错时才暴露。 |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | 逐项把旧 `app.js` 行号映射到新模块。F-03 没有领域内核；F-04 对照 `_serve_index` / package-data / `_WHEEL_REQUIRED`。 |
 | [`tsconfig.json`](tsconfig.json) | `src/` 的 strict TypeScript（`strict`、`noUncheckedIndexedAccess`、Preact `jsxImportSource`）。 |
 | [`tsconfig.node.json`](tsconfig.node.json) | `vite.config.ts` 的 strict TypeScript。 |
@@ -30,6 +31,10 @@
 
 ## 命令
 
+Vitest 5 工具链需要 Node.js 22.x（至少 22.12）、24.x 或 26 及以上版本；
+`.npmrc` 设了 `engine-strict=true`，范围之外的 Node 会被 `npm ci` 直接拒绝。
+CI 使用 Node 22；仓库根目录的 Skill 安装器有独立的 Node 版本要求。
+
 ```bash
 cd frontend
 npm ci
@@ -43,4 +48,10 @@ npm run typecheck    # tsc --noEmit
 
 - 工作台 CSP 是 `script-src 'self' 'wasm-unsafe-eval'`（没有 `unsafe-eval`，也没有 `unsafe-inline`）。禁止运行时模板编译、禁止 Vite 内联脚本 polyfill、禁止 `@vitejs/plugin-legacy`。
 - 不要把前端依赖加进仓库根的 `package.json`。
+- Dependabot 会为这个目录提更新，但它只改 `package.json` 和
+  `package-lock.json`。ci.yml 里的 `browser-smoke`（三个引擎）、`browser-stage0`
+  和 `browser-team-mode` 会重新构建
+  `../openai4s/server/webui/dist/` 并用 `git diff --exit-code` 比对，因此任何会
+  改变产物的升级都会让 CI 变红：把合批分支检出来，在本目录执行
+  `npm ci && npm run build`，再把重建后的 dist 提交到该分支上。
 - 全局样式归 F-21。`src/stores/` 下的 store 文件归 F-05。`compat/window-exports.ts` 归 F-05。

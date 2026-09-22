@@ -65,14 +65,24 @@ is a factual record of the v0.3 plan and is validated by
 
 - [ ] **Observe the Monday dependency batch across ecosystems.**
       [PR #155](https://github.com/PKU-YuanGroup/OpenAI4S/pull/155) assigns uv,
-      npm, Docker, pre-commit and GitHub Actions to one Monday group. The
-      selected policy includes major versions, black and isort, with no
-      allow/ignore filters. Its 13 governance tests and full pre-commit checks
-      pass, as does its [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/34441714995).
+      npm, Docker, pre-commit and GitHub Actions to one Monday group, and the
+      npm entry covers the independent `frontend/` project as well as the root
+      browser tooling. The selected policy includes major versions, black and
+      isort, with no allow/ignore filters; the majors that must not merge as one
+      row of a version table -- the two formatter hooks, and the actions in the
+      two workflows holding `id-token: write` / `security-events: write` -- are
+      pinned as governance tests instead, so the bump arrives red rather than
+      filtered out of the update stream. Its 17 governance tests and full
+      pre-commit checks pass, as does its
+      [complete CI run](https://github.com/PKU-YuanGroup/OpenAI4S/actions/runs/35495269657).
       *Done when:* after code-owner review and default-branch merge, a
       real Dependabot PR contains multiple ecosystems and the following
       Monday still produces updates normally. The configuration is prepared;
-      those scheduled outcomes have not been observed.
+      those scheduled outcomes have not been observed. Two consequences to
+      watch on the first real batch: a `frontend/` bump that changes the
+      emitted bundle needs the committed `openai4s/server/webui/dist/`
+      rebuilt onto the branch by hand, and one unacceptable bump in any
+      ecosystem reddens the whole PR.
 
 ## Closed recently, recorded so it is not re-investigated
 

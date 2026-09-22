@@ -94,11 +94,12 @@ def test_container_base_and_python_inputs_are_integrity_locked():
 
     assert len(images) == 2
     assert len(set(images)) == 1
-    # The minor version is spelled out, not globbed. Dependabot's base-image
-    # group is filtered to minor/patch, and a Docker tag's "minor" is
-    # 3.12 -> 3.14 -- a different CPython. Naming it here is what makes such a
-    # bump arrive as a red test a human has to look at, instead of a digest
-    # swap that reads like a security rebuild. Keep it in step with the
+    # The minor version is spelled out, not globbed. A Docker tag's "minor" is
+    # 3.12 -> 3.14 -- a different CPython -- and the weekly multi-ecosystem
+    # batch carries every update type, so a tag move now arrives inside a
+    # five-ecosystem PR with four other ecosystems' bumps. Naming it here is
+    # what makes such a bump a red test a human has to look at, instead of a
+    # digest swap that reads like a security rebuild. Keep it in step with the
     # Dockerfile, and check the offline matrix in ci.yml before moving it.
     assert re.fullmatch(r"python:3\.14-slim-bookworm@sha256:[0-9a-f]{64}", images[0])
     requirements = SCIENCE_REQUIREMENTS.read_text(encoding="utf-8")

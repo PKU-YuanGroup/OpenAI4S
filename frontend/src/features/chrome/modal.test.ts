@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -336,8 +337,8 @@ describe("F-20 modal focus trap", () => {
     for (const cb of queued) cb(0);
   }
 
-  function key(name: string, shift = false): { key: string; shiftKey: boolean; preventDefault: ReturnType<typeof vi.fn> } {
-    return { key: name, shiftKey: shift, preventDefault: vi.fn() };
+  function key(name: string, shift = false): { key: string; shiftKey: boolean; preventDefault: Mock<() => void> } {
+    return { key: name, shiftKey: shift, preventDefault: vi.fn<() => void>() };
   }
 
   it("pushes a stack entry only when the modal was hidden", () => {
