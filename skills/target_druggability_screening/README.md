@@ -2,14 +2,18 @@
 
 [中文说明](README_zh.md)
 
-End-to-end biological target druggability assessment and lead candidate screening.
-Combines protein-protein interaction (PPI) networks from STRING with quantitative
-pharmacological binding affinities ($K_i, K_d, IC_{50}, EC_{50}$) from BindingDB,
-and evaluates small-molecule drug-likeness using Lipinski's Rule of 5. The result is
-a reproducible Markdown dossier compiled directly into session artifacts.
+Preliminary target and ligand screening from STRING interaction records and
+BindingDB assay measurements. The Markdown dossier preserves source snapshots,
+retrieval provenance, citations, unknown values, and interpretation limits.
+These query results do not establish target druggability or therapeutic relevance.
 
-This recipe uses pure Python standard library utilities and native OpenAI4S science
-connectors. It does not require external chemical modeling servers or GPU resources.
+The sidecar imports with only the Python standard library. Optional RDKit
+(`uv sync --locked --extra chemistry`) calculates molecular weight, logP, HBD,
+HBA, and rotatable bonds from parsed structures. The first four descriptors
+form the Rule of Five screen; missing RDKit or invalid structures remain Unknown.
+Only exact positive affinities with complete descriptors receive an unvalidated
+within-endpoint score. Qualified measurements remain unscored, and repeated
+assay records are not counted as distinct compounds. No GPU is needed.
 
 ## Install
 
@@ -55,5 +59,5 @@ installer refuses to do:
 
 | File | Responsibility |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | The agent-facing recipe driving the four-phase workflow, interactive cell code, and output artifact schema. |
-| [`kernel.py`](kernel.py) | Pure-stdlib sidecar providing SMILES descriptor estimation, Lipinski Rule of 5 evaluation, composite lead scoring, and Markdown dossier formatting. |
+| [`SKILL.md`](SKILL.md) | Target identity checks, executable cell recipe, scoring limits, and artifact provenance workflow. |
+| [`kernel.py`](kernel.py) | Optional RDKit descriptors, complete Rule of Five screening, evidence-preserving assay scoring, and Markdown dossier formatting. |

@@ -18,7 +18,7 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` uses the latest npm release. To use the current
-repository catalog instead (604 Skills: 43 curated + 561 bioSkills), run the
+repository catalog instead (605 Skills: 44 curated + 561 bioSkills), run the
 GitHub form, which follows the default branch:
 
 ```bash

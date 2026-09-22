@@ -1,10 +1,9 @@
 ---
 name: target_druggability_screening
 description: >
-  End-to-end biological target druggability assessment and lead candidate screening.
-  Retrieves protein-protein interaction networks via STRING, queries measured binding
-  affinities (Ki, Kd, IC50) via BindingDB, calculates Lipinski Rule of 5 drug-likeness
-  descriptors, and compiles structured evidence dossiers into session artifacts.
+  Evidence-attributed target and ligand screening. Retrieves STRING interaction
+  records and BindingDB assay measurements, optionally calculates molecular
+  descriptors with RDKit, and saves a dossier with source snapshots and limitations.
 origin: openai4s
 category: biology
 requirements: []
@@ -12,75 +11,106 @@ capabilities:
   network:
     mode: none
     domains: []
-
 ---
 
 # Target Druggability Screening
 
-Produces an evidence-backed target druggability and lead candidate prioritization
-dossier for any biological protein target (e.g. `CDK4`, `EGFR`, `TP53`, `BRAF`).
-The workflow integrates functional PPI networks with quantitative pharmacology and
-rule-based cheminformatics into a reproducible Markdown artifact.
+Compile a preliminary evidence dossier for a protein target. STRING associations
+and BindingDB measurements alone do not establish druggability or therapeutic
+relevance. This recipe retrieves a limited sample, not an exhaustive search.
 
 ## Workflow
 
-1. **Target PPI Context**: Query STRING (`host.science.search("string", target)`)
-   to assess biological interactors, hub protein centrality, and functional pathways.
-2. **Quantitative Pharmacology**: Query BindingDB (`host.science.search("bindingdb", target, filters={"cutoff": 100})`)
-   to retrieve experimentally validated small-molecule chemical binders ($K_i, IC_{50}, K_d$).
-3. **Cheminformatics & Drug-Likeness**: Import the `target_druggability_screening.kernel`
-   sidecar to evaluate Lipinski's Rule of 5 (molecular weight, H-bond donors/acceptors, rotatable bonds)
-   and calculate composite prioritization scores.
-4. **Artifact Compilation**: Generate an evidence-attributed dossier using `format_dossier`
-   and save to the session's versioned artifacts (`host.save_artifact`).
+1. Confirm the target's **UniProt accession and species**. Resolve a gene name
+   such as CDK4 through `host.science.search("uniprot", ...)` first; review ambiguous
+   matches. BindingDB accepts UniProt accessions or PDB IDs, not arbitrary gene names.
+   Use the same confirmed accession for both searches below.
+2. Retrieve STRING interaction partners with an explicit species. The returned
+   functional associations do not measure physical binding, whole-network hub
+   centrality, or pathway enrichment.
+3. Query BindingDB for one endpoint (`Ki`, `Kd`, `IC50`, or `EC50`) at a time.
+   Even within an endpoint, review assay conditions before comparing values.
+4. Use optional RDKit for molecular weight, calculated logP, HBD, HBA, and
+   rotatable bonds. The Rule of Five uses the first four descriptors, allowing
+   at most one violation. Install the existing `chemistry` extra in the active
+   Python environment (`uv sync --locked --extra chemistry`) to enable this step.
+   No RDKit, missing SMILES, and invalid structures produce **Unknown**, never
+   invented descriptors or a passing verdict. Core imports remain stdlib-only.
+5. Preserve qualified affinities (`<`, `>`, `~`), missing values, citations, and
+   repeated assay records. These are evidence, not distinct confirmed leads.
+   Scores require an exact positive nM measurement and a complete descriptor
+   screen; otherwise they remain **Unscored**. The score is an unvalidated
+   within-endpoint heuristic, not a probability or a biological conclusion.
+6. Save each complete query envelope with its provenance, then save the dossier
+   with lineage to those exact artifact versions. Propagate connector failures;
+   do not replace an error with an empty successful search.
 
 ## Interactive / Cell Recipe
 
-Run inside a persistent Python kernel cell:
+Run inside a persistent Python kernel cell. Host connectors mediate all network
+requests; the sidecar performs no direct networking.
 
 ```python
-from target_druggability_screening.kernel import rank_candidates, format_dossier
+import json
+from pathlib import Path
 
-target = "CDK4"  # or UniProt accession "P11802"
+from target_druggability_screening.kernel import format_dossier, rank_candidates
 
-# 1. Biological Interaction Network
-ppi_res = host.science.search("string", target, limit=10)
-ppi_records = ppi_res.get("results", [])
+# Confirm both values before running: this example is human CDK4.
+target = "P11802"
+species = "9606"
+affinity_type = "Ki"
 
-# 2. Measured Binding Affinities
-binding_res = host.science.search(
-    "bindingdb",
-    "P11802",
-    limit=20,
-    filters={"cutoff": 100, "affinity_type": "Ki"},
+ppi_res = host.science.search(
+    "string", target, limit=10, filters={"species": species}
 )
-ligands = binding_res.get("results", [])
+binding_res = host.science.search(
+    "bindingdb", target, limit=20,
+    filters={"cutoff": 100, "affinity_type": affinity_type},
+)
+ranked_leads = rank_candidates(
+    binding_res["results"], top_k=10, affinity_type=affinity_type
+)
 
-# 3. Cheminformatics & Lead Prioritization
-ranked_leads = rank_candidates(ligands, top_k=10)
+source_versions = []
+for result in (ppi_res, binding_res):
+    source_path = Path(f"{target.lower()}-{result['database']}-source.json")
+    source_path.write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
+    saved = host.save_artifact(
+        str(source_path), content_type="application/json", source=result["provenance"]
+    )
+    source_versions.append(saved["version_id"])
 
-# 4. Generate Structured Dossier Artifact
 dossier_content = format_dossier(
     target=target,
-    ppi_records=ppi_records,
+    ppi_records=ppi_res["results"],
     ranked_leads=ranked_leads,
+    provenance=[ppi_res["provenance"], binding_res["provenance"]],
 )
-
-artifact_id = host.save_artifact(
-    f"target-druggability-{target.lower()}.md",
-    dossier_content,
-    mime_type="text/markdown",
-    description=f"Target druggability assessment and lead candidate screening for {target}.",
+dossier_path = Path(f"target-druggability-{target.lower()}.md")
+dossier_path.write_text(dossier_content, encoding="utf-8")
+artifact = host.save_artifact(
+    str(dossier_path), content_type="text/markdown", input_version_ids=source_versions
 )
-print(f"Dossier saved as artifact: {artifact_id}")
+print(f"Dossier saved as artifact version: {artifact['version_id']}")
 ```
 
 ## Sidecar Functions
 
-The sidecar `target_druggability_screening.kernel` provides:
+- `calculate_smiles_descriptors(smiles)`: Parsed RDKit descriptors and engine
+  version, or a reason for missing/invalid/unavailable chemistry.
+- `evaluate_lipinski(descriptors_or_smiles)`: Four-criterion screen; an incomplete
+  input has `pass_rule_of_5=None`.
+- `score_lead(affinity_val, affinity_type, lipinski_pass, violations_count)`:
+  Exact nM potency contributes 60/50/35/20/5 for <10/<100/<1000/<10000/>=10000.
+  A complete Rule of Five screen contributes 40 (pass) or 15 (fail), minus
+  10 per violation, floored at zero. Unknown inputs return `None`.
+- `rank_candidates(ligands, top_k, affinity_type=...)`: Select one endpoint,
+  rank scored assay records, and retain unscored evidence afterwards. Mixed
+  endpoints without explicit selection raise an error. Repeated assays are
+  retained, so row count is not a distinct-compound count.
+- `format_dossier(target, ppi_records, ranked_leads, provenance=...)`: Report
+  evidence, unknowns, source links, retrieval hashes, and interpretation limits.
 
-- `calculate_smiles_descriptors(smiles: str)`: Estimates molecular weight, HBD, HBA, and rotatable bonds from a SMILES representation.
-- `evaluate_lipinski(descriptors: dict | str)`: Evaluates compliance with Lipinski's Rule of 5 and counts rule violations.
-- `score_lead(affinity_val, affinity_type, lipinski_pass)`: Computes a composite prioritization score in $[0, 100]$.
-- `rank_candidates(ligands, top_k)`: Ranks and filters active chemical ligands.
-- `format_dossier(target, ppi_records, ranked_leads)`: Generates Markdown dossier tables with complete provenance.
+Descriptor definitions: [RDKit Lipinski API](https://www.rdkit.org/docs/source/rdkit.Chem.Lipinski.html)
+and [RDKit molecular descriptors](https://www.rdkit.org/docs/GettingStartedInPython.html#list-of-available-descriptors).

@@ -116,7 +116,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 | plane | what's implemented |
 |---|---|
 | **Control & orchestration** | class-based native `Tool`s · append-only Action Ledger · plan/review with a durable state machine · context compaction that archives the raw slices it summarizes · concurrent sub-agent delegation (fanout 48, depth 4) a user can stop mid-flight · enforced Specialist allowlists a child cannot widen · MCP connectors · cross-session memory |
-| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 604 Skills (43 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
+| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 605 Skills (44 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
 | **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
@@ -229,7 +229,7 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 list
 npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (604 Skills: 43 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
+`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (605 Skills: 44 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
 
 ```bash
 npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 44 curated Skills
@@ -253,7 +253,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
 | [**Model backend bring-up**](docs/model-backend-bringup.md) | local/remote GPU selection, checkpoint staging, real-inference canary admission, and connector portability |
-| [**Skills**](docs/skills.md) | 43 curated Skills + 561 pinned bioSkills + how to write your own |
+| [**Skills**](docs/skills.md) | 44 curated Skills + 561 pinned bioSkills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Science connectors**](docs/science-connectors.md) | the seven public databases, their filters, and retrieval provenance |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |

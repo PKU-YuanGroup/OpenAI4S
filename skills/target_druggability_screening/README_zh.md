@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-端到端生物医药靶点成药性评估与先导化合物初筛工作流。结合来自 STRING 数据库的蛋白质相互作用网络（PPI）与来自 BindingDB 的定量药理学结合亲和力（$K_i, K_d, IC_{50}, EC_{50}$），并基于 Lipinski 类药五规则（Rule of 5）评估小分子的成药性特征。最终将分析结果汇总为结构化的 Markdown 科学调研报告，直接保存至会话工件（Artifacts）。
+基于 STRING 互作记录和 BindingDB 实验测量进行靶点与化合物初筛。Markdown 报告保留来源快照、检索溯源、文献引用、缺失值及解释边界。这些查询结果本身不能证实靶点成药性或治疗相关性。
 
-本技能完全基于 Python 标准库与 OpenAI4S 原生科学数据库接口构建，无需额外依赖大型化学建模服务或 GPU 资源。
+伴生模块只需 Python 标准库即可导入。可选 RDKit（`uv sync --locked --extra chemistry`）根据解析后的结构计算分子量、logP、氢键供体数、氢键受体数及可旋转键数；前四项构成 Lipinski 五规则筛选。未安装 RDKit 或结构无效时明确标记“未知”。只有精确正数亲和力与完整描述符才能获得未经验证的同类终点评分；带不等号等限定的测量不评分，重复实验记录也不计为独立化合物。无需 GPU。
 
 ## 安装
 
@@ -30,5 +30,5 @@ python3 -m zipfile -c target_druggability_screening.zip target_druggability_scre
 
 | 文件 | 职责 |
 | --- | --- |
-| [`SKILL.md`](SKILL.md) | 面向 Agent 的核心执行方案，规定四阶段分析流程、交互式 Cell 代码示例及工件输出格式。 |
-| [`kernel.py`](kernel.py) | 纯标准库伴生模块，提供 SMILES 结构描述符估算、Lipinski 五规则评估、先导物综合打分及 Markdown 工件排版功能。 |
+| [`SKILL.md`](SKILL.md) | 靶点身份核对、可执行 Cell 示例、评分边界及工件溯源流程。 |
+| [`kernel.py`](kernel.py) | 可选 RDKit 描述符、完整 Lipinski 五规则筛选、保留证据的实验记录评分及 Markdown 报告生成。 |

@@ -76,7 +76,7 @@ curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/mai
 | [`solublempnn/`](solublempnn/) | ProteinMPNN 的同一套架构，在可溶 PDB 子集上重训，使输出偏离全 PDB 模型乐于放置的表面疏水残基。设计出来的蛋白老是聚集、进包涵体时，用它。代价是牺牲几个百分点的原生序列回收率；而且仅凭序列的先验并不是一次可溶性测量。 |
 | [`single-step-retrosynthesis/`](single-step-retrosynthesis/) | 通过已有的隔离、manifest 校验 Syntheseus adapter 调用 RetroChimera，生成一步前体提案，并有意在库存搜索或递归规划前停止。 |
 | [`using-model-endpoint/`](using-model-endpoint/) | 记录一个计划中的 endpoint 作用域推理工作流：一个网络出口被限定到单个已注册 endpoint 的 Python 内核，预置 `BASE_URL`，没有 job 生命周期。Host 目前实现了 endpoint 的注册与探测，但还没有把这个 provider 接进 `ComputeManager`，也不会创建对应的 scoped kernel。 |
-| [`target_druggability_screening/`](target_druggability_screening/) | 端到端生物医药靶点成药性评估与先导化合物初筛工作流：结合 STRING 蛋白互作网络、BindingDB 药理结合亲和力（Ki, Kd, IC50）与 Lipinski 类药五规则计算，自动生成结构化 Markdown 调研报告。 |
+| [`target_druggability_screening/`](target_druggability_screening/) | 基于 STRING 与 BindingDB 的靶点和化合物初筛，使用可选 RDKit 描述符，报告保留来源快照、缺失值及实验解释边界。 |
 | [`volcengine-datapro/`](volcengine-datapro/) | 一份刻意保持窄范围的专业数据集 MCP recipe：发现 `dataPro_search`、发起真实查询，并且只把结构化结果中整数零的 code 判为可用。仅仅发现工具绝不是鉴权结论。 |
 
 ## 在架构中的位置

@@ -105,7 +105,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 | 平面 | 已实现 |
 |---|---|
 | **控制与编排** | 基于类的原生 `Tool` · 追加式 Action Ledger · 带持久状态机的 plan/review · 会归档原始切片的上下文压缩 · 可中途叫停的并发子代理委派（fanout 48、depth 4）· 子代理无法自行放宽的 Specialist 白名单 · MCP 连接器 · 跨会话记忆 |
-| **科学执行** | 持久的 Python **与** R 内核 · cell 执行中途的同步 `host` RPC · 对象级数据血缘 · 版本化 Artifact · 按内核 *generation* 记录的环境溯源（绝不借用守护进程的）· 后台执行 · 604 个 Skill（43 个精选维护 + 561 个固定版本 bioSkills）· 带 ABA 安全看门狗恢复的 FIFO 执行协调器 |
+| **科学执行** | 持久的 Python **与** R 内核 · cell 执行中途的同步 `host` RPC · 对象级数据血缘 · 版本化 Artifact · 按内核 *generation* 记录的环境溯源（绝不借用守护进程的）· 后台执行 · 605 个 Skill（44 个精选维护 + 561 个固定版本 bioSkills）· 带 ABA 安全看门狗恢复的 FIFO 执行协调器 |
 | **数据与检索** | 七个规范化公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · Tavily 与免密钥搜索作为备用 · 托管的 DataPro 专业数据集检索 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
@@ -218,7 +218,7 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 list
 npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-`npx @pku-yuangroup/openai4s-skills <command>` 使用 npm 上的最新发布版。若要使用当前仓库目录（604 个 Skill：43 个精选 + 561 个 bioSkills），可直接从 GitHub 运行；这种写法跟随默认分支：
+`npx @pku-yuangroup/openai4s-skills <command>` 使用 npm 上的最新发布版。若要使用当前仓库目录（605 个 Skill：44 个精选 + 561 个 bioSkills），可直接从 GitHub 运行；这种写法跟随默认分支：
 
 ```bash
 npx github:PKU-YuanGroup/OpenAI4S install --all                  # 44 个精选 Skill
@@ -242,7 +242,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
 | [**模型后端 bring-up**](docs/model-backend-bringup_zh.md) | 本地/远程 GPU 选择、checkpoint staging、真实推理 canary 准入与 connector 可移植性 |
-| [**Skills**](docs/skills.md) | 43 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |
+| [**Skills**](docs/skills.md) | 44 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |
 | [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
 | [**科学连接器**](docs/science-connectors.md) | 七个公共数据库、各自的过滤条件与检索溯源 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、Action Timeline、只读 Notebook、Artifact 与实现状态 |

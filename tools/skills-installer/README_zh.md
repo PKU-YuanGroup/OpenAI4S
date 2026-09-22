@@ -18,7 +18,7 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` 使用 npm 的最新发布版。若要使用当前仓库目录
-（604 个 Skill：43 个精选 + 561 个 bioSkills），使用跟随默认分支的 GitHub 写法：
+（605 个 Skill：44 个精选 + 561 个 bioSkills），使用跟随默认分支的 GitHub 写法：
 
 ```bash
 npx github:PKU-YuanGroup/OpenAI4S install --all                  # 44 个精选 Skill
