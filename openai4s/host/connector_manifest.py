@@ -193,6 +193,17 @@ MANIFESTS: tuple[ConnectorManifest, ...] = (
         required=(),  # arXiv returns Atom XML, not JSON; checked structurally elsewhere.
         expected=(),
     ),
+    ConnectorManifest(
+        id="string",
+        probe_query="TP53",
+        required=((EACH, "stringId_A"), (EACH, "stringId_B")),
+        expected=(
+            (EACH, "preferredName_A"),
+            (EACH, "preferredName_B"),
+            (EACH, "score"),
+            (EACH, "pscore"),
+        ),
+    ),
 )
 
 MANIFEST_BY_ID = {manifest.id: manifest for manifest in MANIFESTS}
