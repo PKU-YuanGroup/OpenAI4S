@@ -21,12 +21,13 @@ from openai4s.skills_loader import SkillLoader, SkillVersionService
 class SkillService:
     """Retrieve and manage Code-as-Action skill directories."""
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, judgment_service: Any = None) -> None:
         self.cfg = cfg
         self.loader = SkillLoader(cfg=cfg)
         self.versions = SkillVersionService(cfg)
         self.project_id: str | None = None
         self.session_id: str | None = None
+        self._judgment_service = judgment_service
         #: Tri-state: None inherits, [] denies everything, a list is exactly
         #: those. Enforced on every read path below, because until now it was
         #: stored on the specialist, inherited through delegation, merged into
@@ -184,6 +185,133 @@ class SkillService:
                 limit=int(spec.get("limit", 5)),
                 permits=self._permits,
             )
+        )
+
+    def _judgment_flags(self) -> Any:
+        from openai4s.judgment.flags import resolve
+        from openai4s.store import get_store
+
+        return resolve(self.cfg, get_store(self.cfg.db_path))
+
+    def _judgment(self) -> Any:
+        if self._judgment_service is None:
+            from openai4s.host.judgment import JudgmentService
+            from openai4s.store import get_store
+
+            self._judgment_service = JudgmentService(
+                lambda: self.cfg,
+                lambda: get_store(self.cfg.db_path),
+            )
+        return self._judgment_service
+
+    def _suggest_catalog(self) -> Any:
+        from openai4s.judgment.templates.skills import (
+            AreaBucket,
+            SkillCandidate,
+            SuggestCatalog,
+            load_area_index,
+        )
+
+        selected: list[Any] = []
+        for skill in self.loader.skills(include_disabled=True).values():
+            if not self._permits(skill.name):
+                continue
+            if not self.loader.is_enabled(skill.name):
+                continue
+            selected.append(skill)
+        selected.sort(key=lambda skill: (skill.collection or "", skill.name))
+
+        curated: list[Any] = []
+        members: list[Any] = []
+        by_name: dict[str, Any] = {}
+        for skill in selected:
+            candidate = SkillCandidate(
+                name=skill.name,
+                description=skill.description,
+                version=getattr(skill, "version", "") or "",
+                collection=skill.collection,
+                doc=skill.doc or "",
+            )
+            by_name[skill.name] = candidate
+            if skill.collection:
+                members.append(candidate)
+            else:
+                curated.append(candidate)
+
+        member_names = {item.name for item in members}
+        raw_areas = load_area_index().get("areas") or {}
+        areas = []
+        for area_id in sorted(raw_areas):
+            info = raw_areas[area_id]
+            if not isinstance(info, dict):
+                continue
+            kept = tuple(
+                str(name)
+                for name in info.get("members") or []
+                if str(name) in member_names
+            )
+            if not kept:
+                continue
+            areas.append(
+                AreaBucket(
+                    area_id=str(area_id),
+                    label=str(info.get("label") or area_id),
+                    description=str(info.get("description") or ""),
+                    members=kept,
+                )
+            )
+
+        collections = []
+        for collection in self.loader.collections().values():
+            count = sum(1 for item in members if item.collection == collection.id)
+            if count <= 0:
+                continue
+            try:
+                text = collection.prompt_line.format(count=count)
+            except (IndexError, KeyError, ValueError):
+                text = collection.prompt_line
+            collections.append(
+                SkillCandidate(
+                    name=collection.id,
+                    description=text,
+                    version=str((load_area_index().get("version") or "")),
+                    collection=collection.id,
+                    doc="",
+                )
+            )
+
+        return SuggestCatalog(
+            curated=tuple(curated),
+            collections=tuple(collections),
+            areas=tuple(areas),
+            by_name=by_name,
+        )
+
+    def suggest(self, spec: dict) -> dict:
+        """Semantic Skill recommendations. Does not load a Skill or run compute."""
+
+        from openai4s.judgment.templates import skills as skill_templates
+
+        if not isinstance(spec, dict):
+            spec = {}
+        query = str(spec.get("query") or spec.get("request") or "")
+        flags = self._judgment_flags()
+        if not flags.master.enabled or not flags.skill_suggest.enabled:
+            return skill_templates.empty_payload("disabled")
+        self.loader.discover()
+        catalog = self._suggest_catalog()
+        if skill_templates.is_explicit_request(query, catalog.names()):
+            return skill_templates.empty_payload("skipped_explicit")
+        try:
+            max_requests = int(spec.get("max_requests") or skill_templates.MAX_REQUESTS)
+        except (TypeError, ValueError):
+            max_requests = skill_templates.MAX_REQUESTS
+        return skill_templates.suggest(
+            request=query,
+            catalog=catalog,
+            run=self._judgment().run,
+            scope=self._allowed_skills,
+            max_requests=max_requests,
         )
 
     def system_context(self) -> str:

@@ -1,0 +1,117 @@
+[
+  {
+    "categories": [],
+    "code": "import numpy as np\nprint(np.mean([1, 2, 3]))",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "fast-path"
+  },
+  {
+    "categories": [],
+    "code": "df = pd.read_csv('data.csv'); df.describe()",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "fast-path"
+  },
+  {
+    "categories": [],
+    "code": "x = [1, 2, 3]\nprint(sum(x) / len(x))",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "fast-path"
+  },
+  {
+    "categories": [],
+    "code": "import matplotlib.pyplot as plt\nplt.plot([1, 2, 3])",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "fast-path"
+  },
+  {
+    "categories": [],
+    "code": "print(\"hello\")",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "fast-path"
+  },
+  {
+    "categories": [
+      1
+    ],
+    "code": "import os\nos.environ[\"LD_PRELOAD\"] = \"/tmp/x/evil.so\"",
+    "decision": "UNSAFE",
+    "reason": "writes a dynamic-loader injection environment variable",
+    "source": "static"
+  },
+  {
+    "categories": [
+      2
+    ],
+    "code": "open(\"/home/u/.ssh/id_rsa\").read()",
+    "decision": "UNSAFE",
+    "reason": "reads a private key / credential file",
+    "source": "static"
+  },
+  {
+    "categories": [
+      2
+    ],
+    "code": "open(\"/etc/shadow\").read()",
+    "decision": "UNSAFE",
+    "reason": "reads a private key / credential file",
+    "source": "static"
+  },
+  {
+    "categories": [
+      5
+    ],
+    "code": "import base64\nexec(base64.b64decode(payload))",
+    "decision": "UNSAFE",
+    "reason": "executes a decoded/obfuscated payload",
+    "source": "static"
+  },
+  {
+    "categories": [
+      5
+    ],
+    "code": "__import__(\"os\").system(\"id\")",
+    "decision": "UNSAFE",
+    "reason": "obfuscated __import__('os').system call",
+    "source": "static"
+  },
+  {
+    "categories": [],
+    "code": "import subprocess\nsubprocess.run(['ls', '-la'])",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "static"
+  },
+  {
+    "categories": [],
+    "code": "import socket\ns = socket.socket()",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "static"
+  },
+  {
+    "categories": [],
+    "code": "import ctypes; ctypes.CDLL(\"libfoo.so\")",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "static"
+  },
+  {
+    "categories": [],
+    "code": "dyn.load(\"libfoo.so\")",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "static"
+  },
+  {
+    "categories": [],
+    "code": "import pickle\ndata = pickle.loads(buf)",
+    "decision": "SAFE",
+    "reason": "",
+    "source": "static"
+  }
+]

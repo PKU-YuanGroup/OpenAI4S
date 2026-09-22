@@ -70,8 +70,10 @@ function isDiagnosticsConfigWrite(path: string, method: string): boolean {
   const route = path.split("?", 1)[0] || "";
   if (verb === "POST") return CONFIG_POSTS.has(route)
     || /^\/model-profiles\/[^/]+\/activate$/.test(route);
-  if (verb === "PATCH") return /^\/model-profiles\/[^/]+$/.test(route);
+  if (verb === "PATCH") return /^\/model-profiles\/[^/]+$/.test(route)
+    || route === "/experimental/judgment";
   if (verb === "PUT") return route === "/network/status"
+    || route === "/experimental/judgment"
     || /^\/connectors\/[^/]+\/enabled$/.test(route);
   if (verb === "DELETE") return /^\/(?:model-profiles|connectors|permissions|compute\/remote)\/[^/]+$/.test(route);
   return false;
@@ -196,4 +198,159 @@ export async function downloadDiagnosticsBundle(): Promise<void> {
   // synchronously, but WebKit has not honoured that on adjacent blob-URL
   // paths, and a same-tick revoke is the one pattern with no upside.
   window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+export type JudgmentFlag = {
+  enabled: boolean;
+  source: string;
+};
+
+export type JudgmentDisclosureCap = {
+  en: string;
+  zh: string;
+};
+
+export type JudgmentStatus = {
+  experimental: boolean;
+  effective: Record<string, JudgmentFlag>;
+  provider: string;
+  model: string;
+  key_configured: boolean;
+  disclosure: {
+    version: string;
+    acked: boolean;
+    acknowledged_capabilities: string[];
+    capabilities: Record<string, JudgmentDisclosureCap>;
+    facts: { en?: string; zh?: string };
+  };
+  egress: {
+    mode: string;
+    host: string;
+    domain_allowed: boolean;
+    remediation: string | null;
+  };
+};
+
+export type JudgmentUpdate = {
+  enabled?: boolean;
+  capabilities?: Record<string, boolean>;
+  acknowledge?: { version: string; provider: string; capabilities: string[] };
+  api_key?: string;
+  clear_api_key?: boolean;
+};
+
+export type JudgmentProbe = {
+  status: string;
+  error_code: string | null;
+  latency_ms: number;
+  model: string | null;
+};
+
+function flagOf(value: unknown): JudgmentFlag | null {
+  if (!record(value) || typeof value.enabled !== "boolean") return null;
+  return {
+    enabled: value.enabled,
+    source: typeof value.source === "string" ? value.source : "",
+  };
+}
+
+function disclosureCap(value: unknown): JudgmentDisclosureCap | null {
+  if (!record(value) || typeof value.en !== "string" || typeof value.zh !== "string") {
+    return null;
+  }
+  return { en: value.en, zh: value.zh };
+}
+
+function judgmentStatus(body: Record<string, unknown>): JudgmentStatus {
+  const requestId = typeof body.request_id === "string" ? body.request_id : "";
+  const invalid = () =>
+    new ApiError(
+      { error: "Invalid judgment settings response", code: "invalid_response", request_id: requestId },
+      200,
+    );
+  if (typeof body.experimental !== "boolean" || !record(body.effective)
+    || typeof body.provider !== "string" || typeof body.model !== "string"
+    || typeof body.key_configured !== "boolean" || !record(body.disclosure)
+    || !record(body.egress)) {
+    throw invalid();
+  }
+  const effective: Record<string, JudgmentFlag> = {};
+  for (const [name, value] of Object.entries(body.effective)) {
+    const flag = flagOf(value);
+    if (!flag) throw invalid();
+    effective[name] = flag;
+  }
+  const capsRaw = body.disclosure.capabilities;
+  if (!record(capsRaw) || typeof body.disclosure.version !== "string"
+    || typeof body.disclosure.acked !== "boolean") {
+    throw invalid();
+  }
+  const capabilities: Record<string, JudgmentDisclosureCap> = {};
+  for (const [name, value] of Object.entries(capsRaw)) {
+    const cap = disclosureCap(value);
+    if (!cap) throw invalid();
+    capabilities[name] = cap;
+  }
+  const factsRaw = record(body.disclosure.facts) ? body.disclosure.facts : {};
+  const remediation = body.egress.remediation;
+  if (remediation !== null && typeof remediation !== "string") throw invalid();
+  if (typeof body.egress.mode !== "string" || typeof body.egress.domain_allowed !== "boolean") {
+    throw invalid();
+  }
+  return {
+    experimental: body.experimental,
+    effective,
+    provider: body.provider,
+    model: body.model,
+    key_configured: body.key_configured,
+    disclosure: {
+      version: body.disclosure.version,
+      acked: body.disclosure.acked,
+      acknowledged_capabilities: Array.isArray(body.disclosure.acknowledged_capabilities)
+        ? body.disclosure.acknowledged_capabilities.filter((name): name is string => typeof name === "string")
+        : [],
+      capabilities,
+      facts: {
+        ...(typeof factsRaw.en === "string" ? { en: factsRaw.en } : {}),
+        ...(typeof factsRaw.zh === "string" ? { zh: factsRaw.zh } : {}),
+      },
+    },
+    egress: {
+      mode: body.egress.mode,
+      host: typeof body.egress.host === "string" ? body.egress.host
+        : body.provider === "typesafe" ? "api.typesafe.ai" : "",
+      domain_allowed: body.egress.domain_allowed,
+      remediation,
+    },
+  };
+}
+
+export async function getJudgmentStatus(): Promise<JudgmentStatus> {
+  return judgmentStatus(await api("/experimental/judgment"));
+}
+
+export async function updateJudgmentSettings(
+  body: JudgmentUpdate,
+): Promise<JudgmentStatus> {
+  return judgmentStatus(
+    await api("/experimental/judgment", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function testJudgmentConnection(): Promise<JudgmentProbe> {
+  const body = await api("/experimental/judgment/test", {
+    method: "POST",
+    body: "{}",
+  });
+  const latency = body.latency_ms;
+  const latencyMs = typeof latency === "number" && Number.isFinite(latency) ? Math.trunc(latency) : 0;
+  return {
+    status: typeof body.status === "string" ? body.status : "",
+    error_code: typeof body.error_code === "string" ? body.error_code : null,
+    latency_ms: latencyMs,
+    model: typeof body.model === "string" ? body.model : null,
+  };
 }

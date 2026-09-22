@@ -57,6 +57,10 @@ and the internal plans in this directory are not published by that site.
 | `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 preparation: separate HTTP/header/upload/WS clocks, bounded admission and status headroom, actual connection release, and local fault acceptance; no new runtime quotas or deadlines. |
 | `webapp.md` | Web workbench concepts, projections, status, and operator-facing behavior. |
 | `webshare.md` | Web sharing: the read-only snapshot + outbound relay tunnel, deployment, and the trust model. |
+| `experimental-judgment.md` | Operator guide for the default-off experimental semantic judgment layer (TypeSafe Jev): what it is, what each capability sends, how to enable and disable it, doctor/audit status, known limits, graduation, FAQ. |
+| `experimental-judgment_zh.md` | Chinese counterpart of the experimental judgment-layer operator guide. |
+| `experimental-judgment-removal.md` | Step-by-step removal list: files and directories to delete, every mount (file + function + hook), UI, settings keys, egress (none), count sites, and README rows. Following it should leave the offline suite green. |
+| `release-notes-judgment.md` | Copy-paste **Experimental** release-notes entry for the next GitHub Release. The live user-facing changelog remains the root README News section; this tree has no unreleased `v0x-*.md` slot. |
 
 ## Where this fits
 

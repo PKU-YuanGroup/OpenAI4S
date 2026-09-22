@@ -101,6 +101,30 @@ def scan_tool_result(
     only: this scan is never gated, because refusing it would not save the
     tokens, it would hand the model unscreened tool output.
     """
+    verdict = _scan_tool_result(
+        content, source=source, cfg=cfg, use_llm=use_llm, usage_sink=usage_sink
+    )
+    try:
+        from openai4s.judgment.shadow import submit
+
+        submit(
+            "injection",
+            state={"content": (content or "")[:32768]},
+            existing_verdict=bool(verdict.injected),
+        )
+    except Exception:
+        pass
+    return verdict
+
+
+def _scan_tool_result(
+    content: str,
+    *,
+    source: str = "",
+    cfg=None,
+    use_llm: bool = False,
+    usage_sink: Callable[[Any], None] | None = None,
+) -> InjectionVerdict:
     if not content or not content.strip():
         return InjectionVerdict(False)
 

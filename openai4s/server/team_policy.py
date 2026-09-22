@@ -241,6 +241,10 @@ INSTANCE_CONFIG_PATHS = frozenset(
         "/memory/enabled",
         # First-run completion writes instance-global model settings.
         "/onboarding/complete",
+        # Experimental judgment flags, disclosure ack, and TypeSafe key are
+        # instance-wide (same class as /search/config).
+        "/experimental/judgment",
+        "/experimental/judgment/test",
     }
 )
 

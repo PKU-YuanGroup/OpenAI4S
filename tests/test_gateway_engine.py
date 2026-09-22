@@ -2107,18 +2107,30 @@ def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
     provider_done = threading.Event()
     usage_accounted = threading.Event()
     late_cancel_checks = []
-    original_add_frame_tokens = runner.store.add_frame_tokens
+    original_record_abandoned_usage = (
+        gateway_mod.RuntimeActionLedger.record_abandoned_usage
+    )
 
-    def record_frame_tokens(*args, **kwargs):
-        original_add_frame_tokens(*args, **kwargs)
-        usage_accounted.set()
+    def record_abandoned_usage(ledger, usage):
+        original_record_abandoned_usage(ledger, usage)
+        # The late-reply sink updates frame tokens before the ledger. Wait for
+        # both writes, so fixture teardown cannot close Store between them.
+        if ledger.store is runner.store and ledger.root_frame_id == frame_id:
+            usage_accounted.set()
 
-    monkeypatch.setattr(runner.store, "add_frame_tokens", record_frame_tokens)
+    monkeypatch.setattr(
+        gateway_mod.RuntimeActionLedger,
+        "record_abandoned_usage",
+        record_abandoned_usage,
+    )
 
     def fake_chat(messages, cfg, on_delta=None, **kwargs):
         del messages, cfg
         entered.set()
-        assert release.wait(5), "test did not release the blocked provider"
+        # Only the test releases this provider; a timeout must not make Stop
+        # appear to have detached a call that actually finished by itself.
+        # The finally block also releases it after any failed assertion.
+        release.wait()
         late_cancel_checks.append(kwargs["should_cancel"]())
         if on_delta is not None:
             on_delta("LATE_AFTER_STOP")
@@ -2144,7 +2156,13 @@ def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
 
     try:
         job = runner.submit_message(frame_id, "default", "Run a slow request")
-        assert entered.wait(2), "provider call did not start"
+        # Admission, checkpoint/ledger writes and thread startup precede the
+        # provider. Their setup budget is separate from Stop's deadline below.
+        assert entered.wait(10), (
+            "provider call did not start: "
+            f"job_done={job.done.is_set()}, result={job.result!r}, "
+            f"error={job.error!r}, recent_events={hub.events[-5:]!r}"
+        )
         cancelled = runner.cancel(
             frame_id,
             job.execution_id,
@@ -2158,6 +2176,7 @@ def test_cancel_blocked_llm_releases_running_state_and_drops_late_output(
         assert runner.is_running(frame_id) is False
         assert runner.store.get_frame(frame_id)["status"] == "cancelled"
         assert runner.executions.snapshot(frame_id)["owner"] is None
+        assert not provider_done.is_set(), "provider finished before being released"
 
         # Simulate the next queued turn clearing the coordinator's shared
         # cancellation Event before the abandoned provider finally responds.

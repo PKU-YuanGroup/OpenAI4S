@@ -268,6 +268,49 @@ their own later-stage flags. The authoritative
 budget, state, recovery, and projection meanings are in the
 [Auto Mode product contract](auto-mode.md).
 
+## Experimental semantic judgment
+
+Default-off. Early access. Bring your own TypeSafe key. The service is hosted
+in the United States. Operator guide:
+[Experimental semantic judgment](experimental-judgment.md).
+
+`ExperimentalJudgmentFlags` lives on `Config` as `experimental_judgment`.
+Capability fields are tri-state (`bool | None`) via `_strict_env_tristate`:
+unset is `None`, the true/false vocabulary matches `_STRICT_TRUE_VALUES` /
+`_STRICT_FALSE_VALUES`, and any other spelling (including `flase`) raises
+`ValueError`. `Config` snapshots these at construction.
+
+| Config field under `Config.experimental_judgment` | Environment variable | Store setting | Default |
+| --- | --- | --- | --- |
+| `master` | `OPENAI4S_EXPERIMENTAL_JUDGMENT` | `experimental.judgment.enabled` | off |
+| `skill_suggest` | `OPENAI4S_JUDGMENT_SKILL_SUGGEST` | `experimental.judgment.capabilities.skill_suggest` | off |
+| `literature_check` | `OPENAI4S_JUDGMENT_LITERATURE` | `experimental.judgment.capabilities.literature_check` | off |
+| `text_features` | `OPENAI4S_JUDGMENT_TEXT_FEATURES` | `experimental.judgment.capabilities.text_features` | off |
+| `safety_shadow` | `OPENAI4S_JUDGMENT_SAFETY_SHADOW` | `experimental.judgment.capabilities.safety_shadow` | off |
+| `task_mode_shadow` | `OPENAI4S_JUDGMENT_TASK_MODE_SHADOW` | `experimental.judgment.capabilities.task_mode_shadow` | off |
+| `provider` | `OPENAI4S_JUDGMENT_PROVIDER` | `experimental.judgment.provider` | `typesafe` (`llm` is explicit; never a silent fallback) |
+| `model` | `OPENAI4S_JUDGMENT_MODEL` | `experimental.judgment.model` | `jev-1.13.0` (pinned; not `jev-latest`) |
+| `timeout_s` | `OPENAI4S_JUDGMENT_TIMEOUT_S` | — | `3.0` seconds (0.1–30) |
+
+Headless key: `OPENAI4S_TYPESAFE_API_KEY`. The UI stores the same secret as
+`typesafe_api_key` with scope `judgment` through SecretBroker. It is never
+echoed and never copied into the kernel environment.
+
+Kill switch: `OPENAI4S_EXPERIMENTAL_JUDGMENT=0` forces every capability off;
+the UI cannot override it. An environment enable treats the operator as
+informed and logs a warning; the UI path also requires a current-version
+disclosure acknowledgement (`experimental.judgment.disclosure_ack`). Optional
+`experimental.judgment.audit_raw_state` (default off) includes raw state in
+the named `judgment` audit event.
+
+`api.typesafe.ai` is **not** a built-in egress group. In allowlist mode grant
+it with `host.request_network_access(domain="api.typesafe.ai")`. Status:
+Customize → General → Experimental, `openai4s doctor` (check name `judgment`),
+and audit events `judgment` / `judgment_shadow`.
+
+Workbench: Customize → General. REST under `/api/v1/experimental/judgment`
+(`GET` status, `PUT` flags/ack/key, `POST …/test` probe).
+
 ## Optional Jupyter adapter
 
 The daemon and KernelSpec tooling remain zero-dependency. Install the optional

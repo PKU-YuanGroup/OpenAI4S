@@ -703,6 +703,103 @@ def _connectors(cfg: Any) -> Check:
     return Check("connectors", OK, detail, facts=facts)
 
 
+def _judgment(cfg: Any) -> Check:
+    """Experimental semantic judgment layer. Configuration only — no network."""
+
+    from openai4s.judgment.flags import resolve
+    from openai4s.judgment.settings import (
+        TYPESAFE_HOST,
+        egress_report,
+        key_is_configured,
+        resolve_settings_config,
+    )
+
+    facts: dict[str, Any] = {"experimental": True}
+    try:
+        from openai4s.judgment.shadow import stats as shadow_stats
+
+        facts["safety_shadow"] = shadow_stats()
+    except Exception:
+        pass
+    store = _store_for(cfg)
+    cfg = resolve_settings_config(cfg, store)
+    flags = resolve(cfg, store)
+    facts["enabled"] = flags.master.enabled
+    facts["source"] = flags.master.source
+    facts["provider"] = flags.provider
+    facts["model"] = flags.model
+    is_llm = flags.provider == "llm"
+    host = (
+        urllib.parse.urlsplit(cfg.llm.base_url).hostname or ""
+        if is_llm
+        else TYPESAFE_HOST
+    )
+    report = egress_report(host)
+    facts["egress_mode"] = report["mode"]
+    facts["domain_allowed"] = report["domain_allowed"]
+    if not flags.master.enabled:
+        return Check(
+            "judgment",
+            OK,
+            "disabled (experimental, default off)",
+            facts=facts,
+        )
+    try:
+        if is_llm:
+            from openai4s.judgment.settings import status as judgment_status
+
+            configured = bool(judgment_status(cfg, store)["key_configured"])
+        else:
+            configured = key_is_configured(store)
+    except Exception as e:  # noqa: BLE001 - a secret-store fault is a finding
+        facts["key_configured"] = False
+        facts["key_store_error"] = type(e).__name__
+        return Check(
+            "judgment",
+            WARN,
+            "enabled, but the TypeSafe API key could not be read",
+            "Retry after the secret store is available, or set "
+            "OPENAI4S_TYPESAFE_API_KEY for headless use.",
+            facts,
+        )
+    facts["key_configured"] = configured
+    if not configured:
+        if is_llm:
+            return Check(
+                "judgment",
+                WARN,
+                "enabled, but no main model credential is configured",
+                "Configure the main model in Customize -> Models.",
+                facts,
+            )
+        return Check(
+            "judgment",
+            WARN,
+            "enabled, but no TypeSafe API key is configured",
+            "Set the key in Customize -> Experimental, or set "
+            "OPENAI4S_TYPESAFE_API_KEY.",
+            facts,
+        )
+    if report["mode"] == "allowlist" and not report["domain_allowed"]:
+        remedy = report["remediation"] or (
+            f"Call host.request_network_access(domain={host!r}) "
+            "to ask the user to approve widening it."
+        )
+        return Check(
+            "judgment",
+            WARN,
+            f"enabled, but {host} is not on the egress allowlist",
+            remedy,
+            facts,
+        )
+    return Check(
+        "judgment",
+        OK,
+        f"enabled ({flags.provider}/{flags.model})",
+        facts=facts,
+    )
+
+
 def _remote(cfg: Any) -> Check:
     """Can heavy work leave this machine, and is that boundary provable?"""
     facts: dict[str, Any] = {}
@@ -818,6 +915,7 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
     ("disk", _disk),
     ("connectors", _connectors),
     ("remote", _remote),
+    ("judgment", _judgment),
 )
 
 #: Probes `report()` still runs for the CLI, and that a page-load GET must not.

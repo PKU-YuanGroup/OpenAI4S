@@ -55,6 +55,10 @@
 | `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 准备：HTTP／请求头／上传／WS 分阶段预算、有界准入与状态余量、真实连接释放和本地故障验收；不启用新配额或期限。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
+| `experimental-judgment.md` | 默认关闭的实验性语义判断层（TypeSafe Jev）操作说明：它是什么、每项能力会发送什么、如何开关、doctor/审计状态、已知限制、毕业标准、FAQ。 |
+| `experimental-judgment_zh.md` | 实验性判断层操作说明的中文正文。 |
+| `experimental-judgment-removal.md` | 逐步移除清单：要删的文件和目录、每个挂载点（文件 + 函数 + 钩子）、UI、设置 key、egress（无）、计数位点、README 行。按它做完后离线套件应当是绿的。 |
+| `release-notes-judgment.md` | 下一份 GitHub Release 可粘贴的 **Experimental** 条目。面向用户的变更记录仍是根 README 的 News；本树没有未发布的 `v0x-*.md` 槽位。 |
 
 ## 在架构中的位置
 

@@ -140,6 +140,7 @@ openai4s = [
     # either line silently omits the next UI from the wheel.
     "server/webui/dist/*.html",
     "server/webui/dist/assets/*",
+    "judgment/templates/*.json",
 ]
 # Data-only trees (skills*, envs*, workflows*) ship whole rather than by
 # extension. The enumerated list needed one entry per upstream file type and
@@ -285,6 +286,23 @@ files = [
     # and a wrong type here is discovered on a cluster at 2am.
     "openai4s/orchestration/models.py",
     "openai4s/orchestration/ports.py",
+    "openai4s/judgment/disclosure.py",
+    "openai4s/judgment/flags.py",
+    "openai4s/judgment/port.py",
+    "openai4s/judgment/types.py",
+    "openai4s/judgment/typesafe.py",
+    "openai4s/judgment/validate.py",
+    "openai4s/judgment/registry.py",
+    "openai4s/judgment/settings.py",
+    "openai4s/judgment/templates/__init__.py",
+    "openai4s/judgment/templates/skills.py",
+    "openai4s/judgment/templates/literature.py",
+    "openai4s/judgment/shadow.py",
+    "openai4s/judgment/templates/safety.py",
+    "openai4s/judgment/templates/task_mode.py",
+    "openai4s/judgment/task_mode_shadow.py",
+    "openai4s/judgment/templates/features.py",
+    "openai4s/judgment/llm_backend.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

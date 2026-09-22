@@ -669,6 +669,58 @@ control predicate would revoke, plus the owner taking it back), and
 `tests/test_team_governance.py` (the control-mutation list). See
 `docs/team-server.md` §2 for the policy those predicates implement.
 
+## Outbound data flow: Semantic judgment (experimental)
+
+Default-off. The TypeSafe Jev client in `openai4s/judgment/typesafe.py` is the
+fourteenth declared stdlib HTTP surface. It is modelled on `doubao_search.py`:
+one bounded POST to a fixed origin (`https://api.typesafe.ai/v1/systemone`),
+Bearer resolved per request through SecretBroker (`typesafe_api_key`, scope
+`judgment`) or `OPENAI4S_TYPESAFE_API_KEY`, never copied into process-global
+state, redirects refused so the credential stays on that origin, body capped,
+and every exception or log line redacted. The key never enters the kernel
+environment. A loopback fake is accepted only when
+`OPENAI4S_JUDGMENT_FAKE_ENDPOINT` is `http://127.0.0.1…` or `http://[::1]…`.
+
+**There is no `EGRESS_GROUPS` entry for `api.typesafe.ai`.** Adding one would
+widen allowlist mode for every kernel cell while the experiment is off, because
+`builtin_domains()` flattens every group's domains and does not read `enabled`.
+In allowlist mode the operator grants the host with
+`host.request_network_access(domain="api.typesafe.ai")`. `settings.status()`
+reports `egress.domain_in_allowlist("api.typesafe.ai")` and, when allowlist
+would currently block, the same remediation string as `blocked_message()`.
+
+Each capability sends a different payload. Enabling through the UI requires a
+current-version acknowledgement of this table (`DISCLOSURE_VERSION` in
+`openai4s/judgment/disclosure.py`). An environment enable logs a warning and
+treats the operator as informed.
+
+| Capability | Sent to `api.typesafe.ai` |
+| --- | --- |
+| `skill_suggest` | Current user request; in-scope candidate Skill names, descriptions, and `SKILL.md` opening fragments |
+| `literature_check` | Research question, paper passages, claims to check |
+| `text_features` | User-selected data-row text |
+| `safety_shadow` | Pending code cell, tool-result fragments, session trajectory summary (highest outbound risk; the UI marks it separately) |
+| `task_mode_shadow` | User request text |
+
+The service is hosted in the United States. The privacy policy states that
+inputs are not used to train models, and it does not specify a retention
+period. Zero Data Retention is enterprise-only. Early access. Input
+$0.042 / million tokens. Do not enable this for sensitive data. Kill switch:
+`OPENAI4S_EXPERIMENTAL_JUDGMENT=0`. Operator guide:
+[Experimental semantic judgment](experimental-judgment.md).
+
+Named audit event `judgment` records purpose, template, status, usage,
+latency, `state_sha256`, and full probabilities. Raw state is omitted unless
+`experimental.judgment.audit_raw_state` is true. Shadow events
+(`judgment_shadow`) carry hashes and verdict labels, not the code. The
+dispatcher envelope `log_host_call(method="judge")` still records the RPC
+spec, including state.
+
+`safety_shadow` never changes `classify_code` / `scan_tool_result` /
+`screen_trajectory`. The existing function computes the verdict, the shadow
+is submitted inside a `try/except` that swallows everything, and the same
+object is returned. Confidence is never authorization.
+
 ## Remote access
 
 The daemon binds `127.0.0.1` by default. Reach the UI over an SSH tunnel — **never** expose `0.0.0.0` on an untrusted network:

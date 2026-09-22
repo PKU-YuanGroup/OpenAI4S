@@ -1,0 +1,897 @@
+{
+  "areas": {
+    "alignment": {
+      "description": "17 bioSkills recipes for alignment: alignment-io, alignment-trimming, files-alignment-amplicon-clipping, files-alignment-filtering, files-alignment-indexing, files-alignment-sorting, files-alignmen...",
+      "label": "alignment",
+      "members": [
+        "bio-alignment-amplicon-clipping",
+        "bio-alignment-filtering",
+        "bio-alignment-indexing",
+        "bio-alignment-io",
+        "bio-alignment-msa-parsing",
+        "bio-alignment-msa-statistics",
+        "bio-alignment-multiple",
+        "bio-alignment-pairwise",
+        "bio-alignment-sorting",
+        "bio-alignment-structural",
+        "bio-alignment-trimming",
+        "bio-alignment-validation",
+        "bio-bam-statistics",
+        "bio-duplicate-handling",
+        "bio-pileup-generation",
+        "bio-reference-operations",
+        "bio-sam-bam-basics"
+      ]
+    },
+    "alternative": {
+      "description": "9 bioSkills recipes for alternative splicing: differential-splicing, isoform-switching, long-read-splicing, outlier-splicing-detection, sashimi-plots, single-cell-splicing, splice-variant-predictio...",
+      "label": "alternative splicing",
+      "members": [
+        "bio-differential-splicing",
+        "bio-isoform-switching",
+        "bio-long-read-splicing",
+        "bio-outlier-splicing-detection",
+        "bio-sashimi-plots",
+        "bio-single-cell-splicing",
+        "bio-splice-variant-prediction",
+        "bio-splicing-qc",
+        "bio-splicing-quantification"
+      ]
+    },
+    "atac": {
+      "description": "12 bioSkills recipes for ATAC-seq: allele-specific-accessibility, atac-peak-calling, atac-qc, co-accessibility, consensus-peakset, deep-learning-atac, differential-accessibility, enhancer-gene-link...",
+      "label": "ATAC-seq",
+      "members": [
+        "bio-atac-seq-allele-specific-accessibility",
+        "bio-atac-seq-atac-peak-calling",
+        "bio-atac-seq-atac-qc",
+        "bio-atac-seq-co-accessibility",
+        "bio-atac-seq-consensus-peakset",
+        "bio-atac-seq-deep-learning-atac",
+        "bio-atac-seq-differential-accessibility",
+        "bio-atac-seq-enhancer-gene-linking",
+        "bio-atac-seq-footprinting",
+        "bio-atac-seq-motif-deviation",
+        "bio-atac-seq-nucleosome-positioning",
+        "bio-atac-seq-single-cell-atac"
+      ]
+    },
+    "causal": {
+      "description": "11 bioSkills recipes for causal genomics: colocalization-analysis, effector-gene-prioritization, fine-mapping, genetic-correlation, genomic-sem, heritability-partitioning, mediation-analysis, mende...",
+      "label": "causal genomics",
+      "members": [
+        "bio-causal-genomics-colocalization-analysis",
+        "bio-causal-genomics-effector-gene-prioritization",
+        "bio-causal-genomics-fine-mapping",
+        "bio-causal-genomics-genetic-correlation",
+        "bio-causal-genomics-genomic-sem",
+        "bio-causal-genomics-heritability-partitioning",
+        "bio-causal-genomics-mediation-analysis",
+        "bio-causal-genomics-mendelian-randomization",
+        "bio-causal-genomics-pleiotropy-detection",
+        "bio-causal-genomics-proteome-mr-drug-target",
+        "bio-causal-genomics-transcriptome-wide-association"
+      ]
+    },
+    "chemoinformatics": {
+      "description": "20 bioSkills recipes for chemoinformatics: admet-prediction, conformer-generation, covalent-design, free-energy-calculations, generative-design, ml-docking-rescoring, molecular-descriptors, molecul...",
+      "label": "chemoinformatics",
+      "members": [
+        "bio-admet-prediction",
+        "bio-conformer-generation",
+        "bio-covalent-design",
+        "bio-free-energy-calculations",
+        "bio-generative-design",
+        "bio-ml-docking-rescoring",
+        "bio-molecular-descriptors",
+        "bio-molecular-io",
+        "bio-molecular-standardization",
+        "bio-pharmacophore-modeling",
+        "bio-pose-validation",
+        "bio-protac-degraders",
+        "bio-qsar-modeling",
+        "bio-reaction-enumeration",
+        "bio-retrosynthesis",
+        "bio-scaffold-analysis",
+        "bio-shape-similarity",
+        "bio-similarity-searching",
+        "bio-substructure-search",
+        "bio-virtual-screening"
+      ]
+    },
+    "chip": {
+      "description": "12 bioSkills recipes for ChIP-seq: allele-specific-binding, chip-deep-learning, chipseq-qc, chipseq-visualization, chromatin-state-segmentation, cut-and-run-tag, differential-binding, motif-analysi...",
+      "label": "ChIP-seq",
+      "members": [
+        "bio-chipseq-allele-specific-binding",
+        "bio-chipseq-chip-deep-learning",
+        "bio-chipseq-chromatin-state-segmentation",
+        "bio-chipseq-cut-and-run-tag",
+        "bio-chipseq-differential-binding",
+        "bio-chipseq-motif-analysis",
+        "bio-chipseq-peak-annotation",
+        "bio-chipseq-peak-calling",
+        "bio-chipseq-qc",
+        "bio-chipseq-spike-in-normalization",
+        "bio-chipseq-super-enhancers",
+        "bio-chipseq-visualization"
+      ]
+    },
+    "clinical": {
+      "description": "24 bioSkills recipes for clinical: biostatistics-adaptive-designs, biostatistics-bayesian-trials, biostatistics-categorical-tests, biostatistics-cdisc-data-handling, biostatistics-effect-measures,...",
+      "label": "clinical",
+      "members": [
+        "bio-clinical-biostatistics-adaptive-designs",
+        "bio-clinical-biostatistics-bayesian-trials",
+        "bio-clinical-biostatistics-categorical-tests",
+        "bio-clinical-biostatistics-cdisc-data",
+        "bio-clinical-biostatistics-effect-measures",
+        "bio-clinical-biostatistics-logistic-regression",
+        "bio-clinical-biostatistics-missing-data",
+        "bio-clinical-biostatistics-multiplicity-graphical",
+        "bio-clinical-biostatistics-power-sample-size",
+        "bio-clinical-biostatistics-subgroup-analysis",
+        "bio-clinical-biostatistics-survival-analysis",
+        "bio-clinical-biostatistics-trial-reporting",
+        "bio-clinical-databases-acmg-classification",
+        "bio-clinical-databases-clinvar-lookup",
+        "bio-clinical-databases-dbsnp-queries",
+        "bio-clinical-databases-gnomad-frequencies",
+        "bio-clinical-databases-hla-typing",
+        "bio-clinical-databases-msi-detection",
+        "bio-clinical-databases-myvariant-queries",
+        "bio-clinical-databases-pharmacogenomics",
+        "bio-clinical-databases-polygenic-risk",
+        "bio-clinical-databases-somatic-signatures",
+        "bio-clinical-databases-tumor-mutational-burden",
+        "bio-clinical-databases-variant-prioritization"
+      ]
+    },
+    "clip": {
+      "description": "12 bioSkills recipes for CLIP-seq: ago-clip-mirna-targets, binding-site-annotation, clip-alignment, clip-deep-learning, clip-motif-analysis, clip-peak-calling, clip-preprocessing, clip-qc, crosslin...",
+      "label": "CLIP-seq",
+      "members": [
+        "bio-clip-seq-ago-clip-mirna-targets",
+        "bio-clip-seq-binding-site-annotation",
+        "bio-clip-seq-clip-alignment",
+        "bio-clip-seq-clip-deep-learning",
+        "bio-clip-seq-clip-motif-analysis",
+        "bio-clip-seq-clip-peak-calling",
+        "bio-clip-seq-clip-preprocessing",
+        "bio-clip-seq-clip-qc",
+        "bio-clip-seq-crosslink-site-detection",
+        "bio-clip-seq-differential-clip",
+        "bio-clip-seq-m6a-clip",
+        "bio-clip-seq-stamp-antibody-free"
+      ]
+    },
+    "comparative": {
+      "description": "13 bioSkills recipes for comparative genomics: ancestral-reconstruction, comparative-annotation-projection, gene-family-evolution, gene-tree-species-tree-reconciliation, genome-distance-and-species...",
+      "label": "comparative genomics",
+      "members": [
+        "bio-comparative-genomics-ancestral-reconstruction",
+        "bio-comparative-genomics-comparative-annotation-projection",
+        "bio-comparative-genomics-gene-family-evolution",
+        "bio-comparative-genomics-gene-tree-species-tree-reconciliation",
+        "bio-comparative-genomics-genome-distance-and-species-delineation",
+        "bio-comparative-genomics-hgt-detection",
+        "bio-comparative-genomics-introgression-detection",
+        "bio-comparative-genomics-ortholog-inference",
+        "bio-comparative-genomics-pangenome-analysis",
+        "bio-comparative-genomics-positive-selection",
+        "bio-comparative-genomics-synteny-analysis",
+        "bio-comparative-genomics-whole-genome-alignment",
+        "bio-comparative-genomics-whole-genome-duplication"
+      ]
+    },
+    "copy": {
+      "description": "11 bioSkills recipes for copy-number: allele-specific-copy-number, cnv-annotation, cnv-visualization, cnvkit-analysis, copy-ratio-segmentation, focal-amplification-ecdna, gatk-cnv, germline-cnv-int...",
+      "label": "copy-number",
+      "members": [
+        "bio-copy-number-allele-specific-copy-number",
+        "bio-copy-number-cnv-annotation",
+        "bio-copy-number-cnv-visualization",
+        "bio-copy-number-cnvkit-analysis",
+        "bio-copy-number-copy-ratio-segmentation",
+        "bio-copy-number-focal-amplification-ecdna",
+        "bio-copy-number-gatk-cnv",
+        "bio-copy-number-germline-cnv-interpretation",
+        "bio-copy-number-hrd-scoring",
+        "bio-copy-number-recurrent-cnv",
+        "bio-copy-number-subclonal-copy-number"
+      ]
+    },
+    "crispr": {
+      "description": "15 bioSkills recipes for CRISPR screens: bagel-essentiality, base-editing-analysis, batch-correction, combinatorial-screens, copy-number-correction, crispresso-editing, drugz-chemogenomic, hit-call...",
+      "label": "CRISPR screens",
+      "members": [
+        "bio-crispr-screens-bagel-essentiality",
+        "bio-crispr-screens-base-editing-analysis",
+        "bio-crispr-screens-batch-correction",
+        "bio-crispr-screens-combinatorial-screens",
+        "bio-crispr-screens-copy-number-correction",
+        "bio-crispr-screens-crispresso-editing",
+        "bio-crispr-screens-drugz-chemogenomic",
+        "bio-crispr-screens-hit-calling",
+        "bio-crispr-screens-in-vivo-screens",
+        "bio-crispr-screens-jacks-analysis",
+        "bio-crispr-screens-library-design",
+        "bio-crispr-screens-mageck-analysis",
+        "bio-crispr-screens-perturb-seq-analysis",
+        "bio-crispr-screens-prime-editing-screens",
+        "bio-crispr-screens-screen-qc"
+      ]
+    },
+    "data": {
+      "description": "20 bioSkills recipes for data visualization: circos-plots, color-palettes, dimensionality-reduction-plots, distribution-plots, flow-and-transition-plots, forest-funnel-plots, genome-tracks, ggplot2...",
+      "label": "data visualization",
+      "members": [
+        "bio-data-visualization-circos-plots",
+        "bio-data-visualization-color-palettes",
+        "bio-data-visualization-dimensionality-reduction-plots",
+        "bio-data-visualization-distribution-plots",
+        "bio-data-visualization-flow-and-transition-plots",
+        "bio-data-visualization-forest-funnel-plots",
+        "bio-data-visualization-genome-tracks",
+        "bio-data-visualization-ggplot2-fundamentals",
+        "bio-data-visualization-heatmaps-clustering",
+        "bio-data-visualization-interactive-visualization",
+        "bio-data-visualization-lollipop-protein-maps",
+        "bio-data-visualization-manhattan-qq-locuszoom",
+        "bio-data-visualization-matplotlib-fundamentals",
+        "bio-data-visualization-multipanel-figures",
+        "bio-data-visualization-network-visualization",
+        "bio-data-visualization-oncoprint-mutation-matrices",
+        "bio-data-visualization-sequence-logos",
+        "bio-data-visualization-statistical-annotation",
+        "bio-data-visualization-upset-plots",
+        "bio-data-visualization-volcano-and-ma-plots"
+      ]
+    },
+    "database": {
+      "description": "15 bioSkills recipes for database access: batch-downloads, biomart-queries, blast-searches, ensembl-rest, entrez-fetch, entrez-link, entrez-search, geo-data, interaction-databases, local-blast, ncb...",
+      "label": "database access",
+      "members": [
+        "bio-batch-downloads",
+        "bio-biomart-queries",
+        "bio-blast-searches",
+        "bio-ensembl-rest",
+        "bio-entrez-fetch",
+        "bio-entrez-link",
+        "bio-entrez-search",
+        "bio-geo-data",
+        "bio-interaction-databases",
+        "bio-local-blast",
+        "bio-ncbi-datasets-cli",
+        "bio-ortholog-inference",
+        "bio-remote-homology",
+        "bio-sra-data",
+        "bio-uniprot-access"
+      ]
+    },
+    "differential": {
+      "description": "6 bioSkills recipes for differential expression: batch-correction, de-results, de-visualization, deseq2-basics, edger-basics, timeseries-de.",
+      "label": "differential expression",
+      "members": [
+        "bio-differential-expression-batch-correction",
+        "bio-differential-expression-de-results",
+        "bio-differential-expression-de-visualization",
+        "bio-differential-expression-deseq2-basics",
+        "bio-differential-expression-edger-basics",
+        "bio-differential-expression-timeseries-de"
+      ]
+    },
+    "ecological": {
+      "description": "6 bioSkills recipes for ecological genomics: biodiversity-metrics, community-ecology, conservation-genetics, edna-metabarcoding, landscape-genomics, species-delimitation.",
+      "label": "ecological genomics",
+      "members": [
+        "bio-ecological-genomics-biodiversity-metrics",
+        "bio-ecological-genomics-community-ecology",
+        "bio-ecological-genomics-conservation-genetics",
+        "bio-ecological-genomics-edna-metabarcoding",
+        "bio-ecological-genomics-landscape-genomics",
+        "bio-ecological-genomics-species-delimitation"
+      ]
+    },
+    "epidemiological": {
+      "description": "5 bioSkills recipes for epidemiological genomics: amr-surveillance, pathogen-typing, phylodynamics, transmission-inference, variant-surveillance.",
+      "label": "epidemiological genomics",
+      "members": [
+        "bio-epidemiological-genomics-amr-surveillance",
+        "bio-epidemiological-genomics-pathogen-typing",
+        "bio-epidemiological-genomics-phylodynamics",
+        "bio-epidemiological-genomics-transmission-inference",
+        "bio-epidemiological-genomics-variant-surveillance"
+      ]
+    },
+    "epitranscriptomics": {
+      "description": "5 bioSkills recipes for epitranscriptomics: m6a-differential, m6a-peak-calling, m6anet-analysis, merip-preprocessing, modification-visualization.",
+      "label": "epitranscriptomics",
+      "members": [
+        "bio-epitranscriptomics-m6a-differential",
+        "bio-epitranscriptomics-m6a-peak-calling",
+        "bio-epitranscriptomics-m6anet-analysis",
+        "bio-epitranscriptomics-merip-preprocessing",
+        "bio-epitranscriptomics-modification-visualization"
+      ]
+    },
+    "experimental": {
+      "description": "5 bioSkills recipes for experimental design: batch-design, multiple-testing, power-analysis, randomization-blocking, sample-size.",
+      "label": "experimental design",
+      "members": [
+        "bio-experimental-design-batch-design",
+        "bio-experimental-design-multiple-testing",
+        "bio-experimental-design-power-analysis",
+        "bio-experimental-design-randomization-blocking",
+        "bio-experimental-design-sample-size"
+      ]
+    },
+    "expression": {
+      "description": "5 bioSkills recipes for expression matrix: counts-ingest, gene-id-mapping, metadata-joins, normalization, sparse-handling.",
+      "label": "expression matrix",
+      "members": [
+        "bio-expression-matrix-counts-ingest",
+        "bio-expression-matrix-gene-id-mapping",
+        "bio-expression-matrix-metadata-joins",
+        "bio-expression-matrix-normalization",
+        "bio-expression-matrix-sparse-handling"
+      ]
+    },
+    "flow": {
+      "description": "8 bioSkills recipes for flow cytometry: bead-normalization, clustering-phenotyping, compensation-transformation, cytometry-qc, differential-analysis, doublet-detection, fcs-handling, gating-analysis.",
+      "label": "flow cytometry",
+      "members": [
+        "bio-flow-cytometry-bead-normalization",
+        "bio-flow-cytometry-clustering-phenotyping",
+        "bio-flow-cytometry-compensation-transformation",
+        "bio-flow-cytometry-cytometry-qc",
+        "bio-flow-cytometry-differential-analysis",
+        "bio-flow-cytometry-doublet-detection",
+        "bio-flow-cytometry-fcs-handling",
+        "bio-flow-cytometry-gating-analysis"
+      ]
+    },
+    "gene": {
+      "description": "6 bioSkills recipes for gene regulatory networks / networks: coexpression-networks, differential-networks, grn-inference, multiomics-grn, perturbation-simulation, scenic-regulons.",
+      "label": "gene regulatory networks / networks",
+      "members": [
+        "bio-gene-regulatory-networks-coexpression-networks",
+        "bio-gene-regulatory-networks-differential-networks",
+        "bio-gene-regulatory-networks-grn-inference",
+        "bio-gene-regulatory-networks-multiomics-grn",
+        "bio-gene-regulatory-networks-perturbation-simulation",
+        "bio-gene-regulatory-networks-scenic-regulons"
+      ]
+    },
+    "genome": {
+      "description": "29 bioSkills recipes for genome: annotation-annotation-qc, annotation-annotation-transfer, annotation-eukaryotic-gene-prediction, annotation-functional-annotation, annotation-ncrna-annotation, anno...",
+      "label": "genome",
+      "members": [
+        "bio-genome-annotation-annotation-qc",
+        "bio-genome-annotation-annotation-transfer",
+        "bio-genome-annotation-eukaryotic-gene-prediction",
+        "bio-genome-annotation-functional-annotation",
+        "bio-genome-annotation-ncrna-annotation",
+        "bio-genome-annotation-prokaryotic-annotation",
+        "bio-genome-annotation-repeat-annotation",
+        "bio-genome-assembly-assembly-polishing",
+        "bio-genome-assembly-assembly-qc",
+        "bio-genome-assembly-contamination-detection",
+        "bio-genome-assembly-genome-profiling",
+        "bio-genome-assembly-hifi-assembly",
+        "bio-genome-assembly-long-read-assembly",
+        "bio-genome-assembly-metagenome-assembly",
+        "bio-genome-assembly-scaffolding",
+        "bio-genome-assembly-short-read-assembly",
+        "bio-genome-engineering-base-editing-design",
+        "bio-genome-engineering-grna-design",
+        "bio-genome-engineering-hdr-template-design",
+        "bio-genome-engineering-off-target-prediction",
+        "bio-genome-engineering-prime-editing-design",
+        "bio-genome-intervals-bed-file-basics",
+        "bio-genome-intervals-bedgraph-handling",
+        "bio-genome-intervals-bigwig-tracks",
+        "bio-genome-intervals-coverage-analysis",
+        "bio-genome-intervals-gtf-gff-handling",
+        "bio-genome-intervals-interval-arithmetic",
+        "bio-genome-intervals-overlap-significance",
+        "bio-genome-intervals-proximity-operations"
+      ]
+    },
+    "hi": {
+      "description": "9 bioSkills recipes for Hi-C: compartment-analysis, contact-pairs, hic-data-io, hic-differential, hic-visualization, hichip-plac-loops, loop-calling, matrix-operations, tad-detection.",
+      "label": "Hi-C",
+      "members": [
+        "bio-hi-c-analysis-compartment-analysis",
+        "bio-hi-c-analysis-contact-pairs",
+        "bio-hi-c-analysis-hic-data-io",
+        "bio-hi-c-analysis-hic-differential",
+        "bio-hi-c-analysis-hic-visualization",
+        "bio-hi-c-analysis-hichip-plac-loops",
+        "bio-hi-c-analysis-loop-calling",
+        "bio-hi-c-analysis-matrix-operations",
+        "bio-hi-c-analysis-tad-detection"
+      ]
+    },
+    "imaging": {
+      "description": "7 bioSkills recipes for imaging mass cytometry: cell-segmentation, data-preprocessing, differential-analysis, interactive-annotation, phenotyping, quality-metrics, spatial-analysis.",
+      "label": "imaging mass cytometry",
+      "members": [
+        "bio-imaging-mass-cytometry-cell-segmentation",
+        "bio-imaging-mass-cytometry-data-preprocessing",
+        "bio-imaging-mass-cytometry-differential-analysis",
+        "bio-imaging-mass-cytometry-interactive-annotation",
+        "bio-imaging-mass-cytometry-phenotyping",
+        "bio-imaging-mass-cytometry-quality-metrics",
+        "bio-imaging-mass-cytometry-spatial-analysis"
+      ]
+    },
+    "immunoinformatics": {
+      "description": "6 bioSkills recipes for immunoinformatics: epitope-prediction, immunogenicity-scoring, mhc-binding-prediction, mhc-class-ii-prediction, neoantigen-prediction, tcr-epitope-binding.",
+      "label": "immunoinformatics",
+      "members": [
+        "bio-immunoinformatics-epitope-prediction",
+        "bio-immunoinformatics-immunogenicity-scoring",
+        "bio-immunoinformatics-mhc-binding-prediction",
+        "bio-immunoinformatics-mhc-class-ii-prediction",
+        "bio-immunoinformatics-neoantigen-prediction",
+        "bio-immunoinformatics-tcr-epitope-binding"
+      ]
+    },
+    "liquid": {
+      "description": "7 bioSkills recipes for liquid biopsy: analytical-validation, cfdna-preprocessing, ctdna-mutation-detection, fragment-analysis, longitudinal-monitoring, methylation-based-detection, tumor-fraction-...",
+      "label": "liquid biopsy",
+      "members": [
+        "bio-analytical-validation",
+        "bio-cfdna-preprocessing",
+        "bio-ctdna-mutation-detection",
+        "bio-fragment-analysis",
+        "bio-longitudinal-monitoring",
+        "bio-methylation-based-detection",
+        "bio-tumor-fraction-estimation"
+      ]
+    },
+    "long": {
+      "description": "9 bioSkills recipes for long-read / sequencing: basecalling, clair3-variants, haplotype-phasing, isoseq-analysis, long-read-alignment, long-read-qc, medaka-polishing, nanopore-methylation, structur...",
+      "label": "long-read / sequencing",
+      "members": [
+        "bio-long-read-sequencing-basecalling",
+        "bio-long-read-sequencing-clair3-variants",
+        "bio-long-read-sequencing-haplotype-phasing",
+        "bio-long-read-sequencing-isoseq-analysis",
+        "bio-long-read-sequencing-long-read-alignment",
+        "bio-long-read-sequencing-long-read-qc",
+        "bio-long-read-sequencing-medaka-polishing",
+        "bio-long-read-sequencing-nanopore-methylation",
+        "bio-long-read-sequencing-structural-variants"
+      ]
+    },
+    "machine": {
+      "description": "6 bioSkills recipes for machine learning: atlas-mapping, biomarker-discovery, model-validation, omics-classifiers, prediction-explanation, survival-analysis.",
+      "label": "machine learning",
+      "members": [
+        "bio-machine-learning-atlas-mapping",
+        "bio-machine-learning-biomarker-discovery",
+        "bio-machine-learning-model-validation",
+        "bio-machine-learning-omics-classifiers",
+        "bio-machine-learning-prediction-explanation",
+        "bio-machine-learning-survival-analysis"
+      ]
+    },
+    "metabolomics": {
+      "description": "9 bioSkills recipes for metabolomics: isotope-tracing, lipidomics, metabolite-annotation, msdial-preprocessing, normalization-qc, pathway-mapping, statistical-analysis, targeted-analysis, xcms-prep...",
+      "label": "metabolomics",
+      "members": [
+        "bio-metabolomics-isotope-tracing",
+        "bio-metabolomics-lipidomics",
+        "bio-metabolomics-metabolite-annotation",
+        "bio-metabolomics-msdial-preprocessing",
+        "bio-metabolomics-normalization-qc",
+        "bio-metabolomics-pathway-mapping",
+        "bio-metabolomics-statistical-analysis",
+        "bio-metabolomics-targeted-analysis",
+        "bio-metabolomics-xcms-preprocessing"
+      ]
+    },
+    "metagenomics": {
+      "description": "8 bioSkills recipes for metagenomics: abundance-estimation, amr-detection, contamination-controls, functional-profiling, kraken-classification, metagenome-visualization, metaphlan-profiling, strain...",
+      "label": "metagenomics",
+      "members": [
+        "bio-metagenomics-abundance",
+        "bio-metagenomics-amr-detection",
+        "bio-metagenomics-contamination-controls",
+        "bio-metagenomics-functional-profiling",
+        "bio-metagenomics-kraken",
+        "bio-metagenomics-metaphlan",
+        "bio-metagenomics-strain-tracking",
+        "bio-metagenomics-visualization"
+      ]
+    },
+    "methylation": {
+      "description": "10 bioSkills recipes for methylation: array-preprocessing, array-qc-filtering, bismark-alignment, cell-type-deconvolution, differential-cpg-testing, dmr-detection, epigenetic-clocks, ewas-design, m...",
+      "label": "methylation",
+      "members": [
+        "bio-methylation-array-preprocessing",
+        "bio-methylation-array-qc-filtering",
+        "bio-methylation-bismark-alignment",
+        "bio-methylation-calling",
+        "bio-methylation-cell-type-deconvolution",
+        "bio-methylation-differential-cpg",
+        "bio-methylation-dmr-detection",
+        "bio-methylation-epigenetic-clocks",
+        "bio-methylation-ewas-design",
+        "bio-methylation-methylkit"
+      ]
+    },
+    "microbiome": {
+      "description": "6 bioSkills recipes for microbiome: amplicon-processing, differential-abundance, diversity-analysis, functional-prediction, qiime2-workflow, taxonomy-assignment.",
+      "label": "microbiome",
+      "members": [
+        "bio-microbiome-amplicon-processing",
+        "bio-microbiome-differential-abundance",
+        "bio-microbiome-diversity-analysis",
+        "bio-microbiome-functional-prediction",
+        "bio-microbiome-qiime2-workflow",
+        "bio-microbiome-taxonomy-assignment"
+      ]
+    },
+    "multi": {
+      "description": "5 bioSkills recipes for multi-omics / integration: data-harmonization, integration-design, mixomics-analysis, mofa-integration, similarity-network.",
+      "label": "multi-omics / integration",
+      "members": [
+        "bio-multi-omics-data-harmonization",
+        "bio-multi-omics-integration-design",
+        "bio-multi-omics-mixomics-analysis",
+        "bio-multi-omics-mofa-integration",
+        "bio-multi-omics-similarity-network"
+      ]
+    },
+    "pathway": {
+      "description": "6 bioSkills recipes for pathway analysis: enrichment-visualization, go-enrichment, gsea, kegg-pathways, reactome-pathways, wikipathways.",
+      "label": "pathway analysis",
+      "members": [
+        "bio-pathway-enrichment-visualization",
+        "bio-pathway-go-enrichment",
+        "bio-pathway-gsea",
+        "bio-pathway-kegg-pathways",
+        "bio-pathway-reactome",
+        "bio-pathway-wikipathways"
+      ]
+    },
+    "phasing": {
+      "description": "4 bioSkills recipes for phasing and imputation: genotype-imputation, haplotype-phasing, imputation-qc, reference-panels.",
+      "label": "phasing and imputation",
+      "members": [
+        "bio-phasing-imputation-genotype-imputation",
+        "bio-phasing-imputation-haplotype-phasing",
+        "bio-phasing-imputation-imputation-qc",
+        "bio-phasing-imputation-reference-panels"
+      ]
+    },
+    "phylogenetics": {
+      "description": "8 bioSkills recipes for phylogenetics: bayesian-inference, distance-calculations, divergence-dating, modern-tree-inference, species-trees, tree-io, tree-manipulation, tree-visualization.",
+      "label": "phylogenetics",
+      "members": [
+        "bio-phylo-bayesian-inference",
+        "bio-phylo-distance-calculations",
+        "bio-phylo-divergence-dating",
+        "bio-phylo-modern-tree-inference",
+        "bio-phylo-species-trees",
+        "bio-phylo-tree-io",
+        "bio-phylo-tree-manipulation",
+        "bio-phylo-tree-visualization"
+      ]
+    },
+    "population": {
+      "description": "7 bioSkills recipes for population genetics: association-testing, linkage-disequilibrium, plink-basics, population-structure, rare-variant-association, scikit-allel-analysis, selection-statistics.",
+      "label": "population genetics",
+      "members": [
+        "bio-population-genetics-association-testing",
+        "bio-population-genetics-linkage-disequilibrium",
+        "bio-population-genetics-plink-basics",
+        "bio-population-genetics-population-structure",
+        "bio-population-genetics-rare-variant-association",
+        "bio-population-genetics-scikit-allel-analysis",
+        "bio-population-genetics-selection-statistics"
+      ]
+    },
+    "primer": {
+      "description": "4 bioSkills recipes for primer design: primer-basics, primer-specificity, primer-validation, qpcr-primers.",
+      "label": "primer design",
+      "members": [
+        "bio-primer-design-primer-basics",
+        "bio-primer-design-primer-specificity",
+        "bio-primer-design-primer-validation",
+        "bio-primer-design-qpcr-primers"
+      ]
+    },
+    "proteomics": {
+      "description": "9 bioSkills recipes for proteomics: data-import, dia-analysis, differential-abundance, peptide-identification, protein-inference, proteomics-qc, ptm-analysis, quantification, spectral-libraries.",
+      "label": "proteomics",
+      "members": [
+        "bio-proteomics-data-import",
+        "bio-proteomics-dia-analysis",
+        "bio-proteomics-differential-abundance",
+        "bio-proteomics-peptide-identification",
+        "bio-proteomics-protein-inference",
+        "bio-proteomics-proteomics-qc",
+        "bio-proteomics-ptm-analysis",
+        "bio-proteomics-quantification",
+        "bio-proteomics-spectral-libraries"
+      ]
+    },
+    "read": {
+      "description": "11 bioSkills recipes for read: alignment-bowtie2-alignment, alignment-bwa-alignment, alignment-hisat2-alignment, alignment-star-alignment, qc-adapter-trimming, qc-contamination-screening, qc-fastp-...",
+      "label": "read",
+      "members": [
+        "bio-read-alignment-bowtie2-alignment",
+        "bio-read-alignment-bwa-alignment",
+        "bio-read-alignment-hisat2-alignment",
+        "bio-read-alignment-star-alignment",
+        "bio-read-qc-adapter-trimming",
+        "bio-read-qc-contamination-screening",
+        "bio-read-qc-fastp-workflow",
+        "bio-read-qc-quality-filtering",
+        "bio-read-qc-quality-reports",
+        "bio-read-qc-rnaseq-qc",
+        "bio-read-qc-umi-processing"
+      ]
+    },
+    "reporting": {
+      "description": "6 bioSkills recipes for reporting: automated-qc-reports, figure-export, jupyter-reports, publication-tables, quarto-reports, rmarkdown-reports.",
+      "label": "reporting",
+      "members": [
+        "bio-reporting-automated-qc-reports",
+        "bio-reporting-figure-export",
+        "bio-reporting-jupyter-reports",
+        "bio-reporting-publication-tables",
+        "bio-reporting-quarto-reports",
+        "bio-reporting-rmarkdown-reports"
+      ]
+    },
+    "restriction": {
+      "description": "5 bioSkills recipes for restriction analysis: enzyme-selection, fragment-analysis, golden-gate-assembly, restriction-mapping, restriction-sites.",
+      "label": "restriction analysis",
+      "members": [
+        "bio-restriction-enzyme-selection",
+        "bio-restriction-fragment-analysis",
+        "bio-restriction-golden-gate-assembly",
+        "bio-restriction-mapping",
+        "bio-restriction-sites"
+      ]
+    },
+    "ribo": {
+      "description": "6 bioSkills recipes for Ribo-seq: initiation-site-mapping, orf-detection, riboseq-preprocessing, ribosome-periodicity, ribosome-stalling, translation-efficiency.",
+      "label": "Ribo-seq",
+      "members": [
+        "bio-ribo-seq-initiation-site-mapping",
+        "bio-ribo-seq-orf-detection",
+        "bio-ribo-seq-riboseq-preprocessing",
+        "bio-ribo-seq-ribosome-periodicity",
+        "bio-ribo-seq-ribosome-stalling",
+        "bio-ribo-seq-translation-efficiency"
+      ]
+    },
+    "rna": {
+      "description": "8 bioSkills recipes for rna: quantification-alignment-free-quant, quantification-count-matrix-qc, quantification-featurecounts-counting, quantification-tximport-workflow, structure-covariation-anal...",
+      "label": "rna",
+      "members": [
+        "bio-rna-quantification-alignment-free-quant",
+        "bio-rna-quantification-count-matrix-qc",
+        "bio-rna-quantification-featurecounts-counting",
+        "bio-rna-quantification-tximport-workflow",
+        "bio-rna-structure-covariation-analysis",
+        "bio-rna-structure-ncrna-search",
+        "bio-rna-structure-secondary-structure-prediction",
+        "bio-rna-structure-structure-probing"
+      ]
+    },
+    "sequence": {
+      "description": "16 bioSkills recipes for sequence: io-batch-processing, io-compressed-files, io-fastq-quality, io-filter-sequences, io-format-conversion, io-paired-end-fastq, io-read-sequences, io-sequence-statist...",
+      "label": "sequence",
+      "members": [
+        "bio-batch-processing",
+        "bio-codon-usage",
+        "bio-compressed-files",
+        "bio-fastq-quality",
+        "bio-filter-sequences",
+        "bio-format-conversion",
+        "bio-motif-search",
+        "bio-paired-end-fastq",
+        "bio-read-sequences",
+        "bio-reverse-complement",
+        "bio-seq-objects",
+        "bio-sequence-properties",
+        "bio-sequence-slicing",
+        "bio-sequence-statistics",
+        "bio-transcription-translation",
+        "bio-write-sequences"
+      ]
+    },
+    "single": {
+      "description": "17 bioSkills recipes for single-cell: batch-integration, cell-annotation, cell-communication, clustering, cnv-inference, data-io, differential-abundance, doublet-detection, hashing-demultiplexing,...",
+      "label": "single-cell",
+      "members": [
+        "bio-single-cell-batch-integration",
+        "bio-single-cell-cell-annotation",
+        "bio-single-cell-cell-communication",
+        "bio-single-cell-clustering",
+        "bio-single-cell-cnv-inference",
+        "bio-single-cell-data-io",
+        "bio-single-cell-differential-abundance",
+        "bio-single-cell-doublet-detection",
+        "bio-single-cell-hashing-demultiplexing",
+        "bio-single-cell-lineage-tracing",
+        "bio-single-cell-markers-annotation",
+        "bio-single-cell-metabolite-communication",
+        "bio-single-cell-multimodal-integration",
+        "bio-single-cell-perturb-seq",
+        "bio-single-cell-preprocessing",
+        "bio-single-cell-scatac-analysis",
+        "bio-single-cell-trajectory-inference"
+      ]
+    },
+    "small": {
+      "description": "6 bioSkills recipes for small-rna / seq: differential-mirna, mirdeep2-analysis, mirge3-analysis, smrna-preprocessing, target-prediction, trf-pirna-profiling.",
+      "label": "small-rna / seq",
+      "members": [
+        "bio-small-rna-seq-differential-mirna",
+        "bio-small-rna-seq-mirdeep2-analysis",
+        "bio-small-rna-seq-mirge3-analysis",
+        "bio-small-rna-seq-smrna-preprocessing",
+        "bio-small-rna-seq-target-prediction",
+        "bio-small-rna-seq-trf-pirna-profiling"
+      ]
+    },
+    "spatial": {
+      "description": "12 bioSkills recipes for spatial transcriptomics: high-resolution-binning, image-analysis, spatial-communication, spatial-data-io, spatial-deconvolution, spatial-domains, spatial-multiomics, spatia...",
+      "label": "spatial transcriptomics",
+      "members": [
+        "bio-spatial-transcriptomics-high-resolution-binning",
+        "bio-spatial-transcriptomics-image-analysis",
+        "bio-spatial-transcriptomics-spatial-communication",
+        "bio-spatial-transcriptomics-spatial-data-io",
+        "bio-spatial-transcriptomics-spatial-deconvolution",
+        "bio-spatial-transcriptomics-spatial-domains",
+        "bio-spatial-transcriptomics-spatial-multiomics",
+        "bio-spatial-transcriptomics-spatial-neighbors",
+        "bio-spatial-transcriptomics-spatial-preprocessing",
+        "bio-spatial-transcriptomics-spatial-proteomics",
+        "bio-spatial-transcriptomics-spatial-statistics",
+        "bio-spatial-transcriptomics-spatial-visualization"
+      ]
+    },
+    "structural": {
+      "description": "10 bioSkills recipes for structural biology: alphafold-predictions, binding-site-detection, geometric-analysis, interface-analysis, modern-structure-prediction, structure-io, structure-modification...",
+      "label": "structural biology",
+      "members": [
+        "bio-structural-biology-alphafold-predictions",
+        "bio-structural-biology-binding-site-detection",
+        "bio-structural-biology-geometric-analysis",
+        "bio-structural-biology-interface-analysis",
+        "bio-structural-biology-modern-structure-prediction",
+        "bio-structural-biology-structure-io",
+        "bio-structural-biology-structure-modification",
+        "bio-structural-biology-structure-navigation",
+        "bio-structural-biology-structure-preparation",
+        "bio-structural-biology-structure-validation"
+      ]
+    },
+    "systems": {
+      "description": "7 bioSkills recipes for systems biology: community-metabolic-modeling, context-specific-models, flux-balance-analysis, gene-essentiality, metabolic-reconstruction, model-curation, strain-design.",
+      "label": "systems biology",
+      "members": [
+        "bio-systems-biology-community-metabolic-modeling",
+        "bio-systems-biology-context-specific-models",
+        "bio-systems-biology-flux-balance-analysis",
+        "bio-systems-biology-gene-essentiality",
+        "bio-systems-biology-metabolic-reconstruction",
+        "bio-systems-biology-model-curation",
+        "bio-systems-biology-strain-design"
+      ]
+    },
+    "tcr": {
+      "description": "6 bioSkills recipes for TCR/BCR: immcantation-analysis, mixcr-analysis, repertoire-visualization, scirpy-analysis, specificity-annotation, vdjtools-analysis.",
+      "label": "TCR/BCR",
+      "members": [
+        "bio-tcr-bcr-analysis-immcantation-analysis",
+        "bio-tcr-bcr-analysis-mixcr-analysis",
+        "bio-tcr-bcr-analysis-repertoire-visualization",
+        "bio-tcr-bcr-analysis-scirpy-analysis",
+        "bio-tcr-bcr-analysis-specificity-annotation",
+        "bio-tcr-bcr-analysis-vdjtools-analysis"
+      ]
+    },
+    "temporal": {
+      "description": "6 bioSkills recipes for temporal genomics: circadian-rhythms, differential-rhythmicity, periodicity-detection, temporal-clustering, temporal-grn, trajectory-modeling.",
+      "label": "temporal genomics",
+      "members": [
+        "bio-temporal-genomics-circadian-rhythms",
+        "bio-temporal-genomics-differential-rhythmicity",
+        "bio-temporal-genomics-periodicity-detection",
+        "bio-temporal-genomics-temporal-clustering",
+        "bio-temporal-genomics-temporal-grn",
+        "bio-temporal-genomics-trajectory-modeling"
+      ]
+    },
+    "variant": {
+      "description": "13 bioSkills recipes for variant calling: clinical-interpretation, consensus-sequences, deepvariant, filtering-best-practices, gatk-variant-calling, joint-calling, structural-variant-calling, varia...",
+      "label": "variant calling",
+      "members": [
+        "bio-consensus-sequences",
+        "bio-gatk-variant-calling",
+        "bio-variant-annotation",
+        "bio-variant-calling",
+        "bio-variant-calling-clinical-interpretation",
+        "bio-variant-calling-deepvariant",
+        "bio-variant-calling-filtering-best-practices",
+        "bio-variant-calling-joint-calling",
+        "bio-variant-calling-structural-variant-calling",
+        "bio-variant-normalization",
+        "bio-vcf-basics",
+        "bio-vcf-manipulation",
+        "bio-vcf-statistics"
+      ]
+    },
+    "workflow": {
+      "description": "5 bioSkills recipes for workflow management: cwl-workflows, nextflow-pipelines, nf-core-pipelines, snakemake-workflows, wdl-workflows.",
+      "label": "workflow management",
+      "members": [
+        "bio-workflow-management-cwl-workflows",
+        "bio-workflow-management-nextflow-pipelines",
+        "bio-workflow-management-nf-core-pipelines",
+        "bio-workflow-management-snakemake-workflows",
+        "bio-workflow-management-wdl-workflows"
+      ]
+    },
+    "workflows": {
+      "description": "41 bioSkills recipes for workflows: atacseq-pipeline, biomarker-pipeline, causal-genomics-pipeline, chipseq-pipeline, clinical-trial-pipeline, clip-pipeline, cnv-pipeline, crispr-editing-pipeline,...",
+      "label": "workflows",
+      "members": [
+        "bio-workflows-atacseq-pipeline",
+        "bio-workflows-biomarker-pipeline",
+        "bio-workflows-causal-genomics-pipeline",
+        "bio-workflows-chipseq-pipeline",
+        "bio-workflows-clinical-trial-pipeline",
+        "bio-workflows-clip-pipeline",
+        "bio-workflows-cnv-pipeline",
+        "bio-workflows-crispr-editing-pipeline",
+        "bio-workflows-crispr-screen-pipeline",
+        "bio-workflows-cytometry-pipeline",
+        "bio-workflows-edna-pipeline",
+        "bio-workflows-expression-to-pathways",
+        "bio-workflows-fastq-to-variants",
+        "bio-workflows-genome-annotation-pipeline",
+        "bio-workflows-genome-assembly-pipeline",
+        "bio-workflows-grn-pipeline",
+        "bio-workflows-gwas-pipeline",
+        "bio-workflows-hic-pipeline",
+        "bio-workflows-imc-pipeline",
+        "bio-workflows-liquid-biopsy-pipeline",
+        "bio-workflows-longread-sv-pipeline",
+        "bio-workflows-merip-pipeline",
+        "bio-workflows-metabolic-modeling-pipeline",
+        "bio-workflows-metabolomics-pipeline",
+        "bio-workflows-metagenomics-pipeline",
+        "bio-workflows-methylation-pipeline",
+        "bio-workflows-microbiome-pipeline",
+        "bio-workflows-multi-omics-pipeline",
+        "bio-workflows-multiome-pipeline",
+        "bio-workflows-neoantigen-pipeline",
+        "bio-workflows-outbreak-pipeline",
+        "bio-workflows-proteomics-pipeline",
+        "bio-workflows-riboseq-pipeline",
+        "bio-workflows-rnaseq-to-de",
+        "bio-workflows-scrnaseq-pipeline",
+        "bio-workflows-smrna-pipeline",
+        "bio-workflows-somatic-variant-pipeline",
+        "bio-workflows-spatial-pipeline",
+        "bio-workflows-splicing-pipeline",
+        "bio-workflows-tcr-pipeline",
+        "bio-workflows-timecourse-pipeline"
+      ]
+    }
+  },
+  "source_manifest_sha256": "e1747551da95e9320368d4d4f7002d3b9708a808d0b9b0f117e36ed66968530b",
+  "version": "1"
+}

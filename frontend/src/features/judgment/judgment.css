@@ -1,0 +1,120 @@
+/* Experimental judgment: Customize block + search_skills chips. Uses existing
+   style.css tokens; no new custom properties. */
+.judgment-block {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--border, #0002);
+}
+.judgment-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.judgment-badge {
+  display: inline-block;
+  background: var(--bg-200, #f3f3f0);
+  border: 0.5px solid var(--border, #0002);
+  border-radius: 12px;
+  padding: 1px 8px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.judgment-source {
+  font-size: 12px;
+  color: var(--text-300, inherit);
+}
+.judgment-env-off {
+  color: var(--warn, #b8860b);
+  font-size: 12px;
+}
+.judgment-safety {
+  color: var(--danger, #8e2626);
+  font-size: 12px;
+  font-weight: 600;
+}
+.judgment-disclosure {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 18, 14, 0.34);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+}
+.judgment-disclosure-box {
+  background: var(--panel, #fff);
+  border-radius: 12px;
+  width: min(560px, 92%);
+  max-height: 80%;
+  overflow: auto;
+  padding: 16px 18px;
+}
+.judgment-disclosure-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 8px 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-100, #fdfdfc);
+}
+.judgment-disclosure-item.safety {
+  background: var(--danger-bg, #fad6d6);
+}
+.judgment-disclosure-item label {
+  flex: 1;
+}
+.judgment-disclosure-facts {
+  font-size: 12px;
+  color: var(--text-300, inherit);
+  white-space: pre-wrap;
+  margin: 10px 0;
+}
+.judgment-key-state {
+  font-size: 12px;
+  margin-top: 4px;
+}
+.judgment-test-result {
+  font-size: 12px;
+  color: var(--text-300, inherit);
+}
+.judgment-test-result.ok {
+  color: var(--success-text, #006300);
+}
+.judgment-test-result.bad {
+  color: var(--danger, #8e2626);
+}
+.judgment-remediation {
+  font-size: 12px;
+  color: var(--text-200, inherit);
+  white-space: pre-wrap;
+  margin-top: 6px;
+}
+.judgment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 6px 0 8px;
+}
+.judgment-chip-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-300, inherit);
+}
+.judgment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  border-radius: 10px;
+  padding: 2px 8px;
+  background: var(--bg-200, #f3f3f0);
+  border: 0.5px solid var(--border, #0002);
+  white-space: nowrap;
+}
+.judgment-semantic-note {
+  font-size: 12px;
+  color: var(--text-300, inherit);
+  margin: 4px 0 8px;
+}

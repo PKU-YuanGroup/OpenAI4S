@@ -11,5 +11,6 @@
 | [`__init__.py`](__init__.py) | 导出 scripted LLM 与它的结构化错误类型。 |
 | [`scripted_llm.py`](scripted_llm.py) | 以一队脚本化 step 为底的模型 callable。它按顺序返回声明好的规范化响应（顺手补齐 `reasoning`、`usage`、`finish_reason`、`raw` 默认值），在脚本声明了错误的地方抛出 `ScriptedProviderError`，并报告还剩多少 step；每次传入的消息列表都会被深拷贝进 `calls`，场景事后可以照原样检查 prompt。脚本用完还继续调用会抛 `AssertionError`，而不是把最后一条回复重放一遍。 |
 | [`.gitkeep`](.gitkeep) | 把目录留在 git 里，下一个假 provider 才有地方落。 |
+| [`typesafe_fake.py`](typesafe_fake.py) | 本机回环 TypeSafe System One 假端点：只接受带非空 Bearer 的 `POST /v1/systemone`，Noul/Choice/Score 答案确定，支持 `--script` / `--fail` / `--latency-ms` / `--log`，进程内 `start_fake(port=0) -> (url, stop)`。拒绝绑定非 loopback；JSONL 日志只记请求体，不记 Authorization。 |
 
 provider 回放的脚本，就是由 [`../schema.py`](../schema.py) 校验的 `provider_script` 字段，驱动它的是 [`../runner.py`](../runner.py)。将来的 compute、endpoint 或 lab fake 也可以放进来，前提是默认离线。
