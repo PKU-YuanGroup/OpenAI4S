@@ -29,6 +29,7 @@ README；单次替换是原子的，但整批替换不是全部成功或全部�
 | `Lyu6PosHao.png` | 贡献者 `Lyu6PosHao` 的可直接渲染头像。 |
 | `Nobody-Zhang.png` | 贡献者 `Nobody-Zhang` 的可直接渲染头像。 |
 | `Pandasama2025.png` | 贡献者 `Pandasama2025` 的可直接渲染头像。 |
+| `Weifeng2Wu.png` | 贡献者 `Weifeng2Wu` 的可直接渲染头像。 |
 | `WenyuLiang.png` | 贡献者 `WenyuLiang` 的可直接渲染头像。 |
 | `YuyangSunshine.png` | 贡献者 `YuyangSunshine` 的可直接渲染头像。 |
 | `cursoragent.png` | 贡献者 `cursoragent` 的可直接渲染头像。 |

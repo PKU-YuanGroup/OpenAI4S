@@ -32,6 +32,7 @@ each replacement is atomic, but the batch is not an all-or-nothing transaction.
 | `Lyu6PosHao.png` | Render-ready avatar for contributor `Lyu6PosHao`. |
 | `Nobody-Zhang.png` | Render-ready avatar for contributor `Nobody-Zhang`. |
 | `Pandasama2025.png` | Render-ready avatar for contributor `Pandasama2025`. |
+| `Weifeng2Wu.png` | Render-ready avatar for contributor `Weifeng2Wu`. |
 | `WenyuLiang.png` | Render-ready avatar for contributor `WenyuLiang`. |
 | `YuyangSunshine.png` | Render-ready avatar for contributor `YuyangSunshine`. |
 | `cursoragent.png` | Render-ready avatar for contributor `cursoragent`. |

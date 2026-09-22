@@ -49,6 +49,7 @@ _PROBE = {
     "pubchem": ("pubchem", "pubchem.ncbi.nlm.nih.gov", "aspirin"),
     "arxiv": ("arxiv", "export.arxiv.org", "electron"),
     "string": ("string", "string-db.org", "TP53"),
+    "bindingdb": ("bindingdb", "www.bindingdb.org", "P11802"),
 }
 
 

@@ -204,6 +204,17 @@ MANIFESTS: tuple[ConnectorManifest, ...] = (
             (EACH, "pscore"),
         ),
     ),
+    ConnectorManifest(
+        id="bindingdb",
+        probe_query="P11802",
+        required=(("getLindsByUniprotsResponse", "affinities", EACH, "monomerid"),),
+        expected=(
+            ("getLindsByUniprotsResponse", "affinities", EACH, "query"),
+            ("getLindsByUniprotsResponse", "affinities", EACH, "smile"),
+            ("getLindsByUniprotsResponse", "affinities", EACH, "affinity_type"),
+            ("getLindsByUniprotsResponse", "affinities", EACH, "affinity"),
+        ),
+    ),
 )
 
 MANIFEST_BY_ID = {manifest.id: manifest for manifest in MANIFESTS}
