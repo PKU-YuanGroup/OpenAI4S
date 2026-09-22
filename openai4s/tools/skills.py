@@ -154,8 +154,8 @@ class SearchSkillsTool(Tool):
             "limit": int(arguments.get("limit") or 5),
         }
         rows = runtime.invoke(self.host_method, spec)
-        semantic = runtime.invoke("suggest_skills", {"query": spec["query"]})
-        if not isinstance(semantic, dict):
+        semantic = runtime.call_host("suggest_skills", {"query": spec["query"]})
+        if not isinstance(semantic, dict) or "error" in semantic:
             return self.fit_to_budget(rows)
         status = semantic.get("semantic_status")
         if status == "disabled":

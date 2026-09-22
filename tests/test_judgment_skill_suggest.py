@@ -204,6 +204,92 @@ class FakeRuntime:
             return self.semantic
         raise RuntimeError(f"unexpected method {method}")
 
+    def call_host(self, method: str, *arguments: Any) -> Any:
+        return self.invoke(method, *arguments)
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("provider", ["typesafe", "llm"])
+@pytest.mark.parametrize(
+    "allowed,permissions",
+    [
+        (frozenset({"skills"}), {}),
+        (frozenset({"skills", "suggest_skills"}), {"suggest_skills": "deny"}),
+        (frozenset({"skills", "suggest_skills"}), {"suggest_skills": "ask"}),
+    ],
+)
+def test_search_cannot_bypass_child_judgment_policy(
+    tmp_path: Path, provider: str, allowed: frozenset[str], permissions: dict[str, str]
+) -> None:
+    from openai4s.host.delegation_policy import ChildExecutionPolicy
+    from openai4s.host_dispatch import HostDispatcher
+
+    cfg = _cfg(tmp_path, _tiny_skills(tmp_path), provider=provider)
+    dispatcher = HostDispatcher(cfg, workspace=tmp_path)
+    backend = ScriptedBackend()
+    dispatcher._judgment_service.backend_factory = lambda: backend
+    dispatcher.set_child_execution_policy(
+        ChildExecutionPolicy(True, allowed, permissions)
+    )
+
+    result = dispatcher("search_skills", [{"query": "clustering cells"}])
+
+    assert backend.calls == [], "local Skill search must not bypass outbound policy"
+    assert isinstance(result, list)
+    assert any(row["name"] == "alpha" for row in result)
+    audit = dispatcher.store._conn.execute(
+        "SELECT method,ok FROM host_call_log ORDER BY rowid"
+    ).fetchall()
+    assert [(row["method"], bool(row["ok"])) for row in audit] == [
+        ("suggest_skills", False),
+        ("search_skills", True),
+    ]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("provider", ["typesafe", "llm"])
+def test_allowed_nested_suggestion_is_audited_without_extra_replay_call(
+    tmp_path: Path, provider: str
+) -> None:
+    from openai4s.host.delegation_policy import ChildExecutionPolicy
+    from openai4s.host_dispatch import HostDispatcher
+    from openai4s.replay import TapeRecorder, _OpenAI4SReplay
+
+    cfg = _cfg(tmp_path, _tiny_skills(tmp_path), provider=provider)
+    dispatcher = HostDispatcher(cfg, workspace=tmp_path)
+    backend = ScriptedBackend()
+    dispatcher._judgment_service.backend_factory = lambda: backend
+    dispatcher.set_child_execution_policy(
+        ChildExecutionPolicy(True, frozenset({"skills", "suggest_skills"}), {})
+    )
+    recorder = TapeRecorder(tmp_path / "tape.json")
+    dispatcher.recorder = recorder
+    spec = {"query": "clustering cells"}
+
+    result = dispatcher("search_skills", [spec])
+
+    assert backend.calls
+    assert result["semantic_status"] in {"ok", "uncertain"}
+    audit = dispatcher.store._conn.execute(
+        "SELECT method,ok FROM host_call_log ORDER BY rowid"
+    ).fetchall()
+    assert [(row["method"], bool(row["ok"])) for row in audit] == [
+        ("suggest_skills", True),
+        ("search_skills", True),
+    ]
+    assert [row["method"] for row in recorder.records] == ["search_skills"]
+    assert _OpenAI4SReplay(recorder.records).search_skills(spec) == result
+
+    # Direct Host calls remain separate replay entries.
+    direct = dispatcher("suggest_skills", [spec])
+    assert [row["method"] for row in recorder.records] == [
+        "search_skills",
+        "suggest_skills",
+    ]
+    replay = _OpenAI4SReplay(recorder.records)
+    assert replay.search_skills(spec) == result
+    assert replay.suggest_skills(spec) == direct
+
 
 def _choice_option_names(backend: ScriptedBackend) -> set[str]:
     names: set[str] = set()

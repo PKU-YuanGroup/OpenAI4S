@@ -171,7 +171,7 @@ export function ExperimentsTab() {
 
   const saveKey = async () => {
     if (updating) return;
-    let secret = keyDraft.trim();
+    const secret = keyDraft.trim();
     setKeyDraft("");
     if (!secret) {
       hint(t("judgment.keyRequired"), true);
@@ -180,12 +180,10 @@ export function ExperimentsTab() {
     setSavingKey(true);
     try {
       const next = await updateJudgmentSettings({ api_key: secret });
-      secret = "";
       if (!alive()) return;
       apply(next);
       hint(t("judgment.keySaved"));
     } catch (error) {
-      secret = "";
       if (alive()) {
         const message = t("judgment.saveFailed", apiErrorText(error));
         setErr(message);

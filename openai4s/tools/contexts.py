@@ -68,6 +68,7 @@ class ControlToolContext:
         get_on_env_switch: Callable[[], Callable[[str], None] | None],
         get_stage10_enabled: Callable[[], bool] | None = None,
         invoke_control: Callable[..., Any] | None = None,
+        dispatch_host: Callable[[str, list[Any]], Any] | None = None,
         search_web: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self._workspace = workspace
@@ -77,6 +78,7 @@ class ControlToolContext:
         self._get_on_env_switch = get_on_env_switch
         self._get_stage10_enabled = get_stage10_enabled
         self._invoke_control = invoke_control
+        self._dispatch_host = dispatch_host
         self._search_web = search_web
 
     def workspace(self) -> Path:
@@ -135,6 +137,18 @@ class ControlToolContext:
         if self._invoke_control is None:
             raise RuntimeError(f"control behavior is unavailable: {method}")
         return self._invoke_control(method, *arguments)
+
+    def call_host(self, method: str, *arguments: Any) -> Any:
+        """Authorize and audit an additional Host capability independently.
+
+        Unlike ``invoke``, this re-enters the Host policy envelope. The nested
+        result belongs to the outer call's replay entry, while both calls keep
+        their own durable audit records.
+        """
+
+        if self._dispatch_host is None:
+            raise RuntimeError(f"Host dispatch is unavailable: {method}")
+        return self._dispatch_host(method, list(arguments))
 
     def search_web(
         self,

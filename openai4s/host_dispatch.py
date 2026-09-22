@@ -1255,6 +1255,7 @@ class HostDispatcher:
                 self.cfg.roadmap_features.stage10_scientific_connectors
             ),
             invoke_control=self._invoke_control_behavior,
+            dispatch_host=lambda method, args: self(method, args, _record=False),
             search_web=self._search_web,
         )
 
@@ -1768,7 +1769,7 @@ class HostDispatcher:
         )
 
     # dispatcher entrypoint ------------------------------------------------
-    def __call__(self, method: str, args: list) -> Any:
+    def __call__(self, method: str, args: list, *, _record: bool = True) -> Any:
         control_tool = get_tool_by_host_method(method)
         dynamic_catalog = None
         handler: Callable[..., Any]
@@ -2069,7 +2070,8 @@ class HostDispatcher:
             # (credentials_set) are never taped — an exported notebook must not
             # carry a plaintext credential.
             if (
-                self.recorder is not None
+                _record
+                and self.recorder is not None
                 and ok
                 and method not in SECRET_ARG_HOST_CALLS
                 and method not in DERIVABLE_HOST_CALLS

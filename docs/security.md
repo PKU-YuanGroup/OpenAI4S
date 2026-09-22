@@ -671,6 +671,12 @@ control predicate would revoke, plus the owner taking it back), and
 
 ## Outbound data flow: Semantic judgment (experimental)
 
+Semantic recommendations initiated by `search_skills` independently re-enter
+the Host policy and audit envelope as `suggest_skills`. A delegated child
+limited to local Skill retrieval cannot use this path to send data to either
+judgment backend. Capability denial, explicit denial, or an unapproved `ask`
+keeps the lexical search available and omits the semantic recommendations.
+
 Default-off. The TypeSafe Jev client in `openai4s/judgment/typesafe.py` is the
 fourteenth declared stdlib HTTP surface. It is modelled on `doubao_search.py`:
 one bounded POST to a fixed origin (`https://api.typesafe.ai/v1/systemone`),
