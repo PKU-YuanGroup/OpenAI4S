@@ -53,6 +53,7 @@ EGRESS_GROUPS: list[dict] = [
             "ensembl.org",  # Ensembl (+ rest.ensembl.org)
             "openalex.org",  # OpenAlex (+ api.openalex.org)
             "string-db.org",  # STRING protein association networks
+            "bindingdb.org",  # BindingDB protein-ligand affinities
             "crossref.org",  # CrossRef (+ api.crossref.org)
         ],
     },

@@ -66,6 +66,46 @@ def test_string_is_discoverable_and_activates_science_tools():
         assert {"science_search", "science_list_dbs"} <= {spec.name for spec in specs}
 
 
+def test_bindingdb_is_discoverable_and_activates_science_tools():
+    result = SessionToolCatalog().search_capabilities("BindingDB")
+    assert "science" in {group["id"] for group in result["matched_groups"]}
+    for request in ("Search BindingDB for P11802", "查询药物靶点结合亲和力"):
+        specs = SessionToolCatalog().specs_for([{"role": "user", "content": request}])
+        assert {"science_search", "science_list_dbs"} <= {spec.name for spec in specs}
+
+
+def test_bindingdb_catalog_and_control_schema_expose_affinity_filters():
+    catalog = ScienceListDatabasesTool().execute(None, {"domain": "chemistry"})
+    bindingdb = next(item for item in catalog["databases"] if item["id"] == "bindingdb")
+    assert set(bindingdb["filters"]) == {"cutoff", "affinity_type"}
+    search = ScienceSearchTool()
+    args = {
+        "database": "bindingdb",
+        "query": "P11802",
+        "filters": {"cutoff": 0.0001, "affinity_type": "Ki"},
+    }
+    assert search.validation_error(args) is None
+    args["filters"]["affinity_type"] = "unknown"
+    assert search.validation_error(args)
+
+
+@pytest.mark.stubbed_backend
+def test_bindingdb_invalid_affinity_returns_a_bounded_tool_error(monkeypatch):
+    from openai4s import webtools
+
+    row = {"monomerid": "81430", "affinity_type": "Ki", "affinity": "NaN"}
+    body = json.dumps({"getLindsByUniprotsResponse": {"affinities": [row]}})
+    monkeypatch.setattr(
+        webtools, "web_fetch", lambda *_args, **_kwargs: {"content": body}
+    )
+    result = ScienceSearchTool().execute(
+        None, {"database": "bindingdb", "query": "P11802"}
+    )
+    assert set(result) == {"error"}
+    assert "affinity" in result["error"]
+    json.dumps(result, allow_nan=False)
+
+
 @pytest.mark.stubbed_backend
 def test_string_invalid_score_returns_a_bounded_tool_error(monkeypatch):
     from openai4s import webtools

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import urllib.parse
@@ -376,11 +377,18 @@ class ScienceConnectorService:
             return str(payload.get("content") or ""), dict(payload)
         return str(payload or ""), None
 
-    def _json(self, url: str, timeout: float, *, allow_empty: bool = False) -> Any:
+    def _json(
+        self,
+        url: str,
+        timeout: float,
+        *,
+        allow_empty: bool = False,
+        empty_value: Any = None,
+    ) -> Any:
         raw, observed = self._retrieve(url, "json", timeout, _MAX_RESPONSE_CHARS)
         self._observe(url, raw, observed)
         if allow_empty and not raw.strip():
-            return None
+            return empty_value
         try:
             return json.loads(raw)
         except (TypeError, ValueError) as exc:
@@ -870,14 +878,16 @@ class ScienceConnectorService:
         cutoff: int | float = 100
         if cutoff_raw not in (None, ""):
             try:
+                if isinstance(cutoff_raw, bool):
+                    raise ValueError
                 cutoff_val = float(cutoff_raw)
-                if cutoff_val <= 0 or not (cutoff_val == cutoff_val):
+                if cutoff_val <= 0 or not math.isfinite(cutoff_val):
                     raise ValueError
                 cutoff = int(cutoff_val) if cutoff_val.is_integer() else cutoff_val
             except (TypeError, ValueError, OverflowError):
                 raise ScienceConnectorError("cutoff must be a positive number in nM")
 
-        affinity_type_filter = str(filters.get("affinity_type") or "").strip().upper()
+        affinity_type_filter = str(filters.get("affinity_type", "")).strip().upper()
         if affinity_type_filter and affinity_type_filter not in {
             "KI",
             "IC50",
@@ -912,25 +922,26 @@ class ScienceConnectorService:
             url = f"https://www.bindingdb.org/rest/getLigandsByUniprots?{params}"
             container_key = "getLindsByUniprotsResponse"
 
-        payload = self._json(url, timeout)
+        # BindingDB documents a blank body for no matches. Keep it distinct
+        # from JSON null or a broken envelope, and retain the response digest.
+        payload = self._json(
+            url,
+            timeout,
+            allow_empty=True,
+            empty_value={container_key: {"affinities": []}},
+        )
         if not isinstance(payload, dict):
             raise ScienceConnectorError(
                 "BindingDB returned an unexpected result schema"
             )
 
         resp_obj = payload.get(container_key)
-        if resp_obj is None:
-            resp_obj = payload.get("getLindsByUniprotsResponse") or payload.get(
-                "getLindsByPDBsResponse"
-            )
         if not isinstance(resp_obj, dict):
             raise ScienceConnectorError(
                 "BindingDB returned an unexpected result schema"
             )
 
         affinities = resp_obj.get("affinities")
-        if affinities is None:
-            return [], "", url
         if isinstance(affinities, dict):
             affinities = [affinities]
         elif not isinstance(affinities, list):
@@ -943,7 +954,9 @@ class ScienceConnectorService:
             if len(results) >= limit:
                 break
             if not isinstance(row, dict):
-                continue
+                raise ScienceConnectorError(
+                    "BindingDB returned an unexpected result schema"
+                )
             monomer_id = _string(row.get("monomerid"))
             if not monomer_id:
                 continue
@@ -952,9 +965,14 @@ class ScienceConnectorService:
                 continue
 
             target_name = _string(row.get("query"))
-            smile = _string(row.get("smile"))
-            aff_raw = _string(row.get("affinity"))
-            aff_val = _number(aff_raw)
+            # A SMILES string is a chemical identity, so the prose helper's
+            # 500-character truncation would silently change the molecule.
+            smile = row.get("smile")
+            if smile is not None and not isinstance(smile, str):
+                raise ScienceConnectorError(
+                    "BindingDB returned an unexpected SMILES schema"
+                )
+            aff_raw, aff_val = _bindingdb_affinity(row.get("affinity"))
             pmid = _string(row.get("pmid"))
             doi = _string(row.get("doi"))
 
@@ -984,6 +1002,28 @@ class ScienceConnectorService:
                 )
             )
         return results, "", url
+
+
+def _bindingdb_affinity(value: Any) -> tuple[str, float | int | None]:
+    """Keep qualified measurements as raw evidence, never exact numbers."""
+    if value in (None, ""):
+        return "", None
+    error = "BindingDB affinity must be a finite nonnegative measurement in nM"
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ScienceConnectorError(error)
+    raw = str(value).strip()
+    match = re.fullmatch(
+        r"([<>]=?|[=~≤≥≈])?\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)",
+        raw,
+    )
+    if match is None:
+        raise ScienceConnectorError(error)
+    number = float(match[2])
+    if not math.isfinite(number) or number < 0:
+        raise ScienceConnectorError(error)
+    if match[1] and match[1] != "=":
+        return raw, None
+    return raw, int(number) if number.is_integer() else number
 
 
 def _string_score(row: Mapping[str, Any], field: str) -> float | int | None:
