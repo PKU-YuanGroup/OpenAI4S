@@ -155,6 +155,7 @@ def _cache_key(
     state_sha256: str,
     params: Mapping[str, Any],
     scope: object,
+    backend_identity: str = "",
 ) -> tuple[str, ...]:
     return (
         str(provider),
@@ -165,6 +166,7 @@ def _cache_key(
         state_sha256,
         _candidate_hash(params),
         _scope_id(scope),
+        backend_identity,
     )
 
 
@@ -488,7 +490,8 @@ class JudgmentService:
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
         resolved_purpose = purpose or template.purpose
-        flags = self._flags()
+        cfg = self._config()
+        flags = resolve(cfg, self._store())
         enabled = _purpose_enabled(
             flags, resolved_purpose, ignore_capability=ignore_capability
         )
@@ -516,6 +519,11 @@ class JudgmentService:
                 state_sha256=state_sha256,
                 params=raw_params,
                 scope=scope,
+                backend_identity=(
+                    _digest((cfg.llm.provider, cfg.llm.base_url))
+                    if flags.provider == "llm"
+                    else ""
+                ),
             ),
             state_sha256=state_sha256,
             disabled=not enabled,
@@ -666,6 +674,7 @@ class JudgmentService:
                     usage=reply.usage,
                     model=reply.model,
                     request_id=reply.request_id,
+                    fake=reply.fake,
                 )
                 item_result = self._from_reply(
                     prepared,
@@ -784,13 +793,19 @@ class JudgmentService:
         except KeyError:
             return {"error": f"unknown template: {template_id}"}
         try:
-            result = self.run(
-                purpose=template.purpose,
-                template_id=template_id,
-                state=spec.get("state"),
-                params=params_map,
-                scope=spec.get("scope"),
-            )
+            if template_id == PROBE_TEMPLATE_ID:
+                # Master consent permits a connection greeting only. Kernel
+                # callers cannot use the probe to disclose arbitrary state
+                # while every data-bearing capability is disabled.
+                result = self.probe()
+            else:
+                result = self.run(
+                    purpose=template.purpose,
+                    template_id=template_id,
+                    state=spec.get("state"),
+                    params=params_map,
+                    scope=spec.get("scope"),
+                )
         except ValueError as exc:
             return {"error": str(exc) or "invalid judge arguments"}
         return result.to_dict()

@@ -81,9 +81,11 @@ When the corresponding flag is off, each of those paths returns `disabled`
    separately as the highest outbound risk.
 3. Check every capability you intend to use, then confirm. The
    acknowledgement is stored as
-   `experimental.judgment.disclosure_ack = {version, capabilities, acked_at}`
+   `experimental.judgment.disclosure_ack = {version, provider, capabilities, acked_at}`
    for `DISCLOSURE_VERSION` (`2026-09-20`). Changing the disclosure text
-   bumps the version and requires a fresh acknowledgement.
+   bumps the version and requires a fresh acknowledgement. Switching between
+   TypeSafe and the main LLM provider also requires a fresh acknowledgement;
+   older records without `provider` apply only to TypeSafe.
 4. Paste a TypeSafe API key and save. The field never echoes a saved key;
    the UI shows Configured / Not configured only. Clear removes the Store
    row and the keychain item.
@@ -150,10 +152,13 @@ never injected into the kernel environment.
 REST (same auth as `/search/config`):
 
 - `GET /api/v1/experimental/judgment` — flags, source, provider, model,
-  `key_configured` (boolean only), disclosure version and ack, egress
-  report.
+  `key_configured` (boolean only), disclosure version and ack, acknowledged
+  capabilities, and the active provider's egress host and report. With
+  `provider=llm`, the model and credentials come from Models; local endpoints
+  do not require a key. TypeSafe hosting facts do not apply to that provider.
 - `PUT /api/v1/experimental/judgment` — `enabled`, `capabilities`,
-  `acknowledge`, `api_key`, `clear_api_key`.
+  `acknowledge:{version,provider,capabilities}`, `api_key`, `clear_api_key`.
+  Invalid fields reject the whole request before any setting or key is changed.
 - `POST /api/v1/experimental/judgment/test` — connection probe.
 
 ## How to disable

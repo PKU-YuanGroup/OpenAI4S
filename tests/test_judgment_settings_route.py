@@ -10,6 +10,11 @@ import pytest
 
 from openai4s.config import Config, LLMConfig
 from openai4s.judgment.disclosure import CAPABILITIES, DISCLOSURE_VERSION
+from openai4s.judgment.flags import (
+    SETTING_BY_CAPABILITY,
+    SETTING_DISCLOSURE_ACK,
+    SETTING_MASTER,
+)
 from openai4s.judgment.settings import ENV_API_KEY, SECRET_NAME
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.errors import GatewayError
@@ -88,8 +93,10 @@ def _assert_status_shape(body: dict) -> None:
         assert set(disclosure["capabilities"][name]) == {"zh", "en"}
     assert set(disclosure["facts"]) == {"en", "zh"}
     assert isinstance(disclosure["acked"], bool)
+    assert isinstance(disclosure["acknowledged_capabilities"], list)
     egress = body["egress"]
-    assert set(egress) == {"mode", "domain_allowed", "remediation"}
+    assert set(egress) == {"host", "mode", "domain_allowed", "remediation"}
+    assert egress["host"] == "api.typesafe.ai"
     assert egress["mode"] in ("off", "allowlist")
     assert isinstance(egress["domain_allowed"], bool)
 
@@ -194,6 +201,52 @@ def test_type_error_is_400(tmp_path):
     assert "boolean" in raised.value.message
 
 
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"enabled": "yes"},
+        {"capabilities": {"skill_suggest": True, "text_features": "yes"}},
+        {"capabilities": {"skill_suggest": True, "unknown": True}},
+        {"clear_api_key": "yes"},
+        {"clear_api_key": None},
+        {"api_key": 123},
+        {"clear_api_key": True, "api_key": _TEST_KEY},
+        {
+            "acknowledge": {
+                "version": DISCLOSURE_VERSION,
+                "capabilities": [],
+                "provider": "unknown",
+            }
+        },
+    ],
+)
+def test_rejected_update_preserves_flags_ack_and_key(tmp_path, invalid):
+    handler, replies, cfg = _handler(tmp_path)
+    store = get_store(cfg.db_path)
+    store.set_secret_setting(SECRET_NAME, _TEST_KEY, scope="judgment")
+    body = {
+        "enabled": True,
+        "capabilities": {"skill_suggest": True},
+        "acknowledge": {
+            "version": DISCLOSURE_VERSION,
+            "capabilities": ["skill_suggest"],
+        },
+        **invalid,
+    }
+    handler._body = lambda: body
+    with pytest.raises(GatewayError) as raised:
+        handler._api("PUT", "/experimental/judgment")
+    assert raised.value.code == 400
+    assert replies == []
+    for key in (
+        SETTING_MASTER,
+        SETTING_DISCLOSURE_ACK,
+        *SETTING_BY_CAPABILITY.values(),
+    ):
+        assert store.get_setting(key) is None
+    assert store.get_secret_setting(SECRET_NAME, scope="judgment") == _TEST_KEY
+
+
 def test_wrong_disclosure_version_is_rejected(tmp_path):
     handler, replies, _cfg = _handler(tmp_path)
     handler._body = lambda: {
@@ -262,6 +315,124 @@ def test_acknowledge_then_enable_opens_ui_path(tmp_path):
         "source": "setting",
     }
     assert body["disclosure"]["acked"] is True
+    assert body["disclosure"]["acknowledged_capabilities"] == ["skill_suggest"]
+
+
+def test_llm_status_and_acknowledgment_follow_actual_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    handler, replies, cfg = _handler(tmp_path)
+    cfg.llm.model = "science-model"
+    cfg.llm.base_url = "https://provider.example/v1"
+    handler._body = lambda: {
+        "enabled": True,
+        "capabilities": {"skill_suggest": True},
+        "acknowledge": {
+            "version": DISCLOSURE_VERSION,
+            "capabilities": ["skill_suggest"],
+        },
+    }
+    handler._api("PUT", "/experimental/judgment")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["provider"] == "llm"
+    assert body["model"] == cfg.llm.model
+    assert body["key_configured"] is True
+    assert body["egress"]["host"] == "provider.example"
+    assert "TypeSafe" not in body["disclosure"]["facts"]["en"]
+    assert body["disclosure"]["acked"] is False
+    assert body["disclosure"]["acknowledged_capabilities"] == []
+    assert body["effective"]["master"]["source"] == "no_disclosure"
+
+    handler._body = lambda: {
+        "acknowledge": {
+            "version": DISCLOSURE_VERSION,
+            "provider": "llm",
+            "capabilities": ["skill_suggest"],
+        }
+    }
+    handler._api("PUT", "/experimental/judgment")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["effective"]["master"]["enabled"] is True
+    assert body["effective"]["skill_suggest"]["enabled"] is True
+    assert body["disclosure"]["acked"] is True
+    assert body["disclosure"]["acknowledged_capabilities"] == ["skill_suggest"]
+
+
+def test_llm_status_does_not_require_a_typesafe_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    handler, replies, cfg = _handler(tmp_path)
+    cfg.llm.api_key = ""
+    cfg.llm.provider = "chatgpt"
+    cfg.llm.base_url = "http://127.0.0.1:11434/v1"
+    handler._api("GET", "/experimental/judgment")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["key_configured"] is True
+    assert body["egress"]["host"] == "127.0.0.1"
+
+
+def test_unknown_main_model_provider_does_not_break_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    handler, replies, cfg = _handler(tmp_path)
+    cfg.llm.api_key = ""
+    cfg.llm.provider = "missing-provider"
+    handler._api("GET", "/experimental/judgment")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["key_configured"] is False
+
+
+def test_llm_status_reads_current_models_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    handler, replies, cfg = _handler(tmp_path)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_provider", "chatgpt")
+    store.set_setting("llm_model", "configured-science-model")
+    store.set_setting("llm_base_url", "https://configured-model.example/v1")
+    store.set_secret_setting("llm_api_key", "configured-test-key", scope="llm")
+    handler._api("GET", "/experimental/judgment")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["model"] == "configured-science-model"
+    assert body["egress"]["host"] == "configured-model.example"
+    assert body["key_configured"] is True
+    assert cfg.llm.api_key == ""
+
+
+@pytest.mark.stubbed_backend
+def test_llm_probe_reads_current_models_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
+    handler, replies, cfg = _handler(tmp_path)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_provider", "chatgpt")
+    store.set_setting("llm_model", "configured-science-model")
+    store.set_setting("llm_base_url", "https://configured-model.example/v1")
+    store.set_secret_setting("llm_api_key", "configured-test-key", scope="llm")
+    calls = []
+
+    def chat(messages, llm_cfg, **kwargs):
+        calls.append(llm_cfg)
+        return {
+            "content": json.dumps({"answers": {"alive": {"noul": 0.9}}}),
+            "model": llm_cfg.model,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr("openai4s.llm.chat", chat)
+    handler._api("POST", "/experimental/judgment/test")
+    code, body = replies.pop()
+    assert code == 200
+    assert body["status"] == "ok"
+    assert body["model"] == "configured-science-model"
+    assert len(calls) == 1
+    assert calls[0].provider == "chatgpt"
+    assert calls[0].base_url == "https://configured-model.example/v1"
+    assert calls[0].api_key == "configured-test-key"
+    assert cfg.llm.api_key == ""
 
 
 def test_post_test_returns_public_fields(tmp_path):

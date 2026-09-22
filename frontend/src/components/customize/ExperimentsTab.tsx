@@ -70,12 +70,14 @@ export function ExperimentsTab() {
   const [testing, setTesting] = useState(false);
   const [probe, setProbe] = useState<JudgmentProbe | null>(null);
   const [disclosureOpen, setDisclosureOpen] = useState(false);
+  const [pendingCapability, setPendingCapability] = useState<string | null>(null);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
   const apply = (next: JudgmentStatus) => {
     setStatus(next);
     setErr(null);
+    setProbe(null);
   };
 
   useEffect(() => {
@@ -111,21 +113,24 @@ export function ExperimentsTab() {
   const master = status?.effective.master;
   const masterOn = !!master?.enabled;
   const masterForcedOff = master?.source === "env_off";
+  const masterForced = masterForcedOff || master?.source === "env_on";
+  const updating = busy || savingKey || testing;
   const needsAck = !!status && !status.disclosure.acked;
   const listedDisclosure = status ? disclosureNames(status) : [];
   const allChecked =
     listedDisclosure.length > 0 && listedDisclosure.every((name) => checked[name]);
 
-  const openDisclosure = () => {
+  const openDisclosure = (capability: string | null = null) => {
     if (!status) return;
     const initial: Record<string, boolean> = {};
     for (const name of disclosureNames(status)) initial[name] = false;
     setChecked(initial);
+    setPendingCapability(capability);
     setDisclosureOpen(true);
   };
 
   const onMaster = () => {
-    if (!status || busy || masterForcedOff) return;
+    if (!status || updating || masterForced) return;
     if (masterOn) {
       void save({ enabled: false });
       return;
@@ -138,11 +143,14 @@ export function ExperimentsTab() {
   };
 
   const confirmDisclosure = async () => {
-    if (!status || !allChecked) return;
+    if (!status || !allChecked || updating) return;
     const next = await save({
-      enabled: true,
+      ...(pendingCapability
+        ? { capabilities: { [pendingCapability]: true } }
+        : { enabled: true }),
       acknowledge: {
         version: status.disclosure.version,
+        provider: status.provider,
         capabilities: listedDisclosure.filter((name) => checked[name]),
       },
     });
@@ -150,13 +158,19 @@ export function ExperimentsTab() {
   };
 
   const onCap = (name: string) => {
-    if (!status || busy) return;
+    if (!status || updating || !masterOn) return;
     const flag = status.effective[name];
-    if (!flag || flag.source === "env_off") return;
+    if (!flag || flag.source === "env_off" || flag.source === "env_on") return;
+    if (!flag.enabled && (flag.source === "no_disclosure"
+      || !status.disclosure.acknowledged_capabilities.includes(name))) {
+      openDisclosure(name);
+      return;
+    }
     void save({ capabilities: { [name]: !flag.enabled } });
   };
 
   const saveKey = async () => {
+    if (updating) return;
     let secret = keyDraft.trim();
     setKeyDraft("");
     if (!secret) {
@@ -186,6 +200,7 @@ export function ExperimentsTab() {
   };
 
   const clearKey = async () => {
+    if (updating) return;
     setSavingKey(true);
     setKeyDraft("");
     try {
@@ -205,6 +220,7 @@ export function ExperimentsTab() {
   };
 
   const runTest = async () => {
+    if (updating) return;
     setTesting(true);
     try {
       const result = await testJudgmentConnection();
@@ -239,7 +255,7 @@ export function ExperimentsTab() {
           <span>{t("judgment.title")}</span>
           <span class="judgment-badge pill">{t("judgment.badge")}</span>
         </div>
-        <div class="cust-sub">{t("judgment.intro")}</div>
+        <div class="cust-sub">{t("judgment.intro." + (status?.provider || "typesafe"))}</div>
       </div>
       {err ? (
         <div class="cust-note" role="alert" data-judgment-error="1">
@@ -256,8 +272,8 @@ export function ExperimentsTab() {
                 {master ? (
                   <div class="judgment-source">{sourceLine(master.source)}</div>
                 ) : null}
-                {masterForcedOff ? (
-                  <div class="judgment-env-off">{t("judgment.envOff")}</div>
+                {masterForced ? (
+                  <div class="judgment-env-off">{t(masterForcedOff ? "judgment.envOff" : "judgment.envOn")}</div>
                 ) : null}
               </>
             }
@@ -265,8 +281,8 @@ export function ExperimentsTab() {
             <span data-judgment-master={masterOn ? "on" : "off"}>
               <Toggle
                 on={masterOn}
-                disabled={busy || masterForcedOff}
-                title={masterForcedOff ? t("judgment.envOff") : undefined}
+                disabled={updating || masterForced}
+                title={masterForced ? t(masterForcedOff ? "judgment.envOff" : "judgment.envOn") : undefined}
                 onClick={onMaster}
               />
             </span>
@@ -274,7 +290,8 @@ export function ExperimentsTab() {
           {capabilityNames(status).map((name) => {
             const flag = status.effective[name];
             if (!flag) return null;
-            const forced = flag.source === "env_off";
+            const forced = flag.source === "env_off" || flag.source === "env_on";
+            const forcedLabel = flag.source === "env_off" ? "judgment.envOff" : "judgment.envOn";
             const safety = name === "safety_shadow";
             return (
               <CustRow
@@ -284,7 +301,7 @@ export function ExperimentsTab() {
                   <>
                     <div class="judgment-source">{sourceLine(flag.source)}</div>
                     {forced ? (
-                      <div class="judgment-env-off">{t("judgment.envOff")}</div>
+                      <div class="judgment-env-off">{t(forcedLabel)}</div>
                     ) : null}
                     {safety ? (
                       <div class="judgment-safety">{t("judgment.safetyWarn")}</div>
@@ -295,15 +312,15 @@ export function ExperimentsTab() {
                 <span data-judgment-cap={name} data-judgment-cap-on={flag.enabled ? "on" : "off"}>
                   <Toggle
                     on={flag.enabled}
-                    disabled={busy || forced}
-                    title={forced ? t("judgment.envOff") : undefined}
+                    disabled={updating || forced || !masterOn}
+                    title={forced ? t(forcedLabel) : !masterOn ? t("judgment.source.master_off") : undefined}
                     onClick={() => onCap(name)}
                   />
                 </span>
               </CustRow>
             );
           })}
-          <CustRow
+          {status.provider === "typesafe" ? <CustRow
             name={t("judgment.key")}
             desc={
               <>
@@ -317,6 +334,7 @@ export function ExperimentsTab() {
                     placeholder={t("judgment.keyPh")}
                     data-judgment-key="1"
                     value={keyDraft}
+                    disabled={updating}
                     onInput={(e) => setKeyDraft((e.target as HTMLInputElement).value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
@@ -329,7 +347,7 @@ export function ExperimentsTab() {
                     type="button"
                     class="solid-btn small"
                     data-judgment-save-key="1"
-                    disabled={savingKey || busy}
+                    disabled={updating}
                     onClick={() => void saveKey()}
                   >
                     {t("judgment.keySave")}
@@ -338,7 +356,7 @@ export function ExperimentsTab() {
                     type="button"
                     class="outline-btn small"
                     data-judgment-clear-key="1"
-                    disabled={savingKey || busy}
+                    disabled={updating}
                     onClick={() => void clearKey()}
                   >
                     {t("judgment.keyClear")}
@@ -354,13 +372,19 @@ export function ExperimentsTab() {
                 </div>
               </>
             }
-          />
+          /> : status.provider === "llm" ? (
+            <CustRow name={t("judgment.llmKey")} desc={t("judgment.llmKeyDesc")}>
+              <span data-judgment-key-state={status.key_configured ? "configured" : "missing"}>
+                {t(status.key_configured ? "judgment.keyConfigured" : "judgment.keyMissing")}
+              </span>
+            </CustRow>
+          ) : null}
           <CustRow name={t("judgment.test")}>
             <button
               type="button"
               class="outline-btn small"
               data-judgment-test="1"
-              disabled={testing || busy}
+              disabled={updating}
               onClick={() => void runTest()}
             >
               {t("judgment.test")}
@@ -392,9 +416,11 @@ export function ExperimentsTab() {
                 <div data-judgment-egress="1">
                   {t("judgment.egress", status.egress.mode)}
                   {" · "}
-                  {status.egress.domain_allowed
-                    ? t("judgment.egressAllowed")
-                    : t("judgment.egressNotListed")}
+                  {!status.egress.host
+                    ? t("judgment.egressNone")
+                    : status.egress.domain_allowed
+                      ? t("judgment.egressAllowed", status.egress.host)
+                      : t("judgment.egressNotListed", status.egress.host)}
                 </div>
                 {status.egress.remediation ? (
                   <div class="judgment-remediation" data-judgment-remediation="1">
@@ -410,7 +436,7 @@ export function ExperimentsTab() {
         <div class="judgment-disclosure" data-judgment-disclosure="1" role="dialog" aria-modal="true">
           <div class="judgment-disclosure-box">
             <div class="cust-h">{t("judgment.disclosure.title")}</div>
-            <div class="cust-sub">{t("judgment.disclosure.intro")}</div>
+            <div class="cust-sub">{t("judgment.disclosure.intro", status.egress.host)}</div>
             <div class="cust-sub">{t("judgment.ackVersion", status.disclosure.version)}</div>
             {factsText(status) ? (
               <div class="judgment-disclosure-facts">{factsText(status)}</div>
@@ -421,6 +447,7 @@ export function ExperimentsTab() {
                 class={"judgment-disclosure-item" + (name === "safety_shadow" ? " safety" : "")}
               >
                 <input
+                  id={"judgment-ack-" + name}
                   type="checkbox"
                   data-judgment-ack-cap={name}
                   checked={!!checked[name]}
@@ -429,7 +456,7 @@ export function ExperimentsTab() {
                     setChecked((prev) => ({ ...prev, [name]: on }));
                   }}
                 />
-                <label>
+                <label for={"judgment-ack-" + name}>
                   <div class="nm">{capLabel(name)}</div>
                   <div class="ds">{disclosureText(status, name)}</div>
                   {name === "safety_shadow" ? (
@@ -446,7 +473,7 @@ export function ExperimentsTab() {
                 type="button"
                 class="solid-btn small"
                 data-judgment-ack="1"
-                disabled={!allChecked || busy}
+                disabled={!allChecked || updating}
                 onClick={() => void confirmDisclosure()}
               >
                 {t("judgment.disclosure.confirm")}
@@ -455,6 +482,7 @@ export function ExperimentsTab() {
                 type="button"
                 class="outline-btn small"
                 data-judgment-disclosure-cancel="1"
+                disabled={updating}
                 onClick={() => setDisclosureOpen(false)}
               >
                 {t("judgment.disclosure.cancel")}

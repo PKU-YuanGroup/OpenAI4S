@@ -16,6 +16,8 @@ from openai4s.host.judgment import (
     JudgmentService,
     JudgmentServiceResult,
 )
+from openai4s.judgment.disclosure import DISCLOSURE_VERSION
+from openai4s.judgment.flags import SETTING_DISCLOSURE_ACK, SETTING_MASTER
 from openai4s.judgment.port import BACKEND_ERROR_CODES, BackendError
 from openai4s.judgment.registry import (
     PROBE_TEMPLATE_ID,
@@ -52,10 +54,12 @@ class FakeBackend:
         noul: float = 0.91,
         error: BackendError | None = None,
         delay: float = 0.0,
+        fake: bool = False,
     ) -> None:
         self.noul = noul
         self.error = error
         self.delay = delay
+        self.fake = fake
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self.current = 0
@@ -95,6 +99,7 @@ class FakeBackend:
                 answers=answers,
                 usage={"input_tokens": 12, "output_tokens": 0},
                 model=model,
+                fake=self.fake,
             )
         finally:
             with self._lock:
@@ -193,6 +198,40 @@ def test_probe_ignores_sub_capability_but_requires_master(tmp_path: Any) -> None
     assert backend.calls[0]["state"] == {"text": "hello"}
 
 
+@pytest.mark.parametrize(
+    "state", [{"text": "private patient data"}, "private", ["private"], None]
+)
+def test_rpc_probe_never_discloses_caller_state(tmp_path: Any, state: object) -> None:
+    """Master-only acknowledgment authorizes a greeting, not session data."""
+    backend = FakeBackend()
+    audit: list[Any] = []
+    store = MemoryStore(
+        {
+            SETTING_MASTER: "true",
+            SETTING_DISCLOSURE_ACK: json.dumps(
+                {"version": DISCLOSURE_VERSION, "capabilities": []}
+            ),
+            SETTING_AUDIT_RAW_STATE: "true",
+        }
+    )
+    service = JudgmentService(
+        Config(data_dir=tmp_path),
+        lambda: store,
+        backend_factory=lambda: backend,
+        audit_sink=audit.append,
+    )
+    result = service.dispatch(
+        {
+            "template": PROBE_TEMPLATE_ID,
+            "state": state,
+            "params": {"note": "private extra text"},
+        }
+    )
+    assert result["status"] == "ok"
+    assert backend.calls[0]["state"] == {"text": "hello"}
+    assert audit[0]["state"] == {"text": "hello"}
+
+
 @pytest.mark.parametrize("code", sorted(BACKEND_ERROR_CODES))
 def test_backend_error_maps_to_unavailable(tmp_path: Any, code: str) -> None:
     backend = FakeBackend(error=BackendError(code, code))
@@ -247,6 +286,7 @@ def test_cache_hit_and_each_key_part_misses(tmp_path: Any) -> None:
     assert len(backend.calls) == 2
 
     box["cfg"] = _cfg(tmp_path, provider="llm", model="jev-other")
+    box["cfg"].llm.model = "science-other"
     assert _run(service, state).cache_hit is False
     assert len(backend.calls) == 3
 
@@ -324,8 +364,9 @@ def test_cache_hit_and_each_key_part_misses(tmp_path: Any) -> None:
         unregister_template(versioned)
 
 
-def test_run_many_batches_same_state(tmp_path: Any) -> None:
-    backend = FakeBackend()
+@pytest.mark.parametrize("fake", [False, True])
+def test_run_many_batches_same_state(tmp_path: Any, fake: bool) -> None:
+    backend = FakeBackend(fake=fake)
     service = _service(tmp_path, backend)
     state = {"text": "shared"}
     results = service.run_many(
@@ -338,6 +379,32 @@ def test_run_many_batches_same_state(tmp_path: Any) -> None:
     assert [item.status for item in results] == ["ok", "ok", "ok"]
     assert len(backend.calls) == 1
     assert len(backend.calls[0]["questions"]) == 3
+    assert all(item.to_dict()["fake"] is fake for item in results)
+    assert _run(service, state).to_dict()["fake"] is fake
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("model", "other-model"),
+        ("base_url", "https://other-provider.example/v1"),
+        ("provider", "openai"),
+    ],
+)
+def test_llm_cache_uses_actual_main_model_identity(
+    tmp_path: Any, field: str, value: str
+) -> None:
+    backend = FakeBackend()
+    box: dict[str, Config] = {}
+    service = _service(tmp_path, backend, cfg_box=box, flags={"provider": "llm"})
+    first = service.probe()
+    assert first.model == box["cfg"].llm.model
+    assert service.probe().cache_hit is True
+    setattr(box["cfg"].llm, field, value)
+    second = service.probe()
+    assert second.cache_hit is False
+    assert second.model == box["cfg"].llm.model
+    assert len(backend.calls) == 2
 
 
 def test_run_many_concurrency_cap(tmp_path: Any) -> None:

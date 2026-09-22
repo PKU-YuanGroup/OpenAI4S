@@ -351,6 +351,35 @@ def test_disabled_submit_starts_no_workers() -> None:
     assert stats()["submitted"] == 0
 
 
+def test_store_toggle_takes_effect_without_restarting_workers() -> None:
+    from openai4s.judgment.disclosure import DISCLOSURE_VERSION
+    from openai4s.judgment.flags import (
+        SETTING_DISCLOSURE_ACK,
+        SETTING_MASTER,
+        SETTING_SAFETY_SHADOW,
+    )
+    from openai4s.store import get_store
+
+    cfg = get_config()
+    store = get_store(cfg.db_path)
+    set_allow_workers(False)
+    submit("code", state={"code": "print(1)"}, existing_verdict="SAFE")
+    assert stats()["submitted"] == 0
+
+    store.set_setting(
+        SETTING_DISCLOSURE_ACK,
+        json.dumps({"version": DISCLOSURE_VERSION, "capabilities": ["safety_shadow"]}),
+    )
+    store.set_setting(SETTING_MASTER, "true")
+    store.set_setting(SETTING_SAFETY_SHADOW, "true")
+    submit("code", state={"code": "print(2)"}, existing_verdict="SAFE")
+    assert stats()["submitted"] == 1
+
+    store.set_setting(SETTING_SAFETY_SHADOW, "false")
+    submit("code", state={"code": "print(3)"}, existing_verdict="SAFE")
+    assert stats()["submitted"] == 1
+
+
 def test_doctor_appends_shadow_stats() -> None:
     from openai4s import doctor
 

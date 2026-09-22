@@ -16,6 +16,7 @@ from openai4s.judgment.disclosure import (
 from openai4s.judgment.flags import (
     JUDGMENT_FLAG_PRECEDENCE,
     SETTING_MASTER,
+    SETTING_PROVIDER,
     SETTING_SKILL_SUGGEST,
     ResolvedFlag,
     resolve,
@@ -211,6 +212,48 @@ def test_ui_capability_without_capability_ack_is_no_disclosure() -> None:
     effective = resolve(Config(), store)
     assert effective.master == ResolvedFlag(True, "setting")
     assert effective.skill_suggest == ResolvedFlag(False, "no_disclosure")
+
+
+@pytest.mark.parametrize(
+    "ack_provider,provider,enabled",
+    [
+        (None, "typesafe", True),
+        (None, "llm", False),
+        ("typesafe", "llm", False),
+        ("llm", "typesafe", False),
+        ("llm", "llm", True),
+    ],
+)
+def test_ui_acknowledgment_is_bound_to_provider(ack_provider, provider, enabled):
+    ack = json.loads(_ack("skill_suggest"))
+    if ack_provider is not None:
+        ack["provider"] = ack_provider
+    store = MemoryStore(
+        {
+            SETTING_MASTER: "true",
+            SETTING_SKILL_SUGGEST: "true",
+            SETTING_PROVIDER: provider,
+            "experimental.judgment.disclosure_ack": json.dumps(ack),
+        }
+    )
+    effective = resolve(Config(), store)
+    assert effective.master.enabled is enabled
+    assert effective.skill_suggest.enabled is enabled
+    if not enabled:
+        assert effective.master.source == "no_disclosure"
+
+
+def test_env_master_does_not_reuse_ui_capability_ack_for_another_provider():
+    store = MemoryStore(
+        {
+            SETTING_SKILL_SUGGEST: "true",
+            "experimental.judgment.disclosure_ack": _ack("skill_suggest"),
+        }
+    )
+    cfg = Config(
+        experimental_judgment=ExperimentalJudgmentFlags(master=True, provider="llm")
+    )
+    assert resolve(cfg, store).skill_suggest == ResolvedFlag(False, "no_disclosure")
 
 
 def test_env_on_does_not_require_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:

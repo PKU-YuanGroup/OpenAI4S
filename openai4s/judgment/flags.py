@@ -16,7 +16,7 @@ from openai4s.config import (
 )
 from openai4s.judgment.disclosure import (
     CAPABILITIES,
-    DISCLOSURE_VERSION,
+    disclosure_matches,
     is_acknowledged,
 )
 
@@ -172,15 +172,13 @@ def resolve(cfg: Config, store: JudgmentFlagStore | None) -> EffectiveJudgmentFl
     """Apply the six precedence rules in ``JUDGMENT_FLAG_PRECEDENCE``."""
 
     raw = cfg.experimental_judgment
+    provider = _resolve_provider(cfg, store)
     ack = _load_ack(store)
     master = _resolve_one(
         raw.master, _parse_store_bool(_store_get(store, SETTING_MASTER))
     )
     if master.enabled and master.source == "setting":
-        version = ""
-        if isinstance(ack, dict):
-            version = str(ack.get("version") or "")
-        if version != DISCLOSURE_VERSION:
+        if not disclosure_matches(ack, provider):
             master = ResolvedFlag(False, "no_disclosure")
     if master.source == "env_on":
         _warn_env_operator()
@@ -194,7 +192,11 @@ def resolve(cfg: Config, store: JudgmentFlagStore | None) -> EffectiveJudgmentFl
             _capability_env(raw, name),
             _parse_store_bool(_store_get(store, SETTING_BY_CAPABILITY[name])),
         )
-        if flag.enabled and flag.source == "setting" and not is_acknowledged(ack, name):
+        if (
+            flag.enabled
+            and flag.source == "setting"
+            and not is_acknowledged(ack, name, provider)
+        ):
             flag = ResolvedFlag(False, "no_disclosure")
         resolved[name] = flag
 
@@ -205,7 +207,7 @@ def resolve(cfg: Config, store: JudgmentFlagStore | None) -> EffectiveJudgmentFl
         text_features=resolved["text_features"],
         safety_shadow=resolved["safety_shadow"],
         task_mode_shadow=resolved["task_mode_shadow"],
-        provider=_resolve_provider(cfg, store),
-        model=_resolve_model(cfg, store),
+        provider=provider,
+        model=(cfg.llm.model if provider == "llm" else _resolve_model(cfg, store)),
         timeout_s=float(raw.timeout_s),
     )

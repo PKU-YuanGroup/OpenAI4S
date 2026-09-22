@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
+from urllib.parse import urlsplit
 
 from openai4s.config import Config
 from openai4s.judgment.disclosure import (
@@ -20,6 +22,8 @@ from openai4s.judgment.disclosure import (
     DISCLOSURE_VERSION,
     FACTS_EN,
     FACTS_ZH,
+    disclosure_matches,
+    is_acknowledged,
 )
 from openai4s.judgment.flags import (
     SETTING_BY_CAPABILITY,
@@ -39,7 +43,7 @@ ENV_API_KEY = "OPENAI4S_TYPESAFE_API_KEY"
 _ALLOWED_UPDATE_KEYS = frozenset(
     {"enabled", "capabilities", "acknowledge", "api_key", "clear_api_key"}
 )
-_ALLOWED_ACK_KEYS = frozenset({"version", "capabilities"})
+_ALLOWED_ACK_KEYS = frozenset({"version", "capabilities", "provider"})
 
 
 class JudgmentSettingsStore(Protocol):
@@ -110,7 +114,7 @@ def key_is_configured(store: JudgmentSettingsStore | None) -> bool:
     return bool(stored)
 
 
-def egress_report() -> dict[str, Any]:
+def egress_report(host: str = TYPESAFE_HOST) -> dict[str, Any]:
     """Report whether ``api.typesafe.ai`` is already authorized.
 
     ``domain_allowed`` is ``egress.domain_in_allowlist`` — catalog membership,
@@ -123,13 +127,14 @@ def egress_report() -> dict[str, Any]:
     from openai4s import egress
 
     mode = egress.egress_mode()
-    authorized = egress.domain_in_allowlist(TYPESAFE_HOST)
+    authorized = bool(host) and egress.domain_in_allowlist(host)
     remediation: str | None
-    if mode == "allowlist" and not authorized:
-        remediation = egress.blocked_message(TYPESAFE_HOST)
+    if host and mode == "allowlist" and not authorized:
+        remediation = egress.blocked_message(host)
     else:
         remediation = None
     return {
+        "host": host,
         "mode": mode,
         "domain_allowed": authorized,
         "remediation": remediation,
@@ -149,37 +154,94 @@ def _effective_public(
     return out
 
 
-def _disclosure_public(store: JudgmentSettingsStore | None) -> dict[str, Any]:
+def _disclosure_public(
+    store: JudgmentSettingsStore | None, provider: str
+) -> dict[str, Any]:
     capabilities = {
         name: {"zh": DISCLOSURE_TEXT[name]["zh"], "en": DISCLOSURE_TEXT[name]["en"]}
         for name in CAPABILITIES
     }
     ack = _load_ack(store)
-    acked = ack is not None and str(ack.get("version") or "") == DISCLOSURE_VERSION
+    acked = disclosure_matches(ack, provider)
+    facts = {"en": FACTS_EN, "zh": FACTS_ZH}
+    if provider == "llm":
+        facts = {
+            "en": (
+                "Judgment inputs are sent to the main model provider configured in Models. "
+                "That provider's hosting, retention and training policies apply. "
+                "Results are uncalibrated. Do not enable this feature for sensitive data."
+            ),
+            "zh": (
+                "判断输入会发送给 Models 中配置的主模型服务商，其托管、保留和训练政策适用。"
+                "结果未经概率校准。敏感数据不要开启。"
+            ),
+        }
     return {
         "version": DISCLOSURE_VERSION,
         "capabilities": capabilities,
-        "facts": {"en": FACTS_EN, "zh": FACTS_ZH},
+        "facts": facts,
         "acked": acked,
+        "acknowledged_capabilities": [
+            name for name in CAPABILITIES if is_acknowledged(ack, name, provider)
+        ],
     }
+
+
+def _llm_key_ready(cfg: Config) -> bool:
+    """Mirror the main client: local endpoints need no API key."""
+
+    if cfg.llm.api_key:
+        return True
+    from openai4s.llm.capabilities import get_model_capabilities
+    from openai4s.llm.models import LLMError
+    from openai4s.llm.registry import provider_spec
+
+    try:
+        spec = provider_spec(cfg.llm.provider)
+        return get_model_capabilities(
+            cfg.llm.provider,
+            cfg.llm.model or spec["model"],
+            base_url=cfg.llm.base_url or spec["base_url"],
+        ).local_endpoint
+    except (ValueError, LLMError):
+        return False
+
+
+def resolve_settings_config(cfg: Config, store: JudgmentSettingsStore | None) -> Config:
+    """Use current Models settings for the global settings/probe surfaces."""
+
+    if resolve(cfg, store).provider != "llm":
+        return cfg
+    from openai4s.llm.resolve import resolve_llm_config
+
+    return replace(cfg, llm=resolve_llm_config(cfg.llm, store))
 
 
 def status(cfg: Config, store: JudgmentSettingsStore | None) -> dict[str, Any]:
     """Public settings projection. Never includes the API key."""
 
+    cfg = resolve_settings_config(cfg, store)
     flags = resolve(cfg, store)
+    model = flags.model
+    host = TYPESAFE_HOST
+    if flags.provider == "llm":
+        model = cfg.llm.model
+        configured = _llm_key_ready(cfg)
+        host = urlsplit(cfg.llm.base_url).hostname or ""
+    else:
+        configured = key_is_configured(store)
     return {
         "experimental": True,
         "effective": _effective_public(cfg, store),
         "provider": flags.provider,
-        "model": flags.model,
-        "key_configured": key_is_configured(store),
-        "disclosure": _disclosure_public(store),
-        "egress": egress_report(),
+        "model": model,
+        "key_configured": configured,
+        "disclosure": _disclosure_public(store, flags.provider),
+        "egress": egress_report(host),
     }
 
 
-def _apply_acknowledge(store: JudgmentSettingsStore, raw: object) -> None:
+def _validated_acknowledge(raw: object) -> str:
     if not isinstance(raw, dict):
         raise SettingsError("acknowledge must be an object")
     unknown = set(raw) - _ALLOWED_ACK_KEYS
@@ -195,6 +257,9 @@ def _apply_acknowledge(store: JudgmentSettingsStore, raw: object) -> None:
             f"current disclosure version {DISCLOSURE_VERSION!r}",
             "disclosure_version_mismatch",
         )
+    provider = raw.get("provider", "typesafe")
+    if not isinstance(provider, str) or provider not in {"typesafe", "llm"}:
+        raise SettingsError("acknowledge.provider must be typesafe or llm")
     listed = raw.get("capabilities")
     if not isinstance(listed, list):
         raise SettingsError("acknowledge.capabilities must be a list of names")
@@ -210,20 +275,23 @@ def _apply_acknowledge(store: JudgmentSettingsStore, raw: object) -> None:
             names.append(item)
     record = {
         "version": DISCLOSURE_VERSION,
+        "provider": provider,
         "capabilities": names,
         "acked_at": _now_iso(),
     }
-    store.set_setting(SETTING_DISCLOSURE_ACK, json.dumps(record, sort_keys=True))
+    return json.dumps(record, sort_keys=True)
 
 
-def _apply_capabilities(store: JudgmentSettingsStore, raw: object) -> None:
+def _validated_capabilities(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):
         raise SettingsError("capabilities must be an object")
+    settings: dict[str, str] = {}
     for name, value in raw.items():
         if not isinstance(name, str) or name not in SETTING_BY_CAPABILITY:
             raise SettingsError(f"unknown capability: {name}")
         enabled = _require_bool(value, f"capabilities.{name}")
-        store.set_setting(SETTING_BY_CAPABILITY[name], "true" if enabled else "false")
+        settings[SETTING_BY_CAPABILITY[name]] = "true" if enabled else "false"
+    return settings
 
 
 def update(store: JudgmentSettingsStore, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,24 +304,32 @@ def update(store: JudgmentSettingsStore, body: Mapping[str, Any]) -> dict[str, A
         names = ", ".join(sorted(unknown))
         raise SettingsError(f"unknown field: {names}")
 
+    # Validate the complete request before any side effect. A 400 must not
+    # silently acknowledge disclosure, enable outbound data, or clear a key.
+    settings: dict[str, str] = {}
     if "acknowledge" in body:
-        _apply_acknowledge(store, body["acknowledge"])
+        settings[SETTING_DISCLOSURE_ACK] = _validated_acknowledge(body["acknowledge"])
     if "enabled" in body:
         enabled = _require_bool(body["enabled"], "enabled")
-        store.set_setting(SETTING_MASTER, "true" if enabled else "false")
+        settings[SETTING_MASTER] = "true" if enabled else "false"
     if "capabilities" in body:
-        _apply_capabilities(store, body["capabilities"])
+        settings.update(_validated_capabilities(body["capabilities"]))
 
-    clear = body.get("clear_api_key")
-    if clear is not None:
-        if _require_bool(clear, "clear_api_key"):
-            store.set_secret_setting(SECRET_NAME, "", scope=SECRET_SCOPE)
+    clear = (
+        _require_bool(body["clear_api_key"], "clear_api_key")
+        if "clear_api_key" in body
+        else False
+    )
+    key = ""
     if "api_key" in body:
         key = _require_str(body["api_key"], "api_key").strip()
-        if key:
-            if body.get("clear_api_key") is True:
-                raise SettingsError("cannot set api_key and clear_api_key together")
-            store.set_secret_setting(SECRET_NAME, key, scope=SECRET_SCOPE)
+        if key and clear:
+            raise SettingsError("cannot set api_key and clear_api_key together")
+
+    for name, value in settings.items():
+        store.set_setting(name, value)
+    if clear or key:
+        store.set_secret_setting(SECRET_NAME, "" if clear else key, scope=SECRET_SCOPE)
 
     return {"ok": True}
 
@@ -315,7 +391,9 @@ def probe_connection(
 
     from openai4s.host.judgment import JudgmentService
 
-    service = JudgmentService(cfg_provider=cfg, store_provider=store)
+    service = JudgmentService(
+        cfg_provider=resolve_settings_config(cfg, store), store_provider=store
+    )
     return test_connection(service)
 
 
@@ -328,6 +406,7 @@ __all__ = (
     "egress_report",
     "key_is_configured",
     "probe_connection",
+    "resolve_settings_config",
     "status",
     "test_connection",
     "update",

@@ -418,6 +418,39 @@ def test_requests_capped_at_three(tmp_path: Path) -> None:
                 assert 2 <= len(question.options) <= 255
 
 
+@pytest.mark.stubbed_backend
+def test_two_request_budget_keeps_expanded_collection_members(tmp_path: Path) -> None:
+    backend = ScriptedBackend(prefer_bioskills=True)
+    member = skill_templates.SkillCandidate(
+        "bio-single-cell-demo", "Single-cell annotation", "1", "bioskills", "Recipe"
+    )
+    catalog = skill_templates.SuggestCatalog(
+        curated=(),
+        collections=(
+            skill_templates.SkillCandidate(
+                "bioskills", "Bio recipes", "1", "bioskills", ""
+            ),
+        ),
+        areas=(
+            skill_templates.AreaBucket(
+                "single", "Single-cell", "Recipes", (member.name,)
+            ),
+        ),
+        by_name={member.name: member},
+    )
+    cfg = _cfg(tmp_path, _tiny_skills(tmp_path))
+    judgment = JudgmentService(cfg, lambda: None, backend_factory=lambda: backend)
+    result = skill_templates.suggest(
+        request="Annotate these cells",
+        catalog=catalog,
+        run=judgment.run,
+        max_requests=2,
+    )
+    assert result["requests"] == len(backend.calls) == 2
+    assert [item["name"] for item in result["semantic_suggestions"]] == [member.name]
+    assert result["semantic_suggestions"][0]["stage"] == "bioskills"
+
+
 def test_choice_options_capped_at_255(tmp_path: Path) -> None:
     options = {f"skill-{index:03d}": "x" * (index + 1) for index in range(300)}
     capped, truncated = skill_templates.cap_choice_options(

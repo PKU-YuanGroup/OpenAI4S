@@ -138,13 +138,13 @@ def _is_nan(value: object) -> bool:
     return False
 
 
-def _slug(name: str, taken: set[str]) -> str:
+def _slug(name: str, taken: set[str], *, score: bool = False) -> str:
     base = "".join(ch if ch.isalnum() else "_" for ch in name.lower()).strip("_")
     if not base or not base[0].isalpha():
         base = "feature_" + (base or "q")
     candidate = base
     n = 2
-    while candidate in taken:
+    while candidate in taken or (score and f"{candidate}_sd" in taken):
         candidate = f"{base}_{n}"
         n += 1
     return candidate
@@ -208,11 +208,13 @@ def _dedupe_questions(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
             spec = _canonical_question(raw)
         except ValueError:
             continue
-        spec["id"] = _slug(str(spec["id"]), taken)
-        taken.add(spec["id"])
         key = " ".join(spec["instructions"].casefold().split())
         if key in seen_instr:
             continue
+        spec["id"] = _slug(str(spec["id"]), taken, score=spec["kind"] == "score")
+        taken.add(spec["id"])
+        if spec["kind"] == "score":
+            taken.add(f"{spec['id']}_sd")
         seen_instr.add(key)
         out.append(spec)
         if len(out) >= MAX_QUESTIONS:
@@ -456,6 +458,8 @@ def _state_for_row(row_id: object, text: object) -> dict[str, Any]:
 
 
 def _usage_add(total: dict[str, int], payload: Mapping[str, Any]) -> None:
+    if payload.get("cache_hit"):
+        return
     usage = (
         payload.get("usage") if "answers" in payload or "status" in payload else payload
     )
@@ -612,6 +616,25 @@ def _is_binary(values: Sequence[Any]) -> bool:
     return coerced <= {0, 1} or len(coerced) == 2
 
 
+def _encode_targets(values: Sequence[Any]) -> tuple[list[float], list[Any] | None]:
+    if _is_binary(values):
+        present = set(value for value in values if not _is_nan(value))
+        try:
+            classes = sorted(present)
+        except TypeError:
+            classes = sorted(
+                present, key=lambda value: (type(value).__name__, str(value))
+            )
+        labels = {value: float(index) for index, value in enumerate(classes)}
+        return [_NAN if _is_nan(value) else labels[value] for value in values], classes
+    try:
+        return [_NAN if _is_nan(value) else float(value) for value in values], None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "target must be numeric or have two distinct class labels"
+        ) from exc
+
+
 def _finite_pairs(
     y: Sequence[Any], pred: Sequence[Any]
 ) -> tuple[list[float], list[float]]:
@@ -621,10 +644,14 @@ def _finite_pairs(
         if _is_nan(actual) or _is_nan(estimate):
             continue
         try:
-            truth.append(float(actual))
-            guess.append(float(estimate))
+            actual_value = float(actual)
+            estimated_value = float(estimate)
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(actual_value) or not math.isfinite(estimated_value):
+            continue
+        truth.append(actual_value)
+        guess.append(estimated_value)
     return truth, guess
 
 
@@ -665,6 +692,12 @@ def _fit_linear(
     *,
     classification: bool,
 ) -> list[float]:
+    if not train_x or not test_x:
+        return _predict_constant(_mean(train_y), len(test_x))
+    # A small or imbalanced CV fold can contain one class. LogisticRegression
+    # requires two, so use that fold's empirical class rate in this case.
+    if classification and len(set(train_y)) < 2:
+        return _predict_constant(_mean(train_y), len(test_x))
     sklearn = _try_sklearn_linear()
     np = _try_numpy()
     if sklearn is not None and np is not None:
@@ -681,8 +714,6 @@ def _fit_linear(
         model = LinearRegression()
         model.fit(x_train, y_train)
         return [float(v) for v in model.predict(x_test)]
-    if not train_x or not test_x:
-        return _predict_constant(_mean(train_y), len(test_x))
     # Least-squares with a bias column; falls back to the mean if singular.
     n_features = len(train_x[0])
     xtx = [[0.0] * (n_features + 1) for _ in range(n_features + 1)]
@@ -733,7 +764,7 @@ def _cross_validate(
     *,
     classification: bool,
 ) -> tuple[list[float], dict[str, Any]]:
-    matrix, kept = _matrix(table, indices)
+    matrix, kept = _matrix(table, [index for index in indices if not _is_nan(y[index])])
     loc = {index: pos for pos, index in enumerate(kept)}
     oof = [_NAN] * len(indices)
     if len(kept) < 4 or not matrix:
@@ -819,10 +850,24 @@ def _lift(
     classification: bool,
 ) -> dict[str, Any]:
     metrics_mod = _load_sibling("evaluate-model")
-    base = _score_predictions(y_true, baseline, classification=classification)
-    feat = _score_predictions(y_true, model, classification=classification)
-    truth, base_hat = _finite_pairs(y_true, baseline)
-    _, model_hat = _finite_pairs(y_true, model)
+    # Compare both models on the same held-out rows. A missing judgment makes
+    # its model prediction NaN; filtering each model separately misaligns the
+    # paired bootstrap (and can index past the shorter prediction list).
+    truth: list[float] = []
+    base_hat: list[float] = []
+    model_hat: list[float] = []
+    for actual, base_value, model_value in zip(y_true, baseline, model):
+        try:
+            triple = (float(actual), float(base_value), float(model_value))
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in triple):
+            continue
+        truth.append(triple[0])
+        base_hat.append(triple[1])
+        model_hat.append(triple[2])
+    base = _score_predictions(truth, base_hat, classification=classification)
+    feat = _score_predictions(truth, model_hat, classification=classification)
     higher_is_better = bool(classification)
     if base["metric"] is None or feat["metric"] is None or len(truth) < 2:
         return {
@@ -897,6 +942,7 @@ def _select_examples(
     n: int,
     text_field: str,
     id_field: str,
+    target_values: Sequence[Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not indices:
         return []
@@ -921,7 +967,7 @@ def _select_examples(
         item = {
             "id": row.get(id_field),
             "text": row.get(text_field),
-            "target": y[index],
+            "target": y[index] if target_values is None else target_values[index],
         }
         out.append(item)
     return out
@@ -950,12 +996,14 @@ def run_feature_study(
         id_columns=(id_field,) if id_field else (),
         group_columns=(split_by,) if split_by else (),
     )
-    y = _column_values(rows, target)
-    classification = _is_binary(y)
+    target_values = _column_values(rows, target)
+    y, target_classes = _encode_targets(target_values)
+    classification = target_classes is not None
     splits = _split_indices(rows, split_by=split_by, time_col=time_col, seed=SPLIT_SEED)
     dev_idx = list(splits.get("train") or []) + list(splits.get("validation") or [])
     test_idx = list(splits.get("test") or [])
     judged_ids: list[Any] = []
+    usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
     probe = _judge(
         TEMPLATE_ID,
         _state_for_row("capability-probe", "probe"),
@@ -967,6 +1015,7 @@ def run_feature_study(
             }
         ],
     )
+    _usage_add(usage, probe)
     if str(probe.get("status") or "") == "disabled":
         return _disabled_payload(audit=audit, split={"dev": dev_idx, "test": test_idx})
 
@@ -976,7 +1025,6 @@ def run_feature_study(
     )
     accepted: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
-    usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
     oof: list[float] | None = None
     feedback = ""
     last_table: dict[str, Any] | None = None
@@ -990,6 +1038,7 @@ def run_feature_study(
             n=min(8, len(dev_idx)),
             text_field=text_field,
             id_field=id_field,
+            target_values=target_values,
         )
         proposed = propose_questions(
             description,
@@ -1021,6 +1070,13 @@ def run_feature_study(
                 continue
             kept.append(spec)
         trial = kept or trial
+        # The frozen test table is built from trial. Keep the development
+        # matrix in that exact column order, including each Score's spread.
+        columns = [item["column"] for item in _column_plan(trial)]
+        table = {
+            **table,
+            "columns": {name: table["columns"][name] for name in columns},
+        }
         last_table = table
         oof_map, cv = _cross_validate(
             table,
@@ -1062,7 +1118,9 @@ def run_feature_study(
             text_field=text_field,
             id_field=id_field,
         )
-        train_x, train_kept = _matrix(dev_table, list(range(len(dev_idx))))
+        train_x, train_kept = _matrix(
+            dev_table, [i for i in range(len(dev_idx)) if not _is_nan(y[dev_idx[i]])]
+        )
         test_x, test_kept = _matrix(test_table, list(range(len(test_idx))))
         train_y = [float(y[dev_idx[i]]) for i in train_kept]
         if train_x and test_x:
@@ -1106,6 +1164,7 @@ def run_feature_study(
         "usage": usage,
         "judged_ids": judged_ids,
         "classification": classification,
+        "target_classes": target_classes,
         "template_id": TEMPLATE_ID,
         "template_version": TEMPLATE_VERSION,
     }

@@ -9385,6 +9385,9 @@
               "acked": {
                 "type": "boolean"
               },
+              "acknowledged_capabilities": {
+                "type": "array"
+              },
               "capabilities": {
                 "properties": {
                   "literature_check": {
@@ -9482,6 +9485,7 @@
             },
             "required": [
               "acked",
+              "acknowledged_capabilities",
               "capabilities",
               "facts",
               "version"
@@ -9596,6 +9600,9 @@
               "domain_allowed": {
                 "type": "boolean"
               },
+              "host": {
+                "type": "string"
+              },
               "mode": {
                 "type": "string"
               },
@@ -9608,6 +9615,7 @@
             },
             "required": [
               "domain_allowed",
+              "host",
               "mode",
               "remediation"
             ],
@@ -22548,6 +22556,9 @@
               "acked": {
                 "type": "boolean"
               },
+              "acknowledged_capabilities": {
+                "type": "array"
+              },
               "capabilities": {
                 "properties": {
                   "literature_check": {
@@ -22645,6 +22656,7 @@
             },
             "required": [
               "acked",
+              "acknowledged_capabilities",
               "capabilities",
               "facts",
               "version"
@@ -22759,6 +22771,9 @@
               "domain_allowed": {
                 "type": "boolean"
               },
+              "host": {
+                "type": "string"
+              },
               "mode": {
                 "type": "string"
               },
@@ -22768,6 +22783,7 @@
             },
             "required": [
               "domain_allowed",
+              "host",
               "mode",
               "remediation"
             ],
@@ -42887,6 +42903,12 @@
               "acked": {
                 "type": "boolean"
               },
+              "acknowledged_capabilities": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "capabilities": {
                 "properties": {
                   "literature_check": {
@@ -42984,6 +43006,7 @@
             },
             "required": [
               "acked",
+              "acknowledged_capabilities",
               "capabilities",
               "facts",
               "version"
@@ -43098,6 +43121,9 @@
               "domain_allowed": {
                 "type": "boolean"
               },
+              "host": {
+                "type": "string"
+              },
               "mode": {
                 "type": "string"
               },
@@ -43107,6 +43133,7 @@
             },
             "required": [
               "domain_allowed",
+              "host",
               "mode",
               "remediation"
             ],

@@ -527,7 +527,11 @@ def _keyword_window(
     best: tuple[float, int, int] | None = None
     hay_fold = haystack.casefold()
     length = len(haystack)
-    for start in range(0, max(1, length - win + 1), step):
+    last_start = max(0, length - win)
+    starts = list(range(0, last_start + 1, step))
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    for start in starts:
         end = min(length, start + win)
         chunk = hay_fold[start:end]
         hits = 0
@@ -614,9 +618,12 @@ def locate_claim(
 
 
 def _norm_unit(unit: str) -> str:
-    text = (unit or "").strip().lower()
+    # SI symbols are case-sensitive: mM is millimolar, mm is millimetres,
+    # and pA (picoampere) is not Pa (pascal).
+    text = (unit or "").strip()
     text = text.replace("µ", "u").replace("μ", "u")
-    text = text.replace("percentage", "%").replace("percent", "%").replace("pct", "%")
+    if text.casefold() in {"percentage", "percent", "pct"}:
+        text = "%"
     text = re.sub(r"\s+", "", text)
     return text
 

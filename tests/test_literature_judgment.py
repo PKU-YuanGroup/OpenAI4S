@@ -229,6 +229,36 @@ def test_locate_without_quote_uses_keywords(kernel_mod) -> None:
     assert "metformin" in located["section"].casefold()
 
 
+def test_keyword_location_includes_final_partial_window(kernel_mod) -> None:
+    source = "x" * 1070 + " metformin"
+    located = kernel_mod.locate_claim(source, claim="metformin", window=400)
+    assert located is not None
+    assert located["span"]["end"] == len(source)
+    assert "metformin" in located["section"]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("claim_unit,source_unit", [("mM", "mm"), ("Pa", "pA")])
+def test_distinct_case_sensitive_units_cannot_verify_claim(
+    kernel_mod, claim_unit, source_unit
+) -> None:
+    host = FakeHost(_choice_result("supports"))
+    kernel_mod.lr_sdk = lambda: host
+    rows = kernel_mod.check_claims(
+        [
+            {
+                "claim_id": "c1",
+                "source_id": "s1",
+                "claim": f"Value was 5 {claim_unit}.",
+                "quote": f"Value was 5 {source_unit}.",
+            }
+        ],
+        {"s1": {"text": f"Value was 5 {source_unit}.", "version_id": "v1"}},
+    )
+    assert rows[0]["status"] == "numeric_mismatch"
+    assert rows[0]["numeric"]["unit_conflicts"]
+
+
 def test_quantities_value_unit_and_percent(kernel_mod) -> None:
     same = kernel_mod.compare_quantities(
         "reduced HbA1c by 1.1%", "HbA1c fell by 1.1 percent versus placebo"

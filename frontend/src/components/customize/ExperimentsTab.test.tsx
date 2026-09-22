@@ -141,10 +141,11 @@ function status(overrides: Record<string, unknown> = {}) {
     disclosure: {
       version: "2026-09-20",
       acked: false,
+      acknowledged_capabilities: [],
       capabilities: disclosureCaps(),
       facts: { en: "Hosted in the United States.", zh: "托管在美国。" },
     },
-    egress: { mode: "off", domain_allowed: false, remediation: null },
+    egress: { mode: "off", host: "api.typesafe.ai", domain_allowed: false, remediation: null },
     ...overrides,
   };
 }
@@ -182,14 +183,24 @@ beforeEach(() => {
         ...currentStatus,
         key_configured: body.clear_api_key === true ? false : body.api_key ? true : currentStatus.key_configured,
       };
-      if (body.enabled === true && body.acknowledge) {
+      if (body.enabled === true) {
         next.effective = {
           ...(currentStatus.effective as Record<string, unknown>),
           master: { enabled: true, source: "setting" },
         };
+      }
+      if (body.acknowledge) {
         next.disclosure = {
           ...(currentStatus.disclosure as Record<string, unknown>),
           acked: true,
+          acknowledged_capabilities: (body.acknowledge as { capabilities: string[] }).capabilities,
+        };
+      }
+      if (body.capabilities) {
+        next.effective = {
+          ...(next.effective as Record<string, unknown>),
+          ...Object.fromEntries(Object.entries(body.capabilities as Record<string, boolean>)
+            .map(([name, enabled]) => [name, { enabled, source: "setting" }])),
         };
       }
       if (body.enabled === false) {
@@ -245,15 +256,64 @@ describe("ExperimentsTab disclosure", () => {
     await vi.waitFor(() => expect(lastPut).toBeTruthy());
     expect(lastPut).toMatchObject({
       enabled: true,
-      acknowledge: { version: "2026-09-20" },
+      acknowledge: { version: "2026-09-20", provider: "typesafe" },
     });
     const acked = (lastPut as { acknowledge: { capabilities: string[] } }).acknowledge.capabilities;
     expect(acked.sort()).toEqual(Object.keys(disclosureCaps()).sort());
     await vi.waitFor(() => expect(tagged(render(), "data-judgment-master", "on").length).toBe(1));
   });
+
+  it("acknowledges the selected capability when only other capabilities were accepted", async () => {
+    currentStatus = status({
+      effective: { ...status().effective, master: { enabled: true, source: "setting" } },
+      disclosure: {
+        ...status().disclosure, acked: true, acknowledged_capabilities: ["skill_suggest"],
+      },
+    });
+    await open();
+    click(render(), "data-judgment-cap", "literature_check");
+    expect(lastPut).toBeNull();
+    expect(tagged(render(), "data-judgment-disclosure").length).toBe(1);
+    for (const name of Object.keys(disclosureCaps())) {
+      fire(tagged(render(), "data-judgment-ack-cap", name)[0], "onChange", { target: { checked: true } });
+    }
+    click(render(), "data-judgment-ack");
+    await vi.waitFor(() => expect(lastPut).toMatchObject({
+      capabilities: { literature_check: true },
+      acknowledge: { provider: "typesafe" },
+    }));
+    expect(lastPut).not.toHaveProperty("enabled");
+    await vi.waitFor(() => expect(tagged(render(), "data-judgment-cap", "literature_check")[0]?.props?.["data-judgment-cap-on"]).toBe("on"));
+  });
 });
 
 describe("ExperimentsTab env_off and key", () => {
+  it("does not offer ineffective capability writes while the master is off", async () => {
+    const tree = await open();
+    const cap = tagged(tree, "data-judgment-cap", "skill_suggest")[0];
+    expect(nodes(cap, (node) => node.props?.disabled === true).length).toBeGreaterThan(0);
+    click(tree, "data-judgment-cap", "skill_suggest");
+    expect(lastPut).toBeNull();
+  });
+
+  it("prevents settings writes from pretending to turn off environment-enabled switches", async () => {
+    currentStatus = status({
+      effective: {
+        ...status().effective,
+        master: { enabled: true, source: "env_on" },
+        skill_suggest: { enabled: true, source: "env_on" },
+      },
+    });
+    const tree = await open();
+    for (const [key, value] of [["data-judgment-master", undefined], ["data-judgment-cap", "skill_suggest"]] as const) {
+      const wrap = tagged(tree, key, value)[0];
+      expect(nodes(wrap, (node) => node.props?.disabled === true).length).toBeGreaterThan(0);
+      click(tree, key, value);
+    }
+    expect(lastPut).toBeNull();
+    expect(content(tree)).toContain("Forced on by an environment variable");
+  });
+
   it("disables the master switch when source is env_off", async () => {
     currentStatus = status({
       effective: {
@@ -288,6 +348,30 @@ describe("ExperimentsTab env_off and key", () => {
     expect(content(after)).toContain("Configured");
     expect(content(after)).not.toContain("loopback-test-key");
   });
+});
+
+describe("ExperimentsTab providers", () => {
+  it("shows the LLM provider's destination and credentials without TypeSafe key controls", async () => {
+    currentStatus = status({
+      provider: "llm", model: "configured-main-model", key_configured: true,
+      egress: { mode: "off", host: "llm.example.test", domain_allowed: true, remediation: null },
+    });
+    const tree = await open();
+    expect(tagged(tree, "data-judgment-key")).toHaveLength(0);
+    expect(tagged(tree, "data-judgment-save-key")).toHaveLength(0);
+    expect(content(tree)).toContain("llm.example.test is authorized");
+    expect(content(tree)).toContain("configured-main-model");
+    expect(content(tree)).toContain("Uses the model credentials configured in Models.");
+    expect(content(tree)).not.toContain("api.typesafe.ai");
+    expect(content(tree)).not.toContain("TypeSafe API key");
+    click(tree, "data-judgment-master");
+    for (const name of Object.keys(disclosureCaps())) {
+      fire(tagged(render(), "data-judgment-ack-cap", name)[0], "onChange", { target: { checked: true } });
+    }
+    click(render(), "data-judgment-ack");
+    await vi.waitFor(() => expect(lastPut).toMatchObject({ acknowledge: { provider: "llm" } }));
+  });
+
 });
 
 describe("ExperimentsTab connection probe", () => {

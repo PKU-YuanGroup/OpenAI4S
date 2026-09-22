@@ -64,8 +64,9 @@ POST 到 `https://api.typesafe.ai/v1/systemone`。模型 id 钉死为 `jev-1.13.
 2. 打开总开关。披露对话框会列出每一项能力、会发送什么数据，以及下面的托管事实。
    `safety_shadow` 单独标成外发风险最高。
 3. 勾选你打算用的每一项，然后确认。确认写入
-   `experimental.judgment.disclosure_ack = {version, capabilities, acked_at}`，
+   `experimental.judgment.disclosure_ack = {version, provider, capabilities, acked_at}`，
    版本是 `DISCLOSURE_VERSION`（`2026-09-20`）。改了披露文案就升版本，需要重新确认。
+   在 TypeSafe 与主模型之间切换 provider 也需要重新确认；没有 `provider` 的旧记录只适用于 TypeSafe。
 4. 粘贴 TypeSafe API key 并保存。已保存的密钥不会回显；界面只显示「已配置 /
    未配置」。清除会同时删掉 Store 行和钥匙串条目。
 5. 打开各项能力开关。后端和模型是只读的（除非你用环境变量覆盖，否则是
@@ -123,9 +124,11 @@ TypeSafe key 每次请求前经 SecretBroker 取用。客户端不会把它写�
 REST（鉴权与 `/search/config` 相同）：
 
 - `GET /api/v1/experimental/judgment` — 开关、来源、provider、model、
-  `key_configured`（只有布尔值）、披露版本与确认、egress 报告。
+  `key_configured`（只有布尔值）、披露版本与确认、已确认的能力、当前 provider 的 egress 主机与报告。
+  `provider=llm` 时模型和凭据取自 Models，本地端点无需密钥；TypeSafe 托管声明不适用于该 provider。
 - `PUT /api/v1/experimental/judgment` — `enabled`、`capabilities`、
-  `acknowledge`、`api_key`、`clear_api_key`。
+  `acknowledge:{version,provider,capabilities}`、`api_key`、`clear_api_key`。
+  任意字段无效时整份请求在写入设置或密钥前被拒绝。
 - `POST /api/v1/experimental/judgment/test` — 连接测试。
 
 ## 如何关闭

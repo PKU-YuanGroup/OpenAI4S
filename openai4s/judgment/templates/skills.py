@@ -583,7 +583,12 @@ def suggest(
 
     if bound < 3:
         suggestions = []
-        for name, prob in curated_ranked[:MAX_SUGGESTIONS]:
+        # A two-request budget includes collection expansion. Preserve those
+        # member results even when the caller does not request a fit pass.
+        ranked = sorted(
+            curated_ranked + bio_ranked, key=lambda item: (-item[1], item[0])
+        )
+        for name, prob in ranked[:MAX_SUGGESTIONS]:
             stage = (
                 "bioskills"
                 if catalog.by_name.get(name) is not None

@@ -329,6 +329,153 @@ def test_featurize_column_shape_nan_and_score_normalization(kernel_mod) -> None:
     assert "specs" in host.calls[0][2]
 
 
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("score_first", [True, False])
+def test_featurize_reserves_score_spread_column_names(kernel_mod, score_first) -> None:
+    questions = [_score_spec("tone"), _noul_spec("tone_sd")]
+    if not score_first:
+        questions.reverse()
+
+    class Host:
+        def judge(self, _template, _state, **params):
+            return _ok_result(
+                {
+                    spec["id"]: (
+                        _score_answer({"0": 0.0, "1": 1.0, "2": 0.0})
+                        if spec["kind"] == "score"
+                        else _noul_answer(0.8)
+                    )
+                    for spec in params["specs"]
+                }
+            )
+
+    kernel_mod.tf_sdk = Host
+    table = kernel_mod.featurize(
+        [{"id": "a", "text": "A result."}],
+        questions,
+        text_field="text",
+        id_field="id",
+    )
+    assert len(table["columns"]) == 3
+    assert all(len(column) == 1 for column in table["columns"].values())
+    assert sorted(column[0] for column in table["columns"].values()) == [0.0, 0.5, 0.8]
+
+
+def test_lift_pairs_baseline_and_model_on_available_rows(kernel_mod) -> None:
+    kernel_mod.BOOTSTRAP_RESAMPLES = 50
+    lift = kernel_mod._lift(
+        [0.0, 1000.0, 2.0],
+        [1.0, 1.0, 1.0],
+        [0.0, float("nan"), 2.0],
+        classification=False,
+    )
+    assert lift["baseline"]["n"] == lift["model"]["n"] == 2
+    assert lift["baseline"]["metric"] == 1.0
+    assert lift["model"]["metric"] == 0.0
+    assert lift["lift"] == 1.0
+    assert lift["bootstrap"]["estimate"] == 1.0
+
+
+def test_invalid_prediction_does_not_shift_remaining_targets(kernel_mod) -> None:
+    truth, guesses = kernel_mod._finite_pairs([1, 2, 3], ["bad", "nan", 3])
+    assert truth == guesses == [3.0]
+
+
+@pytest.mark.parametrize("label", [0.0, 1.0])
+def test_single_class_training_fold_uses_empirical_probability(
+    kernel_mod, label
+) -> None:
+    predictions = kernel_mod._fit_linear(
+        [[0.0], [0.5], [1.0]],
+        [label] * 3,
+        [[0.25], [0.75]],
+        classification=True,
+    )
+    assert predictions == [label, label]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("stdlib_only", [True, False])
+def test_frozen_study_projects_development_columns_after_dropping_flat_feature(
+    kernel_mod, monkeypatch, stdlib_only
+) -> None:
+    if stdlib_only:
+        monkeypatch.setattr(kernel_mod, "_try_sklearn_linear", lambda: None)
+    kernel_mod.BOOTSTRAP_RESAMPLES = 20
+    questions = [
+        _noul_spec("flat", "Does state.text contain a sentence?"),
+        _noul_spec("varying", "How positive is state.text?"),
+    ]
+
+    class Host:
+        def judge(self, _template, state, **params):
+            return _ok_result(
+                {
+                    spec["id"]: _noul_answer(
+                        float(state["id"]) / 12.0 if spec["id"] == "varying" else 0.5
+                    )
+                    for spec in params["specs"]
+                }
+            )
+
+    kernel_mod.tf_sdk = Host
+    kernel_mod.propose_questions = lambda *a, **kw: questions
+    rows = [{"id": i, "text": f"Row {i}.", "target": float(i)} for i in range(12)]
+    result = kernel_mod.run_feature_study(rows, "target", time_col="id", rounds=1)
+    assert [question["id"] for question in result["questions"]] == ["varying"]
+    assert list(result["test"]["table"]["columns"]) == ["varying"]
+    assert result["test"]["predictions"] == pytest.approx([6, 7, 8, 9, 10, 11])
+    assert result["metrics"]["model"]["metric"] == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("labels", [(1, 2), ("negative", "positive")])
+def test_study_encodes_binary_labels_and_excludes_missing_targets(
+    kernel_mod, labels
+) -> None:
+    kernel_mod.BOOTSTRAP_RESAMPLES = 20
+    questions = [_noul_spec("positive")]
+
+    class Host:
+        def judge(self, _template, state, **params):
+            value = (
+                0.5
+                if state["id"] == "capability-probe"
+                else 0.1 + 0.8 * (state["id"] % 2)
+            )
+            return _ok_result(
+                {spec["id"]: _noul_answer(value) for spec in params["specs"]}
+            )
+
+    kernel_mod.tf_sdk = Host
+    kernel_mod.propose_questions = lambda *a, **kw: questions
+    rows = [
+        {"id": i, "text": f"Row {i}.", "target": None if i in {2, 8} else labels[i % 2]}
+        for i in range(12)
+    ]
+    result = kernel_mod.run_feature_study(rows, "target", time_col="id", rounds=1)
+    assert result["classification"] is True
+    assert result["target_classes"] == list(labels)
+    assert result["history"][0]["cv"]["n"] == 5
+    assert result["metrics"]["model"]["n"] == 5
+    assert result["metrics"]["model"]["metric"] == 1.0
+    assert result["usage"]["input_tokens"] == 13 * 4
+
+
+@pytest.mark.stubbed_backend
+def test_featurize_does_not_bill_cached_judgments_twice(kernel_mod) -> None:
+    cached = {**_ok_result({"q": _noul_answer(0.8)}), "cache_hit": True}
+    kernel_mod.tf_sdk = lambda: FakeHost(cached)
+    table = kernel_mod.featurize(
+        [{"id": "a", "text": "Repeated text."}],
+        [_noul_spec("q")],
+        text_field="text",
+        id_field="id",
+    )
+    assert table["columns"]["q"] == [0.8]
+    assert table["usage"] == {"input_tokens": 0, "output_tokens": 0, "requests": 0}
+
+
 def test_test_split_is_not_judged_until_frozen(kernel_mod) -> None:
     questions = [_noul_spec("mentions_trial")]
     host = FakeHost(_ok_result({"mentions_trial": _noul_answer(0.7)}))

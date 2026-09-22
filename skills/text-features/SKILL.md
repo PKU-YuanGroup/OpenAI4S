@@ -109,6 +109,10 @@ Question edits, feature screening, and thresholds use the development rows
 only. The test split is judged once, after the question set is frozen. The
 report includes lift versus a constant baseline and a bootstrap interval,
 plus the question-set version and per-feature provenance.
+Binary targets are encoded in the reported `target_classes` order; predictions
+are probabilities of the second class. Rows with missing targets are excluded
+from fitting and metrics. Baseline and feature-model lift use the same rows
+with available predictions.
 
 Modeling uses numpy / pandas / scikit-learn when the science extra is
 installed. They are imported lazily. They are not core dependencies. Without

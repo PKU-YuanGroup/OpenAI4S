@@ -43,7 +43,6 @@ _allow_workers = True
 _generation = 0
 _backend_factory: Callable[[], Any] | None = None
 _service: Any = None
-_enabled_cache: tuple[tuple[Any, ...], bool] | None = None
 
 _submitted = 0
 _dropped = 0
@@ -73,7 +72,6 @@ def _env_true(raw: str | None) -> bool:
 def _capability_on() -> bool:
     """Cheap enable check. Env kill-switch / env-on skip Store."""
 
-    global _enabled_cache
     master = _env_token("OPENAI4S_EXPERIMENTAL_JUDGMENT")
     cap = _env_token("OPENAI4S_JUDGMENT_SAFETY_SHADOW")
     if _env_false(master) or _env_false(cap):
@@ -84,17 +82,14 @@ def _capability_on() -> bool:
         from openai4s.config import get_config
 
         cfg = get_config()
-        key = (master, cap, str(cfg.db_path))
-        cached = _enabled_cache
-        if cached is not None and cached[0] == key:
-            return cached[1]
         from openai4s.judgment.flags import resolve
         from openai4s.store import get_store
 
+        # Settings and disclosure may change while the daemon is running.
+        # A cache keyed only by environment/database path would retain an old
+        # off decision after the user enables the capability in Customize.
         flags = resolve(cfg, get_store(cfg.db_path))
-        on = bool(flags.master.enabled and flags.safety_shadow.enabled)
-        _enabled_cache = (key, on)
-        return on
+        return bool(flags.master.enabled and flags.safety_shadow.enabled)
     except Exception:
         return False
 
@@ -346,7 +341,7 @@ def set_allow_workers(allow: bool) -> None:
 def reset_for_tests() -> None:
     """Drop queued work, reset counters, and forget test doubles."""
 
-    global _generation, _submitted, _dropped, _service, _enabled_cache
+    global _generation, _submitted, _dropped, _service
     global _backend_factory, _allow_workers
     with _lock:
         _generation += 1
@@ -360,7 +355,6 @@ def reset_for_tests() -> None:
         _service = None
         _backend_factory = None
         _allow_workers = True
-        _enabled_cache = None
     while True:
         try:
             _queue.get_nowait()

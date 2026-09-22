@@ -44,6 +44,8 @@ try {
   await page.evaluate(() => window.openCust("general"));
   await page.locator("[data-judgment]").waitFor({ state: "visible" });
   await page.locator('#cust-content[aria-busy="false"]').waitFor({ state: "attached" });
+  const skillToggle = page.locator('[data-judgment-cap="skill_suggest"] .toggle');
+  assert.equal(await skillToggle.isDisabled(), true, "capability writes are disabled while the master is off");
   await screenshot("customize-experimental-off");
 
   await page.locator("[data-judgment-master] .toggle").click();
@@ -63,6 +65,20 @@ try {
     (await page.locator("[data-judgment-master]").getAttribute("data-judgment-master")) === "on",
   );
   await screenshot("master-enabled");
+
+  await skillToggle.click();
+  await waitUntil("skill suggestions enabled", async () =>
+    (await page.locator('[data-judgment-cap="skill_suggest"]').getAttribute("data-judgment-cap-on")) === "on",
+  );
+  await page.reload();
+  await page.evaluate(() => window.openCust("general"));
+  await page.locator('[data-judgment-cap="skill_suggest"][data-judgment-cap-on="on"]').waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-judgment-disclosure]").count(), 0, "the acknowledgement survives reload");
+  await skillToggle.click();
+  await waitUntil("skill suggestions disabled", async () =>
+    (await page.locator('[data-judgment-cap="skill_suggest"]').getAttribute("data-judgment-cap-on")) === "off",
+  );
+  await screenshot("capability-toggle-persisted");
 
   const keyBox = page.locator("[data-judgment-key]");
   await keyBox.fill("loopback-test-key");
@@ -86,6 +102,7 @@ try {
     (await page.locator("[data-judgment-key-state]").getAttribute("data-judgment-key-state")) ===
       "missing",
   );
+  assert.equal(await page.locator("[data-judgment-test-result]").getAttribute("data-judgment-test-result"), "idle", "credential edits invalidate a previous successful probe");
   await screenshot("key-cleared");
 
   await page.locator("[data-judgment-test]").click();
@@ -96,7 +113,7 @@ try {
   await screenshot("test-unavailable");
 
   assert.equal(pageErrors.length, 0, pageErrors.join("\n"));
-  console.log("browser_judgment: disclosure, key save/clear, and probe ok/unavailable passed");
+  console.log("browser_judgment: disclosure, capability toggle/reload, key save/clear, and probe ok/unavailable passed");
 } finally {
   await browser.close();
 }

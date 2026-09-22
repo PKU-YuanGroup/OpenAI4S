@@ -66,12 +66,23 @@ FACTS_ZH = (
 )
 
 
-def is_acknowledged(ack_record: object, capability: str) -> bool:
-    """True when ``ack_record`` matches this version and lists ``capability``."""
-
+def disclosure_matches(ack_record: object, provider: str = "typesafe") -> bool:
+    """Older acknowledgments without a provider describe TypeSafe only."""
     if not isinstance(ack_record, Mapping):
         return False
     if str(ack_record.get("version") or "") != DISCLOSURE_VERSION:
+        return False
+    return ack_record.get("provider", "typesafe") == provider
+
+
+def is_acknowledged(
+    ack_record: object, capability: str, provider: str = "typesafe"
+) -> bool:
+    """True when the version, provider and capability were acknowledged."""
+
+    if not isinstance(ack_record, Mapping) or not disclosure_matches(
+        ack_record, provider
+    ):
         return False
     listed = ack_record.get("capabilities")
     if isinstance(listed, str):

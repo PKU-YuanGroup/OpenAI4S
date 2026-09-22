@@ -219,11 +219,13 @@ export type JudgmentStatus = {
   disclosure: {
     version: string;
     acked: boolean;
+    acknowledged_capabilities: string[];
     capabilities: Record<string, JudgmentDisclosureCap>;
     facts: { en?: string; zh?: string };
   };
   egress: {
     mode: string;
+    host: string;
     domain_allowed: boolean;
     remediation: string | null;
   };
@@ -232,7 +234,7 @@ export type JudgmentStatus = {
 export type JudgmentUpdate = {
   enabled?: boolean;
   capabilities?: Record<string, boolean>;
-  acknowledge?: { version: string; capabilities: string[] };
+  acknowledge?: { version: string; provider: string; capabilities: string[] };
   api_key?: string;
   clear_api_key?: boolean;
 };
@@ -304,6 +306,9 @@ function judgmentStatus(body: Record<string, unknown>): JudgmentStatus {
     disclosure: {
       version: body.disclosure.version,
       acked: body.disclosure.acked,
+      acknowledged_capabilities: Array.isArray(body.disclosure.acknowledged_capabilities)
+        ? body.disclosure.acknowledged_capabilities.filter((name): name is string => typeof name === "string")
+        : [],
       capabilities,
       facts: {
         ...(typeof factsRaw.en === "string" ? { en: factsRaw.en } : {}),
@@ -312,6 +317,8 @@ function judgmentStatus(body: Record<string, unknown>): JudgmentStatus {
     },
     egress: {
       mode: body.egress.mode,
+      host: typeof body.egress.host === "string" ? body.egress.host
+        : body.provider === "typesafe" ? "api.typesafe.ai" : "",
       domain_allowed: body.egress.domain_allowed,
       remediation,
     },

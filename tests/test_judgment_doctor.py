@@ -25,6 +25,7 @@ _JUDGMENT_ENV = (
     "OPENAI4S_JUDGMENT_TEXT_FEATURES",
     "OPENAI4S_JUDGMENT_SAFETY_SHADOW",
     "OPENAI4S_JUDGMENT_TASK_MODE_SHADOW",
+    "OPENAI4S_JUDGMENT_PROVIDER",
     ENV_API_KEY,
 )
 
@@ -115,3 +116,44 @@ def test_ui_enabled_store_key_is_not_echoed(tmp_path):
     blob = json.dumps(doctor.report(cfg)) + doctor.render(doctor.report(cfg))
     assert _TEST_KEY not in blob
     assert store.get_setting(SECRET_NAME) != _TEST_KEY
+
+
+def test_llm_backend_reports_main_model_without_typesafe_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    cfg = _cfg(tmp_path)
+    cfg.llm.model = "configured-science-model"
+    check = doctor._judgment(cfg)
+    assert check.status == doctor.OK
+    assert check.detail == "enabled (llm/configured-science-model)"
+    assert check.facts["key_configured"] is True
+
+
+def test_llm_backend_reports_its_own_egress_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    monkeypatch.setenv("OPENAI4S_EGRESS", "allowlist")
+    cfg = _cfg(tmp_path)
+    cfg.llm.base_url = "https://judgment-model.example/v1"
+    check = doctor._judgment(cfg)
+    assert check.status == doctor.WARN
+    assert "judgment-model.example" in check.detail
+    assert check.remedy == egress.blocked_message("judgment-model.example")
+    assert TYPESAFE_HOST not in check.detail
+
+
+def test_llm_backend_reads_configuration_saved_in_models(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    cfg = _cfg(tmp_path)
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    store.set_setting("llm_provider", "chatgpt")
+    store.set_setting("llm_model", "saved-science-model")
+    store.set_setting("llm_base_url", "https://saved-model.example/v1")
+    store.set_secret_setting("llm_api_key", _TEST_KEY, scope="llm")
+    check = doctor._judgment(cfg)
+    assert check.status == doctor.OK
+    assert check.detail == "enabled (llm/saved-science-model)"
+    assert check.facts["key_configured"] is True
+    assert _TEST_KEY not in json.dumps(check.public())
