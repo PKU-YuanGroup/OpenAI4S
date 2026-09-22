@@ -199,10 +199,14 @@ def _service() -> Any:
             return _DEFAULT_SERVICE
     from openai4s.config import get_config
     from openai4s.host.judgment import JudgmentService
+    from openai4s.judgment.settings import resolve_settings_config
     from openai4s.store import get_store
 
     cfg = get_config()
-    service = JudgmentService(lambda: cfg, lambda: get_store(cfg.db_path))
+    service = JudgmentService(
+        lambda: resolve_settings_config(cfg, get_store(cfg.db_path)),
+        lambda: get_store(cfg.db_path),
+    )
     with _STATE:
         if _DEFAULT_SERVICE is None:
             _DEFAULT_SERVICE = service

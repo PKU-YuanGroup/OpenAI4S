@@ -98,15 +98,17 @@ def _live_config() -> Any:
     from dataclasses import replace
 
     from openai4s.config import ExperimentalJudgmentFlags, get_config
+    from openai4s.judgment.settings import resolve_settings_config
+    from openai4s.store import get_store
 
     base = get_config()
     live = ExperimentalJudgmentFlags()
-    if live == base.experimental_judgment:
-        return base
-    try:
-        return replace(base, experimental_judgment=live)
-    except Exception:
-        return base
+    if live != base.experimental_judgment:
+        try:
+            base = replace(base, experimental_judgment=live)
+        except Exception:
+            pass
+    return resolve_settings_config(base, get_store(base.db_path))
 
 
 def _store() -> Any:

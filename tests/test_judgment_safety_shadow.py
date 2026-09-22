@@ -380,6 +380,69 @@ def test_store_toggle_takes_effect_without_restarting_workers() -> None:
     assert stats()["submitted"] == 1
 
 
+@pytest.mark.stubbed_backend
+def test_default_service_refreshes_models_configuration(monkeypatch):
+    from openai4s.judgment import shadow
+    from openai4s.judgment.llm_backend import LlmBackend
+    from openai4s.llm.models import MissingCredentialError
+    from openai4s.store import get_store
+
+    _enable_shadow(monkeypatch)
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    cfg = get_config()
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    calls = []
+
+    def chat(self, messages, llm_cfg, **kwargs):
+        calls.append(
+            (llm_cfg.provider, llm_cfg.base_url, llm_cfg.model, llm_cfg.api_key)
+        )
+        if not llm_cfg.api_key:
+            raise MissingCredentialError("test: no configured key")
+        questions = json.loads(messages[-1]["content"])["questions"]
+        return {
+            "content": json.dumps(
+                {"answers": {qid: {"noul": 0.1} for qid in questions}}
+            ),
+            "model": llm_cfg.model,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(LlmBackend, "_chat", chat)
+    service = shadow._get_service()
+
+    def run():
+        return service.run(
+            purpose=safety_templates.PURPOSE,
+            template_id=safety_templates.TEMPLATE_ID_CODE,
+            state={"code": "print(1)"},
+        )
+
+    assert run().error_code == "unconfigured"
+    for provider, base_url, model, key in (
+        ("chatgpt", "https://first.example/v1", "first-model", "first-test-key"),
+        ("claude", "https://second.example/v1", "second-model", "second-test-key"),
+    ):
+        for name, value in (
+            ("provider", provider),
+            ("base_url", base_url),
+            ("model", model),
+        ):
+            store.set_setting(f"llm_{name}", value)
+        store.set_secret_setting("llm_api_key", key, scope="llm")
+        assert shadow._get_service() is service
+        result = run()
+        assert result.status == "ok"
+        assert result.cache_hit is False
+        assert result.model == model
+        assert calls[-1] == (provider, base_url, model, key)
+    assert len(calls) == 3
+    assert cfg.llm.api_key == ""
+
+
 def test_doctor_appends_shadow_stats() -> None:
     from openai4s import doctor
 

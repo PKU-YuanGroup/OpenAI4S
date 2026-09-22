@@ -205,6 +205,79 @@ def test_template_is_a_structured_three_way_choice() -> None:
     assert set(payload["criteria"]) == set(OPTIONS)
 
 
+@pytest.mark.stubbed_backend
+def test_default_service_refreshes_models_configuration(monkeypatch):
+    import openai4s.config as config_mod
+    from openai4s.judgment import task_mode_shadow
+    from openai4s.judgment.llm_backend import LlmBackend
+    from openai4s.llm.models import MissingCredentialError
+    from openai4s.store import get_store
+
+    monkeypatch.delenv("OPENAI4S_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI4S_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_TASK_MODE_SHADOW", "1")
+    monkeypatch.setenv("OPENAI4S_JUDGMENT_PROVIDER", "llm")
+    monkeypatch.setattr(config_mod, "_CONFIG", None)
+    cfg = config_mod.get_config()
+    cfg.llm.api_key = ""
+    store = get_store(cfg.db_path)
+    calls = []
+
+    def chat(self, messages, llm_cfg, **kwargs):
+        calls.append(
+            (llm_cfg.provider, llm_cfg.base_url, llm_cfg.model, llm_cfg.api_key)
+        )
+        if not llm_cfg.api_key:
+            raise MissingCredentialError("test: no configured key")
+        return {
+            "content": json.dumps(
+                {
+                    "answers": {
+                        "mode": {
+                            "probabilities": {
+                                "analysis_run": 0.9,
+                                "reusable_pipeline": 0.05,
+                                "codebase_change": 0.05,
+                            }
+                        }
+                    }
+                }
+            ),
+            "model": llm_cfg.model,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(LlmBackend, "_chat", chat)
+    service = task_mode_shadow._service()
+
+    def run():
+        return service.run(
+            purpose=PURPOSE, template_id=TEMPLATE_ID, state={"request": "plot this CSV"}
+        )
+
+    assert run().error_code == "unconfigured"
+    for provider, base_url, model, key in (
+        ("chatgpt", "https://first.example/v1", "first-model", "first-test-key"),
+        ("claude", "https://second.example/v1", "second-model", "second-test-key"),
+    ):
+        for name, value in (
+            ("provider", provider),
+            ("base_url", base_url),
+            ("model", model),
+        ):
+            store.set_setting(f"llm_{name}", value)
+        store.set_secret_setting("llm_api_key", key, scope="llm")
+        assert task_mode_shadow._service() is service
+        result = run()
+        assert result.status == "ok"
+        assert result.cache_hit is False
+        assert result.model == model
+        assert calls[-1] == (provider, base_url, model, key)
+    assert len(calls) == 3
+    assert cfg.llm.api_key == ""
+
+
 def test_shadow_agree_compares_labels() -> None:
     assert shadow_agree("analysis_run", "analysis_run", 0.9) is True
     assert shadow_agree("analysis_run", "codebase_change", 0.9) is False
