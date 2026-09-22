@@ -638,3 +638,123 @@ def test_bindingdb_empty_result_and_schema_validation():
 
     with pytest.raises(ScienceConnectorError, match="affinity_type must be one of"):
         service.search("bindingdb", "P11802", filters={"affinity_type": "UNKNOWN"})
+
+
+@pytest.mark.parametrize(
+    "cutoff", [True, False, 0, -1, float("inf"), float("nan"), "inf", "1e999", [], {}]
+)
+def test_bindingdb_invalid_cutoff_is_rejected_before_fetch(cutoff):
+    fetch = FakeFetch()
+    with pytest.raises(ScienceConnectorError, match="cutoff"):
+        ScienceConnectorService(fetch).search(
+            "bindingdb", "P11802", filters={"cutoff": cutoff}
+        )
+    assert fetch.calls == []
+
+
+@pytest.mark.parametrize("body", ["", " \n\t"])
+def test_bindingdb_documented_empty_body_keeps_provenance(body):
+    result = ScienceConnectorService(lambda *_args: body).search("bindingdb", "P11802")
+    assert result["results"] == []
+    assert result["count"] == 0
+    assert result["provenance"]["response_sha256"]
+    assert len(result["provenance"]["responses"]) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        {"getLindsByUniprotsResponse": {}},
+        {"getLindsByUniprotsResponse": {"error": "upstream failed"}},
+        {"getLindsByUniprotsResponse": {"affinities": None}},
+        {"getLindsByUniprotsResponse": {"affinities": "unavailable"}},
+        {"getLindsByUniprotsResponse": {"affinities": ["malformed record"]}},
+        {"getLindsByPDBsResponse": {"affinities": []}},
+    ],
+)
+def test_bindingdb_malformed_responses_are_not_empty_successes(payload):
+    service = ScienceConnectorService(lambda *_args: json.dumps(payload))
+    with pytest.raises(ScienceConnectorError, match="BindingDB.*schema"):
+        service.search("bindingdb", "P11802")
+
+
+def _bindingdb_result(**fields):
+    row = dict(
+        RESPONSES["www.bindingdb.org"]["getLindsByUniprotsResponse"]["affinities"][0]
+    )
+    row.update(fields)
+    # BindingDB can also return a singleton object instead of an array.
+    payload = {"getLindsByUniprotsResponse": {"affinities": row}}
+    return ScienceConnectorService(lambda *_args: json.dumps(payload)).search(
+        "bindingdb", "P11802"
+    )
+
+
+@pytest.mark.parametrize(
+    "affinity",
+    [True, False, "NaN", "Infinity", "-inf", "1e999", "-1", -1, "<NaN", "bad", [], {}],
+)
+def test_bindingdb_invalid_affinities_are_rejected(affinity):
+    with pytest.raises(ScienceConnectorError, match="BindingDB.*affinity"):
+        _bindingdb_result(affinity=affinity)
+
+
+@pytest.mark.parametrize(
+    "affinity, expected", [(0, 0), ("0", 0), (0.13, 0.13), ("1e-3", 0.001)]
+)
+def test_bindingdb_valid_affinities_are_finite_json_numbers(affinity, expected):
+    result = _bindingdb_result(affinity=affinity)
+    attrs = result["results"][0]["attributes"]
+    assert attrs["affinity_value"] == expected
+    assert attrs["affinity_raw"] == str(affinity)
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("affinity", ["<1", "> 10", "<=0.1", "~5", None, ""])
+def test_bindingdb_qualified_or_absent_affinity_is_not_an_exact_measurement(affinity):
+    result = _bindingdb_result(affinity=affinity)
+    attrs = result["results"][0]["attributes"]
+    assert "affinity_value" not in attrs
+    if affinity:
+        assert attrs["affinity_raw"] == affinity
+    else:
+        assert "affinity_raw" not in attrs
+    json.dumps(result, allow_nan=False)
+
+
+def test_bindingdb_keeps_complete_smiles():
+    # A long peptide is structural data, not prose that may be clipped at 500.
+    smiles = "N" + "CC(=O)N" * 80 + "CC(=O)O"
+    assert len(smiles) > 500
+    assert (
+        _bindingdb_result(smile=smiles)["results"][0]["attributes"]["smiles"] == smiles
+    )
+
+
+def test_bindingdb_filters_before_applying_result_limit():
+    row = RESPONSES["www.bindingdb.org"]["getLindsByUniprotsResponse"]["affinities"][0]
+    payload = {
+        "getLindsByUniprotsResponse": {
+            "affinities": [dict(row, affinity_type="IC50"), row]
+        }
+    }
+    calls = []
+
+    def fetch(url, *_args):
+        calls.append(url)
+        return json.dumps(payload)
+
+    result = ScienceConnectorService(fetch).search(
+        "bindingdb",
+        "P11802",
+        limit=1,
+        filters={"affinity_type": "Ki", "cutoff": 0.0001},
+    )
+    assert result["count"] == 1
+    assert result["results"][0]["attributes"]["affinity_type"] == "Ki"
+    assert urllib.parse.parse_qs(urllib.parse.urlsplit(calls[0]).query)["cutoff"] == [
+        "0.0001"
+    ]
