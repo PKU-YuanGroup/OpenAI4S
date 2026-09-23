@@ -313,6 +313,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_review.py`](test_review.py) | 经由网关走完整链路的 Reviewer。它的结论是受约束的：schema 不合法时报为“不可用”，而不是被硬掰成通过；provider 出错也不致命——一次失败的评审不该让被评审的那一轮跟着失败。 |
 | [`test_review_service.py`](test_review_service.py) | 同一个 Reviewer，但作为网关之外的服务，这里的实质是并发。被取消的 provider 调用仍然会在自己的线程上跑完，同时挡住重复提交；线程启动失败时，它会把先前已经占下的预留清理掉。 |
 | [`test_science_connectors.py`](test_science_connectors.py) | 每一个科学数据库 connector，全部跑在离线 HTTP fake 上。它们共用同一份记录 schema；从不用用户输入拼出任意 URL；上游返回 204、或返回一个从未承诺过的 schema 时，得到的是有界的 connector 错误，而不是崩溃。 |
+| [`test_zenodo_datasets.py`](test_zenodo_datasets.py) | 离线 Zenodo/PaRoutes fixture 与只读元数据检索：记录 DOI 与 concept DOI 分开，未知值保持未知（包括受限记录被隐藏的文件列表），cursor 绑定查询并在上游结果窗口处停止，整页拒绝而非截断，且从不下载数据集。 |
 | [`test_stage10_connectors.py`](test_stage10_connectors.py) | Stage 10 的 ClinVar/PubMed/ClinicalTrials：flag 关闭时目录仍是原来的七个；fixture 返回 accession/URL/时间和版本化 Artifact；空结果、429、schema drift 都是诚实错误。Artifact 发布全程固定 parent directory，并核验私有 staging file 的 inode；workspace 路径交换无法重定向写入，hardlink 替换会 fail closed，既不发布也不留下别名。 |
 | [`test_stage10_live_canaries.py`](test_stage10_live_canaries.py) | 打公开 ClinVar、PubMed、ClinicalTrials.gov 的 live canary。标了 `network`/`external`，不进默认离线套件。 |
 | [`test_stage11_remote_compute.py`](test_stage11_remote_compute.py) | Stage 11 持久远程计算：重启只 reconcile、cancel 打到精确 receipt、unknown/timeout 不算成功，harvest Artifact 记下 receipt、输入 version 和 checksum。 |
@@ -528,4 +529,3 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 - [`browser_navigation.mjs`](browser_navigation.mjs): 真实项目导航、会话/文件夹响应乱序、分页归属、失败或畸形读取后的重试及连续新建会话意图与失败恢复，三个引擎共用。
 
 - [`browser_provenance.mjs`](browser_provenance.mjs): 生产溯源控件、只读重试、失败不下载、固定版本导出与精确生产者链接；三引擎矩阵共用。
-`test_zenodo_datasets.py` 覆盖离线 Zenodo/PaRoutes 数据集 fixture 和只读元数据检索契约。
