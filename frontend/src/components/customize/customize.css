@@ -101,6 +101,12 @@
   font-variant-numeric: lining-nums;
   color: var(--text-000);
 }
+/* A later header in the same tab is a section, not the page title. */
+#cust .cust-content :not(:first-child) > .cust-h {
+  margin-top: 32px;
+  font-size: 28px;
+  line-height: 1.2;
+}
 #cust .cust-sub {
   max-width: 40em;
   margin-bottom: 24px;
@@ -152,6 +158,32 @@
 }
 #cust .form-actions {
   margin-top: 20px;
+}
+/* Row-level actions inside a tab are secondary; coral stays for the page's
+   one primary action (a full-size .solid-btn). */
+#cust .cust-content .solid-btn.small {
+  border: 1px solid var(--border-btn, #e6dfd8);
+  background: var(--bg, #faf9f5);
+  color: var(--text-000, #141413);
+}
+#cust .cust-content .solid-btn.small:hover {
+  background: var(--bg-100, #f5f0e8);
+}
+#cust .cust-content .solid-btn.small:disabled {
+  color: var(--text-400, #6c6a64);
+}
+/* A button right after a field matches the field's height. */
+#cust .cust-input + .solid-btn,
+#cust .cust-input + .outline-btn {
+  height: 40px;
+  padding: 0 14px;
+}
+/* Vendor cards (DataPro, Doubao search) are a surface-soft band, no outline. */
+#cust .datapro-card {
+  border: 0;
+  border-radius: var(--radius-card, 12px);
+  background: var(--bg-100, #f5f0e8);
+  padding: 20px;
 }
 #cust .cust-nested {
   position: absolute;

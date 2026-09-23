@@ -2658,3 +2658,4 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 html[data-theme="dark"] .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--bg-300)}
 .nb-right:has(#cancel-btn:not(.hidden)) .nb-send{display:none}
 @media (max-width:900px){.nb-send{width:40px;height:40px;min-width:40px;min-height:40px}}
+@media (max-width:900px){body.sidebar-collapsed #sidebar{box-shadow:none}}
