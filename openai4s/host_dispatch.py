@@ -1936,16 +1936,9 @@ class HostDispatcher:
                     ok = False
                     return result
             if method == "science_import_dataset":
-                # A Cell/headless receipt list is not an immediate durable consumer.
-                if not callable(getattr(self._native_artifact_local, "commit", None)):
-                    ok = False
-                    result = {
-                        "error": "Dataset imports require a native Artifact capture transaction; import in a separate action before analysis"
-                    }
-                    return result
                 # Renaming the download capability must not bypass a standing deny.
-                # An allow here is not consent for an import: the new tool still
-                # passes its own approval gate with the complete selection below.
+                # Resolve that hard refusal before native-capture admission so an
+                # existing policy is the first visible answer for every caller.
                 scope = self.store.resolve_frame_scope(self.frame_id)
                 if (
                     self.store.resolve_permission(
@@ -1959,6 +1952,13 @@ class HostDispatcher:
                     ok = False
                     result = {
                         "error": "Permission denied: web_download to zenodo.org is denied"
+                    }
+                    return result
+                # A Cell/headless receipt list is not an immediate durable consumer.
+                if not callable(getattr(self._native_artifact_local, "commit", None)):
+                    ok = False
+                    result = {
+                        "error": "Dataset imports require a native Artifact capture transaction; import in a separate action before analysis"
                     }
                     return result
             if (

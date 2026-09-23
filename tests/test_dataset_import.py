@@ -182,6 +182,21 @@ def test_permission_compatibility_refuses_before_any_io(
     assert "Permission denied" in result["error"]
 
 
+def test_existing_download_deny_precedes_native_capture_admission(tmp_path):
+    disp = dispatcher(tmp_path)
+    disp.store.set_permission_rule(
+        scope="global",
+        scope_id="",
+        tool="web_download",
+        pattern="zenodo.org",
+        decision="deny",
+    )
+    # No native committer is bound: the standing deny must still win before
+    # the separate native-capture admission message.
+    result = disp("science_import_dataset", [spec()])
+    assert "web_download to zenodo.org is denied" in result["error"]
+
+
 def test_web_download_public_schema_does_not_offer_dataset_import():
     from openai4s.tools.web_download import WebDownloadTool
 
