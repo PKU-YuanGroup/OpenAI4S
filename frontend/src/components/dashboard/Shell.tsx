@@ -346,6 +346,15 @@ export function Shell() {
                         <ModelSelect />
                         <span class="ic" data-icon="chevron-down" data-icon-size="14" />
                       </div>
+                      <button
+                        id="send-btn"
+                        class="nb-send"
+                        type="button"
+                        title="Send"
+                        aria-label="Send"
+                        data-icon="arrow-up"
+                        data-icon-size="16"
+                      />
                     </div>
                   </div>
                 </div>

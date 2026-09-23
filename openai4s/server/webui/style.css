@@ -2222,13 +2222,13 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 
 /* ---- empty session: the headline, the starters and the composer sit
    together in the middle of the column, left-aligned ---- */
-#conv-view:has(#messages>.empty-session){justify-content:center}
-#conv-view:has(#messages>.empty-session) #messages{flex:0 1 auto;padding-bottom:8px}
+#conv-view:has(#messages>.empty-session) #messages{flex:0 1 auto;margin-top:auto;padding-bottom:8px}
+#conv-view:has(#messages>.empty-session) .composer-wrap{margin-bottom:auto}
 .empty-session{max-width:var(--col);margin:0 auto;padding:0;text-align:left}
 .es-title{margin-bottom:12px;font:400 56px/1.1 var(--serif);letter-spacing:-.02em;color:var(--text-000);font-variant-numeric:lining-nums}
 .es-sub{margin-bottom:28px;font-size:16px;line-height:1.6;color:var(--text-200)}
 .es-chips{gap:12px}
-.es-chip{padding:20px 24px;border:0;border-radius:var(--radius-card);background:var(--bg-200)}
+.es-chip{padding:20px 24px;border:0;border-radius:var(--radius-card);background:var(--bg-200);text-align:left;color:var(--text-000)}
 .es-chip:hover{background:var(--bg-300)}
 .es-chip-t{margin-bottom:8px;font-size:16px;font-weight:500}
 .es-chip-p{font-size:14px;line-height:1.55;color:var(--text-300)}
@@ -2640,3 +2640,14 @@ html[data-theme="dark"] #dash-project-search{background-image:url("data:image/sv
 .checkpoint-row .outline-btn{height:auto}
 .internal-checkpoints>summary{cursor:pointer;margin-top:8px;font-size:12px;color:var(--text-200)}
 html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(--text-000)}
+
+/* ---- the composer's send button: coral when there is text, cream when the
+   composer is empty, and the stop button takes its place while a turn runs ---- */
+.nb-right>.nb-model{order:1}
+.nb-right>#cancel-btn,.nb-right>.nb-send{order:2}
+.nb-send{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;padding:0;border:0;border-radius:999px;background:var(--clay);color:#fff;cursor:pointer}
+.nb-send:active{background:var(--clay-em)}
+.nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--line);color:var(--text-400);cursor:default}
+html[data-theme="dark"] .nb-card:has(#composer:placeholder-shown) .nb-send{background:var(--bg-300)}
+.nb-right:has(#cancel-btn:not(.hidden)) .nb-send{display:none}
+@media (max-width:900px){.nb-send{width:40px;height:40px;min-width:40px;min-height:40px}}

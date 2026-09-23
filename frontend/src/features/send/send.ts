@@ -13,7 +13,7 @@
  * pinned dispatch id, never whatever `currentId` happens to hold.
  */
 
-import { LANG, planModePayload, t } from "../../i18n/runtime";
+import { LANG, onLanguageChange, planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
   skillsCatalog,
@@ -76,6 +76,7 @@ import {
   retireTurnTicket,
 } from "./ticket";
 import { turnDone } from "./turn";
+import { sendCopy } from "./copy";
 
 type Annotation = {
   id?: string;
@@ -707,6 +708,17 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       hint(exploreMode.value ? t("explore.toggle.on") : "");
     };
   }
+  const sendBtn = document.getElementById("send-btn");
+  if (sendBtn && !sendBtn.dataset.sendBound) {
+    sendBtn.dataset.sendBound = "1";
+    const label = () => {
+      const text = sendCopy("send");
+      sendBtn.title = text;
+      sendBtn.setAttribute("aria-label", text);
+    };
+    label();
+    onLanguageChange(label);
+  }
   // Delegated on the document root, not on the node: a re-created #composer
   // (a keyed or conditional subtree, a second render()) keeps its Enter
   // handler with nothing to rebind. Bubble phase, so the autocomplete's
@@ -715,11 +727,31 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
   const root = document.documentElement;
   if (root && !root.dataset.sendBound) {
     root.dataset.sendBound = "1";
-    // One dispatch at a time. send() clears the composer only after its first
-    // awaits (POST /frames on a fresh session, the skills catalog for a /skill
-    // token), so a held or double Enter inside that window would create a
-    // second session and send the same text twice.
+    // One dispatch at a time, for Enter and the send button alike. send()
+    // clears the composer only after its first awaits (POST /frames on a
+    // fresh session, the skills catalog for a /skill token), so a held or
+    // double Enter inside that window would create a second session and send
+    // the same text twice.
     let inFlight: Promise<unknown> | null = null;
+    const dispatchComposer = (text: string): void => {
+      if (inFlight) {
+        // Dropping the request is right -- one dispatch at a time -- but
+        // dropping it SILENTLY is the "dead composer" this branch's own
+        // preparation latch exists to explain. `send()`'s hint can never fire
+        // from here because the dispatch it guards never happens, so say the
+        // same thing at the point that actually swallowed it, and only when a
+        // pending upload is the reason.
+        if (pendingUploadsFor(currentId.value || null, effProject() || project.value || null, null).length) {
+          hint(t("upload.pendingSend"), false, true);
+        }
+        return;
+      }
+      const pending = Promise.resolve(dispatch(text));
+      inFlight = pending;
+      void pending.finally(() => {
+        if (inFlight === pending) inFlight = null;
+      });
+    };
     root.addEventListener("keydown", (e) => {
       const c = e.target as HTMLTextAreaElement | null;
       if (!c || c.id !== "composer") return;
@@ -728,23 +760,17 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       if (ac && ac.open) return;
       if (e.key !== "Enter" || e.shiftKey) return;
       e.preventDefault();
-      if (inFlight) {
-        // Dropping the keystroke is right -- one dispatch at a time -- but
-        // dropping it SILENTLY is the "dead composer" this branch's own
-        // preparation latch exists to explain. `send()`'s hint can never fire
-        // from here because the dispatch it guards never happens, so say the
-        // same thing at the point that actually swallowed the Enter, and only
-        // when a pending upload is the reason.
-        if (pendingUploadsFor(currentId.value || null, effProject() || project.value || null, null).length) {
-          hint(t("upload.pendingSend"), false, true);
-        }
-        return;
-      }
-      const pending = Promise.resolve(dispatch(c.value));
-      inFlight = pending;
-      void pending.finally(() => {
-        if (inFlight === pending) inFlight = null;
-      });
+      dispatchComposer(c.value);
+    });
+    // The round send button beside the model picker (Shell.tsx #send-btn).
+    root.addEventListener("click", (e) => {
+      const target = e.target as { closest?: (selector: string) => unknown } | null;
+      if (!target || typeof target.closest !== "function" || !target.closest("#send-btn")) return;
+      const c = document.getElementById("composer") as HTMLTextAreaElement | null;
+      if (!c) return;
+      e.preventDefault();
+      dispatchComposer(c.value);
+      if (typeof c.focus === "function") c.focus();
     });
   }
 }

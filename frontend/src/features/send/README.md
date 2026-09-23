@@ -10,7 +10,8 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | --- | --- |
 | [`admission.ts`](admission.ts) | Admission tracker. Independent `openai4s.admission.{fid}.{id}` keys; legacy key migration; 60s grace. |
 | [`admission.test.ts`](admission.test.ts) | Prefix, legacy migration, grace window, settled states. |
-| [`bind.test.ts`](bind.test.ts) | `bindComposer` binds once; `installSend` stays DOM-free; Enter dispatches the text; one dispatch in flight at a time. |
+| [`bind.test.ts`](bind.test.ts) | `bindComposer` binds once; `installSend` stays DOM-free; Enter and the `#send-btn` click dispatch the text; one dispatch in flight at a time across both. |
+| [`copy.ts`](copy.ts) | `sendCopy`: composer labels (the send button's title) kept out of the generated dictionaries. |
 | [`candidate.ts`](candidate.ts) | Review gate three-state timing: `markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`. |
 | [`candidate.test.ts`](candidate.test.ts) | Three-state sequence, no verified demotion, durable-receipt rule. |
 | [`first-send.test.ts`](first-send.test.ts) | The first message of a fresh session dispatches only after the shared creation has opened the conversation, so `openConversation`'s reset cannot land mid-turn; the ticket and the running state survive. |
@@ -25,7 +26,7 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | [`plan.ts`](plan.ts) | Structured plan card, progress, approve / revise / discard / resume. A step still `in_progress` pulses only while the plan is executing; a `completed` plan that still has one (rows written before the server refused that pair) is labelled as ended with steps not confirmed, from a feature-local copy table. |
 | [`plan.test.ts`](plan.test.ts) | The terminal plan card: a completed plan with a step in progress is not shown as complete, the live glyph stays while executing, and a fully settled plan still reads complete. |
 | [`problems.ts`](problems.ts) | Attachment problem cards (client wording) and @-ref problem cards (server wording). |
-| [`send.ts`](send.ts) | Composer send chain. Plan-mode payload via F-07 `planModePayload`. `bindComposer` (called from `main.tsx` after `render`). |
+| [`send.ts`](send.ts) | Composer send chain. Plan-mode payload via F-07 `planModePayload`. `bindComposer` (called from `main.tsx` after `render`) binds Enter and the send button to one dispatch latch. |
 | [`step.ts`](step.ts) | Semantic activity steps, `buildStepCard`, `searchResultHttpUrl`. |
 | [`ticket.ts`](ticket.ts) | Turn ticket generation, `acceptTurnTicket` / `activateTurnTicket`, `resumeWatch`. |
 | [`turn.ts`](turn.ts) | `turnDone` teardown; calls F-14 `notebookOnTurnDone()`; settles any activity card still running (`messages/cardState.ts`). |
