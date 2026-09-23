@@ -1,57 +1,70 @@
-/* M-02 Dashboard attention cards. Tokens come from F-21 / style.css. */
+/* M-02 Dashboard attention cards. Tokens come from F-21 / style.css.
+   A dark product panel beside the dashboard headline: dark-elevated rows,
+   a status dot + word for each kind, and a quiet action hint on the right. */
 
 #dash-attention {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  padding: 24px;
+  border-radius: var(--radius-card, 12px);
+  background: var(--dark, #181715);
+  color: var(--on-dark, #faf9f5);
 }
 
 #dash-attention.hidden {
   display: none;
 }
 
-#dash-attention .attn-count {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-400);
+#dash-attention .col-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font: 500 15px/1.4 var(--sans);
+  letter-spacing: 0;
+  color: var(--on-dark, #faf9f5);
 }
 
 #dash-attention .attn-title-mark {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--danger, #c43c3c);
-  box-shadow: 0 0 0 3px var(--danger-bg, #fad6d6);
-  flex: none;
+  display: none;
+}
+
+#dash-attention .attn-count {
+  margin-left: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--dark-elevated, #252320);
+  color: var(--on-dark, #faf9f5);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .attn-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .attn-card {
-  background: var(--card);
-  border: 0.5px solid var(--border-card);
-  border-radius: var(--radius-lg, 12px);
-  box-shadow: var(--shadow-card);
-  padding: 16px 18px;
-  cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  text-align: left;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   width: 100%;
+  padding: 14px 18px 14px 20px;
+  border: 0;
+  border-radius: var(--radius, 8px);
+  background: var(--dark-elevated, #252320);
+  box-shadow: none;
+  color: var(--on-dark, #faf9f5);
   font: inherit;
-  color: inherit;
-  transition: box-shadow 0.15s, transform 0.15s;
+  text-align: left;
+  cursor: pointer;
 }
 
 .attn-card:hover {
-  box-shadow: var(--shadow-pop);
-  transform: translateY(-1px);
+  background: #2e2b27;
 }
 
 .attn-card:focus-visible {
@@ -59,35 +72,67 @@
   outline-offset: 2px;
 }
 
-.attn-card.severity-high {
-  border-color: var(--danger, #c43c3c);
-}
-
-.attn-card.severity-medium {
-  border-color: var(--border-card);
-}
-
-.attn-card.severity-low {
-  border-color: var(--border, var(--border-card));
+.attn-card .attn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .attn-card .attn-title {
-  font-family: var(--serif);
-  font-size: 17px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--text-000);
-  line-height: 1.3;
+  overflow: hidden;
+  font: 500 15px/1.4 var(--sans);
+  letter-spacing: 0;
+  color: var(--on-dark, #faf9f5);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attn-card .attn-sub {
-  font-size: 13px;
-  color: var(--text-400);
-  line-height: 1.4;
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--on-dark-soft, #a09d96);
+}
+
+/* The status word leads, as "● Pending approval · Example project". */
+.attn-card .attn-kind {
+  order: -2;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  font-weight: 500;
+  color: var(--on-dark, #faf9f5);
+}
+
+.attn-card .attn-kind::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-soft, #8e8b82);
+}
+
+.attn-card[data-kind="running"] .attn-kind::before {
+  background: var(--teal, #5db8a6);
+}
+
+.attn-card[data-kind="approval"] .attn-kind::before,
+.attn-card[data-kind="compute"] .attn-kind::before {
+  background: var(--amber, #e8a55a);
+}
+
+.attn-card[data-kind="recovery"] .attn-kind::before,
+.attn-card[data-kind="blocked"] .attn-kind::before {
+  background: var(--danger, #c64545);
+}
+
+.attn-card .attn-dot {
+  display: none;
 }
 
 .attn-card .attn-project,
@@ -97,34 +142,42 @@
   white-space: nowrap;
 }
 
+.attn-card .attn-project {
+  min-width: 0;
+}
+
 .attn-card .attn-foot {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 2px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: none;
+  margin: 0;
 }
 
-.attn-card .attn-hint {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-200);
-  background: var(--bg-200);
-  border-radius: 10px;
-  padding: 3px 10px;
-}
-
+.attn-card .attn-hint,
 .attn-card .attn-hint.hint-approve,
 .attn-card .attn-hint.hint-restore,
 .attn-card .attn-hint.hint-retry {
-  color: var(--danger, #8e2626);
-  background: var(--danger-bg, #fad6d6);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--on-dark, #faf9f5);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.attn-card .attn-hint::after {
+  content: "›";
+  font-size: 16px;
+  line-height: 1;
 }
 
 .attn-card .attn-when {
-  font-size: 12.5px;
-  color: var(--text-400);
+  font-size: 12px;
+  color: var(--on-dark-soft, #a09d96);
   white-space: nowrap;
 }

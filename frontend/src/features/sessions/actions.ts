@@ -18,6 +18,8 @@ import { turnDone } from "../send/turn";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
+import { shareCopy } from "./copy";
+import { icon } from "./icon";
 import { assignFolder, loadProjects, loadSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
 import { publicText } from "../scrub/scrub";
@@ -330,14 +332,12 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
   }
 
   const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
+  overlay.className = "modal-overlay share-overlay";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
-  overlay.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000";
+  overlay.setAttribute("aria-labelledby", "share-title");
   const box = document.createElement("div");
-  box.style.cssText =
-    "background:var(--panel,#fff);color:var(--ink,#111);max-width:520px;width:90%;border-radius:12px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)";
+  box.className = "share-box";
   overlay.appendChild(box);
   const close = () => overlay.remove();
   overlay.onclick = (e) => {
@@ -349,104 +349,138 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
       close();
     }
   });
-  const h = document.createElement("h3");
+  const head = document.createElement("div");
+  head.className = "share-head";
+  const h = document.createElement("h2");
+  h.id = "share-title";
+  h.className = "share-title";
   h.textContent = t("share.title");
-  h.style.marginTop = "0";
-  box.appendChild(h);
+  head.appendChild(h);
+  box.appendChild(head);
+  // Appended last (finish) so the button focused on open stays the dialog's
+  // own action; CSS pins it to the top-right corner.
+  const closeX = document.createElement("button");
+  closeX.type = "button";
+  closeX.className = "share-close";
+  closeX.title = t("share.close");
+  closeX.setAttribute("aria-label", t("share.close"));
+  closeX.innerHTML = icon("x", 15);
+  closeX.onclick = close;
 
   const state = String(status.state || "");
   if (state === "unconfigured") {
-    box.appendChild(Object.assign(document.createElement("p"), { textContent: t("share.unconfigured") }));
-    box.appendChild(mkBtn(t("share.close"), close));
-    document.body.appendChild(overlay);
+    box.appendChild(para(t("share.unconfigured")));
+    const closeBtn = mkBtn(t("share.close"), close);
+    box.appendChild(actions(closeBtn));
+    finish(closeBtn);
     return;
   }
   if (state === "disabled") {
-    box.appendChild(Object.assign(document.createElement("p"), { textContent: t("share.disabled") }));
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
+    box.appendChild(para(t("share.disabled")));
+    const closeBtn = mkBtn(t("share.close"), close);
+    let enableBtn: HTMLButtonElement | null = null;
     if (status.configured) {
-      row.appendChild(
-        mkBtn(
-          t("share.enable"),
-          async () => {
-            await shareCall("PUT", `${API}/share/settings`, { enabled: true });
-            close();
-            void openShareDialog(fid, frame);
-          },
-          false,
-          true,
-        ),
+      enableBtn = mkBtn(
+        t("share.enable"),
+        async () => {
+          await shareCall("PUT", `${API}/share/settings`, { enabled: true });
+          close();
+          void openShareDialog(fid, frame);
+        },
+        false,
+        true,
       );
     }
-    row.appendChild(mkBtn(t("share.close"), close));
-    box.appendChild(row);
-    document.body.appendChild(overlay);
+    box.appendChild(enableBtn ? actions(closeBtn, enableBtn) : actions(closeBtn));
+    finish(enableBtn || closeBtn);
     return;
   }
 
   const active = (shares.shares || []).find((s) => s.status === "ready" || s.status === "publishing");
-  const scope = document.createElement("p");
-  scope.className = "muted";
-  scope.style.fontSize = "13px";
-  scope.textContent = t("share.scope");
-  box.appendChild(scope);
-
   if (active) {
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:8px;margin:12px 0";
-    const inp = document.createElement("input");
-    inp.readOnly = true;
-    inp.value = String(active.url || "");
-    inp.style.cssText = "flex:1;padding:8px;border:1px solid var(--line,#ccc);border-radius:8px";
-    row.appendChild(inp);
-    row.appendChild(
-      mkBtn(t("share.copy"), () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(String(active.url || ""));
-        hint(t("share.copied"));
-      }),
-    );
-    box.appendChild(row);
-    const exp = document.createElement("div");
-    exp.className = "muted";
-    exp.style.fontSize = "12px";
-    exp.style.margin = "4px 0 8px";
-    exp.textContent = active.expires_at
+    const statusLine = document.createElement("div");
+    statusLine.className = "share-status";
+    statusLine.textContent = active.expires_at
       ? t("share.expiresAt") + " " + new Date(String(active.expires_at)).toLocaleString()
       : t("share.neverExpires");
-    box.appendChild(exp);
-    const actionsRow = document.createElement("div");
-    actionsRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
-    actionsRow.appendChild(
-      mkBtn(t("share.update"), async () => {
-        await shareCall("PUT", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
-        hint(t("share.updated"));
-        close();
-      }),
+    head.appendChild(statusLine);
+    const label = document.createElement("label");
+    label.className = "share-label";
+    label.htmlFor = "share-url";
+    label.textContent = shareCopy("linkLabel");
+    box.appendChild(label);
+    const row = document.createElement("div");
+    row.className = "share-url-row";
+    const inp = document.createElement("input");
+    inp.id = "share-url";
+    inp.className = "share-url";
+    inp.readOnly = true;
+    inp.value = String(active.url || "");
+    row.appendChild(inp);
+    const copyBtn = mkBtn(
+      t("share.copy"),
+      () => {
+        if (navigator.clipboard) navigator.clipboard.writeText(String(active.url || ""));
+        hint(t("share.copied"));
+      },
+      false,
+      true,
     );
-    actionsRow.appendChild(
-      mkBtn(
-        t("share.revoke"),
-        async () => {
-          if (!confirm(t("share.revokeConfirm"))) return;
-          await shareCall("DELETE", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
-          hint(t("share.revoked"));
+    row.appendChild(copyBtn);
+    box.appendChild(row);
+    box.appendChild(scopeNote());
+    const rows = document.createElement("div");
+    rows.className = "share-rows";
+    rows.appendChild(
+      shareRow(
+        t("share.update"),
+        shareCopy("updateDesc"),
+        mkBtn(t("share.update"), async () => {
+          await shareCall("PUT", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
+          hint(t("share.updated"));
           close();
-        },
-        true,
+        }),
       ),
     );
-    actionsRow.appendChild(mkBtn(t("share.close"), close));
-    box.appendChild(actionsRow);
+    rows.appendChild(
+      shareRow(
+        t("share.revoke"),
+        shareCopy("revokeDesc"),
+        mkBtn(
+          t("share.revoke"),
+          async () => {
+            if (!confirm(t("share.revokeConfirm"))) return;
+            await shareCall("DELETE", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
+            hint(t("share.revoked"));
+            close();
+          },
+          true,
+        ),
+      ),
+    );
+    box.appendChild(rows);
+    finish(copyBtn);
   } else {
+    box.appendChild(scopeNote());
     const expRow = document.createElement("div");
-    expRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:12px 0";
+    expRow.className = "share-expiry";
     const expLabel = document.createElement("span");
-    expLabel.className = "muted";
-    expLabel.style.fontSize = "13px";
-    expLabel.textContent = t("share.expiry");
-    const sel = document.createElement("select");
-    sel.style.cssText = "padding:6px;border:1px solid var(--line,#ccc);border-radius:8px";
+    expLabel.id = "share-expiry-label";
+    expLabel.className = "share-label";
+    expLabel.textContent = t("share.expiry").replace(/[:\uff1a]\s*$/, "");
+    const seg = document.createElement("div");
+    seg.className = "seg share-seg";
+    seg.setAttribute("role", "radiogroup");
+    seg.setAttribute("aria-labelledby", "share-expiry-label");
+    let expiresIn = 604800;
+    const radios: HTMLButtonElement[] = [];
+    const paint = () =>
+      radios.forEach((b) => {
+        const on = Number(b.dataset.secs) === expiresIn;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-checked", on ? "true" : "false");
+        b.tabIndex = on ? 0 : -1;
+      });
     (
       [
         [0, t("share.expiry.never")],
@@ -455,47 +489,96 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
         [2592000, t("share.expiry.30d")],
       ] as Array<[number, string]>
     ).forEach(([secs, label]) => {
-      const o = document.createElement("option");
-      o.value = String(secs);
-      o.textContent = label;
-      sel.appendChild(o);
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "seg-btn";
+      b.setAttribute("role", "radio");
+      b.dataset.secs = String(secs);
+      b.textContent = label;
+      b.onclick = () => {
+        expiresIn = secs;
+        paint();
+      };
+      radios.push(b);
+      seg.appendChild(b);
     });
-    sel.value = "604800";
+    // Arrow keys move the choice, as in any radio group.
+    seg.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const at = radios.findIndex((b) => Number(b.dataset.secs) === expiresIn);
+      const next = radios[(at + (e.key === "ArrowRight" ? 1 : radios.length - 1)) % radios.length];
+      if (!next) return;
+      expiresIn = Number(next.dataset.secs);
+      paint();
+      next.focus();
+    });
+    paint();
     expRow.appendChild(expLabel);
-    expRow.appendChild(sel);
+    expRow.appendChild(seg);
     box.appendChild(expRow);
-    const actionsRow = document.createElement("div");
-    actionsRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
-    actionsRow.appendChild(
-      mkBtn(
-        t("share.create"),
-        async () => {
-          const body: { expires_in?: number } = {};
-          const secs = parseInt(sel.value, 10);
-          if (secs > 0) body.expires_in = secs;
-          const rec = await shareCall("POST", `${API}/frames/${encodeURIComponent(fid)}/shares`, body);
-          close();
-          if (rec && (rec as { url?: string }).url) void openShareDialog(fid, frame);
-        },
-        false,
-        true,
-      ),
+    const createBtn = mkBtn(
+      t("share.create"),
+      async () => {
+        const body: { expires_in?: number } = {};
+        if (expiresIn > 0) body.expires_in = expiresIn;
+        const rec = await shareCall("POST", `${API}/frames/${encodeURIComponent(fid)}/shares`, body);
+        close();
+        if (rec && (rec as { url?: string }).url) void openShareDialog(fid, frame);
+      },
+      false,
+      true,
     );
-    actionsRow.appendChild(mkBtn(t("share.close"), close));
-    box.appendChild(actionsRow);
+    box.appendChild(actions(mkBtn(t("share.close"), close), createBtn));
+    finish(createBtn);
   }
-  document.body.appendChild(overlay);
-  const firstBtn = box.querySelector("button");
-  if (firstBtn instanceof HTMLElement) firstBtn.focus();
 
+  function finish(focus: HTMLElement | null): void {
+    box.appendChild(closeX);
+    document.body.appendChild(overlay);
+    const target = focus || box.querySelector("button");
+    if (target instanceof HTMLElement) target.focus();
+  }
+  function para(text: string): HTMLParagraphElement {
+    const p = document.createElement("p");
+    p.className = "share-text";
+    p.textContent = text;
+    return p;
+  }
+  function scopeNote(): HTMLParagraphElement {
+    const p = document.createElement("p");
+    p.className = "share-scope";
+    p.textContent = t("share.scope");
+    return p;
+  }
+  function actions(...buttons: HTMLButtonElement[]): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "share-actions";
+    buttons.forEach((b) => row.appendChild(b));
+    return row;
+  }
+  function shareRow(title: string, desc: string, button: HTMLButtonElement): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "share-row";
+    const text = document.createElement("div");
+    text.className = "share-row-text";
+    const name = document.createElement("span");
+    name.className = "share-row-title";
+    name.textContent = title;
+    const sub = document.createElement("span");
+    sub.className = "share-row-desc";
+    sub.textContent = desc;
+    text.appendChild(name);
+    text.appendChild(sub);
+    row.appendChild(text);
+    row.appendChild(button);
+    return row;
+  }
   function mkBtn(label: string, onClick: () => void, danger?: boolean, primary?: boolean): HTMLButtonElement {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = label;
-    b.className = danger ? "danger" : primary ? "primary" : "";
-    b.style.cssText =
-      "padding:7px 14px;border-radius:8px;cursor:pointer;border:1px solid var(--line,#ccc)" +
-      (primary ? ";background:var(--accent,#2b6cb0);color:#fff" : "");
+    b.className = primary ? "solid-btn" : danger ? "outline-btn danger" : "outline-btn";
     b.onclick = onClick;
     return b;
   }

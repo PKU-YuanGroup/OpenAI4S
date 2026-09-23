@@ -23,8 +23,11 @@ function ensureHost(): HTMLElement | null {
   host.id = "dash-attention";
   host.className = "dash-attention hidden";
   host.setAttribute("aria-live", "polite");
+  // Beside the headline when the shell has a hero; before the lists otherwise.
+  const hero = dash.querySelector(".dash-hero");
   const grid = dash.querySelector(".dash-grid");
-  if (grid) dash.insertBefore(host, grid);
+  if (hero) hero.appendChild(host);
+  else if (grid) dash.insertBefore(host, grid);
   else dash.appendChild(host);
   return host;
 }

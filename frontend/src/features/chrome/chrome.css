@@ -1,17 +1,23 @@
 /* F-20 lane styles. Class names match style.css so F-21 can consolidate. */
 
-.palette-ov{position:fixed;inset:0;background:rgba(0,0,0,.28);display:flex;align-items:flex-start;justify-content:center;z-index:1000;padding-top:12vh}
-.palette{width:min(620px,92vw);max-height:64vh;display:flex;flex-direction:column;background:var(--bg-100,#fff);border:1px solid var(--line,#8883);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.28);overflow:hidden}
-.palette-input{border:0;outline:0;padding:16px 18px;font-size:15px;background:transparent;color:var(--ink,inherit);border-bottom:1px solid var(--line,#8882)}
-.palette-list{overflow-y:auto;padding:6px}
-.palette-group{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#999);padding:8px 12px 3px}
-.palette-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;cursor:pointer}
-.palette-item.on{background:var(--bg-300,#8881)}
-.pi-ic{display:inline-flex;color:var(--muted,#888);flex:none}
+/* ⌘K palette: a canvas dialog with a search glyph, an esc hint, sentence-case
+   group labels, and surface-card for the highlighted row. */
+.palette-ov{position:fixed;inset:0;background:var(--scrim,rgba(20,20,19,.4));display:flex;align-items:flex-start;justify-content:center;z-index:1000;padding-top:12vh}
+.palette{position:relative;width:min(640px,92vw);max-height:64vh;display:flex;flex-direction:column;background:var(--bg,#faf9f5);border:0;border-radius:var(--radius-lg,16px);box-shadow:var(--shadow-pop);overflow:hidden}
+.palette::after{content:"esc";position:absolute;top:17px;right:18px;padding:1px 6px;border:1px solid var(--border,#e6dfd8);border-radius:4px;color:var(--text-400,#6c6a64);font:500 11px/1.5 var(--sans);pointer-events:none}
+.palette-input{border:0;outline:0;padding:18px 64px 18px 48px;font-size:16px;background:transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23141413' stroke-width='1.7' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 20px 50%;color:var(--ink,inherit);border-bottom:1px solid var(--line-soft,#ebe6df)}
+.palette-input:focus-visible{outline:none}
+.palette-input::placeholder{color:var(--text-400,#6c6a64)}
+html[data-theme="dark"] .palette-input{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23faf9f5' stroke-width='1.7' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E")}
+.palette-list{overflow-y:auto;padding:8px}
+.palette-group{font-size:13px;font-weight:500;color:var(--text-400,#6c6a64);padding:12px 12px 6px}
+.palette-item{display:flex;align-items:center;gap:12px;min-height:42px;padding:8px 12px;border-radius:var(--radius,8px);cursor:pointer}
+.palette-item.on{background:var(--bg-200,#efe9de)}
+.pi-ic{display:inline-flex;color:var(--text-000,#141413);flex:none}
 .pi-txt{min-width:0}
-.pi-label{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pi-sub{font-size:12px;color:var(--muted,#999);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.palette-empty{padding:20px;text-align:center;color:var(--muted,#999);font-size:13px}
+.pi-label{font-size:14px;font-weight:500;color:var(--text-000,#141413);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pi-sub{margin-top:2px;font-size:13px;color:var(--text-400,#6c6a64);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.palette-empty{padding:24px;text-align:center;color:var(--text-400,#6c6a64);font-size:14px}
 
 .note{border:.5px solid var(--border-card);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:13px;position:relative}
 .note .nt-time{font-size:11px;color:var(--text-400);margin-top:5px}

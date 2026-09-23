@@ -13,3 +13,17 @@ export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): st
   };
   return copy[key];
 }
+
+/** Share dialog labels the generated dictionaries do not carry. */
+export function shareCopy(key: "linkLabel" | "updateDesc" | "revokeDesc"): string {
+  const copy = LANG === "en" ? {
+    linkLabel: "Read-only link",
+    updateDesc: "The link stays the same; its content becomes this session's latest state.",
+    revokeDesc: "The link stops working immediately.",
+  } : {
+    linkLabel: "只读链接",
+    updateDesc: "链接不变，内容换成当前会话的最新状态。",
+    revokeDesc: "撤销后立即失效。",
+  };
+  return copy[key];
+}

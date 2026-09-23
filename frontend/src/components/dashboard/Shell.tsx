@@ -3,6 +3,7 @@ import { HistoryLoadStatus } from "../../features/messages/components";
 import { finishArtifactsBoot } from "../../features/artifacts/boot";
 import { bindWorkbench } from "../../features/sessions/boot";
 import { routesToWorkspace } from "../../features/sessions/dom";
+import { DashHeroText } from "./DashHero";
 import { ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
 
@@ -61,22 +62,31 @@ export function Shell() {
               data-icon-size="20"
               type="button"
             />
-            <button id="dash-import-session" class="outline-btn" type="button">
-              <span class="ic" data-icon="cloud-upload" data-icon-size="16" />
-              <span data-i18n="sessionPackage.import">Import session</span>
-            </button>
-            <input
-              id="session-package-input"
-              type="file"
-              accept=".zip,.openai4s-session.zip,application/vnd.openai4s.session+zip"
-              style="display:none"
-            />
-            <button id="dash-new-project" class="outline-btn" type="button">
-              <span class="ic" data-icon="plus" data-icon-size="16" />
-              <span data-i18n="palette.action.newProject">New project</span>
-            </button>
           </div>
         </header>
+        {/* The attention stream (features/attention/boot.ts) mounts beside the
+            headline, as the hero's second column. */}
+        <section class="dash-hero">
+          <div class="dash-hero-copy">
+            <DashHeroText />
+            <div class="dash-hero-actions">
+              <button id="dash-new-project" class="solid-btn" type="button">
+                <span class="ic" data-icon="plus" data-icon-size="16" />
+                <span data-i18n="palette.action.newProject">New project</span>
+              </button>
+              <button id="dash-import-session" class="outline-btn" type="button">
+                <span class="ic" data-icon="cloud-upload" data-icon-size="16" />
+                <span data-i18n="sessionPackage.import">Import session</span>
+              </button>
+              <input
+                id="session-package-input"
+                type="file"
+                accept=".zip,.openai4s-session.zip,application/vnd.openai4s.session+zip"
+                style="display:none"
+              />
+            </div>
+          </div>
+        </section>
         <section id="dash-running" class="dash-running hidden" />
         <div class="dash-grid">
           <section class="dash-col">

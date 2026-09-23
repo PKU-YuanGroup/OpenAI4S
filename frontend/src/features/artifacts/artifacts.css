@@ -2,61 +2,102 @@
    contract classes (.art, .files-grid, .files-empty, #results-list) stay
    named as in the legacy shell; F-21 owns global tokens. */
 
+/* Search on its own row, then the type filter beside the origin switch —
+   the design system's hairline fields and segmented control. */
 .files-toolbar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
-  padding: 8px 12px 4px;
+  padding: 0 0 14px;
 }
 
 .files-search,
 .files-filter-type {
-  min-width: 10ch;
-  flex: 1 1 12rem;
+  min-width: 0;
+  height: 40px;
+  box-sizing: border-box;
   font: inherit;
-  padding: 6px 8px;
-  border: 1px solid var(--border, #d8d6d0);
-  background: var(--surface-0, inherit);
+  font-size: 15px;
+  padding: 0 14px;
+  border: 1px solid var(--border, #e6dfd8);
+  background: var(--bg, #faf9f5);
   color: inherit;
-  border-radius: 6px;
+  border-radius: var(--radius, 8px);
+}
+
+.files-search {
+  grid-column: 1 / -1;
+  padding-left: 40px;
+  background: var(--bg, #faf9f5) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236c6a64' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E") no-repeat 14px 50%;
+}
+
+.files-search::placeholder,
+.files-filter-type::placeholder {
+  color: var(--text-400, #6c6a64);
+}
+
+.files-search:focus,
+.files-filter-type:focus {
+  outline: none;
+  border-color: var(--accent-fill, #cc785c);
+  box-shadow: var(--focus-ring);
 }
 
 .files-origin {
   display: inline-flex;
   gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
 }
 
 .files-origin .seg-btn {
+  height: 34px;
   font: inherit;
-  padding: 6px 10px;
-  border: 1px solid var(--border, #d8d6d0);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
-  color: inherit;
+  color: var(--text-400, #6c6a64);
   cursor: pointer;
 }
 
 .files-origin .seg-btn.active {
-  background: var(--text-100, #1c1c19);
-  color: var(--surface-0, #fff);
+  background: var(--bg-200, #efe9de);
+  color: var(--text-000, #141413);
 }
 
 .files-load-more {
-  margin: 8px 12px 16px;
+  margin: 8px 0 16px;
 }
 
 .files-version-error {
-  margin: 8px 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--warn, #b45309);
-  color: var(--warn, #b45309);
-  border-radius: 6px;
+  margin: 8px 0;
+  padding: 10px 14px;
+  border: 0;
+  background: var(--warn-bg, #f7ecd2);
+  color: var(--warn-text, #8a5b08);
+  border-radius: var(--radius, 8px);
 }
 
 .files-index-note {
-  margin: 0 12px 8px;
-  font-size: 12px;
-  color: var(--text-300, #6f6d68);
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-400, #6c6a64);
+}
+
+#dock-files .editor-drafts {
+  margin: 0 0 12px;
+  padding: 0;
+  font-size: 14px;
+  color: var(--text-200, #3d3d3a);
+}
+
+#dock-files .editor-drafts summary {
+  font-weight: 500;
 }
 
 /* Editor recovery actions remain visible without stealing text-area height. */
@@ -65,6 +106,6 @@
 .edit-acts { flex-wrap: wrap; }
 .editor-drafts { padding: 8px 16px; }
 .editor-drafts summary { cursor: pointer; }
-.editor-draft { border-top: 1px solid var(--border); padding: 8px 0; }
+.editor-draft { border-top: 1px solid var(--line-soft, var(--border)); padding: 10px 0; }
 .editor-draft p { overflow-wrap: anywhere; }
 .editor-draft textarea { display: block; width: 100%; min-height: 80px; box-sizing: border-box; }
