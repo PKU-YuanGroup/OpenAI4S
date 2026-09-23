@@ -361,14 +361,14 @@ def test_file_key_whitespace_is_preserved_as_remote_identity():
     )
 
 
-def test_native_observation_keeps_cursor_receipt_and_complete_file_list(monkeypatch):
+def _search_tool_result(monkeypatch, files, runtime=None):
     from openai4s import webtools
-    from openai4s.tools.registry import finalize_tool_batch, format_tool_result
 
     document = payload()
     document["links"]["next"] = "https://zenodo.org/api/records?page=2"
     document["hits"]["hits"][0]["files"] = [
-        {"key": f"spectrum-{i:03}.csv", "size": i, "checksum": None} for i in range(200)
+        {"key": f"spectrum-{i:03}.csv", "size": i, "checksum": None}
+        for i in range(files)
     ]
     monkeypatch.setattr(
         webtools,
@@ -376,37 +376,100 @@ def test_native_observation_keeps_cursor_receipt_and_complete_file_list(monkeypa
         lambda *_args, **_kwargs: {"content": json.dumps(document)},
     )
     tool = ScienceSearchTool()
-    result = tool.execute(None, {"database": "zenodo", "query": "hyperspectral"})
+    return tool, tool.execute(runtime, {"database": "zenodo", "query": "hyperspectral"})
+
+
+def test_native_observation_keeps_cursor_receipt_and_complete_file_list(monkeypatch):
+    from openai4s.tools.registry import finalize_tool_batch, format_tool_result
+
+    tool, result = _search_tool_result(monkeypatch, 30)
     assert "error" not in result
     observation = finalize_tool_batch([format_tool_result(tool, result)], 1, [])
     assert result["next_cursor"] in observation
     assert result["provenance"]["response_sha256"] in observation
     assert "metadata_response_only_not_dataset_file_bytes" in observation
-    assert "spectrum-199.csv" in observation
-    assert '"file_count": 200' in observation
+    assert "spectrum-029.csv" in observation
+    assert '"file_count": 30' in observation
+    assert "files_omitted_from_view" not in observation
     assert "truncated]" not in observation
 
 
-def test_pretty_native_budget_refuses_before_persisting_partial_evidence(monkeypatch):
-    from openai4s import webtools
+def test_large_inventory_is_named_as_omitted_not_refused_or_cut(monkeypatch):
+    # One record's inventory alone can exceed the model's share of a batch.
+    # Refusing it made the record unreachable at any limit and ended paging.
+    from openai4s.tools.registry import format_tool_result
 
-    document = payload()
-    document["hits"]["hits"][0]["files"] = [
-        {"key": f"spectrum-{i:03}.csv", "size": i, "checksum": None} for i in range(350)
-    ]
-    # This fits the service's JSON bound but not the actual native formatter.
-    assert run(document)[0]["count"] == 1
-    monkeypatch.setattr(
-        webtools,
-        "web_fetch",
-        lambda *_args, **_kwargs: {"content": json.dumps(document)},
-    )
+    records = []
     runtime = SimpleNamespace(
         stage10_enabled=lambda: True,
-        record_science_artifact=lambda _: pytest.fail("must reject before capture"),
+        record_science_artifact=lambda result: records.append(result)
+        or {"path": "dataset-metadata.json"},
     )
-    result = ScienceSearchTool().execute(
-        runtime, {"database": "zenodo", "query": "hyperspectral"}
+    tool, result = _search_tool_result(monkeypatch, 350, runtime)
+    assert "error" not in result
+    # A Python cell and the Artifact receive the complete, unprojected envelope.
+    assert "content" not in result
+    assert len(result["results"][0]["attributes"]["files"]) == 350
+    assert len(records[0]["results"][0]["attributes"]["files"]) == 350
+    observation = format_tool_result(tool, result)
+    assert result["next_cursor"] in observation
+    assert '"files_omitted_from_view": 350' in observation
+    assert '"file_count": 350' in observation
+    assert "host.science.search" in observation
+    assert "spectrum-000.csv" not in observation
+    assert "truncated]" not in observation
+
+
+def test_two_large_searches_in_one_batch_keep_both_receipts(monkeypatch):
+    from openai4s.tools.registry import finalize_tool_batch, format_tool_result
+
+    tool, first = _search_tool_result(monkeypatch, 350)
+    _, second = _search_tool_result(monkeypatch, 349)
+    observation = finalize_tool_batch(
+        [format_tool_result(tool, first), format_tool_result(tool, second)], 2, []
     )
-    assert set(result) == {"error"}
-    assert "observation budget" in result["error"]
+    assert observation.count(first["next_cursor"]) == 2
+    assert '"files_omitted_from_view": 349' in observation
+    assert "truncated]" not in observation
+
+
+def test_every_science_observation_shows_cursor_and_receipt():
+    from openai4s.tools.registry import format_tool_result
+
+    result = {
+        "database": "openalex",
+        "source": "OpenAlex",
+        "query": "CRISPR",
+        "count": 1,
+        "results": [{"id": "W1", "title": "t", "url": "u", "type": "work"}],
+        "next_cursor": "openalex-next-page",
+        "provenance": {"response_sha256": "feedface"},
+    }
+    observation = format_tool_result(ScienceSearchTool(), result)
+    assert "openalex-next-page" in observation
+    assert "feedface" in observation
+    assert '"id": "W1"' in observation
+
+
+def test_full_public_page_fits_the_returned_data_bound():
+    # Live, ordinary queries at limit=25 were refused by an 80 KB page bound
+    # that only protected the model's view, which is now budgeted separately.
+    document = payload()
+    template = document["hits"]["hits"][0]
+    rows = []
+    for index in range(25):
+        row = copy.deepcopy(template)
+        row["id"] = 7_000_000 + index
+        row["files"] = [
+            {"key": f"sample-{index}-{i:02}.csv", "size": i, "checksum": None}
+            for i in range(20)
+        ]
+        rows.append(row)
+    document["hits"]["hits"] = rows
+    result, _ = run(document, limit=25)
+    assert result["count"] == 25
+    files = result["results"][0]["attributes"]["files"]
+    assert "record_id" not in files[0]
+    assert files[0]["download_url"].startswith(
+        "https://zenodo.org/api/records/7000000/files/"
+    )

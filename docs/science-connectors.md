@@ -161,6 +161,12 @@ restricted or embargoed records, so an empty file list is an empty inventory
 only on an `open` record; otherwise the inventory stays unknown. Discovery
 reads metadata only and marks `file_verification=not_downloaded`.
 
+The native `science_search` observation, for every database, starts with the
+cursor and response receipt. When a page's file inventories would exceed an
+ordinary tool's share of the observation, the largest are replaced by a
+`files_omitted_from_view` count rather than cut or refused. A Python cell and
+the Stage 10 Artifact always receive every entry.
+
 The canonical offline fixture is PaRoutes Zenodo record `6275421`, version
 `1.0.0`, licensed `cc-by-4.0`. Its `n1-targets.txt` file is 465,689 bytes with
 source checksum `md5:5adae99357cdad829073b197c7813152`; the same record's

@@ -18,7 +18,9 @@ from openai4s.host.science import ScienceConnectorError
 
 MAX_PAGE_SIZE = 25  # The public API's anonymous-request limit.
 MAX_RECORD_FILES = 1000
-MAX_RESULT_BYTES = 80_000  # Leave room for the common tool/provenance envelope.
+# Bounds what a Python cell or Artifact receives. The model's view is budgeted
+# separately when the tool renders it, so this only stops runaway pages.
+MAX_RESULT_BYTES = 1_000_000
 # Zenodo answers HTTP 400 for a page starting at or past this many hits, yet
 # still advertises `links.next` on the last page inside the window.
 MAX_RESULT_WINDOW = 10_000
@@ -91,7 +93,6 @@ def _files(
                 "key": name,
                 "declared_size_bytes": size,
                 "declared_checksum": checksum.lower() if checksum else None,
-                "record_id": record_id,
                 "download_url": dataset_file_url(record_id, name),
             }
         )
