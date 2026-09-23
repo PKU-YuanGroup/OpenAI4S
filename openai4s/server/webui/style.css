@@ -1881,6 +1881,8 @@ html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(
 
 /* ---- base ---- */
 body{line-height:1.55;color:var(--text-000)}
+/* single-ink line glyphs, a touch lighter than lucide's default 2px */
+.ic-svg{stroke-width:1.75}
 ::selection{background:rgba(204,120,92,.24)}
 .serif{font-variant-numeric:lining-nums}
 
@@ -2143,6 +2145,8 @@ html[data-theme="dark"] .tile:hover{box-shadow:none}
 .pc-revise{padding:14px 24px 0}
 .pc-revise-input{min-height:40px;padding:9px 12px}
 .plan-card .pa,.plan-card.rich .pa{justify-content:flex-end;gap:8px;padding:14px 24px 20px}
+.plan-card .pa .outline-btn{order:1;height:36px;padding:0 16px;font-size:14px}
+.plan-card .pa .approve-btn{order:2}
 .plan-card:not(.rich) .pa{padding:0}
 .pc-status{padding:14px 24px 20px;font-size:13px;font-weight:500}
 html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:rgba(250,249,245,.06)}
@@ -2150,7 +2154,7 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 /* ---- permission gate: a surface-card band with the command in a dark bar ---- */
 .perm-card{margin:12px 0;padding:20px 24px;border:0;border-radius:var(--radius-card);background:var(--bg-200);box-shadow:none;font-size:14px}
 .perm-head{gap:12px}
-.perm-ic{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:999px;background:var(--bg);color:var(--text-000)}
+.perm-ic{flex:none;box-sizing:content-box;width:16px;height:16px;padding:10px;border-radius:999px;background:var(--bg);color:var(--text-000)}
 .perm-title{font-size:17px;font-weight:500}
 .perm-badge{padding:2px 10px;background:var(--bg);color:var(--text-200);font-size:12px;font-weight:500}
 .perm-badge.danger{background:var(--danger-bg);color:var(--danger)}
@@ -2167,22 +2171,25 @@ html[data-theme="dark"] .pc-steps,html[data-theme="dark"] .pc-step{border-color:
 .perm-chip{border:1px solid var(--border);border-radius:6px;background:var(--bg)}
 .perm-chip:hover{background:var(--bg-100)}
 .perm-btns{justify-content:flex-end;gap:8px;margin-top:14px}
-.perm-deny{height:40px;padding:0 20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text-000);font-size:14px;font-weight:500}
+.perm-deny{order:1;height:40px;padding:0 20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text-000);font-size:14px;font-weight:500}
 .perm-deny:hover{background:var(--bg);border-color:var(--danger);color:var(--danger)}
-.perm-allow{flex:none;height:40px;padding:0 24px;border-radius:var(--radius);background:var(--clay);font-size:14px;font-weight:500}
+.perm-allow{order:2;flex:none;height:40px;padding:0 24px;border-radius:var(--radius);background:var(--clay);font-size:14px;font-weight:500}
 .perm-allow:hover{background:var(--clay)}
 .perm-allow:active{background:var(--clay-em)}
 .perm-continue{height:40px;border-radius:var(--radius);background:var(--clay);font-size:14px;font-weight:500}
 .perm-continue:hover{background:var(--clay-em)}
-.perm-card.resolved{padding:12px 16px;border:1px solid var(--border);background:var(--bg)}
-.perm-card.resolved .perm-ic{width:auto;height:auto;background:transparent}
-.perm-card.resolved .perm-title{font-size:14px}
-.perm-card.resolved .perm-sub{margin-left:28px}
-.perm-card.resolved .perm-detail{margin:0 0 0 28px;padding:8px 12px}
+/* a decided request collapses to one hairline row: lock · tool · command · outcome */
+.perm-card.resolved{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;padding:10px 16px;border:1px solid var(--border);background:var(--bg)}
+.perm-card.resolved .perm-head{flex:none;gap:10px}
+.perm-card.resolved .perm-ic{padding:0;background:transparent}
+.perm-card.resolved .perm-title{font-size:14px;font-weight:500}
+.perm-card.resolved .perm-sub{display:none}
+.perm-card.resolved .perm-detail{flex:1 1 160px;min-width:0;max-height:none;margin:0;padding:0;overflow:hidden;background:transparent;color:var(--text-200);white-space:nowrap;text-overflow:ellipsis}
 .perm-card.allowed,.perm-card.denied{border-color:var(--border)}
 .perm-card.allowed .perm-status{color:var(--text-200)}
 .perm-card.allowed .perm-status::before{content:"✓ "}
-.perm-status{margin:8px 0 0 28px;font-size:13px;font-weight:500}
+.perm-status{margin:8px 0 0;font-size:13px;font-weight:500}
+.perm-card.resolved .perm-status{margin:0 0 0 auto}
 .perm-sec-h{font-size:14px;font-weight:500}
 .perm-rule{padding:10px 0;border-top:1px solid var(--line-soft)}
 .perm-rtool{font-size:14px}
@@ -2246,7 +2253,7 @@ html[data-theme="dark"] .nb-card:focus-within{border-color:var(--line2)}
 .dock-empty{padding:32px 12px;font-size:14px;color:var(--text-400)}
 
 /* ---- Notebook header strip ---- */
-.kernel-chips{gap:4px;min-height:52px;margin:-16px -20px 16px;padding:10px 20px;border-bottom:1px solid var(--line-soft);background:color-mix(in srgb,var(--bg) 92%,transparent)}
+.kernel-chips{gap:4px;min-height:52px;margin:-16px -20px 16px;padding:10px 20px;border-bottom:1px solid var(--line-soft);background:var(--bg);backdrop-filter:none}
 .kchip{height:30px;padding:0 12px;border-radius:var(--radius);font-size:13px;font-weight:500;color:var(--text-400)}
 .kchip:hover{background:var(--bg-100);color:var(--text-000)}
 .kchip.on,.nb-exec-toggle.on{background:var(--bg-200);color:var(--text-000)}
