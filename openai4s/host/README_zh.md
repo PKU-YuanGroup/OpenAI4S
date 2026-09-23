@@ -55,3 +55,4 @@ service 可以返回单键的 `{"error": message}` 表示软失败。Python work
 - [安全模型](../../docs/security.md)
 - [远程计算](../../docs/compute.md)
 - [Skills](../../docs/skills.md)
+`zenodo.py` 是只读取 Zenodo 数据集元数据的 connector；它不会下载数据集文件。

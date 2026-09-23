@@ -8,6 +8,7 @@ records without scraping provider-specific pages.
 
 | id | source | disciplines | normalized record |
 |---|---|---|---|
+| `zenodo` | Zenodo Records API | multidisciplinary | dataset record/concept DOI, declared license, version and file inventory |
 | `uniprot` | UniProtKB REST | biology | protein accession, name, genes, organism, length |
 | `pdb` | RCSB PDB Search | biology, chemistry | structure id and relevance score |
 | `ensembl` | Ensembl REST | biology | stable genomic feature from an exact symbol |
@@ -82,7 +83,7 @@ Source-specific filters are intentionally bounded:
   `affinity_type` (`Ki`, `IC50`, `Kd`, `EC50`) for BindingDB;
 - `year_from`, `year_to`, and `work_type` for OpenAlex.
 
-arXiv and OpenAlex return cursors. Other first-batch connectors are bounded
+arXiv, OpenAlex and Zenodo return cursors. Other first-batch connectors are bounded
 single-page searches. PubChem uses its exact name/synonym endpoint rather than
 claiming fuzzy text-search semantics.
 
@@ -140,6 +141,33 @@ represent valid empty results with provenance. Null payloads, missing or
 invalid affinity containers, and non-object rows raise connector errors;
 records without monomer IDs are skipped. BindingDB is discoverable by name and
 its domain is included in the built-in scientific egress allowlist.
+
+### Published Zenodo datasets
+
+`host.science.search("zenodo", "retrosynthesis", limit=10)` searches the fixed
+public [Records API](https://developers.zenodo.org/#records) with
+`type=dataset`. Anonymous pages support 1–25 records. Use the returned cursor
+with the same query and limit; page URLs are rebuilt locally and an upstream
+pagination URL is never followed.
+
+The connector keeps a concrete record DOI separate from the concept DOI that
+groups versions. Each file entry preserves its exact remote key, declared byte
+count, source checksum, and a fixed `download_url`. Unknown license, size,
+checksum, and file inventory values remain unknown; they are never converted to
+zero, an empty list, or an open-license claim. Discovery reads metadata only and
+marks `file_verification=not_downloaded`.
+
+The canonical offline fixture is PaRoutes Zenodo record `6275421`, version
+`1.0.0`, licensed `cc-by-4.0`. Its `n1-targets.txt` file is 465,689 bytes with
+source checksum `md5:5adae99357cdad829073b197c7813152`; the same record's
+`uspto_raw_template_library.csv` (about 645 MB) is retained for future
+oversized-import tests. The fixture is captured under `tests/fixtures/zenodo/`
+and default tests never contact Zenodo.
+
+The connector does not widen the outbound policy. Deployments enforcing
+`OPENAI4S_EGRESS=allowlist` must authorize `zenodo.org` through the built-in
+scientific data-repository group; SSRF, permission, timeout, response-size and
+prompt-injection checks remain active.
 
 ## Safety and failure behavior
 

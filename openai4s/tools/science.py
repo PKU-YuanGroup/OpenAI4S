@@ -73,6 +73,7 @@ class ScienceSearchTool(Tool):
             "database": {
                 "type": "string",
                 "enum": [
+                    "zenodo",
                     "uniprot",
                     "pdb",
                     "ensembl",
@@ -160,6 +161,8 @@ class ScienceSearchTool(Tool):
                 filters=arguments.get("filters"),
                 timeout=float(arguments.get("timeout") or 30),
             )
+            if result.get("database") == "zenodo":
+                result = self._dataset_observation(result)
             artifact = _maybe_record(_runtime, result)
             if artifact:
                 result = dict(result)
@@ -175,6 +178,41 @@ class ScienceSearchTool(Tool):
             return {"error": str(error)}
         except Exception as error:  # noqa: BLE001 - preserve the soft-fail contract
             return {"error": f"science_search: {error}"}
+
+    def _dataset_observation(self, result: dict) -> dict:
+        """Keep paging and receipt metadata visible through native formatting.
+
+        The common formatter otherwise renders only a nonempty results list.
+        It also pretty-prints records, so a compact-JSON size check alone does
+        not bound what the model receives. Refuse before Artifact capture when
+        one result cannot fit; a multi-call batch still has its shared budget.
+        """
+        import json
+
+        from openai4s.host.science import ScienceConnectorError
+        from openai4s.tools.registry import MAX_TOOL_OBS_CHARS, format_tool_result
+
+        summary = {
+            key: result.get(key)
+            for key in (
+                "database",
+                "source",
+                "query",
+                "count",
+                "next_cursor",
+                "provenance",
+            )
+        }
+        summary["hash_scope"] = "metadata_response_only_not_dataset_file_bytes"
+        projected = {**result, "content": json.dumps(summary, ensure_ascii=False)}
+        # Reserve room for the batch header and subsequent screening notices.
+        limit = min(self.output_limit, MAX_TOOL_OBS_CHARS - 4096)
+        if len(format_tool_result(self, projected)) > limit:
+            raise ScienceConnectorError(
+                "Zenodo file metadata exceeds the native observation budget; "
+                "retry with a smaller result limit or a narrower query"
+            )
+        return projected
 
 
 __all__ = ["ScienceListDatabasesTool", "ScienceSearchTool"]

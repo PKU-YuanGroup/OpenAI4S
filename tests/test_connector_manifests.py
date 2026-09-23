@@ -32,7 +32,11 @@ from openai4s.host.connector_manifest import (
     MANIFESTS,
     resolve,
 )
-from openai4s.host.science import DATABASES, ScienceConnectorService
+from openai4s.host.science import (
+    DATABASES,
+    ScienceConnectorError,
+    ScienceConnectorService,
+)
 
 # The same offline fixtures the connector tests use, keyed by host.
 from tests.test_science_connectors import ARXIV_XML, RESPONSES
@@ -41,6 +45,7 @@ pytestmark = pytest.mark.stubbed_backend
 
 # manifest id -> (database id, probe host, a query that hits the fixture)
 _PROBE = {
+    "zenodo": ("zenodo", "zenodo.org", "hyperspectral"),
     "uniprot": ("uniprot", "rest.uniprot.org", "insulin"),
     "pdb": ("pdb", "search.rcsb.org", "hemoglobin"),
     "openalex": ("openalex", "api.openalex.org", "CRISPR"),
@@ -155,6 +160,12 @@ def test_every_required_path_is_load_bearing(manifest):
 
     for path in manifest.required:
         broken_doc = _delete_first(copy.deepcopy(fixture), path)
+        if database_id == "zenodo":
+            # Dataset manifests refuse an incomplete page rather than quietly
+            # dropping a record that the user might select as an input.
+            with pytest.raises(ScienceConnectorError):
+                _service_returning(broken_doc).search(database_id, query, limit=5)
+            continue
         result = _service_returning(broken_doc).search(database_id, query, limit=5)
         assert not result["results"], (
             f"{manifest.id}: deleting required path {path} still returned a record, "

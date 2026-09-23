@@ -136,6 +136,20 @@ class ConnectorManifest:
 #: muted.
 MANIFESTS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
+        id="zenodo",
+        probe_query="hyperspectral",
+        required=(
+            ("hits", "hits", EACH, "id"),
+            ("hits", "hits", EACH, "metadata", "title"),
+            ("hits", "hits", EACH, "metadata", "resource_type", "type"),
+        ),
+        expected=(
+            ("hits", "hits", EACH, "doi"),
+            ("hits", "hits", EACH, "metadata", "license", "id"),
+            ("hits", "hits", EACH, "files", EACH, "checksum"),
+        ),
+    ),
+    ConnectorManifest(
         id="uniprot",
         probe_query="insulin",
         required=(("results", EACH, "primaryAccession"),),

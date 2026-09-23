@@ -55,3 +55,4 @@ A service can fail softly by returning the single-key shape `{"error": message}`
 - [Security model](../../docs/security.md)
 - [Remote compute](../../docs/compute.md)
 - [Skills](../../docs/skills.md)
+`zenodo.py` is the metadata-only Zenodo dataset connector; it never downloads dataset files.

@@ -528,3 +528,4 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 - [`browser_navigation.mjs`](browser_navigation.mjs): 真实项目导航、会话/文件夹响应乱序、分页归属、失败或畸形读取后的重试及连续新建会话意图与失败恢复，三个引擎共用。
 
 - [`browser_provenance.mjs`](browser_provenance.mjs): 生产溯源控件、只读重试、失败不下载、固定版本导出与精确生产者链接；三引擎矩阵共用。
+`test_zenodo_datasets.py` 覆盖离线 Zenodo/PaRoutes 数据集 fixture 和只读元数据检索契约。
