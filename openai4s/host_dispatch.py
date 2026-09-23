@@ -177,6 +177,22 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
             f"Downloading from {_domain(url) or url}",
             {"url": url, "path": a.get("path", "")},
         )
+    if method == "science_import_dataset":
+        return (
+            "fetch",
+            "Importing a verified Zenodo dataset file",
+            {
+                key: a.get(key)
+                for key in (
+                    "record_id",
+                    "file_key",
+                    "path",
+                    "expected_size",
+                    "expected_checksum",
+                    "max_bytes",
+                )
+            },
+        )
     if method == "science_list_dbs":
         return (
             "science",
@@ -1120,6 +1136,7 @@ class HostDispatcher:
         # scope and therefore cannot leave receipts for a later Cell to drain.
         self._native_artifact_local = threading.local()
         self._artifact_receipt_local = threading.local()
+        self._download_cancellation_local = threading.local()
         self._bash_authorization = BashAuthorizationService(
             workspace=lambda: self._files.workspace(),
             frame_id=lambda: self.frame_id,
@@ -1257,6 +1274,7 @@ class HostDispatcher:
             invoke_control=self._invoke_control_behavior,
             dispatch_host=lambda method, args: self(method, args, _record=False),
             search_web=self._search_web,
+            get_download_cancelled=self._current_download_cancellation,
         )
 
     @property
@@ -1392,6 +1410,29 @@ class HostDispatcher:
         return dict(value) if isinstance(value, dict) else None
 
     @contextmanager
+    def bind_download_cancellation(
+        self, cancelled: Callable[[], bool]
+    ) -> Iterator[None]:
+        """Bind one exact execution token, invalidating it when its scope ends."""
+        marker = object()
+        previous = getattr(self._download_cancellation_local, "value", marker)
+        finished = threading.Event()
+        self._download_cancellation_local.value = (
+            lambda: finished.is_set() or cancelled()
+        )
+        try:
+            yield
+        finally:
+            finished.set()
+            if previous is marker:
+                del self._download_cancellation_local.value
+            else:
+                self._download_cancellation_local.value = previous
+
+    def _current_download_cancellation(self) -> Callable[[], bool] | None:
+        return getattr(self._download_cancellation_local, "value", None)
+
+    @contextmanager
     def bind_native_artifact_committer(
         self,
         commit: Callable[[tuple[dict[str, Any], ...]], list[dict[str, Any]]],
@@ -1437,6 +1478,8 @@ class HostDispatcher:
         )
 
     def _artifact_scope_required(self, method: str) -> bool:
+        if method == "science_import_dataset":
+            return True
         if method == "science_search":
             return bool(
                 self.control_tool_execution_metadata("science_search").get(
@@ -1892,6 +1935,32 @@ class HostDispatcher:
                     }
                     ok = False
                     return result
+            if method == "science_import_dataset":
+                # A Cell/headless receipt list is not an immediate durable consumer.
+                if not callable(getattr(self._native_artifact_local, "commit", None)):
+                    ok = False
+                    result = {
+                        "error": "Dataset imports require a native Artifact capture transaction; import in a separate action before analysis"
+                    }
+                    return result
+                # Renaming the download capability must not bypass a standing deny.
+                # An allow here is not consent for an import: the new tool still
+                # passes its own approval gate with the complete selection below.
+                scope = self.store.resolve_frame_scope(self.frame_id)
+                if (
+                    self.store.resolve_permission(
+                        root_frame_id=scope.get("root_frame_id"),
+                        project_id=scope.get("project_id") or "default",
+                        tool="web_download",
+                        pattern_input="zenodo.org",
+                    )
+                    == "deny"
+                ):
+                    ok = False
+                    result = {
+                        "error": "Permission denied: web_download to zenodo.org is denied"
+                    }
+                    return result
             if (
                 self._artifact_scope_required(method)
                 and not self._artifact_capture_bound()
@@ -1995,8 +2064,23 @@ class HostDispatcher:
                     ok = False
                     return result
             result = handler(*args)
-            if method in {"science_search", "compute_result"}:
+            if method in {"science_search", "compute_result", "science_import_dataset"}:
                 result = self._commit_or_queue_artifact_receipt(result)
+            if (
+                method == "science_import_dataset"
+                and isinstance(result, dict)
+                and "error" not in result
+            ):
+                artifact = result.get("artifact")
+                if not isinstance(artifact, dict) or not all(
+                    isinstance(artifact.get(key), str) and artifact[key]
+                    for key in ("artifact_id", "version_id", "filename")
+                ):
+                    failure = RuntimeError(
+                        "Dataset import did not receive a durable Artifact identity"
+                    )
+                    failure.output_committed = True  # type: ignore[attr-defined]
+                    raise failure
             if isinstance(result, dict) and set(result.keys()) == {"error"}:
                 ok = False  # soft-fail contract
             else:

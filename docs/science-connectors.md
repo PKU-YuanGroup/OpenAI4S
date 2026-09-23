@@ -181,6 +181,72 @@ this connector, including `web_download` of a Zenodo file URL; disabling the
 group blocks the connector as well. SSRF, permission, timeout, response-size
 and prompt-injection checks remain active.
 
+### Import one selected Zenodo file
+
+Use the native `science_import_dataset` tool in a Web session, then analyze
+its workspace file in a subsequent Python/R Cell. The tool builds the file
+URL itself; it does not accept a caller-supplied URL or resolve a concept DOI
+to a moving latest version. For the PaRoutes example:
+
+```json
+{
+  "record_id": "6275421",
+  "file_key": "n1-targets.txt",
+  "expected_size": 465689,
+  "expected_checksum": "md5:5adae99357cdad829073b197c7813152",
+  "path": "datasets/n1-targets.txt",
+  "max_bytes": 1048576
+}
+```
+
+Select the exact record ID, file key and declared size/checksum from discovery.
+All six fields above are required; `timeout` optionally limits each network
+request to 1–120 seconds (default 60). `max_bytes=0` admits only an empty file.
+A missing declaration or a declaration above the explicit budget is refused
+before I/O. File keys keep their exact spelling and are never local paths.
+Destinations excluded from Artifact capture (hidden/dependency/repository
+paths) are refused.
+
+The import has its own `science_import_dataset` permission targeting
+`zenodo.org`. A standing `web_download` deny for that host also refuses the
+import; an existing download allow does not grant import permission. After
+approval, the fixed record is refreshed and the selected file must still be
+open with matching size/checksum. The shared egress/SSRF checks still apply
+on metadata reads and each transfer redirect. Source MD5/SHA-256 is verified
+while streaming; a separate SHA-256 describes the actual downloaded bytes.
+The workspace copy is bounded and checked again before publication. A failed
+transfer or cancellation before publication preserves any previous target.
+Downloads never extract archives or execute code. Cancellation is checked
+between reads; an in-flight read may take until its network timeout to return.
+
+Success includes an `artifact` with an immutable `artifact_id`, `version_id`
+and `filename`, plus source metadata binding the exact record/concept DOI,
+version, source license/access declarations, file key, size/checksum, metadata
+response receipt and local file SHA-256. Unknown license remains unknown.
+Source declarations and matching checksums are not proof of scientific validity
+or permission to reuse data. Repeated imports may create separate versions;
+earlier source records are immutable, including after Store reopen.
+
+Standalone CLI, Python Cell and background calls cannot provide the immediate
+native capture transaction and refuse before metadata or file I/O. If capture
+fails after file publication, the action fails with `output_committed` to veto
+automatic replay; the workspace file may remain. Inspect the file and version
+history before explicitly retrying. The generic `web_download` and its SDK
+signature are unchanged. Dataset-specific workbench projection is tracked in
+#185's Stage 3.
+
+The opt-in acceptance test imports the real PaRoutes file through this native
+transaction and checks Store reopen:
+
+```bash
+uv run pytest tests/test_dataset_import_live.py -m network -s
+```
+
+The 2026-09-23 acceptance read measured file SHA-256
+`c0d1b48379e1ceb1129fba4bf3773f73f27bdb22bb4d468417e6e404d3210c15`.
+The test pins this value independently of the record's MD5 declaration.
+Default tests remain offline and no dataset file is bundled.
+
 ## Safety and failure behavior
 
 Connectors construct URLs from fixed HTTPS endpoints; callers cannot supply a

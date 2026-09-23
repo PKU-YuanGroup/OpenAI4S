@@ -14,6 +14,8 @@ A service can fail softly by returning the single-key shape `{"error": message}`
 
 | File | Responsibility |
 | --- | --- |
+| [`datasets.py`](datasets.py) | Exact Zenodo record/file selection and refreshed source declarations; metadata only. |
+| [`download.py`](download.py) | Shared bounded transfer and pinned workspace publication, with optional source integrity checks and execution cancellation. |
 | [`__init__.py`](__init__.py) | Re-exports most of the service classes used by composition code. `BashAuthorizationService` and `ScienceConnectorService` are not in `__all__`; callers import those from their own modules. |
 | [`bash.py`](bash.py) | Authorizes kernel-local `host.bash` without ever running it; the module does not import `subprocess`. The trusted host repeats the safety and egress checks the worker already did, redacts the proposal, then mints a short-lived token bound to the command digest, cwd, worker generation, and challenge. That token can be redeemed exactly once. Whatever the worker reports back is bounded and redacted before it is recorded. |
 | [`accelerators.py`](accelerators.py) | Probes GPUs visible to the local daemon with `nvidia-smi`, separately reports container-runtime availability, and deliberately makes no claim that a model repository, checkpoint, or backend is ready. |

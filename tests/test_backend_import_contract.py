@@ -76,6 +76,10 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             # across a package boundary, which this test refused.
             "guard_url",
             "network_allowed",
+            # Shared transfer preflight and cancellation are consumed by both
+            # the URL downloader and the exact dataset importer.
+            "validate_download_expectation",
+            "check_download_cancelled",
             "web_download",
             "web_fetch",
             "web_search",

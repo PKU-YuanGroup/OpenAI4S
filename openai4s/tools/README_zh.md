@@ -22,6 +22,7 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`dataset_import.py`](dataset_import.py) | 仅原生动作可用的 Zenodo 选定文件导入，校验来源与字节并立即捕获产物回执。 |
 | [`__init__.py`](./__init__.py) | 公共兼容 facade：重新导出工具类、注册表 helper、native spec、schema helper 和批次上限。 |
 | [`artifacts.py`](./artifacts.py) | Artifact 相关工具：列出 Artifact、把已有文件注册进来、查询精确的元数据或精确的版本。恢复历史版本需要审批。 |
 | [`background.py`](./background.py) | 对独立的后台 Python Cell worker 做 submit/list/peek/interrupt。这里只是任务编排，不是 shell runtime。 |

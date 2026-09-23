@@ -14,6 +14,7 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 
 | File | Responsibility |
 | --- | --- |
+| [`artifact_paths.py`](artifact_paths.py) | Shared Artifact capture visibility and dataset destination preflight. |
 | [`__init__.py`](./__init__.py) | Names the package and holds its version. Importing it starts nothing. |
 | [`__main__.py`](./__main__.py) | Makes `python -m openai4s` work by handing off to the CLI entry point. |
 | [`artifact_restore.py`](./artifact_restore.py) | The one Artifact restore path, shared by the native and Web routes. It verifies the historical snapshot before it copies those bytes back inside the workspace. What it records is a fresh version. History is never rewritten. The trusted snapshot roots — every directory the daemon itself writes immutable snapshots into, session imports included — are derived in one place, because two hand-maintained lists is how a directory comes to be written to and then refused on read. That boundary is containment, not integrity: the bytes are still checked against the version row's recorded sha256 and size on every read. Its refusals are typed, so a message this module wrote ("checksum verification failed") reaches the caller while the text of an escaped OS error, which routinely names an absolute path, does not. |

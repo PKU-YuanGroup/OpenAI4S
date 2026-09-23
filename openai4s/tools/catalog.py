@@ -301,6 +301,7 @@ _TOOL_GROUP = {
     "lineage_graph": "data",
     "science_list_dbs": "science",
     "science_search": "science",
+    "science_import_dataset": "science",
     "read_todos": "workflow",
     "write_todos": "workflow",
     "read_plan": "workflow",

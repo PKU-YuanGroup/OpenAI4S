@@ -23,6 +23,7 @@ compromised kernel or arbitrary changes to kernel filesystem semantics.
 
 | File | Responsibility |
 | --- | --- |
+| [`dataset_import.py`](dataset_import.py) | Native-only selected Zenodo file import with source verification and an immediate Artifact receipt. |
 | [`__init__.py`](./__init__.py) | Public compatibility facade: re-exports the tool classes, registry helpers, native specs, schema helpers, and the batch limits. |
 | [`artifacts.py`](./artifacts.py) | Artifact tools: list them, register an existing file, look up exact metadata or an exact version. Restoring a historical version is approval-gated. |
 | [`background.py`](./background.py) | Submit, list, peek at and interrupt independent background Python-cell workers. This is job orchestration, not a shell runtime. |

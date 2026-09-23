@@ -18,6 +18,9 @@ The offline correctness gate for OpenAI4S. `uv run pytest` runs every module her
 
 | File | Responsibility |
 | --- | --- |
+| [`test_dataset_import_live.py`](test_dataset_import_live.py) | Opt-in real PaRoutes import and Store reopen through the native capture transaction; never part of the default offline suite. |
+| [`test_dataset_import.py`](test_dataset_import.py) | Selected-file, permissions, cancellation, native capture, immutable source/reopen and failure/replay contracts using offline fixtures. |
+| [`test_download_integrity.py`](test_download_integrity.py) | Source size/checksum checks, bounded streams, cancellation and publication ordering. |
 | [`test_live_ark_calls.py`](test_live_ark_calls.py) | Explicit live_llm Ark stream cancellation and next-call recovery; key via inherited descriptor, sanitized receipts, never part of offline CI. |
 | [`test_llm_usage_evidence.py`](test_llm_usage_evidence.py) | Raw usage evidence, unknown metering, safe error projection and old-call accounting contracts. |
 | [`test_llm_resource_bounds.py`](test_llm_resource_bounds.py) | Local HTTP deadline, idle, DNS, byte-limit, native stream terminal and text backpressure contracts. |

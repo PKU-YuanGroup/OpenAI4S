@@ -18,6 +18,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`test_dataset_import_live.py`](test_dataset_import_live.py) | 显式启用的真实 PaRoutes 原生导入与 Store 重开验收；不属于默认离线套件。 |
+| [`test_dataset_import.py`](test_dataset_import.py) | 离线 fixture 覆盖文件选择、权限、取消、原生捕获、来源不可变/重开及失败重放合同。 |
+| [`test_download_integrity.py`](test_download_integrity.py) | 来源大小/checksum、有界传输、取消及发布顺序。 |
 | [`test_live_ark_calls.py`](test_live_ark_calls.py) | 显式 live_llm Ark 流式停止与下一调用恢复；凭据通过继承描述符传递、输出脱敏凭证，不进入离线 CI。 |
 | [`test_llm_usage_evidence.py`](test_llm_usage_evidence.py) | 原始用量证据、未知计量、安全错误投影与旧调用结算回归。 |
 | [`test_llm_resource_bounds.py`](test_llm_resource_bounds.py) | 本地 HTTP 总期限、空闲、DNS、字节上限、原生终态和文本背压回归。 |
