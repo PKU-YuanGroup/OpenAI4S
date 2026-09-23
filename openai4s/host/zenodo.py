@@ -19,6 +19,9 @@ from openai4s.host.science import ScienceConnectorError
 MAX_PAGE_SIZE = 25  # The public API's anonymous-request limit.
 MAX_RECORD_FILES = 1000
 MAX_RESULT_BYTES = 80_000  # Leave room for the common tool/provenance envelope.
+# Zenodo answers HTTP 400 for a page starting at or past this many hits, yet
+# still advertises `links.next` on the last page inside the window.
+MAX_RESULT_WINDOW = 10_000
 _DOI = re.compile(r"10\.\d{4,9}/\S+", re.IGNORECASE)
 _CHECKSUM = re.compile(r"(?:md5:[a-fA-F0-9]{32}|sha256:[a-fA-F0-9]{64})")
 
@@ -51,9 +54,13 @@ def _integer(value: Any, name: str, *, positive: bool = False) -> int:
     return value
 
 
-def _files(row: dict[str, Any], record_id: str) -> dict[str, Any]:
+def _files(
+    row: dict[str, Any], record_id: str, access_right: str | None
+) -> dict[str, Any]:
     raw = row.get("files")
-    if raw is None:
+    # Zenodo lists no files for restricted or embargoed records that do have
+    # files. Only an open record's empty list declares an empty inventory.
+    if raw is None or (raw == [] and access_right != "open"):
         return {"files": None, "file_count": None, "declared_total_bytes": None}
     if not isinstance(raw, list) or len(raw) > MAX_RECORD_FILES:
         raise ScienceConnectorError("Zenodo file inventory is invalid or too large")
@@ -119,6 +126,7 @@ def _record(row: Any) -> dict[str, Any]:
     if license_record is not None and not isinstance(license_record, dict):
         raise ScienceConnectorError("Zenodo license must be an object or unknown")
     license_id = _text((license_record or {}).get("id"), "license id", 256)
+    access_right = _text(metadata.get("access_right"), "access right", 128)
     return {
         "id": record_id,
         "title": title,
@@ -129,11 +137,11 @@ def _record(row: Any) -> dict[str, Any]:
             "concept_doi": concept_doi,
             "version": _text(metadata.get("version"), "version", 256),
             "publication_date": _text(metadata.get("publication_date"), "date", 64),
-            "access_right": _text(metadata.get("access_right"), "access right", 128),
+            "access_right": access_right,
             "declared_license": license_id,
             "license_status": "declared_by_source" if license_id else "unknown",
             "file_verification": "not_downloaded",
-            **_files(row, record_id),
+            **_files(row, record_id, access_right),
         },
     }
 
@@ -153,6 +161,10 @@ def search(
                 "Zenodo cursor does not match the query and limit"
             )
         page = int(match.group(1))
+        if (page - 1) * limit >= MAX_RESULT_WINDOW:
+            raise ScienceConnectorError(
+                "Zenodo cursor is past the 10,000-result search window"
+            )
     params = urllib.parse.urlencode(
         {"q": query, "type": "dataset", "size": limit, "page": page}
     )
@@ -176,8 +188,9 @@ def search(
     if not isinstance(links, dict):
         raise ScienceConnectorError("Zenodo pagination metadata is invalid")
     # A next link is only a continuation hint. Never fetch a supplied URL: the
-    # following page is rebuilt against the same fixed public endpoint.
-    next_page = bool(links.get("next")) and bool(rows)
-    if next_page and page >= 999999:
-        raise ScienceConnectorError("Zenodo pagination exceeded the cursor bound")
+    # following page is rebuilt against the same fixed public endpoint. Past
+    # the search window the hint is stale, so it ends pagination instead.
+    next_page = (
+        bool(links.get("next")) and bool(rows) and page * limit < MAX_RESULT_WINDOW
+    )
     return results, f"zenodo:{page + 1}:{binding}" if next_page else "", url

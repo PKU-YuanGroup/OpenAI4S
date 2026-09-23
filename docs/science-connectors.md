@@ -148,14 +148,18 @@ its domain is included in the built-in scientific egress allowlist.
 public [Records API](https://developers.zenodo.org/#records) with
 `type=dataset`. Anonymous pages support 1–25 records. Use the returned cursor
 with the same query and limit; page URLs are rebuilt locally and an upstream
-pagination URL is never followed.
+pagination URL is never followed. Zenodo serves only the first 10,000 hits of a
+search, so the cursor ends there even when the upstream still offers a next
+page.
 
 The connector keeps a concrete record DOI separate from the concept DOI that
 groups versions. Each file entry preserves its exact remote key, declared byte
 count, source checksum, and a fixed `download_url`. Unknown license, size,
 checksum, and file inventory values remain unknown; they are never converted to
-zero, an empty list, or an open-license claim. Discovery reads metadata only and
-marks `file_verification=not_downloaded`.
+zero, an empty list, or an open-license claim. Zenodo lists no files for
+restricted or embargoed records, so an empty file list is an empty inventory
+only on an `open` record; otherwise the inventory stays unknown. Discovery
+reads metadata only and marks `file_verification=not_downloaded`.
 
 The canonical offline fixture is PaRoutes Zenodo record `6275421`, version
 `1.0.0`, licensed `cc-by-4.0`. Its `n1-targets.txt` file is 465,689 bytes with
@@ -164,10 +168,12 @@ source checksum `md5:5adae99357cdad829073b197c7813152`; the same record's
 oversized-import tests. The fixture is captured under `tests/fixtures/zenodo/`
 and default tests never contact Zenodo.
 
-The connector does not widen the outbound policy. Deployments enforcing
-`OPENAI4S_EGRESS=allowlist` must authorize `zenodo.org` through the built-in
-scientific data-repository group; SSRF, permission, timeout, response-size and
-prompt-injection checks remain active.
+This connector adds `zenodo.org` to the built-in Data repositories egress
+group, which is enabled by default and matches subdomains. Under
+`OPENAI4S_EGRESS=allowlist` that authorizes every outbound consumer, not only
+this connector, including `web_download` of a Zenodo file URL; disabling the
+group blocks the connector as well. SSRF, permission, timeout, response-size
+and prompt-injection checks remain active.
 
 ## Safety and failure behavior
 

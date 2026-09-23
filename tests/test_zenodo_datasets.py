@@ -103,6 +103,52 @@ def test_unlisted_files_differ_from_empty_inventory():
     assert empty["files"] == [] and empty["file_count"] == 0
 
 
+@pytest.mark.parametrize("access_right", ["restricted", "embargoed", None])
+def test_hidden_file_list_is_unknown_not_an_empty_inventory(access_right):
+    # Zenodo answers `files: []` for restricted and embargoed records whose
+    # files exist; reporting 0 files / 0 bytes would invent an empty dataset.
+    document = payload()
+    row = document["hits"]["hits"][0]
+    if access_right is None:
+        row["metadata"].pop("access_right")
+    else:
+        row["metadata"]["access_right"] = access_right
+    row["files"] = []
+    attrs = run(document)[0]["results"][0]["attributes"]
+    assert attrs["access_right"] == access_right
+    assert attrs["files"] is None
+    assert attrs["file_count"] is None
+    assert attrs["declared_total_bytes"] is None
+
+
+def _cursor(page, limit, query="hyperspectral"):
+    binding = hashlib.sha256(f"{query}\0{limit}".encode()).hexdigest()[:24]
+    return f"zenodo:{page}:{binding}"
+
+
+def test_paging_stops_at_the_upstream_result_window():
+    # Live Zenodo still sends `links.next` on page 400 at size 25, then answers
+    # HTTP 400 for page 401. A cursor to that page would always fail.
+    document = payload()
+    document["links"]["next"] = "https://zenodo.org/api/records?page=next"
+    before_edge, _ = run(document, limit=25, cursor=_cursor(399, 25))
+    assert before_edge["next_cursor"] == _cursor(400, 25)
+    last, calls = run(document, limit=25, cursor=_cursor(400, 25))
+    assert urllib.parse.parse_qs(urllib.parse.urlsplit(calls[0]).query)["page"] == [
+        "400"
+    ]
+    assert last["count"] == 1
+    assert last["next_cursor"] is None
+    # A page starting inside the window is valid even when it overhangs it.
+    overhang, _ = run(document, limit=3, cursor=_cursor(3334, 3))
+    assert overhang["next_cursor"] is None
+    service = ScienceConnectorService(
+        lambda *_: pytest.fail("must reject before fetch")
+    )
+    with pytest.raises(ScienceConnectorError, match="10,000-result"):
+        service.search("zenodo", "hyperspectral", limit=25, cursor=_cursor(401, 25))
+
+
 def test_paging_rebuilds_url_and_retains_query_binding():
     document = payload()
     document["links"]["next"] = "https://untrusted.invalid/collect"
