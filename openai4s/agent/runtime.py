@@ -12,6 +12,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -68,7 +69,7 @@ from .finalize import (
     execution_evidence,
     note_execution_evidence,
 )
-from .models import ExecutionOutcome, ModelReply, RunState
+from .models import CALL_TELEMETRY_KEY, ExecutionOutcome, ModelReply, RunState
 from .stream_buffer import TextBuffer
 
 LogFn = Callable[..., None]
@@ -292,6 +293,82 @@ class _CancelProbe:
         return self._probe()
 
 
+class _CallProbe:
+    """What one provider call looked like from outside: time and counters.
+
+    Written from two threads -- deltas arrive on the provider thread, the
+    rest on the owning one -- but every field has a single writer, and a
+    torn read would only misplace a millisecond in a diagnostic record.
+    Content-free by construction: no text, no argument, no URL.
+    """
+
+    __slots__ = (
+        "stream",
+        "started",
+        "started_at",
+        "deltas",
+        "first_delta",
+        "last_delta",
+        "call_state",
+    )
+
+    def __init__(self, *, stream: bool) -> None:
+        self.stream = bool(stream)
+        self.started = time.monotonic()
+        self.started_at = int(time.time() * 1000)
+        self.deltas = 0
+        self.first_delta: float | None = None
+        self.last_delta: float | None = None
+        self.call_state: CallState | None = None
+
+    def delta(self) -> None:
+        now = time.monotonic()
+        if self.first_delta is None:
+            self.first_delta = now
+        self.last_delta = now
+        self.deltas += 1
+
+    def record(
+        self,
+        outcome: str,
+        *,
+        reply: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        def since(value: float | None) -> int | None:
+            return None if value is None else int((value - self.started) * 1000)
+
+        record: dict[str, Any] = {
+            "outcome": outcome,
+            "started_at": self.started_at,
+            "duration_ms": since(time.monotonic()),
+            "stream": self.stream,
+            "deltas": self.deltas,
+            "first_delta_ms": since(self.first_delta),
+            "last_delta_ms": since(self.last_delta),
+        }
+        state = self.call_state
+        if state is not None:
+            record["attempts"] = int(state.attempts)
+            record["sent"] = bool(state.sent)
+            record["retry_wait_ms"] = int(state.spent * 1000)
+            prior = state.last_error
+            if prior is not None and state.attempts > 1:
+                # Why an earlier attempt was retried: a closed code and the
+                # HTTP status, never the provider's text.
+                from openai4s.llm.models import llm_failure_code
+
+                record["retried_after"] = llm_failure_code(prior) or "transport_error"
+                if isinstance(prior.status, int):
+                    record["retried_status"] = prior.status
+        if reply is not None:
+            finish = reply.get("finish_reason")
+            if isinstance(finish, str) and finish.isidentifier() and len(finish) <= 40:
+                record["finish_reason"] = finish
+            calls = reply.get("tool_calls")
+            record["tool_calls"] = len(calls) if isinstance(calls, (list, tuple)) else 0
+        return record
+
+
 def _cancelled_model_reply() -> dict[str, Any]:
     """Return a normalized no-op reply for an abandoned provider call."""
 
@@ -358,6 +435,36 @@ class ChatModel:
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
     ) -> Mapping[str, Any]:
+        """One provider call, with its telemetry riding along.
+
+        A reply carries it under ``CALL_TELEMETRY_KEY`` into the Action Ledger;
+        a failure carries it as ``call_telemetry`` on the exception, which is
+        where the terminal record's failure evidence reads it. Both are
+        best-effort: telemetry can never change what the call returned.
+        """
+        probe = _CallProbe(stream=self.stream)
+        try:
+            reply = self._complete(messages, on_delta, probe)
+        except BaseException as error:
+            try:
+                error.call_telemetry = probe.record("error")  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 - telemetry never masks the failure
+                pass
+            raise
+        if not isinstance(reply, Mapping) or reply.get("finish_reason") == "cancelled":
+            return reply
+        try:
+            telemetry = probe.record("ok", reply=reply)
+        except Exception:  # noqa: BLE001
+            return reply
+        return {**reply, CALL_TELEMETRY_KEY: telemetry}
+
+    def _complete(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        on_delta: Callable[[str], None],
+        probe: _CallProbe,
+    ) -> Mapping[str, Any]:
         if self.quota_gate is not None:
             self.quota_gate()
         if callable(self.tools):
@@ -398,6 +505,7 @@ class ChatModel:
         call_state = CallState(
             total_timeout_s=getattr(self.cfg, "total_timeout_s", 600.0)
         )
+        probe.call_state = call_state
 
         def is_cancelled() -> bool:
             if cancelled.is_set():
@@ -493,6 +601,7 @@ class ChatModel:
                 # WebEventSink and the action ledger are single-threaded state
                 # machines. The provider thread only queues bytes; the owning
                 # Agent thread below is the sole caller of on_delta.
+                probe.delta()
                 if not is_cancelled():
                     deltas.put(text)
 

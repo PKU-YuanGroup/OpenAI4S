@@ -48,7 +48,6 @@ DOCUMENTS = (
     "runtime/host_calls.json",
     "runtime/permissions.json",
     "runtime/compactions.json",
-    "runtime/model_calls.json",
     "runtime/collection.json",
 )
 
@@ -215,6 +214,7 @@ def _turn_rows(
         )
         stamps: list[int] = []
         tools: Counter[str] = Counter()
+        tool_errors: Counter[str] = Counter()
         malformed = 0
         empty_arguments = 0
         replies = 0
@@ -248,6 +248,11 @@ def _turn_rows(
                 event_at = _int(event.get("created_at"))
                 if event_at is not None:
                     stamps.append(event_at)
+                if event.get("type") == "result":
+                    result = _dict(event.get("result"))
+                    if result.get("is_error") is True:
+                        tool_errors[_token(result.get("name")) or "unnamed"] += 1
+                    continue
                 if event.get("type") != "proposed" or kind not in {
                     "native_tools",
                     "finalize",
@@ -287,6 +292,7 @@ def _turn_rows(
             "replies": replies,
             "cells": cells,
             "tool_calls": dict(sorted(tools.items())),
+            "tool_errors": dict(sorted(tool_errors.items())),
             "malformed_tool_calls": malformed,
             "empty_argument_calls": empty_arguments,
             "tokens": {"input": tokens_in, "output": tokens_out},
@@ -601,11 +607,58 @@ def _compaction_summary(documents: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _model_calls(documents: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every recorded provider call: the ledger's own and each child's.
+
+    A successful call is a ``model_call`` event on the group its reply
+    produced. A failed one produced no group, so its telemetry rides on the
+    terminal event's failure detail instead.
+    """
+
+    sources: list[tuple[str, list[Any]]] = [
+        ("root", _list(_dict(documents.get("ledger.json")).get("groups")))
+    ]
+    frames = _dict(documents.get("runtime/frames.json"))
+    for ledger in _list(frames.get("child_ledgers")):
+        ledger = _dict(ledger)
+        sources.append(
+            (_token(ledger.get("frame_id")) or "child", _list(ledger.get("groups")))
+        )
+    calls: list[dict[str, Any]] = []
+    for frame, groups in sources:
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for event in _events(group):
+                if event.get("type") == "model_call":
+                    call = _dict(event.get("result"))
+                    if call:
+                        calls.append(
+                            {**call, "frame": frame, "turn_id": group.get("turn_id")}
+                        )
+            if group.get("kind") == "terminal":
+                detail = _dict(
+                    _dict(_terminal_result(group).get("error")).get("detail")
+                )
+                call = _dict(detail.get("call"))
+                if call:
+                    calls.append(
+                        {
+                            **call,
+                            "outcome": "error",
+                            "failure_code": _token(detail.get("code"))
+                            or _token(detail.get("category")),
+                            "frame": frame,
+                            "turn_id": group.get("turn_id"),
+                        }
+                    )
+    return calls
+
+
 def _model_call_summary(documents: Mapping[str, Any]) -> dict[str, Any] | None:
-    document = documents.get("runtime/model_calls.json")
-    if not isinstance(document, dict):
+    calls = _model_calls(documents)
+    if not calls:
         return None
-    calls = [item for item in _list(document.get("calls")) if isinstance(item, dict)]
     outcomes: Counter[str] = Counter(
         _token(call.get("outcome")) or "unknown" for call in calls
     )
@@ -614,30 +667,45 @@ def _model_call_summary(documents: Mapping[str, Any]) -> dict[str, Any] | None:
         for call in calls
         if _token(call.get("failure_code"))
     )
-    retried = sum(1 for call in calls if (_int(call.get("attempts")) or 0) > 1)
-    durations = sorted(
-        _int(call.get("duration_ms"))
+    retried_after: Counter[str] = Counter(
+        _token(call.get("retried_after")) or "unknown"
         for call in calls
-        if _int(call.get("duration_ms")) is not None
+        if (_int(call.get("attempts")) or 0) > 1
     )
-    first = sorted(
-        _int(call.get("first_delta_ms"))
+    finish: Counter[str] = Counter(
+        _token(call.get("finish_reason"))
         for call in calls
-        if _int(call.get("first_delta_ms")) is not None
+        if _token(call.get("finish_reason"))
     )
-    streamed = sum(1 for call in calls if call.get("stream") is True)
 
-    def percentile(values: list[int], fraction: float) -> int | None:
-        if not values:
+    def values(key: str) -> list[int]:
+        return sorted(
+            value for call in calls if (value := _int(call.get(key))) is not None
+        )
+
+    def percentile(items: list[int], fraction: float) -> int | None:
+        if not items:
             return None
-        return values[min(len(values) - 1, int(round(fraction * (len(values) - 1))))]
+        return items[min(len(items) - 1, int(round(fraction * (len(items) - 1))))]
 
+    durations = values("duration_ms")
+    first = values("first_delta_ms")
+    silences = sorted(
+        total - last
+        for call in calls
+        if call.get("stream") is True
+        and (total := _int(call.get("duration_ms"))) is not None
+        and (last := _int(call.get("last_delta_ms"))) is not None
+        and total >= last
+    )
     return {
         "calls": len(calls),
         "outcomes": dict(sorted(outcomes.items())),
         "failure_codes": dict(sorted(codes.items())),
-        "retried": retried,
-        "streamed": streamed,
+        "retried": sum(retried_after.values()),
+        "retried_after": dict(sorted(retried_after.items())),
+        "finish_reasons": dict(sorted(finish.items())),
+        "streamed": sum(1 for call in calls if call.get("stream") is True),
         "duration_ms": {
             "p50": percentile(durations, 0.5),
             "p95": percentile(durations, 0.95),
@@ -647,8 +715,7 @@ def _model_call_summary(documents: Mapping[str, Any]) -> dict[str, Any] | None:
             "p50": percentile(first, 0.5),
             "max": first[-1] if first else None,
         },
-        "total": _int(document.get("total")),
-        "truncated": document.get("truncated") is True,
+        "longest_trailing_silence_ms": silences[-1] if silences else None,
     }
 
 
@@ -660,6 +727,30 @@ def _seconds(ms: Any) -> str:
     if value < 1000:
         return f"{value} ms"
     return f"{value / 1000:.1f} s"
+
+
+def _tool_story(row: Mapping[str, Any]) -> str:
+    """``tool calls x×3; x returned an error 3/3``: the calls and their errors."""
+
+    calls = _dict(row.get("tool_calls"))
+    errors = _dict(row.get("tool_errors"))
+    parts = []
+    if calls:
+        parts.append(
+            "tool calls "
+            + ", ".join(
+                f"{name}×{count}"
+                for name, count in sorted(calls.items(), key=lambda item: -item[1])[:3]
+            )
+        )
+    if errors:
+        parts.append(
+            ", ".join(
+                f"{name} returned an error {count}/{calls.get(name, count)}"
+                for name, count in sorted(errors.items(), key=lambda item: -item[1])[:3]
+            )
+        )
+    return "; ".join(parts)
 
 
 def _findings(diagnosis: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -719,30 +810,28 @@ def _findings(diagnosis: Mapping[str, Any]) -> list[dict[str, Any]]:
                 text += "; output was already committed, so it was not retried"
             add("error", "stream_failure", text + where, turn=row["index"])
         elif outcome == "no_progress":
-            repeated = ", ".join(
-                f"{name}×{count}"
-                for name, count in sorted(
-                    row.get("tool_calls", {}).items(), key=lambda item: -item[1]
-                )[:3]
-            )
+            story = _tool_story(row)
             text = (
                 f"{turn} stopped by the no-progress circuit "
                 f"({row.get('progress_reason') or 'reason not recorded'}) after "
                 f"{row['replies']} model replies"
             )
-            if repeated:
-                text += f"; tool calls {repeated}"
+            if story:
+                text += f"; {story}"
             if row.get("malformed_tool_calls"):
                 text += f"; {row['malformed_tool_calls']} with unparseable arguments"
             if row.get("empty_argument_calls"):
                 text += f"; {row['empty_argument_calls']} with empty argument strings"
             add("warning", "no_progress", text + where, turn=row["index"])
         elif outcome == "max_turns":
+            story = _tool_story(row)
             add(
                 "warning",
                 "max_turns",
                 f"{turn} used its whole step budget ({row['replies']} model replies) "
-                "without a structured completion" + where,
+                "without a structured completion"
+                + (f"; {story}" if story else "")
+                + where,
                 turn=row["index"],
             )
         elif outcome == "cancelled":
@@ -768,6 +857,16 @@ def _findings(diagnosis: Mapping[str, Any]) -> list[dict[str, Any]]:
             if detail.get("status"):
                 text += f", HTTP {detail['status']}"
             add("error", "turn_failed", text + where, turn=row["index"])
+        if (
+            outcome in SUCCESSFUL_REASONS
+            and sum(_dict(row.get("tool_errors")).values()) >= 3
+        ):
+            add(
+                "info",
+                "tool_errors",
+                f"{turn} finished, but {_tool_story(row)}",
+                turn=row["index"],
+            )
         if outcome != "no_progress" and row.get("malformed_tool_calls"):
             add(
                 "warning",
@@ -896,21 +995,41 @@ def _findings(diagnosis: Mapping[str, Any]) -> list[dict[str, Any]]:
                 f"{key}×{count}" for key, count in permissions["not_granted"].items()
             ),
         )
+    # A failed call already has its turn's finding (or its child's); only
+    # what a turn row cannot show is reported from the call telemetry.
     model_calls = _dict(diagnosis.get("model_calls"))
-    if model_calls.get("failure_codes"):
-        add(
-            "warning",
-            "model_call_failures",
-            "model calls failed: "
-            + ", ".join(
-                f"{key}×{count}" for key, count in model_calls["failure_codes"].items()
-            ),
-        )
     if model_calls.get("retried"):
         add(
             "info",
             "model_call_retries",
-            f"{model_calls['retried']} model call(s) needed more than one attempt",
+            f"{model_calls['retried']} model call(s) needed more than one attempt ("
+            + ", ".join(
+                f"after {key}×{count}"
+                for key, count in _dict(model_calls.get("retried_after")).items()
+            )
+            + ")",
+        )
+    if (_int(model_calls.get("first_delta_ms", {}).get("max")) or 0) >= 60_000:
+        add(
+            "info",
+            "slow_first_delta",
+            "the slowest model call waited "
+            f"{_seconds(model_calls['first_delta_ms']['max'])} for its first "
+            "stream delta",
+        )
+    if "length" in _dict(model_calls.get("finish_reasons")) or "max_tokens" in _dict(
+        model_calls.get("finish_reasons")
+    ):
+        truncated = sum(
+            count
+            for key, count in _dict(model_calls.get("finish_reasons")).items()
+            if key in {"length", "max_tokens"}
+        )
+        add(
+            "warning",
+            "output_truncated",
+            f"{truncated} model repl(ies) stopped at the output token limit "
+            "(finish reason length/max_tokens)",
         )
     capabilities = _dict(llm.get("capabilities"))
     if capabilities.get("local_endpoint") and capabilities.get("tool_calling") is False:

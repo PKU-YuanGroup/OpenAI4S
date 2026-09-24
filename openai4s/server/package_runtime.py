@@ -57,7 +57,6 @@ ACTIVITY_FILE = "runtime/activity.json"
 HOST_CALLS_FILE = "runtime/host_calls.json"
 PERMISSIONS_FILE = "runtime/permissions.json"
 COMPACTIONS_FILE = "runtime/compactions.json"
-MODEL_CALLS_FILE = "runtime/model_calls.json"
 COLLECTION_FILE = "runtime/collection.json"
 DIAGNOSIS_FILE = "runtime/diagnosis.json"
 DIAGNOSTICS_FILE = "DIAGNOSTICS.md"
@@ -70,7 +69,6 @@ MAX_ACTIVITY_STEPS = 25_000
 MAX_HOST_CALLS = 20_000
 MAX_PERMISSION_REQUESTS = 5_000
 MAX_COMPACTIONS = 1_000
-MAX_MODEL_CALLS = 20_000
 
 #: Where a failure's code locations are kept from. Frames outside this package
 #: are reduced to a base name so no absolute path is recorded.
@@ -370,12 +368,10 @@ def _location(frame: traceback.FrameSummary) -> str:
     except (OSError, ValueError):
         return f"<unknown>:{frame.lineno}"
     try:
-        relative = path.relative_to(_PACKAGE_ROOT)
-        where = relative.as_posix()
+        where = "openai4s/" + path.relative_to(_PACKAGE_ROOT).as_posix()
     except ValueError:
         try:
-            path.relative_to(_STDLIB_ROOT)
-            where = f"<stdlib>/{path.name}"
+            where = "<stdlib>/" + path.relative_to(_STDLIB_ROOT).as_posix()
         except ValueError:
             where = f"<external>/{path.name}"
     return f"{where}:{frame.lineno}:{frame.name}"
@@ -717,24 +713,12 @@ def collect_runtime_documents(
             "truncated": len(kept) < len(archives),
         }
 
-    def model_calls() -> tuple[Any, dict[str, Any]]:
-        reader = getattr(store, "list_session_model_calls", None)
-        if not callable(reader):
-            raise LookupError("model call telemetry is not recorded by this store")
-        total, calls = reader(root_frame_id, limit=MAX_MODEL_CALLS)
-        return {
-            "total": total,
-            "calls": calls,
-            "truncated": len(calls) < total,
-        }, {"records": len(calls), "total": total, "truncated": len(calls) < total}
-
     run("environment", ENVIRONMENT_FILE, environment)
     run("frames", FRAMES_FILE, frames)
     run("activity", ACTIVITY_FILE, activity)
     run("host_calls", HOST_CALLS_FILE, host_calls)
     run("permissions", PERMISSIONS_FILE, permissions)
     run("compactions", COMPACTIONS_FILE, compactions)
-    run("model_calls", MODEL_CALLS_FILE, model_calls)
     return documents, {
         "schema_version": RUNTIME_SCHEMA_VERSION,
         "sections": dict(sorted(sections.items())),
@@ -821,7 +805,6 @@ __all__ = [
     "ENVIRONMENT_FILE",
     "FRAMES_FILE",
     "HOST_CALLS_FILE",
-    "MODEL_CALLS_FILE",
     "PERMISSIONS_FILE",
     "RUNTIME_SCHEMA_VERSION",
     "agent_facts",
