@@ -151,6 +151,9 @@ function queueRowLabel(item: any): string {
 export function renderQueueStrip(): void {
   const box = $("#queue-strip");
   if (!box) return;
+  // The queue belongs to the session it was read for; a ✕ pressed on a strip
+  // that outlived a session switch must still name that session.
+  const frameId = S.currentId;
   const queue = ((S.executionQueue || {}).queue || []).filter(
     (item: any) => (item.owner || {}).kind === "agent",
   );
@@ -177,15 +180,14 @@ export function renderQueueStrip(): void {
     drop.title = t("queue.cancelOne");
     drop.appendChild(iconEl("x", 13) as Node);
     drop.onclick = () => {
-      void cancelQueuedExecution(item);
+      void cancelQueuedExecution(item, frameId);
     };
     row.appendChild(drop);
     box.appendChild(row);
   });
 }
 
-async function cancelQueuedExecution(item: any): Promise<void> {
-  const fid = S.currentId;
+async function cancelQueuedExecution(item: any, fid: string | null): Promise<void> {
   if (!fid || !item || !item.execution_id || !(item.owner || {}).id) return;
   try {
     const r = (await api(`/frames/${fid}/cancel`, {

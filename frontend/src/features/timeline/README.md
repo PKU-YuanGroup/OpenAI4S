@@ -15,6 +15,7 @@ F-15 Action Timeline kernel. `sanitize*` / `mergeActionTimelines` are pure. The 
 | [`index.ts`](index.ts) | `bootTimeline`: WS handlers + window contract assignments. |
 | [`index.test.ts`](index.test.ts) | `installTimeline` publishes `loadWorkbenchState` for later-lane `callWindow`. |
 | [`island.ts`](island.ts) | Imperative island: 46px ledger, overview SVG, five sidebar panels, `renderActionTimeline`. |
+| [`island.test.ts`](island.test.ts) | Vitest on a fake DOM: queue strip, view teardown, and what a WS-driven re-render keeps. |
 | [`model.ts`](model.ts) | Span / overview geometry, `actionTimelineEntryKey`, epoch parser. |
 | [`s.ts`](s.ts) | `createSProxy()` alias so nested `_timelineView` writes keep identity. |
 | [`sanitize.ts`](sanitize.ts) | `sanitize*` family and `mergeActionTimelines` (app.js:2795-3298). |

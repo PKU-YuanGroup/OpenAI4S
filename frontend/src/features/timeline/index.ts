@@ -18,6 +18,7 @@ import {
   mergeDelegationChildEvent,
   renderActionTimeline,
   renderDelegationPanel,
+  renderQueueStrip,
   steerDelegationChild,
   toggleActionTimelineTurn,
   updateActionTimelineLedger,
@@ -61,6 +62,7 @@ export {
   renderComputeTasksPanel,
   renderContextPanel,
   renderDelegationPanel,
+  renderQueueStrip,
   renderSecurityPanel,
   scheduleWorkbenchRefresh,
   steerDelegationChild,
@@ -80,6 +82,9 @@ const TIMELINE_WINDOW: Record<string, unknown> = {
   mergeDelegationChildEvent,
   renderActionTimeline,
   renderDelegationPanel,
+  // Called by features/sessions (enableComposer) after a session switch has
+  // cleared the queue; unassigned, the previous session's strip stayed up.
+  renderQueueStrip,
   sanitizeActionTimeline,
   steerDelegationChild,
   timelineOverviewTimeToX,
