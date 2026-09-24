@@ -2,8 +2,10 @@ import { useEffect } from "preact/hooks";
 import { t } from "../../i18n";
 import { closeCust, custTab } from "../../features/customize/actions";
 import {
+  backdropClicked,
   followCustomizeDom,
   installCustomizeEscape,
+  notePress,
   onCustomizeKeydown,
 } from "../../features/customize/dismiss";
 import {
@@ -113,8 +115,9 @@ export function Customize() {
       role="dialog"
       aria-modal="true"
       aria-label={t("common.settings")}
+      onPointerDown={notePress}
       onClick={(e) => {
-        if ((e.target as HTMLElement).id === "cust") closeCust();
+        if (backdropClicked(e)) closeCust();
       }}
     >
       <div class="modal-box cust-box">

@@ -11,6 +11,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`ComputeTab.tsx`](ComputeTab.tsx) | Compute, remote GPU, jobs. Job poll 1500ms on the lease. |
 | [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector list; DataPro card is isolated in `vendors/`. |
 | [`Customize.tsx`](Customize.tsx) | `#cust` shell, tablist, Esc / backdrop close. |
+| [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. |
 | [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, API-key shortcut. |
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. Mounted from General. |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click. |

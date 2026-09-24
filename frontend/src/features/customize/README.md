@@ -11,8 +11,8 @@ F-19 Customize domain logic. Tab state machine, timer lease (unmount clears ever
 | [`actions.ts`](actions.ts) | `openCust` / `custTab` / `closeCust`. Bumps generation so the pane remounts. |
 | [`load.ts`](load.ts) | Bounded first load per tab generation: `beginCustomizeLoad` / `markCustomizeLoaded` / `markCustomizeFailed` / `markCustomizeTimedOut`, `CUST_LOAD_TIMEOUT_MS` (30 s, as app.js). |
 | [`load.test.ts`](load.test.ts) | A `custTab()` starts a pending load; marks settle it once; the deadline only fires for the generation still pending. |
-| [`dismiss.ts`](dismiss.ts) | How Customize closes. `customizeOpen` is the one owner: while `#cust` is the modal on top chrome's trap leaves Escape to Customize (nested editor first, then the modal), and any other path that hides `#cust` is followed by `closeCust()`. |
-| [`dismiss.test.ts`](dismiss.test.ts) | Escape in a nested editor closes only the editor; a modal above Customize keeps its Escape; an IME Escape is ignored; `#cust` hidden by another path closes Customize. |
+| [`dismiss.ts`](dismiss.ts) | How Customize closes. `customizeOpen` is the one owner: while `#cust` is the modal on top chrome's trap leaves Escape to Customize (nested editor first, then the modal), and any other path that hides `#cust` is followed by `closeCust()`. A backdrop closes only for a press that did not begin inside the dialog. |
+| [`dismiss.test.ts`](dismiss.test.ts) | Escape in a nested editor closes only the editor; a modal above Customize keeps its Escape; an IME Escape is ignored; `#cust` hidden by another path closes Customize; a backdrop click whose press began inside the dialog does not close it. |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`. Path must be a single leading slash. |
 | [`environment.ts`](environment.ts) | Skill readiness note; `sanitizeStandardProfileReadiness`. |
 | [`host.ts`](host.ts) | `hint` / `openViewer` via `isReady`; re-exports the real `loadModels` from `models.ts` (no window bridge); `effProject`. |

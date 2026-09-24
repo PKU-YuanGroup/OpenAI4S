@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _modalFocus, closeModalEl, resetModalTrap, trapModalKeydown } from "../chrome/modal";
 import {
+  backdropClicked,
   customizeOnTop,
   followCustomizeDom,
   installCustomizeEscape,
+  notePress,
   onCustomizeKeydown,
 } from "./dismiss";
 import { customizeOpen, nestedEditor } from "./state";
@@ -96,6 +98,21 @@ describe("Customize Escape", () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(nestedEditor.value).not.toBeNull();
     expect(modals.cust!.classList.contains("hidden")).toBe(false);
+  });
+});
+
+describe("backdrop clicks", () => {
+  it("close only for a press that did not begin inside the dialog", () => {
+    const backdrop = {} as EventTarget;
+    const field = {} as EventTarget;
+    notePress({ target: field, currentTarget: backdrop });
+    expect(backdropClicked({ target: backdrop, currentTarget: backdrop })).toBe(false);
+    // The recorded press is spent: a later click with no press of its own
+    // (a scripted click) closes as it always did.
+    expect(backdropClicked({ target: backdrop, currentTarget: backdrop })).toBe(true);
+    notePress({ target: backdrop, currentTarget: backdrop });
+    expect(backdropClicked({ target: backdrop, currentTarget: backdrop })).toBe(true);
+    expect(backdropClicked({ target: field, currentTarget: backdrop })).toBe(false);
   });
 });
 

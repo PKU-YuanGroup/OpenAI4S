@@ -3,6 +3,7 @@ import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { custTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
+import { backdropClicked, notePress } from "../../features/customize/dismiss";
 import { skillReadinessNoteText } from "../../features/customize/environment";
 import {
   asList,
@@ -30,8 +31,9 @@ export function NestedEditor() {
   return (
     <div
       class="cust-nested"
+      onPointerDown={notePress}
       onClick={(e) => {
-        if (e.target === e.currentTarget) nestedEditor.value = null;
+        if (backdropClicked(e)) nestedEditor.value = null;
       }}
     >
       <div class="cust-nested-box">

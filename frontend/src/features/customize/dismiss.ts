@@ -60,6 +60,29 @@ export function onCustomizeKeydown(e: EscapeEvent): void {
   closeCust();
 }
 
+type BackdropEvent = { target: EventTarget | null; currentTarget: EventTarget | null };
+
+const pressedInside = new WeakMap<EventTarget, boolean>();
+
+/** `onPointerDown` of a backdrop: remember whether the press began inside the dialog. */
+export function notePress(e: BackdropEvent): void {
+  if (e.currentTarget) pressedInside.set(e.currentTarget, e.target !== e.currentTarget);
+}
+
+/**
+ * A click on the backdrop itself whose press did not begin inside the dialog.
+ * Selecting text in a field and letting go over the backdrop reports the
+ * backdrop, their common ancestor, as the click's target; that used to close
+ * the dialog and drop what was typed.
+ */
+export function backdropClicked(e: BackdropEvent): boolean {
+  const backdrop = e.currentTarget;
+  if (!backdrop) return false;
+  const inside = pressedInside.get(backdrop) === true;
+  pressedInside.delete(backdrop);
+  return e.target === backdrop && !inside;
+}
+
 /** Close Customize when something other than `closeCust()` hides `#cust`. */
 export function followCustomizeDom(modal: HTMLElement): () => void {
   if (typeof MutationObserver === "undefined") return () => {};
