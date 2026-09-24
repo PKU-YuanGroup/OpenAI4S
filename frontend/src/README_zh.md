@@ -10,6 +10,7 @@
 | --- | --- |
 | [`app.test.ts`](app.test.ts) | 脚手架 Vitest：`@preact/signals` 能更新；语言变化时应用根节点会重绘。 |
 | [`app.tsx`](app.tsx) | 工作台 `App`。F-13 挂载仪表盘/工作台 `Shell`；它读取 `languageRevision`，切换语言时整棵 Shell 树都会重绘。 |
+| [`lane-names.test.ts`](lane-names.test.ts) | 传给 `callLane` / `callWindow` / `hostFn` / `laneCall` / `runIsland` 的每个名字都必须在某处被赋值：这些查找遇到缺失的名字只会返回 undefined，结果就是一个点了没反应的控件。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-20 import `features/chrome`（`bootChrome`）。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-19 import `features/customize`（`bootCustomize`）。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-17 import `features/artifacts`（`bootArtifacts`）。后续工作项可以再加一行模块 import。 |
