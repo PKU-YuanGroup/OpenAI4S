@@ -11,7 +11,7 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`admission.ts`](admission.ts) | Admission 追踪器。独立键 `openai4s.admission.{fid}.{id}`；legacy key 迁移；60 秒 grace。 |
 | [`admission.test.ts`](admission.test.ts) | 前缀、legacy 迁移、grace 窗口、settled 状态。 |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` 只绑一次；`installSend` 不碰 DOM；Enter 和点击 `#send-btn` 都派发文本；两者合计同一时刻只有一个 dispatch 在途。 |
-| [`copy.ts`](copy.ts) | `sendCopy`：作曲框文案（发送按钮的标题），不写进生成的词典。 |
+| [`copy.ts`](copy.ts) | `sendCopy`：不进生成词典的文案——发送按钮的提示、审阅进行中（"正在审阅"）以及无标题的审阅发现。 |
 | [`candidate.ts`](candidate.ts) | Review 门控三态时序：`markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`。 |
 | [`candidate.test.ts`](candidate.test.ts) | 三态顺序、禁止把 verified 降级、durable 回执规则。 |
 | [`first-send.test.ts`](first-send.test.ts) | 新会话的第一条消息只在共享创建流程打开对话之后才派发，`openConversation` 的重置不会落在回合中间；票据与运行态得以保留。 |
@@ -30,6 +30,6 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`send.test.ts`](send.test.ts) | 拒绝与首条消息之外的 `send()` 行为：程序化发送（权限卡的继续、批准计划）不动输入框里用户无关的草稿，而输入框自己的文字发送后会被清空；技能目录读取失败后，下一次发送的 `/skill` 仍会带上技能指令。 |
 | [`send.ts`](send.ts) | 作曲框发送全链。计划模式 payload 走 F-07 `planModePayload`。`bindComposer`（由 `main.tsx` 在 `render` 之后调用）把 Enter 和发送按钮绑到同一个派发锁上。 |
 | [`step.ts`](step.ts) | 语义活动步骤、`buildStepCard`、`searchResultHttpUrl`。从步骤里打开产物失败时用提示报告。 |
-| [`step.test.ts`](step.test.ts) | 步骤卡片：查看器打不开产物时会报告，而不是留下未处理的 rejection。 |
+| [`step.test.ts`](step.test.ts) | 步骤卡片：输出开关、审阅中状态与无标题的审阅发现随界面语言显示；查看器打不开产物时会报告，而不是留下未处理的 rejection。 |
 | [`ticket.ts`](ticket.ts) | Turn ticket 世代、`acceptTurnTicket` / `activateTurnTicket`、`resumeWatch`。 |
 | [`turn.ts`](turn.ts) | `turnDone` 收尾；调用 F-14 的 `notebookOnTurnDone()`；收尾仍显示运行中的活动卡片（`messages/cardState.ts`）；任何终态都清掉 `planPending`，只有正常结束的回合才弹旧版审批卡。 |

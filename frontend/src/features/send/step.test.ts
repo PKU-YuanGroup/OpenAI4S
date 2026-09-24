@@ -115,6 +115,42 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
+function open(handle: { card: HTMLElement }): El {
+  const card = handle.card as unknown as El;
+  if (!card.classes.has("open")) card.querySelector(".s-head")!.onclick!();
+  return card;
+}
+
+describe("step card copy follows the UI language", () => {
+  afterEach(async () => {
+    await setLang("en");
+  });
+
+  it("the output toggle, a running review and an untitled finding", async () => {
+    await setLang("zh");
+    const code = open(
+      buildStepCard({ step_id: "c-1", kind: "code", status: "done", input: { code: "print(1)" }, output: { stdout: "1" } }),
+    );
+    const toggle = code.querySelector(".oc-out-tgl")!;
+    expect(toggle.textContent).toBe("显示输出");
+    toggle.onclick!();
+    expect(toggle.textContent).toBe("隐藏输出");
+
+    const running = buildStepCard({ step_id: "r-1", kind: "review", status: "running" });
+    expect((running.card as unknown as El).querySelector(".s-meta")!.textContent).toBe("正在审阅");
+
+    const finding = open(
+      buildStepCard({
+        step_id: "r-2",
+        kind: "review",
+        status: "done",
+        output: { verdict: "issues", issues: [{ severity: "high" }] },
+      }),
+    );
+    expect(finding.querySelector(".review-issue-head")!.querySelector("strong")!.textContent).toBe("审阅发现");
+  });
+});
+
 describe("artifact step card", () => {
   it("reports a viewer that fails to open instead of leaving the rejection unhandled", async () => {
     viewer.open.mockReturnValue(Promise.reject(new Error("version lookup failed")));

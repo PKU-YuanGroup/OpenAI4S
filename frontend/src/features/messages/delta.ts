@@ -7,6 +7,7 @@
  * up to 1MB of `textContent` on every chunk (app.js:5492-5496).
  */
 
+import { LANG } from "../../i18n/runtime";
 import {
   LIVE_OUTPUT_TRUNCATION,
   appendLiveOutput,
@@ -79,12 +80,14 @@ export function bindStreamingPre(
   };
 }
 
-/**
- * app.js:5495 meta line. `n === 1 ? " line"` is unreachable (`n > 1` already
- * failed); kept so the string matches the original.
- */
+/** Feature-local copy: app.js hard-coded the meta line in English. */
+const META_COPY: Record<"en" | "zh", { lines: string; done: string }> = {
+  en: { lines: "{0} lines", done: "done" },
+  zh: { lines: "{0} 行", done: "完成" },
+};
+
+/** app.js:5495 meta line: the line count once there is more than one, else "done". */
 export function toolMetaLabel(newlines: number): string {
-  return newlines > 1
-    ? newlines + (newlines === 1 ? " line" : " lines")
-    : "done";
+  const copy = META_COPY[LANG === "zh" ? "zh" : "en"];
+  return newlines > 1 ? copy.lines.replace("{0}", String(newlines)) : copy.done;
 }

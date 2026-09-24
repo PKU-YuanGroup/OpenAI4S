@@ -23,6 +23,7 @@ import { apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { publicList } from "../timeline/sanitize";
 import { appendSemanticSkillSearch } from "../judgment/chips";
+import { sendCopy } from "./copy";
 import { icon, iconEl } from "./icon";
 
 export type Step = {
@@ -196,7 +197,7 @@ export function outputBlock(
   out.textContent = raw.slice(0, 14000);
   if (opts.mode === "reveal") {
     const tgl = el("button", "oc-out-tgl");
-    const label = el("span", null, "Show output");
+    const label = el("span", null, t("step.artifact.showOutput"));
     tgl.appendChild(label);
     tgl.appendChild(iconEl("chevron-down", 13));
     out.style.display = "none";
@@ -204,7 +205,7 @@ export function outputBlock(
       const show = out.style.display === "none";
       out.style.display = show ? "block" : "none";
       tgl.classList.toggle("open", show);
-      label.textContent = show ? "Hide output" : "Show output";
+      label.textContent = show ? t("step.artifact.hideOutput") : t("step.artifact.showOutput");
     };
     box.appendChild(tgl);
   }
@@ -361,7 +362,7 @@ export function stepBody(step: Step): HTMLElement {
       const row = el("div", "review-issue " + (issue.severity || "medium"));
       const head = el("div", "review-issue-head");
       head.appendChild(el("span", "review-severity", String(issue.severity || "medium")));
-      head.appendChild(el("strong", null, String(issue.title || "Review finding")));
+      head.appendChild(el("strong", null, String(issue.title || sendCopy("reviewFinding"))));
       row.appendChild(head);
       if (issue.detail) row.appendChild(el("div", "review-detail", String(issue.detail)));
       if (issue.evidence) {
@@ -638,7 +639,7 @@ export function applyStepState(handle: StepHandle): void {
   card.classList.toggle("warn", status === "warning");
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
-    meta.textContent = step.kind === "review" ? "Reviewing" : "";
+    meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
       status === "error" ? "x" : status === "warning" ? "alert-triangle" : stepIcon(step.kind),
@@ -742,7 +743,7 @@ export function addLiveStep(m: Record<string, unknown>): void {
   st.wrap.appendChild(st.md);
   st.text = "";
   liveStream.value = st;
-  if (m.kind === "review") hint("Reviewing", false, true);
+  if (m.kind === "review") hint(sendCopy("reviewing"), false, true);
   down();
 }
 

@@ -11,7 +11,7 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | [`admission.ts`](admission.ts) | Admission tracker. Independent `openai4s.admission.{fid}.{id}` keys; legacy key migration; 60s grace. |
 | [`admission.test.ts`](admission.test.ts) | Prefix, legacy migration, grace window, settled states. |
 | [`bind.test.ts`](bind.test.ts) | `bindComposer` binds once; `installSend` stays DOM-free; Enter and the `#send-btn` click dispatch the text; one dispatch in flight at a time across both. |
-| [`copy.ts`](copy.ts) | `sendCopy`: composer labels (the send button's title) kept out of the generated dictionaries. |
+| [`copy.ts`](copy.ts) | `sendCopy`: labels kept out of the generated dictionaries -- the send button's title, a running review ("Reviewing") and an untitled review finding. |
 | [`candidate.ts`](candidate.ts) | Review gate three-state timing: `markCandidateReady` → `applyCandidateResolution` → `applyFinalReviewStatus`. |
 | [`candidate.test.ts`](candidate.test.ts) | Three-state sequence, no verified demotion, durable-receipt rule. |
 | [`first-send.test.ts`](first-send.test.ts) | The first message of a fresh session dispatches only after the shared creation has opened the conversation, so `openConversation`'s reset cannot land mid-turn; the ticket and the running state survive. |
@@ -30,6 +30,6 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | [`send.test.ts`](send.test.ts) | `send()` outside refusals and first sends: a programmatic send (a permission's Continue, a plan approval) leaves the user's unrelated draft in the composer, while the composer's own text is cleared once sent; a `/skill` send after a failed catalog read gets its directive on the next send. |
 | [`send.ts`](send.ts) | Composer send chain. Plan-mode payload via F-07 `planModePayload`. `bindComposer` (called from `main.tsx` after `render`) binds Enter and the send button to one dispatch latch. |
 | [`step.ts`](step.ts) | Semantic activity steps, `buildStepCard`, `searchResultHttpUrl`. Opening an artifact from a step reports a viewer failure as a hint. |
-| [`step.test.ts`](step.test.ts) | Step cards: an artifact the viewer fails to open is reported, not left as an unhandled rejection. |
+| [`step.test.ts`](step.test.ts) | Step cards: the output toggle, a running review and an untitled finding follow the UI language; an artifact the viewer fails to open is reported, not left as an unhandled rejection. |
 | [`ticket.ts`](ticket.ts) | Turn ticket generation, `acceptTurnTicket` / `activateTurnTicket`, `resumeWatch`. |
 | [`turn.ts`](turn.ts) | `turnDone` teardown; calls F-14 `notebookOnTurnDone()`; settles any activity card still running (`messages/cardState.ts`); clears `planPending` on every terminal and offers the legacy approval card only for a finished turn. |

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { setLang } from "../../i18n/runtime";
 import {
   LIVE_OUTPUT_CHAR_CAP,
   LIVE_OUTPUT_TRUNCATION,
@@ -77,10 +78,15 @@ describe("liveOutputDelta / truncation", () => {
     expect(handle.text).toBe(pushes[0]);
   });
 
-  it("toolMetaLabel keeps the original n>1 / done wording", () => {
+  it("toolMetaLabel keeps the original n>1 / done wording, in the UI language", async () => {
+    await setLang("en");
     expect(toolMetaLabel(0)).toBe("done");
     expect(toolMetaLabel(1)).toBe("done");
     expect(toolMetaLabel(2)).toBe("2 lines");
     expect(toolMetaLabel(5)).toBe("5 lines");
+    await setLang("zh");
+    expect(toolMetaLabel(1)).toBe("完成");
+    expect(toolMetaLabel(5)).toBe("5 行");
+    await setLang("en");
   });
 });
