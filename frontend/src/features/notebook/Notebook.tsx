@@ -58,8 +58,10 @@ import {
   nbRender,
   setNotebookRenderImpl,
 } from "./scroll";
+import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { applyArtifactDeepLink } from "../artifacts/ui";
+import { iconSvg } from "../icons/paths";
 import type { NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 
 function notebookCellState(cell: NotebookCell): {
@@ -82,7 +84,21 @@ function notebookCellState(cell: NotebookCell): {
   return { key: "current", cls: "current" };
 }
 
-function StreamingOutput({ text, isError }: { text: string; isError: boolean }) {
+/**
+ * The notice an output judged binary shows instead (send/step.ts `binElide`).
+ * It used to be an empty `<div class="bin-elide">`, so the whole output --
+ * and the ordinary log lines before the binary part -- vanished without a word.
+ */
+function BinaryElided({ length }: { length: number }) {
+  return (
+    <div class="bin-elide">
+      <span class="ic" dangerouslySetInnerHTML={{ __html: iconSvg("file", 13) }} />
+      <span>{t("output.binaryElided", bytes(length))}</span>
+    </div>
+  );
+}
+
+export function StreamingOutput({ text, isError }: { text: string; isError: boolean }) {
   const preRef = useRef<HTMLPreElement>(null);
   const seen = useRef(0);
   useLayoutEffect(() => {
@@ -93,9 +109,7 @@ function StreamingOutput({ text, isError }: { text: string; isError: boolean }) 
     seen.current = appendTextNodeDelta(node, seen.current, text);
   }, [text]);
   if (!text) return null;
-  if (looksBinary(text)) {
-    return <div class="bin-elide" />;
-  }
+  if (looksBinary(text)) return <BinaryElided length={text.length} />;
   return (
     <details class={"nbc-disclosure" + (isError ? " error" : "")}>
       <summary>output</summary>
@@ -104,11 +118,9 @@ function StreamingOutput({ text, isError }: { text: string; isError: boolean }) 
   );
 }
 
-function StaticOutput({ text, isError }: { text: string; isError: boolean }) {
+export function StaticOutput({ text, isError }: { text: string; isError: boolean }) {
   if (!text) return null;
-  if (looksBinary(text)) {
-    return <div class="bin-elide" />;
-  }
+  if (looksBinary(text)) return <BinaryElided length={text.length} />;
   return (
     <details class={"nbc-disclosure" + (isError ? " error" : "")}>
       <summary>output</summary>
