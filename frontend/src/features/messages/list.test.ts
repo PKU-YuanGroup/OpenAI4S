@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Shell } from "../../components/dashboard/Shell";
 import { setLang } from "../../i18n/runtime";
 import { copyFailedText } from "../chrome/clipboard";
+import * as transcript from "../sessions/transcript";
 import { renderStored as renderOlderPage } from "../sessions/transcript";
 import * as messageComponents from "./components";
 import { currentId, _openGen, historyLoad } from "../../stores/session";
@@ -13,9 +14,12 @@ vi.mock("preact/hooks", async (original) => ({
 }));
 import {
   INITIAL_RENDER_BATCH,
+  addMsgActions,
   cancelFramedRender,
+  insertMessageByTime,
   nextBatchEnd,
   renderEmptySession,
+  renderMessageRefChips,
   renderStored as renderFirstPage,
   scheduleFramedRender,
 } from "./list";
@@ -400,6 +404,28 @@ describe("stored rows, first page and older page alike", () => {
     expect(doc.composer.value).toBe("Edit me.");
     expect(doc.composer.style.height).toBe("64px");
     expect(doc.composer.focused).toBe(1);
+  });
+
+  it("the first page, load-earlier and the live turn share one row implementation", () => {
+    expect(transcript.renderStored).toBe(renderFirstPage);
+    expect(transcript.addMsgActions).toBe(addMsgActions);
+    expect(transcript.insertMessageByTime).toBe(insertMessageByTime);
+    expect(transcript.renderEmptySession).toBe(renderEmptySession);
+    expect(transcript.renderMessageRefChips).toBe(renderMessageRefChips);
+  });
+
+  it.each(ROW_RENDERERS)("%s: a user row shows its pinned @-refs without a window lookup", (_name, render) => {
+    // No `window.renderMessageRefChips` here: the first page used to reach
+    // the chips only through that late-bound name.
+    const row = render({
+      role: "user",
+      content: "Plot @growth.csv",
+      artifact_refs: [{ display_name: "growth.csv", version_id: "v-1", sha256: "abcdef0123456789" }],
+    }) as unknown as RowEl;
+    const chips = row.querySelectorAll(".msg-ref-chip");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]!.textContent).toContain("growth.csv");
+    expect(chips[0]!.title).toBe("v-1 · sha256:abcdef012345");
   });
 
   it("a starter chip fills the composer and grows it to fit", () => {

@@ -28,7 +28,7 @@ import { flushRender, type LiveStream } from "../messages/stream";
 import { notebookOnTurnDone } from "../notebook/kernel";
 import { hint } from "../sessions/chrome";
 import { enableComposer } from "../sessions/dom";
-import { addMsgActions } from "../sessions/transcript";
+import { addMsgActions } from "../messages/list";
 import { callLane, setCancelHidden } from "./host";
 import { renderPlanCard, showPlanApproval } from "./plan";
 import { closeTurnTicket } from "./ticket";

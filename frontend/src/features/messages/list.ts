@@ -2,19 +2,27 @@
  * Stored-message rendering, time-order insert, and framed initial paint.
  *
  * Port of app.js `renderStored` (7234-7260), `insertMessageByTime` (7263-7274),
- * `renderEmptySession` (7226-7232), and the openConversation 300-item sync
- * loop (7177-7181) rewritten as 40 items per rAF + one fragment insert.
+ * `renderEmptySession` (7226-7232), `addMsgActions` (7809-7830), the message
+ * @-ref chips (7766-7787), and the openConversation 300-item sync loop
+ * (7177-7181) rewritten as 40 items per rAF + one fragment insert.
+ *
+ * The only implementation of a stored row: `sessions/transcript.ts`
+ * ("load earlier") re-exports these, and the live turn calls
+ * `addMsgActions` here too.
  */
 
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
+import { artifacts } from "../../stores/artifacts";
 import { currentId, feedback as feedbackSignal } from "../../stores/session";
 import { copyFailedText, copyText } from "../chrome/clipboard";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
+import { publicText } from "../scrub/scrub";
 import { api } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { grow } from "../sessions/dom";
+import { iconEl } from "../sessions/icon";
 import { el, messagesHost } from "./dom";
 import { failureMeta } from "./failure";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
@@ -36,8 +44,8 @@ export type StoredMessage = {
   content?: unknown;
   created_at?: unknown;
   artifact_refs?: unknown;
-  failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown };
-  cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown };
+  failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown } | null;
+  cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown } | null;
   review_status?: unknown;
   metadata?: { review_status?: unknown };
   [key: string]: unknown;
@@ -218,7 +226,7 @@ export function renderStored(
     const b = el("div", "bubble");
     b.textContent = planModeRequestText(text);
     w.appendChild(b);
-    callWindow("renderMessageRefChips", w, m.artifact_refs);
+    renderMessageRefChips(w, m.artifact_refs);
   } else {
     const md = el("div", "md");
     md.innerHTML = renderMd(text);
@@ -243,9 +251,37 @@ export function renderStored(
   return w;
 }
 
+/** app.js:7766-7787. The @-refs a user message pinned, as chips under its bubble. */
+export function renderMessageRefChips(host: HTMLElement, refs: unknown): void {
+  if (!Array.isArray(refs) || !refs.length) return;
+  const row = el("div", "msg-refs");
+  refs.slice(0, 8).forEach((raw) => {
+    const r = raw as Record<string, unknown>;
+    const name = String((r && r.display_name) || "");
+    if (!name) return;
+    const chip = el("span", "msg-ref-chip");
+    chip.appendChild(iconEl("file-text", 11));
+    chip.appendChild(el("span", null, publicText(name, 60)));
+    const parts = [String(r.version_id || "")];
+    if (r.sha256) parts.push("sha256:" + String(r.sha256).slice(0, 12));
+    if (r.materialized_target) parts.push("↗ " + String(r.source_session || "").slice(0, 12));
+    chip.title = parts.filter(Boolean).join(" · ");
+    const pool = (artifacts.value || []) as Array<Record<string, unknown>>;
+    const full = pool.find((x) => (x.artifact_id || x.id) === r.artifact_id);
+    if (full) {
+      chip.classList.add("clickable");
+      chip.onclick = () => {
+        callWindow("openViewer", full);
+      };
+    }
+    row.appendChild(chip);
+  });
+  if (row.children.length) host.appendChild(row);
+}
+
 /** app.js:7263-7274. The earlier-control stays pinned to the top. */
 export function insertMessageByTime(
-  node: HTMLElement,
+  node: HTMLElement | null,
   host: ParentNode | null = messagesHost(),
 ): void {
   if (!host || !node) return;
