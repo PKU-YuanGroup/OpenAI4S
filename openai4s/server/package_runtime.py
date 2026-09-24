@@ -261,27 +261,43 @@ def llm_facts(
 
     from openai4s.llm.capabilities import get_model_capabilities
     from openai4s.llm.registry import provider_spec
+    from openai4s.server.errors import safe_type_name
 
     provider = str(getattr(llm_cfg, "provider", "") or "")
-    spec = provider_spec(provider)
-    base_url = str(getattr(llm_cfg, "base_url", "") or "") or str(spec["base_url"])
-    model = str(getattr(llm_cfg, "model", "") or "") or str(spec["model"])
-    wire = str(spec.get("wire") or "")
-    stream_env = os.environ.get("OPENAI4S_LLM_STREAM", "1").strip().lower()
     facts: dict[str, Any] = {
         "provider": provider,
-        "wire": wire,
-        "model": model,
-        "stream": bool(streams)
-        and stream_env not in _STREAM_OFF
-        and wire in _STREAMING_WIRES,
+        "model": str(getattr(llm_cfg, "model", "") or ""),
         "timeout_s": _number(getattr(llm_cfg, "timeout_s", None)),
         "total_timeout_s": _number(getattr(llm_cfg, "total_timeout_s", None)),
         "max_tokens": _number(getattr(llm_cfg, "max_tokens", None)),
         "temperature": _number(getattr(llm_cfg, "temperature", None)),
-        "endpoint": endpoint_facts(base_url, default_url=str(spec["base_url"])),
     }
-    capabilities = get_model_capabilities(provider, model, base_url=base_url)
+    try:
+        spec = provider_spec(provider)
+    except Exception as error:  # noqa: BLE001 - an unknown provider is a finding
+        # What the configuration says is still worth having; only what the
+        # registry would have added is missing, and the reason says why.
+        facts["resolution"] = {"status": "unavailable", "reason": safe_type_name(error)}
+        return facts
+    base_url = str(getattr(llm_cfg, "base_url", "") or "") or str(spec["base_url"])
+    model = facts["model"] or str(spec["model"])
+    wire = str(spec.get("wire") or "")
+    stream_env = os.environ.get("OPENAI4S_LLM_STREAM", "1").strip().lower()
+    facts.update(
+        {
+            "wire": wire,
+            "model": model,
+            "stream": bool(streams)
+            and stream_env not in _STREAM_OFF
+            and wire in _STREAMING_WIRES,
+            "endpoint": endpoint_facts(base_url, default_url=str(spec["base_url"])),
+        }
+    )
+    try:
+        capabilities = get_model_capabilities(provider, model, base_url=base_url)
+    except Exception as error:  # noqa: BLE001
+        facts["resolution"] = {"status": "unavailable", "reason": safe_type_name(error)}
+        return facts
     facts["capabilities"] = {
         key: getattr(capabilities, key)
         for key in (

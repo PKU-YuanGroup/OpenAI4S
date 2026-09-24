@@ -1155,6 +1155,14 @@ def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
         lines.append(
             f"- Model: not resolvable at export ({llm.get('reason') or 'unknown'})"
         )
+    elif _dict(llm.get("resolution")).get("status") == "unavailable":
+        lines.append(
+            f"- Model: `{llm.get('model') or '?'}` via provider "
+            f"`{llm.get('provider') or '?'}`, which this process could not resolve "
+            f"({_dict(llm.get('resolution')).get('reason') or 'unknown'}); read "
+            f"timeout {llm.get('timeout_s', '?')} s, total "
+            f"{llm.get('total_timeout_s', '?')} s"
+        )
     else:
         endpoint = _dict(llm.get("endpoint"))
         endpoint_text = endpoint.get("class") or "?"
