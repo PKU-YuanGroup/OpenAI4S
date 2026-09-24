@@ -280,7 +280,12 @@ const listScope = (): ListOwner => {
   return () => project.value === pid;
 };
 
-export async function loadFolders(): Promise<void> {
+/**
+ * `render: false` when a sessions read drives this one: that read paints the
+ * sidebar once both lists have settled, so painting here as well rebuilt the
+ * whole list twice in a row.
+ */
+export async function loadFolders(options: { render?: boolean } = {}): Promise<void> {
   const pid = project.value;
   const request = ++foldersRequest;
   const scope = listScope();
@@ -317,7 +322,7 @@ export async function loadFolders(): Promise<void> {
   } finally {
     if (current()) {
       foldersLoading.value = false;
-      renderSessions();
+      if (options.render !== false) renderSessions();
     }
   }
 }
@@ -360,7 +365,7 @@ export function loadSessions(options: { more?: boolean } = {}): Promise<SessionR
       sessions.value = state.rows;
       sessionPages.value = Math.max(1, state.walked);
       sessionsHasMore.value = state.hasMore;
-      await loadFolders();
+      await loadFolders({ render: false });
       if (!current()) return { status: "superseded", rows: [] };
       syncCurrentTitle();
       const dash = $("#dashboard");
@@ -600,7 +605,7 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
             body: JSON.stringify({ name: n }),
           });
           invalidateFolders();
-          await loadFolders();
+          await loadFolders({ render: false });
           await loadSessions();
         } catch {
           /* ignore */
@@ -616,7 +621,7 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
         try {
           await api(`/folders/${fold.folder_id}`, { method: "DELETE" });
           invalidateFolders();
-          await loadFolders();
+          await loadFolders({ render: false });
           await loadSessions();
         } catch {
           /* ignore */

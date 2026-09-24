@@ -432,16 +432,36 @@ export function stopDashPoll(): void {
   stopExamplePoll();
 }
 
+/**
+ * Refreshes that ride the dashboard's 4s poll besides its Running card (the
+ * attention stream): one interval and one visibility listener for all of
+ * them, started and stopped with the dashboard, where each feature used to
+ * keep its own interval, listener and class observer.
+ */
+const dashPollers = new Set<() => void>();
+
+export function onDashPoll(refresh: () => void): () => void {
+  dashPollers.add(refresh);
+  return () => {
+    dashPollers.delete(refresh);
+  };
+}
+
+function pollDashboard(): void {
+  void refreshDashRunning();
+  dashPollers.forEach((refresh) => refresh());
+}
+
 export function startDashPoll(): void {
   stopDashPoll();
-  _dashPoll.value = setInterval(() => {
-    void refreshDashRunning();
-  }, 4000);
+  // loadDashboard reads the lists; the riders read now, not a tick from now.
+  dashPollers.forEach((refresh) => refresh());
+  _dashPoll.value = setInterval(pollDashboard, 4000);
   if (!visBound && typeof document !== "undefined") {
     visBound = true;
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && !$("#dashboard")?.classList.contains("hidden")) {
-        void refreshDashRunning();
+        pollDashboard();
       }
     });
   }

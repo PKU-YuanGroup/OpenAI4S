@@ -64,7 +64,7 @@ vi.mock("./dom", () => ({
 import { t } from "../../i18n";
 import { api } from "./api";
 import { sessionCopy } from "./copy";
-import { loadDashboard, renderDashRecent, stopDashPoll } from "./dashboard";
+import { loadDashboard, onDashPoll, renderDashRecent, startDashPoll, stopDashPoll } from "./dashboard";
 
 /** Every text painted under `node`. */
 function texts(node: FakeEl | null | undefined): string[] {
@@ -132,6 +132,31 @@ describe("the example CTA's poll", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(intervals.size).toBe(0);
+  });
+});
+
+describe("the dashboard poll", () => {
+  it("drives the Running card and every rider from one interval", async () => {
+    const ticks: Array<() => void> = [];
+    vi.stubGlobal("setInterval", (tick: () => void) => {
+      ticks.push(tick);
+      return ticks.length;
+    });
+    vi.stubGlobal("document", { hidden: false, addEventListener: vi.fn() });
+    dom["#dashboard"] = fakeEl();
+    vi.mocked(api).mockResolvedValue({ frames: [] } as never);
+    const rider = vi.fn();
+    const leave = onDashPoll(rider);
+    try {
+      startDashPoll();
+      expect(rider).toHaveBeenCalledTimes(1); // it reads now, not a tick from now
+      expect(ticks).toHaveLength(1);
+      ticks[0]!();
+      expect(rider).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(api).toHaveBeenCalledWith("/frames?limit=50"));
+    } finally {
+      leave();
+    }
   });
 });
 

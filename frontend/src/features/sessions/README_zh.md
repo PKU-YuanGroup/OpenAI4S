@@ -23,14 +23,15 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`actions.menu.test.ts`](actions.menu.test.ts) | 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片，上下文用量卡片用当前语言标注。 |
 | [`actions.directory.test.ts`](actions.directory.test.ts) | 会话菜单操作让侧栏目录保持真实：「新建文件夹并移入」建的文件夹会被列出，而不是被缓存的文件夹列表挡掉；删除当前会话后即使随后的列表刷新失败，也不会重新打开被删的会话。 |
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | 取消回执只有在它命名的执行仍是本客户端正在运行的那个时，才切换到「正在停止…」。 |
-| [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期、仪表盘轮询。 |
-| [`dashboard.sessions.test.ts`](dashboard.sessions.test.ts) | 仪表盘的会话列表与示例 CTA：`/frames` 读取失败时如实提示并提供重试，保留上次读到的行，而不是显示没有会话并推荐示例；无论有多少次重绘与它的首次状态读取竞争，CTA 的状态轮询都只跑一份，离开仪表盘之后也不会再启动。 |
+| [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期，以及仪表盘唯一的 4 秒轮询，其他功能经 `onDashPoll` 搭载。 |
+| [`dashboard.sessions.test.ts`](dashboard.sessions.test.ts) | 仪表盘轮询用一个定时器驱动「运行中」卡片和所有搭载者，启动时立即读取一次。仪表盘的会话列表与示例 CTA：`/frames` 读取失败时如实提示并提供重试，保留上次读到的行，而不是显示没有会话并推荐示例；无论有多少次重绘与它的首次状态读取竞争，CTA 的状态轮询都只跑一份，离开仪表盘之后也不会再启动。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助；`FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace` 由 `routeInitialView` 与 Shell 首帧共用。`setTitle` 从静态 `data-i18n-val` 标签手中接管 `#conv-title`。 |
 | [`icon.ts`](icon.ts) | 本车道菜单、行和 `[data-icon]` 标记用的 `icon` / `iconEl` / `paintIcons`。图形路径取自共享的 `icons/paths.ts` 表。 |
 | [`index.ts`](index.ts) | 对外 re-export；import 时挂 window 名字。 |
 | [`lane.ts`](lane.ts) | 用 `isReady` 包一层，调用后续车道的 window 名字。 |
 | [`load.ts`](load.ts) | `loadSessions` 游标走页；`loadProjects` keyset 分页（不发 `offset`），项目目录与仪表盘搜索各自分页；文件夹、`renderSessions`。 |
 | [`dashboard.projects.test.ts`](dashboard.projects.test.ts) | 非整页加载的重绘之后项目卡片显示什么，以及项目目录里存着什么。运行中徽标依据仪表盘最近取到的 frame 标注——包含 4 秒轮询取到的那批，否则重绘会在刚被该轮询清空的「运行中」卡片旁边画出「1 running」。搜索有自己的结果页，从不替换页眉、切换器和各处标签所读的目录，所以被搜索框筛掉的项目在「最近」里仍显示名称；目录刷新失败时保留原目录；从项目行打开项目失败时会提示。 |
+| [`load.render.test.ts`](load.render.test.ts) | 一次会话读取只重建侧栏两次（加载状态，以及两个列表都就绪之后），不会再因它带动的文件夹读取多重建一次。 |
 | [`load.replace.test.ts`](load.replace.test.ts) | 防抖搜索还在等回复时点击「加载更多」会被拒绝：此前它会拿到更新的代号却带着**旧**查询和旧游标发请求，搜索回复因此被当作过期丢弃，旧筛选的第二页落在了新输入的搜索框下面。 |
 | [`load.projects.test.ts`](load.projects.test.ts) | 项目列表查询串不含 `offset`；合并/去重；空态 / 重试 / 加载更多的视图状态。 |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |

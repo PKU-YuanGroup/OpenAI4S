@@ -1,4 +1,4 @@
-export { bootAttention, startAttentionPoll, stopAttentionPoll } from "./boot";
+export { bootAttention } from "./boot";
 export { fetchAttentionPage, refreshAttention } from "./api";
 export { attentionT } from "./copy";
 export {

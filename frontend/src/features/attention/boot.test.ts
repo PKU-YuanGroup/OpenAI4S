@@ -10,10 +10,10 @@ vi.mock("./api", () => api);
 vi.mock("preact", async (original) => ({ ...await original<typeof import("preact")>(), render: vi.fn() }));
 
 import { LANG, setLang } from "../../i18n/runtime";
-import { bootAttention, stopAttentionPoll } from "./boot";
+import { startDashPoll, stopDashPoll } from "../sessions/dashboard";
+import { bootAttention } from "./boot";
 
 afterEach(() => {
-  stopAttentionPoll();
   vi.unstubAllGlobals();
 });
 
@@ -36,5 +36,11 @@ describe("the attention stream and the language", () => {
 
     await setLang(LANG === "en" ? "zh" : "en");
     expect(api.refreshAttention).toHaveBeenCalledTimes(2);
+
+    // Its reads ride the dashboard's own poll, started when the dashboard shows.
+    vi.stubGlobal("setInterval", () => 1);
+    startDashPoll();
+    stopDashPoll();
+    expect(api.refreshAttention).toHaveBeenCalledTimes(3);
   });
 });
