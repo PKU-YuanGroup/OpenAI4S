@@ -317,471 +317,65 @@ export function VolcenginePanel() {
   );
   const resourceCheckFailed = VOLC_CHECK_FAILED_STATES.has(accessState);
 
-  const body = (() => {
-    if (state.state === "not_installed") {
-      return (
-        <div class="volc-actions">
-          <VolcBtn
-            label={t("cust.volc.getConnector")}
-            icon="globe"
-            class="solid-btn small"
-            onClick={() => {
-              window.open("https://github.com/volcengine/ark-cli", "_blank", "noopener");
-            }}
-          />
-        </div>
-      );
-    }
-    if (login.state === "connecting") {
-      return (
-        <>
-          <VolcNotice tone="info" title={t("cust.volc.authTitle")} body={t("cust.volc.connecting")} />
-          <div class="volc-project-hint">{t("cust.volc.projectHint")}</div>
-          <div class="volc-actions">
-            <VolcBtn
-              label={t("cust.volc.cancel")}
-              icon="x"
-              onClick={async () => {
-                try {
-                  const next = await api("/volcengine/login/cancel", { method: "POST" });
-                  applyState((prev) => ({ ...prev, login: next }));
-                } catch (error) {
-                  hint(apiErrorText(error), true);
-                }
-              }}
+  let body: ComponentChildren;
+  if (state.state === "not_installed") body = <NotInstalled />;
+  else if (login.state === "connecting") body = <Connecting applyState={applyState} />;
+  else if (login.state === "awaiting_code") {
+    body = <AwaitingCode state={state} login={login} applyState={applyState} refresh={refresh} />;
+  } else if (login.state === "failed") {
+    body = <FailedLogin state={state} login={login} startLogin={startLogin} refresh={refresh} />;
+  } else if (state.state !== "connected") {
+    body = <SignedOut state={state} identity={identity} startLogin={startLogin} />;
+  } else {
+    body = (
+      <Connected
+        state={state}
+        plans={plans}
+        selected={selected}
+        setPlanKey={setPlanKey}
+        actions={accessActions({
+          state,
+          access,
+          accessState,
+          plans,
+          selected,
+          selectedPlan,
+          configuredForSelection,
+          resourceCheckFailed,
+          polling,
+          keyChoice,
+          setKeyChoice,
+          endpointChoice,
+          setEndpointChoice,
+          configure,
+          startLogin,
+          startKeyPoll,
+        })}
+        footer={
+          <>
+            <RecheckButton
+              refresh={refresh}
+              applyState={applyState}
+              refreshMessage={refreshMessage}
+              setRefreshMessage={setRefreshMessage}
             />
-          </div>
-        </>
-      );
-    }
-    if (login.state === "awaiting_code") {
-      return (
-        <AwaitingCode
-          state={state}
-          login={login}
-          applyState={applyState}
-          refresh={refresh}
-        />
-      );
-    }
-    if (login.state === "failed") {
-      return (
-        <FailedLogin
-          state={state}
-          login={login}
-          startLogin={startLogin}
-          refresh={refresh}
-        />
-      );
-    }
-    if (state.state !== "connected") {
-      const prepKey = identity.project_name ? "cust.volc.reconnectPrep" : "cust.volc.loginPrep";
-      return (
-        <>
-          {state._error ? (
-            <div class="timeline-error">{publicText(state._error, 240)}</div>
-          ) : null}
-          <div class="volc-login-prep">{t(prepKey)}</div>
-          <div class="volc-actions">
             <VolcBtn
-              label={t("cust.volc.connect")}
-              icon="link"
-              class="solid-btn small"
+              label={t("cust.volc.switch")}
+              icon="refresh"
               onClick={() => void startLogin()}
             />
-          </div>
-        </>
-      );
-    }
-
-    const actions: ComponentChildren[] = [];
-    const usageItems = asList(rec(state.usage).items).filter(
-      (item) => !rec(item).product || rec(item).product === selected,
-    );
-    const periods = usageItems.flatMap((item) =>
-      Array.isArray(rec(item).periods) ? rec(item).periods : [],
-    );
-
-    if (accessState === "no_plan") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.connectedNoAccessTitle")}
-          body={t("cust.volc.noPlanBody")}
-        />,
-        <VolcExternal
-          key="plans"
-          label={t("cust.volc.viewPlans")}
-          url="https://www.volcengine.com/activity/agentplan"
-        />,
-        polling ? (
-          <span key="wait" class="volc-key-wait">
-            {t("cust.volc.keyWaiting")}
-          </span>
-        ) : (
-          <VolcExternal
-            key="key"
-            label={t("cust.volc.createKey")}
-            url={volcApiKeyUrl(state)}
-            icon="lock"
-            onOpen={startKeyPoll}
-          />
-        ),
-      );
-    } else if (accessState === "key_missing") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.keyMissingTitle")}
-          body={t("cust.volc.keyMissingBody")}
-        />,
-        polling ? (
-          <span key="wait" class="volc-key-wait">
-            {t("cust.volc.keyWaiting")}
-          </span>
-        ) : (
-          <VolcExternal
-            key="key"
-            label={t("cust.volc.createKey")}
-            url={volcApiKeyUrl(state)}
-            icon="lock"
-            onOpen={startKeyPoll}
-          />
-        ),
-      );
-    } else if (accessState === "key_choice_required" && configuredForSelection) {
-      actions.push(
-        <span key="ready" class="volc-ready">
-          {t("cust.volc.ready")}
-        </span>,
-      );
-    } else if (accessState === "key_choice_required") {
-      const choices = asList(
-        selectedPlan && selectedPlan.key_choices
-          ? selectedPlan.key_choices
-          : access.key_choices,
-      ) as Record<string, unknown>[];
-      let currentKey = keyChoice;
-      if (!choices.some((c) => c.id === currentKey))
-        currentKey = asString(choices[0]?.id);
-      const endpointChoices = asList(access.endpoint_choices) as Record<string, unknown>[];
-      let currentEp = endpointChoice;
-      if (endpointChoices.length && !endpointChoices.some((c) => c.id === currentEp))
-        currentEp = asString(endpointChoices[0]?.id);
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="info"
-          title={t("cust.volc.keyChoiceTitle")}
-          body={t("cust.volc.keyChoiceBody")}
-        />,
-        <div key="kc" class="volc-plan-row">
-          <label class="skill-lbl">{t("cust.volc.apiKey")}</label>
-          <select
-            class="cust-input"
-            value={currentKey}
-            onChange={(e) => setKeyChoice((e.target as HTMLSelectElement).value)}
-          >
-            {choices.map((choice) => (
-              <option value={asString(choice.id)} key={asString(choice.id)}>
-                {choice.suffix
-                  ? t("cust.volc.keyName", asString(choice.name) || t("cust.volc.apiKey"), choice.suffix)
-                  : asString(choice.name) || t("cust.volc.apiKey")}
-              </option>
-            ))}
-          </select>
-        </div>,
-        endpointChoices.length ? (
-          <div key="ep" class="volc-plan-row">
-            <label class="skill-lbl">{t("cust.volc.endpoint")}</label>
-            <select
-              class="cust-input"
-              value={currentEp}
-              onChange={(e) => setEndpointChoice((e.target as HTMLSelectElement).value)}
-            >
-              {endpointChoices.map((choice) => (
-                <option value={asString(choice.id)} key={asString(choice.id)}>
-                  {asString(choice.name || choice.suffix) || t("cust.volc.endpoint")}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : null,
-        <VolcBtn
-          key="use"
-          label={t("cust.volc.usePlan")}
-          icon="check"
-          class="solid-btn small"
-          disabled={!currentKey}
-          onClick={() =>
-            void configure(
-              state,
-              selected || asString(access.plan_key),
-              currentKey,
-              endpointChoices.length ? currentEp : "",
-            )
-          }
-        />,
-      );
-    } else if (["profile_missing", "profile_ambiguous"].includes(accessState)) {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.profileMissingTitle")}
-          body={t("cust.volc.profileMissingBody")}
-        />,
-        <VolcBtn
-          key="setup"
-          label={t("cust.volc.retrySetup")}
-          icon="refresh"
-          class="solid-btn small"
-          onClick={() => void startLogin()}
-        />,
-      );
-    } else if (accessState === "plan_inactive") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.planInactiveTitle")}
-          body={t("cust.volc.planInactiveBody")}
-        />,
-        <VolcExternal
-          key="plans"
-          label={t("cust.volc.viewPlans")}
-          url="https://www.volcengine.com/activity/agentplan"
-        />,
-      );
-    } else if (accessState === "seat_required") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.seatTitle")}
-          body={t("cust.volc.seatBody")}
-        />,
-        <VolcExternal
-          key="ark"
-          label={t("cust.volc.viewPlans")}
-          url="https://console.volcengine.com/ark"
-        />,
-      );
-    } else if (accessState === "quota_exhausted") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.quotaTitle")}
-          body={t("cust.volc.quotaBody")}
-        />,
-        <VolcExternal
-          key="plans"
-          label={t("cust.volc.viewPlans")}
-          url="https://www.volcengine.com/activity/agentplan"
-        />,
-      );
-    } else if (configuredForSelection && resourceCheckFailed) {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.checkFailedTitle")}
-          body={t("cust.volc.checkFailedBody")}
-        />,
-        <span key="ready" class="volc-ready">
-          {t("cust.volc.ready")}
-        </span>,
-      );
-    } else if (configuredForSelection) {
-      actions.push(
-        <span key="ready" class="volc-ready">
-          {t("cust.volc.ready")}
-        </span>,
-      );
-    } else if (accessState === "platform_ready") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="ok"
-          title={t("cust.volc.platformReadyTitle")}
-          body={t("cust.volc.platformReadyBody")}
-        />,
-        <VolcBtn
-          key="use"
-          label={t("cust.volc.useEndpoint")}
-          icon="check"
-          class="solid-btn small"
-          onClick={() =>
-            void configure(state, "platform", "", asString(access.endpoint_choice))
-          }
-        />,
-      );
-    } else if (accessState === "endpoint_choice_required") {
-      const choices = asList(access.endpoint_choices) as Record<string, unknown>[];
-      let currentEp = endpointChoice;
-      if (!choices.some((c) => c.id === currentEp)) currentEp = asString(choices[0]?.id);
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="info"
-          title={t("cust.volc.endpointChoiceTitle")}
-          body={t("cust.volc.endpointChoiceBody")}
-        />,
-        <div key="ep" class="volc-plan-row">
-          <label class="skill-lbl">{t("cust.volc.endpoint")}</label>
-          <select
-            class="cust-input"
-            value={currentEp}
-            onChange={(e) => setEndpointChoice((e.target as HTMLSelectElement).value)}
-          >
-            {choices.map((choice) => (
-              <option value={asString(choice.id)} key={asString(choice.id)}>
-                {asString(choice.name || choice.suffix) || t("cust.volc.endpoint")}
-              </option>
-            ))}
-          </select>
-        </div>,
-        <VolcBtn
-          key="use"
-          label={t("cust.volc.useEndpoint")}
-          icon="check"
-          class="solid-btn small"
-          disabled={!currentEp}
-          onClick={() => void configure(state, "platform", "", currentEp)}
-        />,
-      );
-    } else if (accessState === "platform_endpoint_required") {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="info"
-          title={t("cust.volc.platformTitle")}
-          body={t("cust.volc.platformBody")}
-        />,
-        <VolcExternal
-          key="ep"
-          label={t("cust.volc.openEndpoints")}
-          url="https://console.volcengine.com/ark"
-        />,
-      );
-    } else if (resourceCheckFailed) {
-      actions.push(
-        <VolcNotice
-          key="n"
-          tone="warn"
-          title={t("cust.volc.checkFailedTitle")}
-          body={t("cust.volc.checkFailedBody")}
-        />,
-      );
-    } else if (plans.length) {
-      actions.push(
-        <VolcBtn
-          key="use"
-          label={t("cust.volc.usePlan")}
-          icon="check"
-          class="solid-btn small"
-          onClick={() => void configure(state, selected)}
-        />,
-      );
-    }
-
-    return (
-      <>
-        {state._error ? (
-          <div class="timeline-error">{publicText(state._error, 240)}</div>
-        ) : null}
-        {plans.length > 1 ? (
-          <>
-            <VolcNotice
-              tone="info"
-              title={t("cust.volc.choiceTitle")}
-              body={t("cust.volc.choiceBody")}
-            />
-            <div class="volc-plan-row">
-              <label class="skill-lbl">{t("cust.volc.plan")}</label>
-              <select
-                class="cust-input"
-                value={selected}
-                onChange={(e) => setPlanKey((e.target as HTMLSelectElement).value)}
-              >
-                {plans.map((plan) => (
-                  <option value={asString(plan.key)} key={asString(plan.key)}>
-                    {[plan.name || plan.key, plan.tier, plan.scope].filter(Boolean).join(" / ")}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {state.linked ? (
+              <VolcBtn
+                label={t("cust.volc.disconnect")}
+                icon="x"
+                onClick={() => void disconnect()}
+              />
+            ) : null}
           </>
-        ) : null}
-        {periods.length ? (
-          <>
-            <div class="cust-subhead volc-quota-title">{t("cust.volc.quota")}</div>
-            <div class="volc-quotas">
-              {periods.map((period, i) => {
-                const p = rec(period);
-                const parsed = p.reset_at ? new Date(String(p.reset_at)) : null;
-                const reset =
-                  parsed && !Number.isNaN(parsed.getTime())
-                    ? parsed.toLocaleString()
-                    : p.reset_at;
-                return (
-                  <div class="volc-quota" key={i}>
-                    <div class="volc-quota-labels">
-                      <span>{publicText(p.label, 24)}</span>
-                      <span>{volcQuotaValue(period)}</span>
-                    </div>
-                    <div class="volc-progress">
-                      <span style={{ width: `${volcPercent(period)}%` }} />
-                    </div>
-                    {reset ? (
-                      <div class="volc-reset">{t("cust.volc.reset", publicText(reset, 80))}</div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        ) : null}
-        <div class="volc-actions">
-          {actions}
-          <RecheckButton
-            refresh={refresh}
-            applyState={applyState}
-            refreshMessage={refreshMessage}
-            setRefreshMessage={setRefreshMessage}
-          />
-          <VolcBtn
-            label={t("cust.volc.switch")}
-            icon="refresh"
-            onClick={() => void startLogin()}
-          />
-          {state.linked ? (
-            <VolcBtn
-              label={t("cust.volc.disconnect")}
-              icon="x"
-              onClick={async () => {
-                if (!confirmAction(t("cust.volc.disconnectConfirm"))) return;
-                try {
-                  await api("/volcengine/disconnect", {
-                    method: "POST",
-                    body: JSON.stringify({ confirm: true }),
-                  });
-                  await loadModels();
-                  await refreshKeyBanner();
-                  refreshCustTab("models");
-                } catch (error) {
-                  hint(apiErrorText(error), true);
-                }
-              }}
-            />
-          ) : null}
-        </div>
-      </>
+        }
+      />
     );
-  })();
+  }
 
   return (
     <div class={"volc-panel" + (busy ? " busy" : "")}>
@@ -795,6 +389,519 @@ export function VolcenginePanel() {
       {body}
     </div>
   );
+}
+
+async function disconnect(): Promise<void> {
+  if (!confirmAction(t("cust.volc.disconnectConfirm"))) return;
+  try {
+    await api("/volcengine/disconnect", {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    });
+    await loadModels();
+    await refreshKeyBanner();
+    refreshCustTab("models");
+  } catch (error) {
+    hint(apiErrorText(error), true);
+  }
+}
+
+function NotInstalled() {
+  return (
+    <div class="volc-actions">
+      <VolcBtn
+        label={t("cust.volc.getConnector")}
+        icon="globe"
+        class="solid-btn small"
+        onClick={() => {
+          window.open("https://github.com/volcengine/ark-cli", "_blank", "noopener");
+        }}
+      />
+    </div>
+  );
+}
+
+function Connecting({ applyState }: { applyState: (s: VolcUpdate) => void }) {
+  return (
+    <>
+      <VolcNotice tone="info" title={t("cust.volc.authTitle")} body={t("cust.volc.connecting")} />
+      <div class="volc-project-hint">{t("cust.volc.projectHint")}</div>
+      <div class="volc-actions">
+        <VolcBtn
+          label={t("cust.volc.cancel")}
+          icon="x"
+          onClick={async () => {
+            try {
+              const next = await api("/volcengine/login/cancel", { method: "POST" });
+              applyState((prev) => ({ ...prev, login: next }));
+            } catch (error) {
+              hint(apiErrorText(error), true);
+            }
+          }}
+        />
+      </div>
+    </>
+  );
+}
+
+function SignedOut({
+  state,
+  identity,
+  startLogin,
+}: {
+  state: VolcState;
+  identity: Record<string, unknown>;
+  startLogin: () => Promise<void>;
+}) {
+  const prepKey = identity.project_name ? "cust.volc.reconnectPrep" : "cust.volc.loginPrep";
+  return (
+    <>
+      {state._error ? <div class="timeline-error">{publicText(state._error, 240)}</div> : null}
+      <div class="volc-login-prep">{t(prepKey)}</div>
+      <div class="volc-actions">
+        <VolcBtn
+          label={t("cust.volc.connect")}
+          icon="link"
+          class="solid-btn small"
+          onClick={() => void startLogin()}
+        />
+      </div>
+    </>
+  );
+}
+
+/** Signed in: the plan picker, the quota bars, and what to do next. */
+function Connected({
+  state,
+  plans,
+  selected,
+  setPlanKey,
+  actions,
+  footer,
+}: {
+  state: VolcState;
+  plans: Record<string, unknown>[];
+  selected: string;
+  setPlanKey: (key: string) => void;
+  actions: ComponentChildren[];
+  footer: ComponentChildren;
+}) {
+  const usageItems = asList(rec(state.usage).items).filter(
+    (item) => !rec(item).product || rec(item).product === selected,
+  );
+  const periods = usageItems.flatMap((item) =>
+    Array.isArray(rec(item).periods) ? rec(item).periods : [],
+  );
+  return (
+    <>
+      {state._error ? <div class="timeline-error">{publicText(state._error, 240)}</div> : null}
+      {plans.length > 1 ? (
+        <PlanPicker plans={plans} selected={selected} setPlanKey={setPlanKey} />
+      ) : null}
+      {periods.length ? <Quotas periods={periods} /> : null}
+      <div class="volc-actions">
+        {actions}
+        {footer}
+      </div>
+    </>
+  );
+}
+
+function PlanPicker({
+  plans,
+  selected,
+  setPlanKey,
+}: {
+  plans: Record<string, unknown>[];
+  selected: string;
+  setPlanKey: (key: string) => void;
+}) {
+  return (
+    <>
+      <VolcNotice tone="info" title={t("cust.volc.choiceTitle")} body={t("cust.volc.choiceBody")} />
+      <div class="volc-plan-row">
+        <label class="skill-lbl">{t("cust.volc.plan")}</label>
+        <select
+          class="cust-input"
+          value={selected}
+          onChange={(e) => setPlanKey((e.target as HTMLSelectElement).value)}
+        >
+          {plans.map((plan) => (
+            <option value={asString(plan.key)} key={asString(plan.key)}>
+              {[plan.name || plan.key, plan.tier, plan.scope].filter(Boolean).join(" / ")}
+            </option>
+          ))}
+        </select>
+      </div>
+    </>
+  );
+}
+
+function Quotas({ periods }: { periods: unknown[] }) {
+  return (
+    <>
+      <div class="cust-subhead volc-quota-title">{t("cust.volc.quota")}</div>
+      <div class="volc-quotas">
+        {periods.map((period, i) => {
+          const p = rec(period);
+          const parsed = p.reset_at ? new Date(String(p.reset_at)) : null;
+          const reset =
+            parsed && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleString() : p.reset_at;
+          return (
+            <div class="volc-quota" key={i}>
+              <div class="volc-quota-labels">
+                <span>{publicText(p.label, 24)}</span>
+                <span>{volcQuotaValue(period)}</span>
+              </div>
+              <div class="volc-progress">
+                <span style={{ width: `${volcPercent(period)}%` }} />
+              </div>
+              {reset ? (
+                <div class="volc-reset">{t("cust.volc.reset", publicText(reset, 80))}</div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+type AccessContext = {
+  state: VolcState;
+  access: Record<string, unknown>;
+  accessState: string;
+  plans: Record<string, unknown>[];
+  selected: string;
+  selectedPlan: Record<string, unknown> | null;
+  configuredForSelection: boolean;
+  resourceCheckFailed: boolean;
+  polling: boolean;
+  keyChoice: string;
+  setKeyChoice: (id: string) => void;
+  endpointChoice: string;
+  setEndpointChoice: (id: string) => void;
+  configure: (
+    current: VolcState,
+    nextPlanKey: string,
+    apiKeyChoice?: string,
+    nextEndpoint?: string,
+  ) => Promise<void>;
+  startLogin: () => Promise<void>;
+  startKeyPoll: () => void;
+};
+
+/**
+ * What a signed-in account can do next, by its access state. The branches
+ * are tried in order: `configuredForSelection` answers any state the ones
+ * before it did not.
+ */
+function accessActions(ctx: AccessContext): ComponentChildren[] {
+  const {
+    state,
+    access,
+    accessState,
+    plans,
+    selected,
+    selectedPlan,
+    configuredForSelection,
+    resourceCheckFailed,
+    polling,
+    keyChoice,
+    setKeyChoice,
+    endpointChoice,
+    setEndpointChoice,
+    configure,
+    startLogin,
+    startKeyPoll,
+  } = ctx;
+  const actions: ComponentChildren[] = [];
+  if (accessState === "no_plan") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.connectedNoAccessTitle")}
+        body={t("cust.volc.noPlanBody")}
+      />,
+      <VolcExternal
+        key="plans"
+        label={t("cust.volc.viewPlans")}
+        url="https://www.volcengine.com/activity/agentplan"
+      />,
+      polling ? (
+        <span key="wait" class="volc-key-wait">
+          {t("cust.volc.keyWaiting")}
+        </span>
+      ) : (
+        <VolcExternal
+          key="key"
+          label={t("cust.volc.createKey")}
+          url={volcApiKeyUrl(state)}
+          icon="lock"
+          onOpen={startKeyPoll}
+        />
+      ),
+    );
+  } else if (accessState === "key_missing") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.keyMissingTitle")}
+        body={t("cust.volc.keyMissingBody")}
+      />,
+      polling ? (
+        <span key="wait" class="volc-key-wait">
+          {t("cust.volc.keyWaiting")}
+        </span>
+      ) : (
+        <VolcExternal
+          key="key"
+          label={t("cust.volc.createKey")}
+          url={volcApiKeyUrl(state)}
+          icon="lock"
+          onOpen={startKeyPoll}
+        />
+      ),
+    );
+  } else if (accessState === "key_choice_required" && configuredForSelection) {
+    actions.push(
+      <span key="ready" class="volc-ready">
+        {t("cust.volc.ready")}
+      </span>,
+    );
+  } else if (accessState === "key_choice_required") {
+    const choices = asList(
+      selectedPlan && selectedPlan.key_choices
+        ? selectedPlan.key_choices
+        : access.key_choices,
+    ) as Record<string, unknown>[];
+    let currentKey = keyChoice;
+    if (!choices.some((c) => c.id === currentKey))
+      currentKey = asString(choices[0]?.id);
+    const endpointChoices = asList(access.endpoint_choices) as Record<string, unknown>[];
+    let currentEp = endpointChoice;
+    if (endpointChoices.length && !endpointChoices.some((c) => c.id === currentEp))
+      currentEp = asString(endpointChoices[0]?.id);
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="info"
+        title={t("cust.volc.keyChoiceTitle")}
+        body={t("cust.volc.keyChoiceBody")}
+      />,
+      <div key="kc" class="volc-plan-row">
+        <label class="skill-lbl">{t("cust.volc.apiKey")}</label>
+        <select
+          class="cust-input"
+          value={currentKey}
+          onChange={(e) => setKeyChoice((e.target as HTMLSelectElement).value)}
+        >
+          {choices.map((choice) => (
+            <option value={asString(choice.id)} key={asString(choice.id)}>
+              {choice.suffix
+                ? t("cust.volc.keyName", asString(choice.name) || t("cust.volc.apiKey"), choice.suffix)
+                : asString(choice.name) || t("cust.volc.apiKey")}
+            </option>
+          ))}
+        </select>
+      </div>,
+      endpointChoices.length ? (
+        <div key="ep" class="volc-plan-row">
+          <label class="skill-lbl">{t("cust.volc.endpoint")}</label>
+          <select
+            class="cust-input"
+            value={currentEp}
+            onChange={(e) => setEndpointChoice((e.target as HTMLSelectElement).value)}
+          >
+            {endpointChoices.map((choice) => (
+              <option value={asString(choice.id)} key={asString(choice.id)}>
+                {asString(choice.name || choice.suffix) || t("cust.volc.endpoint")}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null,
+      <VolcBtn
+        key="use"
+        label={t("cust.volc.usePlan")}
+        icon="check"
+        class="solid-btn small"
+        disabled={!currentKey}
+        onClick={() =>
+          void configure(
+            state,
+            selected || asString(access.plan_key),
+            currentKey,
+            endpointChoices.length ? currentEp : "",
+          )
+        }
+      />,
+    );
+  } else if (["profile_missing", "profile_ambiguous"].includes(accessState)) {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.profileMissingTitle")}
+        body={t("cust.volc.profileMissingBody")}
+      />,
+      <VolcBtn
+        key="setup"
+        label={t("cust.volc.retrySetup")}
+        icon="refresh"
+        class="solid-btn small"
+        onClick={() => void startLogin()}
+      />,
+    );
+  } else if (accessState === "plan_inactive") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.planInactiveTitle")}
+        body={t("cust.volc.planInactiveBody")}
+      />,
+      <VolcExternal
+        key="plans"
+        label={t("cust.volc.viewPlans")}
+        url="https://www.volcengine.com/activity/agentplan"
+      />,
+    );
+  } else if (accessState === "seat_required") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.seatTitle")}
+        body={t("cust.volc.seatBody")}
+      />,
+      <VolcExternal
+        key="ark"
+        label={t("cust.volc.viewPlans")}
+        url="https://console.volcengine.com/ark"
+      />,
+    );
+  } else if (accessState === "quota_exhausted") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.quotaTitle")}
+        body={t("cust.volc.quotaBody")}
+      />,
+      <VolcExternal
+        key="plans"
+        label={t("cust.volc.viewPlans")}
+        url="https://www.volcengine.com/activity/agentplan"
+      />,
+    );
+  } else if (configuredForSelection && resourceCheckFailed) {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.checkFailedTitle")}
+        body={t("cust.volc.checkFailedBody")}
+      />,
+      <span key="ready" class="volc-ready">
+        {t("cust.volc.ready")}
+      </span>,
+    );
+  } else if (configuredForSelection) {
+    actions.push(
+      <span key="ready" class="volc-ready">
+        {t("cust.volc.ready")}
+      </span>,
+    );
+  } else if (accessState === "platform_ready") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="ok"
+        title={t("cust.volc.platformReadyTitle")}
+        body={t("cust.volc.platformReadyBody")}
+      />,
+      <VolcBtn
+        key="use"
+        label={t("cust.volc.useEndpoint")}
+        icon="check"
+        class="solid-btn small"
+        onClick={() =>
+          void configure(state, "platform", "", asString(access.endpoint_choice))
+        }
+      />,
+    );
+  } else if (accessState === "endpoint_choice_required") {
+    const choices = asList(access.endpoint_choices) as Record<string, unknown>[];
+    let currentEp = endpointChoice;
+    if (!choices.some((c) => c.id === currentEp)) currentEp = asString(choices[0]?.id);
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="info"
+        title={t("cust.volc.endpointChoiceTitle")}
+        body={t("cust.volc.endpointChoiceBody")}
+      />,
+      <div key="ep" class="volc-plan-row">
+        <label class="skill-lbl">{t("cust.volc.endpoint")}</label>
+        <select
+          class="cust-input"
+          value={currentEp}
+          onChange={(e) => setEndpointChoice((e.target as HTMLSelectElement).value)}
+        >
+          {choices.map((choice) => (
+            <option value={asString(choice.id)} key={asString(choice.id)}>
+              {asString(choice.name || choice.suffix) || t("cust.volc.endpoint")}
+            </option>
+          ))}
+        </select>
+      </div>,
+      <VolcBtn
+        key="use"
+        label={t("cust.volc.useEndpoint")}
+        icon="check"
+        class="solid-btn small"
+        disabled={!currentEp}
+        onClick={() => void configure(state, "platform", "", currentEp)}
+      />,
+    );
+  } else if (accessState === "platform_endpoint_required") {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="info"
+        title={t("cust.volc.platformTitle")}
+        body={t("cust.volc.platformBody")}
+      />,
+      <VolcExternal
+        key="ep"
+        label={t("cust.volc.openEndpoints")}
+        url="https://console.volcengine.com/ark"
+      />,
+    );
+  } else if (resourceCheckFailed) {
+    actions.push(
+      <VolcNotice
+        key="n"
+        tone="warn"
+        title={t("cust.volc.checkFailedTitle")}
+        body={t("cust.volc.checkFailedBody")}
+      />,
+    );
+  } else if (plans.length) {
+    actions.push(
+      <VolcBtn
+        key="use"
+        label={t("cust.volc.usePlan")}
+        icon="check"
+        class="solid-btn small"
+        onClick={() => void configure(state, selected)}
+      />,
+    );
+  }
+  return actions;
 }
 
 function RecheckButton({
