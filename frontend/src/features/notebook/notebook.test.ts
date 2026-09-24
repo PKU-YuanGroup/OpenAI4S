@@ -458,6 +458,30 @@ describe("F-14 Notebook", () => {
       expect(replEnabledNow()).toBe(false);
     });
 
+    it("reads only while the Notebook is on screen, and not again while fresh", async () => {
+      const paths: string[] = [];
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        return path.endsWith("/environments") ? { environments: [], current: "python" } : { alive: true };
+      });
+      dock.value = { open: false, tab: "notebook" };
+      syncKernel(true);
+      dock.value = { open: true, tab: "files" };
+      activeTab.value = "files";
+      syncKernel(true);
+      await settle();
+      expect(paths).toEqual([]);
+      activeTab.value = "notebook";
+      syncKernel(true);
+      await settle();
+      expect(paths).toEqual(["/frames/frame-1/kernel", "/frames/frame-1/environments"]);
+      syncKernel(true);
+      await settle();
+      expect(paths).toHaveLength(2);
+    });
+  });
+
+  describe("cell actions: one request each, and only true feedback", () => {
     it("a second REPL submission while the first is in flight sends nothing", async () => {
       const posts: string[] = [];
       let answer: (body: Record<string, unknown>) => void = () => undefined;
@@ -537,28 +561,6 @@ describe("F-14 Notebook", () => {
       await copyNotebookCell("print(2)");
       expect(written).toBe("print(2)");
       expect(hints).toEqual([[t("nb.action.copied"), undefined]]);
-    });
-
-    it("reads only while the Notebook is on screen, and not again while fresh", async () => {
-      const paths: string[] = [];
-      setNotebookApi(async (path) => {
-        paths.push(path);
-        return path.endsWith("/environments") ? { environments: [], current: "python" } : { alive: true };
-      });
-      dock.value = { open: false, tab: "notebook" };
-      syncKernel(true);
-      dock.value = { open: true, tab: "files" };
-      activeTab.value = "files";
-      syncKernel(true);
-      await settle();
-      expect(paths).toEqual([]);
-      activeTab.value = "notebook";
-      syncKernel(true);
-      await settle();
-      expect(paths).toEqual(["/frames/frame-1/kernel", "/frames/frame-1/environments"]);
-      syncKernel(true);
-      await settle();
-      expect(paths).toHaveLength(2);
     });
   });
 
