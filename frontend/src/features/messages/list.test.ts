@@ -333,4 +333,41 @@ describe("stored rows, first page and older page alike", () => {
     expect(row.dataset.turnId).toBe("turn-7");
     expect(doc.messages.children).toContain(row);
   });
+
+  it.each(ROW_RENDERERS)("%s: 👍/👎 post the rating, toggle, and show a saved one", (_name, render) => {
+    currentId.value = "frame-1";
+    const posts: Array<{ url: string; body: { key?: string; rating?: unknown } }> = [];
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body || "{}")) });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    const row = render({ role: "assistant", content: "Answer A." }) as unknown as RowEl;
+    const [, up, down] = row.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    expect(up.onclick).toBeTypeOf("function");
+    expect(down.onclick).toBeTypeOf("function");
+
+    down.onclick!();
+    expect(down.classList.contains("on")).toBe(true);
+    expect(up.classList.contains("on")).toBe(false);
+    expect(posts.at(-1)?.url).toBe("/api/v1/frames/frame-1/feedback");
+    expect(posts.at(-1)?.body.rating).toBe("down");
+    const key = posts.at(-1)?.body.key;
+    expect(key).toBeTruthy();
+
+    up.onclick!();
+    expect(up.classList.contains("on")).toBe(true);
+    expect(down.classList.contains("on")).toBe(false);
+    expect(posts.at(-1)?.body).toEqual({ key, rating: "up" });
+
+    // The saved rating is what a reopened answer shows.
+    const again = render({ role: "assistant", content: "Answer A." }) as unknown as RowEl;
+    const [, savedUp, savedDown] = again.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    expect(savedUp.classList.contains("on")).toBe(true);
+    expect(savedDown.classList.contains("on")).toBe(false);
+
+    // Clicking the active one withdraws it.
+    savedUp.onclick!();
+    expect(savedUp.classList.contains("on")).toBe(false);
+    expect(posts.at(-1)?.body).toEqual({ key, rating: null });
+  });
 });

@@ -8,8 +8,12 @@
 
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
+import { currentId, feedback as feedbackSignal } from "../../stores/session";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
+import { api } from "../sessions/api";
+import { hint } from "../sessions/chrome";
+import { grow } from "../sessions/dom";
 import { el, messagesHost } from "./dom";
 import { failureMeta } from "./failure";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
@@ -63,34 +67,92 @@ function callWindow(name: string, ...args: unknown[]): void {
   (fn as (...a: unknown[]) => unknown)(...args);
 }
 
-function addMsgActions(wrap: HTMLElement, text: string): void {
+function fbKey(text: string): string {
+  let h = 0;
+  const s = (text || "").slice(0, 400);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return "m" + (h >>> 0).toString(36);
+}
+
+function feedbackBag(): Record<string, unknown> {
+  const cur = feedbackSignal.value;
+  if (cur && typeof cur === "object") return cur as Record<string, unknown>;
+  const next = Object.create(null) as Record<string, unknown>;
+  feedbackSignal.value = next;
+  return next;
+}
+
+function sendFeedback(key: string, rating: string | null): void {
+  if (!currentId.value) return;
+  const bag = feedbackBag();
+  if (rating) bag[key] = rating;
+  else delete bag[key];
+  api("/frames/" + currentId.value + "/feedback", {
+    method: "POST",
+    body: JSON.stringify({ key, rating }),
+  }).catch(() => {});
+  hint(
+    rating === "up"
+      ? t("toast.feedbackUp")
+      : rating === "down"
+        ? t("toast.feedbackDown")
+        : t("toast.feedbackCancelled"),
+  );
+}
+
+/**
+ * app.js:7809-7830. The one action row for a finished answer: the first
+ * page, "load earlier" and the live turn all call this. The first page had
+ * its own copy whose 👍/👎 had no handler and never showed a saved rating.
+ */
+export function addMsgActions(wrap: HTMLElement, text: string): void {
   if (!wrap || wrap.querySelector(".msg-actions")) return;
   const row = el("div", "msg-actions");
   const copy = el("button");
+  (copy as HTMLButtonElement).type = "button";
   copy.title = t("msgAction.copy");
   paintIcon(copy, "copy");
   copy.onclick = () => {
     try {
       if (navigator.clipboard) void navigator.clipboard.writeText(text || "");
     } catch {
-      /* clipboard blocked */
+      /* ignore */
     }
+    paintIcon(copy, "check");
+    setTimeout(() => paintIcon(copy, "copy"), 1200);
   };
-  const tup = el("button");
+  const key = fbKey(text);
+  const cur = feedbackBag()[key] || null;
+  const tup = el("button", cur === "up" ? "on" : null);
+  (tup as HTMLButtonElement).type = "button";
   tup.title = t("msgAction.thumbsUp");
   paintIcon(tup, "thumbs-up");
-  const tdn = el("button");
+  const tdn = el("button", cur === "down" ? "on" : null);
+  (tdn as HTMLButtonElement).type = "button";
   tdn.title = t("msgAction.thumbsDown");
   paintIcon(tdn, "thumbs-down");
+  tup.onclick = () => {
+    const on = !tup.classList.contains("on");
+    tup.classList.toggle("on", on);
+    tdn.classList.remove("on");
+    sendFeedback(key, on ? "up" : null);
+  };
+  tdn.onclick = () => {
+    const on = !tdn.classList.contains("on");
+    tdn.classList.toggle("on", on);
+    tup.classList.remove("on");
+    sendFeedback(key, on ? "down" : null);
+  };
   const edit = el("button");
+  (edit as HTMLButtonElement).type = "button";
   edit.title = t("common.edit");
   paintIcon(edit, "pencil");
   edit.onclick = () => {
     const c = document.getElementById("composer") as HTMLTextAreaElement | null;
     if (!c) return;
     c.value = text || "";
+    grow();
     c.focus();
-    callWindow("grow");
   };
   row.appendChild(copy);
   row.appendChild(tup);

@@ -3,18 +3,21 @@
 import { renderMd } from "../md/render";
 import { failureMeta } from "../messages/failure";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "../messages/identity";
+import { addMsgActions } from "../messages/list";
 import { planModeRequestText, planSeed, planSeedMarker } from "../messages/planPrompt";
 import { cancelledIdentity, stoppedMarker } from "../messages/stopped";
 import { publicText } from "../scrub/scrub";
 import { t } from "../../i18n";
 import { artifacts } from "../../stores/artifacts";
-import { currentId, feedback as feedbackSignal } from "../../stores/session";
-import { api } from "./api";
-import { hint } from "./chrome";
+import { currentId } from "../../stores/session";
 import { $, el, grow } from "./dom";
 import { iconEl } from "./icon";
 import { callLane } from "./lane";
 import type { ChatMessage } from "./messages";
+
+// One action row (copy, 👍/👎, edit) for the first page, this older-page
+// renderer and the live turn; it lives with the first-page renderer.
+export { addMsgActions };
 
 export function starters(): Array<{ t: string; p: string }> {
   return [
@@ -203,97 +206,4 @@ export function renderComposerRefChips(): void {
     host.appendChild(chip);
   });
   host.classList.remove("hidden");
-}
-
-function fbKey(text: string): string {
-  let h = 0;
-  const s = (text || "").slice(0, 400);
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return "m" + (h >>> 0).toString(36);
-}
-
-function feedbackBag(): Record<string, unknown> {
-  const cur = feedbackSignal.value;
-  if (cur && typeof cur === "object") return cur as Record<string, unknown>;
-  const next = Object.create(null) as Record<string, unknown>;
-  feedbackSignal.value = next;
-  return next;
-}
-
-function sendFeedback(key: string, rating: string | null): void {
-  if (!currentId.value) return;
-  const bag = feedbackBag();
-  if (rating) bag[key] = rating;
-  else delete bag[key];
-  api("/frames/" + currentId.value + "/feedback", {
-    method: "POST",
-    body: JSON.stringify({ key, rating }),
-  }).catch(() => {});
-  hint(
-    rating === "up"
-      ? t("toast.feedbackUp")
-      : rating === "down"
-        ? t("toast.feedbackDown")
-        : t("toast.feedbackCancelled"),
-  );
-}
-
-export function addMsgActions(wrap: HTMLElement, text: string): void {
-  if (!wrap || wrap.querySelector(".msg-actions")) return;
-  const row = el("div", "msg-actions");
-  const copy = el("button");
-  copy.type = "button";
-  copy.title = t("msgAction.copy");
-  copy.appendChild(iconEl("copy", 16));
-  copy.onclick = () => {
-    try {
-      if (navigator.clipboard) navigator.clipboard.writeText(text || "");
-    } catch {
-      /* ignore */
-    }
-    copy.innerHTML = "";
-    copy.appendChild(iconEl("check", 16));
-    setTimeout(() => {
-      copy.innerHTML = "";
-      copy.appendChild(iconEl("copy", 16));
-    }, 1200);
-  };
-  const key = fbKey(text);
-  const cur = feedbackBag()[key] || null;
-  const tup = el("button", cur === "up" ? "on" : null);
-  tup.type = "button";
-  tup.title = t("msgAction.thumbsUp");
-  tup.appendChild(iconEl("thumbs-up", 16));
-  const tdn = el("button", cur === "down" ? "on" : null);
-  tdn.type = "button";
-  tdn.title = t("msgAction.thumbsDown");
-  tdn.appendChild(iconEl("thumbs-down", 16));
-  tup.onclick = () => {
-    const on = !tup.classList.contains("on");
-    tup.classList.toggle("on", on);
-    tdn.classList.remove("on");
-    sendFeedback(key, on ? "up" : null);
-  };
-  tdn.onclick = () => {
-    const on = !tdn.classList.contains("on");
-    tdn.classList.toggle("on", on);
-    tup.classList.remove("on");
-    sendFeedback(key, on ? "down" : null);
-  };
-  const edit = el("button");
-  edit.type = "button";
-  edit.title = t("common.edit");
-  edit.appendChild(iconEl("pencil", 16));
-  edit.onclick = () => {
-    const c = $("#composer") as HTMLTextAreaElement | null;
-    if (!c) return;
-    c.value = text || "";
-    grow();
-    c.focus();
-  };
-  row.appendChild(copy);
-  row.appendChild(tup);
-  row.appendChild(tdn);
-  row.appendChild(edit);
-  wrap.appendChild(row);
 }
