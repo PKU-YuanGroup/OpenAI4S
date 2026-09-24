@@ -28,7 +28,7 @@ export {
   parseAttentionTarget,
   projectNameFor,
 } from "./parse";
-export { ATTENTION_POLL_MS, readPollFlags, shouldFetchAttention } from "./poll";
+export { readPollFlags, shouldFetchAttention } from "./poll";
 export {
   attentionCards,
   attentionError,

@@ -506,8 +506,4 @@ export function showWorkspace(): void {
 }
 
 binds.loadDashboard = loadDashboard;
-binds.startDashPoll = startDashPoll;
-binds.stopDashPoll = stopDashPoll;
 binds.renderDashProjects = renderDashProjects;
-binds.showDashboard = showDashboard;
-binds.showWorkspace = showWorkspace;

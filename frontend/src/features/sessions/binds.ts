@@ -14,11 +14,5 @@ export const binds = {
   openConversation: (() => {}) as OpenConversation,
   newSession: (async () => {}) as NewSession,
   loadDashboard: (async () => {}) as () => Promise<void> | void,
-  startDashPoll: (() => {}) as () => void,
-  stopDashPoll: (() => {}) as () => void,
   renderDashProjects: (() => {}) as () => void,
-  renderProjMenu: (() => {}) as () => void,
-  renderSessions: (() => {}) as () => void,
-  showDashboard: (() => {}) as () => void,
-  showWorkspace: (() => {}) as () => void,
 };

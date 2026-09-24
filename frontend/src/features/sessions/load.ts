@@ -575,22 +575,6 @@ export function renderSessions(): void {
   list.appendChild(frag);
 }
 
-export async function newFolder(): Promise<void> {
-  const name = prompt(t("folder.new.prompt"));
-  if (!name || !project.value) return;
-  try {
-    await api(`/projects/${project.value}/folders`, {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    });
-    invalidateFolders();
-    await loadFolders();
-    await loadSessions();
-  } catch (e) {
-    hint(t("folder.create.failed", apiErrorText(e)), true);
-  }
-}
-
 function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string }): void {
   openMenu(anchor, [
     {
@@ -640,5 +624,3 @@ export async function assignFolder(fid: string, folder_id: string | null): Promi
     hint(t("folder.move.failed", apiErrorText(e)), true);
   }
 }
-
-binds.renderSessions = renderSessions;

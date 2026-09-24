@@ -10,12 +10,10 @@ import {
   dateBucketId,
   emptySessionWalk,
   filterRootFrames,
-  prependOlderMessages,
   recentDashboardSessions,
   runningDashboardFrames,
   sessionWalkBudget,
   sessionsInProject,
-  shouldWalkEarlier,
   sortMessagesBySeq,
   sortSessionsByUpdatedAt,
   ungroupedSessions,
@@ -30,19 +28,6 @@ describe("message paging", () => {
   it("sorts a newest-first page back into reading order by seq", () => {
     const rows = [{ seq: 9 }, { seq: 3 }, { seq: 5 }, { seq: undefined }];
     expect(sortMessagesBySeq(rows).map((r) => r.seq || 0)).toEqual([0, 3, 5, 9]);
-  });
-
-  it("concatenates an older page in front of the held (newer) rows", () => {
-    const newest = [{ seq: 301 }, { seq: 302 }];
-    const older = [{ seq: 1 }, { seq: 2 }];
-    expect(prependOlderMessages(older, newest).map((m) => m.seq)).toEqual([1, 2, 301, 302]);
-  });
-
-  it("stops the whole-conversation walk at MESSAGE_WALK_MAX_PAGES", () => {
-    expect(shouldWalkEarlier(true, 10, MESSAGE_WALK_MAX_PAGES - 1)).toBe(true);
-    expect(shouldWalkEarlier(true, 10, MESSAGE_WALK_MAX_PAGES)).toBe(false);
-    expect(shouldWalkEarlier(true, null, 1)).toBe(false);
-    expect(shouldWalkEarlier(false, 10, 1)).toBe(false);
   });
 });
 

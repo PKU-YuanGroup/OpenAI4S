@@ -18,6 +18,6 @@ M-02 Dashboard "needs attention" stream. Cards come from `GET /api/v1/attention`
 | [`navigate.test.ts`](navigate.test.ts) | Closed-set target → local session path + exact dock; URL fields ignored. |
 | [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`. |
 | [`parse.ts`](parse.ts) | Closed-set item parse and `cardsFromItems` mapping. |
-| [`poll.ts`](poll.ts) | `shouldFetchAttention` / `ATTENTION_POLL_MS = 4000`. |
+| [`poll.ts`](poll.ts) | `shouldFetchAttention`: read only while the dashboard is on screen and the page is visible. |
 | [`state.ts`](state.ts) | Lane-local signals. Not promoted into `stores/`. |
 | [`types.ts`](types.ts) | B-05 item/target types and closed `SOURCE_KINDS` / `SURFACES` / `DOCKS`. |

@@ -42,15 +42,6 @@ export function sortMessagesBySeq<T extends SeqRow>(rows: T[]): T[] {
   return rows;
 }
 
-/** Older page belongs in front of the already-held (newer) rows. */
-export function prependOlderMessages<T>(older: T[], newer: T[]): T[] {
-  return older.concat(newer);
-}
-
-export function shouldWalkEarlier(earlier: boolean, cursor: unknown, pages: number): boolean {
-  return earlier && cursor != null && pages < MESSAGE_WALK_MAX_PAGES;
-}
-
 export function sortSessionsByUpdatedAt<T extends { updated_at?: string }>(rows: T[]): T[] {
   return rows.slice().sort((a, b) => {
     return new Date(b.updated_at || "").getTime() - new Date(a.updated_at || "").getTime();

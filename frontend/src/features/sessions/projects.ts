@@ -304,8 +304,6 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
   void select(initialTab === "lineage" ? "lineage" : "timeline");
 }
 
-binds.renderProjMenu = () => renderProjMenu();
-
 export function renderProjMenu(): void {
   const current = $("#proj-current");
   if (current) {

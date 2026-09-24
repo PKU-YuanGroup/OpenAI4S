@@ -1,5 +1,3 @@
-import { ATTENTION_POLL_MS } from "./types";
-
 export type AttentionPollFlags = {
   dashboardHidden: boolean;
   documentHidden: boolean;
@@ -34,5 +32,3 @@ export function readPollFlags(doc: PollDoc | null = defaultPollDoc()): Attention
     documentHidden: typeof doc.hidden === "boolean" ? !!doc.hidden : false,
   };
 }
-
-export { ATTENTION_POLL_MS };

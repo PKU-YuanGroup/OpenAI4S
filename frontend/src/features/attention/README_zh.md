@@ -18,6 +18,6 @@ M-02 仪表盘「需要处理」卡片流。数据来自 `GET /api/v1/attention`
 | [`navigate.test.ts`](navigate.test.ts) | 闭集 target → 本地 session 路径 + exact dock；忽略 URL 字段。 |
 | [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`。 |
 | [`parse.ts`](parse.ts) | 闭集 item 解析与 `cardsFromItems` 映射。 |
-| [`poll.ts`](poll.ts) | `shouldFetchAttention` / `ATTENTION_POLL_MS = 4000`。 |
+| [`poll.ts`](poll.ts) | `shouldFetchAttention`：只在仪表盘可见且页面可见时读取。 |
 | [`state.ts`](state.ts) | 车道局部 signal。不上升进 `stores/`。 |
 | [`types.ts`](types.ts) | B-05 item/target 类型，以及闭集 `SOURCE_KINDS` / `SURFACES` / `DOCKS`。 |
