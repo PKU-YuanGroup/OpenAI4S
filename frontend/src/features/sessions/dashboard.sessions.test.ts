@@ -15,6 +15,7 @@ type FakeEl = {
   onclick: (() => void) | null;
   classList: { contains: () => boolean; add: () => void; remove: () => void };
   appendChild: (child: FakeEl) => FakeEl;
+  setAttribute: (name: string, value: string) => void;
   remove: () => void;
   innerHTML: string;
 };
@@ -34,6 +35,7 @@ function fakeEl(tag = "div", cls: string | null = null, text = ""): FakeEl {
       node.children.push(child);
       return child;
     },
+    setAttribute() {},
     remove() {
       node.removed = true;
     },
@@ -59,8 +61,21 @@ vi.mock("./dom", () => ({
   syncMobileChrome: () => {},
 }));
 
+import { t } from "../../i18n";
 import { api } from "./api";
-import { renderDashRecent, stopDashPoll } from "./dashboard";
+import { sessionCopy } from "./copy";
+import { loadDashboard, renderDashRecent, stopDashPoll } from "./dashboard";
+
+/** Every text painted under `node`. */
+function texts(node: FakeEl | null | undefined): string[] {
+  const out: string[] = [];
+  const walk = (n: FakeEl) => {
+    if (n.text) out.push(n.text);
+    n.children.forEach(walk);
+  };
+  if (node) walk(node);
+  return out;
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -117,5 +132,48 @@ describe("the example CTA's poll", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(intervals.size).toBe(0);
+  });
+});
+
+describe("a /frames read that fails on the dashboard", () => {
+  let framesFail = false;
+  beforeEach(() => {
+    framesFail = false;
+    dom["#dash-projects"] = fakeEl();
+    vi.stubGlobal("document", { hidden: false, createDocumentFragment: () => fakeEl("fragment") });
+    vi.mocked(api).mockImplementation(async (path: string) => {
+      if (path.startsWith("/frames")) {
+        if (framesFail) throw new Error("daemon restarting");
+        return { frames: [{ id: "f1", name: "Titration run", message_count: 2 }] };
+      }
+      if (path.startsWith("/projects")) return { projects: [] };
+      throw new Error(`unexpected request: ${path}`);
+    });
+  });
+
+  it("says the list could not be read instead of showing no sessions and the example", async () => {
+    framesFail = true;
+    await loadDashboard();
+    const shown = texts(dom["#dash-sessions"]);
+    expect(shown).toEqual([sessionCopy("sessionsError"), sessionCopy("retry")]);
+    expect(shown).not.toContain(t("dash.sessions.empty"));
+    expect(vi.mocked(api).mock.calls.map(([path]) => path)).not.toContain("/example/session");
+  });
+
+  it("keeps the sessions it last read, and Retry reads them again", async () => {
+    await loadDashboard();
+    expect(texts(dom["#dash-sessions"])).toContain("Titration run");
+
+    framesFail = true;
+    await loadDashboard();
+    const shown = texts(dom["#dash-sessions"]);
+    expect(shown).toContain("Titration run");
+    expect(shown).toContain(sessionCopy("sessionsError"));
+
+    framesFail = false;
+    const retry = dom["#dash-sessions"]!.children.find((node) => node.text === sessionCopy("retry"));
+    retry!.onclick!();
+    await vi.waitFor(() => expect(texts(dom["#dash-sessions"])).not.toContain(sessionCopy("sessionsError")));
+    expect(texts(dom["#dash-sessions"])).toContain("Titration run");
   });
 });

@@ -17,6 +17,7 @@ import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys } from "./chrome";
+import { sessionCopy } from "./copy";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import {
   canLoadMoreProjects,
@@ -144,23 +145,28 @@ export function paintDashSkeleton(): void {
  * annotates its fresh server rows (which carry no `running_count`) from
  * these, so the running badge survives a keystroke. */
 let _dashFrames: SessionLike[] = [];
+/**
+ * The last `/frames` read failed. An unread list is not an empty one: the
+ * lists keep the rows last confirmed and say so, instead of painting "no
+ * sessions yet" and offering the example over sessions that exist.
+ */
+let dashFramesFailed = false;
 
 export async function loadDashboard(): Promise<void> {
   bindProjectSearch();
   paintDashSkeleton();
   // The search box persists across dashboard visits; the list must match it.
   await loadProjects({ q: String(projectsQuery.value || "") });
-  let frames: SessionLike[] = [];
   try {
     const d = (await api("/frames?limit=50")) as { frames?: SessionLike[] };
-    frames = filterRootFrames((d && d.frames) || []);
+    _dashFrames = filterRootFrames((d && d.frames) || []);
+    dashFramesFailed = false;
   } catch {
-    frames = [];
+    dashFramesFailed = true;
   }
-  _dashFrames = frames;
   renderDashProjects();
-  renderDashRunning(frames);
-  renderDashRecent(frames);
+  renderDashRunning(_dashFrames);
+  renderDashRecent(_dashFrames);
 }
 
 export function renderDashProjects(): void {
@@ -303,7 +309,18 @@ export function renderDashRecent(frames: SessionLike[]): void {
   const sc = $("#dash-sessions");
   if (!sc) return;
   sc.innerHTML = "";
-  if (!recent.length) {
+  if (dashFramesFailed) {
+    const notice = el("div", "dash-empty", sessionCopy("sessionsError"));
+    notice.setAttribute("role", "alert");
+    const retry = el("button", "outline-btn small", sessionCopy("retry"));
+    retry.type = "button";
+    retry.id = "dash-sessions-retry";
+    retry.onclick = () => {
+      void loadDashboard().catch(() => undefined);
+    };
+    sc.appendChild(notice);
+    sc.appendChild(retry);
+  } else if (!recent.length) {
     sc.appendChild(el("div", "dash-empty", t("dash.sessions.empty")));
     sc.appendChild(exampleSeedCta());
   }
@@ -397,6 +414,11 @@ export async function refreshDashRunning(): Promise<void> {
   // emptied -- a wrong badge where the old code merely had none.
   _dashFrames = frames;
   renderDashRunning(frames);
+  if (dashFramesFailed) {
+    // This poll is the retry the failed read was waiting for.
+    dashFramesFailed = false;
+    renderDashRecent(frames);
+  }
 }
 
 export function stopDashPoll(): void {
