@@ -517,6 +517,13 @@ afterEach(() => {
   stubbedFrames?.run();
   mountedDocument = null;
   stubbedFrames = null;
+  // Cancel a refresh or resync a test left scheduled, on the clock that
+  // scheduled it. resetStoreFields drops the handle without clearing it, so a
+  // real-timer test's refresh used to fire ~180ms later inside whatever test
+  // was running then -- on a slow CI runner, a full re-read recorded by the
+  // delegation-only test.
+  clearTimeout(S._workbenchTimer);
+  clearTimeout(S._branchConversationTimer);
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });

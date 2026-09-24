@@ -96,13 +96,23 @@ describe("mdHighlight (unified scanner)", () => {
   });
 
   it("streams a large block in time linear in its length", () => {
-    resetMdHighlightMemo();
     const code = "for i in range(10):\n    total = total + compute(i, 'x')  # step\n".repeat(2500);
+    const onePass = (): number => {
+      resetMdHighlightMemo();
+      const started = performance.now();
+      mdHighlight(code, "python");
+      return performance.now() - started;
+    };
+    onePass();
+    const fresh = Math.min(onePass(), onePass(), onePass());
+    resetMdHighlightMemo();
     const started = performance.now();
     for (let end = 100; end <= code.length; end += 100) mdHighlight(code.slice(0, end), "python");
     const elapsed = performance.now() - started;
-    // Re-tokenizing from the top on each of ~1,650 chunks scans ~135M characters.
-    expect(elapsed).toBeLessThan(1500);
+    // Re-tokenizing from the top on each of ~1,600 chunks costs ~800 fresh
+    // passes; resuming at the last line costs ~25. The budget is relative to
+    // this machine: a fixed 1500 ms failed on a CI runner at 1560 ms.
+    expect(elapsed).toBeLessThan(200 * fresh);
   });
 
   it("derives EDKW from the unified table", () => {
