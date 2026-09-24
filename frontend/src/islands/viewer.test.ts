@@ -12,6 +12,7 @@ vi.mock("../features/artifacts/renderers", () => ({ renderArtifactBody: vi.fn() 
 vi.mock("../features/execution/provenance", () => ({ renderProvenanceInto: vi.fn(), decorateViewerWithProvenance: vi.fn() }));
 vi.mock("../features/autocomplete/editor", () => ({ edacTeardown: vi.fn(), bindEditorAutocomplete: vi.fn() }));
 vi.mock("./mol", () => ({ molTeardown: vi.fn() }));
+vi.mock("../features/chrome/modal", () => ({ openModalEl: vi.fn() }));
 
 describe("isTextEditable (app.js:9458-9461)", () => {
   it("rejects images, structures, and PDFs", () => {
@@ -263,5 +264,66 @@ it("an exact legacy version's unknown metadata is exported without borrowing cur
   )), async (blobs) => {
     await vi.waitFor(() => expect(blobs).toHaveLength(1));
     expect(JSON.parse(await blobs[0]!.text())).toMatchObject({ version_id: "v1", filename: null, size_bytes: null, content_type: null });
+  });
+});
+
+
+describe("versions modal ownership (AUDIT A29)", () => {
+  class ModalNode {
+    children: ModalNode[] = [];
+    parent: ModalNode | null = null;
+    root = false;
+    className = ""; title = ""; href = ""; target = ""; disabled = false;
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    onclick?: () => unknown;
+    private text = "";
+    get isConnected(): boolean {
+      let node: ModalNode | null = this;
+      while (node && !node.root) node = node.parent;
+      return !!node;
+    }
+    get textContent(): string { return this.text + this.children.map((c) => c.textContent).join(""); }
+    set textContent(value: string) { this.clear(); this.text = value; }
+    set innerHTML(_value: string) { this.clear(); }
+    appendChild(child: ModalNode) { child.parent = this; this.children.push(child); return child; }
+    setAttribute() {}
+    private clear() {
+      for (const child of this.children) child.parent = null;
+      this.children = []; this.text = "";
+    }
+  }
+  const walk = (n: ModalNode): ModalNode[] => [n, ...n.children.flatMap(walk)];
+
+  it("drops a late list for the artifact whose modal was replaced", async () => {
+    resetStoreFields();
+    const modal = new ModalNode(); modal.root = true;
+    const body = modal.appendChild(new ModalNode());
+    const nodes: Record<string, ModalNode> = {
+      "#modal": modal, "#modal-body": body,
+      "#modal-title": modal.appendChild(new ModalNode()), "#modal-download": modal.appendChild(new ModalNode()),
+    };
+    vi.stubGlobal("document", { querySelector: (sel: string) => nodes[sel] ?? null, createElement: () => new ModalNode() });
+    let releaseA!: () => void;
+    const heldA = new Promise<void>((resolve) => { releaseA = resolve; });
+    const listFor = (id: string, count: number) => ({
+      versions: Array.from({ length: count }, (_, i) => ({ version_id: `${id}-v${i + 1}`, ordinal: i + 1, is_latest: i === count - 1 })),
+    });
+    setArtifactsFetch(async (url) => {
+      if (url.includes("/artifacts/A/versions")) { await heldA; return new Response(JSON.stringify(listFor("A", 3))); }
+      return new Response(JSON.stringify(listFor("B", 1)));
+    });
+    const rows = () => walk(body).filter((n) => n.className.startsWith("ver-row"));
+    try {
+      const { showVersions } = await import("./viewer");
+      void showVersions({ id: "A", filename: "a.png" });
+      void showVersions({ id: "B", filename: "b.png" });
+      await vi.waitFor(() => expect(rows()).toHaveLength(1));
+      releaseA();
+      for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rows()).toHaveLength(1);
+      expect(body.textContent).toContain("v1");
+      expect(body.textContent).not.toContain("v3");
+    } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
   });
 });

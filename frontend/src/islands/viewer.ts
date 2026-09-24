@@ -290,16 +290,25 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
   if (dl) dl.style.display = "none";
   const body = $("#modal-body");
   if (!body) return;
-  body.innerHTML = "<div class='dock-empty'>" + translate("common.loading") + "</div>";
+  body.innerHTML = "";
+  // The modal body is shared: another artifact's versions, the fullscreen
+  // preview, Ketcher and the project view all clear it and paint their own.
+  // A read paints only while a node this view put there is still attached,
+  // so A's late list cannot land in B's modal (where "Restore" acts on A).
+  let shown: HTMLElement = el("div", "dock-empty", translate("common.loading"));
+  body.appendChild(shown);
   openModalEl($("#modal"));
   const render = async (): Promise<void> => {
+    const owner = shown;
     let d: { versions?: VersionRow[] } | null = null;
     try {
       d = (await api(`/artifacts/${a.id}/versions`)) as { versions?: VersionRow[] };
     } catch (e) {
+      if (!owner.isConnected) return;
       body.textContent = translate("versions.load.err", (e as { message?: string }).message || String(e));
       return;
     }
+    if (!owner.isConnected) return;
     const vs = (d && d.versions) || [];
     body.innerHTML = "";
     const wrap = el("div", "ver-list"),
@@ -380,6 +389,7 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
     });
     body.appendChild(wrap);
     body.appendChild(diffPanel);
+    shown = wrap;
   };
   void render();
 }
