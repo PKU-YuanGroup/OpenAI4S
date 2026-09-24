@@ -2,12 +2,10 @@
 
 [English](README.md)
 
-Action Timeline 孤岛的 Preact 容器。只负责生命周期：挂 `#dock-timeline`、调用 `renderActionTimeline`、卸载时销毁 `_timelineView`。类名（`.timeline-ledger-row` 等）为 E2E 冻结。
+已退役。这里原有一个没有任何地方 import 的 `Timeline` Preact 容器：工作台在 [`../dashboard/Shell.tsx`](../dashboard/Shell.tsx) 里自己渲染 `#dock-timeline` 宿主，由 [`../../features/timeline/island.ts`](../../features/timeline/island.ts) 的命令式孤岛填充；孤岛的布局规则（46px 行高、绝对定位、overview SVG 尺寸）在 `openai4s/server/webui/style.css`。容器自带的样式表也因此从未进入打包。
+
+保留这个目录只是因为 [`../README.md`](../README.md) 仍然列出它；两者应一起删除。
 
 ## 文件
 
-| 文件 | 职责 |
-| --- | --- |
-| [`index.ts`](index.ts) | 再导出 `Timeline`。 |
-| [`Timeline.css`](Timeline.css) | 孤岛布局：46px 行高、绝对定位行、overview SVG 尺寸。视觉 token 仍归 F-21。 |
-| [`Timeline.tsx`](Timeline.tsx) | `#dock-timeline` 宿主与挂载/卸载。 |
+没有源文件。

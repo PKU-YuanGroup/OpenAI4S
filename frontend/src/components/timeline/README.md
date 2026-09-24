@@ -2,12 +2,10 @@
 
 [中文说明](README_zh.md)
 
-Preact container for the Action Timeline island. Lifecycle only: mount `#dock-timeline`, call `renderActionTimeline`, destroy `_timelineView` on unmount. Class names (`.timeline-ledger-row` and siblings) are frozen for E2E.
+Retired. This directory held a `Timeline` Preact container that nothing imported: the workbench renders the `#dock-timeline` host itself in [`../dashboard/Shell.tsx`](../dashboard/Shell.tsx), the imperative island in [`../../features/timeline/island.ts`](../../features/timeline/island.ts) fills it, and the island's layout rules (46px rows, absolute positioning, overview SVG size) live in `openai4s/server/webui/style.css`. The container's stylesheet was never bundled for the same reason.
+
+The directory stays only because [`../README.md`](../README.md) still lists it; remove both together.
 
 ## Files
 
-| File | Responsibility |
-| --- | --- |
-| [`index.ts`](index.ts) | Re-export `Timeline`. |
-| [`Timeline.css`](Timeline.css) | Island layout: 46px row height, absolute rows, overview SVG size. Visual tokens stay with F-21. |
-| [`Timeline.tsx`](Timeline.tsx) | `#dock-timeline` host and mount/unmount. |
+No source files.
