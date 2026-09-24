@@ -405,9 +405,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   }
   // The textarea remains editable while FileReader/upload is pending. Clear
   // only the draft that this invocation captured; text typed during that wait
-  // belongs to the next message and must survive.
+  // belongs to the next message and must survive. And only when that draft is
+  // what this call sends: a programmatic send (a permission's Continue, a plan
+  // approval) carries its own text, and the user's unrelated draft is theirs.
   const composer = $("#composer") as HTMLTextAreaElement | null;
-  if (composer && composer.value === composerDraft) composer.value = "";
+  if (composer && composer.value === composerDraft && composerDraft.trim() === text) composer.value = "";
   grow();
   renderComposerRefChips();
   if (annIds.length) {

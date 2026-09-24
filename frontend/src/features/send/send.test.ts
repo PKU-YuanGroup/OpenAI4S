@@ -98,6 +98,23 @@ describe("send()", () => {
     vi.unstubAllGlobals();
   });
 
+  it("a programmatic send leaves the user's unrelated draft in the composer", async () => {
+    // A permission card's Continue and a plan approval call send() with their
+    // own text while the user may be half-way through the next message.
+    nodes.composer!.value = "half a thought about the next step";
+    await send("Continue with the approved tool call.");
+    expect(posted()).toHaveLength(1);
+    expect((posted()[0]?.input_data as { request?: string }).request).toBe("Continue with the approved tool call.");
+    expect(nodes.composer!.value).toBe("half a thought about the next step");
+  });
+
+  it("the composer's own text is cleared once it is sent", async () => {
+    nodes.composer!.value = "  plot the growth curve \n";
+    await send(nodes.composer!.value);
+    expect(posted()).toHaveLength(1);
+    expect(nodes.composer!.value).toBe("");
+  });
+
   it("a /skill send after a failed catalog read still gets its directive next time", async () => {
     const directive = t("skill.invokeDirective", "plot");
     catalogUp = false;
