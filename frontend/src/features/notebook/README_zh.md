@@ -12,7 +12,7 @@ F-14 Notebook 面板。Cell 合并与 live 协议从 `app.js`（9765-9910）移�
 | --- | --- |
 | [`types.ts`](types.ts) | `NotebookCell` / kernel 状态 / 滚动容器类型。 |
 | [`labels.ts`](labels.ts) | `kernelLabel` / `kernelIdFromEnv`（app.js:10063-10075）。 |
-| [`cells.ts`](cells.ts) | 合并、draft/start/chunk/finished、`_seenChunks`、每 cell 输出 signal、`loadExecutionLog`。 |
+| [`cells.ts`](cells.ts) | 合并、draft/start/chunk/finished、`_seenChunks`、每 cell 输出 signal、`loadExecutionLog`、`paintStreamedText`（新的 `<pre>` 从零开始）。 |
 | [`kernel.ts`](kernel.ts) | `_kc` invalidate、kernel/REPL/env，供 F-11 调用的 `notebookOnTurnDone`。 |
 | [`scroll.ts`](scroll.ts) | 跟随 + `_nbReading` / `_nbDirty` / `_nbSched`（app.js:10339-10350, 9900-9908）。 |
 | [`chrome.ts`](chrome.ts) | `highlightTraceback`、`notebookExportLink`、live 图片、行内表格。`looksBinary` 与 Files 共用 `artifacts/api.ts` 那一份，不再各留一份。 |
@@ -20,4 +20,4 @@ F-14 Notebook 面板。Cell 合并与 live 协议从 `app.js`（9765-9910）移�
 | [`Notebook.test.tsx`](Notebook.test.tsx) | 在 node 里把面板组件当函数调用：二进制输出的省略提示。 |
 | [`install.ts`](install.ts) | WS handler + window 上的 `highlightTraceback` / `notebookExportLink`。由于每种 WS 类型只有一个处理器，`notebook_cell_finished` 同时收尾聊天区的实时活动卡片（`messages/cardState.ts`）。 |
 | [`index.ts`](index.ts) | 对外再导出。 |
-| [`notebook.test.ts`](notebook.test.ts) | 合并、重放去重、invalidate 时机、滚动门控、traceback XSS。 |
+| [`notebook.test.ts`](notebook.test.ts) | 合并、重放去重、invalidate 时机、滚动门控、traceback XSS、被省略后重新出现的流式 `<pre>` 完整重绘。 |

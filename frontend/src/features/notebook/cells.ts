@@ -174,6 +174,28 @@ export function appendTextNodeDelta(
   return text.length;
 }
 
+/**
+ * Paint streaming output into its `<pre>`. `seen` is how much of `text` that
+ * `<pre>` already shows. No `<pre>` (the output was empty or elided as
+ * binary) or a new, empty one starts from zero: the count used to survive
+ * the unmount, so a new `<pre>` received only `text.slice(oldSeen)` and the
+ * start of the output was gone. Returns the new count.
+ */
+export function paintStreamedText(
+  pre: { firstChild: ChildNode | null; appendChild: (node: Text) => unknown } | null,
+  seen: number,
+  text: string,
+): number {
+  if (!pre) return 0;
+  let node = pre.firstChild as Text | null;
+  if (!node) {
+    node = document.createTextNode("");
+    pre.appendChild(node);
+    seen = 0;
+  }
+  return appendTextNodeDelta(node, seen, text);
+}
+
 function setLive(next: NotebookCell[]): void {
   liveCells.value = next;
 }

@@ -39,6 +39,7 @@ import {
   nbCellKey,
   nbCellStart,
   nbFindCell,
+  paintStreamedText,
   projectNotebookCells,
   resetCellOutputs,
   setNotebookApi,
@@ -483,6 +484,54 @@ describe("F-14 Notebook", () => {
       };
       appendTextNodeDelta(node, 11, "hi");
       expect(node.data).toBe("hi");
+    });
+  });
+
+  describe("paintStreamedText (a <pre> that came back after being elided)", () => {
+    type FakeText = { data: string; appendData: (s: string) => void };
+    function fakePre(): { firstChild: FakeText | null; appendChild: (node: FakeText) => void } {
+      const pre = {
+        firstChild: null as FakeText | null,
+        appendChild(node: FakeText) {
+          pre.firstChild = node;
+        },
+      };
+      return pre;
+    }
+    function paint(pre: ReturnType<typeof fakePre> | null, seen: number, text: string): number {
+      return paintStreamedText(pre as unknown as Parameters<typeof paintStreamedText>[0], seen, text);
+    }
+
+    beforeEach(() => {
+      vi.stubGlobal("document", {
+        createTextNode: (data: string): FakeText => ({
+          data,
+          appendData(s: string) {
+            this.data += s;
+          },
+        }),
+      });
+    });
+
+    it("repaints the whole output when the <pre> was unmounted in between", () => {
+      const first = fakePre();
+      let seen = paint(first, 0, "abc");
+      expect(first.firstChild?.data).toBe("abc");
+      seen = paint(null, seen, "abc\u0000\u0001");
+      expect(seen).toBe(0);
+      const second = fakePre();
+      paint(second, seen, "abcdef");
+      expect(second.firstChild?.data).toBe("abcdef");
+    });
+
+    it("starts a new, empty <pre> from zero whatever count it is handed", () => {
+      const first = fakePre();
+      const seen = paint(first, 0, "abc");
+      const second = fakePre();
+      paint(second, seen, "abcdef");
+      expect(second.firstChild?.data).toBe("abcdef");
+      paint(second, 6, "abcdefgh");
+      expect(second.firstChild?.data).toBe("abcdefgh");
     });
   });
 

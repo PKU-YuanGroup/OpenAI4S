@@ -22,7 +22,7 @@ import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
 import { publicText } from "../scrub/scrub";
-import { appendTextNodeDelta, cellOutput, nbCellKey, notebookDisplayEntries } from "./cells";
+import { cellOutput, nbCellKey, notebookDisplayEntries, paintStreamedText } from "./cells";
 import {
   notebookArtifactState,
   el,
@@ -102,11 +102,7 @@ export function StreamingOutput({ text, isError }: { text: string; isError: bool
   const preRef = useRef<HTMLPreElement>(null);
   const seen = useRef(0);
   useLayoutEffect(() => {
-    const pre = preRef.current;
-    if (!pre) return;
-    if (!pre.firstChild) pre.appendChild(document.createTextNode(""));
-    const node = pre.firstChild as Text;
-    seen.current = appendTextNodeDelta(node, seen.current, text);
+    seen.current = paintStreamedText(preRef.current, seen.current, text);
   }, [text]);
   if (!text) return null;
   if (looksBinary(text)) return <BinaryElided length={text.length} />;
