@@ -32,6 +32,7 @@ import { onEvent, resetWsHandlers } from "../ws/registry";
 import {
   appendTextNodeDelta,
   cellOutput,
+  loadExecutionLog,
   mergeNotebookCells,
   nbCellChunk,
   nbCellDraft,
@@ -57,6 +58,7 @@ import {
   resetNotebookCellCaches,
 } from "./chrome";
 import { installNotebook } from "./install";
+import type { NotebookCell } from "./types";
 import { invalidateKernelCache, kernelEpoch, nbSwitchEnv, notebookOnTurnDone } from "./kernel";
 import {
   isNearBottom,
@@ -599,6 +601,54 @@ describe("F-14 Notebook", () => {
       expect(grouped[0] && grouped[0].producing_cell_id).toBe("b");
       expect(grouped[0] && grouped[0].attempt_count).toBe(2);
       expect(grouped[0] && grouped[0]._revisions && grouped[0]!._revisions!.length).toBe(1);
+    });
+
+    // The memoized cell view only skips a cell whose props are the same
+    // object; every projection used to clone every cell.
+    it("returns the same projected object for finished records that did not change", () => {
+      const failed = { producing_cell_id: "a", origin: "agent", status: "error", kernel_id: "python", language: "python" };
+      const retry = { producing_cell_id: "b", origin: "agent", status: "ok", kernel_id: "python", language: "python" };
+      const other = { producing_cell_id: "c", origin: "user", status: "ok" };
+      const first = projectNotebookCells([failed, retry, other]);
+      const second = projectNotebookCells([failed, retry, other]);
+      expect(second).toHaveLength(2);
+      expect(second[0]).toBe(first[0]);
+      expect(second[1]).toBe(first[1]);
+      const changed = { ...other, stdout: "new" };
+      const third = projectNotebookCells([failed, retry, changed]);
+      expect(third[0]).toBe(first[0]);
+      expect(third[1]).not.toBe(first[1]);
+      expect(third[1]!.stdout).toBe("new");
+    });
+
+    it("rebuilds a group with a running member, whose record changes in place", () => {
+      const live: NotebookCell = { producing_cell_id: "r", live: true, status: "running" };
+      const before = projectNotebookCells([live]);
+      live.output_artifacts = [{ filename: "p.png", artifact_id: "art", version_id: "v1", url: "/u" }];
+      const after = projectNotebookCells([live]);
+      expect(after[0]).not.toBe(before[0]);
+      expect(after[0]!.output_artifacts).toHaveLength(1);
+    });
+
+    it("keeps a record's identity when the execution log sends it back unchanged", async () => {
+      let stdout = "1\n";
+      setNotebookApi(async () => ({
+        entries: [
+          { producing_cell_id: "k1", cell_index: 1, status: "ok", stdout, figures: ["f.png"] },
+          { producing_cell_id: "k2", cell_index: 2, status: "ok", stdout: "2\n" },
+        ],
+        kernels: ["python"],
+      }));
+      await loadExecutionLog("frame-1");
+      const [k1, k2] = cells.value as NotebookCell[];
+      await loadExecutionLog("frame-1");
+      expect((cells.value as NotebookCell[])[0]).toBe(k1);
+      expect((cells.value as NotebookCell[])[1]).toBe(k2);
+      stdout = "1\nmore\n";
+      await loadExecutionLog("frame-1");
+      expect((cells.value as NotebookCell[])[0]).not.toBe(k1);
+      expect((cells.value as NotebookCell[])[0]!.stdout).toBe("1\nmore\n");
+      expect((cells.value as NotebookCell[])[1]).toBe(k2);
     });
   });
 

@@ -118,8 +118,8 @@ export function identityForOwner(queue: unknown, ownerKind: string | null): Iden
     : null;
 }
 
-function latestCellForLanguage(language: string): NotebookCell | null {
-  const list = notebookDisplayEntries().filter((cell) =>
+function latestCellForLanguage(entries: NotebookCell[], language: string): NotebookCell | null {
+  const list = entries.filter((cell) =>
     String(cell.language || cell.kernel_id || "python")
       .toLowerCase()
       .startsWith(language),
@@ -175,8 +175,10 @@ export function runtimeSummary(): {
   else if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) status = "restoring";
   else if (ownerTicket || running.value || kcSt.turn_running) status = "busy";
   else if (kcSt.alive) status = "live";
-  const pythonCell = latestCellForLanguage("python");
-  const rCell = latestCellForLanguage("r");
+  // One projection for the whole summary; it used to be computed three times.
+  const entries = notebookDisplayEntries();
+  const pythonCell = latestCellForLanguage(entries, "python");
+  const rCell = latestCellForLanguage(entries, "r");
   const branchObj = branchState.value as { branch_id?: string } | null;
   const timeline = actionTimeline.value as { branch_id?: string } | null;
   const branch =
@@ -187,10 +189,7 @@ export function runtimeSummary(): {
   const stateRevision =
     recovery.state_revision != null
       ? Number(recovery.state_revision)
-      : Math.max(
-          0,
-          ...notebookDisplayEntries().map((cell) => Number(cell.state_revision) || 0),
-        );
+      : Math.max(0, ...entries.map((cell) => Number(cell.state_revision) || 0));
   const pyGeneration =
     recovery.python_generation_id ||
     kcSt.python_generation_id ||
