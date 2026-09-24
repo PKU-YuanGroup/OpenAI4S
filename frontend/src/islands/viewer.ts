@@ -360,8 +360,7 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
             })) as { artifact?: ArtifactRow } | null;
             syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true);
             hint(translate("versions.restored", v.ordinal));
-            const bust = _artBust.value || {};
-            bust[a.id] = Date.now();
+            _artBust.value = { ..._artBust.value, [a.id]: Date.now() };
             if (currentId.value) void loadArtifacts(currentId.value);
             const docked = dockArtifact.value as ArtifactRow | null;
             if (docked && docked.id === a.id) {

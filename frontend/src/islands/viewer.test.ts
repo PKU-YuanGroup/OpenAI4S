@@ -4,7 +4,7 @@ import { hint } from "../features/sessions/chrome";
 import { translate } from "../features/artifacts/api";
 import { filesT } from "../features/artifacts/copy";
 import { copyFailedText } from "../features/chrome/clipboard";
-import { dockArtifact } from "../stores/artifacts";
+import { _artBust, dockArtifact } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 const menu = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("../features/sessions/chrome", () => ({ openMenu: (...args: unknown[]) => menu.open(...args), hint: vi.fn() }));
@@ -294,8 +294,11 @@ describe("versions modal ownership (AUDIT A29)", () => {
     }
   }
   const walk = (n: ModalNode): ModalNode[] => [n, ...n.children.flatMap(walk)];
+  const listFor = (id: string, count: number) => ({
+    versions: Array.from({ length: count }, (_, i) => ({ version_id: `${id}-v${i + 1}`, ordinal: i + 1, is_latest: i === count - 1 })),
+  });
 
-  it("drops a late list for the artifact whose modal was replaced", async () => {
+  function mountModal() {
     resetStoreFields();
     const modal = new ModalNode(); modal.root = true;
     const body = modal.appendChild(new ModalNode());
@@ -304,16 +307,17 @@ describe("versions modal ownership (AUDIT A29)", () => {
       "#modal-title": modal.appendChild(new ModalNode()), "#modal-download": modal.appendChild(new ModalNode()),
     };
     vi.stubGlobal("document", { querySelector: (sel: string) => nodes[sel] ?? null, createElement: () => new ModalNode() });
+    return { body, rows: () => walk(body).filter((n) => n.className.startsWith("ver-row")) };
+  }
+
+  it("drops a late list for the artifact whose modal was replaced", async () => {
+    const { body, rows } = mountModal();
     let releaseA!: () => void;
     const heldA = new Promise<void>((resolve) => { releaseA = resolve; });
-    const listFor = (id: string, count: number) => ({
-      versions: Array.from({ length: count }, (_, i) => ({ version_id: `${id}-v${i + 1}`, ordinal: i + 1, is_latest: i === count - 1 })),
-    });
     setArtifactsFetch(async (url) => {
       if (url.includes("/artifacts/A/versions")) { await heldA; return new Response(JSON.stringify(listFor("A", 3))); }
       return new Response(JSON.stringify(listFor("B", 1)));
     });
-    const rows = () => walk(body).filter((n) => n.className.startsWith("ver-row"));
     try {
       const { showVersions } = await import("./viewer");
       void showVersions({ id: "A", filename: "a.png" });
@@ -324,6 +328,28 @@ describe("versions modal ownership (AUDIT A29)", () => {
       expect(rows()).toHaveLength(1);
       expect(body.textContent).toContain("v1");
       expect(body.textContent).not.toContain("v3");
+    } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
+  it("a restore publishes a new cache-bust map (AUDIT S04)", async () => {
+    const { body, rows } = mountModal();
+    let listReads = 0;
+    setArtifactsFetch(async (url) => {
+      if (url.endsWith("/restore")) return new Response(JSON.stringify({ artifact: { id: "A", version_id: "A-v1" } }));
+      listReads += 1;
+      return new Response(JSON.stringify(listFor("A", 2)));
+    });
+    try {
+      const { showVersions } = await import("./viewer");
+      void showVersions({ id: "A", filename: "a.png" });
+      await vi.waitFor(() => expect(rows()).toHaveLength(2));
+      const before = _artBust.value;
+      await walk(body).find((n) => n.textContent === translate("versions.restore"))?.onclick?.();
+      expect(_artBust.value).not.toBe(before);
+      expect(_artBust.value).toHaveProperty("A");
+      // The restore repaints the list; let it finish before the fixture goes.
+      await vi.waitFor(() => expect(listReads).toBe(2));
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0));
     } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
   });
 });

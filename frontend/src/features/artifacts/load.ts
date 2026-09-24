@@ -58,13 +58,16 @@ export async function loadArtifacts(id: string): Promise<void> {
     return;
   }
   let refreshProv = false;
+  const busts: Record<string, unknown> = {};
   a.forEach((x) => {
     const v = x.version_id || x.latest_version_id || x.checksum;
     const changed = syncArtifactVersion(x, false);
-    if (changed && v) _artBust.value[x.id] = v;
+    if (changed && v) busts[x.id] = v;
     const docked = dockArtifact.value as ArtifactRow | null;
     if (changed && provMode.value && docked && !docked._exactVersion && docked.id === x.id) refreshProv = true;
   });
+  // A new object, so anything reading the signal hears that a URL moved.
+  if (Object.keys(busts).length) _artBust.value = { ..._artBust.value, ...busts };
   artifactsSignal.value = a;
   artifactsFrameId.value = id;
   artifactsFrameGeneration.value = generation;
