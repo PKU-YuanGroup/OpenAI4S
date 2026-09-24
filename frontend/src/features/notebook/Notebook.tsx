@@ -22,7 +22,7 @@ import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
 import { publicText } from "../scrub/scrub";
-import { cellOutput, nbCellKey, notebookDisplayEntries, paintStreamedText } from "./cells";
+import { cellOutput, nbCellKey, notebookViewEntries, paintStreamedText } from "./cells";
 import {
   notebookArtifactState,
   el,
@@ -388,8 +388,8 @@ function TableMount({ fname, cell }: { fname: string; cell: NotebookCell }) {
 
 const MemoCellView = memo(CellView);
 
-export function CellList() {
-  const entries = notebookDisplayEntries();
+/** Paints the entries it is handed (the reading gate's list), never the cell stores. */
+export function CellList({ entries }: { entries: NotebookCell[] }) {
   const filter = kernelFilter.value;
   const shown = filter
     ? entries.filter((e) => (e.kernel_id || "python") === filter)
@@ -437,9 +437,8 @@ function toggleExecutedCodeLocal(): void {
   nbRender();
 }
 
-function KernelChips() {
+function KernelChips({ entries }: { entries: NotebookCell[] }) {
   kernelEpoch.value;
-  const entries = notebookDisplayEntries();
   const kernels: string[] = [];
   entries.forEach((e) => {
     const k = e.kernel_id || "python";
@@ -696,18 +695,18 @@ function ExecutedCodeSlot() {
   return <div ref={hostRef} />;
 }
 
-export function NotebookDock() {
+export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
   kernelEpoch.value;
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   const repl = replEnabledNow();
   return (
     <>
-      <KernelChips />
+      <KernelChips entries={entries} />
       {execOpen ? (
         <ExecutedCodeSlot />
       ) : (
         <>
-          <CellList />
+          <CellList entries={entries} />
           <OwnerChips />
           {repl ? <ReplPanel /> : <StatusStrip />}
         </>
@@ -716,7 +715,11 @@ export function NotebookDock() {
   );
 }
 
-/** app.js:10333-10479 without `innerHTML=""` of the cell list. */
+/**
+ * app.js:10333-10479 without `innerHTML=""` of the cell list. Every caller
+ * (nbRender, the Timeline's refreshes, a tab switch) paints the list the
+ * reading gate allows, computed once for the whole dock.
+ */
 export function renderNotebook(): void {
   if (typeof document === "undefined") return;
   const nb = document.getElementById("dock-notebook");
@@ -724,7 +727,7 @@ export function renderNotebook(): void {
   const body = nb.parentElement as unknown as ScrollBox | null;
   const follow = measureNotebookFollow(body);
   bindNotebookScroll(body);
-  render(<NotebookDock />, nb);
+  render(<NotebookDock entries={notebookViewEntries()} />, nb);
   followLiveOutput(body, follow);
 }
 

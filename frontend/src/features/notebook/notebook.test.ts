@@ -39,6 +39,7 @@ import {
   nbCellKey,
   nbCellStart,
   nbFindCell,
+  notebookViewEntries,
   paintStreamedText,
   projectNotebookCells,
   resetCellOutputs,
@@ -405,6 +406,40 @@ describe("F-14 Notebook", () => {
       const body = { scrollHeight: 500, scrollTop: 0, clientHeight: 100 };
       onNotebookScroll(body);
       expect(_nbReading.value).toBe(true);
+    });
+
+    it("keeps the painted list while the reader is scrolled up during a turn", () => {
+      const failed = {
+        producing_cell_id: "a",
+        cell_index: 1,
+        origin: "agent",
+        status: "error",
+        kernel_id: "python",
+        language: "python",
+      };
+      cells.value = [failed];
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["a"]);
+      running.value = true;
+      _nbReading.value = true;
+      // The agent retries: projected, the failed cell folds into the retry's
+      // revisions. Painting that now would pull it out from under the reader.
+      liveCells.value = [{ ...failed, producing_cell_id: "b", cell_index: 2, status: "running", live: true }];
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["a"]);
+      expect(_nbDirty.value).toBe(true);
+      _nbReading.value = false;
+      const flushed = notebookViewEntries();
+      expect(flushed.map(nbCellKey)).toEqual(["b"]);
+      expect((flushed[0]!._revisions || []).map(nbCellKey)).toEqual(["a"]);
+    });
+
+    it("never holds back another session's list", () => {
+      cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
+      notebookViewEntries();
+      running.value = true;
+      _nbReading.value = true;
+      currentId.value = "frame-2";
+      cells.value = [{ producing_cell_id: "z", cell_index: 1 }];
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["z"]);
     });
   });
 

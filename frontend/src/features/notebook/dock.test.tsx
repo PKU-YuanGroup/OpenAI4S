@@ -15,9 +15,11 @@ vi.mock("preact/hooks", () => ({
   useState: (initial: unknown) => [initial, () => undefined],
 }));
 
+import { effect } from "@preact/signals";
 import { i18nReady, t } from "../../i18n/runtime";
 import { cells, liveCells } from "../../stores/notebook";
 import { resetStoreFields } from "../../stores/signal-field";
+import { notebookDisplayEntries } from "./cells";
 import { CellList, CellOutput } from "./Notebook";
 
 type VNode = {
@@ -68,15 +70,37 @@ describe("Notebook cell identity across completion", () => {
   it("keeps one component under the cell's key from its first chunk to its record", () => {
     const base = { producing_cell_id: "c1", cell_id: "c1", cell_index: 1, source: "print(1)" };
     liveCells.value = [{ ...base, live: true, status: "running" }];
-    const running = listed(CellList());
+    const running = listed(CellList({ entries: notebookDisplayEntries() }));
     liveCells.value = [];
     cells.value = [{ ...base, status: "ok", stdout: "1\n" }];
-    const finished = listed(CellList());
+    const finished = listed(CellList({ entries: notebookDisplayEntries() }));
     expect(running).toHaveLength(1);
     expect(finished).toHaveLength(1);
     // A different component type under the same key makes Preact unmount the
     // card: open outputs and revisions collapse and the page jumps.
     expect(finished[0]!.key).toBe(running[0]!.key);
     expect(finished[0]!.type).toBe(running[0]!.type);
+  });
+});
+
+describe("Notebook reading gate", () => {
+  it("CellList paints the entries it is handed and subscribes to no cell store", () => {
+    const entries = [{ producing_cell_id: "shown", cell_index: 1, status: "error" }];
+    let paints = 0;
+    let painted: VNode[] = [];
+    const dispose = effect(() => {
+      paints += 1;
+      painted = listed(CellList({ entries }));
+    });
+    try {
+      // A retry arriving while the reader is scrolled up must not repaint
+      // the list: only a render the gate allows hands CellList new entries.
+      cells.value = [{ producing_cell_id: "other", cell_index: 2 }];
+      liveCells.value = [{ producing_cell_id: "retry", cell_index: 3, live: true }];
+      expect(paints).toBe(1);
+      expect(painted.map((node) => node.key)).toEqual(["shown"]);
+    } finally {
+      dispose();
+    }
   });
 });

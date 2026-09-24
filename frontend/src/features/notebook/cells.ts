@@ -15,12 +15,15 @@ import {
   _lineageFor,
   _lineageReq,
   _liveCell,
+  _nbDirty,
+  _nbReading,
   cells,
   kernels,
   lineage,
   liveCells,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
+import { running } from "../../stores/stream";
 import { provMode } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
 import { appendLiveOutput } from "../stream/cap";
@@ -496,6 +499,27 @@ export function notebookDisplayEntries(): NotebookCell[] {
   const live = asCells(liveCells.value);
   const combined = live.length ? saved.concat(live) : saved.slice();
   return projectNotebookCells(combined);
+}
+
+let painted: { frameId: string | null; entries: NotebookCell[] } | null = null;
+
+/**
+ * The cell list a Notebook render paints (scroll.ts reading gate). While a
+ * turn runs and the reader is scrolled up, the list last painted stays and
+ * the pane is marked dirty; returning to the bottom flushes it. CellList used
+ * to read the cell stores itself, which subscribed it to them and repainted
+ * past the gate: a failed cell being read was folded into the next attempt's
+ * revisions under the reader. Output chunks still stream into the cells on
+ * screen through their own signals.
+ */
+export function notebookViewEntries(): NotebookCell[] {
+  const frameId = currentId.value || null;
+  if (painted && painted.frameId === frameId && running.value && _nbReading.value) {
+    _nbDirty.value = true;
+    return painted.entries;
+  }
+  painted = { frameId, entries: notebookDisplayEntries() };
+  return painted.entries;
 }
 
 let loadArtifactsFn: ((id: string) => void) | null = null;
