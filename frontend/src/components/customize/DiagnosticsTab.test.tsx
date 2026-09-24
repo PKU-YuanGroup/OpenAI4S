@@ -269,6 +269,7 @@ describe("diagnostics response and configuration contracts", () => {
     ["/connectors/example/enabled", "PUT"], ["/connectors/example", "DELETE"],
     ["/compute/remote", "POST"], ["/compute/remote/example", "DELETE"], ["/permissions", "POST"],
     ["/doubao-search/config", "POST"], ["/datapro/config", "POST"], ["/volcengine/configure", "POST"],
+    ["/models/default", "PUT"], ["/connectors/example", "PUT"],
   ])("invalidates a successful config save %s %s", async (path, method) => {
     await api(path, { method }); expect(diagnosticsConfigRevision.value).toBe(1);
   });
