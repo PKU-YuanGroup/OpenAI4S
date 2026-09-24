@@ -445,4 +445,56 @@ describe("queue strip", () => {
     await flush();
     expect(calls.map((call) => call.path)).toEqual(["/frames/frame-a/cancel"]);
   });
+
+  it("sends one cancel however often the ✕ is pressed while it is pending", async () => {
+    const doc = mountDocument();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const posts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        posts.push(String(url));
+        await gate;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+      }),
+    );
+    vi.stubGlobal("hint", vi.fn());
+    S.currentId = "frame-c";
+    S.executionQueue = { owner: null, queue: [queued("exec-c")] };
+    renderQueueStrip();
+    const first = doc.querySelector("#queue-strip .queue-cancel")!;
+    first.click();
+    first.click();
+    // A queue update re-renders the row while the request is still out.
+    renderQueueStrip();
+    const again = doc.querySelector("#queue-strip .queue-cancel")!;
+    expect(again.disabled).toBe(true);
+    (again.onclick as () => void)();
+    release();
+    await flush();
+    await flush();
+    expect(posts).toHaveLength(1);
+    // Accepted: until the queue stops listing it, the row cannot be sent again.
+    expect(doc.querySelector("#queue-strip .queue-cancel")!.disabled).toBe(true);
+  });
+
+  it("offers the ✕ again when the cancel was refused", async () => {
+    const doc = mountDocument();
+    const calls = stubApi(() => ({ ok: false, reason: "not queued" }));
+    vi.stubGlobal("hint", vi.fn());
+    S.currentId = "frame-d";
+    S.executionQueue = { owner: null, queue: [queued("exec-d")] };
+    renderQueueStrip();
+    doc.querySelector("#queue-strip .queue-cancel")!.click();
+    await flush();
+    await flush();
+    const retry = doc.querySelector("#queue-strip .queue-cancel")!;
+    expect(retry.disabled).toBe(false);
+    retry.click();
+    await flush();
+    expect(calls).toHaveLength(2);
+  });
 });
