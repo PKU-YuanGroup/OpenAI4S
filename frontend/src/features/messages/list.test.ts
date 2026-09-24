@@ -15,6 +15,7 @@ import {
   INITIAL_RENDER_BATCH,
   cancelFramedRender,
   nextBatchEnd,
+  renderEmptySession,
   renderStored as renderFirstPage,
   scheduleFramedRender,
 } from "./list";
@@ -390,5 +391,24 @@ describe("stored rows, first page and older page alike", () => {
     await refusedCopy.onclick!();
     expect(refusedCopy.attrs["data-icon"]).toBe("copy");
     expect(doc.hint.textContent).toContain(copyFailedText());
+  });
+
+  it.each(ROW_RENDERERS)("%s: Edit fills the composer and grows it to fit", (_name, render) => {
+    const row = render({ role: "assistant", content: "Edit me." }) as unknown as RowEl;
+    const edit = row.querySelector(".msg-actions")!.children[3]!;
+    edit.onclick!();
+    expect(doc.composer.value).toBe("Edit me.");
+    expect(doc.composer.style.height).toBe("64px");
+    expect(doc.composer.focused).toBe(1);
+  });
+
+  it("a starter chip fills the composer and grows it to fit", () => {
+    renderEmptySession();
+    const chip = doc.messages.querySelector(".es-chip")!;
+    chip.onclick!();
+    expect(doc.composer.value).toBe(doc.messages.querySelector(".es-chip-p")!.textContent);
+    expect(doc.composer.value).not.toBe("");
+    expect(doc.composer.style.height).toBe("64px");
+    expect(doc.composer.focused).toBe(1);
   });
 });

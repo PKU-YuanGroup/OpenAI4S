@@ -382,14 +382,17 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   ];
   for (const s of starters) {
     const chip = el("button", "es-chip");
+    (chip as HTMLButtonElement).type = "button";
     chip.appendChild(el("div", "es-chip-t", s.title));
     chip.appendChild(el("div", "es-chip-p", s.prompt));
     chip.onclick = () => {
       const c = document.getElementById("composer") as HTMLTextAreaElement | null;
       if (!c) return;
       c.value = s.prompt;
+      // Imported: no lane assigns a window `grow`, so the filled composer
+      // never grew to fit the starter prompt.
+      grow();
       c.focus();
-      callWindow("grow");
     };
     chips.appendChild(chip);
   }
