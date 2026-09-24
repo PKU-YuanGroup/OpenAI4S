@@ -1,6 +1,7 @@
 /** Share dialog: create, copy, update or revoke a session's read-only link. app.js:7560-7697. */
 
 import { t } from "../../i18n";
+import { copyFailedText, copyText } from "../chrome/clipboard";
 import { API, ApiError, apiErrorText } from "./api";
 import { hint } from "./chrome";
 import { shareCopy } from "./copy";
@@ -111,8 +112,16 @@ export async function openShareDialog(fid: string, frame: SessionLike = {}): Pro
     const copyBtn = mkBtn(
       t("share.copy"),
       () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(String(active.url || ""));
-        hint(t("share.copied"));
+        void copyText(String(active.url || "")).then((ok) => {
+          if (ok) {
+            hint(t("share.copied"));
+            return;
+          }
+          // Nothing reached the clipboard: leave the link selected for a manual copy.
+          inp.focus();
+          inp.select();
+          hint(copyFailedText(), true);
+        });
       },
       false,
       true,
