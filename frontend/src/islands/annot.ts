@@ -378,7 +378,10 @@ function toggleAnnotList(anchor: HTMLElement): void {
         const id = annotationId(an);
         await deleteAnnotations(id ? [id] : []);
         pop.remove();
-        if (openAnnotations().length && anchor.parentElement) toggleAnnotList(anchor);
+        // Deleting repaints the badge (`bar.innerHTML = ""`), so `anchor` is
+        // gone; reopen on the chip that replaced it.
+        const chip = $("#annot-bar .annot-chip");
+        if (openAnnotations().length && chip) toggleAnnotList(chip);
       } catch (err) {
         hint(translate("annot.remove.err", apiErrorText(err)), true);
       }
