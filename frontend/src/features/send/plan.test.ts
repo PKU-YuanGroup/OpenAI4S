@@ -54,7 +54,7 @@ vi.mock("../messages/scroll", () => ({ down: () => {} }));
 
 import { t } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
-import { planPending, planReady } from "../../stores/stream";
+import { planPending, planReady, running } from "../../stores/stream";
 import { renderPlanCard } from "./plan";
 import { turnDone } from "./turn";
 
@@ -131,6 +131,31 @@ describe("terminal plan card", () => {
     const card = lastCard();
     expect(one(card, "pc-eyebrow").textContent).toBe(t("plan.eyebrow.completed"));
     expect(one(card, "pc-status").textContent).toBe(t("plan.status.completed", 2, 2));
+  });
+});
+
+describe("revising a draft plan", () => {
+  type ReviseBox = FakeNode & { value: string; onkeydown: (e: Record<string, unknown>) => void };
+
+  function enter(box: ReviseBox): void {
+    box.onkeydown({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 13, preventDefault() {} });
+  }
+
+  beforeEach(() => {
+    (fake.host as unknown as FakeNode).children = [];
+    currentId.value = "f-plan";
+    running.value = false;
+  });
+
+  it("keeps the change request when the revision is not dispatched", async () => {
+    renderPlanCard(plan(["pending"]), "draft");
+    const box = one(lastCard(), "pc-revise-input") as ReviseBox;
+    // Another turn is running: dispatchPlanTurn refuses without a request.
+    running.value = true;
+    box.value = "use a log scale";
+    enter(box);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(box.value).toBe("use a log scale");
   });
 });
 

@@ -247,7 +247,12 @@ export function renderPlanCard(plan: unknown, status?: string | null): void {
         const v = ta.value.trim();
         if (v) {
           ta.value = "";
-          void revisePlan(v);
+          void revisePlan(v).then((sent) => {
+            // Not dispatched (a turn is running, or the POST failed): the
+            // change request is only here, so it goes back unless the user
+            // has started another one.
+            if (!sent && !ta.value.trim()) ta.value = v;
+          });
         }
       }
     };
@@ -378,8 +383,9 @@ export async function discardPlan(): Promise<void> {
   hint(t("toast.planDiscarded"));
 }
 
-export async function revisePlan(changes: string): Promise<void> {
-  await dispatchPlanTurn(
+/** True when the revision turn was dispatched. */
+export async function revisePlan(changes: string): Promise<boolean> {
+  return dispatchPlanTurn(
     "/plan/revise",
     { changes, model: defaultModelName.value },
     t("toast.planRevising"),
