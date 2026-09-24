@@ -46,14 +46,12 @@ export function MemoryTab() {
   useTabRead(
     "memory",
     async (current) => {
-      const m = await api("/memory/enabled");
-      const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));
-      const cat = await api("/memory/categories?project_id=all").catch(() => ({
-        categories: [],
-      }));
-      const context = await api(
-        `/memory/context?project_id=${encodeURIComponent(active)}`,
-      ).catch(() => null);
+      const [m, mem, cat, context] = await Promise.all([
+        api("/memory/enabled"),
+        api("/memory?project_id=all").catch(() => ({ memories: [] })),
+        api("/memory/categories?project_id=all").catch(() => ({ categories: [] })),
+        api(`/memory/context?project_id=${encodeURIComponent(active)}`).catch(() => null),
+      ]);
       if (!current()) return;
       setEnabled(!!m.enabled);
       setMemories(asList(mem.memories) as Record<string, unknown>[]);

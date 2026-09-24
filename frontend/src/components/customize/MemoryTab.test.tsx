@@ -106,6 +106,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("MemoryTab first read", () => {
+  it("asks for the switch, the memories, the categories and the context at once", async () => {
+    mocks.fetch.mockImplementation(() => new Promise<Response>(() => {}));
+    render();
+    await settle();
+    const asked = mocks.fetch.mock.calls.map(([url]) => String(url).replace(/\?.*$/, ""));
+    expect(asked.sort()).toEqual([
+      "/api/v1/memory",
+      "/api/v1/memory/categories",
+      "/api/v1/memory/context",
+      "/api/v1/memory/enabled",
+    ]);
+  });
+});
+
 describe("MemoryTab add", () => {
   it("saves a memory once however often Save is pressed while the write is in flight", async () => {
     let finish!: (value: Response) => void;

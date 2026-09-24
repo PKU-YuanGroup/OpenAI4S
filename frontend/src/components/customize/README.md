@@ -13,11 +13,12 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector list; DataPro card is isolated in `vendors/`. |
 | [`Customize.tsx`](Customize.tsx) | `#cust` shell, tablist, Esc / backdrop close. |
 | [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. The modal does not re-render for a settling load or a nested editor, and the Skills and Memory tabs re-render for a change of project, not for every session-list update. |
-| [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, API-key shortcut. |
+| [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, API-key shortcut. A theme or layout pick updates its segment in place. |
+| [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | Picking a theme or layout moves its own segment without remounting or re-reading the tab. |
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. Mounted from General. |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click. |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory enable / add / edit / delete with explicit scope. |
-| [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | Save adds a memory once however often it is pressed while the write is in flight. |
+| [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | The first read asks for its four lists at once; Save adds a memory once however often it is pressed while the write is in flight. |
 | [`ModelsTab.tsx`](ModelsTab.tsx) | Profiles, local scan, probe, capability-receipt badges. With no active profile it shows the live `GET /config/llm` model (environment or saved settings) as the active row. |
 | [`ModelsTab.test.tsx`](ModelsTab.test.tsx) | An `.env`-configured install with no profiles shows its active model instead of "No models configured yet"; no extra row when a profile is active; an unreadable config does not hide profiles; a profile on the environment key is labelled so, not "No key"; a local model is added once however often Add is pressed while the write is in flight; adding, deleting or adding a local profile re-reads the composer's `#model-select` list. |
 | [`NestedEditor.tsx`](NestedEditor.tsx) | Skill / specialist / connector / job-output overlay. An edit form cannot save until its first read has succeeded. |
