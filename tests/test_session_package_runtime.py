@@ -396,6 +396,7 @@ def test_runtime_members_are_listed_verifiable_and_deterministic(tmp_path):
         } == {
             "activity": "ok",
             "compactions": "ok",
+            "compute_jobs": "ok",
             "diagnosis": "ok",
             "environment": "ok",
             "frames": "ok",
@@ -535,6 +536,56 @@ def test_the_diagnosis_page_names_what_went_wrong_and_reproduces_no_content(
         # Content-free: the canary sits in a message, tool arguments, a tool
         # result, a Cell traceback and a permission payload.
         assert CANARY not in page and CANARY not in diagnosis
+    finally:
+        store.close()
+
+
+def test_remote_compute_jobs_travel_scoped_to_the_session(tmp_path):
+    store, service = _service(tmp_path)
+    try:
+        session = _session(store, tmp_path)
+        workspace = tmp_path / "ws" / session["root"] / session["root"]
+        store.create_compute_job(
+            job_id="job-mine",
+            provider="ssh:gpu-lab-private",
+            owner_key=str(workspace),
+        )
+        store.update_compute_job(
+            "job-mine", status="failed", exit_code=137, termination_reason="oom"
+        )
+        store.append_compute_job_event("job-mine", "submitted", {"cmd": CANARY})
+        store.create_compute_job(
+            job_id="job-other-session",
+            provider="ssh:elsewhere",
+            owner_key=str(tmp_path / "ws" / "someone-else"),
+        )
+        files = _unpack(service.export(session["root"])["data"])
+        document = json.loads(files["runtime/compute_jobs.json"])
+        (job,) = document["jobs"]
+        assert job["job_id"] == "job-mine" and job["status"] == "failed"
+        assert job["provider_kind"] == "ssh" and len(job["provider_fingerprint"]) == 16
+        # Event kinds and times only: payloads can carry a command line.
+        assert [event["kind"] for event in job["events"]][-1] == "submitted"
+        assert all(set(event) == {"seq", "kind", "at"} for event in job["events"])
+        text = files["runtime/compute_jobs.json"].decode()
+        for leaked in ("gpu-lab-private", CANARY, "workdir", "receipt"):
+            assert leaked not in text
+        assert "remote compute jobs did not deliver: ssh:failed(oom)×1" in (
+            files["DIAGNOSTICS.md"].decode()
+        )
+    finally:
+        store.close()
+
+
+def test_bookkeeping_groups_are_not_read_as_turns(tmp_path):
+    store, service, session, exported = _export(tmp_path)
+    try:
+        imported = service.import_bytes(exported["data"])
+        files = _unpack(service.export(imported["root_frame_id"])["data"])
+        diagnosis = json.loads(files["runtime/diagnosis.json"])
+        # The import marker is a ledger group of its own turn; it is not a stop.
+        assert diagnosis["counts"]["turns"] == 2
+        assert "unterminated" not in [item["kind"] for item in diagnosis["findings"]]
     finally:
         store.close()
 
@@ -714,6 +765,33 @@ def test_failure_evidence_is_content_free_and_total():
             raise RuntimeError("no")
 
     assert isinstance(package_runtime.failure_evidence(Hostile()), dict)
+
+
+def test_bundle_tag_matches_the_support_bundle():
+    from openai4s.observability import fingerprint
+
+    assert package_diagnosis.bundle_tag("ffee00112233aabb") == (
+        f"<redacted:{fingerprint('ffee00112233aabb')}>"
+    )
+
+
+def test_package_strings_cannot_drive_the_terminal(tmp_path):
+    store, service, _session_, exported = _export(tmp_path)
+    try:
+        files = _unpack(exported["data"])
+        environment = json.loads(files["runtime/environment.json"])
+        environment["openai4s"]["version"] = "0.3.0\x1b]52;c;cHduZWQ=\x07"
+        environment["posture"]["egress"] = "\x1b[2J\u202etxt"
+        files["runtime/environment.json"] = json.dumps(environment).encode()
+        target = tmp_path / "hostile.openai4s-session.zip"
+        target.write_bytes(_repack(files))
+        page = package_diagnosis.render_markdown(
+            package_diagnosis.diagnose_package(target)
+        )
+        assert "\x1b" not in page and "\x07" not in page and "\u202e" not in page
+        assert "OpenAI4S 0.3.0]52;c;cHduZWQ=" in page
+    finally:
+        store.close()
 
 
 # -------------------------------------------------------------- telemetry

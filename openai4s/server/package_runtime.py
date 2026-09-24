@@ -46,7 +46,7 @@ import sys
 import sysconfig
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 RUNTIME_SCHEMA_VERSION = 1
@@ -57,6 +57,7 @@ ACTIVITY_FILE = "runtime/activity.json"
 HOST_CALLS_FILE = "runtime/host_calls.json"
 PERMISSIONS_FILE = "runtime/permissions.json"
 COMPACTIONS_FILE = "runtime/compactions.json"
+COMPUTE_JOBS_FILE = "runtime/compute_jobs.json"
 COLLECTION_FILE = "runtime/collection.json"
 DIAGNOSIS_FILE = "runtime/diagnosis.json"
 DIAGNOSTICS_FILE = "DIAGNOSTICS.md"
@@ -69,6 +70,8 @@ MAX_ACTIVITY_STEPS = 25_000
 MAX_HOST_CALLS = 20_000
 MAX_PERMISSION_REQUESTS = 5_000
 MAX_COMPACTIONS = 1_000
+MAX_COMPUTE_JOBS = 500
+MAX_COMPUTE_EVENTS = 200
 
 #: Where a failure's code locations are kept from. Frames outside this package
 #: are reduced to a base name so no absolute path is recorded.
@@ -569,9 +572,15 @@ def collect_runtime_documents(
     scrub: Callable[[Any], Any],
     safe_group: Callable[[Mapping[str, Any]], dict[str, Any]],
     cell_frames: Mapping[str, str] | None = None,
+    workspaces: Sequence[str] = (),
     cfg: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return ``{package path: document}`` plus the collection report."""
+    """Return ``{package path: document}`` plus the collection report.
+
+    ``workspaces`` are the session's workspace paths: a remote compute job is
+    owned by the workspace that submitted it, which is the only link from a
+    job back to a session.
+    """
 
     from openai4s.server.errors import safe_type_name
 
@@ -729,12 +738,64 @@ def collect_runtime_documents(
             "truncated": len(kept) < len(archives),
         }
 
+    def compute_jobs() -> tuple[Any, dict[str, Any]]:
+        jobs: dict[str, Mapping[str, Any]] = {}
+        for key in sorted({str(value) for value in workspaces if value}):
+            for job in store.compute_jobs_for_owner(key, MAX_COMPUTE_JOBS):
+                jobs[str(job.get("job_id"))] = job
+        rows = []
+        for job_id, job in sorted(
+            jobs.items(),
+            key=lambda item: (int(item[1].get("created_at") or 0), item[0]),
+        )[-MAX_COMPUTE_JOBS:]:
+            # `ssh:<alias>` / `byoc:<id>`: the kind is ours, the name is the
+            # user's host alias, so only its fingerprint travels. Remote paths,
+            # process ids and the provider's receipt stay behind.
+            kind, _, name = str(job.get("provider") or "").partition(":")
+            events = store.compute_job_events(job_id)
+            rows.append(
+                {
+                    "job_id": job_id,
+                    "provider_kind": kind or "unknown",
+                    "provider_fingerprint": (
+                        hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+                        if name
+                        else None
+                    ),
+                    **{
+                        key: job.get(key)
+                        for key in (
+                            "status",
+                            "exit_code",
+                            "reason",
+                            "termination_reason",
+                            "created_at",
+                            "submitted_at",
+                            "terminal_at",
+                            "updated_at",
+                        )
+                    },
+                    "input_versions": len(job.get("input_versions") or []),
+                    "events": [
+                        {
+                            "seq": event.get("seq"),
+                            "kind": event.get("kind"),
+                            "at": event.get("at"),
+                        }
+                        for event in events[-MAX_COMPUTE_EVENTS:]
+                    ],
+                    "events_total": len(events),
+                }
+            )
+        return {"jobs": rows}, {"records": len(rows), "total": len(jobs)}
+
     run("environment", ENVIRONMENT_FILE, environment)
     run("frames", FRAMES_FILE, frames)
     run("activity", ACTIVITY_FILE, activity)
     run("host_calls", HOST_CALLS_FILE, host_calls)
     run("permissions", PERMISSIONS_FILE, permissions)
     run("compactions", COMPACTIONS_FILE, compactions)
+    run("compute_jobs", COMPUTE_JOBS_FILE, compute_jobs)
     return documents, {
         "schema_version": RUNTIME_SCHEMA_VERSION,
         "sections": dict(sorted(sections.items())),
@@ -816,6 +877,7 @@ __all__ = [
     "ACTIVITY_FILE",
     "COLLECTION_FILE",
     "COMPACTIONS_FILE",
+    "COMPUTE_JOBS_FILE",
     "DIAGNOSIS_FILE",
     "DIAGNOSTICS_FILE",
     "ENVIRONMENT_FILE",

@@ -1170,6 +1170,7 @@ class SessionPackageService:
                 files=files,
                 runtime_facts=runtime_facts,
                 cell_frames=cell_frames,
+                branches=(root_frame_id, active_branch),
             )
         )
         for name, payload in files.items():
@@ -1277,6 +1278,7 @@ class SessionPackageService:
         files: Mapping[str, bytes],
         runtime_facts: Mapping[str, Any] | None,
         cell_frames: Mapping[str, str],
+        branches: tuple[str, ...] = (),
     ) -> dict[str, bytes]:
         """``runtime/*.json``, ``runtime/diagnosis.json`` and ``DIAGNOSTICS.md``.
 
@@ -1287,6 +1289,13 @@ class SessionPackageService:
         """
 
         scrub = self._runtime_scrubber()
+        workspaces: set[str] = set()
+        for branch_id in dict.fromkeys(branches):
+            try:
+                path = Path(self._workspace(root_frame_id, branch_id)).expanduser()
+                workspaces.update({str(path), str(path.resolve())})
+            except Exception:  # noqa: BLE001 - one path fewer, not a failed export
+                continue
         documents, collection = package_runtime.collect_runtime_documents(
             self.store,
             root_frame_id,
@@ -1294,6 +1303,7 @@ class SessionPackageService:
             scrub=scrub,
             safe_group=self._safe_group,
             cell_frames=cell_frames,
+            workspaces=sorted(workspaces),
         )
         sections = collection["sections"]
         output: dict[str, bytes] = {}

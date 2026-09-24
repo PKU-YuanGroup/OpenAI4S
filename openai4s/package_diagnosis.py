@@ -48,6 +48,7 @@ DOCUMENTS = (
     "runtime/host_calls.json",
     "runtime/permissions.json",
     "runtime/compactions.json",
+    "runtime/compute_jobs.json",
     "runtime/collection.json",
 )
 
@@ -55,6 +56,12 @@ DOCUMENTS = (
 SUCCESSFUL_REASONS = frozenset({"submitted", "plan"})
 #: Model-reply group kinds -- one per provider round-trip that was recorded.
 REPLY_KINDS = frozenset({"code", "native_tools", "finalize", "no_action"})
+#: Kinds that make a ledger turn a conversation turn. Anything else on its own
+#: -- the `session_import` / `session_import_trust` markers -- is bookkeeping,
+#: and reading it as a turn would report a stop that never happened.
+TURN_KINDS = REPLY_KINDS | {"user", "terminal"}
+#: Remote compute job states that did not deliver.
+UNSUCCESSFUL_JOB_STATES = frozenset({"failed", "timed_out", "cancelled", "unknown"})
 #: Kernel generation states that end a worker abnormally.
 ABNORMAL_KERNEL_STATES = frozenset({"crashed", "failed", "abandoned", "partial"})
 #: Step statuses that describe a failed card.
@@ -103,6 +110,37 @@ def _token(value: Any) -> str:
     """A recorded code or name, kept only when it is shaped like one."""
     text = _str(value).strip()
     return text if _TOKEN.fullmatch(text) else ""
+
+
+def bundle_tag(request_id: str) -> str:
+    """How ``openai4s diagnostics`` writes this request id: fingerprinted.
+
+    The support bundle never carries a raw id (``observability.fingerprint``,
+    SHA-256 truncated to 12); printing the same tag here is what lets a
+    maintainer holding both artifacts match a failed turn to its log lines.
+    Kept in step by ``test_bundle_tag_matches_the_support_bundle``.
+    """
+
+    import hashlib
+
+    digest = hashlib.sha256(str(request_id).encode("utf-8", "replace")).hexdigest()
+    return f"<redacted:{digest[:12]}>"
+
+
+def _clean(value: Any, limit: int = 120) -> str:
+    """A package-supplied string, safe to print on a terminal.
+
+    ``inspect-package`` exists to read packages nobody vouched for, and the
+    environment block is free text from one: an ESC or OSC sequence in a
+    "version" would reach the maintainer's terminal as a command, not as text.
+    Control and format characters are dropped and the length is bounded.
+    """
+
+    import unicodedata
+
+    text = value if isinstance(value, str) else str(value)
+    kept = "".join(char for char in text if unicodedata.category(char)[0] not in {"C"})
+    return kept[:limit]
 
 
 def _exception_type(text: Any) -> str:
@@ -206,6 +244,8 @@ def _turn_rows(
 
     rows: list[dict[str, Any]] = []
     for (branch_id, turn_id), members in by_turn.items():
+        if not any(_str(group.get("kind")) in TURN_KINDS for group in members):
+            continue
         members.sort(
             key=lambda item: (
                 _int(item.get("created_at")) or 0,
@@ -588,6 +628,34 @@ def _permission_summary(documents: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _compute_summary(documents: Mapping[str, Any]) -> dict[str, Any] | None:
+    document = documents.get("runtime/compute_jobs.json")
+    if not isinstance(document, dict):
+        return None
+    jobs = [job for job in _list(document.get("jobs")) if isinstance(job, dict)]
+    if not jobs:
+        return None
+    states: Counter[str] = Counter(
+        _token(job.get("status")) or "unknown" for job in jobs
+    )
+    unsuccessful: Counter[str] = Counter(
+        f"{_token(job.get('provider_kind')) or 'provider'}:"
+        f"{_token(job.get('status')) or 'unknown'}"
+        + (
+            f"({_token(job.get('termination_reason'))})"
+            if _token(job.get("termination_reason"))
+            else ""
+        )
+        for job in jobs
+        if (_token(job.get("status")) or "unknown") in UNSUCCESSFUL_JOB_STATES
+    )
+    return {
+        "jobs": len(jobs),
+        "states": dict(sorted(states.items())),
+        "unsuccessful": dict(sorted(unsuccessful.items())),
+    }
+
+
 def _compaction_summary(documents: Mapping[str, Any]) -> dict[str, Any]:
     document = _dict(documents.get("runtime/compactions.json"))
     archives = [
@@ -768,7 +836,8 @@ def _findings(diagnosis: Mapping[str, Any]) -> list[dict[str, Any]]:
         failure = _dict(row.get("failure"))
         detail = _dict(row.get("error_detail"))
         where = (
-            f" (request_id {failure['request_id']})"
+            f" (request_id {failure['request_id']}; in a diagnostics bundle "
+            f"{bundle_tag(failure['request_id'])})"
             if failure.get("request_id")
             else ""
         )
@@ -972,6 +1041,16 @@ def _findings(diagnosis: Mapping[str, Any]) -> list[dict[str, Any]]:
                 else ""
             ),
         )
+    compute = _dict(diagnosis.get("compute_jobs"))
+    if compute.get("unsuccessful"):
+        add(
+            "warning",
+            "compute_jobs",
+            "remote compute jobs did not deliver: "
+            + ", ".join(
+                f"{key}×{count}" for key, count in compute["unsuccessful"].items()
+            ),
+        )
     child_outcomes = {
         key: count
         for key, count in _dict(children.get("child_turn_outcomes")).items()
@@ -1100,6 +1179,7 @@ def diagnose(documents: Mapping[str, Any]) -> dict[str, Any]:
         ("children", _children_summary(documents)),
         ("permissions", _permission_summary(documents)),
         ("model_calls", _model_call_summary(documents)),
+        ("compute_jobs", _compute_summary(documents)),
     ):
         if section is not None:
             diagnosis[key] = section
@@ -1123,7 +1203,10 @@ def _when(ms: Any) -> str:
 
 def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
     if environment.get("derived_from"):
-        platforms = ", ".join(_list(environment.get("platforms"))) or "not recorded"
+        platforms = (
+            ", ".join(_clean(item) for item in _list(environment.get("platforms")))
+            or "not recorded"
+        )
         return [
             "- This package predates runtime evidence; the only host facts are the "
             f"artifact environment platforms: {platforms}."
@@ -1133,11 +1216,11 @@ def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
     python = _dict(environment.get("python"))
     host = _dict(environment.get("platform"))
     parts = [
-        f"OpenAI4S {openai4s.get('version') or '?'}"
-        + (f" ({openai4s['channel']})" if openai4s.get("channel") else ""),
-        f"Python {python.get('version') or '?'}",
+        f"OpenAI4S {_clean(openai4s.get('version') or '?')}"
+        + (f" ({_clean(openai4s['channel'])})" if openai4s.get("channel") else ""),
+        f"Python {_clean(python.get('version') or '?')}",
         " ".join(
-            str(item)
+            _clean(item)
             for item in (host.get("system"), host.get("release"), host.get("machine"))
             if item
         )
@@ -1153,29 +1236,29 @@ def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
         lines.append("- Model: not recorded by this export")
     elif llm.get("status") == "unavailable":
         lines.append(
-            f"- Model: not resolvable at export ({llm.get('reason') or 'unknown'})"
+            f"- Model: not resolvable at export ({_clean(llm.get('reason') or 'unknown')})"
         )
     elif _dict(llm.get("resolution")).get("status") == "unavailable":
         lines.append(
-            f"- Model: `{llm.get('model') or '?'}` via provider "
-            f"`{llm.get('provider') or '?'}`, which this process could not resolve "
-            f"({_dict(llm.get('resolution')).get('reason') or 'unknown'}); read "
-            f"timeout {llm.get('timeout_s', '?')} s, total "
-            f"{llm.get('total_timeout_s', '?')} s"
+            f"- Model: `{_clean(llm.get('model') or '?')}` via provider "
+            f"`{_clean(llm.get('provider') or '?')}`, which this process could not resolve "
+            f"({_clean(_dict(llm.get('resolution')).get('reason') or 'unknown')}); read "
+            f"timeout {_clean(llm.get('timeout_s', '?'))} s, total "
+            f"{_clean(llm.get('total_timeout_s', '?'))} s"
         )
     else:
         endpoint = _dict(llm.get("endpoint"))
-        endpoint_text = endpoint.get("class") or "?"
+        endpoint_text = _clean(endpoint.get("class") or "?")
         if endpoint.get("provider_default"):
             endpoint_text = "the provider's default endpoint"
         elif endpoint.get("fingerprint"):
-            endpoint_text += f" (fingerprint {endpoint['fingerprint']})"
+            endpoint_text += f" (fingerprint {_clean(endpoint['fingerprint'], 64)})"
         lines.append(
-            f"- Model: `{llm.get('model') or '?'}` via provider `{llm.get('provider') or '?'}` "
-            f"(wire {llm.get('wire') or '?'}), streaming "
+            f"- Model: `{_clean(llm.get('model') or '?')}` via provider `{_clean(llm.get('provider') or '?')}` "
+            f"(wire {_clean(llm.get('wire') or '?')}), streaming "
             f"{'on' if llm.get('stream') else 'off'}, read timeout "
-            f"{llm.get('timeout_s', '?')} s, total {llm.get('total_timeout_s', '?')} s, "
-            f"max output {llm.get('max_tokens', '?')} tokens; endpoint: {endpoint_text}"
+            f"{_clean(llm.get('timeout_s', '?'))} s, total {_clean(llm.get('total_timeout_s', '?'))} s, "
+            f"max output {_clean(llm.get('max_tokens', '?'))} tokens; endpoint: {endpoint_text}"
         )
         capabilities = _dict(llm.get("capabilities"))
         if capabilities:
@@ -1191,14 +1274,14 @@ def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
             ]
             window = capabilities.get("context_window_tokens")
             if window:
-                flags.append(f"context {window} tokens")
+                flags.append(f"context {_clean(window)} tokens")
             lines.append("- Effective model capabilities: " + ", ".join(flags))
         receipt = _dict(llm.get("capability_receipt"))
         if receipt:
             lines.append(
                 "- Capability probe receipt: native tool call "
-                f"{receipt.get('native_tool_call', '?')}, streaming "
-                f"{receipt.get('streaming', '?')}, observed {_when(receipt.get('observed_at'))}"
+                f"{_clean(receipt.get('native_tool_call', '?'))}, streaming "
+                f"{_clean(receipt.get('streaming', '?'))}, observed {_when(receipt.get('observed_at'))}"
             )
     # `name: value`, never `NAME=value`: this page passes the same secret
     # scrubber as the package, and `SECRET_STORE=...` is exactly the shape of
@@ -1209,7 +1292,10 @@ def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
         lines.append(
             "- Posture: "
             + (
-                ", ".join(f"{key}: {value}" for key, value in sorted(changed.items()))
+                ", ".join(
+                    f"{_clean(key)}: {_clean(value)}"
+                    for key, value in sorted(changed.items())
+                )
                 if changed
                 else "every knob at its default"
             )
@@ -1219,7 +1305,7 @@ def _environment_lines(environment: Mapping[str, Any]) -> list[str]:
         lines.append(
             "- Agent limits: "
             + ", ".join(
-                f"{key}: {value}"
+                f"{_clean(key)}: {_clean(value)}"
                 for key, value in sorted(agent.items())
                 if value is not None
             )
@@ -1305,6 +1391,7 @@ def render_markdown(diagnosis: Mapping[str, Any]) -> str:
         ("children", "Delegated children"),
         ("permissions", "Permission requests"),
         ("model_calls", "Model calls"),
+        ("compute_jobs", "Remote compute jobs"),
         ("compactions", "Compactions"),
     ):
         section = diagnosis.get(key)
@@ -1330,8 +1417,8 @@ def render_markdown(diagnosis: Mapping[str, Any]) -> str:
         for name, status in sorted(missing.items()):
             status = _dict(status)
             lines.append(
-                f"- `{name}`: {status.get('status')}"
-                + (f" ({status['reason']})" if status.get("reason") else "")
+                f"- `{_clean(name, 60)}`: {_clean(status.get('status'), 40)}"
+                + (f" ({_clean(status['reason'], 80)})" if status.get("reason") else "")
             )
     lines += [
         "",
@@ -1368,6 +1455,7 @@ __all__ = [
     "DIAGNOSIS_SCHEMA_VERSION",
     "DOCUMENTS",
     "PackageReadError",
+    "bundle_tag",
     "diagnose",
     "diagnose_package",
     "iter_problem_lines",

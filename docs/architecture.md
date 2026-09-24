@@ -460,6 +460,7 @@ schema-v1 importer hash-checks and secret-scans them, then ignores them.
 | `runtime/host_calls.json` | The newest 20,000 `host_call_log` rows plus per-method call and failure totals over all of them. |
 | `runtime/permissions.json` | Permission requests without `payload`, `pattern`, `message` or `resolution_context`. |
 | `runtime/compactions.json` | Compaction archive metadata and summaries, never the compacted slices. |
+| `runtime/compute_jobs.json` | Remote compute jobs the session's workspace submitted (a job's only link to a session): status, exit code, reasons, event kinds and times. The host alias is fingerprinted; remote paths, process ids, receipts and event payloads stay behind. |
 | `runtime/collection.json` | Per-section status. A section that cannot be read is recorded `unavailable` with its error category; one that still holds secret material after redaction is `omitted`. Neither fails the export. |
 | `runtime/diagnosis.json`, `DIAGNOSTICS.md` | The content-free diagnosis below. |
 
@@ -484,7 +485,12 @@ nothing for 600 s"), no-progress trips with repeated tools, parse errors and
 empty argument strings, tool results that came back as errors, Cell
 exception types, abnormal kernel generations, degraded sandboxes, failing
 host methods, cards left running, children's outcomes, withheld
-permissions, retries and output-limit truncation. It reproduces no message,
+permissions, remote jobs that did not deliver, retries and output-limit
+truncation. Each `request_id` is printed beside the tag an
+`openai4s diagnostics` bundle uses for it (`<redacted:…>`, the same
+fingerprint), so a maintainer holding both can match a failed turn to its
+log lines. Strings a package supplies are stripped of control characters
+before they reach a terminal. It reproduces no message,
 argument, Cell source, output, path or URL; it does name the model, the
 provider and tool names. `openai4s inspect-package` runs it after the
 integrity check and, because it derives turns from the ledger and messages,
