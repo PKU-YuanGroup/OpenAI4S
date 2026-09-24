@@ -312,10 +312,9 @@ export function ModelsTab() {
                   });
                   hint(t("toast.models.added", nm));
                 }
-                if (editing && editing.id === data.active_id) {
-                  await refreshKeyBanner();
-                  await loadModels();
-                }
+                if (editing && editing.id === data.active_id) await refreshKeyBanner();
+                // `#model-select` lists every saved profile by id and name.
+                await loadModels();
                 custTab("models");
               } catch (e) {
                 setSaving(false);
@@ -445,6 +444,7 @@ export function LocalEndpointRow({
               }),
             });
             hint(t("cust.models.local.added", next));
+            await loadModels();
             custTab("models");
           } catch (error) {
             hint(t("artifact.save.err", publicText((error as Error).message, 240)), true);
@@ -459,7 +459,7 @@ export function LocalEndpointRow({
   );
 }
 
-function ProfileRow({
+export function ProfileRow({
   p,
   activeId,
   protocols,
@@ -573,10 +573,9 @@ function ProfileRow({
           try {
             await api(`/model-profiles/${p.id}`, { method: "DELETE" });
             hint(t("toast.deleted"));
-            if (isActive) {
-              await refreshKeyBanner();
-              await loadModels();
-            }
+            if (isActive) await refreshKeyBanner();
+            // A deleted profile left in `#model-select` could still be chosen.
+            await loadModels();
             custTab("models");
           } catch (e) {
             hint(t("toast.deleteFailed", apiErrorText(e)), true);

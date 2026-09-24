@@ -3,6 +3,7 @@ import { t } from "../../i18n";
 import { publicText } from "../../features/scrub/scrub";
 import { asString } from "../../features/customize/host";
 import {
+  loadModels,
   loopbackModelBase,
   modelProtocolOptions,
   readCapabilityReceipt,
@@ -406,6 +407,8 @@ export function WizardHost() {
       const created = await saveModelProfile(body);
       const id = asString(created.id);
       if (id) await activateModelProfile(id);
+      // The composer's `#model-select` lists saved profiles and marks the active one.
+      void loadModels();
       if (!alive.current) return;
       const chosen = { ...path, profileId: id };
       choosePath(chosen);
@@ -486,6 +489,7 @@ export function WizardHost() {
     setBusy(true);
     try {
       const refreshed = await activateExistingModelProfile(id);
+      void loadModels();
       if (!alive.current) return;
       // The saved profile may have been edited since the wizard listed it.
       // Refresh the identity too, so the old model's receipt cannot survive.
