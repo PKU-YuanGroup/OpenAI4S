@@ -172,25 +172,27 @@ export function mergeDelegationChildEvent(m: any): void {
           stats: { total: 0, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 },
           children: [],
         };
+  // A new state object (and children array): writing back the mutated one
+  // would not notify anything subscribed to delegationState.
   const at = state.children.findIndex((item) => item.child_id === clean.child_id);
-  if (at >= 0)
-    state.children[at] = Object.assign({}, state.children[at], clean);
-  else state.children.push(clean);
+  const children =
+    at >= 0
+      ? state.children.map((item, index) => (index === at ? Object.assign({}, item, clean) : item))
+      : state.children.concat(clean);
   const stats: DelegationState["stats"] = {
-    total: state.children.length,
+    total: children.length,
     pending: 0,
     running: 0,
     done: 0,
     failed: 0,
     stopped: 0,
   };
-  state.children.forEach((item) => {
+  children.forEach((item) => {
     const key = String(item.status || "");
     const bag = stats as Record<string, number>;
     if (Object.prototype.hasOwnProperty.call(bag, key)) bag[key] = (bag[key] || 0) + 1;
   });
-  state.stats = stats;
-  S.delegationState = state;
+  S.delegationState = { ...state, children, stats };
 }
 
 export function actionTimelineBranchScope(

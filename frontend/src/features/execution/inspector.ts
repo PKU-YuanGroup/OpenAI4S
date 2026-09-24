@@ -50,27 +50,36 @@ export function variablePreviewText(value: unknown): string {
   return "";
 }
 
+/** Publish a new inspector state (a same-reference write notifies nobody). */
+function updateInspector(patch: Partial<InspectorState>): void {
+  variableInspector.value = { ...inspectorState(), ...patch };
+}
+
 export async function refreshVariableInspector(): Promise<void> {
   const inspector = inspectorState();
   const frameId = currentId.value;
   if (!inspector || !frameId || inspector.loading) return;
   const language = inspector.language === "r" ? "r" : "python";
-  const request = (inspector.request = (inspector.request || 0) + 1);
-  inspector.loading = language;
-  inspector.error = "";
+  const request = (inspector.request || 0) + 1;
+  updateInspector({ request, loading: language, error: "" });
   paint();
   try {
     const payload = await api(
       `/frames/${encodeURIComponent(frameId)}/kernel/variables?language=${language}`,
     );
     if (frameId !== currentId.value || request !== inspectorState().request) return;
-    inspector.results[language] = sanitizeVariableInspection(payload, frameId, language);
+    updateInspector({
+      results: {
+        ...inspectorState().results,
+        [language]: sanitizeVariableInspection(payload, frameId, language),
+      },
+    });
   } catch (error) {
     if (frameId === currentId.value && request === inspectorState().request)
-      inspector.error = publicText(apiErrorText(error), 240);
+      updateInspector({ error: publicText(apiErrorText(error), 240) });
   } finally {
     if (frameId === currentId.value && request === inspectorState().request) {
-      inspector.loading = null;
+      updateInspector({ loading: null });
       paint();
     }
   }
@@ -124,8 +133,7 @@ export function renderVariableInspector(): HTMLElement {
   select.value = language;
   select.disabled = !!inspector.loading;
   select.onchange = () => {
-    inspector.language = select.value === "r" ? "r" : "python";
-    inspector.error = "";
+    updateInspector({ language: select.value === "r" ? "r" : "python", error: "" });
     paint();
   };
   label.appendChild(select);

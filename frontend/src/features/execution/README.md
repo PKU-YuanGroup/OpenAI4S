@@ -23,7 +23,8 @@ Does not edit `stores/` or `compat/window-exports.ts` above the lane-additions m
 | [`boot.ts`](boot.ts) | Window names + notebook/viewer composition. |
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`lineage.test.ts`](lineage.test.ts) | Provenance chain data transforms; the Environment panel rendered for a legacy 0.2.x snapshot, a really empty Python list and an R kernel. |
-| [`conflict.test.ts`](conflict.test.ts) | 409 presentation; `forkOnce` is single-shot. |
+| [`conflict.test.ts`](conflict.test.ts) | 409 presentation; `forkOnce` is single-shot; the branch-error banner is published as a new object. |
+| [`inspector.test.ts`](inspector.test.ts) | Variable inspector refresh publishes loading and results as new state objects. |
 
 - [`copy.ts`](copy.ts): Bilingual provenance read-state and evidence copy.
 - [`validation.ts`](validation.ts): Strict network lineage/environment validation, with historical nullable fields preserved.

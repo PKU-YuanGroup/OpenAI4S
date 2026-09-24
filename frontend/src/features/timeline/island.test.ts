@@ -8,9 +8,11 @@
  * browser blurs a detached node), and listener bookkeeping so leaks show up.
  */
 
+import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
 import { pendingReplIdentity } from "../../stores/notebook";
+import { delegationState, executionQueue } from "../../stores/timeline";
 import {
   kernelEpoch,
   scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh,
@@ -18,6 +20,7 @@ import {
 import { onEvent } from "../ws/registry";
 import {
   loadWorkbenchState,
+  mergeDelegationChildEvent,
   rememberExecutionState,
   renderActionTimeline,
   renderBranchPanel,
@@ -698,5 +701,54 @@ describe("shared notebook helpers", () => {
     expect(pendingReplIdentity.value).toBeNull();
     // The notebook's KernelChips / StatusStrip only re-read `_kc` on an epoch bump.
     expect(kernelEpoch.value).toBeGreaterThan(epoch);
+  });
+});
+
+describe("signal writes publish new objects", () => {
+  /** Every value a subscriber was notified with. */
+  function watch<T>(read: () => T): { seen: T[]; stop: () => void } {
+    const seen: T[] = [];
+    const stop = effect(() => {
+      seen.push(read());
+    });
+    return { seen, stop };
+  }
+
+  it("an execution_owner event notifies executionQueue subscribers", () => {
+    vi.useFakeTimers();
+    mountDocument();
+    stubApi(() => undefined);
+    installTimeline({});
+    S.currentId = "frame-o";
+    S.executionQueue = { owner: null, queue: [], queued_count: 0 };
+    const { seen, stop } = watch(() => executionQueue.value as { owner: unknown } | null);
+    onEvent({
+      type: "execution_owner",
+      frame_id: "frame-o",
+      execution_id: "exec-o",
+      owner: { kind: "agent", id: "turn-o" },
+    });
+    stop();
+    expect(seen).toHaveLength(2);
+    expect((seen[1] as { owner: { owner: { kind: string } } }).owner.owner.kind).toBe("agent");
+  });
+
+  it("merging a delegation child event notifies delegationState subscribers", () => {
+    const initial = {
+      root_frame_id: "frame-d",
+      initialized: true,
+      budget: null,
+      stats: { total: 1, pending: 0, running: 1, done: 0, failed: 0, stopped: 0 },
+      children: [{ child_id: "c-1", status: "running" }],
+    };
+    S.delegationState = initial;
+    const { seen, stop } = watch(() => delegationState.value);
+    mergeDelegationChildEvent({ child: { child_id: "c-1", status: "done" } });
+    mergeDelegationChildEvent({ child: { child_id: "c-2", status: "running" } });
+    stop();
+    expect(seen).toHaveLength(3);
+    expect(S.delegationState.stats).toMatchObject({ total: 2, done: 1, running: 1 });
+    // The object subscribers already hold is left as it was.
+    expect(initial.children).toEqual([{ child_id: "c-1", status: "running" }]);
   });
 });

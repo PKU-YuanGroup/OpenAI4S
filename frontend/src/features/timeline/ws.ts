@@ -69,10 +69,11 @@ function handleExecutionState(m: WsMessage): void {
   if (!mine(fid)) return;
   if (m.type === "execution_owner") {
     const current = S.executionQueue || sanitizeExecutionQueue({});
-    current.owner = m.owner
-      ? sanitizeExecutionQueue({ owner: { ...m, owner: m.owner } }).owner
-      : null;
-    S.executionQueue = current;
+    // A new object: the notebook's owner chips subscribe to executionQueue.
+    S.executionQueue = {
+      ...current,
+      owner: m.owner ? sanitizeExecutionQueue({ owner: { ...m, owner: m.owner } }).owner : null,
+    };
     if (m.owner && m.execution_id) rememberExecutionState({ ...m, status: "running" });
     else S.executionIdentity = null;
   } else rememberExecutionState(m);

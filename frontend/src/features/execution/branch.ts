@@ -29,8 +29,11 @@ function hint(msg: string, err?: boolean): void {
 
 /** Write the honest server sentence onto the Timeline branch-error banner. */
 export function applyForkPresentation(presentation: ForkPresentation): void {
-  const errors = workbenchErrors.value || {};
-  errors.branchAction = forkErrorDisplay(presentation);
+  // A new object, so a subscriber to workbenchErrors sees the banner change.
+  workbenchErrors.value = {
+    ...(workbenchErrors.value || {}),
+    branchAction: forkErrorDisplay(presentation),
+  };
   hint(t("branch.actionFailed", forkErrorDisplay(presentation)), true);
 }
 
