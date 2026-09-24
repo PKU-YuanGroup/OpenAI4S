@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setArtifactsFetch } from "../artifacts/api";
+import { setArtifactsFetch, translate } from "../artifacts/api";
 import { jsonResponse } from "../artifacts/http-stub";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
 import { clampHistogram, MAX_TABLE_PROFILE_BINS, readApproximate } from "./histogram";
@@ -458,5 +458,70 @@ describe("flag=0 fallback + workbench profile fetch", () => {
     expect(link!.getAttribute("href")).toContain("spreadsheet_safe=1");
     expect(link!.getAttribute("href")).toContain("version_id=v1");
     expect(host.querySelector(".wb-table-approx")).toBeTruthy();
+  });
+});
+
+describe("workbench paging (AUDIT A65)", () => {
+  beforeEach(() => {
+    installDom();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+  });
+
+  function pageOf(total: number, offset: number) {
+    const count = Math.max(0, Math.min(50, total - offset));
+    return {
+      artifact_id: "art-1", version_id: "v1", columns: ["n"],
+      rows: Array.from({ length: count }, (_, i) => [offset + i]),
+      total_rows: total, offset, limit: 50,
+    };
+  }
+
+  function mount(serve: (offset: number) => Promise<unknown>) {
+    const offsets: number[] = [];
+    setArtifactsFetch(async (url) => {
+      const u = String(url);
+      if (u.includes("/table/profile")) return jsonResponse(profileFixture());
+      const offset = Number(new URL(u, "http://x").searchParams.get("offset"));
+      offsets.push(offset);
+      return jsonResponse(await serve(offset));
+    });
+    const host = document.body.children[0] as unknown as FakeEl;
+    renderTableArtifact(host as unknown as HTMLElement, { id: "art-1", filename: "t.csv", version_id: "v1" }, "/files/t.csv", {
+      workbenchOn: true, capabilities: WORKBENCH_CAPS,
+    });
+    const buttons = host.querySelectorAll("button");
+    const meta = host.querySelector("div.wb-table-meta")!;
+    return { offsets, prev: buttons[0]!, next: buttons[1]!, meta };
+  }
+
+  it("disables paging while a page loads and steps from the page on screen", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const { offsets, prev, next, meta } = mount(async (offset) => {
+      if (offset > 0) await held;
+      return pageOf(60, offset);
+    });
+    await flush();
+    expect(meta.textContent).toBe(translate("wb.table.meta", 60, 1, 50));
+    expect([prev.disabled, next.disabled]).toEqual([true, false]);
+    next.onclick?.();
+    expect([prev.disabled, next.disabled]).toEqual([true, true]);
+    // A second click that still got through asks for the same page, not rows 101+.
+    next.onclick?.();
+    release();
+    await flush();
+    expect(offsets).toEqual([0, 50, 50]);
+    expect(meta.textContent).toBe(translate("wb.table.meta", 60, 51, 60));
+    expect([prev.disabled, next.disabled]).toEqual([false, true]);
+  });
+
+  it("captions an empty table without a 1–0 range", async () => {
+    const { meta, prev, next } = mount(async (offset) => pageOf(0, offset));
+    await flush();
+    expect(meta.textContent).toBe(translate("wb.table.meta", 0, 0, 0));
+    expect([prev.disabled, next.disabled]).toEqual([true, true]);
   });
 });
