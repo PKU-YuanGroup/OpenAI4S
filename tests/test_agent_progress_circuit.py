@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 
-from openai4s.agent.actions import NativeToolBatch, NativeToolCall
+import pytest
+
+from openai4s.agent.actions import FinalizeAction, NativeToolBatch, NativeToolCall
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
     ActionRouted,
@@ -13,6 +15,7 @@ from openai4s.agent.events import (
     ReplyReceived,
     RunFinished,
 )
+from openai4s.agent.finalize import execute_finalize_action
 from openai4s.agent.ledger import RuntimeActionLedger, restore_progress_circuit
 from openai4s.agent.models import EngineResult, ExecutionOutcome, ModelReply, RunState
 from openai4s.agent.progress_circuit import (
@@ -24,6 +27,7 @@ from openai4s.agent.progress_circuit import (
     PROGRESS_REASON_TOOL_ERROR,
     ProgressCircuit,
     attach_progress_circuit,
+    circuit_from_state,
     reconstruct_progress_circuit,
 )
 from openai4s.store import Store
@@ -97,6 +101,10 @@ class CountingExecutor:
     def execute(self, action, reply, state):
         del reply, state
         self.calls.append(action)
+        if isinstance(action, FinalizeAction):
+            # The Host contract itself: the circuit must read the result the
+            # CLI and Web executors really produce.
+            return execute_finalize_action(action)
         if isinstance(action, NativeToolBatch):
             history = []
             for call in action.calls:
@@ -631,3 +639,153 @@ def test_metadata_cache_is_not_durable_authority(tmp_path):
     assert restored.same_action_streak == 2
     assert restored.same_action_streak != cached.same_action_streak
     store.close()
+
+
+_FINALIZE_ARGUMENTS = {
+    # The 2026-09-24 Web repro: `output` where the schema wants `summary`.
+    "invalid": {"output": {"answer": 42}, "completion_bullets": ["Answered it"]},
+    # A different refusal: no completion bullet at all.
+    "unbulleted": {"summary": "The answer is 42.", "completion_bullets": []},
+    "valid": {"summary": "The answer is 42.", "completion_bullets": ["Answered it"]},
+}
+
+
+def _finalize_call(index: int, kind: str) -> NativeToolCall:
+    if kind == "malformed":
+        return NativeToolCall(
+            id=f"call-{index}",
+            wire_id=f"wire-{index}",
+            name="finalize_response",
+            ordinal=0,
+            raw_arguments='{"summary": ',
+            parse_error="invalid JSON",
+        )
+    arguments = copy.deepcopy(_FINALIZE_ARGUMENTS[kind])
+    return NativeToolCall(
+        id=f"call-{index}",
+        wire_id=f"wire-{index}",
+        name="finalize_response",
+        ordinal=0,
+        raw_arguments=json.dumps(arguments, separators=(",", ":")),
+        arguments=arguments,
+    )
+
+
+def _finalize_replies(count: int, kind: str) -> list[ModelReply]:
+    return [
+        ModelReply(tool_calls=(_finalize_call(index, kind),)) for index in range(count)
+    ]
+
+
+def _live_and_restored_finalize(tmp_path, kinds, *, name="finalize"):
+    """Feed one finalize sequence to a live circuit and to the ledger.
+
+    The live side observes each outcome the way `AgentEngine` does -- after
+    execution, before `OutcomeProduced` is recorded -- so a sequence the
+    engine would never reach (a run continuing after an accepted one) can be
+    compared as well.
+    """
+    store = Store(tmp_path / f"{name}.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, f"turn-{name}")
+    ledger.append_user({"role": "user", "content": "What is 6 * 7?"})
+    live = ProgressCircuit()
+    for index, kind in enumerate(kinds):
+        action = FinalizeAction(_finalize_call(index, kind))
+        outcome = execute_finalize_action(action)
+        ledger.emit(ReplyReceived(ModelReply(tool_calls=(action.call,)), index))
+        ledger.emit(ActionRouted(action, index))
+        live.observe_execution(action, outcome)
+        ledger.emit(OutcomeProduced(outcome, index))
+    restored = restore_progress_circuit(store, root)
+    assert [group["kind"] for group in store.list_action_groups(root)] == [
+        "user",
+        *(["finalize"] * len(kinds)),
+    ]
+    store.close()
+    return live, restored
+
+
+def test_a_refused_finalize_loop_is_rebuilt_as_the_live_run_tripped(tmp_path):
+    """The live circuit and `restore_progress_circuit` read the same rows:
+    the finalize call's proposed event and its recorded tool result."""
+    store = Store(tmp_path / "finalize-loop.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-finalize")
+    user = {"role": "user", "content": "What is 6 * 7?"}
+    ledger.append_user(user)
+    state = RunState([user], max_turns=64)
+    model = FakeModel(_finalize_replies(64, "invalid"))
+
+    result = AgentEngine(model, CountingExecutor(), event_sink=ledger).run(state)
+
+    assert result.stop_reason == NO_PROGRESS_STOP_REASON
+    assert result.progress_reason == PROGRESS_REASON_TOOL_ERROR
+    assert len(model.calls) == 2
+    live = circuit_from_state(state)
+    restored = restore_progress_circuit(store, root)
+    assert restored == live
+    assert restored.trip_reason == PROGRESS_REASON_TOOL_ERROR
+    assert restored.error_streak == 2
+    store.close()
+
+
+def test_restart_mid_finalize_streak_trips_on_the_next_refusal(tmp_path):
+    store = Store(tmp_path / "finalize-restart.db")
+    root = store.new_frame(project_id="default", status="ready")
+    ledger = RuntimeActionLedger(store, root, "turn-before-restart")
+    user = {"role": "user", "content": "What is 6 * 7?"}
+    ledger.append_user(user)
+    AgentEngine(
+        FakeModel(_finalize_replies(1, "invalid")),
+        CountingExecutor(),
+        event_sink=ledger,
+        max_turns=1,
+    ).run([user])
+
+    restored = restore_progress_circuit(store, root)
+    assert restored.error_streak == 1
+    assert not restored.tripped
+    state = RunState([user], max_turns=10)
+    attach_progress_circuit(state, restored)
+    engine, model, executor = _engine(_finalize_replies(3, "invalid"), max_turns=10)
+    result = engine.run(state)
+
+    assert result.stop_reason == NO_PROGRESS_STOP_REASON
+    assert result.progress_reason == PROGRESS_REASON_TOOL_ERROR
+    assert len(model.calls) == 1
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("kinds", "trip_reason"),
+    [
+        (["invalid", "invalid"], PROGRESS_REASON_TOOL_ERROR),
+        (["invalid", "invalid", "invalid"], PROGRESS_REASON_TOOL_ERROR),
+        (["malformed", "malformed"], PROGRESS_REASON_MALFORMED),
+        (["invalid", "unbulleted", "invalid"], None),
+    ],
+)
+def test_refused_finalize_groups_rebuild_the_live_circuit(tmp_path, kinds, trip_reason):
+    live, restored = _live_and_restored_finalize(tmp_path, kinds)
+
+    assert restored == live
+    assert restored.trip_reason == trip_reason
+
+
+def test_an_accepted_finalize_never_moves_the_circuit_live_or_rebuilt(tmp_path):
+    """An accepted finalization ends the run, so it can never be part of a
+    loop. It is not observed at all: counted like a native call, identical
+    accepted results would build a same-action streak, and one after a
+    refusal would reset the error streak the refusal started."""
+    refused, _ = _live_and_restored_finalize(tmp_path, ["invalid"], name="refused")
+    live, restored = _live_and_restored_finalize(
+        tmp_path, ["invalid", "valid", "valid", "valid"], name="then-accepted"
+    )
+    assert live == restored == refused
+    assert refused.error_streak == 1
+
+    live, restored = _live_and_restored_finalize(
+        tmp_path, ["valid"] * 4, name="accepted"
+    )
+    assert live == restored == ProgressCircuit()
