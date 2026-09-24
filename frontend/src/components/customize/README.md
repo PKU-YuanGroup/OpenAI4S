@@ -32,7 +32,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
 | [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. The Skill, specialist and connector row switches show what a later read brings and keep a write the server took over an older read. |
 | [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. |
-| [`icons.tsx`](icons.tsx) | `Icon`: draws from the shared `features/icons/paths.ts` table; keeps only the four names that table lacks (`globe`, `lock`, `refresh`, `link`). |
+| [`icons.tsx`](icons.tsx) | `Icon`: draws from the shared `features/icons/paths.ts` table and keeps no drawings of its own. |
 | [`icons.test.tsx`](icons.test.tsx) | Every name the modal paints is drawn, a shared name comes from the shared table, an unknown name draws nothing. |
 | [`hooks.ts`](hooks.ts) | `useTabRead`: a tab's reads, on mount and again in place after a write (`refreshCustTab`); only the newest read applies, the first settles the pane's load status. `useOptimistic` / `useOptimisticToggle`: a control bound to one server setting is disabled until the tab's first read lands (`null`), moves at once, allows one write at a time, and goes back to the confirmed value when a write fails. |
 | [`index.ts`](index.ts) | Re-exports `Customize`. |
