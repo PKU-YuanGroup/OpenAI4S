@@ -96,6 +96,29 @@ describe("F-20 command palette", () => {
     expect(setActiveTab).toHaveBeenCalledWith("files");
   });
 
+  it("a session that fails to open is handled, not left as an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const openConversation = vi.fn().mockRejectedValue(new Error("session gone"));
+      const openViewer = vi.fn();
+      vi.stubGlobal("window", { openConversation, openViewer });
+      currentId.value = "other";
+      const { openDataproSearchHit, openPaletteArtifact } = await import("./palette");
+      openPaletteArtifact({ id: "art_1", root_frame_id: "frame_9" });
+      openDataproSearchHit({ artifact_id: "art_2", root_frame_id: "frame_9" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(openConversation).toHaveBeenCalledTimes(2);
+      expect(unhandled).toEqual([]);
+      expect(openViewer).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("same-session hit skips openConversation", async () => {
     const openConversation = vi.fn();
     const openViewer = vi.fn();

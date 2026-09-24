@@ -122,7 +122,9 @@ export function openPaletteArtifact(hit: ArtifactHit): void {
   const openConversation = hostFn("openConversation");
   const frameId = hit.root_frame_id;
   if (frameId && isReady(openConversation) && frameId !== currentId.value) {
-    Promise.resolve(openConversation(frameId, hit.project_id || null)).then(go);
+    // A session that failed to open has nothing to show the hit in; the
+    // rejection is handled here rather than surfacing as an unhandled one.
+    void Promise.resolve(openConversation(frameId, hit.project_id || null)).then(go, () => undefined);
     return;
   }
   go();
@@ -163,10 +165,11 @@ export function openDataproSearchHit(hit: DataproHit): void {
     const openConversation = hostFn("openConversation");
     if (hit.root_frame_id && hit.root_frame_id !== currentId.value) {
       if (isReady(openConversation)) {
-        Promise.resolve(openConversation(hit.root_frame_id, hit.project_id || null)).then(
+        void Promise.resolve(openConversation(hit.root_frame_id, hit.project_id || null)).then(
           () => {
             if (isReady(openViewer)) openViewer(view);
           },
+          () => undefined,
         );
       }
       return;

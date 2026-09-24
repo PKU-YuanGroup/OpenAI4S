@@ -21,7 +21,7 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors, and a drag that ends on the scrim not closing. |
 | [`modal.ts`](modal.ts) | Verbatim focus trap (stack / Tab / Esc / restore). The scrim closes only when the press started on it too. |
 | [`notes.ts`](notes.ts) | Project notes in the Files dock. |
-| [`palette.test.ts`](palette.test.ts) | M-03 Artifact hit, stub-safe `isReady`, out-of-order `PAL.gen`, a failed skills catalog retried rather than cached. |
+| [`palette.test.ts`](palette.test.ts) | M-03 Artifact hit, stub-safe `isReady`, out-of-order `PAL.gen`, a failed skills catalog retried rather than cached, a failed session open handled rather than left unhandled. |
 | [`palette.ts`](palette.ts) | ⌘K palette. Artifact hits open session then exact version. |
 | [`resizer.ts`](resizer.ts) | Sidebar / dock column drag. Keys `os-side-w` / `os-dock-w`. The handle's tooltip is a static `data-i18n-title` label, repainted when the dictionaries load and on a language switch. |
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | The resizer tooltip is never the bare key `resizer.drag`, and follows the dictionary load and a language switch. |
