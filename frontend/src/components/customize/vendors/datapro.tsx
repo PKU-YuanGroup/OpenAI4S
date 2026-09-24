@@ -14,30 +14,32 @@ import {
   hint,
   openViewer,
 } from "../../../features/customize/host";
+import { useOptimisticToggle } from "../hooks";
+import { useVendorKey } from "./use-vendor-key";
+
+const connectorPath = `/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`;
 
 export function DataProCard({
   config,
   configError,
 }: {
-  config: Record<string, unknown>;
+  /** `null` until `GET /datapro/config` has answered. */
+  config: Record<string, unknown> | null;
   configError: unknown;
 }) {
-  const [keyConfigured, setKeyConfigured] = useState(!!config.key_configured);
-  const [arkKeyReused, setArkKeyReused] = useState(!!config.ark_key_reused);
-  const [connectorEnabled, setConnectorEnabled] = useState(!!config.connector_enabled);
-  const [skillEnabled, setSkillEnabled] = useState(!!config.skill_enabled);
-  const [skillBusy, setSkillBusy] = useState(false);
-  const [key, setKey] = useState("");
-  const [keyState, setKeyState] = useState(
-    configError
-      ? t("cust.datapro.requestFailed", apiErrorText(configError))
-      : arkKeyReused
-        ? t("cust.datapro.keyArkReused")
-        : keyConfigured
-          ? t("cust.datapro.keyConfigured")
-          : t("cust.datapro.keyMissing"),
+  const vendorKey = useVendorKey("cust.datapro", "/datapro/config", config, configError);
+  const connector = useOptimisticToggle(
+    config ? !!config.connector_enabled : null,
+    (on) => api(connectorPath, { method: "PUT", body: JSON.stringify({ enabled: on }) }),
+    {
+      done: (on) => hint(on ? t("cust.datapro.connectorOn") : t("cust.datapro.connectorOff")),
+      failed: (error) => hint(t("toast.failed", apiErrorText(error)), true),
+    },
   );
-  const [keyBad, setKeyBad] = useState(!!configError || (!keyConfigured && !arkKeyReused));
+  // The config read the skill was enabled for; a newer read speaks for itself.
+  const [skillEnabledFor, setSkillEnabledFor] = useState<Record<string, unknown> | null>(null);
+  const skillEnabled = (config !== null && skillEnabledFor === config) || !!config?.skill_enabled;
+  const [skillBusy, setSkillBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [statusClass, setStatusClass] = useState("datapro-status");
@@ -46,44 +48,6 @@ export function DataProCard({
   const [result, setResult] = useState(t("cust.datapro.noResult"));
   const [artifact, setArtifact] = useState<Record<string, unknown> | null>(null);
   const [searching, setSearching] = useState(false);
-  const [savingKey, setSavingKey] = useState(false);
-
-  const placeholder = arkKeyReused
-    ? t("cust.datapro.keyPlaceholderArk")
-    : keyConfigured
-      ? t("cust.datapro.keyPlaceholderSet")
-      : t("cust.datapro.keyPlaceholder");
-
-  const saveKey = async () => {
-    let secret = key.trim();
-    setKey("");
-    if (!secret) {
-      hint(t("cust.datapro.keyRequired"), true);
-      return;
-    }
-    setSavingKey(true);
-    const request = api("/datapro/config", {
-      method: "POST",
-      body: JSON.stringify({ agent_plan_key: secret }),
-    });
-    secret = "";
-    try {
-      const saved = await request;
-      setKeyConfigured(!!saved.key_configured);
-      setArkKeyReused(!!saved.ark_key_reused);
-      setKeyState(
-        saved.ark_key_reused ? t("cust.datapro.keyArkReused") : t("cust.datapro.keyConfigured"),
-      );
-      setKeyBad(false);
-      hint(t("cust.datapro.keySaved"));
-    } catch (error) {
-      setKeyState(t("cust.datapro.requestFailed", apiErrorText(error)));
-      setKeyBad(true);
-    } finally {
-      setKey("");
-      setSavingKey(false);
-    }
-  };
 
   const runSearch = async () => {
     const text = query.trim();
@@ -149,12 +113,13 @@ export function DataProCard({
           type="button"
           class="outline-btn small"
           data-action="datapro-enable-skill"
-          disabled={skillBusy || (skillEnabled && connectorEnabled)}
+          disabled={skillBusy || !config || (skillEnabled && connector.on)}
           onClick={async () => {
+            if (!config || skillBusy) return;
             setSkillBusy(true);
             try {
-              if (!connectorEnabled) {
-                await api(`/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`, {
+              if (!connector.on) {
+                await api(connectorPath, {
                   method: "PUT",
                   body: JSON.stringify({ enabled: true }),
                 });
@@ -163,8 +128,8 @@ export function DataProCard({
                 `/skills/catalog/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`,
                 { method: "PUT", body: JSON.stringify({ enabled: true }) },
               );
-              setConnectorEnabled(true);
-              setSkillEnabled(true);
+              connector.confirm(true);
+              setSkillEnabledFor(config);
               dropSkillsCatalog();
               hint(t("cust.datapro.skillEnabledToast"));
             } catch (error) {
@@ -183,23 +148,11 @@ export function DataProCard({
         </button>
         <button
           type="button"
-          class={"toggle" + (connectorEnabled ? " on" : "")}
+          class={"toggle" + (connector.on ? " on" : "")}
           data-action="datapro-toggle-connector"
           title={t("cust.datapro.connectorToggle")}
-          onClick={async () => {
-            const on = !connectorEnabled;
-            setConnectorEnabled(on);
-            try {
-              await api(`/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`, {
-                method: "PUT",
-                body: JSON.stringify({ enabled: on }),
-              });
-              hint(on ? t("cust.datapro.connectorOn") : t("cust.datapro.connectorOff"));
-            } catch (error) {
-              setConnectorEnabled(!on);
-              hint(t("toast.failed", apiErrorText(error)), true);
-            }
-          }}
+          disabled={!connector.ready}
+          onClick={connector.toggle}
         />
       </div>
       <div class="datapro-field">
@@ -212,13 +165,13 @@ export function DataProCard({
             autocomplete="off"
             autocapitalize="off"
             spellcheck={false}
-            placeholder={placeholder}
-            value={key}
-            onInput={(e) => setKey((e.target as HTMLInputElement).value)}
+            placeholder={vendorKey.placeholder}
+            value={vendorKey.key}
+            onInput={(e) => vendorKey.setKey((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                void saveKey();
+                void vendorKey.saveKey();
               }
             }}
           />
@@ -226,13 +179,15 @@ export function DataProCard({
             type="button"
             class="solid-btn small"
             data-action="datapro-save-key"
-            disabled={savingKey}
-            onClick={() => void saveKey()}
+            disabled={vendorKey.savingKey || !vendorKey.loaded}
+            onClick={() => void vendorKey.saveKey()}
           >
             {t("cust.datapro.saveKey")}
           </button>
         </div>
-        <div class={"datapro-credential-state" + (keyBad ? " bad" : "")}>{keyState}</div>
+        <div class={"datapro-credential-state" + (vendorKey.keyBad ? " bad" : "")}>
+          {vendorKey.keyState}
+        </div>
       </div>
       <div class="datapro-field">
         <label class="skill-lbl">{t("cust.datapro.queryLabel")}</label>

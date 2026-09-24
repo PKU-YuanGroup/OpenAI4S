@@ -100,30 +100,104 @@ export function bytes(b: number | null | undefined): string {
   return (b / 1048576).toFixed(1) + " MB";
 }
 
+/** Shortest unbroken `[A-Za-z0-9+/=]` run that can be an encoded blob. */
+const BLOB_RUN = 1200;
+/** Consecutive `\xNN` escapes that make an escape dump. */
+const ESCAPE_RUN = 400;
 /**
- * app.js:6055-6066. Heuristic: raw binary / giant base64|hex blob.
+ * Characters examined for blobs and escape dumps. A kernel stream is capped at
+ * 1,000,000 characters plus a truncation marker (MAX_OUTPUT_CHARS in
+ * `openai4s/kernel/protocol.py`), so every cell output is judged whole; a
+ * longer file is judged by its first MiB, well past the 300,000 characters
+ * its text preview shows before "Show complete text".
  */
-export function looksBinary(s: string | null | undefined): boolean {
-  if (!s) return false;
-  const sample = s.slice(0, 4096);
+export const BINARY_SCAN_LIMIT = 1 << 20;
+
+function isHexDigit(c: number): boolean {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+}
+
+/**
+ * One pass over the scan window for an encoded blob or an escape dump.
+ *
+ * This was `/[A-Za-z0-9+/=]{1200,}/` and `/(?:\\x[0-9a-fA-F]{2}){400,}/` over
+ * the whole string, on every call -- once per streamed Notebook chunk. A run
+ * shorter than the minimum made the engine retry from every start inside it,
+ * so line-wrapped sequence output cost about a second per MiB.
+ *
+ * Length alone is not evidence of a blob: a protein or DNA sequence written
+ * on one line is exactly such a run (a 1273-residue spike FASTA record).
+ * Base64 of real bytes mixes both letter cases with digits, `+` and `/` --
+ * 2.7-26% of its characters across random, float, integer and text payloads
+ * -- while a sequence is letters, carrying at most a name's serial number or
+ * a trailing length. A run counts only with both cases and that punctuation
+ * at 1% or more of its length; a dump of zero bytes ("AAAA...") stays text,
+ * as a poly-A tract must.
+ */
+function encodedSpan(s: string): boolean {
+  const end = Math.min(s.length, BINARY_SCAN_LIMIT);
+  let run = 0;
+  let upper = false;
+  let lower = false;
+  let marks = 0;
+  let escapes = 0;
+  let escapeEnd = -1;
+  for (let i = 0; i <= end; i++) {
+    const c = i < end ? s.charCodeAt(i) : -1;
+    if (c >= 97 && c <= 122) lower = true;
+    else if (c >= 65 && c <= 90) upper = true;
+    else if ((c >= 48 && c <= 57) || c === 43 || c === 47) marks++;
+    else if (c !== 61) {
+      if (run >= BLOB_RUN && upper && lower && marks * 100 >= run) return true;
+      run = 0;
+      upper = lower = false;
+      marks = 0;
+      if (c === 92 && s.charCodeAt(i + 1) === 120 && isHexDigit(s.charCodeAt(i + 2)) && isHexDigit(s.charCodeAt(i + 3))) {
+        escapes = i === escapeEnd ? escapes + 1 : 1;
+        if (escapes >= ESCAPE_RUN) return true;
+        escapeEnd = i + 4;
+      }
+      continue;
+    }
+    run++;
+  }
+  return false;
+}
+
+/**
+ * Raw bytes decoded as text: control characters (other than tab, newline and
+ * carriage return), DEL and U+FFFD over 12% of the first 4 KiB. This is the
+ * whole test for JSON, whose long string values look like encoded blobs.
+ */
+export function controlDense(text: string): boolean {
+  const sample = text.slice(0, 4096);
   let ctrl = 0;
   for (let i = 0; i < sample.length; i++) {
     const c = sample.charCodeAt(i);
     if (c === 9 || c === 10 || c === 13) continue;
     if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
   }
-  if (sample.length && ctrl / sample.length > 0.12) return true;
-  return /[A-Za-z0-9+/=]{1200,}/.test(s) || /(?:\\x[0-9a-fA-F]{2}){400,}/.test(s);
+  return sample.length > 0 && ctrl / sample.length > 0.12;
 }
 
+/**
+ * app.js:6055-6066. Heuristic: raw binary, a giant base64 blob, or a long
+ * `\xNN` escape dump.
+ */
+export function looksBinary(s: string | null | undefined): boolean {
+  if (!s) return false;
+  return controlDense(s) || encodedSpan(s);
+}
+
+/** The element helper for this lane and islands/dom.ts. */
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string | null,
-  text?: string | null,
+  text?: string | number | null,
 ): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text != null) node.textContent = text;
+  if (text != null) node.textContent = String(text);
   return node;
 }
 

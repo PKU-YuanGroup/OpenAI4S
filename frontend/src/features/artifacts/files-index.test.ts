@@ -7,6 +7,8 @@ import {
   browseFiles,
   filterArtifactsClient,
   filesGridArtifacts,
+  filesGridPending,
+  filesReadFailed,
   setFilesContentType,
   setFilesOrigin,
   visibleArtifacts,
@@ -465,6 +467,83 @@ describe("M-03 Files index (artifact-index, no array fallback)", () => {
     resetFilesIndexState();
     expect(filesIndexReq.value).toBeGreaterThan(n);
     expect(filesIndexItems.value).toEqual([]);
+  });
+});
+
+
+describe("session artifact read failures (AUDIT A26)", () => {
+  beforeEach(() => { resetStoreFields(); resetFilesIndexState(); setArtifactsFetch(null); });
+  afterEach(() => setArtifactsFetch(null));
+  const refuse = async () => jsonResponse({ error: "daemon restarting" }, 503);
+
+  it("keeps the confirmed list through a failed refresh and reports the read", async () => {
+    currentId.value = "a";
+    const rows = make500().slice(0, 3);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("a");
+    expect(filesGridArtifacts().map((x) => x.id)).toEqual(rows.map((x) => x.id).sort().reverse());
+    setArtifactsFetch(refuse);
+    await loadArtifacts("a");
+    expect(artifactsSignal.value).toEqual(rows);
+    expect(filesGridArtifacts()).toHaveLength(3);
+    expect(filesReadFailed()).toBe(true);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("a");
+    expect(filesReadFailed()).toBe(false);
+  });
+
+  it("reports a failed first read instead of an empty session, without the previous session's rows", async () => {
+    currentId.value = "a";
+    setArtifactsFetch(async () => jsonResponse(make500().slice(0, 3)));
+    await loadArtifacts("a");
+    currentId.value = "b";
+    setArtifactsFetch(refuse);
+    await loadArtifacts("b");
+    expect(filesReadFailed()).toBe(true);
+    expect(filesGridArtifacts()).toEqual([]);
+    expect(artifactsSignal.value).toEqual([]);
+    expect(artifactsFrameId.value).toBe("b");
+  });
+});
+
+
+describe("Files grid pending state (AUDIT A63)", () => {
+  beforeEach(() => { resetStoreFields(); resetFilesIndexState(); setArtifactsFetch(null); });
+  afterEach(() => setArtifactsFetch(null));
+
+  it("is pending while the first project index read is in flight, not empty", async () => {
+    filesScope.value = "project";
+    project.value = "p";
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    setArtifactsFetch(async () => { await held; return jsonResponse({ artifacts: [], next_cursor: null, has_more: false }); });
+    const reading = browseFiles({ reset: true });
+    expect(filesGridPending()).toBe(true);
+    release();
+    await reading;
+    expect(filesGridPending()).toBe(false);
+    expect(filesGridArtifacts()).toEqual([]);
+  });
+
+  it("is pending after a filter change until the listing is browsed", async () => {
+    currentId.value = "a";
+    setArtifactsFetch(async () => jsonResponse([row({ id: "1" })]));
+    await loadArtifacts("a");
+    expect(filesGridPending()).toBe(false);
+    setFilesQuery("zzz");
+    expect(filesGridPending()).toBe(true);
+    await browseFiles({ reset: true });
+    expect(filesGridPending()).toBe(false);
+  });
+
+  it("is pending until the open session's list arrives, and not after a failed read", async () => {
+    currentId.value = "a";
+    await browseFiles({ reset: true });
+    expect(filesGridPending()).toBe(true);
+    setArtifactsFetch(async () => jsonResponse({ error: "down" }, 503));
+    await loadArtifacts("a");
+    expect(filesGridPending()).toBe(false);
+    expect(filesReadFailed()).toBe(true);
   });
 });
 

@@ -103,7 +103,8 @@ def test_root_and_dark_declare_the_four_f21_tokens():
     for name in ("--text-100", "--text-300", "--surface-0", "--warn"):
         assert f"{name}:" in root
         assert f"{name}:" in dark
-    assert "--text-400:#6f6d68" in root
+    # The design system's `muted`: 5.1:1 on the #faf9f5 canvas.
+    assert "--text-400:#6c6a64" in root
 
 
 def test_dark_comma_selectors_do_not_leak_onto_light():

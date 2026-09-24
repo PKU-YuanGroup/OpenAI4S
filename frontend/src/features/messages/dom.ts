@@ -25,8 +25,9 @@ export function messagesHost(): HTMLElement | null {
 }
 
 /**
- * Guarantee the DOM contract nodes exist so feed/down/openConversation can
- * run before the layout lane composes MessageList into the shell.
+ * Guarantee the DOM contract nodes exist when a conversation opens. The
+ * Shell renders both, so in the workbench this is a no-op; never call it
+ * before `render()`, where Preact would reuse the node for another element.
  */
 export function ensureMessageDom(): void {
   if (typeof document === "undefined") return;

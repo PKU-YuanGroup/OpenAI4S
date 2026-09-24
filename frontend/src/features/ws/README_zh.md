@@ -11,8 +11,8 @@
 | [`types.ts`](types.ts) | `WsMessage` / `WsHandler`。 |
 | [`registry.ts`](registry.ts) | Map 注册表、`registerWsHandler`、内层 `onEvent`。 |
 | [`guards.ts`](guards.ts) | `mine`、`isStaleTurnEvent`、`eventFrameId`、`tryLane`。 |
-| [`connect.ts`](connect.ts) | `connectWS`、`sub`/`unsub`、ping、重连、`handleIncomingMessage`（游标）。 |
-| [`handlers.ts`](handlers.ts) | `replay_begin`/`replay_end`；`frame_update` 原位 patch + 300ms 尾沿加载；`artifact_created` upsert + 150ms 尾沿加载。 |
+| [`connect.ts`](connect.ts) | `connectWS`、`sub`/`unsub`、ping、重连、`handleIncomingMessage`（游标，原地写入：只被采样，无人订阅）。 |
+| [`handlers.ts`](handlers.ts) | `replay_begin`/`replay_end`；`frame_update` 原位 patch + 300ms 尾沿加载；`artifact_created` upsert（列表、`_artBust`、`_tbl` 都换成新值，订阅者才能收到）+ 150ms 尾沿加载。 |
 | [`index.ts`](index.ts) | `installWs` / `bootWs` 与对外 re-export。 |
 | [`registry.test.ts`](registry.test.ts) | 重复注册 throw；handler 抛异常时游标不推进。 |
 | [`handlers.test.ts`](handlers.test.ts) | epoch 失配、gap 重载、mine / isStaleTurnEvent、会话 patch、产物 upsert、防抖。 |

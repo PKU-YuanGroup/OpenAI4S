@@ -46,6 +46,7 @@ METADATA_KEY = "progress_circuit"
 
 _USER_KIND = "user"
 _NATIVE_KIND = "native_tools"
+_FINALIZE_KIND = "finalize"
 _CODE_KIND = "code"
 _NO_ACTION_KIND = "no_action"
 _TERMINAL_KIND = "terminal"
@@ -227,8 +228,33 @@ class ProgressCircuit:
         if isinstance(action, NativeToolBatch):
             self.observe_native_batch(action.calls, outcome.history_messages)
             return
+        if isinstance(action, FinalizeAction):
+            self.observe_finalize(action.call, outcome.history_messages)
+            return
         if isinstance(action, CodeCell):
             self.observe_code_progress()
+
+    def observe_finalize(
+        self,
+        call: _CallLike,
+        results: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Count a refused ``finalize_response`` exactly as a one-call batch.
+
+        A refused finalization is answered with a tool error, and the model
+        that keeps resending it is looping like any other failing call: a
+        Web session that answered every turn with the same schema-invalid
+        finalization ran the whole turn budget out, because this circuit only
+        ever saw native batches. An accepted one is not observed at all. It
+        ends the run, and leaving the circuit untouched is what makes a valid
+        completion unable to trip it, live or rebuilt from the ledger. Both
+        paths decide acceptance from the recorded tool result, never from the
+        live-only completion record.
+        """
+
+        if _finalize_accepted(results):
+            return
+        self.observe_native_batch((call,), results)
 
     def observe_native_batch(
         self,
@@ -290,30 +316,21 @@ class ProgressCircuit:
     def observe_group(self, group: Mapping[str, Any]) -> None:
         kind = str(group.get("kind") or "")
         if kind == _NATIVE_KIND:
-            self._observe_native_group(group)
+            self.observe_native_batch(*_group_calls_and_results(group))
+            return
+        if kind == _FINALIZE_KIND:
+            # The ledger writes a finalize group exactly like a one-call
+            # native group -- one proposed event, one result event -- so the
+            # rebuild reads the same call and result the live run observed.
+            calls, results = _group_calls_and_results(group)
+            if calls:
+                self.observe_finalize(calls[0], results)
             return
         if kind == _CODE_KIND:
             self.observe_code_progress()
             return
         if kind == _NO_ACTION_KIND:
             self.observe_assistant_text(_group_assistant_text(group))
-
-    def _observe_native_group(self, group: Mapping[str, Any]) -> None:
-        events = [
-            event for event in (group.get("events") or ()) if isinstance(event, Mapping)
-        ]
-        calls: list[_ProposedCall] = []
-        results: list[Mapping[str, Any]] = []
-        for event in events:
-            if event.get("type") == "proposed":
-                call = _call_from_proposed(event)
-                if call is not None:
-                    calls.append(call)
-            elif event.get("type") == "result":
-                result = _mapping(event.get("result"))
-                if result is not None:
-                    results.append(result)
-        self.observe_native_batch(calls, results)
 
     def _observe_tool_results(self, results: Sequence[Mapping[str, Any]]) -> None:
         error_messages = [
@@ -403,6 +420,39 @@ def _call_is_malformed(call: _CallLike) -> bool:
     if call.parse_error:
         return True
     return call.arguments is None
+
+
+def _finalize_accepted(results: Sequence[Mapping[str, Any]] | None) -> bool:
+    """Whether the Host accepted a finalization, read off its tool result.
+
+    ``execute_finalize_action`` answers every declaration with exactly one
+    result whose ``is_error`` is false only when the completion was accepted,
+    and the ledger persists that flag. No result at all -- a group the daemon
+    never closed -- is not an acceptance.
+    """
+
+    messages = [message for message in results or () if isinstance(message, Mapping)]
+    return bool(messages) and not any(message.get("is_error") for message in messages)
+
+
+def _group_calls_and_results(
+    group: Mapping[str, Any],
+) -> tuple[list[_ProposedCall], list[Mapping[str, Any]]]:
+    events = [
+        event for event in (group.get("events") or ()) if isinstance(event, Mapping)
+    ]
+    calls: list[_ProposedCall] = []
+    results: list[Mapping[str, Any]] = []
+    for event in events:
+        if event.get("type") == "proposed":
+            call = _call_from_proposed(event)
+            if call is not None:
+                calls.append(call)
+        elif event.get("type") == "result":
+            result = _mapping(event.get("result"))
+            if result is not None:
+                results.append(result)
+    return calls, results
 
 
 def _call_from_proposed(event: Mapping[str, Any]) -> _ProposedCall | None:

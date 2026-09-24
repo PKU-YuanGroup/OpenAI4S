@@ -4,7 +4,6 @@
 
 import { t } from "../../i18n/runtime";
 import { $, grow, hint } from "./dom";
-import { hostFn, isReady } from "./host";
 
 type SpeechRecCtor = new () => SpeechRec;
 type SpeechRec = {
@@ -62,9 +61,7 @@ export function micDictate(): void {
     }
     if (comp) {
       comp.value = (base ? base + " " : "") + txt;
-      const g = hostFn("grow");
-      if (isReady(g)) g();
-      else grow();
+      grow();
     }
   };
   r.onerror = (e) => {

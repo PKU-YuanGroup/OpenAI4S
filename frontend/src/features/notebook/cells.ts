@@ -11,24 +11,25 @@ import { artUrl } from "../artifacts/cache";
 import { dockArtifact } from "../../stores/artifacts";
 import {
   _executionLoadReq,
-  _kc,
   _lineageFor,
   _lineageReq,
   _liveCell,
+  _nbDirty,
+  _nbReading,
   cells,
   kernels,
   lineage,
   liveCells,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
+import { running } from "../../stores/stream";
 import { provMode } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
 import { appendLiveOutput } from "../stream/cap";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { kernelIdFromEnv } from "./labels";
 import { nbRender } from "./scroll";
-import type { KernelStatus, NotebookCell, NotebookOutputArtifact } from "./types";
+import type { NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function asCells(value: unknown): NotebookCell[] {
   return Array.isArray(value) ? (value as NotebookCell[]) : [];
@@ -172,6 +173,34 @@ export function appendTextNodeDelta(
   const delta = text.slice(previousLength);
   if (delta) node.appendData(delta);
   return text.length;
+}
+
+/**
+ * Paint streaming output into its `<pre>`. `seen` is how much of `text` that
+ * `<pre>` already shows. No `<pre>` (the output was empty or elided as
+ * binary) or a new, empty one starts from zero: the count used to survive
+ * the unmount, so a new `<pre>` received only `text.slice(oldSeen)` and the
+ * start of the output was gone. `final` is a finished cell's record: shown
+ * exactly, not as a tail appended to what streamed. Returns the new count.
+ */
+export function paintStreamedText(
+  pre: { firstChild: ChildNode | null; appendChild: (node: Text) => unknown } | null,
+  seen: number,
+  text: string,
+  final = false,
+): number {
+  if (!pre) return 0;
+  let node = pre.firstChild as Text | null;
+  if (!node) {
+    node = document.createTextNode("");
+    pre.appendChild(node);
+    seen = 0;
+  }
+  if (final) {
+    if (node.data !== text) node.data = text;
+    return text.length;
+  }
+  return appendTextNodeDelta(node, seen, text);
 }
 
 function setLive(next: NotebookCell[]): void {
@@ -342,125 +371,99 @@ export function nbCellFinished(event: WsMessage): void {
   nbRender();
 }
 
-const _NB_DIV = "----- output -----";
+/** A record and the grouping fields its projection carries. */
+type Attempt = {
+  cell: NotebookCell;
+  groupId: string;
+  revisionOf: string | null | undefined;
+  attempt: number | undefined;
+  /** Grouping filled in here rather than sent by the server. */
+  derived: boolean;
+};
 
-/** app.js:9880-9889. Legacy unstructured tool stream. */
-export function nbLiveStart(
-  tool: string | null | undefined,
-  raw: string | null | undefined,
-  serverKernelId: string | null | undefined,
-  serverCellIndex: number | string | null | undefined,
-  serverLanguage: string | null | undefined,
-): void {
-  const codeTools = /^(run_python|python|exec|run_bash|bash)/;
-  const isCode =
-    serverCellIndex != null ||
-    codeTools.test(tool || "") ||
-    !TOOL_LABELS_HAS(tool || "");
-  if (!isCode) {
-    _liveCell.value = null;
-    return;
-  }
-  const idx =
-    serverCellIndex || ((raw || "").match(/cell\s+(\d+)/) || [])[1];
-  const st = _kc.value.st as KernelStatus | null;
-  const kernelId =
-    serverKernelId || kernelIdFromEnv((st && st.env) || null);
-  const live = asCells(liveCells.value).slice();
-  const cell: NotebookCell = {
-    cell_index: idx ? +idx : live.length + 1,
-    kernel_id: kernelId,
-    language: serverLanguage || "python",
-    source: "",
-    stdout: "",
-    stderr: "",
-    status: "running",
-    figures: [],
-    live: true,
-    _out: false,
-  };
-  live.push(cell);
-  setLive(live);
-  _liveCell.value = cell;
-  syncCellOutput(cell);
-  nbRender();
-}
+let projections = new Map<string, { records: NotebookCell[]; cell: NotebookCell }>();
 
-function TOOL_LABELS_HAS(tool: string): boolean {
-  const w = globalThis as unknown as { TOOL_LABELS?: Record<string, unknown> };
-  const labels = w.TOOL_LABELS;
-  return !!(labels && tool && labels[tool]);
-}
-
-/** app.js:9891-8898 */
-export function nbLiveAppend(txt: string): void {
-  const c = _liveCell.value as NotebookCell | null;
-  if (!c) return;
-  if (!c._out) {
-    const i = txt.indexOf(_NB_DIV);
-    if (i === -1) {
-      c.source = (c.source || "") + txt;
-    } else {
-      c.source = (c.source || "") + txt.slice(0, i);
-      c._out = true;
-      c.stdout = (c.stdout || "") + txt.slice(i + _NB_DIV.length).replace(/^\n/, "");
-    }
-  } else {
-    c.stdout = (c.stdout || "") + txt;
-  }
-  const rec = syncCellOutput(c);
-  rec.stdout.value = String(c.stdout || "");
-  rec.source.value = String(c.source || "");
-  nbRender();
-}
-
-/** app.js:10076-10112 */
+/**
+ * app.js:10076-10112. A group whose members are the same finished records
+ * as on the last call returns the same projected object, so the memoized
+ * cell view skips it; every call used to clone every cell, and that memo
+ * never hit. The grouping reads only a record and the one before it, so the
+ * same members in the same order project the same way. A group with a
+ * running or draft member is rebuilt: those records change in place.
+ */
 export function projectNotebookCells(
   rawEntries: NotebookCell[] | null | undefined,
 ): NotebookCell[] {
-  const entries = (rawEntries || []).map((cell) => ({ ...cell }));
-  let previous: NotebookCell | null = null;
-  entries.forEach((cell) => {
-    const previousFailed =
-      previous && ["error", "failed"].includes(String(previous.status));
-    const agentRetry = previous && previous.origin === "agent" && cell.origin === "agent";
-    const sameRuntime =
-      previous &&
-      (previous.kernel_id || "python") === (cell.kernel_id || "python") &&
-      (previous.language || "python") === (cell.language || "python");
-    if (!cell.attempt_group_id) {
-      if (previous && previousFailed && sameRuntime && agentRetry) {
-        cell.attempt_group_id = previous.attempt_group_id || nbCellKey(previous);
-        cell.revision_of = nbCellKey(previous);
-        cell.attempt = (previous.attempt || 1) + 1;
-      } else {
-        cell.attempt_group_id = nbCellKey(cell);
-        cell.revision_of = null;
-        cell.attempt = 1;
-      }
+  const attempts: Attempt[] = [];
+  let previous: Attempt | null = null;
+  for (const cell of rawEntries || []) {
+    let entry: Attempt;
+    if (cell.attempt_group_id) {
+      entry = {
+        cell,
+        groupId: cell.attempt_group_id,
+        revisionOf: cell.revision_of,
+        attempt: cell.attempt,
+        derived: false,
+      };
+    } else {
+      const prev = previous ? previous.cell : null;
+      const previousFailed = prev && ["error", "failed"].includes(String(prev.status));
+      const agentRetry = prev && prev.origin === "agent" && cell.origin === "agent";
+      const sameRuntime =
+        prev &&
+        (prev.kernel_id || "python") === (cell.kernel_id || "python") &&
+        (prev.language || "python") === (cell.language || "python");
+      entry =
+        previous && prev && previousFailed && sameRuntime && agentRetry
+          ? {
+              cell,
+              groupId: previous.groupId || nbCellKey(prev),
+              revisionOf: nbCellKey(prev),
+              attempt: (previous.attempt || 1) + 1,
+              derived: true,
+            }
+          : { cell, groupId: nbCellKey(cell), revisionOf: null, attempt: 1, derived: true };
     }
-    previous = cell;
+    attempts.push(entry);
+    previous = entry;
+  }
+  const groups = new Map<string, Attempt[]>();
+  attempts.forEach((entry) => {
+    const group = String(entry.groupId || nbCellKey(entry.cell));
+    const list = groups.get(group);
+    if (list) list.push(entry);
+    else groups.set(group, [entry]);
   });
-  const groups = new Map<string, NotebookCell[]>();
-  entries.forEach((cell) => {
-    const group = String(cell.attempt_group_id || nbCellKey(cell));
-    let list = groups.get(group);
-    if (!list) {
-      list = [];
-      groups.set(group, list);
+  const next = new Map<string, { records: NotebookCell[]; cell: NotebookCell }>();
+  const projected: NotebookCell[] = [];
+  groups.forEach((members, group) => {
+    const records = members.map((entry) => entry.cell);
+    const stable = records.every((cell) => !cell.live && !cell.draft);
+    const hit = projections.get(group);
+    let cell: NotebookCell;
+    if (stable && hit && hit.records.length === records.length && hit.records.every((r, i) => r === records[i])) {
+      cell = hit.cell;
+    } else {
+      const clones = members.map((entry) =>
+        entry.derived
+          ? { ...entry.cell, attempt_group_id: entry.groupId, revision_of: entry.revisionOf, attempt: entry.attempt }
+          : { ...entry.cell },
+      );
+      const latest = clones[clones.length - 1] as NotebookCell;
+      cell = {
+        ...latest,
+        attempt: clones.length,
+        attempt_count: clones.length,
+        is_latest_attempt: true,
+        _revisions: clones.slice(0, -1),
+      };
     }
-    list.push(cell);
+    if (stable) next.set(group, { records, cell });
+    projected.push(cell);
   });
-  return Array.from(groups.values()).map((attempts) => {
-    const latest = attempts[attempts.length - 1] as NotebookCell;
-    return {
-      ...latest,
-      attempt: attempts.length,
-      attempt_count: attempts.length,
-      is_latest_attempt: true,
-      _revisions: attempts.slice(0, -1),
-    };
-  });
+  projections = next;
+  return projected;
 }
 
 export function notebookDisplayEntries(): NotebookCell[] {
@@ -468,6 +471,28 @@ export function notebookDisplayEntries(): NotebookCell[] {
   const live = asCells(liveCells.value);
   const combined = live.length ? saved.concat(live) : saved.slice();
   return projectNotebookCells(combined);
+}
+
+let painted: { frameId: string | null; entries: NotebookCell[] } | null = null;
+
+/**
+ * The cell list a Notebook render paints (scroll.ts reading gate). While a
+ * turn runs and the reader is scrolled up, the list last painted stays and
+ * the pane is marked dirty; returning to the bottom flushes it. CellList used
+ * to read the cell stores itself, which subscribed it to them and repainted
+ * past the gate: a failed cell being read was folded into the next attempt's
+ * revisions under the reader. Output chunks still stream into the cells on
+ * screen through their own signals.
+ */
+export function notebookViewEntries(): NotebookCell[] {
+  const frameId = currentId.value || null;
+  if (painted && painted.frameId === frameId && running.value && _nbReading.value) {
+    _nbDirty.value = true;
+    return painted.entries;
+  }
+  painted = { frameId, entries: notebookDisplayEntries() };
+  if (_nbDirty.value) _nbDirty.value = false;
+  return painted.entries;
 }
 
 let loadArtifactsFn: ((id: string) => void) | null = null;
@@ -512,6 +537,20 @@ export async function notebookFetch(
   return j && typeof j === "object" ? (j as Record<string, unknown>) : null;
 }
 
+/** Equal JSON-shaped values, a few levels deep; anything deeper counts as changed. */
+function sameRecord(a: unknown, b: unknown, depth = 4): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || depth <= 0) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every(
+    (key) => Object.prototype.hasOwnProperty.call(right, key) && sameRecord(left[key], right[key], depth - 1),
+  );
+}
+
 /** app.js:9746-9763 */
 export async function loadExecutionLog(id: string): Promise<void> {
   const request = (_executionLoadReq.value = (_executionLoadReq.value || 0) + 1);
@@ -522,10 +561,21 @@ export async function loadExecutionLog(id: string): Promise<void> {
     d = null;
   }
   if (id !== currentId.value || request !== _executionLoadReq.value) return;
-  const serverCells = ((d && (d.entries as NotebookCell[])) || []).map((cell) => ({
-    ...cell, _artifactBindingsPending: false,
-  }));
-  if (!d) setSaved(asCells(cells.value).map((cell) => ({ ...cell, _artifactBindingsPending: false })));
+  // A record the server sends back unchanged keeps the object already held,
+  // so its projection and memoized view are reused after every reload.
+  const held = new Map(asCells(cells.value).map((cell) => [nbCellKey(cell), cell] as const));
+  const serverCells = ((d && (d.entries as NotebookCell[])) || []).map((cell) => {
+    const next = { ...cell, _artifactBindingsPending: false };
+    const known = held.get(nbCellKey(next));
+    return known && sameRecord(known, next) ? known : next;
+  });
+  if (!d) {
+    setSaved(
+      asCells(cells.value).map((cell) =>
+        cell._artifactBindingsPending === false ? cell : { ...cell, _artifactBindingsPending: false },
+      ),
+    );
+  }
   setSaved(mergeNotebookCells(serverCells, asCells(cells.value)));
   const nextKernels = ((d && d.kernels) as string[]) || [];
   kernels.value = nextKernels;

@@ -1,7 +1,12 @@
 /**
  * DOM helpers for F-18 islands. Icon paths are the lucide subset this lane
- * emits (app.js:7-77); innerHTML is the original SVG injection.
+ * emits (app.js:7-77); innerHTML is the original SVG injection. `el` is the
+ * artifacts helper, re-exported rather than kept as a second copy.
  */
+
+import { el } from "../features/artifacts/api";
+
+export { el };
 
 const ICONS: Record<string, string> = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -33,17 +38,6 @@ const ICONS: Record<string, string> = {
 export function $(sel: string): HTMLElement | null {
   if (typeof document === "undefined") return null;
   return document.querySelector(sel);
-}
-
-export function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string | null,
-  text?: string | number | null,
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text != null) node.textContent = String(text);
-  return node;
 }
 
 export function icon(name: string, size?: number, cls?: string): string {

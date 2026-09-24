@@ -4,6 +4,8 @@ import { ACTION_TIMELINE_PAGE_SIZE, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   branchUndoFromProjection,
+  carryRevertPreview,
+  keepUnchanged,
   mergeActionTimelines,
   publicArtifacts,
   publicList,
@@ -485,5 +487,77 @@ describe("publicText still redacts through the sanitizer", () => {
       groups: [group("g", 1, { title: "sk-abcdefghijk" })],
     });
     expect(safe.groups[0]?.title).toBe("[redacted]");
+  });
+});
+
+describe("carryRevertPreview", () => {
+  const state = (head: string, extra: Record<string, unknown> = {}) =>
+    sanitizeBranches({
+      branch_id: "main",
+      branches: [
+        { branch_id: "main", head_checkpoint_id: head, checkpoints: [{ checkpoint_id: "cp-target" }, { checkpoint_id: head }] },
+        // A fork that has not moved yet shares its fork point with main.
+        { branch_id: "side", head_checkpoint_id: head, checkpoints: [{ checkpoint_id: "cp-target" }, { checkpoint_id: head }] },
+      ],
+      ...extra,
+    });
+  const previewOf = (fields: Record<string, unknown>) =>
+    sanitizeRevertPreview({ branch_id: "main", target_checkpoint_id: "cp-target", can_apply: true, ...fields });
+
+  it("keeps a preview whose head is still the branch head, and drops one whose head moved", () => {
+    const preview = previewOf({ current_checkpoint_id: "cp-head" });
+    const previous = { ...state("cp-head"), revert_preview: preview };
+    expect(carryRevertPreview(previous, state("cp-head")).revert_preview).toBe(preview);
+    expect(carryRevertPreview(previous, state("cp-moved")).revert_preview).toBeNull();
+  });
+
+  it("drops a preview for another branch and lets a refreshed preview win", () => {
+    const preview = previewOf({ current_checkpoint_id: "cp-head" });
+    const previous = { ...state("cp-head"), revert_preview: preview };
+    const otherBranch = sanitizeBranches({ ...state("cp-head"), branch_id: "side" });
+    expect(carryRevertPreview(previous, otherBranch).revert_preview).toBeNull();
+    const refreshed = state("cp-head", {
+      revert_preview: { branch_id: "main", current_checkpoint_id: "cp-head", target_checkpoint_id: "cp-head" },
+    });
+    expect(carryRevertPreview(previous, refreshed).revert_preview?.target_checkpoint_id).toBe("cp-head");
+  });
+
+  it("without a recorded head, keeps the preview only while its target is still listed", () => {
+    const preview = previewOf({});
+    const previous = { ...state("cp-head"), revert_preview: preview };
+    expect(carryRevertPreview(previous, state("cp-head")).revert_preview).toBe(preview);
+    const gone = sanitizeBranches({
+      branch_id: "main",
+      branches: [{ branch_id: "main", head_checkpoint_id: "cp-head", checkpoints: [{ checkpoint_id: "cp-head" }] }],
+    });
+    expect(carryRevertPreview(previous, gone).revert_preview).toBeNull();
+  });
+});
+
+describe("unchanged projections keep their identity", () => {
+  const timeline = (groups: unknown[]) =>
+    sanitizeActionTimeline({ root_frame_id: "f", branch_id: "br", groups });
+
+  it("a re-sent group that did not change stays the object already held", () => {
+    const current = timeline([group("a", 1), group("b", 2)]);
+    const merged = mergeActionTimelines(current, timeline([group("b", 2), group("c", 3)]), "latest")!;
+    expect(merged).not.toBe(current);
+    expect(merged.groups[1]).toBe(current.groups[1]);
+    const changed = mergeActionTimelines(current, timeline([group("b", 2, { status: "failed" })]), "latest")!;
+    expect(changed.groups[1]).not.toBe(current.groups[1]);
+    expect(changed.groups[1]!.status).toBe("failed");
+  });
+
+  it("a merge that changes nothing returns the current projection", () => {
+    const current = timeline([group("a", 1), group("b", 2)]);
+    expect(mergeActionTimelines(current, timeline([group("a", 1), group("b", 2)]), "latest")).toBe(current);
+  });
+
+  it("keepUnchanged compares content, not identity", () => {
+    const previous = sanitizeContext({ token_count: 3, layers: [{ name: "system" }] });
+    expect(keepUnchanged(previous, sanitizeContext({ token_count: 3, layers: [{ name: "system" }] }))).toBe(previous);
+    const next = sanitizeContext({ token_count: 4, layers: [{ name: "system" }] });
+    expect(keepUnchanged(previous, next)).toBe(next);
+    expect(keepUnchanged(null, next)).toBe(next);
   });
 });

@@ -1,4 +1,4 @@
-export { bootAttention, startAttentionPoll, stopAttentionPoll } from "./boot";
+export { bootAttention } from "./boot";
 export { fetchAttentionPage, refreshAttention } from "./api";
 export { attentionT } from "./copy";
 export {
@@ -28,7 +28,7 @@ export {
   parseAttentionTarget,
   projectNameFor,
 } from "./parse";
-export { ATTENTION_POLL_MS, readPollFlags, shouldFetchAttention } from "./poll";
+export { readPollFlags, shouldFetchAttention } from "./poll";
 export {
   attentionCards,
   attentionError,

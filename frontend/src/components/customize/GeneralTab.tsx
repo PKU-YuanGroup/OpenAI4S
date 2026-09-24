@@ -13,8 +13,11 @@ import { CustRow, Hdr, Seg } from "./ui";
 export function GeneralTab() {
   const alive = useAlive();
   const [keyLine, setKeyLine] = useState(t("cust.models.key.missing"));
-  const theme = getTheme();
-  const layout = getLayout();
+  // Shown from local state: a pick used to remount the whole tab (custTab),
+  // refetching the key line, the judgment settings and diagnostics, just to
+  // move the highlighted segment.
+  const [theme, setThemeChoice] = useState<ThemeMode>(getTheme);
+  const [layout, setLayoutChoice] = useState<LayoutName>(getLayout);
 
   useEffect(() => {
     void (async () => {
@@ -48,7 +51,7 @@ export function GeneralTab() {
           ]}
           onPick={(val) => {
             setTheme(val as ThemeMode);
-            custTab("general");
+            setThemeChoice(getTheme());
           }}
         />
       </CustRow>
@@ -62,7 +65,7 @@ export function GeneralTab() {
           ]}
           onPick={(val) => {
             setLayout(val as LayoutName);
-            custTab("general");
+            setLayoutChoice(val as LayoutName);
           }}
         />
       </CustRow>

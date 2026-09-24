@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: String }));
 vi.mock("./dashboard", () => ({ showWorkspace: vi.fn(), showDashboard: vi.fn() }));
-const recovery = vi.hoisted(() => ({ recoverConversation: vi.fn(async () => {}) }));
+const recovery = vi.hoisted(() => ({ recoverConversation: vi.fn(async () => {}), openConversation: vi.fn(async () => {}) }));
 vi.mock("../messages/open", () => recovery);
 
 import { _msgEarlierLoading, _openGen, currentId, _foldersFor, _sessionsLoadingMore, folders, foldersLoading, foldersLoadError, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError } from "../../stores/session";

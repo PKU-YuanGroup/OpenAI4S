@@ -1,5 +1,5 @@
 /**
- * F-20 boot: focus trap, team surface, ⌘K palette, upload/notes/mic,
+ * F-20 boot: focus trap, team surface, ⌘K palette, upload/mic,
  * layout density, column resizers.
  *
  * Assigns this lane's window names from the owning module (same pattern as
@@ -22,7 +22,6 @@ import {
   openModalEl,
   trapModalKeydown,
 } from "./modal";
-import { bindNotes, loadNotes } from "./notes";
 import {
   bindPaletteButton,
   closePalette,
@@ -68,7 +67,6 @@ export {
   probeTeamAuth,
 } from "./team";
 export { uploadFiles } from "./upload";
-export { addNote, effProject, loadNotes } from "./notes";
 
 type ChromeWindow = Record<string, unknown>;
 
@@ -85,7 +83,6 @@ function assignWindow(): void {
   w.setLayout = setLayout;
   w.uploadFiles = uploadFiles;
   w.micDictate = micDictate;
-  w.loadNotes = loadNotes;
 }
 
 function installWorkbenchKeys(): void {
@@ -107,37 +104,35 @@ function installWorkbenchKeys(): void {
   });
 }
 
+/**
+ * One boot step. A throw is reported and the remaining steps still bind: a
+ * single failure here used to leave ⌘K, uploads, the modal traps and
+ * everything after bootChrome() in main.tsx unbound.
+ */
+function bootStep(name: string, run: () => void): void {
+  try {
+    run();
+  } catch (error) {
+    console.error("bootChrome: " + name + " failed", error);
+  }
+}
+
 /** F-20 boot. Call after the shell has mounted so team ids can be found. */
 export function bootChrome(): void {
-  assignWindow();
-  addModalEscapeBlocker(() => isPaletteOpen());
-  applyLayout(readStoredLayout());
-  restoreColWidths();
-  initColResizers();
-  bindPaletteButton();
-  bindUpload();
-  bindNotes();
-  bindMic();
-  bindModalDismiss($("#cust"), $("#cust-close"));
-  bindModalDismiss($("#modal"), $("#modal-close"));
-  const closeProjectModal = hostFn("closeProjectModal");
-  const projClose = $("#proj-modal-close");
-  const projCancel = $("#pm-cancel");
-  const projModal = $("#proj-modal");
-  const closeProj = (): void => {
-    if (isReady(closeProjectModal)) closeProjectModal();
-    else closeModalEl(projModal);
-  };
-  if (projClose) projClose.addEventListener("click", closeProj);
-  if (projCancel) projCancel.addEventListener("click", closeProj);
-  if (projModal) {
-    projModal.addEventListener("click", (e) => {
-      if (e.target === projModal) closeProj();
-    });
-  }
-  installWorkbenchKeys();
-  bindDockChrome();
-  bootTeam();
+  bootStep("window names", assignWindow);
+  bootStep("palette escape", () => addModalEscapeBlocker(() => isPaletteOpen()));
+  bootStep("layout", () => applyLayout(readStoredLayout()));
+  bootStep("column widths", restoreColWidths);
+  bootStep("column resizers", initColResizers);
+  bootStep("palette", bindPaletteButton);
+  bootStep("upload", bindUpload);
+  bootStep("mic", bindMic);
+  // `#cust` is not bound here: Customize renders its own × and backdrop,
+  // both through closeCust(), so its open state has one owner.
+  bootStep("modal dismiss", () => bindModalDismiss($("#modal"), $("#modal-close")));
+  bootStep("keys", installWorkbenchKeys);
+  bootStep("dock", bindDockChrome);
+  bootStep("team", bootTeam);
 }
 
 function bindDockChrome(): void {

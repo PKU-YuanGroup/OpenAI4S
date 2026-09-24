@@ -9,7 +9,6 @@ import {
   consumeArtifactDeepLink,
   dockClose,
   dockToggle,
-  openArtifactFromHit,
   openViewer,
   renderConversationArtifacts,
   renderDockTabs,
@@ -45,7 +44,6 @@ export function installArtifacts(target?: Target): void {
     host.renderDockTabs = renderDockTabs;
     host.dockClose = dockClose;
     host.dockToggle = dockToggle;
-    host.openArtifactFromHit = openArtifactFromHit;
     host.loadArtifacts = loadArtifacts;
   }
   setLoadArtifactsImpl(loadArtifacts);

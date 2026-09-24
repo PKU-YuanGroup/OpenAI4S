@@ -117,8 +117,30 @@ export function renderWorkbenchTable(
   container.appendChild(chrome);
 
   let request = 0;
+  // The page on screen. Paging steps from it, never from a request still in
+  // flight: a double-clicked "Next" on a 60-row table used to ask for rows
+  // 101+ and show an empty table captioned "showing 101–60".
+  let shown: { offset: number; rows: number; total: number } | null = null;
+  const paging = (busy: boolean): void => {
+    prev.disabled = busy || !shown || shown.offset <= 0;
+    next.disabled = busy || !shown || shown.offset + shown.rows >= shown.total;
+  };
+  // The profile depends on the version and the filter only, so paging and
+  // sorting reuse it instead of recomputing it server-side on every click.
+  let profileRead: { path: string; result: Promise<TableProfile> } | null = null;
+  const readProfile = (path: string): Promise<TableProfile> => {
+    if (profileRead && profileRead.path === path) return profileRead.result;
+    const read = { path, result: api(path) as Promise<TableProfile> };
+    profileRead = read;
+    // A failed read is retried by the next load, never replayed from here.
+    read.result.catch(() => {
+      if (profileRead === read) profileRead = null;
+    });
+    return read.result;
+  };
   const load = async () => {
     const gen = ++request;
+    paging(true);
     const query = new URLSearchParams({
       sort: state.sort,
       dir: state.dir,
@@ -135,17 +157,19 @@ export function renderWorkbenchTable(
     } catch (error) {
       if (gen !== request) return;
       hold.textContent = apiErrorText(error);
+      paging(false);
       return;
     }
     if (gen !== request || !container.isConnected) return;
     const rows = payload.rows || [];
     const offset = payload.offset || 0;
     const total = payload.total_rows || 0;
+    shown = { offset, rows: rows.length, total };
     meta.textContent = translate(
       "wb.table.meta",
       total,
-      offset + 1,
-      Math.min(offset + rows.length, total),
+      rows.length ? offset + 1 : 0,
+      rows.length ? Math.min(offset + rows.length, total) : 0,
     );
     hold.innerHTML = "";
     const table = el("table", "sheet");
@@ -169,8 +193,7 @@ export function renderWorkbenchTable(
       table.appendChild(tr);
     });
     hold.appendChild(table);
-    prev.disabled = offset <= 0;
-    next.disabled = offset + rows.length >= total;
+    paging(false);
 
     const versionId = resolvedTableVersionId(a, payload.version_id);
     zonesHost.innerHTML = "";
@@ -195,7 +218,7 @@ export function renderWorkbenchTable(
         if (!search) {
           profileError = tableT("wb.table.profile.needVersion");
         } else {
-          profile = (await api(tableProfilePath(a.id, search))) as TableProfile;
+          profile = await readProfile(tableProfilePath(a.id, search));
         }
       } catch (error) {
         profileError = apiErrorText(error);
@@ -211,11 +234,13 @@ export function renderWorkbenchTable(
     void load();
   };
   prev.onclick = () => {
-    state.offset = Math.max(0, state.offset - state.limit);
+    if (!shown) return;
+    state.offset = Math.max(0, shown.offset - state.limit);
     void load();
   };
   next.onclick = () => {
-    state.offset += state.limit;
+    if (!shown || shown.offset + shown.rows >= shown.total) return;
+    state.offset = shown.offset + state.limit;
     void load();
   };
   void load();

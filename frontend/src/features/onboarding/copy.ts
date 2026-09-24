@@ -1,10 +1,12 @@
-import { LANG, tOptional } from "../../i18n/runtime";
+import { copyLookup, type CopyTable } from "../../i18n/copy";
+
+export { copyLookup, type CopyTable };
 
 /**
  * M-01 copy. Existing model/readiness keys stay in the F-07 dictionaries.
  * New wizard strings live here so we do not rewrite generated i18n/en.ts / zh.ts.
  */
-const COPY: Record<"zh" | "en", Record<string, string>> = {
+const COPY: CopyTable = {
   zh: {
     "onboarding.title": "首次设置",
     "onboarding.subtitle": "四个必需步骤。在你按下「测试连接」之前，不会向模型供应商发请求。",
@@ -85,13 +87,4 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
   },
 };
 
-export function ot(key: string, ...args: unknown[]): string {
-  const fromDict = tOptional(key);
-  let s = fromDict != null ? fromDict : COPY[LANG]?.[key] || COPY.en[key] || key;
-  if (args.length) {
-    s = String(s).replace(/\{(\d+)\}/g, (m, i) =>
-      args[+i] != null ? String(args[+i]) : m,
-    );
-  }
-  return s;
-}
+export const ot = copyLookup(COPY);

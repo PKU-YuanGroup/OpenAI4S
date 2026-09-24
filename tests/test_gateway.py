@@ -3860,6 +3860,69 @@ def test_model_routes_invalidate_datapro_only_when_effective_key_changes(
         runner.close()
 
 
+def test_models_default_refuses_a_deleted_profile_and_keeps_the_default(tmp_path):
+    """A deleted profile's id is not a model name.
+
+    A composer list read before the delete still offers the tombstoned
+    profile; its id used to be written into `llm_model`, so every later call
+    asked the provider for a model called "mp-...". It is refused the way
+    activate() refuses a tombstone, and nothing changes; a plain model name
+    (the `.env` / older-client path) still works.
+    """
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    store.set_model_profiles(
+        [
+            {
+                "id": "ark-a",
+                "name": "Ark A",
+                "provider": "ark",
+                "base_url": "",
+                "model": "model-a",
+                "api_key": "profile-a-key",
+            },
+            {
+                "id": "mp-deadbeef",
+                "name": "Deleted",
+                "provider": "ark",
+                "base_url": "",
+                "model": "model-gone",
+                "api_key": "",
+                "deleted_at": 1,
+            },
+        ]
+    )
+    store.set_setting("llm_provider", "ark")
+    store.set_setting("llm_model", "model-a")
+    replies: list[tuple[int, dict]] = []
+    body: dict = {}
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        handler._query = lambda: {}
+        handler._body = lambda: body
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._api("GET", "/models/default")
+        default_before = replies[-1][1]["default_model_id"]
+
+        body = {"model_id": "mp-deadbeef"}
+        handler._api("PUT", "/models/default")
+        assert replies[-1] == (404, {"error": "profile not found"})
+        assert store.get_setting("llm_model") == "model-a"
+        handler._api("GET", "/models/default")
+        assert replies[-1][1]["default_model_id"] == default_before
+
+        body = {"model_id": "model-direct"}
+        handler._api("PUT", "/models/default")
+        assert replies[-1] == (200, {"default_model_id": "model-direct"})
+        assert store.get_setting("llm_model") == "model-direct"
+    finally:
+        runner.close()
+
+
 @pytest.mark.stubbed_backend
 def test_config_provider_switch_never_reuses_old_provider_key_for_datapro(
     tmp_path, monkeypatch

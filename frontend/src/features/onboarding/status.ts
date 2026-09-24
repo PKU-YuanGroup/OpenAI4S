@@ -96,8 +96,3 @@ export function sanitizeOnboardingStatus(raw: unknown): OnboardingStatus {
     environment: sanitizeStandardProfileReadiness(row.environment),
   };
 }
-
-export function onboardingStatusHasSecret(status: OnboardingStatus, secret: string): boolean {
-  if (!secret) return false;
-  return JSON.stringify(status).includes(secret);
-}

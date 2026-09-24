@@ -8,9 +8,9 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`app.test.ts`](app.test.ts) | 脚手架 Vitest：`@preact/signals` 能更新。 |
-| [`app.tsx`](app.tsx) | 工作台 `App`。F-13 挂载仪表盘/工作台 `Shell`。 |
-| [`app.tsx`](app.tsx) | 空壳 `App`。真正的视图落地后会替换它。 |
+| [`app.test.ts`](app.test.ts) | 脚手架 Vitest：`@preact/signals` 能更新；语言变化时应用根节点会重绘。 |
+| [`app.tsx`](app.tsx) | 工作台 `App`。F-13 挂载仪表盘/工作台 `Shell`；它读取 `languageRevision`，切换语言时整棵 Shell 树都会重绘。 |
+| [`lane-names.test.ts`](lane-names.test.ts) | 传给 `callLane` / `callWindow` / `hostFn` / `laneCall` / `runIsland` 的每个名字都必须在某处被赋值：这些查找遇到缺失的名字只会返回 undefined，结果就是一个点了没反应的控件。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-20 import `features/chrome`（`bootChrome`）。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-19 import `features/customize`（`bootCustomize`）。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-17 import `features/artifacts`（`bootArtifacts`）。后续工作项可以再加一行模块 import。 |
@@ -32,5 +32,5 @@
 | [`features/`](features/) | F 系列领域内核。F-08 放下 markdown / 高亮 / CSV / 流截断 / 涂抹这些纯函数模块。 |
 | [`i18n/`](i18n/) | F-07：抽取的 zh/en 字典、`t()` / `tOptional` 运行时、计划模式 payload 辅助函数。 |
 | [`stores/`](stores/) | F-05 的 signal 模块。后续车道只 import 这些文件，不改本体。 |
-| [`components/`](components/) | 视图容器。F-15 加入 `timeline/`（`#dock-timeline` 的孤岛宿主）。 |
+| [`components/`](components/) | 视图容器。Action Timeline 不在这里：它是 `features/timeline/` 里的命令式孤岛。 |
 | [`islands/`](islands/) | F-18 命令式孤岛：3Dmol 懒注入、图片标注器、Ketcher、PDF/html-preview sandbox。 |

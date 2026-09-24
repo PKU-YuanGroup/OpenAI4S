@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { csvFields, delimiterFor, parseDelimited, parseTable } from "./csv";
+import { csvFields, delimiterFor, parseDelimited, parseTable, tableShape } from "./csv";
 
 /**
  * Quoted-newline sample. The three consumers that used to disagree
@@ -82,6 +82,36 @@ describe("heterogeneous JSON tables", () => {
   });
 });
 
+describe("delimited tables keep every column (AUDIT A44)", () => {
+  it("does not sniff a declared CSV/TSV as JSON when a header opens with a bracket", () => {
+    expect(parseTable("[Na+],[Cl-],conc\n1,2,3\n", { filename: "ions.csv" })).toEqual([
+      { "[Na+]": "1", "[Cl-]": "2", conc: "3" },
+    ]);
+    expect(parseTable("{a}\tb\n1\t2\n", { filename: "t", content_type: "text/tab-separated-values" })).toEqual([
+      { "{a}": "1", b: "2" },
+    ]);
+    // Undeclared text that looks like JSON is still read as JSON.
+    expect(parseTable('[{"a":1}]', { filename: "rows.txt" })).toEqual([{ a: 1 }]);
+  });
+
+  it("suffixes a repeated header instead of overwriting its twin", () => {
+    expect(parseTable("mean,mean,sd,mean\n1,2,3,4\n", { filename: "t.csv" })).toEqual([
+      { mean: "1", "mean.1": "2", sd: "3", "mean.2": "4" },
+    ]);
+  });
+
+  it("keeps cells past the header under their position; trailing separators add nothing", () => {
+    expect(parseTable("a,b\n1,2,3\n4,5\n", { filename: "t.csv" })).toEqual([
+      { a: "1", b: "2", "2": "3" },
+      { a: "4", b: "5", "2": "" },
+    ]);
+    expect(parseTable("a,b\n1,2,\n3,4,,\n", { filename: "t.csv" })).toEqual([
+      { a: "1", b: "2" },
+      { a: "3", b: "4" },
+    ]);
+  });
+});
+
 describe("array-of-array JSON tables", () => {
   it("renders a homogeneous array of arrays as positional columns", () => {
     expect(parseTable("[[1,2],[3,4]]", { filename: "values.json" })).toEqual([
@@ -95,5 +125,51 @@ describe("array-of-array JSON tables", () => {
   });
   it("still refuses a mix of array and object rows", () => {
     expect(parseTable("[[1,2],{\"a\":1}]", { filename: "values.json" })).toBeNull();
+  });
+});
+
+describe("tableShape: parseTable's rows and columns without the rows (AUDIT P06)", () => {
+  /** What the thumbnail reads off parseTable: the row count and the column set. */
+  function fromParse(text: string, a: { filename?: string; content_type?: string }) {
+    const rows = parseTable(text, a);
+    return rows && rows.length ? { rows: rows.length, columns: Object.keys(rows[0] || {}).sort() } : null;
+  }
+  function shape(text: string, a: { filename?: string; content_type?: string }) {
+    const found = tableShape(text, a);
+    return found && { rows: found.rows, columns: [...found.columns].sort() };
+  }
+
+  it("agrees with parseTable on hand-picked tables", () => {
+    const cases: Array<[string, { filename?: string; content_type?: string }]> = [
+      [QUOTED_NEWLINE, { filename: "t.csv" }],
+      ["gene\tlogFC\tpval\nTP53\t2.4\t0.001\n", { filename: "de.tsv" }],
+      ["gene\ts1\ts2\ts3\nA\t1\t2\t3\n", { filename: "counts.txt" }],
+      ["mean,mean,sd\r\n1,2,3\r\n\r\n4,5,6,7\r\n", { filename: "t.csv" }],
+      ['a,"b\r\n""c"""\n1,2\n, \n', { filename: "t.csv" }],
+      ["[Na+],[Cl-],conc\n1,2,3\n", { filename: "ions.csv" }],
+      ['[{"a":1,"b":2},{"a":3}]', { filename: "rows.json" }],
+      ["only a header\n", { filename: "t.csv" }],
+      ["", { filename: "t.csv" }],
+    ];
+    for (const [text, a] of cases) expect(shape(text, a)).toEqual(fromParse(text, a));
+    expect(tableShape("x,y,x\n1,2,3,4\n", { filename: "t.csv" })).toEqual({ rows: 1, columns: ["x", "y", "x.1", "3"] });
+  });
+
+  it("agrees with parseTable on generated delimited text", () => {
+    const tokens = ["a", "b", "7", " ", " ", ",", "\t", ";", "|", '"', '""', "\n", "\r\n", "\r", "[", "{"];
+    const names = ["t.csv", "t.tsv", "t.txt", "t"];
+    let x = 3;
+    const next = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0), (x >>> 8) % n);
+    let tables = 0;
+    for (let run = 0; run < 3000; run++) {
+      let text = "";
+      for (let i = 0, n = 1 + next(40); i < n; i++) text += tokens[next(tokens.length)];
+      const a = { filename: names[next(names.length)] };
+      const expected = fromParse(text, a);
+      if (expected) tables += 1;
+      expect(shape(text, a), JSON.stringify([text, a])).toEqual(expected);
+    }
+    // Most generated texts must be real tables, or agreeing on `null` proves little.
+    expect(tables).toBeGreaterThan(1000);
   });
 });

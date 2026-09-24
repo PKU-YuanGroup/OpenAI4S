@@ -15,6 +15,7 @@ import { openConversation, recoverConversation } from "../messages/open";
 import { renderProjMenu } from "./projects";
 import { resetNotebookCellCaches } from "../notebook/chrome";
 import { unsub } from "../ws/connect";
+import { openProject } from "./projects";
 
 /**
  * F-11 owns `resumeWatch` (send/ticket.ts). This lane carried a
@@ -113,6 +114,12 @@ export async function newSession(projectId?: string): Promise<void> {
  */
 export { openConversation };
 
+/**
+ * Show what the address names. Routing replaces the address it resolves
+ * (`/projects/<pid>` becomes that project's first session) instead of pushing
+ * a new entry: pushed, Back returned to `/projects/<pid>`, whose popstate
+ * routed and pushed again, so Back could never leave a project deep link.
+ */
 export async function routeInitialView(): Promise<void> {
   const path = (typeof location !== "undefined" && location.pathname) || "/";
   const fm = path.match(FRAME_ROUTE);
@@ -128,15 +135,14 @@ export async function routeInitialView(): Promise<void> {
     await loadSessionsForScope(sessionListScope());
     if (!ownsView(owner)) return;
     renderProjMenu();
-    await openConversation(fid, pid);
+    await openConversation(fid, pid, { replaceUrl: true });
     return;
   }
   const pm = path.match(PROJECT_ROUTE);
   if (pm) {
     const pid = decodeURIComponent(pm[1] || "");
     const owner = viewOwner();
-    const { openProject } = await import("./projects");
-    if (ownsView(owner)) await openProject(pid);
+    if (ownsView(owner)) await openProject(pid, { replaceUrl: true });
     return;
   }
   showDashboard();

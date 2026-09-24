@@ -13,7 +13,6 @@ import {
   setActiveTab,
   applyArtifactDeepLink,
   consumeArtifactDeepLink,
-  copyArtifactDeepLink,
   openViewer,
 } from "./ui";
 
@@ -118,18 +117,6 @@ describe("M-03 deep-link apply / openViewer", () => {
     expect(dockArtifact.value).toMatchObject({ root_frame_id: "real-frame", project_id: "real-project", version_id: "v-old" });
     expect((dockArtifact.value as ArtifactRow).producing_cell_id).toBeUndefined();
   });
-
-  it("copyable deep link omits version_id for latest and includes it for exact", async () => {
-    const latest = await copyArtifactDeepLink({ id: "art-1", version_id: "v-new" });
-    expect(latest).toContain("artifact=art-1");
-    expect(latest).not.toContain("version_id=");
-    const exact = await copyArtifactDeepLink({
-      id: "art-1",
-      version_id: "v-old",
-      _exactVersion: true,
-    });
-    expect(exact).toContain("version_id=v-old");
-  });
 });
 
 
@@ -162,6 +149,123 @@ describe("version-specific tabs", () => {
     expect(dockArtifact.value).not.toBe(latest);
     setArtifactsFetch(null);
   });
+  it("closing a background tab takes it off the tab bar (AUDIT A59)", () => {
+    class Node {
+      children: Node[] = []; className = ""; textContent = ""; title = "";
+      classList = { add: (name: string) => { this.className += " " + name; } };
+      onclick: ((event: { stopPropagation(): void }) => void) | null = null;
+      set innerHTML(_value: string) { this.children = []; }
+      appendChild(child: Node) { this.children.push(child); return child; }
+    }
+    const bar = new Node();
+    vi.stubGlobal("document", { getElementById: (id: string) => (id === "dock-tabs" ? bar : null), createElement: () => new Node() });
+    const names = () => bar.children.map((tab) => tab.children.find((node) => node.className === "t-name")?.textContent);
+    try {
+      addOpenTab({ id: "a", filename: "a.txt" });
+      addOpenTab({ id: "b", filename: "b.txt" });
+      setActiveTab("a");
+      expect(names()).toEqual(["a.txt", "b.txt", "Notebook", expect.any(String)]);
+      closeTab("b");
+      expect(activeTab.value).toBe("a");
+      expect(names()).toEqual(["a.txt", "Notebook", expect.any(String)]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+
+it("a failed session read shows Retry instead of an empty grid (AUDIT A26)", async () => {
+  const { currentId } = await import("../../stores/session");
+  const { renderFilesGrid } = await import("./ui");
+  const { loadArtifacts } = await import("./load");
+  const { filesReadFailed } = await import("./files-index");
+  const { resetFilesIndexState } = await import("./state");
+  const { filesT } = await import("./copy");
+  const { translate } = await import("./api");
+  class Node {
+    children: Node[] = []; className = ""; textContent = ""; title = ""; src = "";
+    dataset: Record<string, string> = {};
+    onclick?: () => unknown;
+    set innerHTML(_value: string) { this.children = []; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+  const list = new Node();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "results-list" ? list : id === "results-count" ? new Node() : null),
+    createElement: () => new Node(),
+  });
+  resetStoreFields();
+  resetFilesIndexState();
+  let reads = 0;
+  setArtifactsFetch(async () => {
+    reads += 1;
+    return reads === 1
+      ? jsonResponse({ error: "daemon restarting" }, 503)
+      : jsonResponse([{ id: "x", filename: "x.bin", content_type: "application/octet-stream" }]);
+  });
+  try {
+    currentId.value = "s";
+    await loadArtifacts("s");
+    renderFilesGrid();
+    const texts = walk(list).map((node) => node.textContent);
+    expect(texts).toContain(filesT("files.read.failed"));
+    expect(texts).not.toContain(translate("files.empty"));
+    walk(list).find((node) => node.textContent === translate("common.retry"))?.onclick?.();
+    await vi.waitFor(() => expect(filesReadFailed()).toBe(false));
+    expect(reads).toBe(2);
+    renderFilesGrid();
+    expect(walk(list).some((node) => node.className === "art")).toBe(true);
+    expect(walk(list).some((node) => node.className.includes("files-read-error"))).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});
+
+
+it("the Files grid says Loading, not empty, while the project index read is in flight (AUDIT A63)", async () => {
+  const { filesScope } = await import("../../stores/artifacts");
+  const { project } = await import("../../stores/session");
+  const { renderFilesGrid } = await import("./ui");
+  const { browseFiles } = await import("./files-index");
+  const { resetFilesIndexState } = await import("./state");
+  const { translate } = await import("./api");
+  class Node {
+    children: Node[] = []; className = ""; textContent = "";
+    set innerHTML(_value: string) { this.children = []; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  const list = new Node();
+  const count = new Node();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "results-list" ? list : id === "results-count" ? count : null),
+    createElement: () => new Node(),
+  });
+  resetStoreFields();
+  resetFilesIndexState();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  setArtifactsFetch(async () => { await held; return jsonResponse({ artifacts: [], next_cursor: null, has_more: false }); });
+  try {
+    filesScope.value = "project";
+    project.value = "p";
+    const reading = browseFiles({ reset: true });
+    renderFilesGrid();
+    expect(list.children.map((node) => node.textContent)).toEqual([translate("common.loading")]);
+    expect(count.textContent).toBe("…");
+    release();
+    await reading;
+    renderFilesGrid();
+    expect(list.children.map((node) => node.textContent)).toEqual([translate("files.emptyProject")]);
+    expect(count.textContent).toBe("0");
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
 });
 
 

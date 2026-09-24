@@ -12,8 +12,6 @@ export {
   nbCellStart,
   nbEventCellId,
   nbFindCell,
-  nbLiveAppend,
-  nbLiveStart,
   notebookDisplayEntries,
   projectNotebookCells,
   resetCellOutputs,
@@ -24,7 +22,6 @@ export {
 } from "./cells";
 export {
   NOTEBOOK_EXPORTS,
-  artUrlByName,
   highlightCellSource,
   highlightTraceback,
   looksBinary,
@@ -37,25 +34,27 @@ export {
 } from "./chrome";
 export { installNotebook, registerNotebookHandlers } from "./install";
 export {
+  currentKernelStatus,
   executeNotebookCode,
   handleKernelStatus,
   identityForOwner,
   invalidateKernelCache,
   kernelCtl,
-  kernelEpoch,
   kernelIdFromEnv,
   kernelLabel,
   kernelStatusOf,
-  nbPopulateEnvSelect,
+  kernelView,
   nbSwitchEnv,
   notebookOnTurnDone,
+  refreshKernelEnvs,
   refreshKernelState,
   replEnabledNow,
   runtimeSummary,
   setScheduleWorkbenchRefresh,
   setScopedExecutionRequest,
 } from "./kernel";
-export { cellNode, NotebookDock, renderNotebook, scrollToCell } from "./Notebook";
+export type { KernelView } from "./kernel";
+export { cellNode, NotebookDock, renderNotebook } from "./Notebook";
 export {
   NB_FOLLOW_PX,
   bindNotebookScroll,

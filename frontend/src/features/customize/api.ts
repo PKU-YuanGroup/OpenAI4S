@@ -72,9 +72,12 @@ function isDiagnosticsConfigWrite(path: string, method: string): boolean {
     || /^\/model-profiles\/[^/]+\/activate$/.test(route);
   if (verb === "PATCH") return /^\/model-profiles\/[^/]+$/.test(route)
     || route === "/experimental/judgment";
+  // `/models/default` activates the chosen profile (or rewrites `llm_model`);
+  // `/connectors/<id>` is the connector editor's save.
   if (verb === "PUT") return route === "/network/status"
     || route === "/experimental/judgment"
-    || /^\/connectors\/[^/]+\/enabled$/.test(route);
+    || route === "/models/default"
+    || /^\/connectors\/[^/]+(?:\/enabled)?$/.test(route);
   if (verb === "DELETE") return /^\/(?:model-profiles|connectors|permissions|compute\/remote)\/[^/]+$/.test(route);
   return false;
 }

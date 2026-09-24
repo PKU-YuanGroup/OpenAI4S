@@ -9,8 +9,8 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 | File | Responsibility |
 | --- | --- |
 | [`annot.ts`](annot.ts) | Image annotator, pin status, composer chip (app.js:8965-8993, 9149-9429). |
-| [`annot.test.ts`](annot.test.ts) | `annotationStatus` mapping; held pins; `openAnnotations`. |
-| [`dom.ts`](dom.ts) | `el` / `$` / lucide subset / `ghostIconBtn`. |
+| [`annot.test.ts`](annot.test.ts) | `annotationStatus` mapping; held pins; `openAnnotations`; the comment list reopens on the repainted chip after a removal. |
+| [`dom.ts`](dom.ts) | `el` (the artifacts helper, re-exported) / `$` / lucide subset / `ghostIconBtn`. |
 | [`frames.ts`](frames.ts) | Inert iframe policy, verified loopback origin and grant path checks; app-origin Ketcher + clipboard allow. |
 | [`frames.test.ts`](frames.test.ts) | iframe sandbox attributes, the derived loopback origin, grant path checks, and app-origin Ketcher. |
 | [`host.ts`](host.ts) | `isReady` window calls; `t()` fallback. |
@@ -19,6 +19,6 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 | [`ketcher.ts`](ketcher.ts) | `openKetcher` iframe onto `/ketcher` (app.js:10834). |
 | [`locator.ts`](locator.ts) | PDF / HTML locator comments (app.js:10835-10897). |
 | [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` lazy inject (app.js:9610-9673). |
-| [`mol.test.ts`](mol.test.ts) | No static 3Dmol import; no live CDN URL; vendored src. |
+| [`mol.test.ts`](mol.test.ts) | No static 3Dmol import; no live CDN URL; vendored src; only the latest attached structure creates a viewer, and the script is injected once. |
 | [`viewer.ts`](viewer.ts) | Dock Viewer chrome, editor, versions (app.js:9430-9609). |
 | [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` extension / content-type gate. |

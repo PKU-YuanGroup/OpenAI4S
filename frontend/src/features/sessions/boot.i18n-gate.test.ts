@@ -32,7 +32,7 @@ const route = vi.hoisted(() => ({
   routeInitialView: vi.fn(async () => {}),
   newSession: vi.fn(async () => {}),
 }));
-const dashboard = vi.hoisted(() => ({ showDashboard: vi.fn(), loadDashboard: vi.fn() }));
+const dashboard = vi.hoisted(() => ({ showDashboard: vi.fn(), loadDashboard: vi.fn(), repaintDashboard: vi.fn() }));
 const lists = vi.hoisted(() => ({ renderSessions: vi.fn(), renderEmptySession: vi.fn() }));
 
 vi.mock("../../i18n", async (importOriginal) => ({
@@ -69,6 +69,7 @@ beforeEach(() => {
   route.routeInitialView.mockClear();
   dashboard.showDashboard.mockClear();
   dashboard.loadDashboard.mockClear();
+  dashboard.repaintDashboard.mockClear();
   lists.renderSessions.mockClear();
   lists.renderEmptySession.mockClear();
   clicks = { "#new-session": {}, "#dash-new-project": {} };
@@ -78,6 +79,7 @@ beforeEach(() => {
     activeElement: null,
     querySelector: (selector: string) => clicks[selector] ?? null,
     querySelectorAll: () => [],
+    getElementById: () => null,
   });
   vi.stubGlobal("window", { addEventListener: vi.fn() });
   vi.stubGlobal("localStorage", { getItem: () => "en", setItem: () => undefined });
@@ -158,6 +160,28 @@ describe("bindWorkbench and the locale chunks", () => {
     expect(dashboard.loadDashboard).not.toHaveBeenCalled();
     expect(lists.renderSessions).not.toHaveBeenCalled();
     expect(lists.renderEmptySession).not.toHaveBeenCalled();
+  });
+
+  it("a language switch repaints the lists from what they hold, and only a switch does", async () => {
+    clicks["#dashboard"] = { classList: { contains: () => false } };
+    const { bindWorkbench } = await import("./boot");
+    const ready = bindWorkbench();
+    gate.release();
+    await ready;
+    await flush();
+    lists.renderSessions.mockClear();
+    const i18n = await import("../../i18n");
+
+    await i18n.setLang("en"); // the language on screen (localStorage says en): nothing to repaint
+    expect(dashboard.repaintDashboard).not.toHaveBeenCalled();
+    expect(lists.renderSessions).not.toHaveBeenCalled();
+
+    // (The i18n mock outlives resetModules, so every earlier test's workbench
+    // hook is registered too: the counts are "at least once", not "once".)
+    await i18n.setLang("zh");
+    expect(dashboard.repaintDashboard).toHaveBeenCalled();
+    expect(lists.renderSessions).toHaveBeenCalled();
+    expect(dashboard.loadDashboard).not.toHaveBeenCalled(); // no new reads
   });
 
   it("does not wait forever on a stalled locale chunk", async () => {

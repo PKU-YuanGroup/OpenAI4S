@@ -1,8 +1,8 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { publicModelId, publicText } from "../../features/scrub/scrub";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { defaultModel } from "../../stores/customize";
 import {
   asList,
@@ -24,7 +24,7 @@ import {
 } from "../../features/customize/models";
 import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Subhead } from "./ui";
 import { VolcenginePanel } from "./vendors/volcengine";
 
@@ -107,33 +107,27 @@ export function ModelsTab() {
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        // The live configuration alongside the saved profiles. An install
-        // driven by `.env` has no profiles at all, and this tab then said "No
-        // models configured yet" while every turn ran on the environment's
-        // model. Best-effort: an unreadable config must not hide the profiles.
-        const [next, conf] = await Promise.all([
-          api("/model-profiles"),
-          api("/config/llm").catch(() => null),
-        ]);
-        if (!alive()) return;
-        setData({
-          profiles: asList(next.profiles) as Profile[],
-          active_id: asString(next.active_id),
-          protocols: asList(next.protocols),
-        });
-        setLive(readLiveModel(conf));
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
-      }
-    })();
-  }, [alive]);
+  useTabRead(
+    "models",
+    async (current) => {
+      // The live configuration alongside the saved profiles. An install
+      // driven by `.env` has no profiles at all, and this tab then said "No
+      // models configured yet" while every turn ran on the environment's
+      // model. Best-effort: an unreadable config must not hide the profiles.
+      const [next, conf] = await Promise.all([
+        api("/model-profiles"),
+        api("/config/llm").catch(() => null),
+      ]);
+      if (!current()) return;
+      setData({
+        profiles: asList(next.profiles) as Profile[],
+        active_id: asString(next.active_id),
+        protocols: asList(next.protocols),
+      });
+      setLive(readLiveModel(conf));
+    },
+    setErr,
+  );
 
   const protocols: ProtocolOption[] = modelProtocolOptions(data.protocols);
   const protocolIds = new Set(protocols.map((item) => item.value));
@@ -312,11 +306,12 @@ export function ModelsTab() {
                   });
                   hint(t("toast.models.added", nm));
                 }
-                if (editing && editing.id === data.active_id) {
-                  await refreshKeyBanner();
-                  await loadModels();
-                }
-                custTab("models");
+                if (editing && editing.id === data.active_id) await refreshKeyBanner();
+                // `#model-select` lists every saved profile by id and name.
+                await loadModels();
+                resetForm();
+                setSaving(false);
+                refreshCustTab("models");
               } catch (e) {
                 setSaving(false);
                 hint(t("artifact.save.err", apiErrorText(e)), true);
@@ -348,6 +343,9 @@ export function ModelsTab() {
             activeId={data.active_id}
             protocols={protocols}
             onEdit={() => startEdit(p)}
+            onDeleted={() => {
+              if (editing && editing.id === p.id) resetForm();
+            }}
           />
         ))
       )}
@@ -385,7 +383,7 @@ function liveModelRow(live: LiveModel, protocols: ProtocolOption[]) {
   );
 }
 
-function LocalEndpointRow({
+export function LocalEndpointRow({
   endpoint,
   profiles,
 }: {
@@ -398,6 +396,7 @@ function LocalEndpointRow({
   profiles: Profile[];
 }) {
   const [model, setModel] = useState(endpoint.default_model);
+  const [adding, setAdding] = useState(false);
   const configured = profiles.some(
     (profile) =>
       loopbackModelBase(profile.base_url) === endpoint.base_url && profile.model === model,
@@ -428,10 +427,11 @@ function LocalEndpointRow({
       <button
         type="button"
         class="outline-btn small"
-        disabled={configured || !model}
+        disabled={configured || !model || adding}
         onClick={async () => {
           const next = publicText(model, 512);
-          if (!next || configured) return;
+          if (!next || configured || adding) return;
+          setAdding(true);
           try {
             await api("/model-profiles", {
               method: "POST",
@@ -443,9 +443,12 @@ function LocalEndpointRow({
               }),
             });
             hint(t("cust.models.local.added", next));
-            custTab("models");
+            await loadModels();
+            refreshCustTab("models");
           } catch (error) {
             hint(t("artifact.save.err", publicText((error as Error).message, 240)), true);
+          } finally {
+            setAdding(false);
           }
         }}
       >
@@ -455,16 +458,18 @@ function LocalEndpointRow({
   );
 }
 
-function ProfileRow({
+export function ProfileRow({
   p,
   activeId,
   protocols,
   onEdit,
+  onDeleted,
 }: {
   p: Profile;
   activeId: string;
   protocols: ProtocolOption[];
   onEdit: () => void;
+  onDeleted?: () => void;
 }) {
   const isActive = p.id === activeId;
   const rd = (p.readiness && typeof p.readiness === "object"
@@ -513,7 +518,7 @@ function ProfileRow({
               defaultModel.value = p.model || defaultModel.value;
               await loadModels();
               await refreshKeyBanner();
-              custTab("models");
+              refreshCustTab("models");
             } catch (e) {
               hint(t("toast.switchFailed", apiErrorText(e)), true);
             }
@@ -569,11 +574,11 @@ function ProfileRow({
           try {
             await api(`/model-profiles/${p.id}`, { method: "DELETE" });
             hint(t("toast.deleted"));
-            if (isActive) {
-              await refreshKeyBanner();
-              await loadModels();
-            }
-            custTab("models");
+            if (isActive) await refreshKeyBanner();
+            // A deleted profile left in `#model-select` could still be chosen.
+            await loadModels();
+            onDeleted?.();
+            refreshCustTab("models");
           } catch (e) {
             hint(t("toast.deleteFailed", apiErrorText(e)), true);
           }

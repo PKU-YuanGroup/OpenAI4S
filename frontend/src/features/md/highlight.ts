@@ -119,6 +119,31 @@ function sp(cls: string, s: string): string {
   return '<span class="tok-' + cls + '">' + esc(s) + "</span>";
 }
 
+/** Past this a block is shown escaped but untokenized (a pasted data dump, not code to read). */
+export const HIGHLIGHT_MAX_CHARS = 200_000;
+
+/**
+ * The last block highlighted, so a streamed code block that only grew is
+ * scanned from where its last token started instead of from the top.
+ *
+ * Every token starts in the scanner's default state, and nothing before the
+ * last newline scanned outside a token can change as text arrives: numbers
+ * and identifiers stop at a line end, and a string or comment still open
+ * there is the last token. So when the new code extends the old, the scan
+ * resumes at the start of the last line, or at the last token if that began
+ * earlier (an unclosed multi-line string or comment). The last token alone
+ * is not enough: "0x" is a number and an identifier until "1" arrives.
+ * Without this an open fence was re-tokenized from its first line on every
+ * frame, which is why highlighting used to give up at 24,000 chars.
+ */
+type HighlightMemo = { lang: string; code: string; html: string; resumeAt: number; resumeHtml: number };
+let highlightMemo: HighlightMemo | null = null;
+
+/** Tests: forget the streamed-block memo. */
+export function resetMdHighlightMemo(): void {
+  highlightMemo = null;
+}
+
 /**
  * Lightweight language-aware tokenizer. Returns escaped HTML with
  * `<span class="tok-*">` wrappers; concatenating textContent of the result
@@ -127,7 +152,7 @@ function sp(cls: string, s: string): string {
 export function mdHighlight(code: string | null | undefined, lang?: string | null): string {
   code = String(code == null ? "" : code);
   if (!code) return "";
-  if (code.length > 24000) return esc(code);
+  if (code.length > HIGHLIGHT_MAX_CHARS) return esc(code);
   const c = mdLang(lang);
   const kw = mdKw(lang);
   const lc = MD_LINE_COMMENT[c] || null;
@@ -138,7 +163,18 @@ export function mdHighlight(code: string | null | undefined, lang?: string | nul
   let i = 0;
   const n = code.length;
   let out = "";
+  const memo = highlightMemo;
+  if (memo && memo.lang === c && n >= memo.code.length && code.startsWith(memo.code)) {
+    i = memo.resumeAt;
+    out = memo.html.slice(0, memo.resumeHtml);
+  }
+  let lastStart = i;
+  let lastHtml = out.length;
+  let lineStart = i;
+  let lineHtml = out.length;
   while (i < n) {
+    lastStart = i;
+    lastHtml = out.length;
     const ch = code.charAt(i);
     if (lc && code.startsWith(lc, i)) {
       let j = code.indexOf("\n", i);
@@ -194,7 +230,15 @@ export function mdHighlight(code: string | null | undefined, lang?: string | nul
     }
     out += esc(ch);
     i++;
+    if (ch === "\n") {
+      lineStart = i;
+      lineHtml = out.length;
+    }
   }
+  highlightMemo =
+    lastStart < lineStart
+      ? { lang: c, code, html: out, resumeAt: lastStart, resumeHtml: lastHtml }
+      : { lang: c, code, html: out, resumeAt: lineStart, resumeHtml: lineHtml };
   return out;
 }
 

@@ -12,7 +12,9 @@ F-12 composer (`@` / `#` / `/`) and right-dock editor autocomplete. Keyword list
 | [`detect.test.ts`](detect.test.ts) | Trigger parsing: boundary, empty query, mid-token, Han/IME. |
 | [`rank.ts`](rank.ts) | Composer filter + cap 8; editor keywords-first then buffer identifiers. |
 | [`rank.test.ts`](rank.test.ts) | Ranking, identity-dedupe, F-08 keyword table, no private EDKW. |
-| [`composer.ts`](composer.ts) | Live `ac` controller, project-file cache, `#composer-ac` popup. |
-| [`editor.ts`](editor.ts) | Per-editor controller, caret mirror, `execCommand('insertText')`. |
+| [`composer.ts`](composer.ts) | Live `ac` controller, project-file cache, `#composer-ac` popup. An update whose list loads after a newer keystroke's is dropped, and the popup is filtered and anchored on the token at the caret once the list is in. |
+| [`catalog.ts`](catalog.ts) | `loadSkillsCatalog`: the one skills-catalog loader for `/` completions and `send()`'s `/skill` directive (the palette can adopt it). Concurrent callers share one request; a failed read rejects and is not stored, so the next caller retries. |
+| [`composer.test.ts`](composer.test.ts) | Out-of-order file lists: the newest keystroke wins; the replacement starts at the token at the caret after the load; a caret that left the token closes the popup. `/` completions return after a failed catalog read; the shared catalog stores no failure and dedupes a concurrent load. |
+| [`editor.ts`](editor.ts) | Per-editor controller, caret mirror, `execCommand('insertText')`. Editors are bound at their mount point (`bindEditorAutocomplete`); `watchEditAreas` binds those present once, with no document-wide observer. |
 | [`index.ts`](index.ts) | `installAutocomplete` assigns window names; binds composer + `.edit-area`. |
-| [`install.test.ts`](install.test.ts) | `ac` is the live object; `edacTeardown` passes `isReady`. |
+| [`install.test.ts`](install.test.ts) | `ac` is the live object; `edacTeardown` passes `isReady`; no MutationObserver watches the document for editor textareas. |

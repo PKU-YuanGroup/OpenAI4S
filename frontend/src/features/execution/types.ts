@@ -18,6 +18,8 @@ export type ExecSourcesState = {
   error: string;
   request: number;
   cellRequest?: number;
+  /** The session's saved cells when the snapshot was last read (executedCellsStamp). */
+  stamp?: string;
 };
 
 export type LineageInteraction = {

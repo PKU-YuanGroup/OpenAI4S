@@ -1,7 +1,6 @@
 export { bootOnboarding } from "./boot";
 export { ot } from "./copy";
 export {
-  capabilityBadgeMarkup,
   capabilityBadgeRows,
   capabilityBadgeText,
   capabilityUnknownReason,

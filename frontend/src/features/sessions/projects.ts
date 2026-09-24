@@ -1,6 +1,8 @@
 /** Projects: menu, modal, research view. app.js:6767-6913, 6840-6861. */
 
 import { publicText } from "../scrub/scrub";
+import { actionTimelineCard } from "../timeline/island";
+import type { TimelineGroup } from "../timeline/types";
 import { t } from "../../i18n";
 import {
   _openGen,
@@ -13,13 +15,21 @@ import {
 import { _modalMode } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
-import { hint } from "./chrome";
+import { hint, reportFailure } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
-import { callLane, hostFn } from "./lane";
-import { loadProjects, loadSessions, loadSessionsForScope, sessionListScope } from "./load";
+import { callLane } from "./lane";
+import {
+  loadProjects,
+  loadSessions,
+  loadSessionsForScope,
+  normalizeProjectQuery,
+  sessionListScope,
+} from "./load";
 import { beginNavigation } from "./navigation";
+import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
+import { recoverConversation } from "../messages/open";
 
 type ProjectLike = {
   project_id?: string;
@@ -129,11 +139,7 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
           ),
         );
       }
-      const cardFn = hostFn("actionTimelineCard");
-      if (cardFn) {
-        const card = cardFn(group as never);
-        if (card instanceof Node) wrapper.appendChild(card);
-      }
+      wrapper.appendChild(actionTimelineCard(group as TimelineGroup));
       content.appendChild(wrapper);
     });
   };
@@ -233,8 +239,6 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
   void select(initialTab === "lineage" ? "lineage" : "timeline");
 }
 
-binds.renderProjMenu = () => renderProjMenu();
-
 export function renderProjMenu(): void {
   const current = $("#proj-current");
   if (current) {
@@ -270,15 +274,21 @@ export function renderProjMenu(): void {
       void openProjectResearchView("timeline");
     });
     item(t("sessionPackage.import"), "cloud-upload", () => {
-      import("./actions").then((mod) => mod.chooseSessionPackage());
+      try {
+        chooseSessionPackage();
+      } catch (error) {
+        reportFailure(error);
+      }
     });
     item(t("proj.menu.downloadArtifacts"), "download", () => {
-      import("./actions").then((mod) =>
-        mod.downloadArtifactBundle(
+      try {
+        downloadArtifactBundle(
           `/api/v1/projects/${encodeURIComponent(project.value as string)}/artifacts.zip`,
           `${projName(project.value)}-artifacts.zip`,
-        ),
-      );
+        );
+      } catch (error) {
+        reportFailure(error);
+      }
     });
     m.appendChild(el("div", "ctx-sep"));
   }
@@ -324,7 +334,8 @@ async function reclaimView(gen: number, filterVersion: number, workspaceShown: b
   else if (workspaceShown && project.value) await openProject(project.value);
 }
 
-export async function openProject(id: string): Promise<void> {
+/** `replaceUrl`: routing resolves a project address, see `routeInitialView`. */
+export async function openProject(id: string, options?: { replaceUrl?: boolean }): Promise<void> {
   // A project trip is navigation: bump the generation so any continuation still
   // parked on an await (an upload-created session about to open its
   // conversation, a resume watchdog) sees a stale token and stands down instead
@@ -348,7 +359,6 @@ export async function openProject(id: string): Promise<void> {
     // and reopening it would rewrite its address with the sidebar's project.
     const retained = currentId.value;
     if (retained) {
-      const { recoverConversation } = await import("../messages/open");
       if (_openGen.value !== gen || currentId.value !== retained) return;
       await Promise.allSettled([
         recoverConversation(retained, gen),
@@ -365,8 +375,10 @@ export async function openProject(id: string): Promise<void> {
   // next navigation raced the open this call had not finished.
   // The child takes its own generation; ownership checks belong before this
   // handoff, not after it.
-  if (first?.id) await binds.openConversation(first.id, id);
-  else await binds.newSession(id);
+  if (first?.id) {
+    if (options?.replaceUrl) await binds.openConversation(first.id, id, { replaceUrl: true });
+    else await binds.openConversation(first.id, id);
+  } else await binds.newSession(id);
 }
 
 export async function createProject(
@@ -425,10 +437,11 @@ export async function submitProjectModal(): Promise<void> {
           context: ($("#pm-ctx") as HTMLTextAreaElement | null)?.value,
         }),
       });
-      // The dashboard keeps its search box across visits; a repaint must
-      // load the page that box describes, not the unfiltered directory.
+      // The directory carries the new name to the header and the switcher; a
+      // dashboard showing a search reloads the page its box describes too.
       const dashVisible = !$("#dashboard")?.classList.contains("hidden");
-      await loadProjects({ q: dashVisible ? String(projectsQuery.value || "") : "" });
+      const q = dashVisible ? normalizeProjectQuery(String(projectsQuery.value || "")) : "";
+      await Promise.all([loadProjects(), q ? loadProjects({ q }) : null]);
       renderProjMenu();
       if (dashVisible) binds.renderDashProjects();
       closeProjectModal();

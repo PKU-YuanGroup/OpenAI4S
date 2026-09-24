@@ -1,4 +1,7 @@
+import { effect } from "@preact/signals";
 import { describe, expect, it, vi } from "vitest";
+import { workbenchErrors } from "../../stores/timeline";
+import { applyForkPresentation } from "./branch";
 import {
   FORK_NO_CHECKPOINT_MESSAGE,
   forkErrorDisplay,
@@ -100,5 +103,19 @@ describe("fork 409 presentation (CursorCheckpointUnavailable)", () => {
   it("keeps a successful POST as ok without inventing a conflict", async () => {
     const attempt = await forkOnce(async () => ({ branch_id: "b1" }));
     expect(attempt).toEqual({ ok: true, result: { branch_id: "b1" }, attempts: 1 });
+  });
+});
+
+describe("applyForkPresentation", () => {
+  it("publishes a new workbenchErrors object, so a subscriber sees the banner", () => {
+    workbenchErrors.value = { recoveryAction: "earlier" };
+    const seen: Array<Record<string, unknown>> = [];
+    const stop = effect(() => {
+      seen.push(workbenchErrors.value);
+    });
+    applyForkPresentation(presentForkError(conflict409()));
+    stop();
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual({ recoveryAction: "earlier", branchAction: FORK_NO_CHECKPOINT_MESSAGE });
   });
 });

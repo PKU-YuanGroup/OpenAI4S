@@ -8,7 +8,6 @@
 import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
-import { isReady } from "../compat/stub";
 import { api, apiErrorText, bytes } from "../features/artifacts/api";
 import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
 import { validateArtifactVersions } from "../features/artifacts/validation";
@@ -26,6 +25,7 @@ import {
   renderProvenanceInto,
 } from "../features/execution/provenance";
 import { edacTeardown } from "../features/autocomplete/editor";
+import { copyFailedText, copyText } from "../features/chrome/clipboard";
 import { openModalEl } from "../features/chrome/modal";
 import { hint, openMenu, type MenuItem } from "../features/sessions/chrome";
 import { ago } from "../features/sessions/dom";
@@ -112,6 +112,17 @@ export function openArtifact(a: ArtifactRow): void {
   const body = $("#modal-body");
   if (body) renderArtifactBody(body, a);
   openModalEl($("#modal"));
+}
+
+/**
+ * Copy the Viewer deep link. A refused write puts the link in the status
+ * line to copy by hand, instead of claiming a copy nobody made.
+ */
+async function copyDeepLink(a: ArtifactRow): Promise<boolean> {
+  const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
+  if (await copyText(href)) return true;
+  hint(copyFailedText() + " " + href, true);
+  return false;
 }
 
 export function editArtifact(a: ArtifactRow): void {
@@ -206,15 +217,9 @@ function artifactMenu(anchor: Element, a: ArtifactRow): void {
       label: translate("menu.copyLink"),
       icon: "link",
       onClick: () => {
-        try {
-          const nav = (globalThis as { navigator?: { clipboard?: { writeText?: (s: string) => void } } })
-            .navigator;
-          if (nav && nav.clipboard && nav.clipboard.writeText)
-            nav.clipboard.writeText(artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null));
-        } catch {
-          /* clipboard denied */
-        }
-        hint(translate("artifact.linkCopied"));
+        void copyDeepLink(a).then((ok) => {
+          if (ok) hint(translate("artifact.linkCopied"));
+        });
       },
     },
     {
@@ -285,16 +290,25 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
   if (dl) dl.style.display = "none";
   const body = $("#modal-body");
   if (!body) return;
-  body.innerHTML = "<div class='dock-empty'>" + translate("common.loading") + "</div>";
+  body.innerHTML = "";
+  // The modal body is shared: another artifact's versions, the fullscreen
+  // preview, Ketcher and the project view all clear it and paint their own.
+  // A read paints only while a node this view put there is still attached,
+  // so A's late list cannot land in B's modal (where "Restore" acts on A).
+  let shown: HTMLElement = el("div", "dock-empty", translate("common.loading"));
+  body.appendChild(shown);
   openModalEl($("#modal"));
   const render = async (): Promise<void> => {
+    const owner = shown;
     let d: { versions?: VersionRow[] } | null = null;
     try {
       d = (await api(`/artifacts/${a.id}/versions`)) as { versions?: VersionRow[] };
     } catch (e) {
+      if (!owner.isConnected) return;
       body.textContent = translate("versions.load.err", (e as { message?: string }).message || String(e));
       return;
     }
+    if (!owner.isConnected) return;
     const vs = (d && d.versions) || [];
     body.innerHTML = "";
     const wrap = el("div", "ver-list"),
@@ -346,8 +360,7 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
             })) as { artifact?: ArtifactRow } | null;
             syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true);
             hint(translate("versions.restored", v.ordinal));
-            const bust = _artBust.value || {};
-            bust[a.id] = Date.now();
+            _artBust.value = { ..._artBust.value, [a.id]: Date.now() };
             if (currentId.value) void loadArtifacts(currentId.value);
             const docked = dockArtifact.value as ArtifactRow | null;
             if (docked && docked.id === a.id) {
@@ -375,6 +388,7 @@ export async function showVersions(a: ArtifactRow): Promise<void> {
     });
     body.appendChild(wrap);
     body.appendChild(diffPanel);
+    shown = wrap;
   };
   void render();
 }
@@ -404,11 +418,9 @@ export function renderViewer(): void {
   const acts = el("div", "vh-acts");
   const copy = el("button", "outline-btn small", filesT("files.deeplink.copy"));
   copy.onclick = () => {
-    const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
-    const clip = (globalThis as { navigator?: { clipboard?: { writeText?: (s: string) => Promise<void> } } })
-      .navigator?.clipboard?.writeText;
-    if (isReady(clip)) void clip(href);
-    copy.textContent = filesT("files.deeplink.copied");
+    void copyDeepLink(a).then((ok) => {
+      if (ok) copy.textContent = filesT("files.deeplink.copied");
+    });
   };
   const menuBtn = ghostIconBtn("more-vertical", translate("viewer.act.more"));
   menuBtn.onclick = () => artifactMenu(menuBtn, a);

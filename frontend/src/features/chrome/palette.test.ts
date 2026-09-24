@@ -96,6 +96,29 @@ describe("F-20 command palette", () => {
     expect(setActiveTab).toHaveBeenCalledWith("files");
   });
 
+  it("a session that fails to open is handled, not left as an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const openConversation = vi.fn().mockRejectedValue(new Error("session gone"));
+      const openViewer = vi.fn();
+      vi.stubGlobal("window", { openConversation, openViewer });
+      currentId.value = "other";
+      const { openDataproSearchHit, openPaletteArtifact } = await import("./palette");
+      openPaletteArtifact({ id: "art_1", root_frame_id: "frame_9" });
+      openDataproSearchHit({ artifact_id: "art_2", root_frame_id: "frame_9" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(openConversation).toHaveBeenCalledTimes(2);
+      expect(unhandled).toEqual([]);
+      expect(openViewer).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("same-session hit skips openConversation", async () => {
     const openConversation = vi.fn();
     const openViewer = vi.fn();
@@ -167,6 +190,99 @@ describe("F-20 command palette", () => {
     expect(PAL.items.some((it) => it.label === "stale.csv")).toBe(false);
   });
 
+  it("does not cache a failed skills catalog; the next search retries it", async () => {
+    stubPaletteDom();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => ({ ok: false, status: 503, text: async () => "{}" }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        text: async () => JSON.stringify({ skills: [{ name: "plotting", displayName: "Plotting" }] }),
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { PAL, palSearch } = await import("./palette");
+    PAL.listEl = paletteList() as unknown as HTMLElement;
+    await palSearch("");
+    expect(skillsCatalog.value).toBeNull();
+    expect(PAL.items.some((it) => it.label === "Plotting")).toBe(false);
+    await palSearch("");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(PAL.items.some((it) => it.label === "Plotting")).toBe(true);
+  });
+
+  it("Enter acts on the typed query's rows while /search is still in flight", async () => {
+    const inputs: Array<{ value: string; listeners: Record<string, (e: unknown) => void> }> = [];
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => {
+        const listeners: Record<string, (e: unknown) => void> = {};
+        const node = {
+          tagName: tag.toUpperCase(),
+          className: "",
+          textContent: "",
+          innerHTML: "",
+          value: "",
+          style: {},
+          listeners,
+          appendChild: vi.fn(),
+          setAttribute: vi.fn(),
+          remove: vi.fn(),
+          focus: vi.fn(),
+          querySelectorAll: () => [],
+          addEventListener: (type: string, fn: (e: unknown) => void) => {
+            listeners[type] = fn;
+          },
+        };
+        if (tag === "input") inputs.push(node);
+        return node;
+      },
+      body: { appendChild: vi.fn() },
+    });
+    const openCust = vi.fn();
+    const newSession = vi.fn();
+    const openConversation = vi.fn();
+    vi.stubGlobal("window", { openCust, newSession, openConversation });
+    skillsCatalog.value = [];
+    let answer: (body: unknown) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            answer = (body) => resolve({ ok: true, text: async () => JSON.stringify(body) });
+          }),
+      ),
+    );
+    const { t } = await import("../../i18n/runtime");
+    const { PAL, closePalette, openPalette } = await import("./palette");
+    closePalette();
+    openPalette();
+    const input = inputs[inputs.length - 1]!;
+    const type = (value: string): void => {
+      input.value = value;
+      input.listeners.input!({});
+    };
+    const enter = (): void => {
+      input.listeners.keydown!({ key: "Enter", isComposing: false, keyCode: 13, preventDefault: vi.fn() });
+    };
+
+    // The empty query lists "New session" first. Typing a command and
+    // pressing Enter before /search answers must run that command.
+    type(t("palette.action.customize").toLowerCase());
+    enter();
+    expect(openCust).toHaveBeenCalledTimes(1);
+    expect(newSession).not.toHaveBeenCalled();
+
+    // No local match: Enter waits for this query's own results.
+    type("zzz");
+    enter();
+    await Promise.resolve();
+    expect(openConversation).not.toHaveBeenCalled();
+    answer({ sessions: [{ id: "frame_z", name: "zzz notes" }], artifacts: [], datapro: [] });
+    await vi.waitFor(() => expect(openConversation).toHaveBeenCalledWith("frame_z", null));
+    expect(newSession).not.toHaveBeenCalled();
+    expect(PAL.open).toBe(false);
+  });
+
   it("source gates later-lane names with isReady and never imports window-exports", () => {
     const src = readFileSync(join(here, "palette.ts"), "utf8");
     expect(src).toContain("isReady");
@@ -174,3 +290,25 @@ describe("F-20 command palette", () => {
     expect(src).not.toMatch(/typeof\s+\w+\s*===\s*["']function["']/);
   });
 });
+
+function paletteList(): { innerHTML: string; appendChild: ReturnType<typeof vi.fn>; querySelectorAll: () => never[] } {
+  return { innerHTML: "", appendChild: vi.fn(), querySelectorAll: () => [] };
+}
+
+function stubPaletteDom(): void {
+  vi.stubGlobal("window", {});
+  vi.stubGlobal("document", {
+    createElement: (tag: string) => ({
+      tagName: tag.toUpperCase(),
+      className: "",
+      textContent: "",
+      innerHTML: "",
+      style: {},
+      appendChild: vi.fn(),
+      setAttribute: vi.fn(),
+      addEventListener: vi.fn(),
+      querySelectorAll: () => [],
+    }),
+    body: { appendChild: vi.fn() },
+  });
+}

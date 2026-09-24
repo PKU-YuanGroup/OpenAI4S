@@ -43,6 +43,7 @@ import {
 import {
   permCards,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -86,7 +87,9 @@ import { invalidateKernelCache } from "../notebook/kernel";
 import { renderPlanCard } from "../send/plan";
 import { closeTurnTicket, resumeWatch } from "../send/ticket";
 import { failureHint, lastTerminalFailure } from "../send/turn";
+import { destroyActionTimelineView, renderActionTimeline } from "../timeline/island";
 import { hint } from "../sessions/chrome";
+import { refreshComputeStatus } from "../sessions/compute";
 import { showWorkspace } from "../sessions/dashboard";
 import {
   enableComposer,
@@ -183,10 +186,30 @@ function resetSessionScoped(): void {
   planReady.value = null;
   planStatus.value = null;
   planPending.value = false;
+  planPendingTurn.value = null;
   computeStatus.value = null;
   annotations.value = [];
   _editing.value = null;
+  // Destroyed before it is dropped: its document keydown listener and its
+  // ResizeObserver can only be released through the view object itself.
+  destroyActionTimelineView();
   _timelineView.value = null;
+}
+
+/**
+ * A same-frame reset (branch activate/revert/undo) keeps the dock on the pane
+ * the user was using and repaints it. The reset closes every artifact tab, so
+ * only the built-in panes can be kept. Switching `activeTab` to the Notebook
+ * without touching the DOM left the Timeline on screen frozen: its renders are
+ * all gated on `activeTab === "timeline"`.
+ */
+function keepDockPane(tab: string): void {
+  const pane = tab === "timeline" || tab === "files" ? tab : "notebook";
+  activeTab.value = pane;
+  renderDockTabs();
+  showDockPane(pane);
+  if (pane === "timeline") renderActionTimeline();
+  else if (pane === "notebook") callLane("renderNotebook");
 }
 
 const incomplete = (): HistoryLoadResult => ({
@@ -344,7 +367,13 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       callLane("paintEarlierControl");
       // Failed auxiliary history is not evidence for a truly empty session.
       if (!messages.length && result.stepsLoaded && result.runStateLoaded && stopped) renderEmptySession();
-      down();
+      // A transcript with nothing confirmed before it (an open, a branch
+      // reset) starts at its newest message, as app.js's down(true) did.
+      // Unforced, the updateJumpPill() below measured the emptied host at
+      // the top in the same frame and a long session opened at its oldest
+      // loaded row. A re-read of the transcript on screen leaves a reader
+      // who scrolled up where they are.
+      down(!cached);
     }
   }
   if (deferred) {
@@ -445,9 +474,13 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
   return promise;
 }
 
-/** Open another conversation, or reload this one while preserving confirmed content. */
+/**
+ * Open another conversation, or reload this one while preserving confirmed
+ * content. `replaceUrl` is for routing: the address being resolved is
+ * replaced rather than stacked under the one it resolves to.
+ */
 export async function openConversation(
-  fid: string, pid?: string | null, options?: { resetHistory?: boolean },
+  fid: string, pid?: string | null, options?: { resetHistory?: boolean; replaceUrl?: boolean },
 ): Promise<HistoryLoadResult> {
   if (_branchConversationTimer.value != null) clearTimeout(_branchConversationTimer.value as ReturnType<typeof setTimeout>);
   const previousFid = currentId.value;
@@ -460,6 +493,11 @@ export async function openConversation(
   const shownFid = openedFrameId.value;
   const rescoping = switching || shownFid !== fid;
   if (previousFid && switching) unsub(previousFid);
+  // With no current conversation, the one still shown (Home, a delete that
+  // emptied the list) is released the same way, even when it is the one being
+  // reopened: this read must not race its live events, and the `sub` at the
+  // end then replays what arrived since, exactly as after a switch.
+  else if (!previousFid && shownFid) unsub(shownFid);
   if (rescoping) resetNotebookCellCaches(switching ? previousFid : shownFid, fid);
   if (pid && pid !== project.value) {
     // The sidebar is now scoped to another project, so its confirmed rows are
@@ -468,7 +506,7 @@ export async function openConversation(
     project.value = pid; _projArtFor.value = null; resetSessionDirectory();
   }
   const found = (sessions.value as Array<{ id?: string; project_id?: string }>).find((x) => x?.id === fid);
-  navURL(framePath(fid, pid || project.value || found?.project_id));
+  navURL(framePath(fid, pid || project.value || found?.project_id), !!options?.replaceUrl);
   showWorkspace(); showConv(); renderProjMenu();
   if (isMobile()) setSidebar(true);
   ensureMessageDom();
@@ -490,18 +528,27 @@ export async function openConversation(
     const host = messagesHost();
     if (host) host.innerHTML = "";
     if (liveStream.value) flushRender(liveStream.value as LiveStream, true);
+    const tab = activeTab.value;
     resetSessionScoped();
     historyContent.value = null;
     historyMutation.value += 1;
+    keepDockPane(tab);
   }
   if (rescoping) {
     const host = messagesHost();
     if (host) host.innerHTML = "";
+    // The view is emptied, so this session's resume cursor no longer
+    // describes what is on screen: text a running turn streamed before the
+    // switch (or the trip Home) is gone, and resubscribing from that cursor
+    // would not send it again. From zero the daemon replays the running
+    // turn's live buffer, as for a fresh page load; an idle session's replay
+    // is empty.
+    delete _seqSeen.value[fid];
     closeTurnTicket(); resetSessionScoped();
     historyContent.value = null; historyMutation.value = 0; resetHistorySubmissions();
     enableComposer(true); hideCancel(); hint("");
     if (_resumeTimer.value != null) clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
-    callLane("destroyActionTimelineView"); showDockPane("notebook"); invalidateKernelCache();
+    showDockPane("notebook"); invalidateKernelCache();
     if (typeof document !== "undefined") {
       document.getElementById("compute-badge")?.remove();
       document.getElementById("compute-lost")?.remove();
@@ -512,7 +559,8 @@ export async function openConversation(
     callLane("edacTeardown"); callLane("_molTeardown"); renderDockTabs();
   }
   openedFrameId.value = fid;
-  callLane("refreshComputeStatus", fid);
+  // Deliberately not awaited: a session must open even where the route is missing.
+  void refreshComputeStatus(fid);
   if (!sessions.value.length || directoryPending) {
     try { await loadSessions(); } catch { /* history has its own independently reported reads */ }
     if (!current(fid, gen)) return obsolete();

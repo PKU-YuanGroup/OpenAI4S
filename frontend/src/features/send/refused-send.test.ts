@@ -16,11 +16,12 @@ vi.mock("../ws/connect", () => wsMock);
 vi.mock("../sessions/load", () => loadMock);
 
 import { t } from "../../i18n/runtime";
-import { currentId, project } from "../../stores/session";
+import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
 import { UPLOAD_STATE } from "../chrome/upload";
 import { rebindConfirmText, rebindDoneText, send } from "./send";
+import { closeTurnTicket } from "./ticket";
 
 type FakeEl = Record<string, unknown> & {
   classList: { add: (name: string) => void; remove: () => void; toggle: () => void; contains: () => boolean };
@@ -289,6 +290,50 @@ describe("send(): a message the server refuses before admission", () => {
     expect(nodes.composer!.value).toBe("a new draft");
     expect(userBubble()?.removed).toBe(false);
     expect(userBubble()?.added).toContain("cancelled");
+  });
+
+  it.each([
+    ["a missing key", refusal("model_profile_needs_key", NEEDS_KEY).body],
+    ["an unusable pin", refusal("model_revision_unavailable", "no longer usable; rebind it").body],
+    ["an unready environment", { error: "environment not ready", code: "environment_not_ready", status: 409 }],
+  ])("a refusal (%s) that lands after the user opened another session stays out of it", async (_why, body) => {
+    let answer: (value: unknown) => void = () => {};
+    const paths: string[] = [];
+    const asked: string[] = [];
+    vi.stubGlobal("confirm", (text: string) => {
+      asked.push(text);
+      return true;
+    });
+    vi.stubGlobal("fetch", (url: string) => {
+      const path = String(url).replace("/api/v1", "");
+      paths.push(path);
+      if (path === "/frames/frame_1/message") {
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    const done = send("hello");
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    // Session B is on screen now (openConversation's reset: the turn ticket
+    // closed, nothing running, a new generation); its composer -- the same
+    // element -- is empty.
+    currentId.value = "frame_2";
+    closeTurnTicket();
+    running.value = false;
+    _openGen.value += 1;
+    nodes.composer!.value = "";
+    nodes["composer-hint"]!.children.length = 0;
+    answer({ ok: false, status: 409, text: () => Promise.resolve(JSON.stringify(body)) });
+    await done;
+
+    expect(nodes.composer!.value).toBe("");
+    expect(lastHint()).toBe("");
+    expect(openCust).not.toHaveBeenCalled();
+    expect(asked).toEqual([]);
+    expect(paths).not.toContain("/frames/frame_1/model-binding");
+    expect(running.value).toBe(false);
   });
 
   it("still takes the bubble away when the environment refusal's text went back", async () => {

@@ -1,7 +1,7 @@
 /** Line icons used by dashboard / session menus. Paths live in features/icons/paths.ts. */
 
 import { iconSvg } from "../icons/paths";
-import { $, el } from "./dom";
+import { el } from "./dom";
 
 export function icon(name: string, size?: number, cls?: string): string {
   return iconSvg(name, size, cls);
@@ -22,10 +22,4 @@ export function paintIcons(root?: ParentNode | null): void {
     e.innerHTML = icon(e.dataset.icon || "", +(e.dataset.iconSize || 16) || 16);
     e._painted = true;
   });
-}
-
-/** Re-paint after language / theme swaps that rebuild labels. */
-export function paintWorkbenchIcons(): void {
-  paintIcons($("#dashboard"));
-  paintIcons($("#workspace"));
 }

@@ -8,5 +8,5 @@ Live tool-output cap. Port of app.js `appendLiveOutput`: 1MB, then the truncatio
 
 | File | Responsibility |
 | --- | --- |
-| [`cap.ts`](cap.ts) | `appendLiveOutput`, `LIVE_OUTPUT_CHAR_CAP`, `LIVE_OUTPUT_TRUNCATION`. |
-| [`cap.test.ts`](cap.test.ts) | Under-cap concat; truncation idempotent. |
+| [`cap.ts`](cap.ts) | `appendLiveOutput`, `LIVE_OUTPUT_CHAR_CAP`, `LIVE_OUTPUT_TRUNCATION`; `liveOutputIncrement`, the same cap from a tracked length and truncation flag (no search of the whole output per chunk). |
+| [`cap.test.ts`](cap.test.ts) | Under-cap concat; truncation idempotent; the incremental form builds exactly what `appendLiveOutput` builds. |

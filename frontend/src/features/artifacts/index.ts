@@ -24,7 +24,6 @@ export { molSvg, parseMolPoints, tileThumb } from "./thumbs";
 export {
   applyArtifactDeepLink,
   consumeArtifactDeepLink,
-  openArtifactFromHit,
   openViewer,
   renderConversationArtifacts,
   renderFilesGrid,

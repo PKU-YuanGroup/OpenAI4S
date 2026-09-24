@@ -1,11 +1,10 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
 import { currentId } from "../../stores/session";
-import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimistic, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Note } from "./ui";
 
 type ScopeMeta = { scope: string; scope_id: string; label: string };
@@ -13,15 +12,18 @@ type Rule = { rule_id: string; tool: string; pattern: string; decision: string }
 
 function DecSelect({
   value,
+  disabled,
   onChange,
 }: {
   value: string;
+  disabled?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
     <select
       class="perm-dec"
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange((e.target as HTMLSelectElement).value)}
     >
       <option value="allow">{t("perm.btn.allow")}</option>
@@ -45,7 +47,7 @@ function ResetRow() {
           if (!confirmAction(t("cust.perm.resetConfirm"))) return;
           try {
             await api("/permissions/reset", { method: "POST" });
-            custTab("permissions");
+            refreshCustTab("permissions");
             hint(t("toast.perm.resetDone"));
           } catch (e) {
             hint(t("toast.failed", apiErrorText(e)), true);
@@ -54,6 +56,56 @@ function ResetRow() {
       >
         {t("cust.perm.resetBtn")}
       </button>
+    </div>
+  );
+}
+
+/**
+ * One rule. The decision is optimistic: the select moves at once, and a
+ * refused write puts it back. It used to stay on the refused choice -- nothing
+ * re-rendered, so Preact never reset the select -- while the rule kept its
+ * old decision.
+ */
+function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
+  const decision = useOptimistic<string>(
+    r.decision,
+    (next) =>
+      api("/permissions", {
+        method: "POST",
+        body: JSON.stringify({
+          scope: g.scope,
+          scope_id: g.scope_id,
+          tool: r.tool,
+          pattern: r.pattern,
+          decision: next,
+        }),
+      }),
+    {
+      done: () => hint(t("toast.perm.ruleUpdated")),
+      failed: (e) => hint(t("toast.perm.updateFailed", apiErrorText(e)), true),
+    },
+  );
+  return (
+    <div class="perm-rule">
+      <span class="perm-rtool">{r.tool}</span>
+      <span class="perm-rpat mono">{r.pattern}</span>
+      <DecSelect
+        value={decision.value ?? r.decision}
+        disabled={decision.busy}
+        onChange={decision.set}
+      />
+      <IconGhost
+        name="trash-2"
+        title={t("common.delete")}
+        onClick={async () => {
+          try {
+            await api(`/permissions/${r.rule_id}`, { method: "DELETE" });
+            refreshCustTab("permissions");
+          } catch (e) {
+            hint(t("toast.deleteFailed", apiErrorText(e)), true);
+          }
+        }}
+      />
     </div>
   );
 }
@@ -96,7 +148,10 @@ function AddRow({ g }: { g: ScopeMeta }) {
                 decision: dec,
               }),
             });
-            custTab("permissions");
+            setTool("");
+            setPat("*");
+            setDec("ask");
+            refreshCustTab("permissions");
           } catch (e) {
             hint(t("toast.addFailed", apiErrorText(e)), true);
           }
@@ -109,30 +164,22 @@ function AddRow({ g }: { g: ScopeMeta }) {
 }
 
 export function PermissionsTab() {
-  const alive = useAlive();
   const [note, setNote] = useState<string | null>(null);
   const [data, setData] = useState<Record<string, unknown> | null>(null);
 
-  useEffect(() => {
-    if (!currentId.value) {
-      setNote(t("cust.perm.noSessionNote"));
-      markCustomizeLoaded();
-      return;
-    }
-    void (async () => {
-      try {
-        const next = await api(`/frames/${currentId.value}/permissions`);
-        if (!alive()) return;
-        setData(next);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setNote(message);
-        markCustomizeFailed(message);
+  useTabRead(
+    "permissions",
+    async (current) => {
+      if (!currentId.value) {
+        setNote(t("cust.perm.noSessionNote"));
+        return;
       }
-    })();
-  }, [alive]);
+      const next = await api(`/frames/${currentId.value}/permissions`);
+      if (!current()) return;
+      setData(next);
+    },
+    setNote,
+  );
 
   const meta: Record<string, ScopeMeta> | null = data
     ? {
@@ -165,42 +212,7 @@ export function PermissionsTab() {
                 <div class="perm-sec-h">{g.label}</div>
                 {!rules.length ? <Note>{t("cust.perm.noRules")}</Note> : null}
                 {rules.map((r) => (
-                  <div class="perm-rule" key={r.rule_id}>
-                    <span class="perm-rtool">{r.tool}</span>
-                    <span class="perm-rpat mono">{r.pattern}</span>
-                    <DecSelect
-                      value={r.decision}
-                      onChange={async (v) => {
-                        try {
-                          await api("/permissions", {
-                            method: "POST",
-                            body: JSON.stringify({
-                              scope: g.scope,
-                              scope_id: g.scope_id,
-                              tool: r.tool,
-                              pattern: r.pattern,
-                              decision: v,
-                            }),
-                          });
-                          hint(t("toast.perm.ruleUpdated"));
-                        } catch (e) {
-                          hint(t("toast.perm.updateFailed", apiErrorText(e)), true);
-                        }
-                      }}
-                    />
-                    <IconGhost
-                      name="trash-2"
-                      title={t("common.delete")}
-                      onClick={async () => {
-                        try {
-                          await api(`/permissions/${r.rule_id}`, { method: "DELETE" });
-                          custTab("permissions");
-                        } catch (e) {
-                          hint(t("toast.deleteFailed", apiErrorText(e)), true);
-                        }
-                      }}
-                    />
-                  </div>
+                  <RuleRow key={r.rule_id} g={g} r={r} />
                 ))}
                 <AddRow g={g} />
               </div>

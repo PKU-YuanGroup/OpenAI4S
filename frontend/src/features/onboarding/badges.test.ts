@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { CapabilityBadges } from "../../components/onboarding/CapabilityBadges";
 import {
   badgesFromProbe,
-  capabilityBadgeMarkup,
   capabilityBadgeRows,
   capabilityBadgeText,
 } from "./badges";
 import type { CapabilityReceipt } from "../customize/models";
+
+type Pill = { props: Record<string, string> & { children: string } };
+
+/** The pills `CapabilityBadges` renders for a receipt. */
+function pills(receipt: CapabilityReceipt, unknownReason = ""): Pill[] {
+  const tree = CapabilityBadges({ receipt, unknownReason }) as { props: { children: Pill[] } } | null;
+  return tree ? tree.props.children : [];
+}
 
 const UNKNOWN: CapabilityReceipt = {
   native_tool_call: "unknown",
@@ -26,14 +34,13 @@ describe("M-01 capability badges", () => {
     };
     const rows = capabilityBadgeRows(mixed);
     expect(rows.map((row) => row.state)).toEqual(["true", "false"]);
-    const native = capabilityBadgeMarkup(rows[0]!);
-    const streaming = capabilityBadgeMarkup(rows[1]!);
-    expect(native).toContain('data-cap="native_tool_call"');
-    expect(native).toContain('data-state="true"');
-    expect(native).toContain(" · stale");
-    expect(streaming).toContain('data-cap="streaming"');
-    expect(streaming).toContain('data-state="false"');
-    expect(streaming).toContain('data-stale="true"');
+    const [native, streaming] = pills(mixed);
+    expect(native!.props["data-cap"]).toBe("native_tool_call");
+    expect(native!.props["data-state"]).toBe("true");
+    expect(native!.props.children).toContain(" · stale");
+    expect(streaming!.props["data-cap"]).toBe("streaming");
+    expect(streaming!.props["data-state"]).toBe("false");
+    expect(streaming!.props["data-stale"]).toBe("true");
   });
 
   it("shows unknown as unknown and keeps the raw reason (no beautify)", () => {
@@ -44,9 +51,7 @@ describe("M-01 capability badges", () => {
     const native = capabilityBadgeText(rows[0]!);
     expect(native).toBe("native tool call · unknown — timed out contacting the endpoint");
     expect(native.toLowerCase()).not.toMatch(/does not support|unsupported|cannot stream/);
-    expect(capabilityBadgeMarkup(rows[0]!)).toContain('data-state="unknown"');
-    expect(capabilityBadgeMarkup(rows[0]!)).not.toContain('data-state="false"');
-    expect(capabilityBadgeMarkup(rows[0]!)).not.toContain('data-state="true"');
+    expect(pills(UNKNOWN, reason)[0]!.props["data-state"]).toBe("unknown");
   });
 
   it("does not invent a reason when the probe left unknown without detail", () => {

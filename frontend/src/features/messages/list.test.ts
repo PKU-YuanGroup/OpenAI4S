@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Shell } from "../../components/dashboard/Shell";
+import { setLang } from "../../i18n/runtime";
+import { copyFailedText } from "../chrome/clipboard";
+import * as transcript from "../sessions/transcript";
+import { renderStored as renderOlderPage } from "../sessions/transcript";
 import * as messageComponents from "./components";
 import { currentId, _openGen, historyLoad } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
@@ -10,8 +14,13 @@ vi.mock("preact/hooks", async (original) => ({
 }));
 import {
   INITIAL_RENDER_BATCH,
+  addMsgActions,
   cancelFramedRender,
+  insertMessageByTime,
   nextBatchEnd,
+  renderEmptySession,
+  renderMessageRefChips,
+  renderStored as renderFirstPage,
   scheduleFramedRender,
 } from "./list";
 
@@ -147,4 +156,293 @@ it("shows scoped read errors and a retry button, hiding settled or obsolete hist
   expect(Status()).toBeNull();
   historyLoad.value = { ...historyLoad.value, fid: "g", generation: 3 };
   expect(Status()).toBeNull();
+});
+
+/** Just enough DOM for one stored row and its action buttons (no jsdom here). */
+class RowClassList {
+  readonly tokens = new Set<string>();
+  add(...names: string[]): void {
+    for (const n of names) this.tokens.add(n);
+  }
+  remove(...names: string[]): void {
+    for (const n of names) this.tokens.delete(n);
+  }
+  contains(name: string): boolean {
+    return this.tokens.has(name);
+  }
+  toggle(name: string, force?: boolean): boolean {
+    const on = force === undefined ? !this.tokens.has(name) : force;
+    if (on) this.tokens.add(name);
+    else this.tokens.delete(name);
+    return on;
+  }
+}
+
+class RowEl {
+  tagName: string;
+  id = "";
+  title = "";
+  type = "";
+  value = "";
+  classList = new RowClassList();
+  children: RowEl[] = [];
+  parentNode: RowEl | null = null;
+  dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
+  attrs: Record<string, string> = {};
+  onclick: (() => unknown) | null = null;
+  scrollHeight = 64;
+  focused = 0;
+  private text = "";
+  constructor(tag: string) {
+    this.tagName = tag.toUpperCase();
+  }
+  get className(): string {
+    return [...this.classList.tokens].join(" ");
+  }
+  set className(value: string) {
+    this.classList = new RowClassList();
+    for (const t of String(value).split(/\s+/).filter(Boolean)) this.classList.add(t);
+  }
+  get textContent(): string {
+    return this.children.length ? this.children.map((c) => c.textContent).join("") : this.text;
+  }
+  set textContent(value: string) {
+    this.children = [];
+    this.text = value == null ? "" : String(value);
+  }
+  get innerHTML(): string {
+    return this.text;
+  }
+  set innerHTML(value: string) {
+    this.children = [];
+    // Strip to a fixed point, as the other test doubles do: a single pass over
+    // `<<b>script>` leaves `<script>`. Not a sanitiser.
+    let text = String(value),
+      previous: string;
+    do {
+      previous = text;
+      text = text.replace(/<[^>]*>/g, "");
+    } while (text !== previous);
+    this.text = text;
+  }
+  get firstChild(): RowEl | null {
+    return this.children[0] ?? null;
+  }
+  setAttribute(name: string, value: string): void {
+    this.attrs[name] = String(value);
+  }
+  getAttribute(name: string): string | null {
+    return this.attrs[name] ?? null;
+  }
+  appendChild<T extends RowEl>(child: T): T {
+    child.parentNode?.removeChild(child);
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+  insertBefore<T extends RowEl>(child: T, ref: RowEl | null): T {
+    if (!ref) return this.appendChild(child);
+    child.parentNode?.removeChild(child);
+    child.parentNode = this;
+    this.children.splice(this.children.indexOf(ref), 0, child);
+    return child;
+  }
+  removeChild(child: RowEl): void {
+    this.children = this.children.filter((c) => c !== child);
+    child.parentNode = null;
+  }
+  remove(): void {
+    this.parentNode?.removeChild(this);
+  }
+  focus(): void {
+    this.focused += 1;
+  }
+  querySelector(sel: string): RowEl | null {
+    return this.querySelectorAll(sel)[0] ?? null;
+  }
+  querySelectorAll(sel: string): RowEl[] {
+    const direct = sel.startsWith(":scope > ");
+    const want = direct ? sel.slice(":scope > ".length) : sel;
+    const out: RowEl[] = [];
+    const walk = (node: RowEl): void => {
+      for (const child of node.children) {
+        if (rowMatches(child, want)) out.push(child);
+        if (!direct) walk(child);
+      }
+    };
+    walk(this);
+    return out;
+  }
+}
+
+function rowMatches(node: RowEl, sel: string): boolean {
+  if (sel.startsWith("#")) return node.id === sel.slice(1);
+  if (sel.startsWith(".")) return sel.slice(1).split(".").every((c) => node.classList.contains(c));
+  return node.tagName === sel.toUpperCase();
+}
+
+class RowDoc {
+  body = new RowEl("body");
+  messages = new RowEl("div");
+  composer = new RowEl("textarea");
+  hint = new RowEl("div");
+  constructor() {
+    this.messages.id = "messages";
+    this.composer.id = "composer";
+    this.hint.id = "composer-hint";
+    this.body.appendChild(this.messages);
+    this.body.appendChild(this.composer);
+    this.body.appendChild(this.hint);
+  }
+  createElement(tag: string): RowEl {
+    return new RowEl(tag);
+  }
+  createTextNode(text: string): RowEl {
+    const node = new RowEl("#text");
+    node.textContent = text;
+    return node;
+  }
+  getElementById(id: string): RowEl | null {
+    return this.body.querySelector("#" + id);
+  }
+  querySelector(sel: string): RowEl | null {
+    return this.body.querySelector(sel);
+  }
+  querySelectorAll(sel: string): RowEl[] {
+    return this.body.querySelectorAll(sel);
+  }
+}
+
+/** The two stored-row entry points: the first page and "load earlier". */
+type RowRenderer = (m: Record<string, unknown>) => HTMLElement | null;
+const ROW_RENDERERS: ReadonlyArray<readonly [string, RowRenderer]> = [
+  ["first page", renderFirstPage as RowRenderer],
+  ["older page", renderOlderPage as RowRenderer],
+];
+
+describe("stored rows, first page and older page alike", () => {
+  let doc: RowDoc;
+  beforeEach(async () => {
+    await setLang("en");
+    resetStoreFields();
+    doc = new RowDoc();
+    vi.stubGlobal("document", doc);
+  });
+
+  it.each(ROW_RENDERERS)("%s: a reviewed answer keeps its badge and candidate identity", (_name, render) => {
+    const row = render({
+      role: "assistant",
+      content: "The fit converged.",
+      message_id: "msg-7",
+      turn_id: "turn-7",
+      review_status: { status: "verified", user_truth: "" },
+    }) as unknown as RowEl;
+    const badge = row.querySelector(":scope > .review-badge");
+    expect(badge?.classList.contains("review-badge-verified")).toBe(true);
+    expect(row.dataset.reviewStatus).toBe("verified");
+    expect(row.dataset.candidateResolved).toBe("true");
+    // A later candidate_resolved / review event finds the row by identity.
+    expect(row.dataset.messageId).toBe("msg-7");
+    expect(row.dataset.turnId).toBe("turn-7");
+    expect(doc.messages.children).toContain(row);
+  });
+
+  it.each(ROW_RENDERERS)("%s: 👍/👎 post the rating, toggle, and show a saved one", (_name, render) => {
+    currentId.value = "frame-1";
+    const posts: Array<{ url: string; body: { key?: string; rating?: unknown } }> = [];
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body || "{}")) });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+    });
+    const row = render({ role: "assistant", content: "Answer A." }) as unknown as RowEl;
+    const [, up, down] = row.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    expect(up.onclick).toBeTypeOf("function");
+    expect(down.onclick).toBeTypeOf("function");
+
+    down.onclick!();
+    expect(down.classList.contains("on")).toBe(true);
+    expect(up.classList.contains("on")).toBe(false);
+    expect(posts.at(-1)?.url).toBe("/api/v1/frames/frame-1/feedback");
+    expect(posts.at(-1)?.body.rating).toBe("down");
+    const key = posts.at(-1)?.body.key;
+    expect(key).toBeTruthy();
+
+    up.onclick!();
+    expect(up.classList.contains("on")).toBe(true);
+    expect(down.classList.contains("on")).toBe(false);
+    expect(posts.at(-1)?.body).toEqual({ key, rating: "up" });
+
+    // The saved rating is what a reopened answer shows.
+    const again = render({ role: "assistant", content: "Answer A." }) as unknown as RowEl;
+    const [, savedUp, savedDown] = again.querySelector(".msg-actions")!.children as [RowEl, RowEl, RowEl];
+    expect(savedUp.classList.contains("on")).toBe(true);
+    expect(savedDown.classList.contains("on")).toBe(false);
+
+    // Clicking the active one withdraws it.
+    savedUp.onclick!();
+    expect(savedUp.classList.contains("on")).toBe(false);
+    expect(posts.at(-1)?.body).toEqual({ key, rating: null });
+  });
+
+  it.each(ROW_RENDERERS)("%s: Copy ticks only for a confirmed clipboard write", async (_name, render) => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const row = render({ role: "assistant", content: "Copy me." }) as unknown as RowEl;
+    const copy = row.querySelector(".msg-actions")!.children[0]!;
+    expect(copy.attrs["data-icon"]).toBe("copy");
+    await copy.onclick!();
+    expect(writeText).toHaveBeenCalledWith("Copy me.");
+    expect(copy.attrs["data-icon"]).toBe("check");
+
+    // Refused (a permission prompt, or plain-http LAN with no clipboard API
+    // and no selection fallback): no tick, and the failure is said.
+    vi.stubGlobal("navigator", { clipboard: { writeText: () => Promise.reject(new Error("denied")) } });
+    const refused = render({ role: "assistant", content: "Copy me too." }) as unknown as RowEl;
+    const refusedCopy = refused.querySelector(".msg-actions")!.children[0]!;
+    await refusedCopy.onclick!();
+    expect(refusedCopy.attrs["data-icon"]).toBe("copy");
+    expect(doc.hint.textContent).toContain(copyFailedText());
+  });
+
+  it.each(ROW_RENDERERS)("%s: Edit fills the composer and grows it to fit", (_name, render) => {
+    const row = render({ role: "assistant", content: "Edit me." }) as unknown as RowEl;
+    const edit = row.querySelector(".msg-actions")!.children[3]!;
+    edit.onclick!();
+    expect(doc.composer.value).toBe("Edit me.");
+    expect(doc.composer.style.height).toBe("64px");
+    expect(doc.composer.focused).toBe(1);
+  });
+
+  it("the first page, load-earlier and the live turn share one row implementation", () => {
+    expect(transcript.renderStored).toBe(renderFirstPage);
+    expect(transcript.addMsgActions).toBe(addMsgActions);
+    expect(transcript.insertMessageByTime).toBe(insertMessageByTime);
+    expect(transcript.renderEmptySession).toBe(renderEmptySession);
+    expect(transcript.renderMessageRefChips).toBe(renderMessageRefChips);
+  });
+
+  it.each(ROW_RENDERERS)("%s: a user row shows its pinned @-refs without a window lookup", (_name, render) => {
+    // No `window.renderMessageRefChips` here: the first page used to reach
+    // the chips only through that late-bound name.
+    const row = render({
+      role: "user",
+      content: "Plot @growth.csv",
+      artifact_refs: [{ display_name: "growth.csv", version_id: "v-1", sha256: "abcdef0123456789" }],
+    }) as unknown as RowEl;
+    const chips = row.querySelectorAll(".msg-ref-chip");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]!.textContent).toContain("growth.csv");
+    expect(chips[0]!.title).toBe("v-1 · sha256:abcdef012345");
+  });
+
+  it("a starter chip fills the composer and grows it to fit", () => {
+    renderEmptySession();
+    const chip = doc.messages.querySelector(".es-chip")!;
+    chip.onclick!();
+    expect(doc.composer.value).toBe(doc.messages.querySelector(".es-chip-p")!.textContent);
+    expect(doc.composer.value).not.toBe("");
+    expect(doc.composer.style.height).toBe("64px");
+    expect(doc.composer.focused).toBe(1);
+  });
 });

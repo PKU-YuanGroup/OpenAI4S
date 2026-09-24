@@ -57,7 +57,7 @@ The `S` singleton becomes seven `@preact/signals` modules plus a `window.S` Prox
 | `const S = { … }` 120–131 | `src/stores/{session,stream,notebook,timeline,artifacts,ui,customize}.ts` | Same defaults (`dock.open: false`, `activeTab: "notebook"`, `workbenchErrors: {}`, `variableInspector` shape, `filesScope: "frame"`). |
 | `S._seqSeen` 5176, `S._streamEpoch` 5180 | `stream._seqSeen` / `stream._streamEpoch` | Nested `S._seqSeen[rid] = sq` mutates the stored object. Epoch is a scalar. |
 | `S._artBust` 5323, `S._tbl` 5334 | `artifacts._artBust` / `artifacts._tbl` | Objects stored by reference; nested write/delete keep identity. |
-| `const _kc = { … }` 9954 | `notebook._kc` (not on `S`) | Same keys (`id/st/stAt/stBusy/envs/cur/envAt/envBusy`). F-14 invalidates. |
+| `const _kc = { … }` 9954 | `notebook._kc` (not on `S`) | Keys `id/st/stAt/envs/cur/envAt`, published as a new object on every write. The busy flags became per-session in-flight reads in `kernel.ts`. F-14 invalidates. |
 | `_timelineView` / `actionTimeline` / `executionQueue` 124, 129 | `timeline.*` | **By-reference.** Nested writes (`searchQuery`, `collapsedTurns.add`) do not clone. |
 | `ACTION_TIMELINE_{PAGE_SIZE,ROW_HEIGHT,OVERSCAN,OVERVIEW_WIDTH}` 2784–2789 | `src/stores/timeline.ts` + `window` export | 500 / 46 / 8 / 1000. |
 | Evaluate free identifiers (`renderMd`, `t`, `onEvent`, …) | `src/compat/window-exports.ts` | Names from `tests/webui-contract.md` §1. Functions are throwing stubs until a later lane overwrites them in the `// === lane additions ===` region. |
@@ -245,7 +245,7 @@ Rendering shell rewrite of the Notebook dock. The live protocol, `_seenChunks` d
 | `renderNotebook` follow + scroll listener 10339-10350 | `scroll.ts` `measureNotebookFollow` / `bindNotebookScroll` / `onNotebookScroll` | 120px threshold; `_nbScrollBound` once; returning to bottom flushes `_nbDirty`. |
 | `renderNotebook` `nb.innerHTML=""` 10352 + `cellNode` 10567-10621 | `Notebook.tsx` CellList + memo completed cells | Keyed by `producing_cell_id`. Chunks write only that cell's output signal and `textNode.appendData(delta)`. Code highlight memoized on source. |
 | kernel chips / REPL / status strip 10357-10475 | `Notebook.tsx` `KernelChips` / `ReplPanel` / `StatusStrip` | Rendered apart from the cell list. REPL only when `repl_enabled` and not quarantined. Classes `#dock-notebook .nb-repl` / `.nb-repl-input` / `.nb-status` / `.notebook-cell` unchanged. |
-| `_kc` 9954 + `invalidateKernelCache` 9955 | F-05 `stores/notebook.ts` `_kc` + `kernel.ts` `invalidateKernelCache` | Clears `id/st/stAt/envs/cur/envAt`; leaves `stBusy/envBusy`. |
+| `_kc` 9954 + `invalidateKernelCache` 9955 | F-05 `stores/notebook.ts` `_kc` + `kernel.ts` `invalidateKernelCache` | Clears `id/st/stAt/envs/cur/envAt`; a read still in flight is shown but read again. |
 | invalidate at `kernel_status` 5352, `turnDone` 5854, `nbSwitchEnv` 10060 | `handleKernelStatus` / `notebookOnTurnDone` / `nbSwitchEnv` | F-11 **must** call `notebookOnTurnDone()` from `turnDone` (this lane cannot register a second `frame_update` handler). |
 | `kernelCtl` / `executeNotebookCode` / `refreshKernelState` / `nbPopulateEnvSelect` 9911-10047 | `kernel.ts` | 800ms state / 8000ms env cache; session-id race drop. |
 | `projectNotebookCells` 10076-10112 | `cells.ts` | Agent retry grouping after a failed same-runtime cell. |
@@ -345,7 +345,7 @@ New UI on the F-17 table artifact viewer. `openai4s/server/webui/app.js` is not 
 
 | Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
 | --- | --- | --- |
-| `artifactWorkbenchOn` 8710 | `stores/notebook.artifactWorkbench` + `_kc.st.artifact_workbench` (`readWorkbenchFlag` / existing `artifactWorkbenchOn`) | Flag-off is the kill switch. |
+| `artifactWorkbenchOn` 8710 | `stores/notebook.artifactWorkbench` + `_kc.st.artifact_workbench` (`readWorkbenchFlag` in `features/table/workbench.ts`; the duplicate `artifactWorkbenchOn` was removed) | Flag-off is the kill switch. |
 | `renderWorkbenchTable` 8723-8768 | `features/table/workbench.ts` `renderWorkbenchTable` | Same `/table` sort/dir/offset/limit/`q_` page chrome. Filter `col:value` shorthand kept. |
 | `renderTableArtifact` flag-off 8769+ | `features/table/workbench.ts` `renderLegacyTable` | `fetchArtifactText` → `parseTable` → `renderSheet`. No `/table/profile`, no export.csv. |
 | *(none — Schema/Distribution/Export)* | `features/table/zones.ts` | B-07 profile columns: type/missing/unique + min/max/mean/histogram. `approximate:true` paints `.wb-table-approx` (近似 / Approximate) and labels unique as ≈ n; never rewritten as exact. Histogram bars ≤ 50 (`MAX_TABLE_PROFILE_BINS`). |

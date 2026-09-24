@@ -38,6 +38,22 @@ function classes(node: VNode | null): string[] {
   return String(node?.props?.class || "").split(/\s+/).filter(Boolean);
 }
 
+/** The class lists of every element from the root down to `id`, or null. */
+function ancestry(tree: unknown, id: string, trail: string[][] = []): string[][] | null {
+  if (Array.isArray(tree)) {
+    for (const child of tree) {
+      const hit = ancestry(child, id, trail);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (!tree || typeof tree !== "object") return null;
+  const node = tree as VNode;
+  const here = [...trail, classes(node)];
+  if (node.props?.id === id) return here;
+  return ancestry(node.props?.children, id, here);
+}
+
 function paintAt(pathname: string): unknown {
   vi.stubGlobal("location", { pathname });
   return Shell();
@@ -45,6 +61,16 @@ function paintAt(pathname: string): unknown {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("the Shell repainted after a language switch", () => {
+  it("does not bind the session title the router writes", () => {
+    // A bound `value` is compared with the live input on every repaint, so a
+    // language switch put "会话" back over the session's name.
+    const title = byId(paintAt("/projects/p-1/frames/f-1"), "conv-title");
+    expect(title?.props).not.toHaveProperty("value");
+    expect(title?.props?.defaultValue).toBe("会话");
+  });
 });
 
 describe("the Shell before the first route", () => {
@@ -61,6 +87,17 @@ describe("the Shell before the first route", () => {
     const tree = paintAt("/projects/p-1");
     expect(classes(byId(tree, "dashboard"))).toContain("hidden");
     expect(byId(tree, "route-loading")?.props?.hidden).toBeFalsy();
+  });
+
+  it("puts New project in the hero as the one primary action, beside Import", () => {
+    const tree = paintAt("/");
+    expect(classes(byId(tree, "dash-new-project"))).toContain("solid-btn");
+    expect(classes(byId(tree, "dash-import-session"))).toContain("outline-btn");
+    for (const id of ["dash-new-project", "dash-import-session", "session-package-input"]) {
+      const trail = ancestry(tree, id) || [];
+      expect(trail.some((cls) => cls.includes("dash-hero"))).toBe(true);
+      expect(trail.some((cls) => cls.includes("dash-head"))).toBe(false);
+    }
   });
 
   it("paints the dashboard at the root, with no loading indicator", () => {

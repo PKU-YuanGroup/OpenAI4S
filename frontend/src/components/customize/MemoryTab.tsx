@@ -1,52 +1,67 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
-import { asList, asString, hint } from "../../features/customize/host";
-import { MEMORY_BLOCKS, memScopeLabel, memScopes } from "../../features/customize/memory";
+import { refreshCustTab } from "../../features/customize/actions";
+import { asList, asString, customizeProject, hint } from "../../features/customize/host";
+import { MEMORY_BLOCKS, memScopeIds, memScopeLabel } from "../../features/customize/memory";
 import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
+
+/**
+ * A scope's name. Its own component: the project list it reads changes far
+ * more often than anything else on this tab.
+ */
+function ScopeName({ pid }: { pid: string }) {
+  return <>{memScopeLabel(pid)}</>;
+}
+
+function InjectedInto({ pid }: { pid: string }) {
+  return <>{t("cust.memory.injectedInto", memScopeLabel(pid))}</>;
+}
 
 export function MemoryTab() {
   const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
-  const [enabled, setEnabled] = useState(false);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const [memories, setMemories] = useState<Record<string, unknown>[]>([]);
   const [cats, setCats] = useState<Record<string, unknown>[]>([]);
   const [ctx, setCtx] = useState<Record<string, unknown> | null>(null);
-  const scopes = memScopes();
-  const active = scopes[scopes.length - 1]?.id || "global";
+  const scopes = memScopeIds(customizeProject.value);
+  const active = scopes[scopes.length - 1] || "global";
   const [block, setBlock] = useState("user");
   const [scope, setScope] = useState(active);
   const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const memory = useOptimisticToggle(
+    enabled,
+    (on) =>
+      api("/memory/enabled", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: on }),
+      }),
+    { done: (on) => hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled")) },
+  );
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const m = await api("/memory/enabled");
-        const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));
-        const cat = await api("/memory/categories?project_id=all").catch(() => ({
-          categories: [],
-        }));
-        const context = await api(
-          `/memory/context?project_id=${encodeURIComponent(active)}`,
-        ).catch(() => null);
-        if (!alive()) return;
-        setEnabled(!!m.enabled);
-        setMemories(asList(mem.memories) as Record<string, unknown>[]);
-        setCats(asList(cat.categories) as Record<string, unknown>[]);
-        setCtx(context);
-        setScope(active);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
-      }
-    })();
-  }, [alive, active]);
+  useTabRead(
+    "memory",
+    async (current) => {
+      const [m, mem, cat, context] = await Promise.all([
+        api("/memory/enabled"),
+        api("/memory?project_id=all").catch(() => ({ memories: [] })),
+        api("/memory/categories?project_id=all").catch(() => ({ categories: [] })),
+        api(`/memory/context?project_id=${encodeURIComponent(active)}`).catch(() => null),
+      ]);
+      if (!current()) return;
+      setEnabled(!!m.enabled);
+      setMemories(asList(mem.memories) as Record<string, unknown>[]);
+      setCats(asList(cat.categories) as Record<string, unknown>[]);
+      setCtx(context);
+      setScope(active);
+    },
+    setErr,
+    [active],
+  );
 
   if (err) return <div>{err}</div>;
 
@@ -63,25 +78,10 @@ export function MemoryTab() {
         <div class="info">
           <div class="nm">{t("cust.memory.enableName")}</div>
           <div class="ds">
-            {enabled ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc")}
+            {memory.on ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc")}
           </div>
         </div>
-        <Toggle
-          on={enabled}
-          onClick={async () => {
-            const on = !enabled;
-            setEnabled(on);
-            try {
-              await api("/memory/enabled", {
-                method: "PUT",
-                body: JSON.stringify({ enabled: on }),
-              });
-              hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled"));
-            } catch {
-              setEnabled(!on);
-            }
-          }}
-        />
+        <Toggle on={memory.on} disabled={!memory.ready} onClick={memory.toggle} />
       </div>
       <div class="cust-row">
         <div class="info">
@@ -94,9 +94,9 @@ export function MemoryTab() {
               value={scope}
               onChange={(e) => setScope((e.target as HTMLSelectElement).value)}
             >
-              {scopes.map((s) => (
-                <option value={s.id} key={s.id}>
-                  {s.label}
+              {scopes.map((id) => (
+                <option value={id} key={id}>
+                  <ScopeName pid={id} />
                 </option>
               ))}
             </select>
@@ -121,9 +121,11 @@ export function MemoryTab() {
             <button
               type="button"
               class="solid-btn small"
+              disabled={saving}
               onClick={async () => {
                 const v = content.trim();
-                if (!v) return;
+                if (!v || saving) return;
+                setSaving(true);
                 try {
                   await api("/memory", {
                     method: "POST",
@@ -134,9 +136,11 @@ export function MemoryTab() {
                     }),
                   });
                   setContent("");
-                  custTab("memory");
+                  refreshCustTab("memory");
                 } catch (e) {
                   hint(t("artifact.save.err", apiErrorText(e)), true);
+                } finally {
+                  if (alive()) setSaving(false);
                 }
               }}
             >
@@ -148,7 +152,9 @@ export function MemoryTab() {
       {ctx ? (
         <div class="cust-row">
           <div class="info">
-            <div class="nm">{t("cust.memory.injectedInto", memScopeLabel(active))}</div>
+            <div class="nm">
+              <InjectedInto pid={active} />
+            </div>
             <div class="ds">
               {t(
                 "cust.memory.injectedCounts",
@@ -185,7 +191,9 @@ export function MemoryTab() {
                 <div class="info">
                   <div class="ds">{asString(x.content)}</div>
                   <div class="ds">
-                    <Pill>{memScopeLabel(asString(x.project_id))}</Pill>
+                    <Pill>
+                      <ScopeName pid={asString(x.project_id)} />
+                    </Pill>
                     {x.updated_at ? <Pill>{t("cust.memory.edited")}</Pill> : null}
                   </div>
                 </div>
@@ -203,7 +211,7 @@ export function MemoryTab() {
                         `/memory/${x.memory_id}?project_id=${encodeURIComponent(asString(x.project_id, "global"))}`,
                         { method: "PATCH", body: JSON.stringify({ content: value }) },
                       );
-                      custTab("memory");
+                      refreshCustTab("memory");
                     } catch (e) {
                       hint(apiErrorText(e), true);
                     }
@@ -219,7 +227,7 @@ export function MemoryTab() {
                         `/memory/${x.memory_id}?project_id=${encodeURIComponent(asString(x.project_id, "global"))}`,
                         { method: "DELETE" },
                       );
-                      custTab("memory");
+                      refreshCustTab("memory");
                     } catch (e) {
                       hint(apiErrorText(e), true);
                     }

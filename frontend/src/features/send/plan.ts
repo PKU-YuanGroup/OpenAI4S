@@ -13,6 +13,7 @@ import { defaultModelName } from "../../stores/customize";
 import {
   planMode,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -247,7 +248,12 @@ export function renderPlanCard(plan: unknown, status?: string | null): void {
         const v = ta.value.trim();
         if (v) {
           ta.value = "";
-          void revisePlan(v);
+          void revisePlan(v).then((sent) => {
+            // Not dispatched (a turn is running, or the POST failed): the
+            // change request is only here, so it goes back unless the user
+            // has started another one.
+            if (!sent && !ta.value.trim()) ta.value = v;
+          });
         }
       }
     };
@@ -364,22 +370,29 @@ export async function resumePlan(): Promise<void> {
 }
 
 export async function discardPlan(): Promise<void> {
-  if (!currentId.value) return;
+  const fid = currentId.value;
+  if (!fid) return;
+  const gen = _openGen.value;
   try {
-    await api(`/frames/${currentId.value}/plan/discard`, { method: "POST", body: "{}" });
+    await api(`/frames/${fid}/plan/discard`, { method: "POST", body: "{}" });
   } catch {
     /* discard is best-effort */
   }
+  // The live plan card and plan state below belong to whichever session is
+  // on screen now; if that is no longer the one discarded, leave them be.
+  if (currentId.value !== fid || _openGen.value !== gen) return;
   const card = $("#plan-card-live");
   if (card) card.remove();
   planReady.value = null;
   planStatus.value = "discarded";
   planPending.value = false;
+  planPendingTurn.value = null;
   hint(t("toast.planDiscarded"));
 }
 
-export async function revisePlan(changes: string): Promise<void> {
-  await dispatchPlanTurn(
+/** True when the revision turn was dispatched. */
+export async function revisePlan(changes: string): Promise<boolean> {
+  return dispatchPlanTurn(
     "/plan/revise",
     { changes, model: defaultModelName.value },
     t("toast.planRevising"),

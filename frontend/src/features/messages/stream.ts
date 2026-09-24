@@ -9,7 +9,6 @@
  *   - `down()` via the shared rAF (no sync `scrollTop`)
  */
 
-import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
@@ -63,32 +62,15 @@ export type LiveStream = {
   _lastFlush: number;
 };
 
-type NbLiveStart = (
-  tool: string,
-  raw: string,
-  kernelId: unknown,
-  cellIndex: unknown,
-  language: unknown,
-) => void;
-type NbLiveAppend = (txt: string) => void;
-
-let nbLiveStartImpl: NbLiveStart | null = null;
-let nbLiveAppendImpl: NbLiveAppend | null = null;
-
-/** F-14 owns notebook live cells. Until then these are no-ops. */
-export function setNbLiveStartImpl(fn: NbLiveStart | null): void {
-  nbLiveStartImpl = fn;
-}
-export function setNbLiveAppendImpl(fn: NbLiveAppend | null): void {
-  nbLiveAppendImpl = fn;
-}
-
 function currentStream(): LiveStream | null {
   return (liveStream.value as LiveStream | null) || null;
 }
 
 function ensureDual(st: LiveStream): void {
-  if (st.sealed && st.tail) return;
+  // A replaced `st.md` (a reviewed answer swapped in by candidate.ts) leaves
+  // sealed/tail and the cut state describing text that is no longer shown.
+  if (st.sealed && st.tail && st.sealed.parentNode === st.md) return;
+  resetMdState(st);
   st.md.innerHTML = "";
   st.sealed = el("div", "md-sealed");
   st.tail = el("div", "md-tail");
@@ -103,7 +85,31 @@ function resetMdState(st: LiveStream): void {
   st.tail = null;
 }
 
-/** app.js:5403-5426. Dual-node: sealed rewritten only when the cut advances. */
+/** A list item, or an indented line that may continue one. */
+const LIST_TAIL = /^(?:\s*(?:[-*+]|\d+[.)])[ \t]|\s+\S)/;
+
+/**
+ * Whether `renderMd` of the text up to `cut` is final no matter what is
+ * appended. A stable cut sits after a blank line or a closing fence, and every
+ * block `renderMd` knows ends there -- except a list, which continues across
+ * blank lines when another item follows. So a region whose last line is
+ * list-ish stays in the tail until a later cut settles it.
+ */
+function settledAt(text: string, from: number, cut: number): boolean {
+  const lines = text.slice(from, cut).split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i] || "";
+    if (line.trim()) return !LIST_TAIL.test(line);
+  }
+  return true;
+}
+
+/**
+ * app.js:5403-5426, dual-node. Settled text is rendered once, into chunks
+ * appended to `sealed`; only the tail after it re-renders each flush.
+ * Re-rendering the whole sealed prefix whenever the cut advanced rendered a
+ * 60KB answer ~86 times over while it streamed.
+ */
 export function flushRender(st: LiveStream | null, finalRender?: boolean): void {
   if (!st) return;
   if (st._raf) {
@@ -123,42 +129,50 @@ export function flushRender(st: LiveStream | null, finalRender?: boolean): void 
   const cutState = mdStableCut(text, st._mdCut);
   st._mdCut = cutState;
   const cut = cutState.stable;
-  if (shouldAdvanceSealed(cut, st._stableAt || 0) && st.sealed) {
+  const settled = st._stableAt || 0;
+  if (st.sealed && shouldAdvanceSealed(cut, settled) && settledAt(text, settled, cut)) {
+    st.sealed.insertAdjacentHTML("beforeend", renderMd(text.slice(settled, cut)));
     st._stableAt = cut;
-    st.sealed.innerHTML = renderMd(text.slice(0, cut));
   }
-  if (st.tail) {
-    if (st._stableAt && text.length > st._stableAt) {
-      st.tail.innerHTML = renderMd(text.slice(st._stableAt));
-    } else {
-      st.tail.innerHTML = renderMd(text);
-    }
+  if (st.tail) st.tail.innerHTML = renderMd(text.slice(st._stableAt || 0));
+}
+
+/** Past 600 chars a flush is due at most every 48ms (app.js: ~20/s). */
+const FLUSH_GAP_MS = 48;
+/** Unsettled tail chars per extra ms of gap. */
+const TAIL_CHARS_PER_MS = 200;
+
+/**
+ * The tail re-renders whole on every flush, and a tail that cannot settle --
+ * an unclosed code fence, a long loose list -- keeps growing: at 20 flushes a
+ * second a long code block was re-highlighted from its first line twenty
+ * times a second. The gap grows with the tail instead (1ms per 200 chars
+ * past ~10K), which keeps the re-render work per second flat.
+ */
+function flushGap(st: LiveStream): number {
+  const text = st.text || "";
+  if (text.length <= 600 || !st._lastFlush) return 0;
+  return Math.max(FLUSH_GAP_MS, (text.length - (st._stableAt || 0)) / TAIL_CHARS_PER_MS);
+}
+
+function renderFrame(st: LiveStream, deferred: boolean): void {
+  st._raf = null;
+  const gap = flushGap(st);
+  // Within the gap: wait one frame, as app.js did; only a large tail waits
+  // its whole gap out.
+  if (performance.now() - st._lastFlush < gap && (!deferred || gap > FLUSH_GAP_MS)) {
+    st._raf = scheduleFrame(() => renderFrame(st, true));
+    return;
   }
+  flushRender(st);
+  down();
 }
 
 /** app.js:5427-5440. ~20/s cap on long streams; `down()` is rAF-coalesced. */
 export function scheduleRender(st: LiveStream): void {
   st._dirty = true;
   if (st._raf) return;
-  st._raf = scheduleFrame(() => {
-    st._raf = null;
-    const now = performance.now();
-    if (
-      st.text &&
-      st.text.length > 600 &&
-      st._lastFlush &&
-      now - st._lastFlush < 48
-    ) {
-      st._raf = scheduleFrame(() => {
-        st._raf = null;
-        flushRender(st);
-        down();
-      });
-      return;
-    }
-    flushRender(st);
-    down();
-  });
+  st._raf = scheduleFrame(() => renderFrame(st, false));
 }
 
 /** app.js:5445-5451. */
@@ -199,23 +213,35 @@ export function startStream(): LiveStream | null {
     _lastFlush: 0,
   };
   liveStream.value = st;
-  stepEls.value = Object.create(null);
+  stepEls.value = stepsOnScreen(stepEls.value);
   liveCells.value = [];
   _liveCell.value = null;
   down();
   return st;
 }
 
+/**
+ * The step registry, minus cards no longer in the document. Opening a running
+ * session renders its stored steps (registering them) and then replays the
+ * turn, which starts with text_reset: wiping the registry here made every
+ * replayed step a second card while the stored one stayed "running". Step
+ * ids are unique, so keeping the cards on screen cannot capture another
+ * turn's step; openConversation still starts each session with a fresh one.
+ */
+function stepsOnScreen(current: unknown): Record<string, unknown> {
+  const kept = Object.create(null) as Record<string, unknown>;
+  if (!current || typeof current !== "object") return kept;
+  for (const [id, handle] of Object.entries(current as Record<string, unknown>)) {
+    const card = handle && typeof handle === "object" ? (handle as { card?: { isConnected?: boolean } }).card : null;
+    if (card && card.isConnected) kept[id] = handle;
+  }
+  return kept;
+}
+
 export function ensure(): LiveStream | null {
   const cur = currentStream();
   if (cur) return cur;
   return startStream();
-}
-
-function callWindow(name: string, ...args: unknown[]): void {
-  const fn = (globalThis as Record<string, unknown>)[name];
-  if (!isReady(fn)) return;
-  (fn as (...a: unknown[]) => unknown)(...args);
 }
 
 function newToolPre(): { pre: HTMLElement; handle: StreamingPreHandle } {
@@ -244,8 +270,6 @@ export function feed(
   const st = ensure();
   if (!st) return;
   rememberCandidateIdentity(st.wrap, event);
-  const structuredCellId =
-    event && (event.producing_cell_id || event.cell_id);
   if (kind === "tool") {
     const cellHeader = !!(event && event.cell_index != null);
     const subagentHeader = !cellHeader && chunk.startsWith("◆");
@@ -290,34 +314,10 @@ export function feed(
       st.text = "";
       resetMdState(st);
       st._lastFlush = 0;
-      if (!suba && !structuredCellId) {
-        if (nbLiveStartImpl) {
-          nbLiveStartImpl(
-            tool,
-            raw,
-            event && event.kernel_id,
-            event && event.cell_index,
-            event && event.language,
-          );
-        } else {
-          callWindow(
-            "nbLiveStart",
-            tool,
-            raw,
-            event && event.kernel_id,
-            event && event.cell_index,
-            event && event.language,
-          );
-        }
-      }
     } else if (st.toolHandle) {
       const add = chunk.replace(/^↳\s*/, "");
       st.toolHandle.append(add);
       paintToolMeta(st);
-      if (!structuredCellId) {
-        if (nbLiveAppendImpl) nbLiveAppendImpl(add);
-        else callWindow("nbLiveAppend", add);
-      }
     }
   } else {
     // The stopped marker is rendered as a marker, not appended as prose, so

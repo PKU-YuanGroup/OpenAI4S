@@ -6,70 +6,22 @@ import {
   doubaoSearchResultText,
 } from "../../../features/customize/vendors";
 import { hint } from "../../../features/customize/host";
+import { useVendorKey } from "./use-vendor-key";
 
 export function DoubaoSearchCard({
   config,
   configError,
 }: {
-  config: Record<string, unknown>;
+  /** `null` until `GET /doubao-search/config` has answered. */
+  config: Record<string, unknown> | null;
   configError: unknown;
 }) {
-  const [keyConfigured, setKeyConfigured] = useState(!!config.key_configured);
-  const [arkKeyReused, setArkKeyReused] = useState(!!config.ark_key_reused);
-  const [key, setKey] = useState("");
-  const [savingKey, setSavingKey] = useState(false);
-  const [keyState, setKeyState] = useState(
-    configError
-      ? t("cust.doubao.requestFailed", apiErrorText(configError))
-      : arkKeyReused
-        ? t("cust.doubao.keyArkReused")
-        : keyConfigured
-          ? t("cust.doubao.keyConfigured")
-          : t("cust.doubao.keyMissing"),
-  );
-  const [keyBad, setKeyBad] = useState(!!configError || (!keyConfigured && !arkKeyReused));
+  const vendorKey = useVendorKey("cust.doubao", "/doubao-search/config", config, configError);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [statusClass, setStatusClass] = useState("datapro-status");
   const [result, setResult] = useState(t("cust.doubao.noResult"));
   const [searching, setSearching] = useState(false);
-
-  const placeholder = arkKeyReused
-    ? t("cust.doubao.keyPlaceholderArk")
-    : keyConfigured
-      ? t("cust.doubao.keyPlaceholderSet")
-      : t("cust.doubao.keyPlaceholder");
-
-  const saveKey = async () => {
-    let secret = key.trim();
-    setKey("");
-    if (!secret) {
-      hint(t("cust.doubao.keyRequired"), true);
-      return;
-    }
-    setSavingKey(true);
-    const request = api("/doubao-search/config", {
-      method: "POST",
-      body: JSON.stringify({ agent_plan_key: secret }),
-    });
-    secret = "";
-    try {
-      const saved = await request;
-      setKeyConfigured(!!saved.key_configured);
-      setArkKeyReused(!!saved.ark_key_reused);
-      setKeyState(
-        saved.ark_key_reused ? t("cust.doubao.keyArkReused") : t("cust.doubao.keyConfigured"),
-      );
-      setKeyBad(false);
-      hint(t("cust.doubao.keySaved"));
-    } catch (error) {
-      setKeyState(t("cust.doubao.requestFailed", apiErrorText(error)));
-      setKeyBad(true);
-    } finally {
-      setKey("");
-      setSavingKey(false);
-    }
-  };
 
   const runSearch = async () => {
     const text = query.trim();
@@ -124,13 +76,13 @@ export function DoubaoSearchCard({
             autocomplete="off"
             autocapitalize="off"
             spellcheck={false}
-            placeholder={placeholder}
-            value={key}
-            onInput={(e) => setKey((e.target as HTMLInputElement).value)}
+            placeholder={vendorKey.placeholder}
+            value={vendorKey.key}
+            onInput={(e) => vendorKey.setKey((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                void saveKey();
+                void vendorKey.saveKey();
               }
             }}
           />
@@ -138,13 +90,15 @@ export function DoubaoSearchCard({
             type="button"
             class="solid-btn small"
             data-action="doubao-search-save-key"
-            disabled={savingKey}
-            onClick={() => void saveKey()}
+            disabled={vendorKey.savingKey || !vendorKey.loaded}
+            onClick={() => void vendorKey.saveKey()}
           >
             {t("cust.doubao.saveKey")}
           </button>
         </div>
-        <div class={"datapro-credential-state" + (keyBad ? " bad" : "")}>{keyState}</div>
+        <div class={"datapro-credential-state" + (vendorKey.keyBad ? " bad" : "")}>
+          {vendorKey.keyState}
+        </div>
       </div>
       <div class="datapro-field">
         <label class="skill-lbl">{t("cust.doubao.queryLabel")}</label>

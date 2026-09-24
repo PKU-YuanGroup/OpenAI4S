@@ -18,7 +18,7 @@ import {
   setMessageReviewBadge,
 } from "../messages/identity";
 import { el } from "../messages/dom";
-import { addMsgActions } from "../sessions/transcript";
+import { addMsgActions } from "../messages/list";
 import { scheduleConversationResync } from "../timeline/island";
 
 export { reviewStatusFrom };

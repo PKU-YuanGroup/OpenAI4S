@@ -21,3 +21,22 @@ export function appendLiveOutput(
     ? existing + addition.slice(0, remaining) + LIVE_OUTPUT_TRUNCATION
     : existing + addition;
 }
+
+/**
+ * The same cap for a caller that tracks how much it holds and whether the
+ * marker went in. `appendLiveOutput` has to search the whole output for the
+ * marker on every chunk -- up to 1MB, thousands of times per cell.
+ */
+export function liveOutputIncrement(
+  length: number,
+  truncated: boolean,
+  chunk: string | null | undefined,
+): { added: string; truncated: boolean } {
+  if (truncated) return { added: "", truncated: true };
+  if (length >= LIVE_OUTPUT_CHAR_CAP) return { added: LIVE_OUTPUT_TRUNCATION, truncated: true };
+  const addition = String(chunk || "");
+  const remaining = LIVE_OUTPUT_CHAR_CAP - length;
+  return addition.length > remaining
+    ? { added: addition.slice(0, remaining) + LIVE_OUTPUT_TRUNCATION, truncated: true }
+    : { added: addition, truncated: false };
+}

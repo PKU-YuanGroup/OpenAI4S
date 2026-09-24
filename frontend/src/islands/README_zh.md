@@ -9,8 +9,8 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | 文件 | 职责 |
 | --- | --- |
 | [`annot.ts`](annot.ts) | 图片标注器、pin 状态、作曲框 chip（app.js:8965-8993, 9149-9429）。 |
-| [`annot.test.ts`](annot.test.ts) | `annotationStatus` 映射；held pin；`openAnnotations`。 |
-| [`dom.ts`](dom.ts) | `el` / `$` / lucide 子集 / `ghostIconBtn`。 |
+| [`annot.test.ts`](annot.test.ts) | `annotationStatus` 映射；held pin；`openAnnotations`；删除一条后评论列表在重绘的 chip 上重新打开。 |
+| [`dom.ts`](dom.ts) | `el`（再导出 artifacts 的同名函数）/ `$` / lucide 子集 / `ghostIconBtn`。 |
 | [`frames.ts`](frames.ts) | 惰性 iframe 策略、回环源与 grant 路径检查；应用同源 Ketcher 与剪贴板权限。 |
 | [`frames.test.ts`](frames.test.ts) | iframe sandbox 属性、派生的回环源、grant 路径检查及应用同源 Ketcher。 |
 | [`host.ts`](host.ts) | 用 `isReady` 调 window；`t()` 回退。 |
@@ -19,6 +19,6 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`ketcher.ts`](ketcher.ts) | `openKetcher` iframe 打开 `/ketcher`（app.js:10834）。 |
 | [`locator.ts`](locator.ts) | PDF / HTML locator 评论（app.js:10835-10897）。 |
 | [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` 懒注入（app.js:9610-9673）。 |
-| [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src。 |
+| [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src；只有最新且仍在页面上的结构创建 viewer，脚本只注入一次。 |
 | [`viewer.ts`](viewer.ts) | Dock Viewer 铬、编辑器、版本（app.js:9430-9609）。 |
 | [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` 扩展名 / content-type 门。 |

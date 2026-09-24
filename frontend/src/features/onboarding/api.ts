@@ -31,6 +31,17 @@ export async function saveModelProfile(
   });
 }
 
+/** Rewrite a profile in place. A body without `api_key` keeps the stored key. */
+export async function updateModelProfile(
+  id: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return api(`/model-profiles/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function activateModelProfile(id: string): Promise<Record<string, unknown>> {
   return api(`/model-profiles/${encodeURIComponent(id)}/activate`, {
     method: "POST",

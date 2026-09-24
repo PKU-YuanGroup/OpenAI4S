@@ -1,7 +1,7 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import {
   asList,
@@ -9,32 +9,24 @@ import {
   confirmAction,
   hint,
 } from "../../features/customize/host";
-import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 
 export function SpecialistsTab() {
-  const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
   const [builtin, setBuiltin] = useState<Record<string, unknown>[]>([]);
   const [custom, setCustom] = useState<Record<string, unknown>[]>([]);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const d = await api("/specialists");
-        if (!alive()) return;
-        setBuiltin(asList(d.builtin) as Record<string, unknown>[]);
-        setCustom(asList(d.specialists) as Record<string, unknown>[]);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
-      }
-    })();
-  }, [alive]);
+  useTabRead(
+    "specialists",
+    async (current) => {
+      const d = await api("/specialists");
+      if (!current()) return;
+      setBuiltin(asList(d.builtin) as Record<string, unknown>[]);
+      setCustom(asList(d.specialists) as Record<string, unknown>[]);
+    },
+    setErr,
+  );
 
   if (err) return <div>{err}</div>;
 
@@ -82,7 +74,7 @@ export function SpecialistsTab() {
                 await api(`/specialists/${encodeURIComponent(asString(s.name))}`, {
                   method: "DELETE",
                 });
-                custTab("specialists");
+                refreshCustTab("specialists");
               } catch (e) {
                 hint(t("toast.deleteFailed", apiErrorText(e)), true);
               }
@@ -98,8 +90,13 @@ export function SpecialistsTab() {
   );
 }
 
-function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
-  const [on, setOn] = useState(ag.enabled !== false);
+export function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
+  const enabled = useOptimisticToggle(ag.enabled !== false, (on) =>
+    api(`/agents/${encodeURIComponent(asString(ag.name))}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: on }),
+    }),
+  );
   return (
     <div class="cust-row">
       <div class="info">
@@ -114,21 +111,7 @@ function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
         </div>
         <div class="ds">{asString(ag.description)}</div>
       </div>
-      <Toggle
-        on={on}
-        onClick={async () => {
-          const next = !on;
-          setOn(next);
-          try {
-            await api(`/agents/${encodeURIComponent(asString(ag.name))}/enabled`, {
-              method: "PUT",
-              body: JSON.stringify({ enabled: next }),
-            });
-          } catch {
-            setOn(!next);
-          }
-        }}
-      />
+      <Toggle on={enabled.on} onClick={enabled.toggle} />
     </div>
   );
 }

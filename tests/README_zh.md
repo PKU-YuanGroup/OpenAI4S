@@ -55,10 +55,10 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_admet_genetic.py`](test_admet_genetic.py) | 内置的 ADMET genetic Skill：能被发现、helper 的聚合是确定性的，以及它生成的 dashboard 会转义脚本和 HTML 定界符。 |
 | [`test_agent.py`](test_agent.py) | 全套里覆盖面最宽的一个模块——离线外层循环的完整链路。Code-as-Action 循环、没有 R 时 R Cell 软失败成一条 observation、token 估算、把一个 Cell 和它的 observation 压在同一个原子段里的 compaction，以及委派的上限。改坏了循环，通常先在这里露馅。 |
 | [`test_agent_control.py`](test_agent_control.py) | 压力之下的原生 Tool 批次。哪怕其中一次调用失败，或者整轮在批次中途被取消，批次里的每个调用最终都要落到一个结果。互不相干的只读调用可以并行，但一个会写的调用是它之后所有调用的 barrier。 |
-| [`test_agent_engine.py`](test_agent_engine.py) | 单独用 fake port 驱动 `AgentEngine`。最后那个测试才是这个模块的要点：引擎不许 import 任何运行时基础设施。其余的钉住路由优先级、可重放的历史分组，以及取消究竟在哪几个时刻取胜。 |
+| [`test_agent_engine.py`](test_agent_engine.py) | 单独用 fake port 驱动 `AgentEngine`。那个 import 测试才是这个模块的要点：引擎不许 import 任何运行时基础设施。其余的钉住路由优先级、可重放的历史分组、取消究竟在哪几个时刻取胜，以及模型反复发送被拒的 `finalize_response` 时以 `no_progress` 停下，而不是耗尽整个回合预算。 |
 | [`test_agent_hybrid.py`](test_agent_hybrid.py) | 关于 hybrid `Agent` 门面的两个测试：原生调用压过代码、且它的规范历史能活到下一轮；被复用的 agent 在接新任务前会清掉上一次的提交。 |
 | [`test_agent_profile_repository.py`](test_agent_profile_repository.py) | 落在 SQLite 里的具名 agent profile，主要是那些别扭的地方——假值的老式序列化、列表读取时的 JSON 解码边界，以及 upsert 必须扛住的“先读后写”那段空隙。 |
-| [`test_agent_progress_circuit.py`](test_agent_progress_circuit.py) | 通用 Agent 无进展熔断：相同动作 / malformed / 同类 error / 长文本阈值，不同参数与 reasoning 插入不得误报，以及从 Action Ledger 而非活着的 `RunState` 重建重启/压缩状态。触发后是 `no_progress`，绝不是 completed。 |
+| [`test_agent_progress_circuit.py`](test_agent_progress_circuit.py) | 通用 Agent 无进展熔断：相同动作 / malformed / 同类 error / 长文本阈值，不同参数与 reasoning 插入不得误报，以及从 Action Ledger 而非活着的 `RunState` 重建重启/压缩状态。被拒的 `finalize_response` 分组重建出与在线运行相同的熔断状态，被接受的 finalize 永不改变它。触发后是 `no_progress`，绝不是 completed。 |
 | [`test_agent_runtime.py`](test_agent_runtime.py) | 纯引擎与真实基础设施之间的本地适配器。两条规则占主导：原生调用解析出错或超出上限时绝不许下发，同时也绝不许把 Tool 结果弄丢。compaction 会把尾部撑开，好让 assistant 的 Tool group 保持原子；一个熔断器会掐掉反复低收益的 compaction。 |
 | [`test_compaction_summary_robustness.py`](test_compaction_summary_robustness.py) | 长程修复的 Lane A。摘要调用拿到真实的输出预算（`max(8192, cfg.llm.max_tokens)`，可用环境变量覆盖）且不再设 temperature；空的或被截断的摘要抛 `CompactionSummaryError`，而不是把中段归档到一条模型随后会信以为真的占位符后面；摘要输入去掉 `wire_state` 并截断工具参数。 |
 | [`test_compaction_cli_budget.py`](test_compaction_cli_budget.py) | Lane B。CLI 现在把 Web 循环早已有的、由 provider 推导的上下文预算和工具 schema 计量交给 `CompactionPolicy`，所以一次性的 `openai4s run` 按模型真实窗口压缩，而不是按配置默认值。 |

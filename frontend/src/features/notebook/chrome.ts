@@ -1,13 +1,14 @@
 /**
  * Notebook chrome: traceback highlight, export split-button, live figures,
- * inline CSV tables, binary elision. Window contract names assigned in install.ts.
+ * inline CSV tables, the shared binary-output test. Window contract names
+ * assigned in install.ts.
  */
 
 import { fetchArtifactText } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
-import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
+import { _tbl } from "../../stores/artifacts";
 import { t } from "../../i18n/runtime";
 import { delimiterFor, parseDelimited } from "../csv/csv";
 import { esc } from "../md/esc";
@@ -34,33 +35,11 @@ export function iconEl(name: string, size: number): HTMLElement {
   return span;
 }
 
-export function bytes(b: number): string {
-  b = b || 0;
-  if (b < 1024) return b + " B";
-  if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
-  return (b / 1048576).toFixed(1) + " MB";
-}
-
-/** app.js:6055-6066 */
-export function looksBinary(s: string | null | undefined): boolean {
-  if (!s) return false;
-  const sample = s.slice(0, 4096);
-  let ctrl = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const c = sample.charCodeAt(i);
-    if (c === 9 || c === 10 || c === 13) continue;
-    if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
-  }
-  if (sample.length && ctrl / sample.length > 0.12) return true;
-  return /[A-Za-z0-9+/=]{1200,}/.test(s) || /(?:\\x[0-9a-fA-F]{2}){400,}/.test(s);
-}
-
-export function binElide(len: number): HTMLElement {
-  const d = el("div", "bin-elide");
-  d.appendChild(iconEl("file", 13));
-  d.appendChild(el("span", null, t("output.binaryElided", bytes(len || 0))));
-  return d;
-}
+/**
+ * One binary-output heuristic for the whole workbench: the Files viewer and
+ * the Notebook must agree on what a protein or DNA sequence is.
+ */
+export { looksBinary } from "../artifacts/api";
 
 /** app.js:10480-10481 */
 export function stripAnsi(s: unknown): string {
@@ -178,23 +157,6 @@ export function notebookExportLink(frameId: string): HTMLElement {
   wrap.appendChild(toggle);
   wrap.appendChild(menu);
   return wrap;
-}
-
-export function artUrl(a: { id?: string }): string {
-  const b = (_artBust.value || {})[String(a.id)];
-  return `${API}/artifacts/${a.id}` + (b ? `?_=${b}` : "");
-}
-
-/** app.js:9676-9681 */
-export function artUrlByName(fname: string): string {
-  if (!fname) return "";
-  const base = String(fname).split("/").pop();
-  const list = Array.isArray(artifacts.value) ? artifacts.value : [];
-  const a = list.find((x) => {
-    const rec = x as { filename?: string };
-    return (rec.filename || "") === fname || (rec.filename || "").split("/").pop() === base;
-  }) as { id?: string } | undefined;
-  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 
 export function notebookArtifactState(cell: NotebookCell, filename: string): {

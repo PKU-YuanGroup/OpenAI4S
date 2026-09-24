@@ -3,6 +3,7 @@ import {
   LIVE_OUTPUT_CHAR_CAP,
   LIVE_OUTPUT_TRUNCATION,
   appendLiveOutput,
+  liveOutputIncrement,
 } from "./cap";
 
 describe("appendLiveOutput", () => {
@@ -22,5 +23,31 @@ describe("appendLiveOutput", () => {
     expect(appendLiveOutput(once, "zzz")).toBe(once);
     const already = appendLiveOutput(big, "y");
     expect(appendLiveOutput(already, "z")).toBe(already);
+  });
+});
+
+describe("liveOutputIncrement", () => {
+  it("builds exactly what appendLiveOutput builds, from the length alone", () => {
+    const chunks = ["a".repeat(400000), "", "b".repeat(400000), "c".repeat(300000), "d", "e"];
+    let whole = "";
+    let built = "";
+    let truncated = false;
+    for (const chunk of chunks) {
+      whole = appendLiveOutput(whole, chunk);
+      const step = liveOutputIncrement(built.length, truncated, chunk);
+      built += step.added;
+      truncated = step.truncated;
+      expect(built).toBe(whole);
+      expect(truncated).toBe(whole.includes(LIVE_OUTPUT_TRUNCATION));
+    }
+    expect(built.length).toBe(LIVE_OUTPUT_CHAR_CAP + LIVE_OUTPUT_TRUNCATION.length);
+    // Exactly at the cap, the next chunk (even an empty one) adds the marker.
+    expect(liveOutputIncrement(LIVE_OUTPUT_CHAR_CAP, false, "")).toEqual({
+      added: LIVE_OUTPUT_TRUNCATION,
+      truncated: true,
+    });
+    expect(appendLiveOutput("x".repeat(LIVE_OUTPUT_CHAR_CAP), "")).toBe(
+      "x".repeat(LIVE_OUTPUT_CHAR_CAP) + LIVE_OUTPUT_TRUNCATION,
+    );
   });
 });

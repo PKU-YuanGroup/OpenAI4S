@@ -1,30 +1,36 @@
 /* Experimental judgment: Customize block + search_skills chips. Uses existing
    style.css tokens; no new custom properties. */
 .judgment-block {
-  margin-top: 18px;
-  padding-top: 12px;
-  border-top: 0.5px solid var(--border, #0002);
+  margin-top: 32px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line, #e6dfd8);
 }
 .judgment-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+}
+#cust .judgment-title-row {
+  margin-top: 20px;
+  font-size: 28px;
 }
 .judgment-badge {
   display: inline-block;
-  background: var(--bg-200, #f3f3f0);
-  border: 0.5px solid var(--border, #0002);
-  border-radius: 12px;
-  padding: 1px 8px;
-  font-size: 11px;
-  letter-spacing: 0.02em;
+  background: var(--bg-200, #efe9de);
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font: 500 12px/1.4 var(--sans);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-000, #141413);
 }
 .judgment-source {
   font-size: 12px;
   color: var(--text-300, inherit);
 }
 .judgment-env-off {
-  color: var(--warn, #b8860b);
+  color: var(--warn-text, #8a5b08);
   font-size: 12px;
 }
 .judgment-safety {
@@ -35,19 +41,19 @@
 .judgment-disclosure {
   position: absolute;
   inset: 0;
-  background: rgba(20, 18, 14, 0.34);
+  background: var(--scrim, rgba(20, 20, 19, 0.4));
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 3;
 }
 .judgment-disclosure-box {
-  background: var(--panel, #fff);
-  border-radius: 12px;
+  background: var(--bg, #faf9f5);
+  border-radius: var(--radius-lg, 16px);
   width: min(560px, 92%);
   max-height: 80%;
   overflow: auto;
-  padding: 16px 18px;
+  padding: 24px 28px;
 }
 .judgment-disclosure-item {
   display: flex;
@@ -55,11 +61,11 @@
   align-items: flex-start;
   margin: 8px 0;
   padding: 8px;
-  border-radius: 8px;
-  background: var(--bg-100, #fdfdfc);
+  border-radius: var(--radius, 8px);
+  background: var(--bg-100, #f5f0e8);
 }
 .judgment-disclosure-item.safety {
-  background: var(--danger-bg, #fad6d6);
+  background: var(--danger-bg, #f6e2de);
 }
 .judgment-disclosure-item label {
   flex: 1;
@@ -106,11 +112,11 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  border-radius: 10px;
-  padding: 2px 8px;
-  background: var(--bg-200, #f3f3f0);
-  border: 0.5px solid var(--border, #0002);
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: var(--bg-200, #efe9de);
+  border: 0;
   white-space: nowrap;
 }
 .judgment-semantic-note {

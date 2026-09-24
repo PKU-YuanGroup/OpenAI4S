@@ -1,20 +1,19 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { closeCust, custTab } from "../../features/customize/actions";
+import { closeCust, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { skillReadinessNoteText } from "../../features/customize/environment";
 import {
   asList,
   asString,
   confirmAction,
+  customizeProject,
   dropSkillsCatalog,
-  effProject,
   hint,
   insertSkillMention,
 } from "../../features/customize/host";
-import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Toggle } from "./ui";
 
 type Skill = Record<string, unknown>;
@@ -25,11 +24,16 @@ function skillScope(s: Skill): "project" | "bundled" | "personal" {
   return "personal";
 }
 
-function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
+export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   const scope = skillScope(s);
   const name = asString(s.displayName || s.name);
   const note = skillReadinessNoteText(s);
-  const [enabled, setEnabled] = useState(s.enabled !== false);
+  const enabled = useOptimisticToggle(s.enabled !== false, (on) =>
+    api(`/skills/catalog/${encodeURIComponent(asString(s.name))}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: on }),
+    }),
+  );
   return (
     <div class="cust-row">
       <div class="info">
@@ -80,7 +84,7 @@ function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
                   method: "DELETE",
                 });
                 dropSkillsCatalog();
-                custTab("skills");
+                refreshCustTab("skills");
               } catch (e) {
                 hint(t("toast.deleteFailed", apiErrorText(e)), true);
               }
@@ -89,59 +93,39 @@ function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
         </>
       ) : null}
       {scope !== "project" ? (
-        <Toggle
-          on={enabled}
-          onClick={async () => {
-            const on = !enabled;
-            setEnabled(on);
-            try {
-              await api(`/skills/catalog/${encodeURIComponent(asString(s.name))}/enabled`, {
-                method: "PUT",
-                body: JSON.stringify({ enabled: on }),
-              });
-            } catch {
-              setEnabled(!on);
-            }
-          }}
-        />
+        <Toggle on={enabled.on} onClick={enabled.toggle} />
       ) : null}
     </div>
   );
 }
 
 export function SkillsTab() {
-  const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [openCollections, setOpenCollections] = useState<Record<string, boolean>>({});
-  const pid = effProject();
+  const pid = customizeProject.value;
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const personalRequest = api("/skills/catalog");
-        const projectRequest = pid
-          ? api(`/projects/${encodeURIComponent(pid)}/skills/catalog`).catch(() => ({
-              skills: [],
-            }))
-          : Promise.resolve({ skills: [] });
-        const [personalData, projectData] = await Promise.all([
-          personalRequest,
-          projectRequest,
-        ]);
-        if (!alive()) return;
-        const personalSkills = asList(personalData.skills) as Skill[];
-        const projectSkills = asList(projectData.skills) as Skill[];
-        setSkills([...personalSkills, ...projectSkills]);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
-      }
-    })();
-  }, [alive, pid]);
+  useTabRead(
+    "skills",
+    async (current) => {
+      const personalRequest = api("/skills/catalog");
+      const projectRequest = pid
+        ? api(`/projects/${encodeURIComponent(pid)}/skills/catalog`).catch(() => ({
+            skills: [],
+          }))
+        : Promise.resolve({ skills: [] });
+      const [personalData, projectData] = await Promise.all([
+        personalRequest,
+        projectRequest,
+      ]);
+      if (!current()) return;
+      const personalSkills = asList(personalData.skills) as Skill[];
+      const projectSkills = asList(projectData.skills) as Skill[];
+      setSkills([...personalSkills, ...projectSkills]);
+    },
+    setErr,
+    [pid],
+  );
 
   if (err) return <div>{err}</div>;
 

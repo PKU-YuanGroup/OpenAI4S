@@ -6,7 +6,7 @@
  * like `__proto__` cannot pollute.
  */
 
-import { t } from "../../i18n/runtime";
+import { LANG, t } from "../../i18n/runtime";
 import { permCards, running } from "../../stores/stream";
 import { el } from "../messages/dom";
 import { down } from "../messages/scroll";
@@ -92,6 +92,26 @@ export function defaultRememberScope(m: PermEvent): string {
   return m && m.dangerous ? "once" : "conversation";
 }
 
+/** Feature-local copy: `i18n/en.ts` / `zh.ts` are generated extracts of app.js. */
+const RESOLVING_COPY: Record<"en" | "zh", string> = {
+  en: "Decision received; it is still being recorded.",
+  zh: "已收到决定，正在记录。",
+};
+
+function statusLine(card: HTMLElement): HTMLElement {
+  let st = card.querySelector(".perm-status") as HTMLElement | null;
+  if (!st) {
+    st = el("div", "perm-status");
+    card.appendChild(st);
+  }
+  return st;
+}
+
+/** Accepted, commit in flight: the buttons stay down until permission_resolved. */
+function showResolving(card: HTMLElement): void {
+  statusLine(card).textContent = RESOLVING_COPY[LANG === "zh" ? "zh" : "en"];
+}
+
 function registry(): Record<string, PermHandle> {
   let reg = permCards.value as Record<string, PermHandle> | null;
   if (!reg) {
@@ -116,11 +136,7 @@ export function markPermCard(
   if (h.allow) h.allow.disabled = true;
   if (h.deny) h.deny.disabled = true;
   h.card.classList.add("resolved", allowed ? "allowed" : "denied");
-  let st = h.card.querySelector(".perm-status") as HTMLElement | null;
-  if (!st) {
-    st = el("div", "perm-status");
-    h.card.appendChild(st);
-  }
+  const st = statusLine(h.card);
   const res = rec(resolution);
   const afterRestart = res.resolution_context === "after_restart";
   st.textContent = afterRestart
@@ -252,6 +268,14 @@ export function renderPermissionCard(m: PermEvent): void {
         body: JSON.stringify(body),
       });
       const recRes = rec(resolution);
+      if (recRes.code === "decision_resolving") {
+        // 202: the decision was accepted and its durable commit is still in
+        // flight (the server bounds its own wait). Not a failure: offering
+        // the buttons again would re-submit a decision about to commit (409).
+        // The tool thread's permission_resolved event settles the card.
+        showResolving(card);
+        return;
+      }
       if (!resolution || recRes.ok !== true) {
         throw new Error(String(recRes.error || "permission decision was not accepted"));
       }

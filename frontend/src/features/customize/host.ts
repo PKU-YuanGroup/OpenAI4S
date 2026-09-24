@@ -2,6 +2,7 @@
  * Optional later-lane capabilities. Guard with isReady — F-05 placeholders
  * are functions, so `typeof x === "function"` would pass and then throw.
  */
+import { computed } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import { currentId, project, projects, sessions } from "../../stores/session";
 import { skillsCatalog } from "../../stores/customize";
@@ -66,16 +67,19 @@ export function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-export function asBool(value: unknown): boolean {
-  return !!value;
-}
-
 export function effProject(): string | null {
   if (project.value) return project.value;
   const list = sessions.value as Array<{ id?: string; project_id?: string }>;
   const f = list.find((x) => x.id === currentId.value);
   return (f && f.project_id) || null;
 }
+
+/**
+ * `effProject()` for rendering. It reads the session list, which changes on
+ * every refresh; a tab that called it in render re-rendered on each of them.
+ * This notifies only when the effective project itself changes.
+ */
+export const customizeProject = computed(() => effProject());
 
 export function projectName(pid: string | null | undefined): string {
   if (!pid) return "";

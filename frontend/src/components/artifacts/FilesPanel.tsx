@@ -1,5 +1,5 @@
 import { DraftsPanel } from "./DraftsPanel";
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { render } from "preact";
 import { filesScope } from "../../stores/artifacts";
 import { _openGen, currentId, project } from "../../stores/session";
@@ -55,6 +55,10 @@ export function FilesPanel() {
   const fid = currentId.value;
   const generation = _openGen.value;
   const currentListing = filesListingIsCurrent();
+  // The type filter applies on change (Enter or blur). Until then the field
+  // shows what was typed: any re-render mid-typing used to write the applied
+  // filter back over it.
+  const [typeDraft, setTypeDraft] = useState<string | null>(null);
 
   useEffect(() => {
     if (searchTimer !== null) { clearTimeout(searchTimer); searchTimer = null; }
@@ -112,8 +116,12 @@ export function FilesPanel() {
           type="search"
           placeholder={filesT("files.filter.type.ph")}
           aria-label={filesT("files.filter.type")}
-          value={filesContentType.value}
-          onChange={(e) => applyType((e.currentTarget as HTMLInputElement).value)}
+          value={typeDraft ?? filesContentType.value}
+          onInput={(e) => setTypeDraft((e.currentTarget as HTMLInputElement).value)}
+          onChange={(e) => {
+            setTypeDraft(null);
+            applyType((e.currentTarget as HTMLInputElement).value);
+          }}
         />
         <span class="files-origin" role="group" aria-label={filesT("files.filter.origin")}>
           {(["", "uploaded", "generated"] as const).map((key) => (
