@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { custTab } from "../../features/customize/actions";
@@ -23,7 +23,7 @@ import {
   standardReadinessStateText,
   type StandardReadiness,
 } from "../../features/customize/environment";
-import { scheduleTimeout } from "../../features/customize/timers";
+import { clearLeaseTimeout, scheduleTimeout } from "../../features/customize/timers";
 import { useAlive, useTimerLease } from "./use-timer-lease";
 import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, InfoRow } from "./ui";
@@ -193,29 +193,41 @@ export function ComputeTab() {
   const [jobCmd, setJobCmd] = useState("");
   const [jobBusy, setJobBusy] = useState(false);
   const [alias, setAlias] = useState("");
+  // One poll chain: each read supersedes the one before it and owns the next
+  // tick. Submit and Cancel read too, and every read used to arm a timer of
+  // its own, so N chains polled at once and answered out of order.
+  const jobPoll = useRef<{ seq: number; timer: ReturnType<typeof setTimeout> | 0 }>({
+    seq: 0,
+    timer: 0,
+  });
 
   const loadJobs = async () => {
+    const poll = jobPoll.current;
+    const seq = ++poll.seq;
+    clearLeaseTimeout(lease, poll.timer);
+    poll.timer = 0;
     let d: Record<string, unknown>;
     try {
       d = await api("/compute/jobs");
     } catch {
       d = { jobs: [] };
     }
-    if (!alive()) return;
+    if (!alive() || seq !== poll.seq) return;
     const list = asList(d.jobs) as Record<string, unknown>[];
     setJobs(list);
     const anyRunning = list.some(
       (j) => j.status === "running" || j.status === "queued",
     );
     if (anyRunning) {
-      const handle = scheduleTimeout(
+      poll.timer = scheduleTimeout(
         lease,
         () => {
+          poll.timer = 0;
           void loadJobs();
         },
         1500,
       );
-      _jobPoll.value = handle;
+      _jobPoll.value = poll.timer;
     }
   };
 

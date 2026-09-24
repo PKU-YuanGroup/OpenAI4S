@@ -8,7 +8,8 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 
 | File | Responsibility |
 | --- | --- |
-| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute, remote GPU, jobs. Job poll 1500ms on the lease. |
+| [`ComputeTab.tsx`](ComputeTab.tsx) | Compute, remote GPU, jobs. One job poll chain, 1500ms on the lease; a newer read supersedes an older one. |
+| [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | Submit and Cancel re-read the job list without starting a second poll chain; an older read that answers late is dropped. |
 | [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector list; DataPro card is isolated in `vendors/`. |
 | [`Customize.tsx`](Customize.tsx) | `#cust` shell, tablist, Esc / backdrop close. |
 | [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. |
