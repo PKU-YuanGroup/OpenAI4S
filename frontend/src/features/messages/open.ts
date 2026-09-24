@@ -460,6 +460,11 @@ export async function openConversation(
   const shownFid = openedFrameId.value;
   const rescoping = switching || shownFid !== fid;
   if (previousFid && switching) unsub(previousFid);
+  // With no current conversation, the one still shown (Home, a delete that
+  // emptied the list) is released the same way, even when it is the one being
+  // reopened: this read must not race its live events, and the `sub` at the
+  // end then replays what arrived since, exactly as after a switch.
+  else if (!previousFid && shownFid) unsub(shownFid);
   if (rescoping) resetNotebookCellCaches(switching ? previousFid : shownFid, fid);
   if (pid && pid !== project.value) {
     // The sidebar is now scoped to another project, so its confirmed rows are

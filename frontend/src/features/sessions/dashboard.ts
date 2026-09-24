@@ -13,6 +13,7 @@ import {
   projectsQuery,
 } from "../../stores/session";
 import { _dashPoll } from "../../stores/ui";
+import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys } from "./chrome";
@@ -412,6 +413,13 @@ export function showDashboard(): void {
   beginNavigation();
   $("#workspace")?.classList.add("hidden");
   $("#dashboard")?.classList.remove("hidden");
+  // Leaving a conversation releases its subscription, as switching to another
+  // one does. Kept subscribed, a running session's events went on advancing
+  // its resume cursor with nothing showing them; reopening it from here then
+  // read a history that moved under it (deferred, so no Stop, an unlocked
+  // composer and no watchdog) and resubscribed past everything it had missed.
+  const leaving = currentId.value;
+  if (leaving) unsub(leaving);
   currentId.value = null;
   void loadDashboard();
   startDashPoll();

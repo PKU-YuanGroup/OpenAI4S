@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
 import * as session from "../../stores/session";
-import { _replayGap, running, stream, _seqSeen, _resumeTimer } from "../../stores/stream";
+import { _replayGap, running, stream, _seqSeen, _resumeTimer, ws } from "../../stores/stream";
 import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
 import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
 import { loadEarlierMessages } from "../sessions/messages";
+import { showDashboard, stopDashPoll } from "../sessions/dashboard";
+import { handleIncomingMessage } from "../ws/connect";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
 import { adoptCreatedFrame } from "../chrome/upload";
 import { loadExecutionLog } from "../notebook/cells";
@@ -423,6 +425,71 @@ describe("branch history replacement", () => {
   });
 });
 
+
+describe("reopening a running session from Home", () => {
+  /** The daemon's end of the socket: a frame's events reach only a client viewing it. */
+  function daemonSocket() {
+    const viewed = new Set<string>();
+    const sent: Array<Record<string, unknown>> = [];
+    let seq = 0;
+    const socket = {
+      readyState: 1,
+      onopen: null, onclose: null, onmessage: null,
+      send(raw: string) {
+        const message = JSON.parse(raw) as Record<string, unknown>;
+        sent.push(message);
+        if (message.type === "view_session") viewed.add(String(message.root_frame_id));
+        if (message.type === "unview_session") viewed.delete(String(message.root_frame_id));
+      },
+    };
+    const emit = (fid: string) => {
+      seq += 1;
+      if (viewed.has(fid)) handleIncomingMessage(JSON.stringify({ type: "kernel_status", root_frame_id: fid, seq }));
+    };
+    return { socket, sent, viewed, emit };
+  }
+
+  it("shows the run as running and resumes from where it was left, like a switch back from another session", async () => {
+    const daemon = daemonSocket();
+    ws.value = daemon.socket;
+    const stillRunning = (path: string) => path.endsWith("/status") ? response({ running: true, status: "processing" }) : undefined;
+    server(stillRunning);
+    await openConversation("f");
+    expect(running.value).toBe(true);
+    daemon.emit("f");
+    const cursorWhenLeft = _seqSeen.value.f;
+
+    showDashboard();
+    stopDashPoll();
+    expect(daemon.viewed.has("f")).toBe(false);
+    daemon.emit("f"); daemon.emit("f"); // the turn goes on while the user is Home
+
+    // ...and while its history is being read again.
+    server((path) => { if (path.includes("/messages?")) daemon.emit("f"); return stillRunning(path); });
+    const armedBefore = _resumeTimer.value;
+    expect(await openConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
+    expect(session.historyLoad.value?.deferred).toBe(false);
+    expect(running.value).toBe(true);
+    expect(_resumeTimer.value).not.toBe(armedBefore);
+    expect(daemon.sent.filter((m) => m.type === "view_session").at(-1)).toMatchObject({ root_frame_id: "f", since_seq: cursorWhenLeft });
+    clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
+  });
+
+  it("releases a frame still shown with no current conversation before reading it again", async () => {
+    const daemon = daemonSocket();
+    ws.value = daemon.socket;
+    const stillRunning = (path: string) => path.endsWith("/status") ? response({ running: true, status: "processing" }) : undefined;
+    server(stillRunning);
+    await openConversation("f");
+    session.currentId.value = null; // cleared by a path that kept the subscription
+    server((path) => { if (path.includes("/messages?")) daemon.emit("f"); return stillRunning(path); });
+    await openConversation("f");
+    expect(session.historyLoad.value?.deferred).toBe(false);
+    expect(running.value).toBe(true);
+    expect(daemon.viewed.has("f")).toBe(true);
+    clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
+  });
+});
 
 it("keeps the missed-terminal watchdog active while the status still says running", async () => {
   vi.useFakeTimers();
