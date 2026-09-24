@@ -47,18 +47,6 @@ export function artifactDeepLinkHref(
   return location.pathname + artifactDeepLinkSearch(artifactId, versionId);
 }
 
-function rowFromUnknown(value: unknown, fallbackId: string): ArtifactRow | null {
-  if (Array.isArray(value)) {
-    const first = value[0];
-    return rowFromUnknown(first, fallbackId);
-  }
-  if (!value || typeof value !== "object") return null;
-  const rec = value as Record<string, unknown>;
-  const id = rec.id || rec.artifact_id || fallbackId;
-  if (id == null || id === "") return null;
-  return { ...rec, id: String(id) } as ArtifactRow;
-}
-
 /**
  * Resolve a deep link to an immutable version.
  *
@@ -169,5 +157,3 @@ export function versionResolveMessage(result: VersionResolve | null): string | n
 export function rememberViewerVersion(result: VersionResolve): void {
   viewerVersionState.value = result;
 }
-
-export { rowFromUnknown };

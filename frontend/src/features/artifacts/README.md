@@ -37,7 +37,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`thumbs.ts`](thumbs.ts) | Tile thumbs from a bounded per-version preview cache, `parseMolPoints` / `molSvg`. |
 | [`thumbs.test.ts`](thumbs.test.ts) | One read per artifact version, error pages and failed reads never kept, LRU bound. |
 | [`types.ts`](types.ts) | Artifact DTO, page size 50/100, TEXT_EXT / MOL_EXT. |
-| [`ui.ts`](ui.ts) | Files grid, Viewer, `openViewer`, ⌘K/deep-link hit. Provided `version_id` never silent-latest. |
+| [`ui.ts`](ui.ts) | Files grid, dock tabs, `openViewer`, deep links; `renderViewer` delegates to the islands Viewer. Provided `version_id` never silent-latest. |
 | [`ui.test.ts`](ui.test.ts) | Deep-link apply / `openViewer` exact pin / stale does not open latest. |
 | [`editor.ts`](editor.ts) | Version-bound drafts, bounded UTF-8 storage, checksum reads and conditional saves. |
 | [`editor-view.ts`](editor-view.ts) | Editor controls and read-only conflict/unknown-result recovery. |

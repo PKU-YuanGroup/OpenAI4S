@@ -13,7 +13,6 @@ import {
   setActiveTab,
   applyArtifactDeepLink,
   consumeArtifactDeepLink,
-  copyArtifactDeepLink,
   openViewer,
 } from "./ui";
 
@@ -117,18 +116,6 @@ describe("M-03 deep-link apply / openViewer", () => {
     setActiveTab(artifactTabKey({ id: "art-1", version_id: "v-old", _exactVersion: true }));
     expect(dockArtifact.value).toMatchObject({ root_frame_id: "real-frame", project_id: "real-project", version_id: "v-old" });
     expect((dockArtifact.value as ArtifactRow).producing_cell_id).toBeUndefined();
-  });
-
-  it("copyable deep link omits version_id for latest and includes it for exact", async () => {
-    const latest = await copyArtifactDeepLink({ id: "art-1", version_id: "v-new" });
-    expect(latest).toContain("artifact=art-1");
-    expect(latest).not.toContain("version_id=");
-    const exact = await copyArtifactDeepLink({
-      id: "art-1",
-      version_id: "v-old",
-      _exactVersion: true,
-    });
-    expect(exact).toContain("version_id=v-old");
   });
 });
 
