@@ -345,7 +345,7 @@ New UI on the F-17 table artifact viewer. `openai4s/server/webui/app.js` is not 
 
 | Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
 | --- | --- | --- |
-| `artifactWorkbenchOn` 8710 | `stores/notebook.artifactWorkbench` + `_kc.st.artifact_workbench` (`readWorkbenchFlag` / existing `artifactWorkbenchOn`) | Flag-off is the kill switch. |
+| `artifactWorkbenchOn` 8710 | `stores/notebook.artifactWorkbench` + `_kc.st.artifact_workbench` (`readWorkbenchFlag` in `features/table/workbench.ts`; the duplicate `artifactWorkbenchOn` was removed) | Flag-off is the kill switch. |
 | `renderWorkbenchTable` 8723-8768 | `features/table/workbench.ts` `renderWorkbenchTable` | Same `/table` sort/dir/offset/limit/`q_` page chrome. Filter `col:value` shorthand kept. |
 | `renderTableArtifact` flag-off 8769+ | `features/table/workbench.ts` `renderLegacyTable` | `fetchArtifactText` → `parseTable` → `renderSheet`. No `/table/profile`, no export.csv. |
 | *(none — Schema/Distribution/Export)* | `features/table/zones.ts` | B-07 profile columns: type/missing/unique + min/max/mean/histogram. `approximate:true` paints `.wb-table-approx` (近似 / Approximate) and labels unique as ≈ n; never rewritten as exact. Histogram bars ≤ 50 (`MAX_TABLE_PROFILE_BINS`). |
