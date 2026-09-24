@@ -2,6 +2,11 @@ import { useEffect } from "preact/hooks";
 import { t } from "../../i18n";
 import { closeCust, custTab } from "../../features/customize/actions";
 import {
+  followCustomizeDom,
+  installCustomizeEscape,
+  onCustomizeKeydown,
+} from "../../features/customize/dismiss";
+import {
   CUST_LOAD_TIMEOUT_MS,
   markCustomizeTimedOut,
 } from "../../features/customize/load";
@@ -91,19 +96,14 @@ export function Customize() {
   const loading = customizeLoad.value.generation === gen && customizeLoad.value.state === "loading";
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (!customizeOpen.value) return;
-      if (nestedEditor.value) {
-        nestedEditor.value = null;
-        e.preventDefault();
-        return;
-      }
-      e.preventDefault();
-      closeCust();
+    installCustomizeEscape();
+    document.addEventListener("keydown", onCustomizeKeydown);
+    const modal = document.getElementById("cust");
+    const unfollow = modal ? followCustomizeDom(modal) : () => {};
+    return () => {
+      document.removeEventListener("keydown", onCustomizeKeydown);
+      unfollow();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
   }, []);
 
   return (
