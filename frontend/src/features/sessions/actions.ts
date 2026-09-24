@@ -11,6 +11,7 @@ import { exploreMode, pendingExecutionId, planMode, running } from "../../stores
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
+import { composerCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
 // Imported, not reached through `callLane`. Neither name is ever assigned to
 // `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
@@ -101,11 +102,11 @@ export async function showContextUsage(): Promise<void> {
   card.className = "prov-card";
   const h = document.createElement("div");
   h.className = "prov-h";
-  h.textContent = `${(input + output).toLocaleString()} tokens`;
+  h.textContent = t("context.tokens", (input + output).toLocaleString());
   card.appendChild(h);
   const meta = document.createElement("div");
   meta.className = "prov-meta";
-  meta.textContent = `Input ${input.toLocaleString()} · Output ${output.toLocaleString()} · Reviewer ${reviewer.toLocaleString()}`;
+  meta.textContent = composerCopy("usage", input.toLocaleString(), output.toLocaleString(), reviewer.toLocaleString());
   card.appendChild(meta);
   body.appendChild(card);
   $("#modal")?.classList.remove("hidden");
@@ -162,7 +163,7 @@ export async function requestReview(): Promise<void> {
   running.value = true;
   enableComposer(false);
   $("#cancel-btn")?.classList.remove("hidden");
-  hint("Reviewing", false, true);
+  hint(composerCopy("reviewing"), false, true);
   try {
     await api(`/frames/${currentId.value}/review`, { method: "POST", body: "{}" });
     resumeWatch(currentId.value, _openGen.value);
@@ -196,7 +197,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
             method: "PATCH",
             body: JSON.stringify({ delegation_enabled: on }),
           });
-          hint(t("composer.option.delegation") + ` · ${on ? "On" : "Off"}`);
+          hint(t("composer.option.delegation") + " · " + composerCopy(on ? "on" : "off"));
         } catch (e) {
           hint((e as Error).message, true);
         }
@@ -222,7 +223,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
             method: "PATCH",
             body: JSON.stringify({ auto_review: !review.auto_review }),
           });
-          hint(t("composer.option.autoReview") + ` · ${!review.auto_review ? "On" : "Off"}`);
+          hint(t("composer.option.autoReview") + " · " + composerCopy(!review.auto_review ? "on" : "off"));
         } catch (e) {
           hint((e as Error).message, true);
         }

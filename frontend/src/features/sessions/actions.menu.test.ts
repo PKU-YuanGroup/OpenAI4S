@@ -11,14 +11,33 @@ vi.mock("./compute", () => ({ openRunLocationDialog: vi.fn() }));
 const messages = vi.hoisted(() => ({ fetchRecentMessages: vi.fn(), fetchAllMessages: vi.fn() }));
 vi.mock("./messages", () => messages);
 
-import { t } from "../../i18n";
+import { LANG, setLang, t } from "../../i18n";
 import { customizeOpen, customizeTab, nestedEditor } from "../customize/state";
 import { _titleName, currentId, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
-import { saveCurrentAsSkill, sessionMenu } from "./actions";
+import { saveCurrentAsSkill, sessionMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { openProjectResearchView, projectTimelineCard } from "./projects";
+
+class FakeNode {
+  className = "";
+  textContent = "";
+  firstChild = null;
+  type = "";
+  onclick: (() => void) | null = null;
+  style: Record<string, string> = {};
+  dataset: Record<string, string> = {};
+  attrs: Record<string, string> = {};
+  children: FakeNode[] = [];
+  classList = { add: () => {}, remove: () => {}, toggle: () => {} };
+  set innerHTML(_value: string) { this.children = []; }
+  setAttribute(name: string, value: string) { this.attrs[name] = value; }
+  appendChild(child: FakeNode) { this.children.push(child); return child; }
+  texts(): string[] {
+    return [this.textContent, ...this.children.flatMap((child) => child.texts())].filter(Boolean);
+  }
+}
 
 beforeEach(() => {
   resetStoreFields();
@@ -58,26 +77,28 @@ describe("Save as skill", () => {
   });
 });
 
-describe("the project research Timeline", () => {
-  class FakeNode {
-    className = "";
-    textContent = "";
-    firstChild = null;
-    type = "";
-    onclick: (() => void) | null = null;
-    style: Record<string, string> = {};
-    dataset: Record<string, string> = {};
-    attrs: Record<string, string> = {};
-    children: FakeNode[] = [];
-    classList = { add: () => {}, remove: () => {}, toggle: () => {} };
-    set innerHTML(_value: string) { this.children = []; }
-    setAttribute(name: string, value: string) { this.attrs[name] = value; }
-    appendChild(child: FakeNode) { this.children.push(child); return child; }
-    texts(): string[] {
-      return [this.textContent, ...this.children.flatMap((child) => child.texts())].filter(Boolean);
+describe("Context usage", () => {
+  it("labels the card in the language on screen", async () => {
+    const previous = LANG;
+    await setLang("zh");
+    const body = new FakeNode();
+    const nodes: Record<string, FakeNode> = { "#modal-body": body, "#modal-title": new FakeNode(), "#modal-download": new FakeNode(), "#modal": new FakeNode() };
+    vi.stubGlobal("document", { createElement: () => new FakeNode(), querySelector: (sel: string) => nodes[sel] ?? null });
+    vi.stubGlobal("fetch", async (input: unknown) => new Response(JSON.stringify(String(input).endsWith("/steps")
+      ? { steps: [{ kind: "review", output: { usage: { input_tokens: 40, output_tokens: 2 } } }] }
+      : { input_tokens: 120, output_tokens: 30 })));
+    try {
+      currentId.value = "f";
+      await showContextUsage();
+      expect(body.texts()).toEqual([t("context.tokens", "150"), "输入 120 · 输出 30 · 审阅 42"]);
+    } finally {
+      vi.unstubAllGlobals();
+      await setLang(previous);
     }
-  }
+  });
+});
 
+describe("the project research Timeline", () => {
   it("lists each session's action groups as cards under the session's name", async () => {
     const body = new FakeNode();
     const nodes: Record<string, FakeNode> = { "#modal-body": body, "#modal-title": new FakeNode(), "#modal-download": new FakeNode(), "#modal": new FakeNode() };
