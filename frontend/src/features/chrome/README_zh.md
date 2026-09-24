@@ -25,7 +25,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。查询的本地命令立即显示；回车不会作用于上一次查询的列表。 |
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |
-| [`team.test.ts`](team.test.ts) | 身份芯片、admin 面板、guest 重定向、团队模态走陷阱、审计时间按毫秒时间戳显示、晚到的目录读取不会覆盖较新的目录列表。 |
-| [`team.ts`](team.ts) | 团队 IIFE。`/auth/me` 探测；admin/files 模态走陷阱。只有最新一次目录读取会渲染，也只有它会改变上传目标。 |
+| [`team.test.ts`](team.test.ts) | 身份芯片、admin 面板、guest 重定向、团队模态走陷阱、审计时间按毫秒时间戳显示、晚到的目录读取不会覆盖较新的目录列表、admin 分节标题随界面语言显示。 |
+| [`team.ts`](team.ts) | 团队 IIFE。`/auth/me` 探测；admin/files 模态走陷阱。只有最新一次目录读取会渲染，也只有它会改变上传目标。admin 分节标题取自本地中英文案表。 |
 | [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限。 |
 | [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传、`UPLOAD_STATE`、首个会话的单飞，以及 send 屏障用的 `waitForPendingUploads`。 |

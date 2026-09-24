@@ -7,10 +7,36 @@
  * `classList.remove("hidden")`.
  */
 
+import { LANG } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
+
+/**
+ * Admin-panel section headings. A local table: the generated
+ * `i18n/en.ts` / `zh.ts` extracts are byte-checked and must not grow.
+ */
+const SECTION_COPY: Record<"zh" | "en", Record<string, string>> = {
+  zh: {
+    users: "用户",
+    usage: "用量",
+    quotas: "配额",
+    invites: "邀请",
+    audit: "审计（最近 50 条）",
+  },
+  en: {
+    users: "Users",
+    usage: "Usage",
+    quotas: "Quotas",
+    invites: "Invites",
+    audit: "Audit (latest 50)",
+  },
+};
+
+export function teamSectionTitle(key: string): string {
+  return (SECTION_COPY[LANG] || SECTION_COPY.en)[key] || SECTION_COPY.en[key] || key;
+}
 
 type TeamUser = {
   id?: string;
@@ -396,9 +422,9 @@ export async function loadAdmin(): Promise<void> {
     users.forEach((u) => {
       if (u.id && u.username) idName[u.id] = u.username;
     });
-    table(section(body, "Users"), ["user", "role", "state", "id"],
+    table(section(body, teamSectionTitle("users")), ["user", "role", "state", "id"],
       users.map((u) => [u.username, u.role, u.disabled ? "disabled" : "active", u.id]));
-    table(section(body, "Usage"), ["user", "project", "kind", "total", "events"],
+    table(section(body, teamSectionTitle("usage")), ["user", "project", "kind", "total", "events"],
       usage.map((r) => [
         idName[String(r.user_id)] || r.user_id,
         r.project_id,
@@ -406,16 +432,16 @@ export async function loadAdmin(): Promise<void> {
         Math.round(Number(r.total) * 100) / 100,
         r.events,
       ]));
-    table(section(body, "Quotas"), ["scope", "scope id", "kind", "limit", "window"],
+    table(section(body, teamSectionTitle("quotas")), ["scope", "scope id", "kind", "limit", "window"],
       quotas.map((r) => [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]));
-    table(section(body, "Invites"), ["prefix", "project", "by", "state"],
+    table(section(body, teamSectionTitle("invites")), ["prefix", "project", "by", "state"],
       invites.map((r) => [
         r.token_prefix,
         r.project_id,
         r.created_by,
         r.live ? "live" : (r.used_at ? "used/revoked" : "expired"),
       ]));
-    table(section(body, "Audit (latest 50)"), ["when", "actor", "action", "target"],
+    table(section(body, teamSectionTitle("audit")), ["when", "actor", "action", "target"],
       audit.map((r) => [
         auditWhen(r.ts),
         r.actor,

@@ -416,6 +416,24 @@ describe("F-20 team surface", () => {
     expect(team.teamFilesPath()).toBe("/data/small");
   });
 
+  it("section headings follow the interface language", async () => {
+    team.bootTeam();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => ({ status: 200, ok: true, json: async () => ({}) })),
+    );
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("zh");
+    await team.loadAdmin();
+    const headings = (doc.getElementById("team-admin-body")?.children || [])
+      .filter((node) => node.tagName === "H3")
+      .map((node) => node.textContent);
+    expect(headings).toEqual(["用户", "用量", "配额", "邀请", "审计（最近 50 条）"]);
+    await runtime.setLang("en");
+    await team.loadAdmin();
+    expect(doc.getElementById("team-admin-body")?.textContent).toContain("Audit (latest 50)");
+  });
+
   it("renders audit times from the epoch-millisecond ts the server stores", async () => {
     team.bootTeam();
     const ts = 1727136000000;
