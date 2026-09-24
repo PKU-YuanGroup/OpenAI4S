@@ -141,30 +141,33 @@ export function upsertArtifactFromEvent(m: WsMessage): Record<string, unknown> |
     artifactsFrameId.value = currentId.value;
     artifactsFrameGeneration.value = _openGen.value;
   }
+  // New values, never edits of the old ones: a signal compares by reference,
+  // so a pushed row or a busted key written in place reached no subscriber
+  // (the Files grid, a figure URL rendered from `_artBust`).
   const list = artifactsSignal.value;
   const rows: unknown[] = Array.isArray(list) ? list : [];
-  if (rows !== list) artifactsSignal.value = rows;
   const idx = rows.findIndex((item) => {
     if (!item || typeof item !== "object") return false;
     const rec = item as { id?: unknown; artifact_id?: unknown };
     return rec.id === id || rec.artifact_id === id;
   });
-  if (idx >= 0) {
-    Object.assign(rows[idx] as object, row);
-  } else {
-    rows.push(row);
-  }
-  const bust = _artBust.value;
-  bust[id] = row.version_id || String(Date.now());
+  artifactsSignal.value = idx >= 0
+    ? rows.map((item, at) => (at === idx ? { ...(item as object), ...row } : item))
+    : [...rows, row];
+  _artBust.value = { ..._artBust.value, [id]: row.version_id || String(Date.now()) };
   const fn = String(row.filename || "");
   const tbl = _tbl.value;
-  if (tbl && fn) {
-    const base = fn.split("/").pop();
-    if (base) {
-      for (const k in tbl) {
-        if (!k.includes("/artifacts/versions/") && k.includes(base)) delete tbl[k];
-      }
+  const base = fn.split("/").pop();
+  if (tbl && base) {
+    // A table parse still in flight writes into the cache it started from, so
+    // a stale read cannot land in this one.
+    const kept: Record<string, unknown> = Object.create(null);
+    let busted = false;
+    for (const k in tbl) {
+      if (k.includes("/artifacts/versions/") || !k.includes(base)) kept[k] = tbl[k];
+      else busted = true;
     }
+    if (busted) _tbl.value = kept;
   }
   return row;
 }
@@ -185,6 +188,7 @@ function handleReplayBegin(m: WsMessage): void {
     // aged past it, or it belonged to a previous run. Replaying from a hole
     // we cannot see would leave the transcript quietly wrong, so reload it.
     if (m.gap) {
+      // In place, like every cursor write (see handleIncomingMessage).
       const seen = _seqSeen.value;
       if (typeof fid === "string") seen[fid] = 0;
       _replayGap.value = fid;
