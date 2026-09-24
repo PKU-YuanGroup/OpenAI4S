@@ -1,10 +1,11 @@
-import { LANG, tOptional } from "../../i18n/runtime";
+import { LANG } from "../../i18n/runtime";
+import { copyLookup, type CopyTable } from "../../i18n/copy";
 
 /**
  * Experimental judgment copy. New strings live here so we do not rewrite
  * the generated `i18n/en.ts` / `zh.ts` extract.
  */
-const COPY: Record<"zh" | "en", Record<string, string>> = {
+const COPY: CopyTable = {
   zh: {
     "judgment.title": "语义判断层",
     "judgment.badge": "Experimental",
@@ -130,16 +131,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
   },
 };
 
-export function judgmentT(key: string, ...args: unknown[]): string {
-  const fromDict = tOptional(key);
-  let s = fromDict != null ? fromDict : COPY[LANG]?.[key] || COPY.en[key] || key;
-  if (args.length) {
-    s = String(s).replace(/\{(\d+)\}/g, (m, i) =>
-      args[+i] != null ? String(args[+i]) : m,
-    );
-  }
-  return s;
-}
+export const judgmentT = copyLookup(COPY);
 
 export function judgmentSourceLabel(source: string): string {
   const key = "judgment.source." + source;

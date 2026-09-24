@@ -47,18 +47,6 @@ export function artifactDeepLinkHref(
   return location.pathname + artifactDeepLinkSearch(artifactId, versionId);
 }
 
-function rowFromUnknown(value: unknown, fallbackId: string): ArtifactRow | null {
-  if (Array.isArray(value)) {
-    const first = value[0];
-    return rowFromUnknown(first, fallbackId);
-  }
-  if (!value || typeof value !== "object") return null;
-  const rec = value as Record<string, unknown>;
-  const id = rec.id || rec.artifact_id || fallbackId;
-  if (id == null || id === "") return null;
-  return { ...rec, id: String(id) } as ArtifactRow;
-}
-
 /**
  * Resolve a deep link to an immutable version.
  *
@@ -69,9 +57,13 @@ function rowFromUnknown(value: unknown, fallbackId: string): ArtifactRow | null 
 export async function resolveArtifactVersion(
   link: ArtifactDeepLink,
   fetchVersions: (id: string) => Promise<ArtifactVersionRow[]> = defaultFetchVersions,
-  fetchArtifact: (id: string) => Promise<ArtifactRow | null> = defaultFetchArtifact,
+  fetchArtifact?: (id: string) => Promise<ArtifactRow | null>,
 ): Promise<VersionResolve> {
-  const artifact = await fetchArtifact(link.artifactId);
+  // The default artifact read is itself a versions read, so one request
+  // answers both whether the artifact exists and which version the link pins.
+  let versionsRead: Promise<ArtifactVersionRow[]> | null = null;
+  const readVersions = (id: string) => (versionsRead ??= fetchVersions(id));
+  const artifact = await (fetchArtifact ?? ((id) => defaultFetchArtifact(id, readVersions)))(link.artifactId);
   if (!artifact) {
     return { status: "not-found", artifactId: link.artifactId, versionId: link.versionId };
   }
@@ -83,7 +75,7 @@ export async function resolveArtifactVersion(
     };
   }
   const wanted = link.versionId;
-  const versions = await fetchVersions(link.artifactId);
+  const versions = await readVersions(link.artifactId);
   const exact = versions.find((row) => row.version_id === wanted);
   if (exact) {
     return {
@@ -125,9 +117,12 @@ async function defaultFetchVersions(id: string): Promise<ArtifactVersionRow[]> {
   }
 }
 
-async function defaultFetchArtifact(id: string): Promise<ArtifactRow | null> {
+async function defaultFetchArtifact(
+  id: string,
+  readVersions: (id: string) => Promise<ArtifactVersionRow[]>,
+): Promise<ArtifactRow | null> {
   try {
-    const versions = await defaultFetchVersions(id);
+    const versions = await readVersions(id);
     // The versions route answers 200 [] for a missing artifact. An empty
     // list is therefore not-found, not a ghost row that would later look
     // like "latest".
@@ -162,5 +157,3 @@ export function versionResolveMessage(result: VersionResolve | null): string | n
 export function rememberViewerVersion(result: VersionResolve): void {
   viewerVersionState.value = result;
 }
-
-export { rowFromUnknown };

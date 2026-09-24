@@ -7,7 +7,7 @@
  * work that nothing is running.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type FakeNode = {
   tag: string;
@@ -34,6 +34,7 @@ const fake = vi.hoisted(() => {
       children: [] as unknown[],
       firstChild: null,
       remove() {},
+      querySelectorAll: () => [],
     };
     node.appendChild = (child: unknown) => {
       (node.children as unknown[]).push(child);
@@ -41,18 +42,22 @@ const fake = vi.hoisted(() => {
     };
     return node;
   };
-  return { make, host: make("div", "messages") };
+  return { make, host: make("div", "messages"), live: { card: null as { remove: () => void } | null } };
 });
 
 vi.mock("../messages/dom", () => ({
   el: fake.make,
-  $: (selector: string) => (selector === "#messages" ? fake.host : null),
+  $: (selector: string) =>
+    selector === "#messages" ? fake.host : selector === "#plan-card-live" ? fake.live.card : null,
+  messagesHost: () => fake.host,
 }));
 vi.mock("../messages/scroll", () => ({ down: () => {} }));
 
 import { t } from "../../i18n/runtime";
-import { currentId } from "../../stores/session";
-import { renderPlanCard } from "./plan";
+import { _openGen, currentId } from "../../stores/session";
+import { planPending, planPendingTurn, planReady, planStatus, running } from "../../stores/stream";
+import { discardPlan, renderPlanCard } from "./plan";
+import { turnDone } from "./turn";
 
 function walk(node: FakeNode, found: FakeNode[] = []): FakeNode[] {
   found.push(node);
@@ -127,5 +132,139 @@ describe("terminal plan card", () => {
     const card = lastCard();
     expect(one(card, "pc-eyebrow").textContent).toBe(t("plan.eyebrow.completed"));
     expect(one(card, "pc-status").textContent).toBe(t("plan.status.completed", 2, 2));
+  });
+});
+
+describe("revising a draft plan", () => {
+  type ReviseBox = FakeNode & { value: string; onkeydown: (e: Record<string, unknown>) => void };
+
+  function enter(box: ReviseBox): void {
+    box.onkeydown({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 13, preventDefault() {} });
+  }
+
+  beforeEach(() => {
+    (fake.host as unknown as FakeNode).children = [];
+    currentId.value = "f-plan";
+    running.value = false;
+  });
+
+  it("keeps the change request when the revision is not dispatched", async () => {
+    renderPlanCard(plan(["pending"]), "draft");
+    const box = one(lastCard(), "pc-revise-input") as ReviseBox;
+    // Another turn is running: dispatchPlanTurn refuses without a request.
+    running.value = true;
+    box.value = "use a log scale";
+    enter(box);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(box.value).toBe("use a log scale");
+  });
+});
+
+describe("discarding a plan", () => {
+  afterEach(() => {
+    fake.live.card = null;
+    vi.unstubAllGlobals();
+  });
+
+  it("an answer that lands after the user opened another session leaves that session's plan alone", async () => {
+    let answer: () => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      () =>
+        new Promise((resolve) => {
+          answer = () => resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+        }),
+    );
+    currentId.value = "f-a";
+    const discarding = discardPlan();
+    // Session B opens with its own live plan card.
+    currentId.value = "f-b";
+    _openGen.value += 1;
+    const planOfB = plan(["pending"]);
+    planReady.value = planOfB;
+    planStatus.value = "draft";
+    let removed = false;
+    fake.live.card = { remove: () => void (removed = true) };
+    answer();
+    await discarding;
+    expect(removed).toBe(false);
+    expect(planReady.value).toBe(planOfB);
+    expect(planStatus.value).toBe("draft");
+  });
+
+  it("still clears the plan it discarded", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") }),
+    );
+    currentId.value = "f-a";
+    planReady.value = plan(["pending"]);
+    planStatus.value = "draft";
+    let removed = false;
+    fake.live.card = { remove: () => void (removed = true) };
+    await discardPlan();
+    expect(removed).toBe(true);
+    expect(planReady.value).toBeNull();
+    expect(planStatus.value).toBe("discarded");
+  });
+});
+
+describe("the approval card after a plan-mode turn without a structured plan", () => {
+  function approvalCards(): FakeNode[] {
+    return (fake.host as unknown as FakeNode).children.filter((node) => node.className === "plan-card");
+  }
+
+  beforeEach(() => {
+    (fake.host as unknown as FakeNode).children = [];
+    // No session: turnDone's artifact and execution-log reloads stay idle.
+    currentId.value = null;
+    planReady.value = null;
+  });
+
+  it.each(["cancelled", "blocked_by_guardian", "failed"])(
+    "a %s plan turn offers nothing to approve and leaves nothing for the next turn",
+    (status) => {
+      planPending.value = true;
+      turnDone(status);
+      expect(approvalCards()).toHaveLength(0);
+      expect(planPending.value).toBe(false);
+      // The next, ordinary turn finishes.
+      turnDone("completed");
+      expect(approvalCards()).toHaveLength(0);
+    },
+  );
+
+  it("a plan turn that finished offers it", () => {
+    planPending.value = true;
+    turnDone("completed");
+    expect(approvalCards()).toHaveLength(1);
+    expect(planPending.value).toBe(false);
+  });
+
+  it("a plan send queued behind a running turn waits for its own turn's end", () => {
+    planPending.value = true;
+    planPendingTurn.value = { queued: true, executionId: "exec-plan" };
+    turnDone("completed", { execution_id: "exec-ahead" });
+    expect(approvalCards()).toHaveLength(0);
+    expect(planPending.value).toBe(true);
+    turnDone("completed", { execution_id: "exec-plan" });
+    expect(approvalCards()).toHaveLength(1);
+    expect(planPending.value).toBe(false);
+    expect(planPendingTurn.value).toBeNull();
+  });
+
+  it("a queued plan send the server has not named yet is not ended by the turn ahead", () => {
+    planPending.value = true;
+    planPendingTurn.value = { queued: true, executionId: null };
+    turnDone("completed", { execution_id: "exec-ahead" });
+    expect(approvalCards()).toHaveLength(0);
+    expect(planPending.value).toBe(true);
+  });
+
+  it("a named plan turn is not ended by an end that names no execution (a REPL cell)", () => {
+    planPending.value = true;
+    planPendingTurn.value = { queued: false, executionId: "exec-plan" };
+    turnDone("completed", {});
+    expect(approvalCards()).toHaveLength(0);
+    expect(planPending.value).toBe(true);
   });
 });

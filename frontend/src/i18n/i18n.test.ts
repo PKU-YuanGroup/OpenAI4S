@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { effect } from "@preact/signals";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   checkDicts,
@@ -284,6 +285,22 @@ describe("F-07 setLang / detectLang / applyStaticI18n", () => {
     expect(titleEl.title).toBe("切换主题");
     expect(phEl.placeholder).toBe(t("annot.draft.placeholder"));
     expect(valEl.value).toBe(t("conv.title.default"));
+  });
+
+  it("a render through t() or tOptional() repaints itself after setLang", async () => {
+    await i18nReady();
+    await setLang("zh");
+    const painted: string[] = [];
+    // What a Preact component or an effect does: read through t() while tracked.
+    const stop = effect(() => {
+      painted.push(t("common.close") + "|" + tOptional("common.cancel"));
+    });
+    await setLang("en");
+    stop();
+    expect(painted).toEqual([
+      zh["common.close"] + "|" + zh["common.cancel"],
+      en["common.close"] + "|" + en["common.cancel"],
+    ]);
   });
 
   it("onLanguageChange runs after setLang", async () => {

@@ -7,8 +7,21 @@
  * and the inactive language is prefetched after first paint.
  */
 
+import { signal } from "@preact/signals";
+
 export type Lang = "zh" | "en";
 export type I18nDict = Record<string, string>;
+
+/**
+ * Bumped each time the dictionaries of the language on screen are applied:
+ * the first load, and every switch. `t()` and `tOptional()` read it, so any
+ * Preact view that renders through them repaints itself; the app root reads
+ * it so the whole Shell tree repaints (copy tables that read `LANG` directly
+ * included). Imperative views hook `onLanguageChange`. Before it, `LANG` was a
+ * plain module variable nothing could observe, and a switch left lists,
+ * cards and panels in the old language until something else redrew them.
+ */
+export const languageRevision = signal(0);
 
 // Single dictionary keyed by stable dot-keys; every UI string reads through t().
 // I18N.zh / I18N.en are populated by loadLocale (dynamic import of zh.ts / en.ts).
@@ -66,7 +79,7 @@ export function loadLocale(lang: Lang): Promise<I18nDict> {
 
 let boot: Promise<void> | undefined;
 // Declared before the import-time i18nReady() below, whose repaint reads it.
-const languageHooks: Array<() => void> = [];
+const languageHooks: Array<(lang: Lang) => void> = [];
 
 function applyDocumentLang(lang: Lang): void {
   if (typeof document === "undefined" || !document.documentElement) return;
@@ -142,6 +155,7 @@ void i18nReady().catch(() => undefined);
 // "context.omitted.images" rendered as text). This says "translate if you know
 // it" and lets the caller supply something a person can read otherwise.
 export function tOptional(key: string): string | null {
+  void languageRevision.value; // a render reading this repaints on a switch
   const d = I18N[LANG] || {},
     z = I18N.zh || {};
   const value = d[key] != null ? d[key] : z[key];
@@ -149,6 +163,7 @@ export function tOptional(key: string): string | null {
 }
 
 export function t(key: string, ...args: readonly unknown[]): string {
+  void languageRevision.value; // a render reading this repaints on a switch
   const d = I18N[LANG] || I18N.zh || {};
   let s: unknown = d[key];
   if (s == null) {
@@ -206,8 +221,12 @@ export function refreshLangToggle(): void {
  * here. app.js:172 called refreshThemeToggle() then rerenderI18n(); those
  * views are not in this work item, so the calls are a hook list instead of
  * a hard dependency on unported functions.
+ *
+ * A hook runs on every repaint -- the first dictionary load as well as each
+ * switch -- and gets the language just applied, so one that only cares about
+ * a switch can compare it with the language it last painted.
  */
-export function onLanguageChange(hook: () => void): () => void {
+export function onLanguageChange(hook: (lang: Lang) => void): () => void {
   languageHooks.push(hook);
   return () => {
     const i = languageHooks.indexOf(hook);
@@ -226,8 +245,9 @@ export async function setLang(lang: string): Promise<void> {
   repaintLanguage();
 }
 
-/** Everything that shows the active language: static labels, toggle, hooks. */
+/** Everything that shows the active language: static labels, toggle, hooks, subscribers. */
 function repaintLanguage(): void {
+  languageRevision.value += 1;
   if (typeof document !== "undefined") {
     applyDocumentLang(LANG);
     applyStaticI18n(document);
@@ -235,7 +255,7 @@ function repaintLanguage(): void {
   }
   for (const hook of languageHooks) {
     try {
-      hook();
+      hook(LANG);
     } catch {
       /* same isolation as app.js rerenderI18n per-view try/catch */
     }

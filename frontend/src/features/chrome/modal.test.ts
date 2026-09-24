@@ -516,6 +516,45 @@ describe("F-20 modal focus trap", () => {
     expect(list.some((n) => n === (disabled as unknown as HTMLElement))).toBe(false);
   });
 
+  it("a drag that ends on the scrim does not close; a press and release on it does", () => {
+    const modal = makeModal(doc, "cust");
+    const field = doc.createElement("input");
+    (modal.querySelector(".modal-box") as FakeEl).appendChild(field);
+    api.bindModalDismiss(modal as unknown as HTMLElement, null);
+    api.openModalEl(modal as unknown as HTMLElement);
+    const fire = (type: string, target: FakeEl): void => {
+      for (const fn of modal.listeners.get(type) || []) fn({ target });
+    };
+    // Selecting text in the field and releasing over the scrim: the click
+    // lands on the common ancestor, which is the scrim.
+    fire("pointerdown", field);
+    fire("click", modal);
+    expect(modal.classList.contains("hidden")).toBe(false);
+    fire("pointerdown", modal);
+    fire("click", modal);
+    expect(modal.classList.contains("hidden")).toBe(true);
+  });
+
+  it("closes through the owner's callback, from × and from a press and release on the scrim", () => {
+    const modal = makeModal(doc, "proj-modal");
+    const closeBtn = doc.createElement("button");
+    const field = doc.createElement("input");
+    (modal.querySelector(".modal-box") as FakeEl).appendChild(field);
+    const close = vi.fn();
+    api.bindModalDismiss(modal as unknown as HTMLElement, closeBtn as unknown as HTMLElement, close);
+    const fire = (el: FakeEl, type: string, target: FakeEl): void => {
+      for (const fn of el.listeners.get(type) || []) fn({ target });
+    };
+    fire(closeBtn, "click", closeBtn);
+    expect(close).toHaveBeenCalledTimes(1);
+    fire(modal, "pointerdown", field);
+    fire(modal, "click", modal);
+    expect(close).toHaveBeenCalledTimes(1);
+    fire(modal, "pointerdown", modal);
+    fire(modal, "click", modal);
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
   it("source does not import window-exports (Proxy install is a side effect)", () => {
     const src = readFileSync(join(here, "modal.ts"), "utf8");
     expect(src).not.toContain("window-exports");

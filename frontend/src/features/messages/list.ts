@@ -2,14 +2,27 @@
  * Stored-message rendering, time-order insert, and framed initial paint.
  *
  * Port of app.js `renderStored` (7234-7260), `insertMessageByTime` (7263-7274),
- * `renderEmptySession` (7226-7232), and the openConversation 300-item sync
- * loop (7177-7181) rewritten as 40 items per rAF + one fragment insert.
+ * `renderEmptySession` (7226-7232), `addMsgActions` (7809-7830), the message
+ * @-ref chips (7766-7787), and the openConversation 300-item sync loop
+ * (7177-7181) rewritten as 40 items per rAF + one fragment insert.
+ *
+ * The only implementation of a stored row: `sessions/transcript.ts`
+ * ("load earlier") re-exports these, and the live turn calls
+ * `addMsgActions` here too.
  */
 
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
+import { artifacts } from "../../stores/artifacts";
+import { currentId, feedback as feedbackSignal } from "../../stores/session";
+import { copyFailedText, copyText } from "../chrome/clipboard";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
+import { publicText } from "../scrub/scrub";
+import { api } from "../sessions/api";
+import { hint } from "../sessions/chrome";
+import { grow } from "../sessions/dom";
+import { iconEl } from "../sessions/icon";
 import { el, messagesHost } from "./dom";
 import { failureMeta } from "./failure";
 import { rememberCandidateIdentity, setMessageReviewBadge } from "./identity";
@@ -31,8 +44,8 @@ export type StoredMessage = {
   content?: unknown;
   created_at?: unknown;
   artifact_refs?: unknown;
-  failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown };
-  cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown };
+  failure?: { request_id?: unknown; code?: unknown; output_committed?: unknown } | null;
+  cancelled?: { request_id?: unknown; execution_id?: unknown; reason?: unknown } | null;
   review_status?: unknown;
   metadata?: { review_status?: unknown };
   [key: string]: unknown;
@@ -63,34 +76,93 @@ function callWindow(name: string, ...args: unknown[]): void {
   (fn as (...a: unknown[]) => unknown)(...args);
 }
 
-function addMsgActions(wrap: HTMLElement, text: string): void {
+function fbKey(text: string): string {
+  let h = 0;
+  const s = (text || "").slice(0, 400);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return "m" + (h >>> 0).toString(36);
+}
+
+function feedbackBag(): Record<string, unknown> {
+  const cur = feedbackSignal.value;
+  if (cur && typeof cur === "object") return cur as Record<string, unknown>;
+  const next = Object.create(null) as Record<string, unknown>;
+  feedbackSignal.value = next;
+  return next;
+}
+
+function sendFeedback(key: string, rating: string | null): void {
+  if (!currentId.value) return;
+  const bag = feedbackBag();
+  if (rating) bag[key] = rating;
+  else delete bag[key];
+  api("/frames/" + currentId.value + "/feedback", {
+    method: "POST",
+    body: JSON.stringify({ key, rating }),
+  }).catch(() => {});
+  hint(
+    rating === "up"
+      ? t("toast.feedbackUp")
+      : rating === "down"
+        ? t("toast.feedbackDown")
+        : t("toast.feedbackCancelled"),
+  );
+}
+
+/**
+ * app.js:7809-7830. The one action row for a finished answer: the first
+ * page, "load earlier" and the live turn all call this. The first page had
+ * its own copy whose 👍/👎 had no handler and never showed a saved rating.
+ */
+export function addMsgActions(wrap: HTMLElement, text: string): void {
   if (!wrap || wrap.querySelector(".msg-actions")) return;
   const row = el("div", "msg-actions");
   const copy = el("button");
+  (copy as HTMLButtonElement).type = "button";
   copy.title = t("msgAction.copy");
   paintIcon(copy, "copy");
-  copy.onclick = () => {
-    try {
-      if (navigator.clipboard) void navigator.clipboard.writeText(text || "");
-    } catch {
-      /* clipboard blocked */
+  copy.onclick = async () => {
+    // The check is shown only for a confirmed write: a try/catch cannot see
+    // the async rejection, so a blocked or absent clipboard used to tick too.
+    if (!(await copyText(text || ""))) {
+      hint(copyFailedText(), true);
+      return;
     }
+    paintIcon(copy, "check");
+    setTimeout(() => paintIcon(copy, "copy"), 1200);
   };
-  const tup = el("button");
+  const key = fbKey(text);
+  const cur = feedbackBag()[key] || null;
+  const tup = el("button", cur === "up" ? "on" : null);
+  (tup as HTMLButtonElement).type = "button";
   tup.title = t("msgAction.thumbsUp");
   paintIcon(tup, "thumbs-up");
-  const tdn = el("button");
+  const tdn = el("button", cur === "down" ? "on" : null);
+  (tdn as HTMLButtonElement).type = "button";
   tdn.title = t("msgAction.thumbsDown");
   paintIcon(tdn, "thumbs-down");
+  tup.onclick = () => {
+    const on = !tup.classList.contains("on");
+    tup.classList.toggle("on", on);
+    tdn.classList.remove("on");
+    sendFeedback(key, on ? "up" : null);
+  };
+  tdn.onclick = () => {
+    const on = !tdn.classList.contains("on");
+    tdn.classList.toggle("on", on);
+    tup.classList.remove("on");
+    sendFeedback(key, on ? "down" : null);
+  };
   const edit = el("button");
+  (edit as HTMLButtonElement).type = "button";
   edit.title = t("common.edit");
   paintIcon(edit, "pencil");
   edit.onclick = () => {
     const c = document.getElementById("composer") as HTMLTextAreaElement | null;
     if (!c) return;
     c.value = text || "";
+    grow();
     c.focus();
-    callWindow("grow");
   };
   row.appendChild(copy);
   row.appendChild(tup);
@@ -154,7 +226,7 @@ export function renderStored(
     const b = el("div", "bubble");
     b.textContent = planModeRequestText(text);
     w.appendChild(b);
-    callWindow("renderMessageRefChips", w, m.artifact_refs);
+    renderMessageRefChips(w, m.artifact_refs);
   } else {
     const md = el("div", "md");
     md.innerHTML = renderMd(text);
@@ -179,9 +251,37 @@ export function renderStored(
   return w;
 }
 
+/** app.js:7766-7787. The @-refs a user message pinned, as chips under its bubble. */
+export function renderMessageRefChips(host: HTMLElement, refs: unknown): void {
+  if (!Array.isArray(refs) || !refs.length) return;
+  const row = el("div", "msg-refs");
+  refs.slice(0, 8).forEach((raw) => {
+    const r = raw as Record<string, unknown>;
+    const name = String((r && r.display_name) || "");
+    if (!name) return;
+    const chip = el("span", "msg-ref-chip");
+    chip.appendChild(iconEl("file-text", 11));
+    chip.appendChild(el("span", null, publicText(name, 60)));
+    const parts = [String(r.version_id || "")];
+    if (r.sha256) parts.push("sha256:" + String(r.sha256).slice(0, 12));
+    if (r.materialized_target) parts.push("↗ " + String(r.source_session || "").slice(0, 12));
+    chip.title = parts.filter(Boolean).join(" · ");
+    const pool = (artifacts.value || []) as Array<Record<string, unknown>>;
+    const full = pool.find((x) => (x.artifact_id || x.id) === r.artifact_id);
+    if (full) {
+      chip.classList.add("clickable");
+      chip.onclick = () => {
+        callWindow("openViewer", full);
+      };
+    }
+    row.appendChild(chip);
+  });
+  if (row.children.length) host.appendChild(row);
+}
+
 /** app.js:7263-7274. The earlier-control stays pinned to the top. */
 export function insertMessageByTime(
-  node: HTMLElement,
+  node: HTMLElement | null,
   host: ParentNode | null = messagesHost(),
 ): void {
   if (!host || !node) return;
@@ -224,7 +324,6 @@ export function renderHistoryItem(
     const node = renderStoredStepImpl(item.v, target);
     return node instanceof Node ? node : null;
   }
-  callWindow("renderStoredStep", item.v, target);
   return null;
 }
 
@@ -318,14 +417,17 @@ export function renderEmptySession(host: ParentNode | null = messagesHost()): vo
   ];
   for (const s of starters) {
     const chip = el("button", "es-chip");
+    (chip as HTMLButtonElement).type = "button";
     chip.appendChild(el("div", "es-chip-t", s.title));
     chip.appendChild(el("div", "es-chip-p", s.prompt));
     chip.onclick = () => {
       const c = document.getElementById("composer") as HTMLTextAreaElement | null;
       if (!c) return;
       c.value = s.prompt;
+      // Imported: no lane assigns a window `grow`, so the filled composer
+      // never grew to fit the starter prompt.
+      grow();
       c.focus();
-      callWindow("grow");
     };
     chips.appendChild(chip);
   }

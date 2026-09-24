@@ -35,9 +35,12 @@ vi.mock("../../i18n", () => ({
 }));
 vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive }));
 vi.mock("./vendors/volcengine", () => ({ VolcenginePanel: () => null }));
-vi.mock("../../features/customize/actions", () => ({ custTab: () => undefined }));
+vi.mock("../../features/customize/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../features/customize/actions")>()),
+  custTab: () => undefined,
+}));
 
-import { ModelsTab, profileKeyLabel } from "./ModelsTab";
+import { LocalEndpointRow, ModelsTab, ProfileRow, profileKeyLabel } from "./ModelsTab";
 
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -183,6 +186,93 @@ describe("ModelsTab active configuration", () => {
     });
     expect(tagged(tree, "data-live-model")).toHaveLength(0);
     expect(content(tree)).not.toContain("versions.load.err");
+  });
+});
+
+describe("local endpoint add", () => {
+  it("adds a local model once however often Add is pressed while the write is in flight", async () => {
+    let finish!: (value: Response) => void;
+    mocks.fetch.mockImplementation((_url: string, init?: RequestInit) =>
+      init?.method === "POST"
+        ? new Promise<Response>((resolve) => (finish = resolve))
+        : Promise.resolve(response({})),
+    );
+    const posts = () => mocks.fetch.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "POST");
+    const endpoint = {
+      label: "Ollama",
+      base_url: "http://127.0.0.1:11434/v1",
+      models: ["llama3"],
+      default_model: "llama3",
+    };
+    const row = () => {
+      hookCursor = 0;
+      return LocalEndpointRow({ endpoint, profiles: [] }) as Node;
+    };
+    const add = () => (row().props!.children as Node[]).find((node) => node?.type === "button")!;
+
+    void (add().props!.onClick as () => Promise<void>)();
+    expect(add().props!.disabled).toBe(true);
+    void (add().props!.onClick as () => Promise<void>)();
+    expect(posts()).toHaveLength(1);
+
+    finish(response({ id: "mp-local" }));
+    await vi.waitFor(() => expect(add().props!.disabled).toBe(false));
+    expect(posts()).toHaveLength(1);
+  });
+});
+
+describe("composer model list after a profile change", () => {
+  // `#model-select` renders from what GET /models answered at the last read.
+  const modelReads = () =>
+    mocks.fetch.mock.calls.filter(([url, init]) => url === "/api/v1/models" && !(init as RequestInit)?.method)
+      .length;
+  const find = (node: unknown, match: (node: Node) => boolean): Node | null => {
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = find(child, match);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!node || typeof node !== "object") return null;
+    const current = node as Node;
+    return match(current) ? current : find(current.props?.children, match);
+  };
+
+  it("re-reads the list after a profile is added", async () => {
+    await open({
+      "/model-profiles": () => response({ profiles: [], active_id: "", protocols: ["ark"] }),
+      "/config/llm": () => response(LIVE),
+    });
+    const name = find(render(), (node) => node.type === "input" && node.props?.placeholder === "cust.models.namePlaceholder")!;
+    (name.props!.onInput as (e: unknown) => void)({ target: { value: "Second" } });
+    const add = find(render(), (node) => node.type === "button" && node.props?.class === "solid-btn")!;
+    await (add.props!.onClick as () => Promise<void>)();
+    expect(mocks.fetch.mock.calls.some(([url, init]) => url === "/api/v1/model-profiles" && (init as RequestInit)?.method === "POST")).toBe(true);
+    expect(modelReads()).toBe(1);
+  });
+
+  it("re-reads the list after a profile that is not active is deleted", async () => {
+    vi.stubGlobal("window", { confirm: () => true });
+    mocks.fetch.mockImplementation(() => Promise.resolve(response({})));
+    hookCursor = 0;
+    const row = ProfileRow({ p: { id: "mp-2", name: "Other" }, activeId: "mp-1", protocols: [], onEdit: () => {} });
+    const trash = find(row, (node) => node.props?.name === "trash-2")!;
+    await (trash.props!.onClick as () => Promise<void>)();
+    expect(mocks.fetch.mock.calls[0]).toEqual(["/api/v1/model-profiles/mp-2", expect.objectContaining({ method: "DELETE" })]);
+    expect(modelReads()).toBe(1);
+  });
+
+  it("re-reads the list after a local model is added", async () => {
+    mocks.fetch.mockImplementation(() => Promise.resolve(response({ id: "mp-local" })));
+    hookCursor = 0;
+    const row = LocalEndpointRow({
+      endpoint: { label: "Ollama", base_url: "http://127.0.0.1:11434/v1", models: ["llama3"], default_model: "llama3" },
+      profiles: [],
+    }) as Node;
+    const add = (row.props!.children as Node[]).find((node) => node?.type === "button")!;
+    await (add.props!.onClick as () => Promise<void>)();
+    expect(modelReads()).toBe(1);
   });
 });
 

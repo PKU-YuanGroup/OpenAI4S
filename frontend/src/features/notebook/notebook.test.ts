@@ -19,19 +19,24 @@ import {
   _nbDirty,
   _nbReading,
   _nbSched,
+  _replDrafts,
   cells,
   liveCells,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
+import { branchState, securityState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
+import { t } from "../../i18n/runtime";
+import { copyFailedText } from "../chrome/clipboard";
 import { LIVE_OUTPUT_CHAR_CAP, LIVE_OUTPUT_TRUNCATION } from "../stream/cap";
 import { registerBuiltinHandlers, setArtifactCreatedSideEffects } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
 import {
   appendTextNodeDelta,
   cellOutput,
+  loadExecutionLog,
   mergeNotebookCells,
   nbCellChunk,
   nbCellDraft,
@@ -39,6 +44,8 @@ import {
   nbCellKey,
   nbCellStart,
   nbFindCell,
+  notebookViewEntries,
+  paintStreamedText,
   projectNotebookCells,
   resetCellOutputs,
   setNotebookApi,
@@ -55,7 +62,22 @@ import {
   resetNotebookCellCaches,
 } from "./chrome";
 import { installNotebook } from "./install";
-import { invalidateKernelCache, kernelEpoch, nbSwitchEnv, notebookOnTurnDone } from "./kernel";
+import type { NotebookCell } from "./types";
+import {
+  copyNotebookCell,
+  currentKernelStatus,
+  executeNotebookCode,
+  forkNotebookCell,
+  forkPending,
+  invalidateKernelCache,
+  kernelView,
+  nbSwitchEnv,
+  notebookOnTurnDone,
+  refreshKernelState,
+  replEnabledNow,
+  shortRuntime,
+  syncKernel,
+} from "./kernel";
 import {
   isNearBottom,
   measureNotebookFollow,
@@ -315,11 +337,9 @@ describe("F-14 Notebook", () => {
       kc.id = "frame-1";
       kc.st = { alive: true, state: "running" };
       kc.stAt = 99;
-      kc.stBusy = true;
       kc.envs = [{ name: "python" }];
       kc.cur = "python";
       kc.envAt = 77;
-      kc.envBusy = true;
     }
 
     function expectInvalidated(): void {
@@ -330,22 +350,44 @@ describe("F-14 Notebook", () => {
       expect(kc.envs).toBeNull();
       expect(kc.cur).toBeNull();
       expect(kc.envAt).toBe(0);
-      expect(kc.stBusy).toBe(true);
-      expect(kc.envBusy).toBe(true);
     }
 
-    it("clears id/st/envs and leaves busy flags (app.js:9955)", () => {
+    it("clears id/st/envs (app.js:9955)", () => {
       seedCache();
-      const epoch = kernelEpoch.value;
+      const before = _kc.value;
       invalidateKernelCache();
       expectInvalidated();
-      expect(kernelEpoch.value).toBe(epoch + 1);
+      // A new object, not an in-place edit: whoever reads `_kc` hears about
+      // it without a hand-maintained epoch counter.
+      expect(_kc.value).not.toBe(before);
     });
 
     it("invalidates on kernel_status for the open session", () => {
       seedCache();
       onEvent({ type: "kernel_status", frame_id: "frame-1", status: "restarted", generation: 2 });
       expectInvalidated();
+    });
+
+    it("stores a kernel_status sandbox scrubbed, keeping the permission state", () => {
+      securityState.value = {
+        sandbox: { state: "old" },
+        permission: { mode: "ask", pending_count: 2, unattended: "deny" },
+      };
+      onEvent({
+        type: "kernel_status",
+        frame_id: "frame-1",
+        status: "restarted",
+        sandbox: { state: "enforced", mode: 7, runtimes: "not-a-list", detail: "x".repeat(900) },
+      });
+      const state = securityState.value as {
+        sandbox: { state: string; mode: string; runtimes: unknown[]; detail: string };
+        permission: { mode: string; pending_count: number };
+      };
+      expect(state.sandbox.state).toBe("enforced");
+      expect(state.sandbox.mode).toBe("7");
+      expect(state.sandbox.runtimes).toEqual([]);
+      expect(state.sandbox.detail.length).toBeLessThanOrEqual(500);
+      expect(state.permission).toEqual({ mode: "ask", pending_count: 2, unattended: "deny" });
     });
 
     it("does not invalidate kernel_status for another session", () => {
@@ -366,6 +408,177 @@ describe("F-14 Notebook", () => {
       setNotebookApi(async () => ({ ok: true }));
       await nbSwitchEnv("science");
       expectInvalidated();
+    });
+  });
+
+  describe("kernel status reads", () => {
+    type Pending = { path: string; answer: (body: Record<string, unknown>) => void };
+    function deferApi(): Pending[] {
+      const pending: Pending[] = [];
+      setNotebookApi(
+        (path) =>
+          new Promise((resolve) => {
+            pending.push({ path, answer: resolve });
+          }),
+      );
+      return pending;
+    }
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it("a read still out for the previous session does not block the new one", async () => {
+      const pending = deferApi();
+      currentId.value = "frame-a";
+      void refreshKernelState();
+      invalidateKernelCache();
+      currentId.value = "frame-b";
+      void refreshKernelState();
+      expect(pending.map((p) => p.path)).toEqual(["/frames/frame-a/kernel", "/frames/frame-b/kernel"]);
+      pending[1]!.answer({ alive: true, state: "running" });
+      pending[0]!.answer({ alive: false, state: "stopped" });
+      await settle();
+      expect(_kc.value.id).toBe("frame-b");
+      expect(_kc.value.st).toEqual({ alive: true, state: "running" });
+    });
+
+    it("an answer that crossed an invalidation is shown, then read again", async () => {
+      const pending = deferApi();
+      void refreshKernelState();
+      invalidateKernelCache();
+      pending[0]!.answer({ alive: true, generation: 1 });
+      await settle();
+      expect(_kc.value.st).toEqual({ alive: true, generation: 1 });
+      void refreshKernelState();
+      expect(pending).toHaveLength(2);
+      pending[1]!.answer({ alive: true, generation: 2 });
+      await settle();
+      expect(_kc.value.st).toEqual({ alive: true, generation: 2 });
+    });
+
+    it("keeps the last read on screen across an invalidation", async () => {
+      setNotebookApi(async () => ({ alive: true, state: "running", repl_enabled: true }));
+      await refreshKernelState();
+      const shown = kernelView.value;
+      expect(replEnabledNow()).toBe(true);
+      invalidateKernelCache();
+      expect(_kc.value.st).toBeNull();
+      // Clearing what was shown flashed the status line to "…" and unmounted
+      // the REPL panel after every turn, until the next read landed.
+      expect(kernelView.value).toBe(shown);
+      expect(currentKernelStatus()).toEqual({ alive: true, state: "running", repl_enabled: true });
+      expect(replEnabledNow()).toBe(true);
+    });
+
+    it("shows nothing read for another session", async () => {
+      setNotebookApi(async () => ({ alive: true, repl_enabled: true }));
+      await refreshKernelState();
+      currentId.value = "frame-2";
+      expect(currentKernelStatus()).toBeNull();
+      expect(replEnabledNow()).toBe(false);
+    });
+
+    it("reads only while the Notebook is on screen, and not again while fresh", async () => {
+      const paths: string[] = [];
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        return path.endsWith("/environments") ? { environments: [], current: "python" } : { alive: true };
+      });
+      dock.value = { open: false, tab: "notebook" };
+      syncKernel(true);
+      dock.value = { open: true, tab: "files" };
+      activeTab.value = "files";
+      syncKernel(true);
+      await settle();
+      expect(paths).toEqual([]);
+      activeTab.value = "notebook";
+      syncKernel(true);
+      await settle();
+      expect(paths).toEqual(["/frames/frame-1/kernel", "/frames/frame-1/environments"]);
+      syncKernel(true);
+      await settle();
+      expect(paths).toHaveLength(2);
+    });
+  });
+
+  describe("cell actions: one request each, and only true feedback", () => {
+    it("a second REPL submission while the first is in flight sends nothing", async () => {
+      const posts: string[] = [];
+      let answer: (body: Record<string, unknown>) => void = () => undefined;
+      setNotebookApi((path) => {
+        posts.push(path);
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      });
+      const first = executeNotebookCode("print(1)", "python");
+      // A double click on Rerun: each POST carried a new execution_id, and
+      // the server's FIFO ran code with side effects twice.
+      const second = executeNotebookCode("print(1)", "python");
+      expect(posts).toEqual(["/frames/frame-1/kernel/execute"]);
+      expect(await second).toBe(false);
+      answer({ status: "accepted" });
+      expect(await first).toBe(true);
+    });
+
+    it("Fork sends one request while one is out, and says when the branch exists", async () => {
+      branchState.value = { capabilities: { fork_from_cell: true } };
+      const hints: string[] = [];
+      vi.stubGlobal("hint", (message: string) => hints.push(message));
+      const posts: string[] = [];
+      let answer: (response: Response) => void = () => undefined;
+      vi.stubGlobal("fetch", (url: string) => {
+        posts.push(url);
+        return new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+      });
+      const cell = { producing_cell_id: "c7", fork_checkpoint_id: "ckpt-0123456789" };
+      const first = forkNotebookCell(cell);
+      const second = forkNotebookCell(cell);
+      expect(posts).toEqual(["/api/v1/frames/frame-1/branches/fork"]);
+      await second;
+      answer(new Response(JSON.stringify({ branch_id: "b2" }), { status: 200 }));
+      await first;
+      expect(hints).toEqual([t("branch.forked", shortRuntime("ckpt-0123456789"))]);
+      expect(forkPending.value).toBeNull();
+    });
+
+    it("Fork shows the server's refusal, not a success", async () => {
+      branchState.value = { capabilities: { fork_from_cell: true } };
+      const hints: string[] = [];
+      vi.stubGlobal("hint", (message: string) => hints.push(message));
+      const sentence = "historical source has no exact cursor checkpoint";
+      vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ error: sentence }), { status: 409 }));
+      await forkNotebookCell({ producing_cell_id: "c7", fork_checkpoint_id: "ckpt-1" });
+      expect(hints).toEqual([t("branch.actionFailed", sentence)]);
+      expect(forkPending.value).toBeNull();
+    });
+
+    it("Copy says it failed when no write was confirmed, and leaves the REPL draft alone", async () => {
+      const hints: Array<[string, boolean | undefined]> = [];
+      vi.stubGlobal("hint", (message: string, err?: boolean) => hints.push([message, err]));
+      vi.stubGlobal("navigator", { clipboard: { writeText: () => Promise.reject(new Error("denied")) } });
+      vi.stubGlobal("document", undefined);
+      const drafts = _replDrafts.value;
+      await copyNotebookCell("print(1)");
+      expect(hints).toEqual([[copyFailedText(), true]]);
+      expect(_replDrafts.value).toBe(drafts);
+      expect(_replDrafts.value).toEqual({ python: "", r: "" });
+    });
+
+    it("Copy says it copied only after a confirmed write", async () => {
+      const hints: Array<[string, boolean | undefined]> = [];
+      vi.stubGlobal("hint", (message: string, err?: boolean) => hints.push([message, err]));
+      let written = "";
+      vi.stubGlobal("navigator", {
+        clipboard: {
+          writeText: async (text: string) => {
+            written = text;
+          },
+        },
+      });
+      await copyNotebookCell("print(2)");
+      expect(written).toBe("print(2)");
+      expect(hints).toEqual([[t("nb.action.copied"), undefined]]);
     });
   });
 
@@ -404,6 +617,64 @@ describe("F-14 Notebook", () => {
       const body = { scrollHeight: 500, scrollTop: 0, clientHeight: 100 };
       onNotebookScroll(body);
       expect(_nbReading.value).toBe(true);
+    });
+
+    it("keeps the painted list while the reader is scrolled up during a turn", () => {
+      const failed = {
+        producing_cell_id: "a",
+        cell_index: 1,
+        origin: "agent",
+        status: "error",
+        kernel_id: "python",
+        language: "python",
+      };
+      cells.value = [failed];
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["a"]);
+      running.value = true;
+      _nbReading.value = true;
+      // The agent retries: projected, the failed cell folds into the retry's
+      // revisions. Painting that now would pull it out from under the reader.
+      liveCells.value = [{ ...failed, producing_cell_id: "b", cell_index: 2, status: "running", live: true }];
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["a"]);
+      expect(_nbDirty.value).toBe(true);
+      _nbReading.value = false;
+      const flushed = notebookViewEntries();
+      expect(flushed.map(nbCellKey)).toEqual(["b"]);
+      expect((flushed[0]!._revisions || []).map(nbCellKey)).toEqual(["a"]);
+    });
+
+    it("scrolling another dock pane says nothing about the Notebook", () => {
+      // `.dock-body` scrolls for every pane; the Timeline scrolled up must not
+      // hold the Notebook's list the next time it is opened.
+      activeTab.value = "timeline";
+      onNotebookScroll({ scrollHeight: 2000, scrollTop: 0, clientHeight: 400 });
+      expect(_nbReading.value).toBe(false);
+    });
+
+    it("comes back from another pane painting the current list", () => {
+      cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
+      notebookViewEntries();
+      onNotebookScroll({ scrollHeight: 2000, scrollTop: 0, clientHeight: 400 });
+      expect(_nbReading.value).toBe(true);
+      running.value = true;
+      activeTab.value = "files";
+      expect(_nbReading.value).toBe(false);
+      cells.value = [
+        { producing_cell_id: "a", cell_index: 1 },
+        { producing_cell_id: "b", cell_index: 2 },
+      ];
+      activeTab.value = "notebook";
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["a", "b"]);
+    });
+
+    it("never holds back another session's list", () => {
+      cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
+      notebookViewEntries();
+      running.value = true;
+      _nbReading.value = true;
+      currentId.value = "frame-2";
+      cells.value = [{ producing_cell_id: "z", cell_index: 1 }];
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["z"]);
     });
   });
 
@@ -486,6 +757,61 @@ describe("F-14 Notebook", () => {
     });
   });
 
+  describe("paintStreamedText (a <pre> that came back after being elided)", () => {
+    type FakeText = { data: string; appendData: (s: string) => void };
+    function fakePre(): { firstChild: FakeText | null; appendChild: (node: FakeText) => void } {
+      const pre = {
+        firstChild: null as FakeText | null,
+        appendChild(node: FakeText) {
+          pre.firstChild = node;
+        },
+      };
+      return pre;
+    }
+    function paint(pre: ReturnType<typeof fakePre> | null, seen: number, text: string): number {
+      return paintStreamedText(pre as unknown as Parameters<typeof paintStreamedText>[0], seen, text);
+    }
+
+    beforeEach(() => {
+      vi.stubGlobal("document", {
+        createTextNode: (data: string): FakeText => ({
+          data,
+          appendData(s: string) {
+            this.data += s;
+          },
+        }),
+      });
+    });
+
+    it("repaints the whole output when the <pre> was unmounted in between", () => {
+      const first = fakePre();
+      let seen = paint(first, 0, "abc");
+      expect(first.firstChild?.data).toBe("abc");
+      seen = paint(null, seen, "abc\u0000\u0001");
+      expect(seen).toBe(0);
+      const second = fakePre();
+      paint(second, seen, "abcdef");
+      expect(second.firstChild?.data).toBe("abcdef");
+    });
+
+    it("starts a new, empty <pre> from zero whatever count it is handed", () => {
+      const first = fakePre();
+      const seen = paint(first, 0, "abc");
+      const second = fakePre();
+      paint(second, seen, "abcdef");
+      expect(second.firstChild?.data).toBe("abcdef");
+      paint(second, 6, "abcdefgh");
+      expect(second.firstChild?.data).toBe("abcdefgh");
+    });
+
+    it("shows a finished record exactly, not as a tail on what streamed", () => {
+      const pre = fakePre();
+      const seen = paint(pre, 0, "partial line");
+      paintStreamedText(pre as unknown as Parameters<typeof paintStreamedText>[0], seen, "final record!", true);
+      expect(pre.firstChild?.data).toBe("final record!");
+    });
+  });
+
   describe("projectNotebookCells", () => {
     it("groups agent retries after a failed cell", () => {
       const grouped = projectNotebookCells([
@@ -508,6 +834,54 @@ describe("F-14 Notebook", () => {
       expect(grouped[0] && grouped[0].producing_cell_id).toBe("b");
       expect(grouped[0] && grouped[0].attempt_count).toBe(2);
       expect(grouped[0] && grouped[0]._revisions && grouped[0]!._revisions!.length).toBe(1);
+    });
+
+    // The memoized cell view only skips a cell whose props are the same
+    // object; every projection used to clone every cell.
+    it("returns the same projected object for finished records that did not change", () => {
+      const failed = { producing_cell_id: "a", origin: "agent", status: "error", kernel_id: "python", language: "python" };
+      const retry = { producing_cell_id: "b", origin: "agent", status: "ok", kernel_id: "python", language: "python" };
+      const other = { producing_cell_id: "c", origin: "user", status: "ok" };
+      const first = projectNotebookCells([failed, retry, other]);
+      const second = projectNotebookCells([failed, retry, other]);
+      expect(second).toHaveLength(2);
+      expect(second[0]).toBe(first[0]);
+      expect(second[1]).toBe(first[1]);
+      const changed = { ...other, stdout: "new" };
+      const third = projectNotebookCells([failed, retry, changed]);
+      expect(third[0]).toBe(first[0]);
+      expect(third[1]).not.toBe(first[1]);
+      expect(third[1]!.stdout).toBe("new");
+    });
+
+    it("rebuilds a group with a running member, whose record changes in place", () => {
+      const live: NotebookCell = { producing_cell_id: "r", live: true, status: "running" };
+      const before = projectNotebookCells([live]);
+      live.output_artifacts = [{ filename: "p.png", artifact_id: "art", version_id: "v1", url: "/u" }];
+      const after = projectNotebookCells([live]);
+      expect(after[0]).not.toBe(before[0]);
+      expect(after[0]!.output_artifacts).toHaveLength(1);
+    });
+
+    it("keeps a record's identity when the execution log sends it back unchanged", async () => {
+      let stdout = "1\n";
+      setNotebookApi(async () => ({
+        entries: [
+          { producing_cell_id: "k1", cell_index: 1, status: "ok", stdout, figures: ["f.png"] },
+          { producing_cell_id: "k2", cell_index: 2, status: "ok", stdout: "2\n" },
+        ],
+        kernels: ["python"],
+      }));
+      await loadExecutionLog("frame-1");
+      const [k1, k2] = cells.value as NotebookCell[];
+      await loadExecutionLog("frame-1");
+      expect((cells.value as NotebookCell[])[0]).toBe(k1);
+      expect((cells.value as NotebookCell[])[1]).toBe(k2);
+      stdout = "1\nmore\n";
+      await loadExecutionLog("frame-1");
+      expect((cells.value as NotebookCell[])[0]).not.toBe(k1);
+      expect((cells.value as NotebookCell[])[0]!.stdout).toBe("1\nmore\n");
+      expect((cells.value as NotebookCell[])[1]).toBe(k2);
     });
   });
 

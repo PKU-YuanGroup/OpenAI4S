@@ -15,7 +15,7 @@ F-05 把旧的 `S` 单例拆成的 signal 模块。后续 F 系列车道只 impo
 | [`migration.test.ts`](migration.test.ts) | 把 `MIGRATION.md` + `S_FIELD_META` 对照 `tests/webui-contract.md` 做 diff。 |
 | [`notebook.ts`](notebook.ts) | cells、kernels、lineage、REPL 草稿、变量检查器、模块级 `_kc`。 |
 | [`registry.ts`](registry.ts) | `S_FIELD_META`、`sSignals`、`createSProxy`（get/set ↔ `signal.value`）。 |
-| [`session.ts`](session.ts) | 项目/会话身份、文件夹、消息游标、批注；`openedFrameId`，即屏幕上会话级状态所属的会话。 |
+| [`session.ts`](session.ts) | 项目/会话身份、文件夹、消息游标、批注；`openedFrameId`，即屏幕上会话级状态所属的会话。`projects` 是各处显示项目名所依据的项目目录；仪表盘搜索的结果页单独存放在 `projectSearch*`。 |
 | [`signal-field.ts`](signal-field.ts) | `field(init)` + 测试用的 `resetStoreFields()`。 |
 | [`stream.ts`](stream.ts) | WS 句柄、直播 wrap、plan/turn ticket、`_seqSeen` / `_streamEpoch`。 |
 | [`timeline.ts`](timeline.ts) | Action timeline、执行队列、workbench 投影、ACTION_TIMELINE_* 常量。 |

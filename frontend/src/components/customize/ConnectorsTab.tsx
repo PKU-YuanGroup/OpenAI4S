@@ -1,7 +1,7 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { DATAPRO_CONNECTOR_ID } from "../../features/customize/vendors";
 import {
@@ -10,52 +10,46 @@ import {
   confirmAction,
   hint,
 } from "../../features/customize/host";
-import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 import { DataProCard } from "./vendors/datapro";
 
 export function ConnectorsTab() {
-  const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
   const [conns, setConns] = useState<Record<string, unknown>[]>([]);
   const [directory, setDirectory] = useState<Record<string, unknown>[]>([]);
   const [datapro, setDatapro] = useState<{
-    config: Record<string, unknown>;
+    config: Record<string, unknown> | null;
     error: unknown;
-  }>({ config: {}, error: null });
+  }>({ config: null, error: null });
   const [name, setName] = useState("");
   const [cmd, setCmd] = useState("");
 
-  useEffect(() => {
-    void (async () => {
+  useTabRead(
+    "connectors",
+    async (current) => {
+      const [d, dp] = await Promise.all([
+        api("/connectors"),
+        api("/datapro/config")
+          .then((config) => ({ config, error: null as unknown }))
+          .catch((error) => ({ config: {} as Record<string, unknown>, error })),
+      ]);
+      if (!current()) return;
+      setConns(asList(d.connectors) as Record<string, unknown>[]);
+      setDatapro(dp);
+      markCustomizeLoaded();
       try {
-        const [d, dp] = await Promise.all([
-          api("/connectors"),
-          api("/datapro/config")
-            .then((config) => ({ config, error: null as unknown }))
-            .catch((error) => ({ config: {} as Record<string, unknown>, error })),
-        ]);
-        if (!alive()) return;
-        setConns(asList(d.connectors) as Record<string, unknown>[]);
-        setDatapro(dp);
-        markCustomizeLoaded();
-        try {
-          const dir = await api("/connectors/directory");
-          if (!alive()) return;
-          setDirectory(asList(dir.directory) as Record<string, unknown>[]);
-        } catch {
-          if (!alive()) return;
-          setDirectory([]);
-        }
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
+        const dir = await api("/connectors/directory");
+        if (!current()) return;
+        setDirectory(asList(dir.directory) as Record<string, unknown>[]);
+      } catch {
+        if (!current()) return;
+        setDirectory([]);
       }
-    })();
-  }, [alive]);
+    },
+    setErr,
+  );
 
   if (err) return <div>{err}</div>;
 
@@ -100,7 +94,7 @@ export function ConnectorsTab() {
                     body: JSON.stringify(request),
                   });
                   hint(t("toast.connectors.added", asString(item.name)));
-                  custTab("connectors");
+                  refreshCustTab("connectors");
                 } catch (e) {
                   hint(t("toast.addFailed", apiErrorText(e)), true);
                 }
@@ -142,7 +136,7 @@ export function ConnectorsTab() {
                   });
                   setName("");
                   setCmd("");
-                  custTab("connectors");
+                  refreshCustTab("connectors");
                 } catch (e) {
                   hint(t("toast.addFailed", apiErrorText(e)), true);
                 }
@@ -157,8 +151,13 @@ export function ConnectorsTab() {
   );
 }
 
-function ConnectorRow({ k }: { k: Record<string, unknown> }) {
-  const [on, setOn] = useState(!!k.enabled);
+export function ConnectorRow({ k }: { k: Record<string, unknown> }) {
+  const enabled = useOptimisticToggle(!!k.enabled, (on) =>
+    api(`/connectors/${k.connector_id}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: on }),
+    }),
+  );
   const [testing, setTesting] = useState(false);
   return (
     <div class="cust-row">
@@ -197,21 +196,7 @@ function ConnectorRow({ k }: { k: Record<string, unknown> }) {
       >
         {testing ? t("cust.connectors.testing") : t("cust.connectors.test")}
       </button>
-      <Toggle
-        on={on}
-        onClick={async () => {
-          const next = !on;
-          setOn(next);
-          try {
-            await api(`/connectors/${k.connector_id}/enabled`, {
-              method: "PUT",
-              body: JSON.stringify({ enabled: next }),
-            });
-          } catch {
-            setOn(!next);
-          }
-        }}
-      />
+      <Toggle on={enabled.on} onClick={enabled.toggle} />
       <IconGhost
         name="trash-2"
         title={t("common.delete")}
@@ -219,7 +204,7 @@ function ConnectorRow({ k }: { k: Record<string, unknown> }) {
           if (!confirmAction(t("cust.connectors.deleteConfirm", asString(k.name)))) return;
           try {
             await api(`/connectors/${k.connector_id}`, { method: "DELETE" });
-            custTab("connectors");
+            refreshCustTab("connectors");
           } catch {
             /* original swallowed */
           }

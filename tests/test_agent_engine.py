@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import openai4s.agent.engine as engine_module
-from openai4s.agent.actions import CodeCell, NativeToolBatch
+from openai4s.agent.actions import CodeCell, FinalizeAction, NativeToolBatch
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.events import (
     ActionRouted,
@@ -20,6 +20,7 @@ from openai4s.agent.events import (
     TextDelta,
     TurnStarted,
 )
+from openai4s.agent.finalize import execute_finalize_action
 from openai4s.agent.models import ExecutionOutcome, ModelReply
 
 
@@ -517,4 +518,97 @@ def test_a_model_that_ignores_the_note_is_still_stopped_by_the_circuit():
         "no_progress",
         "same_action",
     )
+    assert len(model.calls) == 3
+
+
+# The 2026-09-24 Web repro: `output` where the schema wants `summary`.
+_UNFINISHED = {"output": {"answer": 42}, "completion_bullets": ["Answered it"]}
+_FINISHED = {"summary": "The answer is 42.", "completion_bullets": ["Answered it"]}
+
+
+def _finalize(call_id, arguments):
+    return _reply(tool_calls=[_call(call_id, "finalize_response", dict(arguments))])
+
+
+def _host_finalize(action, reply, state):
+    # The real Host contract, not a fake result: the circuit reads the exact
+    # tool result the CLI and Web executors produce.
+    assert isinstance(action, FinalizeAction)
+    return execute_finalize_action(action)
+
+
+def test_a_repeated_invalid_finalize_stops_with_no_progress_not_max_turns():
+    # A mock provider answered every turn of a real Web session with the same
+    # schema-invalid finalize_response. The circuit only ever observed native
+    # batches, so the engine called the model 64 times -- the whole
+    # OPENAI4S_MAX_TURNS budget -- and ended max_turns.
+    engine, model, _, executor, _, _, _ = _engine(
+        [_finalize(f"call_{index}", _UNFINISHED) for index in range(64)],
+        executor=FakeExecutor(handler=_host_finalize),
+        max_turns=64,
+    )
+
+    result = engine.run([{"role": "user", "content": "What is 6 * 7?"}])
+
+    assert (result.stop_reason, result.progress_reason) == (
+        "no_progress",
+        "similar_tool_error",
+    )
+    assert result.completion is None
+    assert len(model.calls) == len(executor.calls) == 2
+    refusal = model.calls[1][-1]
+    assert refusal["role"] == "tool" and refusal["is_error"] is True
+    assert refusal["content"] == (
+        "[Tool error] finalize_response: invalid arguments: "
+        "$.summary: required property is missing; "
+        "$.output: unknown property is not allowed"
+    )
+    # The continuation note names the call the model has to stop repeating.
+    assert "Recent tool identifiers: finalize_response." in (
+        result.messages[-1]["content"]
+    )
+
+
+def test_a_repeated_malformed_finalize_stops_as_consecutive_malformed():
+    call = {
+        **_call("call_0", "finalize_response", None),
+        "raw_arguments": '{"summary": ',
+        "arguments": None,
+        "parse_error": "invalid JSON",
+    }
+    engine, model, _, _, _, _, _ = _engine(
+        [_reply(tool_calls=[dict(call, id=f"call_{i}")]) for i in range(8)],
+        executor=FakeExecutor(handler=_host_finalize),
+        max_turns=8,
+    )
+
+    result = engine.run([{"role": "user", "content": "What is 6 * 7?"}])
+
+    assert (result.stop_reason, result.progress_reason) == (
+        "no_progress",
+        "consecutive_malformed",
+    )
+    assert len(model.calls) == 2
+
+
+def test_a_finalize_the_model_repairs_is_submitted_not_stopped():
+    # One refusal, then a different mistake, then the fix: a model that
+    # changes its call is trying, and a valid finalize is the completion.
+    engine, model, _, _, _, _, _ = _engine(
+        [
+            _finalize("call_0", _UNFINISHED),
+            _finalize("call_1", {**_FINISHED, "completion_bullets": []}),
+            _finalize("call_2", _FINISHED),
+        ],
+        executor=FakeExecutor(handler=_host_finalize),
+        max_turns=8,
+    )
+
+    result = engine.run([{"role": "user", "content": "What is 6 * 7?"}])
+
+    assert (result.stop_reason, result.progress_reason) == ("submitted", None)
+    assert result.completion == {
+        "output": {"summary": "The answer is 42."},
+        "completion_bullets": ["Answered it"],
+    }
     assert len(model.calls) == 3

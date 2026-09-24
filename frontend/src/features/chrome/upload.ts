@@ -15,12 +15,12 @@
 
 import { t } from "../../i18n/runtime";
 import { defaultModelName } from "../../stores/customize";
+import { effProject } from "../customize/host";
 import { _openGen, currentId, project } from "../../stores/session";
 import { sub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { $, hint } from "./dom";
 import { hostFn, isReady } from "./host";
-import { effProject } from "./notes";
 
 export interface UploadResult {
   ok: boolean;

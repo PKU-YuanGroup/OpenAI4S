@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { setLang } from "../../i18n/runtime";
 import {
   LIVE_OUTPUT_CHAR_CAP,
   LIVE_OUTPUT_TRUNCATION,
@@ -65,6 +66,24 @@ describe("liveOutputDelta / truncation", () => {
     expect(pushes).toEqual(["tail\n"]);
   });
 
+  it("examines only the chunk: no search or slice of the output it already holds", () => {
+    const node = { data: "", appendData(s: string) { this.data += s; } };
+    const handle = bindStreamingPre(node, "");
+    const includes = vi.spyOn(String.prototype, "includes");
+    const slice = vi.spyOn(String.prototype, "slice");
+    try {
+      for (let i = 0; i < 500; i++) handle.append("row " + i + "\n");
+      expect(includes).not.toHaveBeenCalled();
+      expect(slice).not.toHaveBeenCalled();
+    } finally {
+      includes.mockRestore();
+      slice.mockRestore();
+    }
+    expect(handle.newlines).toBe(500);
+    expect(handle.truncated).toBe(false);
+    expect(node.data).toBe(handle.text);
+  });
+
   it("does not appendData once truncated", () => {
     const pushes: string[] = [];
     const node = { appendData(s: string) { pushes.push(s); } };
@@ -77,10 +96,15 @@ describe("liveOutputDelta / truncation", () => {
     expect(handle.text).toBe(pushes[0]);
   });
 
-  it("toolMetaLabel keeps the original n>1 / done wording", () => {
+  it("toolMetaLabel keeps the original n>1 / done wording, in the UI language", async () => {
+    await setLang("en");
     expect(toolMetaLabel(0)).toBe("done");
     expect(toolMetaLabel(1)).toBe("done");
     expect(toolMetaLabel(2)).toBe("2 lines");
     expect(toolMetaLabel(5)).toBe("5 lines");
+    await setLang("zh");
+    expect(toolMetaLabel(1)).toBe("完成");
+    expect(toolMetaLabel(5)).toBe("5 行");
+    await setLang("en");
   });
 });

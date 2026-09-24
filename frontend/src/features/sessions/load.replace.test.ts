@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: vi.fn() }));
 
 import { api } from "./api";
-import { loadProjects, projectsReplaceInFlight } from "./load";
-import { projects, projectsHasMore, projectsNextCursor } from "../../stores/session";
+import { loadProjects } from "./load";
+import { resetStoreFields } from "../../stores/signal-field";
+import { projectSearch, projects, projectsQuery } from "../../stores/session";
 
 const page = (ids: string[], cursor: string | null) => ({
   projects: ids.map((id) => ({ project_id: id, name: id })),
@@ -12,13 +13,12 @@ const page = (ids: string[], cursor: string | null) => ({
   has_more: cursor !== null,
   total: ids.length,
 });
+const ids = (rows: unknown[]) => (rows as { project_id: string }[]).map((row) => row.project_id);
 
 describe("a search in flight refuses a load-more", () => {
   beforeEach(() => {
     vi.mocked(api).mockReset();
-    projects.value = [];
-    projectsHasMore.value = false;
-    projectsNextCursor.value = null;
+    resetStoreFields();
   });
   afterEach(() => vi.mocked(api).mockReset());
 
@@ -26,13 +26,12 @@ describe("a search in flight refuses a load-more", () => {
     // Page one of the unfiltered directory, with more behind it.
     vi.mocked(api).mockResolvedValueOnce(page(["a"], "c1"));
     await loadProjects({ q: "" });
-    expect(projectsReplaceInFlight()).toBe(false);
 
-    // A debounced search takes a newer generation and waits on the daemon.
+    // The box takes a query; its debounced search waits on the daemon.
+    projectsQuery.value = "beta";
     let answer: (value: unknown) => void = () => {};
     vi.mocked(api).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
     const search = loadProjects({ q: "beta" });
-    expect(projectsReplaceInFlight()).toBe(true);
 
     // The still-rendered Load-more button is clicked meanwhile. Before the
     // gate, this took generation N+1 with the OLD query and cursor, and the
@@ -43,7 +42,8 @@ describe("a search in flight refuses a load-more", () => {
 
     answer(page(["z"], null));
     await search;
-    expect(projectsReplaceInFlight()).toBe(false);
-    expect((projects.value as { project_id: string }[]).map((row) => row.project_id)).toEqual(["z"]);
+    expect(ids(projectSearch.value)).toEqual(["z"]);
+    // The search has pages of its own; the directory is what it was.
+    expect(ids(projects.value)).toEqual(["a"]);
   });
 });

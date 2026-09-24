@@ -15,7 +15,7 @@ F-05 signal modules for the old `S` singleton. Later F-series lanes import these
 | [`migration.test.ts`](migration.test.ts) | Diffs `MIGRATION.md` + `S_FIELD_META` against `tests/webui-contract.md`. |
 | [`notebook.ts`](notebook.ts) | Cells, kernels, lineage, REPL drafts, variable inspector, module-level `_kc`. |
 | [`registry.ts`](registry.ts) | `S_FIELD_META`, `sSignals`, `createSProxy` (get/set ↔ `signal.value`). |
-| [`session.ts`](session.ts) | Project/session identity, folders, messages cursor, annotations; `openedFrameId`, the frame whose session-scoped state is on screen. |
+| [`session.ts`](session.ts) | Project/session identity, folders, messages cursor, annotations; `openedFrameId`, the frame whose session-scoped state is on screen. `projects` is the project directory every view names projects from; the dashboard search keeps its own pages in `projectSearch*`. |
 | [`signal-field.ts`](signal-field.ts) | `field(init)` + `resetStoreFields()` for tests. |
 | [`stream.ts`](stream.ts) | WS handle, live stream wrap, plan/turn ticket, `_seqSeen` / `_streamEpoch`. |
 | [`timeline.ts`](timeline.ts) | Action timeline, execution queue, workbench projections, ACTION_TIMELINE_* constants. |

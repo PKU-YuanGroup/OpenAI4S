@@ -19,9 +19,11 @@ import { down } from "../messages/scroll";
 import { ensure, sealText, type LiveStream } from "../messages/stream";
 import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
+import { apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { publicList } from "../timeline/sanitize";
 import { appendSemanticSkillSearch } from "../judgment/chips";
+import { sendCopy } from "./copy";
 import { icon, iconEl } from "./icon";
 
 export type Step = {
@@ -42,7 +44,12 @@ export type StepHandle = {
   meta: HTMLElement;
   ic: HTMLElement;
   step: Step;
+  /** The body does not show `step` yet: built when the card is next opened. */
+  bodyStale?: boolean;
 };
+
+/** `lazyBody`: a collapsed card (its body is `display: none`) builds its body on first expand. */
+export type StepPaint = { lazyBody?: boolean };
 
 const STEP_ICON: Record<string, string> = {
   search: "search",
@@ -76,13 +83,17 @@ function rec(value: unknown): Record<string, unknown> {
 function openArt(meta: { artifact_id?: unknown; filename?: unknown; content_type?: unknown; size_bytes?: unknown }): void {
   if (!meta || !meta.artifact_id) return;
   dockOpen();
-  openViewer({
-    id: String(meta.artifact_id),
-    artifact_id: String(meta.artifact_id),
-    filename: meta.filename != null ? String(meta.filename) : undefined,
-    content_type: meta.content_type != null ? String(meta.content_type) : undefined,
-    size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
-  } as ArtifactRow);
+  // openViewer may resolve a version first; a failure there belongs to this
+  // click, not to an unhandled rejection.
+  void Promise.resolve(
+    openViewer({
+      id: String(meta.artifact_id),
+      artifact_id: String(meta.artifact_id),
+      filename: meta.filename != null ? String(meta.filename) : undefined,
+      content_type: meta.content_type != null ? String(meta.content_type) : undefined,
+      size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
+    } as ArtifactRow),
+  ).catch((error: unknown) => hint(t("toast.failed", apiErrorText(error)), true));
 }
 
 export function binElide(len: number): HTMLElement {
@@ -191,7 +202,7 @@ export function outputBlock(
   out.textContent = raw.slice(0, 14000);
   if (opts.mode === "reveal") {
     const tgl = el("button", "oc-out-tgl");
-    const label = el("span", null, "Show output");
+    const label = el("span", null, t("step.artifact.showOutput"));
     tgl.appendChild(label);
     tgl.appendChild(iconEl("chevron-down", 13));
     out.style.display = "none";
@@ -199,7 +210,7 @@ export function outputBlock(
       const show = out.style.display === "none";
       out.style.display = show ? "block" : "none";
       tgl.classList.toggle("open", show);
-      label.textContent = show ? "Hide output" : "Show output";
+      label.textContent = show ? t("step.artifact.hideOutput") : t("step.artifact.showOutput");
     };
     box.appendChild(tgl);
   }
@@ -356,7 +367,7 @@ export function stepBody(step: Step): HTMLElement {
       const row = el("div", "review-issue " + (issue.severity || "medium"));
       const head = el("div", "review-issue-head");
       head.appendChild(el("span", "review-severity", String(issue.severity || "medium")));
-      head.appendChild(el("strong", null, String(issue.title || "Review finding")));
+      head.appendChild(el("strong", null, String(issue.title || sendCopy("reviewFinding"))));
       row.appendChild(head);
       if (issue.detail) row.appendChild(el("div", "review-detail", String(issue.detail)));
       if (issue.evidence) {
@@ -625,15 +636,21 @@ export function stepBody(step: Step): HTMLElement {
   return box;
 }
 
-export function applyStepState(handle: StepHandle): void {
-  const { card, body, meta, ic, step } = handle;
+function paintStepBody(handle: StepHandle): void {
+  handle.body.innerHTML = "";
+  handle.body.appendChild(stepBody(handle.step));
+  handle.bodyStale = false;
+}
+
+export function applyStepState(handle: StepHandle, paint: StepPaint = {}): void {
+  const { card, meta, ic, step } = handle;
   const status = step.status || "running";
   card.classList.toggle("running", status === "running");
   card.classList.toggle("err", status === "error");
   card.classList.toggle("warn", status === "warning");
   if (status === "running") {
     ic.innerHTML = icon("loader", 14, "spin");
-    meta.textContent = step.kind === "review" ? "Reviewing" : "";
+    meta.textContent = step.kind === "review" ? sendCopy("reviewing") : "";
   } else {
     ic.innerHTML = icon(
       status === "error" ? "x" : status === "warning" ? "alert-triangle" : stepIcon(step.kind),
@@ -643,8 +660,6 @@ export function applyStepState(handle: StepHandle): void {
       (step.summary != null ? String(step.summary) : "") ||
       (step.output && rec(step.output).error ? t("step.status.failed") : "");
   }
-  body.innerHTML = "";
-  body.appendChild(stepBody(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") {
     card.classList.add("open");
   }
@@ -655,9 +670,18 @@ export function applyStepState(handle: StepHandle): void {
     card.classList.toggle("review-issues", status === "done" && hasIssues);
     card.classList.toggle("open", !!hasIssues);
   }
+  // A reopened session's history and every live update used to build the
+  // full body -- code highlighting, output, search results -- for cards
+  // nobody had expanded.
+  if (!paint.lazyBody || card.classList.contains("open")) paintStepBody(handle);
+  else handle.bodyStale = true;
 }
 
-export function buildStepCard(step: Step): StepHandle {
+/**
+ * The window contract (`buildStepCard`, read by the browser gates) builds the
+ * body at once; the history and live paths below pass `lazyBody`.
+ */
+export function buildStepCard(step: Step, paint: StepPaint = {}): StepHandle {
   const card = el("div", "step step-" + (step.kind || "code"));
   const dlg = rec(rec(step.input).delegation);
   const hasDlg = step.input && rec(step.input).delegation && typeof rec(step.input).delegation === "object";
@@ -689,11 +713,16 @@ export function buildStepCard(step: Step): StepHandle {
   const body = el("div", "s-body");
   card.appendChild(h);
   card.appendChild(body);
-  h.onclick = () => card.classList.toggle("open");
   const handle: StepHandle = { card, body, meta, ic, step };
-  applyStepState(handle);
+  h.onclick = () => {
+    const open = card.classList.toggle("open");
+    if (open && handle.bodyStale) paintStepBody(handle);
+  };
+  applyStepState(handle, paint);
   return handle;
 }
+
+const LAZY_BODY: StepPaint = { lazyBody: true };
 
 function stepRegistry(): Record<string, StepHandle> {
   let els = stepEls.value as Record<string, StepHandle> | null;
@@ -711,20 +740,23 @@ export function addLiveStep(m: Record<string, unknown>): void {
     existing.step.title = (m.title as string) || existing.step.title;
     if (m.input != null) existing.step.input = rec(m.input);
     if (m.status) existing.step.status = String(m.status);
-    applyStepState(existing);
+    applyStepState(existing, LAZY_BODY);
     down();
     return;
   }
   const st = ensure() as (LiveStream & { toolCard?: HTMLElement & { _demoted?: boolean } }) | null;
   if (!st) return;
   sealText(st);
-  const handle = buildStepCard({
-    step_id: m.step_id != null ? String(m.step_id) : undefined,
-    kind: m.kind != null ? String(m.kind) : undefined,
-    title: m.title != null ? String(m.title) : undefined,
-    input: rec(m.input),
-    status: m.status != null ? String(m.status) : "running",
-  });
+  const handle = buildStepCard(
+    {
+      step_id: m.step_id != null ? String(m.step_id) : undefined,
+      kind: m.kind != null ? String(m.kind) : undefined,
+      title: m.title != null ? String(m.title) : undefined,
+      input: rec(m.input),
+      status: m.status != null ? String(m.status) : "running",
+    },
+    LAZY_BODY,
+  );
   if (m.step_id) stepRegistry()[String(m.step_id)] = handle;
   st.wrap.appendChild(handle.card);
   if (st.toolCard && !st.toolCard._demoted) {
@@ -737,7 +769,7 @@ export function addLiveStep(m: Record<string, unknown>): void {
   st.wrap.appendChild(st.md);
   st.text = "";
   liveStream.value = st;
-  if (m.kind === "review") hint("Reviewing", false, true);
+  if (m.kind === "review") hint(sendCopy("reviewing"), false, true);
   down();
 }
 
@@ -747,13 +779,13 @@ export function updateLiveStep(m: Record<string, unknown>): void {
   h.step.status = m.status != null ? String(m.status) : h.step.status;
   h.step.output = rec(m.output);
   if (m.summary != null) h.step.summary = String(m.summary);
-  applyStepState(h);
+  applyStepState(h, LAZY_BODY);
   if (h.step.kind === "review" && m.status !== "running") hint("");
   down();
 }
 
 export function renderStoredStep(s: Step, target?: ParentNode | null): HTMLElement {
-  const handle = buildStepCard(s);
+  const handle = buildStepCard(s, LAZY_BODY);
   if (s.step_id) stepRegistry()[String(s.step_id)] = handle;
   handle.card.dataset.ts = String(s.created_at || 0);
   (target || (typeof document !== "undefined" ? document.getElementById("messages") : null))?.appendChild(

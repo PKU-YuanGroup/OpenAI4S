@@ -8,13 +8,13 @@
  */
 
 import { t } from "../../i18n/runtime";
-import { skillsCatalog } from "../../stores/customize";
 import { artifacts } from "../../stores/artifacts";
 import { currentId, sessions } from "../../stores/session";
 import { effProject } from "../customize/host";
 import { api } from "../sessions/api";
 import { $, el, grow } from "../sessions/dom";
 import { renderComposerRefChips } from "../sessions/transcript";
+import { loadSkillsCatalog } from "./catalog";
 import { acDetectFrom, type ComposerDetect } from "./detect";
 import {
   artifactToAcItem,
@@ -54,33 +54,6 @@ export function acDetect(): ComposerDetect | null {
   const pos = c.selectionStart;
   const before = (c.value || "").slice(0, pos);
   return acDetectFrom(before, pos);
-}
-
-async function loadSkillsCatalog(): Promise<
-  Array<{ displayName?: string; name?: string; description?: string }>
-> {
-  if (skillsCatalog.value) {
-    return skillsCatalog.value as Array<{
-      displayName?: string;
-      name?: string;
-      description?: string;
-    }>;
-  }
-  try {
-    const d = (await api("/skills/catalog")) as {
-      skills?: Array<{ displayName?: string; name?: string; description?: string }>;
-    };
-    skillsCatalog.value = (d && d.skills) || [];
-  } catch {
-    skillsCatalog.value = [];
-  }
-  return (
-    (skillsCatalog.value as Array<{
-      displayName?: string;
-      name?: string;
-      description?: string;
-    }>) || []
-  );
 }
 
 export async function acProjectFiles(): Promise<ArtifactLike[]> {
@@ -159,7 +132,11 @@ export function acPick(i: number): void {
   c.focus();
 }
 
+/** Bumped by every `acUpdate`; an update whose load settles after a newer one started is dropped. */
+let acSeq = 0;
+
 export async function acUpdate(): Promise<void> {
+  const seq = ++acSeq;
   const d = acDetect();
   if (!d) {
     acClose();
@@ -178,10 +155,22 @@ export async function acUpdate(): Promise<void> {
     }>;
     items = rows.map(sessionToAcItem);
   } else if (d.trigger === "/") {
-    const sk = await loadSkillsCatalog();
+    // A failed read offers nothing this time; the next `/` asks again.
+    const sk = await loadSkillsCatalog().catch(() => []);
     items = sk.map(skillToAcItem);
   }
-  items = rankComposerItems(items, d.query);
+  // The file and skill lists load asynchronously. Keystrokes in the
+  // meantime started newer updates, and the caret may have moved without
+  // one: filter by, and anchor the replacement on, the token at the caret
+  // now. The one read before the await let Enter replace from a stale start
+  // and swallow what was typed after it.
+  if (seq !== acSeq) return;
+  const now = acDetect();
+  if (!now || now.trigger !== d.trigger) {
+    acClose();
+    return;
+  }
+  items = rankComposerItems(items, now.query);
   if (!items.length) {
     acClose();
     return;
@@ -189,8 +178,8 @@ export async function acUpdate(): Promise<void> {
   ac.open = true;
   ac.items = items;
   ac.idx = 0;
-  ac.trigger = d.trigger;
-  ac.start = d.start;
+  ac.trigger = now.trigger;
+  ac.start = now.start;
   acRender();
 }
 

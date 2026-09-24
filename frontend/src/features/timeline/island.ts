@@ -1,8 +1,9 @@
 /**
  * Imperative Action Timeline island.
- * Port of app.js:2920-5154: queue, workbench load, overview SVG, virtualized
+ * Port of app.js:2920-5154: workbench load, overview SVG, virtualized
  * ledger (46px / overscan / signature reuse / translateY), inspector, and the
- * branch / recovery / context / security / delegation / compute panels.
+ * branch / recovery / context / security / delegation / compute panels. The
+ * queue strip is in queue.ts.
  *
  * Components only supply #dock-timeline and a mount/unmount. This module owns
  * `_timelineView` identity and the window-exported function names.
@@ -10,7 +11,10 @@
 
 import { LANG, t, tOptional } from "../../i18n/runtime";
 import { publicText } from "../scrub/scrub";
-import { _kc, cells, liveCells, pendingReplIdentity } from "../../stores/notebook";
+import { pendingReplIdentity } from "../../stores/notebook";
+import { nbFindCell } from "../notebook/cells";
+import { invalidateKernelCache, runtimeSummary, shortRuntime } from "../notebook/kernel";
+import { nbRender } from "../notebook/scroll";
 import {
   ACTION_TIMELINE_OVERSCAN,
   ACTION_TIMELINE_OVERVIEW_WIDTH,
@@ -41,9 +45,12 @@ import {
   timelineOverviewXToTime,
   timelineTokenTotal,
 } from "./model";
+import { renderQueueStrip } from "./queue";
 import { S } from "./s";
 import {
   branchUndoFromProjection,
+  carryRevertPreview,
+  keepUnchanged,
   mergeActionTimelines,
   RECOVERY_ACTION_IDS,
   sanitizeActionTimeline,
@@ -63,38 +70,6 @@ import type { ActionTimeline, DelegationState, TimelineGroup } from "./types";
 
 type View = any;
 type Group = TimelineGroup & Record<string, any>;
-
-function invalidateKernelCache(): void {
-  const cache = _kc.value;
-  cache.id = null;
-  cache.st = null;
-  cache.stAt = 0;
-  cache.envs = null;
-  cache.cur = null;
-  cache.envAt = 0;
-}
-
-function nbCellKey(cell: any): string {
-  if (cell && (cell.producing_cell_id || cell.cell_id))
-    return String(cell.producing_cell_id || cell.cell_id);
-  return (
-    "legacy:" +
-    String((cell && cell.kernel_id) || "python") +
-    ":" +
-    String(cell && cell.cell_index != null ? cell.cell_index : "?")
-  );
-}
-
-function nbFindCell(producingCellId: unknown): any {
-  const key = String(producingCellId || "");
-  const live = (liveCells.value || []) as any[];
-  const stored = (cells.value || []) as any[];
-  return (
-    live.find((cell) => nbCellKey(cell) === key) ||
-    stored.find((cell) => nbCellKey(cell) === key) ||
-    null
-  );
-}
 
 export function timelineKind(group: any): string {
   const kind = String((group && group.kind) || "").toLowerCase();
@@ -127,96 +102,15 @@ function timelineKindIcon(kind: string): string {
   return "terminal";
 }
 
-export function shortRuntime(value: unknown): string {
-  const text = publicText(value, 96);
-  return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none");
-}
-
-function queueRowLabel(item: any): string {
-  const meta = item.metadata || {};
-  const bits: string[] = [];
-  if (meta.model_profile_id)
-    bits.push(
-      t(
-        "queue.underProfile",
-        meta.model_profile_id,
-        meta.model_profile_revision == null ? "?" : meta.model_profile_revision,
-      ),
-    );
-  if (item.branch_id) bits.push(t("queue.onBranch", item.branch_id));
-  bits.push(item.execution_id);
-  return bits.join(" · ");
-}
-
-export function renderQueueStrip(): void {
-  const box = $("#queue-strip");
-  if (!box) return;
-  const queue = ((S.executionQueue || {}).queue || []).filter(
-    (item: any) => (item.owner || {}).kind === "agent",
-  );
-  box.innerHTML = "";
-  box.classList.toggle("hidden", !queue.length);
-  if (!queue.length) return;
-  box.appendChild(el("div", "queue-head", t("queue.waiting", queue.length)));
-  queue.forEach((item: any) => {
-    const row = el("div", "queue-row");
-    row.appendChild(
-      el(
-        "span",
-        "queue-pos",
-        "#" + (item.queue_position == null ? "?" : item.queue_position),
-      ),
-    );
-    row.appendChild(
-      el("span", "queue-preview", item.metadata.preview || t("queue.noPreview")),
-    );
-    const meta = el("span", "queue-meta", queueRowLabel(item));
-    meta.title = queueRowLabel(item);
-    row.appendChild(meta);
-    const drop = el("button", "icon-ghost queue-cancel") as HTMLButtonElement;
-    drop.title = t("queue.cancelOne");
-    drop.appendChild(iconEl("x", 13) as Node);
-    drop.onclick = () => {
-      void cancelQueuedExecution(item);
-    };
-    row.appendChild(drop);
-    box.appendChild(row);
-  });
-}
-
-async function cancelQueuedExecution(item: any): Promise<void> {
-  const fid = S.currentId;
-  if (!fid || !item || !item.execution_id || !(item.owner || {}).id) return;
-  try {
-    const r = (await api(`/frames/${fid}/cancel`, {
-      method: "POST",
-      body: JSON.stringify({
-        execution_id: item.execution_id,
-        owner: { kind: item.owner.kind, id: item.owner.id },
-        reason: "queued follow-up dropped by user",
-      }),
-    })) as { ok?: boolean; reason?: string };
-    if (!r || r.ok !== true) {
-      hint(t("queue.cancelFailed", (r && r.reason) || ""), true);
-      return;
-    }
-    const bubble = [...document.querySelectorAll(".msg.user")].find(
-      (n) => (n as HTMLElement).dataset.executionId === item.execution_id,
-    );
-    if (bubble) bubble.classList.add("cancelled");
-    hint(t("queue.cancelled"));
-  } catch (e) {
-    hint(t("queue.cancelFailed", apiErrorText(e)), true);
-  }
-}
-
 export function rememberExecutionQueue(payload: unknown): any {
-  S.executionQueue = sanitizeExecutionQueue(payload);
+  S.executionQueue = keepUnchanged(S.executionQueue, sanitizeExecutionQueue(payload));
   const ticket = S.executionQueue.owner;
-  S.executionIdentity =
+  S.executionIdentity = keepUnchanged(
+    S.executionIdentity,
     ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id
       ? { execution_id: ticket.execution_id, owner: { kind: ticket.owner.kind, id: ticket.owner.id } }
-      : null;
+      : null,
+  );
   renderQueueStrip();
   return S.executionQueue;
 }
@@ -260,20 +154,11 @@ export function rememberExecutionState(event: any): void {
       }
       laneCall("loadArtifacts", frameId);
       scheduleWorkbenchRefresh();
-      if (S.dock.open && S.activeTab === "notebook") laneCall("scheduleNotebookRender");
+      // No window name: `scheduleNotebookRender` was never assigned, so the
+      // Notebook kept its busy REPL row until something else repainted it.
+      nbRender();
     }
   }
-}
-
-export function identityForOwner(queue: any, ownerKind: string | null | undefined): any {
-  const safe = queue || sanitizeExecutionQueue({}),
-    candidates = [safe.owner].concat(safe.queue || []).filter(Boolean);
-  const ticket = ownerKind
-    ? candidates.find((item: any) => item.owner && item.owner.kind === ownerKind)
-    : safe.owner;
-  return ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id
-    ? { execution_id: ticket.execution_id, owner: ticket.owner }
-    : null;
 }
 
 export function mergeDelegationChildEvent(m: any): void {
@@ -293,25 +178,27 @@ export function mergeDelegationChildEvent(m: any): void {
           stats: { total: 0, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 },
           children: [],
         };
+  // A new state object (and children array): writing back the mutated one
+  // would not notify anything subscribed to delegationState.
   const at = state.children.findIndex((item) => item.child_id === clean.child_id);
-  if (at >= 0)
-    state.children[at] = Object.assign({}, state.children[at], clean);
-  else state.children.push(clean);
+  const children =
+    at >= 0
+      ? state.children.map((item, index) => (index === at ? Object.assign({}, item, clean) : item))
+      : state.children.concat(clean);
   const stats: DelegationState["stats"] = {
-    total: state.children.length,
+    total: children.length,
     pending: 0,
     running: 0,
     done: 0,
     failed: 0,
     stopped: 0,
   };
-  state.children.forEach((item) => {
+  children.forEach((item) => {
     const key = String(item.status || "");
     const bag = stats as Record<string, number>;
     if (Object.prototype.hasOwnProperty.call(bag, key)) bag[key] = (bag[key] || 0) + 1;
   });
-  state.stats = stats;
-  S.delegationState = state;
+  S.delegationState = { ...state, children, stats };
 }
 
 export function actionTimelineBranchScope(
@@ -411,59 +298,148 @@ export async function loadEarlierActionTimeline(): Promise<void> {
   }
 }
 
-export async function loadWorkbenchState(id: string | null, force = false): Promise<void> {
+/** The workbench projections, each read from its own endpoint. */
+export const WORKBENCH_PARTS = [
+  "timeline",
+  "execution",
+  "branches",
+  "context",
+  "security",
+  "delegations",
+  "recovery",
+  "recoveryActions",
+  "computeTasks",
+] as const;
+export type WorkbenchPart = (typeof WORKBENCH_PARTS)[number];
+
+let workbenchLoadsInFlight = 0;
+
+export async function loadWorkbenchState(
+  id: string | null,
+  force = false,
+  parts: readonly WorkbenchPart[] = WORKBENCH_PARTS,
+): Promise<void> {
   if (!id || id !== S.currentId) return;
-  if (!force && S._workbenchLoading === id) return;
+  const wanted = new Set(parts);
+  // Only a read of everything is "the" workbench load that the loading flag,
+  // the empty-state text and non-forced callers wait on.
+  const full = WORKBENCH_PARTS.every((part) => wanted.has(part));
+  if (!force && full && S._workbenchLoading === id) return;
   const request = (S._workbenchReq = (S._workbenchReq || 0) + 1);
-  S._workbenchLoading = id;
-  const base = `/frames/${id}`;
-  const [
-    timeline,
-    execution,
-    branches,
-    context,
-    security,
-    delegation,
-    recovery,
-    recoveryActions,
-    computeTasks,
-  ] = await Promise.all([
-    optionalApi([base + `/action-timeline?limit=${ACTION_TIMELINE_PAGE_SIZE}`]),
-    optionalApi([base + "/execution-queue", base + "/execution"]),
-    optionalApi([base + "/branches"]),
-    optionalApi([base + "/context"]),
-    optionalApi([base + "/security"]),
-    optionalApi([base + "/delegations"]),
-    optionalApi([base + "/recovery"]),
-    optionalApi([base + "/recovery/actions"]),
-    optionalApi([base + "/compute/tasks"]),
-  ]);
-  if (request !== S._workbenchReq || id !== S.currentId) return;
-  S._workbenchLoading = null;
-  if (timeline)
-    S.actionTimeline = mergeActionTimelines(
-      S.actionTimeline,
-      sanitizeActionTimeline(timeline),
-      "latest",
-    );
-  if (execution) rememberExecutionQueue(execution);
-  if (branches) {
-    S.branchState = sanitizeBranches(branches);
-    S.branchUndo = branchUndoFromProjection(S.branchState);
+  if (full) S._workbenchLoading = id;
+  workbenchLoadsInFlight += 1;
+  try {
+    const base = `/frames/${id}`;
+    const read = (part: WorkbenchPart, paths: string[]) =>
+      wanted.has(part) ? optionalApi(paths) : Promise.resolve(null);
+    const [
+      timeline,
+      execution,
+      branches,
+      context,
+      security,
+      delegation,
+      recovery,
+      recoveryActions,
+      computeTasks,
+    ] = await Promise.all([
+      read("timeline", [base + `/action-timeline?limit=${ACTION_TIMELINE_PAGE_SIZE}`]),
+      read("execution", [base + "/execution-queue", base + "/execution"]),
+      read("branches", [base + "/branches"]),
+      read("context", [base + "/context"]),
+      read("security", [base + "/security"]),
+      read("delegations", [base + "/delegations"]),
+      read("recovery", [base + "/recovery"]),
+      read("recoveryActions", [base + "/recovery/actions"]),
+      read("computeTasks", [base + "/compute/tasks"]),
+    ]);
+    if (request !== S._workbenchReq || id !== S.currentId) return;
+    if (full) S._workbenchLoading = null;
+    if (timeline)
+      S.actionTimeline = mergeActionTimelines(
+        S.actionTimeline,
+        sanitizeActionTimeline(timeline),
+        "latest",
+      );
+    if (execution) rememberExecutionQueue(execution);
+    // What did not change keeps its object, so nothing keyed on it is rebuilt.
+    if (branches) {
+      S.branchState = keepUnchanged(
+        S.branchState,
+        carryRevertPreview(S.branchState, sanitizeBranches(branches)),
+      );
+      S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
+    }
+    if (context) S.contextState = keepUnchanged(S.contextState, sanitizeContext(context));
+    if (security) S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(security));
+    if (delegation)
+      S.delegationState = keepUnchanged(S.delegationState, sanitizeDelegations(delegation));
+    if (recovery) S.recoveryState = keepUnchanged(S.recoveryState, sanitizeRecovery(recovery));
+    if (recoveryActions)
+      S.recoveryActions = keepUnchanged(
+        S.recoveryActions,
+        sanitizeRecoveryActions(recoveryActions),
+      );
+    if (computeTasks)
+      S.computeTasks = keepUnchanged(S.computeTasks, sanitizeComputeTasks(computeTasks));
+    if (S.activeTab === "timeline") scheduleActionTimelineRender();
+    if (S.activeTab === "notebook") laneCall("renderNotebook");
+  } finally {
+    workbenchLoadsInFlight -= 1;
+    if (!workbenchLoadsInFlight) refreshAfterWorkbenchLoad();
   }
-  if (context) S.contextState = sanitizeContext(context);
-  if (security) S.securityState = sanitizeSecurity(security);
-  if (delegation) S.delegationState = sanitizeDelegations(delegation);
-  if (recovery) S.recoveryState = sanitizeRecovery(recovery);
-  if (recoveryActions) S.recoveryActions = sanitizeRecoveryActions(recoveryActions);
-  if (computeTasks) S.computeTasks = sanitizeComputeTasks(computeTasks);
-  if (S.activeTab === "timeline") renderActionTimeline();
-  if (S.activeTab === "notebook") laneCall("renderNotebook");
 }
 
-export function scheduleWorkbenchRefresh(delay = 180): void {
+/**
+ * Scheduled refreshes. Every relevant socket event (and every finished cell)
+ * asks for one; they used to re-read all nine endpoints each time, on top of
+ * any read still in flight. Requests now accumulate the parts they need until
+ * the timer fires, and a refresh due while a read is in flight waits for it.
+ * The timer stays in S._workbenchTimer, so clearing it (a session reset)
+ * still cancels the refresh.
+ */
+let pendingWorkbenchParts: Set<WorkbenchPart> | null = null;
+let pendingWorkbenchScope = "";
+let workbenchRefreshAfterLoad: { parts: Set<WorkbenchPart>; generation: number } | null = null;
+
+export function scheduleWorkbenchRefresh(
+  delay = 180,
+  parts: readonly WorkbenchPart[] = WORKBENCH_PARTS,
+): void {
+  // Parts asked for before a full read (which served them) or a session
+  // reset (which cleared their timer and voided them) are not carried over.
+  const scope = String(S.currentId) + "#" + String(S._workbenchReq || 0);
+  const pending =
+    pendingWorkbenchParts && pendingWorkbenchScope === scope
+      ? pendingWorkbenchParts
+      : new Set<WorkbenchPart>();
+  parts.forEach((part) => pending.add(part));
+  pendingWorkbenchParts = pending;
+  pendingWorkbenchScope = scope;
   clearTimeout(S._workbenchTimer);
-  S._workbenchTimer = setTimeout(() => loadWorkbenchState(S.currentId, true), delay);
+  S._workbenchTimer = setTimeout(runScheduledWorkbenchRefresh, delay);
+}
+
+function runScheduledWorkbenchRefresh(): void {
+  const parts = pendingWorkbenchParts || new Set<WorkbenchPart>(WORKBENCH_PARTS);
+  pendingWorkbenchParts = null;
+  if (workbenchLoadsInFlight) {
+    const follow = workbenchRefreshAfterLoad
+      ? workbenchRefreshAfterLoad.parts
+      : new Set<WorkbenchPart>();
+    parts.forEach((part) => follow.add(part));
+    workbenchRefreshAfterLoad = { parts: follow, generation: S._workbenchReq };
+    return;
+  }
+  void loadWorkbenchState(S.currentId, true, [...parts]);
+}
+
+function refreshAfterWorkbenchLoad(): void {
+  const follow = workbenchRefreshAfterLoad;
+  workbenchRefreshAfterLoad = null;
+  // A newer full read, or a session reset, since it was asked for covers it.
+  if (follow && follow.generation === S._workbenchReq)
+    scheduleWorkbenchRefresh(0, [...follow.parts]);
 }
 
 export function scheduleConversationResync(fid: string, delay = 120, resetHistory = false): void {
@@ -479,85 +455,7 @@ export function scheduleBranchConversationResync(fid: string, delay = 120): void
   scheduleConversationResync(fid, delay, true);
 }
 
-function latestCellForLanguage(language: string): any {
-  return (
-    (S.cells || [])
-      .concat(S.liveCells || [])
-      .filter((cell: any) =>
-        String(cell.language || cell.kernel_id || "python")
-          .toLowerCase()
-          .startsWith(language),
-      )
-      .slice(-1)[0] || null
-  );
-}
-
-function runtimeSummary(): any {
-  const queue = S.executionQueue || {};
-  const ownerTicket = queue.owner || null;
-  const owner = (ownerTicket && ownerTicket.owner) || {};
-  const recovery = S.recoveryState || {};
-  const recoveryStatus = String(recovery.status || "").toLowerCase();
-  const trustState = publicText(
-    recovery.trust_state ||
-      (S.recoveryActions || {}).trust_state ||
-      (_kc.value.st || ({} as any)).trust_state,
-    32,
-  );
-  const explicitRecoveryRequired =
-    recovery.explicit_recovery_required === true ||
-    (S.recoveryActions || {}).explicit_recovery_required === true ||
-    (_kc.value.st || ({} as any)).explicit_recovery_required === true;
-  const viewOnly =
-    explicitRecoveryRequired ||
-    recovery.view_only === true ||
-    (S.recoveryActions || {}).view_only === true ||
-    (_kc.value.st || ({} as any)).view_only === true;
-  let status = "ended";
-  if (/fail|error/.test(recoveryStatus)) status = "failed";
-  else if (/partial/.test(recoveryStatus)) status = "partial";
-  else if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) status = "restoring";
-  else if (ownerTicket || S.running || (_kc.value.st && (_kc.value.st as any).turn_running))
-    status = "busy";
-  else if (_kc.value.st && (_kc.value.st as any).alive) status = "live";
-  const pythonCell = latestCellForLanguage("python"),
-    rCell = latestCellForLanguage("r");
-  const branch =
-    (S.branchState && S.branchState.branch_id) ||
-    (S.actionTimeline && S.actionTimeline.branch_id) ||
-    (recovery && recovery.branch_id) ||
-    S.currentId;
-  const stateRevision =
-    recovery.state_revision != null
-      ? recovery.state_revision
-      : Math.max(
-          0,
-          ...((S.cells || []) as any[])
-            .concat(S.liveCells || [])
-            .map((cell: any) => Number(cell.state_revision) || 0),
-        );
-  const pyGeneration =
-    recovery.python_generation_id ||
-    (_kc.value.st &&
-      ((_kc.value.st as any).python_generation_id || (_kc.value.st as any).generation_id)) ||
-    (pythonCell && pythonCell.generation_id);
-  const rGeneration = recovery.r_generation_id || (rCell && rCell.generation_id);
-  return {
-    status,
-    branch: publicText(branch, 96),
-    python: publicText(pyGeneration, 96),
-    r: publicText(rGeneration, 96),
-    viewOnly,
-    trustState,
-    revision: stateRevision || null,
-    owner: publicText(owner.kind || (ownerTicket && ownerTicket.owner_kind), 48),
-    ownerId: publicText(owner.id || (ownerTicket && ownerTicket.owner_id), 96),
-    queue: Number(queue.queued_count || (queue.queue || []).length || 0),
-  };
-}
-
-function runtimeSummaryNode(compact = false): HTMLElement {
-  const runtime = runtimeSummary();
+function runtimeSummaryNode(compact = false, runtime = runtimeSummary()): HTMLElement {
   const root = el("div", "runtime-summary" + (compact ? " compact" : ""));
   const state = el("span", "runtime-state " + runtime.status, t("runtime.status." + runtime.status));
   root.appendChild(state);
@@ -651,6 +549,24 @@ function appendActionTimelineDetails(container: HTMLElement, group: Group): any 
   if (details.latest && details.latest.error)
     container.appendChild(el("div", "timeline-error", details.latest.error));
   return details;
+}
+
+/** app.js:3542. One action group as a card: the project research Timeline's rows. */
+export function actionTimelineCard(group: Group): HTMLElement {
+  const kind = timelineKind(group),
+    status = String(group.status || "completed").toLowerCase();
+  const card = el("article", "timeline-card kind-" + kind + " status-" + status);
+  card.setAttribute("data-action-kind", kind);
+  const head = el("div", "timeline-card-head");
+  const kindLabel = el("span", "timeline-kind");
+  kindLabel.appendChild(iconEl(timelineKindIcon(kind), 14));
+  kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
+  head.appendChild(kindLabel);
+  head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32)));
+  card.appendChild(head);
+  card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  appendActionTimelineDetails(card, group);
+  return card;
 }
 
 function actionTimelineInspector(group: Group): HTMLElement {
@@ -1997,7 +1913,16 @@ export function sortedActionTimelineGroups(timeline: ActionTimeline | null = S.a
     }) as Group[];
 }
 
-export function destroyActionTimelineView(view: View = S._timelineView): void {
+/**
+ * The view this module created and has not destroyed yet. `S._timelineView`
+ * is also cleared from outside -- messages/open.ts resets session state
+ * before it asks for destroyActionTimelineView -- and a view nobody destroys
+ * keeps its document keydown listener and ResizeObserver (and so its whole
+ * DOM) alive for the page's lifetime.
+ */
+let liveTimelineView: View | null = null;
+
+export function destroyActionTimelineView(view: View = S._timelineView || liveTimelineView): void {
   if (!view) return;
   if (view.raf) cancelAnimationFrame(view.raf);
   if (view.overview && view.overview.raf) cancelAnimationFrame(view.overview.raf);
@@ -2006,6 +1931,7 @@ export function destroyActionTimelineView(view: View = S._timelineView): void {
   clearActionTimelineOverviewHover(view);
   if (view.resizeObserver) view.resizeObserver.disconnect();
   if (S._timelineView === view) S._timelineView = null;
+  if (liveTimelineView === view) liveTimelineView = null;
 }
 
 function actionTimelineViewMatches(view: View, rootFrameId: string, branchId: string): boolean {
@@ -2167,6 +2093,7 @@ export function toggleActionTimelineTurn(view: View, turnId: string): void {
 }
 
 function createActionTimelineView(rootFrameId: string, branchId: string): View {
+  if (liveTimelineView) destroyActionTimelineView(liveTimelineView);
   const region = el("div", "timeline-ledger-region");
   region.dataset.rootFrameId = rootFrameId;
   region.dataset.branchId = branchId;
@@ -2390,6 +2317,7 @@ function createActionTimelineView(rootFrameId: string, branchId: string): View {
     view.resizeObserver.observe(scroll);
   }
   S._timelineView = view;
+  liveTimelineView = view;
   return view;
 }
 
@@ -2797,6 +2725,7 @@ function recoveryTimelineCard(state: any, actionsState: any): HTMLElement {
         !!(currentBranch && action.enabled && !S._recoveryActionLoading),
         () => executeRecoveryAction(action.id),
         reason,
+        "recovery:" + action.id,
       ),
     );
     row.appendChild(el("span", "recovery-action-reason", reason));
@@ -2833,13 +2762,28 @@ function branchCapabilityReason(name: string): string {
   );
 }
 
+/** Names a control so focus can follow it into a rebuilt panel. */
+function focusKey<T extends HTMLElement>(node: T, key: string): T {
+  node.dataset.focusKey = key;
+  return node;
+}
+
+/** Names a <details> (and its summary) so a rebuilt panel can reopen it. */
+function detailsKey(details: HTMLElement, key: string): void {
+  details.dataset.detailsKey = key;
+  const summary = details.querySelector("summary");
+  if (summary) focusKey(summary as HTMLElement, "summary:" + key);
+}
+
 function disabledWorkbenchButton(
   label: string,
   enabled: boolean,
   action: () => void,
   disabledReason?: string,
+  key?: string,
 ): HTMLButtonElement {
   const button = el("button", "outline-btn small", label) as HTMLButtonElement;
+  if (key) focusKey(button, key);
   button.disabled = !enabled;
   button.title = enabled ? label : disabledReason || t("nb.action.unavailable");
   if (enabled) button.onclick = action;
@@ -2949,7 +2893,10 @@ async function previewSessionRevert(checkpointId: string): Promise<void> {
       }),
     })) as { preview?: unknown };
     if (S.currentId === frameId && S.branchState)
-      S.branchState.revert_preview = sanitizeRevertPreview(preview.preview || preview);
+      S.branchState = {
+        ...S.branchState,
+        revert_preview: sanitizeRevertPreview(preview.preview || preview),
+      };
   } catch (error) {
     if (S.currentId === frameId)
       S.workbenchErrors.branchAction = publicText((error as Error).message, 240);
@@ -3056,6 +3003,7 @@ export function renderBranchPanel(): HTMLElement {
         void createSessionCheckpoint();
       },
       branchCapabilityReason("checkpoint"),
+      "branch-checkpoint",
     ),
   );
   if (S.branchUndo && S.branchUndo.branch_id === (state || {}).branch_id)
@@ -3066,6 +3014,8 @@ export function renderBranchPanel(): HTMLElement {
         () => {
           void undoSessionRevert();
         },
+        undefined,
+        "branch-undo",
       ),
     );
   panel.appendChild(controls);
@@ -3097,6 +3047,7 @@ export function renderBranchPanel(): HTMLElement {
           !!(branch.activatable && branchCapability("activate") && !busy),
           () => activateSessionBranch(branch.branch_id),
           branchCapabilityReason("activate"),
+          "branch-activate:" + branch.branch_id,
         ),
       );
     }
@@ -3120,6 +3071,7 @@ export function renderBranchPanel(): HTMLElement {
           !!(branchCapability("fork") && !busy),
           () => forkSessionCheckpoint(cp.checkpoint_id),
           branchCapabilityReason("fork"),
+          "branch-fork:" + cp.checkpoint_id,
         ),
       );
       actions.appendChild(
@@ -3130,6 +3082,7 @@ export function renderBranchPanel(): HTMLElement {
           !!(branchCapability("revert_preview") && !busy),
           () => previewSessionRevert(cp.checkpoint_id),
           branchCapabilityReason("revert_preview"),
+          "branch-preview:" + cp.checkpoint_id,
         ),
       );
       cpRow.appendChild(actions);
@@ -3150,6 +3103,7 @@ export function renderBranchPanel(): HTMLElement {
         .slice(0, 20)
         .forEach((cp: any) => internalList.appendChild(checkpointRow(cp)));
       collapsed.appendChild(internalList);
+      detailsKey(collapsed, "branch-internal:" + branch.branch_id);
       cps.appendChild(collapsed);
     }
     row.appendChild(cps);
@@ -3191,6 +3145,7 @@ export function renderBranchPanel(): HTMLElement {
           void applySessionRevert();
         },
         branchCapabilityReason("revert"),
+        "branch-revert",
       ),
     );
     panel.appendChild(box);
@@ -3276,6 +3231,7 @@ export function renderContextPanel(): HTMLElement {
         row.appendChild(el("span", "timeline-pill", t("context.artifacts", item.artifact_count)));
       history.appendChild(row);
     });
+    detailsKey(history, "context-history");
     panel.appendChild(history);
   }
   return panel;
@@ -3433,10 +3389,16 @@ export function renderComputeTasksPanel(): HTMLElement {
       );
     if (task.reason) row.appendChild(el("div", "compute-task-message", task.reason));
     if (task.live) {
-      const refresh = ghostIconBtn("refresh", t("compute.refresh"));
+      const refresh = focusKey(
+        ghostIconBtn("refresh", t("compute.refresh")),
+        "compute-refresh:" + task.job_id,
+      );
       refresh.onclick = () => refreshComputeTask(task.job_id, refresh);
       row.appendChild(refresh);
-      const cancel = ghostIconBtn("stop", tOptional("compute.cancel") || "Cancel remote job");
+      const cancel = focusKey(
+        ghostIconBtn("stop", tOptional("compute.cancel") || "Cancel remote job"),
+        "compute-cancel:" + task.job_id,
+      );
       cancel.className += " compute-task-cancel";
       cancel.onclick = () => cancelComputeTask(task.job_id, cancel);
       row.appendChild(cancel);
@@ -3589,10 +3551,16 @@ export function renderDelegationPanel(): HTMLElement {
       row.appendChild(el("div", "delegation-child-message", child.error || child.stop_reason));
     if (["running", "pending"].includes(String(child.status || "").toLowerCase())) {
       const controls = el("div", "delegation-child-controls");
-      const stop = ghostIconBtn("stop", t("delegation.stop"));
+      const stop = focusKey(
+        ghostIconBtn("stop", t("delegation.stop")),
+        "delegation-stop:" + child.child_id,
+      );
       stop.onclick = () => stopDelegationChild(child.child_id, stop);
       controls.appendChild(stop);
-      const steer = ghostIconBtn("message-square", t("delegation.steer"));
+      const steer = focusKey(
+        ghostIconBtn("message-square", t("delegation.steer")),
+        "delegation-steer:" + child.child_id,
+      );
       steer.onclick = () => steerDelegationChild(child.child_id, steer);
       controls.appendChild(steer);
       row.appendChild(controls);
@@ -3602,13 +3570,254 @@ export function renderDelegationPanel(): HTMLElement {
   return panel;
 }
 
+/**
+ * Language hook epoch: the dictionaries landing after first paint, or a
+ * language switch. Section keys carry it, so cached panels repaint in the
+ * new words; the ledger re-translates on its own language check.
+ */
+let timelineI18nEpoch = 0;
+
+export function relabelActionTimeline(): void {
+  timelineI18nEpoch += 1;
+  const view = S._timelineView;
+  if (view) view.language = "";
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
+}
+
+/** A stable per-object id, so a section key can say "the same state object". */
+const timelineObjectIds = new WeakMap<object, number>();
+let nextTimelineObjectId = 1;
+function identityKey(value: unknown): string {
+  if (!value || typeof value !== "object") return String(value);
+  let id = timelineObjectIds.get(value as object);
+  if (!id) {
+    id = nextTimelineObjectId++;
+    timelineObjectIds.set(value as object, id);
+  }
+  return "#" + id;
+}
+
+type TimelineSection = { key: string; node: HTMLElement };
+
+/**
+ * The Timeline's persistent frame inside #dock-timeline. A repaint used to
+ * replaceChildren() the whole root on every relevant socket event, so a click
+ * landed on a button that had just been detached, open <details> collapsed,
+ * the search box lost focus (and any IME composition) and the dock scrolled
+ * back up. Now a section is rebuilt only when what it shows changed, the
+ * ledger region stays attached while its view lives, and a rebuilt section
+ * inherits the open <details> and focused control of the one it replaces.
+ */
+type TimelineShell = {
+  root: HTMLElement;
+  layout: HTMLElement;
+  side: HTMLElement;
+  actions: HTMLElement;
+  historyState: HTMLElement;
+  sections: Map<string, TimelineSection>;
+};
+
+let timelineShell: TimelineShell | null = null;
+
+function ensureTimelineShell(root: HTMLElement): TimelineShell {
+  const current = timelineShell;
+  if (current && current.root === root && current.layout.parentNode === root) return current;
+  const layout = el("div", "workbench-layout"),
+    side = el("div", "workbench-side"),
+    actions = el("section", "timeline-actions"),
+    historyState = el("div", "timeline-history-state hidden");
+  actions.appendChild(historyState);
+  layout.appendChild(side);
+  layout.appendChild(actions);
+  root.replaceChildren();
+  timelineShell = { root, layout, side, actions, historyState, sections: new Map() };
+  return timelineShell;
+}
+
+function carryOpenDetails(from: HTMLElement, to: HTMLElement): void {
+  const open = new Set<string>();
+  from.querySelectorAll("details[data-details-key]").forEach((node) => {
+    const details = node as HTMLDetailsElement;
+    if (details.open) open.add(details.dataset.detailsKey || "");
+  });
+  if (!open.size) return;
+  to.querySelectorAll("details[data-details-key]").forEach((node) => {
+    const details = node as HTMLDetailsElement;
+    if (open.has(details.dataset.detailsKey || "")) details.open = true;
+  });
+}
+
+function timelineSection(
+  shell: TimelineShell,
+  name: string,
+  key: string,
+  build: () => HTMLElement,
+): HTMLElement {
+  const current = shell.sections.get(name);
+  if (current && current.key === key) return current.node;
+  const node = build();
+  if (current) carryOpenDetails(current.node, node);
+  shell.sections.set(name, { key, node });
+  return node;
+}
+
+/** Make `parent`'s children exactly `desired`, moving nothing that is already in place. */
+function syncTimelineChildren(parent: HTMLElement, desired: HTMLElement[]): void {
+  Array.from(parent.children).forEach((child) => {
+    if (!desired.includes(child as HTMLElement)) child.remove();
+  });
+  desired.forEach((node, index) => {
+    const at = parent.children[index] || null;
+    if (at !== node) parent.insertBefore(node, at);
+  });
+}
+
+function timelineFocusKey(root: HTMLElement): string | null {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || !root.contains(active) || !active.closest) return null;
+  const keyed = active.closest("[data-focus-key]") as HTMLElement | null;
+  return keyed && root.contains(keyed) ? keyed.dataset.focusKey || null : null;
+}
+
+function restoreTimelineFocus(root: HTMLElement, key: string | null): void {
+  if (!key || root.contains(document.activeElement)) return;
+  const target = (Array.from(root.querySelectorAll("[data-focus-key]")) as HTMLElement[]).find(
+    (node) => node.dataset.focusKey === key,
+  );
+  if (!target) return;
+  try {
+    target.focus({ preventScroll: true });
+  } catch {
+    target.focus();
+  }
+}
+
+function timelineTop(): HTMLElement {
+  const top = el("div", "timeline-top");
+  const heading = el("div");
+  heading.appendChild(el("div", "timeline-title", t("timeline.title")));
+  heading.appendChild(el("div", "timeline-subtitle", t("timeline.subtitle")));
+  top.appendChild(heading);
+  const refresh = focusKey(ghostIconBtn("refresh", t("timeline.refresh")), "timeline-refresh");
+  refresh.onclick = () => {
+    void loadWorkbenchState(S.currentId, true);
+  };
+  top.appendChild(refresh);
+  return top;
+}
+
+/**
+ * Socket-driven repaints wait for the pointer and for IME composition: a
+ * press is a mousedown/mouseup pair that must land on the same button, and a
+ * composition is interrupted by any change to the field. A hold that never
+ * ends (a lost pointerup) stops counting after this long.
+ */
+const TIMELINE_INTERACTION_HOLD_MS = 4000;
+let timelinePressAt = 0;
+let timelineComposeAt = 0;
+let timelineRenderQueued = false;
+let timelineRenderDeferred = false;
+let timelineInteractionDoc: Document | null = null;
+
+function timelineInteracting(): boolean {
+  const now = Date.now();
+  return (
+    (!!timelinePressAt && now - timelinePressAt < TIMELINE_INTERACTION_HOLD_MS) ||
+    (!!timelineComposeAt && now - timelineComposeAt < TIMELINE_INTERACTION_HOLD_MS)
+  );
+}
+
+function nextTimelineFrame(callback: () => void): void {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
+  else setTimeout(callback, 16);
+}
+
+function resumeDeferredTimelineRender(): void {
+  if (!timelineRenderDeferred || timelineInteracting()) return;
+  timelineRenderDeferred = false;
+  // Next frame, not now: the click that ends this press is dispatched first.
+  scheduleActionTimelineRender();
+}
+
+function bindTimelineInteraction(): void {
+  if (typeof document === "undefined" || typeof document.addEventListener !== "function") return;
+  if (timelineInteractionDoc === document) return;
+  timelineInteractionDoc = document;
+  const inTimeline = (event: Event) => {
+    const root = $("#dock-timeline");
+    return !!root && root.contains(event.target as Node);
+  };
+  const released = () => {
+    if (!timelinePressAt) return;
+    timelinePressAt = 0;
+    resumeDeferredTimelineRender();
+  };
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (inTimeline(event)) timelinePressAt = Date.now();
+    },
+    true,
+  );
+  document.addEventListener("pointerup", released, true);
+  document.addEventListener("pointercancel", released, true);
+  document.addEventListener(
+    "compositionstart",
+    (event) => {
+      if (inTimeline(event)) timelineComposeAt = Date.now();
+    },
+    true,
+  );
+  document.addEventListener(
+    "compositionend",
+    () => {
+      if (!timelineComposeAt) return;
+      timelineComposeAt = 0;
+      resumeDeferredTimelineRender();
+    },
+    true,
+  );
+}
+
+/**
+ * Coalesce socket-driven repaints into one per frame, held while the user is
+ * pressing or composing inside the Timeline. Direct calls to
+ * renderActionTimeline() (a user's own action) still paint at once.
+ */
+export function scheduleActionTimelineRender(): void {
+  bindTimelineInteraction();
+  if (timelineRenderQueued) return;
+  timelineRenderQueued = true;
+  nextTimelineFrame(() => {
+    timelineRenderQueued = false;
+    if (S.activeTab !== "timeline") return;
+    if (timelineInteracting()) {
+      timelineRenderDeferred = true;
+      setTimeout(resumeDeferredTimelineRender, TIMELINE_INTERACTION_HOLD_MS);
+      return;
+    }
+    renderActionTimeline();
+  });
+}
+
 export function syncActionTimelineHistoryState(host: HTMLElement | null = null): void {
   if (S._timelineView) syncActionTimelineOverviewControls(S._timelineView);
   const root = $("#dock-timeline");
   const target = host || (root && root.querySelector(".timeline-history-state"));
   if (!target) return;
-  const previousHeight = (target as HTMLElement).getBoundingClientRect().height;
   const timeline = S.actionTimeline || {};
+  // Rebuild only when what it says changed: its button is pressed while the
+  // ledger keeps updating, and a replaced button swallows that click.
+  const key = [
+    timeline.has_more_before ? 1 : 0,
+    actionTimelineHistoryIsLoading(timeline) ? 1 : 0,
+    S.workbenchErrors.timelineHistory || "",
+    S._timelineView ? 1 : 0,
+    LANG + ":" + timelineI18nEpoch,
+  ].join("|");
+  if ((target as any)._timelineHistoryKey === key) return;
+  (target as any)._timelineHistoryKey = key;
+  const previousHeight = (target as HTMLElement).getBoundingClientRect().height;
   (target as HTMLElement).replaceChildren();
   (target as HTMLElement).style.minHeight = "";
   if (timeline.has_more_before) {
@@ -3644,6 +3853,7 @@ export function syncActionTimelineHistoryState(host: HTMLElement | null = null):
 export function renderActionTimeline(): void {
   const root = $("#dock-timeline");
   if (!root) return;
+  bindTimelineInteraction();
   const timeline = S.actionTimeline || {};
   const groups = sortedActionTimelineGroups(timeline);
   const rootFrameScope = actionTimelineRootScope(timeline),
@@ -3663,6 +3873,7 @@ export function renderActionTimeline(): void {
   const searchSelection = restoreSearchFocus
     ? [previousView.search.input.selectionStart, previousView.search.input.selectionEnd]
     : null;
+  const focusedControl = timelineFocusKey(root);
   if (activeRow && actionTimelineViewMatches(previousView, rootFrameScope, branchScope)) {
     if ((activeRow as HTMLElement).dataset.groupId)
       S._timelineRestoreFocusGroupId = (activeRow as HTMLElement).dataset.groupId;
@@ -3684,57 +3895,98 @@ export function renderActionTimeline(): void {
     S.actionTimelineSelectedGroupId = null;
     S.actionTimelineSelectedBranchId = null;
   }
-  root.replaceChildren();
+  const shell = ensureTimelineShell(root);
   root.dataset.timelineBranch = branchScope;
-  const top = el("div", "timeline-top");
-  const heading = el("div");
-  heading.appendChild(el("div", "timeline-title", t("timeline.title")));
-  heading.appendChild(el("div", "timeline-subtitle", t("timeline.subtitle")));
-  top.appendChild(heading);
-  const refresh = ghostIconBtn("refresh", t("timeline.refresh"));
-  refresh.onclick = () => {
-    void loadWorkbenchState(S.currentId, true);
-  };
-  top.appendChild(refresh);
-  root.appendChild(top);
-  root.appendChild(runtimeSummaryNode(false));
-  const layout = el("div", "workbench-layout"),
-    side = el("div", "workbench-side"),
-    actions = el("section", "timeline-actions");
-  side.appendChild(renderBranchPanel());
-  side.appendChild(renderDelegationPanel());
-  side.appendChild(renderComputeTasksPanel());
-  side.appendChild(renderContextPanel());
-  side.appendChild(renderSecurityPanel());
-  layout.appendChild(side);
-  const historyState = el("div", "timeline-history-state hidden");
-  actions.appendChild(historyState);
-  syncActionTimelineHistoryState(historyState);
+  const lang = LANG + ":" + timelineI18nEpoch;
+  const runtime = runtimeSummary();
+  syncTimelineChildren(root, [
+    timelineSection(shell, "top", lang, timelineTop),
+    timelineSection(shell, "runtime", lang + "|" + JSON.stringify(runtime), () =>
+      runtimeSummaryNode(false, runtime),
+    ),
+    shell.layout,
+  ]);
+  const undo = S.branchUndo;
+  syncTimelineChildren(shell.side, [
+    timelineSection(
+      shell,
+      "branch",
+      [
+        lang,
+        identityKey(S.branchState),
+        undo ? undo.branch_id + "/" + undo.revert_checkpoint_id : "",
+        S._branchActionLoading || "",
+        S.workbenchErrors.branchAction || "",
+      ].join("|"),
+      renderBranchPanel,
+    ),
+    timelineSection(
+      shell,
+      "delegation",
+      lang + "|" + identityKey(S.delegationState),
+      renderDelegationPanel,
+    ),
+    timelineSection(
+      shell,
+      "compute",
+      lang + "|" + identityKey(S.computeTasks),
+      renderComputeTasksPanel,
+    ),
+    timelineSection(shell, "context", lang + "|" + identityKey(S.contextState), renderContextPanel),
+    timelineSection(
+      shell,
+      "security",
+      lang + "|" + identityKey(S.securityState),
+      renderSecurityPanel,
+    ),
+  ]);
+  syncActionTimelineHistoryState(shell.historyState);
   const hasRecovery = !!(
     S.recoveryActions ||
     (S.recoveryState && (S.recoveryState.status || (S.recoveryState.log || []).length))
   );
-  if (hasRecovery) actions.appendChild(recoveryTimelineCard(S.recoveryState, S.recoveryActions));
-  if (groups.length) actions.appendChild(actionTimelineLedger(groups, branchScope, rootFrameScope));
+  const actionNodes = [shell.historyState];
+  if (hasRecovery)
+    actionNodes.push(
+      timelineSection(
+        shell,
+        "recovery",
+        [
+          lang,
+          identityKey(S.recoveryState),
+          identityKey(S.recoveryActions),
+          S._recoveryActionLoading || "",
+          S.workbenchErrors.recoveryAction || "",
+          S.currentId || "",
+          (S.branchState && S.branchState.branch_id) || "",
+        ].join("|"),
+        () => recoveryTimelineCard(S.recoveryState, S.recoveryActions),
+      ),
+    );
+  if (groups.length) actionNodes.push(actionTimelineLedger(groups, branchScope, rootFrameScope));
   else {
     destroyActionTimelineView();
     if (!timeline.has_more_before && !S.workbenchErrors.timelineHistory && !hasRecovery) {
-      actions.appendChild(
-        el(
-          "div",
-          "workbench-empty timeline-empty",
-          S._workbenchLoading ? t("timeline.loading") : t("timeline.empty"),
+      const loading = !!S._workbenchLoading;
+      actionNodes.push(
+        timelineSection(shell, "empty", lang + "|" + loading, () =>
+          el(
+            "div",
+            "workbench-empty timeline-empty",
+            loading ? t("timeline.loading") : t("timeline.empty"),
+          ),
         ),
       );
     }
   }
-  layout.appendChild(actions);
-  root.appendChild(layout);
+  syncTimelineChildren(shell.actions, actionNodes);
   if (groups.length) updateActionTimelineLedger({ direction: "render" });
   else S._timelineRestoreFocusGroupId = null;
+  // Only put focus back if this render lost it: refocusing a field that kept
+  // it (or resetting its caret) would break an IME composition in progress.
   if (restoreInspectorFocus && S._timelineView) {
     const close = S._timelineView.inspectorHost.querySelector("button");
-    if (close) {
+    if (close && !S._timelineView.inspectorHost.contains(document.activeElement)) {
       try {
         close.focus({ preventScroll: true });
       } catch {
@@ -3743,16 +3995,19 @@ export function renderActionTimeline(): void {
     }
   } else if (restoreSearchFocus && S._timelineView) {
     const input = S._timelineView.search.input;
-    try {
-      input.focus({ preventScroll: true });
-    } catch {
-      input.focus();
-    }
-    if (searchSelection && searchSelection[0] != null)
+    if (document.activeElement !== input) {
       try {
-        input.setSelectionRange(searchSelection[0], searchSelection[1]);
+        input.focus({ preventScroll: true });
       } catch {
-        /* ignore */
+        input.focus();
       }
+      if (searchSelection && searchSelection[0] != null)
+        try {
+          input.setSelectionRange(searchSelection[0], searchSelection[1]);
+        } catch {
+          /* ignore */
+        }
+    }
   }
+  restoreTimelineFocus(root, focusedControl);
 }

@@ -8,7 +8,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`copy.ts`](copy.ts) | 功能本地中英文案（`judgmentT`）。 |
+| [`copy.ts`](copy.ts) | 功能本地中英文案（`judgmentT`，基于 onboarding 的 `copyLookup`）。 |
 | [`chips.ts`](chips.ts) | 解析 list / dict 两种 `search_skills` 形态；渲染实验性推荐 chip。 |
 | [`chips.test.ts`](chips.test.ts) | list 形态保持原样；dict 形态绘制 chip、p_fit、confidence、悬停版本与状态提示。 |
 | [`judgment.css`](judgment.css) | Customize 区块与 chip 样式。只用已有 CSS token。 |

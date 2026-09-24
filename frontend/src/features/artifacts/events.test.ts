@@ -1,9 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { _artVer, dockArtifact } from "../../stores/artifacts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _artVer, dockArtifact, filesScope } from "../../stores/artifacts";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
+import { setNotebookRenderImpl } from "../notebook/scroll";
+import { project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
-import { artifactCreatedSideEffects } from "./events";
+import { activeTab, dock } from "../../stores/ui";
+import { setArtifactsFetch } from "./api";
+import { artifactCreatedSideEffects, PROJECT_REFRESH_DELAY_MS } from "./events";
+import { jsonResponse } from "./http-stub";
+import { loadProjectArtifacts } from "./load";
 import { resetFilesIndexState } from "./state";
 
 describe("artifact_created side effects (app.js:5314-5346)", () => {
@@ -14,6 +20,8 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
 
   afterEach(() => {
     delete (globalThis as { nbRender?: unknown }).nbRender;
+    setNotebookRenderImpl(null);
+    vi.useRealTimers();
   });
 
   it("syncs the version cache when a produced file overwrites in place", () => {
@@ -29,14 +37,18 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
   });
 
   it("appends a live figure onto the producing cell while a turn is running", () => {
+    vi.useFakeTimers();
     running.value = true;
+    dock.value = { open: true, tab: "notebook" };
+    activeTab.value = "notebook";
     const cell = { producing_cell_id: "c1", live: true, figures: [] as string[] };
     liveCells.value = [cell];
     _liveCell.value = cell;
+    // The Notebook's own render entry, not a window name nobody assigns.
     let painted = 0;
-    (globalThis as { nbRender?: () => void }).nbRender = () => {
+    setNotebookRenderImpl(() => {
       painted += 1;
-    };
+    });
     artifactCreatedSideEffects({
       type: "artifact_created",
       artifact: {
@@ -46,6 +58,7 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
         producing_cell_id: "c1",
       },
     });
+    vi.runAllTimers();
     expect(cell.figures).toEqual(["fig.png"]);
     expect(painted).toBe(1);
     artifactCreatedSideEffects({
@@ -57,6 +70,7 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
         producing_cell_id: "c1",
       },
     });
+    vi.runAllTimers();
     expect(cell.figures).toEqual(["fig.png"]);
     expect(painted).toBe(1);
   });
@@ -80,6 +94,60 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
       }),
     ).not.toThrow();
     expect(cell.figures).toEqual(["fig.png"]);
+  });
+});
+
+
+describe("project-scope artifact_created refresh (AUDIT P07)", () => {
+  beforeEach(() => {
+    resetStoreFields();
+    resetFilesIndexState();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    setArtifactsFetch(null);
+  });
+
+  async function projectListing(): Promise<string[]> {
+    filesScope.value = "project";
+    project.value = "p";
+    const reads: string[] = [];
+    setArtifactsFetch(async (url) => {
+      reads.push(url);
+      return jsonResponse({ artifacts: [], next_cursor: null, has_more: false });
+    });
+    await loadProjectArtifacts(true);
+    reads.length = 0;
+    return reads;
+  }
+  // Another session in the project produced a file.
+  const created = (id: string) =>
+    artifactCreatedSideEffects({ type: "artifact_created", root_frame_id: "other", artifact: { id, filename: `${id}.csv` } });
+
+  it("reads nothing while Files is hidden, then refreshes once when it is shown", async () => {
+    const reads = await projectListing();
+    vi.useFakeTimers();
+    for (const id of ["a", "b", "c"]) created(id);
+    await vi.advanceTimersByTimeAsync(10 * PROJECT_REFRESH_DELAY_MS);
+    expect(reads).toEqual([]);
+    vi.useRealTimers();
+    // What opening the Files tab calls.
+    await loadProjectArtifacts();
+    expect(reads).toHaveLength(1);
+    await loadProjectArtifacts();
+    expect(reads).toHaveLength(1);
+  });
+
+  it("refreshes a visible Files tab once per burst", async () => {
+    const reads = await projectListing();
+    dock.value = { open: true, tab: "files" };
+    activeTab.value = "files";
+    vi.useFakeTimers();
+    for (const id of ["a", "b", "c"]) created(id);
+    expect(reads).toEqual([]);
+    await vi.advanceTimersByTimeAsync(PROJECT_REFRESH_DELAY_MS);
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toContain("/projects/p/artifact-index?");
   });
 });
 

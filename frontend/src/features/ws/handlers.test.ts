@@ -1,4 +1,5 @@
 import { artifactsFrameId } from "../../stores/artifacts";
+import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
 import { _liveCell, liveCells } from "../../stores/notebook";
@@ -205,28 +206,45 @@ describe("WS protocol handlers", () => {
     const exactKey = "/api/v1/artifacts/versions/v1/old.png";
     _tbl.value = { "old.png:1": "cached", [exactKey]: "fixed v1", other: "keep" };
 
+    // Subscribers see every update: each is a new value, never an edit of the old one.
+    const seen = { artifacts: 0, bust: 0 };
+    const stop = effect(() => {
+      void artifacts.value;
+      seen.artifacts += 1;
+    });
+    const stopBust = effect(() => {
+      void _artBust.value;
+      seen.bust += 1;
+    });
+
     onEvent({
       type: "artifact_created",
       artifact: { id: "art1", filename: "dir/old.png", version_id: "v2" },
     });
-    expect(artifacts.value).toBe(list);
-    expect(row.filename).toBe("dir/old.png");
+    expect(artifacts.value).not.toBe(list);
+    expect(artifacts.value).toEqual([{ id: "art1", artifact_id: "art1", filename: "dir/old.png", version_id: "v2" }]);
+    expect(row.filename).toBe("old.png");
     expect(_artBust.value.art1).toBe("v2");
     expect(_tbl.value["old.png:1"]).toBeUndefined();
     expect(_tbl.value.other).toBe("keep");
     expect(_tbl.value[exactKey]).toBe("fixed v1");
+    expect(seen).toEqual({ artifacts: 2, bust: 2 });
 
     onEvent({
       type: "artifact_created",
       artifact_id: "art2",
       filename: "plan.json",
     });
-    expect(list).toHaveLength(2);
-    expect((list[1] as { id: string }).id).toBe("art2");
+    expect(artifacts.value).toHaveLength(2);
+    expect((artifacts.value[1] as { id: string }).id).toBe("art2");
+    expect(list).toHaveLength(1);
+    expect(seen).toEqual({ artifacts: 3, bust: 3 });
+    stop();
+    stopBust();
 
-    const n = list.length;
+    const n = artifacts.value.length;
     onEvent({ type: "artifact_created", root_frame_id: "f" });
-    expect(list).toHaveLength(n);
+    expect(artifacts.value).toHaveLength(n);
 
     expect(load).not.toHaveBeenCalled();
     vi.advanceTimersByTime(LOAD_ARTIFACTS_DEBOUNCE_MS);

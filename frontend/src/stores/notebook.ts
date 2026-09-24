@@ -53,22 +53,18 @@ export type KernelCache = {
   id: string | null;
   st: unknown;
   stAt: number;
-  stBusy: boolean;
   envs: unknown;
   cur: unknown;
   envAt: number;
-  envBusy: boolean;
 };
 
 export const _kc = field<KernelCache>(() => ({
   id: null,
   st: null,
   stAt: 0,
-  stBusy: false,
   envs: null,
   cur: null,
   envAt: 0,
-  envBusy: false,
 }));
 
 export const notebookSignals = {

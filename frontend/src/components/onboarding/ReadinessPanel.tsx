@@ -1,5 +1,7 @@
-import { useState } from "preact/hooks";
+import type { ComponentChildren } from "preact";
+import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
+import { copyFailedText, copyText } from "../../features/chrome/clipboard";
 import {
   standardReadinessStateText,
   type StandardReadiness,
@@ -8,8 +10,13 @@ import { hint } from "../../features/customize/host";
 import { ot } from "../../features/onboarding/copy";
 import type { OnboardingNetwork, OnboardingStatus } from "../../features/onboarding/status";
 
-function CopyCommand({ item }: { item: { command: string; label: string } }) {
+export function CopyCommand({ item }: { item: { command: string; label: string } }) {
   const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1200);
+    return () => clearTimeout(timer);
+  }, [copied]);
   return (
     <div class="standard-readiness-command">
       <code aria-label={item.label || undefined}>{item.command}</code>
@@ -17,16 +24,11 @@ function CopyCommand({ item }: { item: { command: string; label: string } }) {
         type="button"
         class="outline-btn small"
         onClick={async () => {
-          try {
-            if (!navigator.clipboard || !navigator.clipboard.writeText) {
-              throw new Error("clipboard unavailable");
-            }
-            await navigator.clipboard.writeText(item.command);
+          if (await copyText(item.command)) {
             setCopied(true);
             hint(t("environment.readiness.copied"));
-            window.setTimeout(() => setCopied(false), 1200);
-          } catch {
-            hint(t("nb.action.failed"), true);
+          } else {
+            hint(copyFailedText(), true);
           }
         }}
       >
@@ -36,7 +38,17 @@ function CopyCommand({ item }: { item: { command: string; label: string } }) {
   );
 }
 
-function EnvironmentCard({ readiness }: { readiness: StandardReadiness }) {
+/**
+ * The standard-profile readiness card: first-run setup shows it, and so does
+ * Settings -> Compute, which adds a Refresh `action` to its head.
+ */
+export function EnvironmentCard({
+  readiness,
+  action,
+}: {
+  readiness: StandardReadiness;
+  action?: ComponentChildren;
+}) {
   return (
     <section class={"standard-readiness-card state-" + readiness.state}>
       <div class="standard-readiness-head">
@@ -44,6 +56,7 @@ function EnvironmentCard({ readiness }: { readiness: StandardReadiness }) {
           <div class="standard-readiness-title">{t("environment.readiness.cardTitle")}</div>
           <div class="standard-readiness-summary">{standardReadinessStateText(readiness)}</div>
         </div>
+        {action}
       </div>
       {readiness.missing_environments.length ? (
         <div class="standard-readiness-gap">

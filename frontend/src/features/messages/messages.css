@@ -30,7 +30,7 @@
   max-width: var(--col);
   margin: 8px auto 2px;
   color: var(--text-400);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .msg-stopped .ic {
@@ -42,10 +42,6 @@
   color: var(--text-400);
 }
 
-/* The running/success green bar (style.css .activity) is not a stopped cell's. */
-.activity.stopped {
-  border-left-color: color-mix(in srgb, var(--text-400) 30%, var(--line));
-}
 
 /*
  * A running cell has not succeeded yet, and a card whose outcome never arrived
@@ -57,18 +53,11 @@
   color: var(--text-400);
 }
 
-.activity.running,
-.activity.ended {
-  border-left-color: color-mix(in srgb, var(--text-400) 30%, var(--line));
-}
 
 .activity.failed .a-head .ic {
   color: var(--danger);
 }
 
-.activity.failed {
-  border-left-color: color-mix(in srgb, var(--danger) 46%, var(--line));
-}
 
 @media (prefers-reduced-motion: no-preference) {
   .activity.running .a-head .ic svg {

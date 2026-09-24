@@ -1,16 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
 import * as session from "../../stores/session";
-import { _replayGap, running, stream, _seqSeen, _resumeTimer } from "../../stores/stream";
+import { _replayGap, running, stream, _seqSeen, _resumeTimer, ws } from "../../stores/stream";
 import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
 import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
 import { loadEarlierMessages } from "../sessions/messages";
+import { showDashboard, stopDashPoll } from "../sessions/dashboard";
+import { routeInitialView } from "../sessions/conversation";
+import { handleIncomingMessage } from "../ws/connect";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
+import { _timelineView } from "../../stores/timeline";
+import { _messagesFollow, activeTab } from "../../stores/ui";
+import { flushScrollNow, unbindMessageScroll } from "./scroll";
 import { adoptCreatedFrame } from "../chrome/upload";
 import { loadExecutionLog } from "../notebook/cells";
 
 const paint = vi.hoisted(() => ({ empty: vi.fn(), batches: vi.fn(), pageRows: vi.fn() }));
 const chrome = vi.hoisted(() => ({ hint: vi.fn() }));
+const timeline = vi.hoisted(() => ({ render: vi.fn() }));
+vi.mock("../timeline/island", async (original) => ({
+  ...await original<typeof import("../timeline/island")>(),
+  renderActionTimeline: () => timeline.render(),
+}));
 vi.mock("../sessions/chrome", async (original) => ({
   ...await original<typeof import("../sessions/chrome")>(),
   hint: (...args: unknown[]) => chrome.hint(...args),
@@ -424,6 +435,113 @@ describe("branch history replacement", () => {
 });
 
 
+describe("reopening a running session from Home", () => {
+  /** The daemon's end of the socket: a frame's events reach only a client viewing it. */
+  function daemonSocket() {
+    const viewed = new Set<string>();
+    const sent: Array<Record<string, unknown>> = [];
+    let seq = 0;
+    const socket = {
+      readyState: 1,
+      onopen: null, onclose: null, onmessage: null,
+      send(raw: string) {
+        const message = JSON.parse(raw) as Record<string, unknown>;
+        sent.push(message);
+        if (message.type === "view_session") viewed.add(String(message.root_frame_id));
+        if (message.type === "unview_session") viewed.delete(String(message.root_frame_id));
+      },
+    };
+    const emit = (fid: string) => {
+      seq += 1;
+      if (viewed.has(fid)) handleIncomingMessage(JSON.stringify({ type: "kernel_status", root_frame_id: fid, seq }));
+    };
+    return { socket, sent, viewed, emit };
+  }
+
+  it("shows the run as running and asks for its live buffer again, like a switch back from another session", async () => {
+    const daemon = daemonSocket();
+    ws.value = daemon.socket;
+    const stillRunning = (path: string) => path.endsWith("/status") ? response({ running: true, status: "processing" }) : undefined;
+    server(stillRunning);
+    await openConversation("f");
+    expect(running.value).toBe(true);
+    daemon.emit("f");
+    const cursorWhenLeft = _seqSeen.value.f;
+
+    showDashboard();
+    stopDashPoll();
+    expect(daemon.viewed.has("f")).toBe(false);
+    daemon.emit("f"); daemon.emit("f"); // the turn goes on while the user is Home
+
+    // ...and while its history is being read again.
+    server((path) => { if (path.includes("/messages?")) daemon.emit("f"); return stillRunning(path); });
+    const armedBefore = _resumeTimer.value;
+    expect(await openConversation("f")).toMatchObject({ messagesLoaded: true, stepsLoaded: true, runStateLoaded: true });
+    expect(session.historyLoad.value?.deferred).toBe(false);
+    expect(running.value).toBe(true);
+    expect(_resumeTimer.value).not.toBe(armedBefore);
+    // The reopen emptied the transcript, so the text the turn streamed before
+    // Home is gone from the screen; resubscribing from the old cursor would
+    // not send it again. From zero the daemon replays the running turn.
+    expect(cursorWhenLeft).toBeGreaterThan(0);
+    expect(daemon.sent.filter((m) => m.type === "view_session").at(-1)).toMatchObject({ root_frame_id: "f", since_seq: 0 });
+    clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
+  });
+
+  it("releases a frame still shown with no current conversation before reading it again", async () => {
+    const daemon = daemonSocket();
+    ws.value = daemon.socket;
+    const stillRunning = (path: string) => path.endsWith("/status") ? response({ running: true, status: "processing" }) : undefined;
+    server(stillRunning);
+    await openConversation("f");
+    session.currentId.value = null; // cleared by a path that kept the subscription
+    server((path) => { if (path.includes("/messages?")) daemon.emit("f"); return stillRunning(path); });
+    await openConversation("f");
+    expect(session.historyLoad.value?.deferred).toBe(false);
+    expect(running.value).toBe(true);
+    expect(daemon.viewed.has("f")).toBe(true);
+    clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
+  });
+});
+
+it("reads where the session runs when it is opened", async () => {
+  const fetcher = server();
+  await openConversation("f");
+  expect(fetcher.mock.calls.map(([path]) => String(path))).toContain("/api/v1/sessions/f/compute");
+});
+
+describe("routing an address", () => {
+  /** A session history: entries, the current index, and the two History API writes. */
+  function fakeHistory(entries: string[]) {
+    let index = entries.length - 1;
+    return {
+      entries,
+      location: { get pathname() { return entries[index]; } },
+      pushState(_state: unknown, _title: string, path: string) {
+        entries.splice(index + 1, entries.length, path);
+        index = entries.length - 1;
+      },
+      replaceState(_state: unknown, _title: string, path: string) {
+        entries[index] = path;
+      },
+    };
+  }
+
+  it("replaces a project deep link with the session it resolves to, so Back can leave it", async () => {
+    const history = fakeHistory(["/", "/projects/P"]);
+    vi.stubGlobal("history", history);
+    vi.stubGlobal("location", history.location);
+    server((path) => {
+      if (path.includes("/projects?")) return response({ projects: [{ project_id: "P", name: "P" }] });
+      if (path.includes("/frames?")) return response({ frames: [{ id: "f", project_id: "P" }], has_more: false });
+      if (path.endsWith("/folders")) return response({ folders: [] });
+    });
+    await routeInitialView();
+    expect(session.currentId.value).toBe("f");
+    expect(history.entries).toEqual(["/", "/projects/P/frames/f"]);
+  });
+});
+
 it("keeps the missed-terminal watchdog active while the status still says running", async () => {
   vi.useFakeTimers();
   server(); await openConversation("f");
@@ -503,6 +621,54 @@ describe("a stopped read finishes the work of the terminal events it missed", ()
     expect(await recoverConversation("f")).toMatchObject({ runStateLoaded: true });
     expect(running.value).toBe(false);
     expect(chrome.hint).toHaveBeenCalledWith("", false);
+  });
+});
+
+it.each([
+  ["switching sessions", "g", undefined],
+  ["a same-frame branch reset", "f", { resetHistory: true }],
+])("destroys the Timeline view before dropping it when %s", async (_label, fid, options) => {
+  server(); await openConversation("f");
+  const view = { raf: 0, resizeObserver: { disconnect: vi.fn() } };
+  _timelineView.value = view;
+  await openConversation(fid, undefined, options);
+  expect(view.resizeObserver.disconnect).toHaveBeenCalledTimes(1);
+  expect(_timelineView.value).toBeNull();
+});
+
+describe("a same-frame branch reset and the dock", () => {
+  /** The four dock panes, recording which one the reset leaves visible. */
+  function dockPanes(): Record<string, boolean> {
+    const hidden: Record<string, boolean> = {};
+    vi.stubGlobal("document", {
+      querySelector: () => null,
+      getElementById: (id: string) => /^dock-(viewer|notebook|timeline|files)$/.test(id)
+        ? { classList: { toggle: (_name: string, on: boolean) => { hidden[id] = on; } } }
+        : id === "messages" || id === "jump-pill" ? {} : null,
+      createDocumentFragment: () => ({}),
+    });
+    return hidden;
+  }
+
+  it.each(["timeline", "files"])("stays on the %s pane, in the state and in the DOM", async (tab) => {
+    server(); await openConversation("f");
+    activeTab.value = tab;
+    const hidden = dockPanes();
+    timeline.render.mockClear();
+    expect(await openConversation("f", undefined, { resetHistory: true })).toMatchObject({ messagesLoaded: true });
+    expect(activeTab.value).toBe(tab);
+    expect(hidden).toMatchObject({ [`dock-${tab}`]: false, "dock-notebook": true, "dock-viewer": true });
+    // Repainted for the new branch rather than left frozen on the old one.
+    expect(timeline.render).toHaveBeenCalledTimes(tab === "timeline" ? 1 : 0);
+  });
+
+  it("moves to the Notebook, in the DOM too, when the artifact tab it showed was closed by the reset", async () => {
+    server(); await openConversation("f");
+    activeTab.value = "artifact:a1";
+    const hidden = dockPanes();
+    await openConversation("f", undefined, { resetHistory: true });
+    expect(activeTab.value).toBe("notebook");
+    expect(hidden).toMatchObject({ "dock-notebook": false, "dock-viewer": true, "dock-timeline": true });
   });
 });
 
@@ -672,5 +838,42 @@ describe("a newly created session's Notebook", () => {
     cells.value = A_CELLS;
     await openConversation("f");
     expect(cells.value).toEqual(A_CELLS);
+  });
+});
+
+describe("where a committed transcript leaves the scroll", () => {
+  function stubHost(scrollTop: number) {
+    // Earlier opens ran with no #messages; drop any scroll they left pending.
+    unbindMessageScroll();
+    const host = {
+      innerHTML: "", scrollTop, scrollHeight: 2000, clientHeight: 500, scrollTo() {},
+      children: [] as unknown[], replaceChildren: vi.fn(), querySelector: () => null,
+    };
+    const stage = { fragment: true };
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) => selector === "#messages" ? host : null,
+      getElementById: (id: string) => id === "messages" ? host : null,
+      createDocumentFragment: () => stage,
+    });
+    return host;
+  }
+
+  it("a transcript with nothing confirmed before it opens at its newest message", async () => {
+    server(); await openConversation("f");
+    session.historyContent.value = null;
+    _messagesFollow.value = false; // the session left behind was scrolled up
+    const host = stubHost(0);
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
+    flushScrollNow();
+    expect(host.scrollTop).toBe(host.scrollHeight);
+  });
+
+  it("a re-read of the transcript on screen leaves a reader who scrolled up where they are", async () => {
+    server(); await openConversation("f");
+    _messagesFollow.value = false;
+    const host = stubHost(100);
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
+    flushScrollNow();
+    expect(host.scrollTop).toBe(100);
   });
 });

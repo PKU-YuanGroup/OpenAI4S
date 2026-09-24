@@ -36,6 +36,7 @@ vi.mock("../../i18n", () => ({ get LANG() { return mocks.lang; }, t: (key: strin
 vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive }));
 
 import { DiagnosticsTab } from "./DiagnosticsTab";
+import { copyFailedText } from "../../features/chrome/clipboard";
 import { api, runDiagnosticsChecks } from "../../features/customize/api";
 import { CUST_LOAD_TIMEOUT_MS } from "../../features/customize/load";
 import {
@@ -108,6 +109,43 @@ beforeEach(() => {
   vi.stubGlobal("fetch", mocks.fetch);
 });
 afterEach(() => { cleanups.splice(0).forEach((cleanup) => cleanup()); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
+
+describe("DiagnosticsTab request id copy", () => {
+  /** A plain-http page: no async clipboard, only the selection copy. */
+  function plainHttp(execCopy: boolean) {
+    const hint = vi.fn();
+    const area = { value: "", style: {}, setAttribute() {}, select() {}, remove() {} };
+    vi.stubGlobal("window", { hint });
+    vi.stubGlobal("navigator", {});
+    vi.stubGlobal("document", {
+      body: { appendChild() {} }, activeElement: null, createElement: () => area, execCommand: () => execCopy,
+    });
+    return { hint, area };
+  }
+  const copyButton = () => nodes(render(), (node) => node.type === "button" && ["Copy", "Copied"].includes(content(node)))[0]!;
+  async function opened() {
+    render(); flushEffects();
+    // Copy is enabled once the passive status has brought a request id.
+    await vi.waitFor(() => expect(copyButton().props!.disabled).toBe(false));
+  }
+
+  it("copies over plain http through the selection copy", async () => {
+    await opened();
+    const { area, hint } = plainHttp(true);
+    await (copyButton().props!.onClick as () => Promise<void>)();
+    expect(area.value).toBe("req-passive");
+    expect(content(copyButton())).toBe("Copied");
+    expect(hint).not.toHaveBeenCalled();
+  });
+
+  it("says so when no copy happened, and does not claim one", async () => {
+    await opened();
+    const { hint } = plainHttp(false);
+    await (copyButton().props!.onClick as () => Promise<void>)();
+    expect(content(copyButton())).toBe("Copy");
+    expect(hint).toHaveBeenCalledWith(copyFailedText(), true, undefined);
+  });
+});
 
 describe("DiagnosticsTab", () => {
   it("opens with one passive GET and no full checks or bundle request", async () => {
@@ -269,6 +307,7 @@ describe("diagnostics response and configuration contracts", () => {
     ["/connectors/example/enabled", "PUT"], ["/connectors/example", "DELETE"],
     ["/compute/remote", "POST"], ["/compute/remote/example", "DELETE"], ["/permissions", "POST"],
     ["/doubao-search/config", "POST"], ["/datapro/config", "POST"], ["/volcengine/configure", "POST"],
+    ["/models/default", "PUT"], ["/connectors/example", "PUT"],
   ])("invalidates a successful config save %s %s", async (path, method) => {
     await api(path, { method }); expect(diagnosticsConfigRevision.value).toBe(1);
   });

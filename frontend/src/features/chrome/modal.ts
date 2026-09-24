@@ -139,18 +139,17 @@ function visibleFallbackModal(): HTMLElement | null {
   return null;
 }
 
+/** The modal the trap acts on: the open top of its stack, else the first visible fallback. */
+export function topModal(): HTMLElement | null {
+  const top = _modalFocus.stack[_modalFocus.stack.length - 1];
+  if (top && !top.el.classList.contains("hidden")) return top.el;
+  return visibleFallbackModal();
+}
+
 /** app.js:11095-11120 */
 export function trapModalKeydown(e: ModalKeyEvent | KeyboardEvent): void {
   if (e.key !== "Tab" && e.key !== "Escape") return;
-  // topmost open modal (stack) or first visible modal
-  let modal: HTMLElement | null = null;
-  if (_modalFocus.stack.length) {
-    const top = _modalFocus.stack[_modalFocus.stack.length - 1];
-    modal = top ? top.el : null;
-  }
-  if (!modal || modal.classList.contains("hidden")) {
-    modal = visibleFallbackModal();
-  }
+  const modal = topModal();
   if (!modal) return;
   if (e.key === "Escape") {
     // Don't steal Escape from nested popovers / composer autocomplete
@@ -178,19 +177,37 @@ export function trapModalKeydown(e: ModalKeyEvent | KeyboardEvent): void {
   }
 }
 
-/** Overlay click (target === modal) + close button. app.js:13387-13391. */
-export function bindModalDismiss(modal: HTMLElement | null, closeBtn?: HTMLElement | null): void {
+/**
+ * Overlay click + close button. app.js:13387-13391.
+ *
+ * A drag that starts in a field and ends on the scrim fires its click on
+ * their common ancestor, the scrim itself, so `target === modal` alone threw
+ * away an unsaved form after a text selection. The press has to start on the
+ * scrim as well.
+ */
+/**
+ * × and the scrim close `modal`, through `close` when its owner has state to
+ * reset. The scrim only counts when the press also started on it: a text
+ * selection released over it reports the scrim as the click's target.
+ */
+export function bindModalDismiss(
+  modal: HTMLElement | null,
+  closeBtn?: HTMLElement | null,
+  close: () => void = () => closeModalEl(modal),
+): void {
   if (!modal) return;
-  if (closeBtn) closeBtn.addEventListener("click", () => closeModalEl(modal));
+  if (closeBtn) closeBtn.addEventListener("click", () => close());
+  let pressedOnScrim = false;
+  modal.addEventListener("pointerdown", (e) => {
+    pressedOnScrim = e.target === modal;
+  });
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeModalEl(modal);
+    const fromScrim = pressedOnScrim;
+    pressedOnScrim = false;
+    if (fromScrim && e.target === modal) close();
   });
 }
 
 export function anyModalOpen(): boolean {
-  if (_modalFocus.stack.length) {
-    const top = _modalFocus.stack[_modalFocus.stack.length - 1];
-    if (top && !top.el.classList.contains("hidden")) return true;
-  }
-  return visibleFallbackModal() !== null;
+  return topModal() !== null;
 }

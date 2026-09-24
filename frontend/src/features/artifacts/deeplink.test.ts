@@ -133,6 +133,19 @@ describe("M-03 default version fetch (no silent latest)", () => {
     }
   });
 
+  it("resolves an exact version with one GET /versions (AUDIT P13)", async () => {
+    const reads: string[] = [];
+    setArtifactsFetch(async (url) => {
+      reads.push(url);
+      return jsonResponse({ versions });
+    });
+    for (const versionId of ["v-old", "v-missing", null]) {
+      reads.length = 0;
+      await resolveArtifactVersion({ artifactId: "art-1", versionId });
+      expect(reads).toEqual(["/api/v1/artifacts/art-1/versions"]);
+    }
+  });
+
   it("pins the exact version from GET /versions and never rewrites it to latest", async () => {
     setArtifactsFetch(async (url) => {
       expect(url).toContain("/artifacts/art-1/versions");

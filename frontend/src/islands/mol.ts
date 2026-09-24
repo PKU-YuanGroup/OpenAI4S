@@ -49,6 +49,39 @@ function preFallback(view: HTMLElement, text: string): void {
   view.innerHTML = "<pre style='padding:16px'>" + esc(text.slice(0, 8000)) + "</pre>";
 }
 
+/**
+ * The latest molecule() call. Only it may create the one live viewer: an
+ * earlier call still fetching (or waiting on the script) used to finish
+ * after it, overwrite `_molViewer`/`_molView` and leave a WebGL context
+ * nothing would free.
+ */
+let molRequest = 0;
+/** The one in-flight load of the vendored script, shared by every caller. */
+let molScript: Promise<boolean> | null = null;
+
+function loadMolScript(): Promise<boolean> {
+  if (!molScript) {
+    molScript = new Promise<boolean>((resolve) => {
+      // Vendored copy only. A missing local 3Dmol used to fall back to fetching
+      // https://3Dmol.org/build/3Dmol-min.js, which executes third-party script in
+      // the page that holds the session cookie -- and does it silently, on an app
+      // whose whole premise is that it runs locally and makes no call the user did
+      // not ask for. The degraded path (render the coordinates as text) was
+      // already written; the CDN hop only stood between the failure and it.
+      const s = el("script");
+      s.src = MOL_VENDOR_SRC;
+      s.onload = () => resolve(true);
+      s.onerror = () => {
+        // A later structure may try again; this one falls back to text.
+        molScript = null;
+        resolve(false);
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return molScript;
+}
+
 /* Free the previous 3Dmol WebGL context before creating a new one (browsers cap
    live contexts at ~16; leaking one per structure viewed eventually blanks them). */
 export function molTeardown(): void {
@@ -78,6 +111,7 @@ export function molTeardown(): void {
 /** app.js:9622-9673 — container-agnostic, style selector, atom count, download, label. */
 export function molecule(container: HTMLElement, url: string, nm: string): void {
   molTeardown();
+  const request = ++molRequest;
   container.innerHTML = "";
   const wrap = el("div", "mol-wrap");
   wrap.appendChild(el("div", "mol-tag", "Using 3Dmol.js viewer"));
@@ -147,10 +181,14 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
     viewer.setStyle({ hetflag: true }, { stick: { colorscheme: "Jmol" } });
     viewer.render();
   };
-  const boot = (): Promise<void> =>
-    fetch(url)
+  // Superseded by a later structure, or its view was replaced meanwhile.
+  const stale = (): boolean => request !== molRequest || !view.isConnected;
+  const boot = (): Promise<void> => {
+    if (stale()) return Promise.resolve();
+    return fetch(url)
       .then((r) => r.text())
       .then((data) => {
+        if (stale()) return;
         try {
           const runtime = molApi();
           if (!runtime) {
@@ -188,6 +226,7 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
       .catch(() => {
         /* fetch failed; chrome still offers download */
       });
+  };
   const fb = (): Promise<void> =>
     fetch(url)
       .then((r) => r.text())
@@ -201,23 +240,10 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
     void boot();
     return;
   }
-  // Vendored copy only. A missing local 3Dmol used to fall back to fetching
-  // https://3Dmol.org/build/3Dmol-min.js, which executes third-party script in
-  // the page that holds the session cookie -- and does it silently, on an app
-  // whose whole premise is that it runs locally and makes no call the user did
-  // not ask for. The degraded path below (render the coordinates as text) was
-  // already written; the CDN hop only stood between the failure and it.
   if (typeof document === "undefined" || !document.head) {
     void fb();
     return;
   }
-  const s = el("script");
-  s.src = MOL_VENDOR_SRC;
-  s.onload = () => {
-    void boot();
-  };
-  s.onerror = () => {
-    void fb();
-  };
-  document.head.appendChild(s);
+  // Every structure opened before the script arrives waits on the same tag.
+  void loadMolScript().then((loaded) => (loaded ? boot() : fb()));
 }

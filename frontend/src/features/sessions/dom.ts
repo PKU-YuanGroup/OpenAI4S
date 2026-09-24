@@ -3,7 +3,6 @@ import { beginNavigation } from "./navigation";
 
 import { t } from "../../i18n";
 import { _openGen, currentId } from "../../stores/session";
-import { _messagesFollow } from "../../stores/ui";
 import { callLane } from "./lane";
 
 export function $(sel: string): HTMLElement | null {
@@ -117,33 +116,10 @@ export function isMobile(): boolean {
   return window.matchMedia("(max-width: 900px)").matches;
 }
 
-export function messagesAtBottom(m: HTMLElement | null, pad?: number): boolean {
-  return !m || m.scrollHeight - m.scrollTop - m.clientHeight < (pad || 80);
-}
-
-export function paintJumpPill(): void {
-  const m = $("#messages");
-  const pill = $("#jump-pill");
-  if (!m || !pill) return;
-  pill.classList.toggle("hidden", messagesAtBottom(m, 60));
-}
-
-export function down(force?: boolean): void {
-  const m = $("#messages");
-  if (!m) return;
-  if (force || _messagesFollow.value !== false) {
-    m.scrollTop = m.scrollHeight;
-    _messagesFollow.value = true;
-  }
-  paintJumpPill();
-}
-
-export function updateJumpPill(): void {
-  const m = $("#messages");
-  if (!m) return;
-  _messagesFollow.value = messagesAtBottom(m);
-  paintJumpPill();
-}
+// One follow-scroll implementation: the messages lane's rAF-coalesced one.
+// This copy wrote scrollTop synchronously and was what the jump pill and the
+// scroll listener were bound to, beside the one everything else called.
+export { down, messagesAtBottom, paintJumpPill, updateJumpPill } from "../messages/scroll";
 
 export function openModalEl(modal: HTMLElement | null): void {
   if (!modal) return;

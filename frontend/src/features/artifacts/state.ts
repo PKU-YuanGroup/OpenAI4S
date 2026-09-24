@@ -36,6 +36,8 @@ export const filesIndexError = signal<string | null>(null);
 export const filesIndexReq = signal(0);
 /** Exact-version resolve outcome for the open Viewer. */
 export const viewerVersionState = signal<VersionResolve | null>(null);
+/** The session whose last `/frames/{id}/artifacts` read failed. Failed is not empty. */
+export const artifactsReadError = signal<{ frameId: string; generation: number } | null>(null);
 
 export function resetFilesIndexState(): void {
   filesQuery.value = "";
@@ -51,4 +53,5 @@ export function resetFilesIndexState(): void {
   filesIndexError.value = null;
   filesIndexReq.value = (filesIndexReq.value || 0) + 1;
   viewerVersionState.value = null;
+  artifactsReadError.value = null;
 }

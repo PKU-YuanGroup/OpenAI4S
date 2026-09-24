@@ -5,7 +5,9 @@ import {
   getDiagnosticsStatus,
   runDiagnosticsChecks,
 } from "../../features/customize/api";
+import { copyFailedText, copyText } from "../../features/chrome/clipboard";
 import { custTab } from "../../features/customize/actions";
+import { hint } from "../../features/customize/host";
 import {
   customizeGeneration,
   diagnosticsAttempt,
@@ -117,12 +119,12 @@ export function DiagnosticsTab() {
 
   async function onCopy() {
     if (!requestId) return;
-    try {
-      await navigator.clipboard.writeText(requestId);
-      if (current()) setCopied(true);
-    } catch {
-      /* clipboard may be denied; the id remains visible */
-    }
+    // The shared write: over plain http there is no navigator.clipboard, and
+    // the selection copy it falls back to still works there.
+    const copiedNow = await copyText(requestId);
+    if (!current()) return;
+    if (copiedNow) setCopied(true);
+    else hint(copyFailedText(), true);
   }
 
   async function onChecks() {

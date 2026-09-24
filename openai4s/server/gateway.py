@@ -16060,8 +16060,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         .lower()
                     )
                     chosen = str(self._body().get("model_id") or "").strip()
-                    if chosen:
-                        _default_model["id"] = chosen
                     # The selector's option value is now a `profile_id`, because
                     # deduping the list by bare model name made two profiles
                     # sharing a model against different providers indistinguishable
@@ -16072,11 +16070,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # A value that is not a known profile id is still written to
                     # `llm_model`: `.env`-configured installs and older clients
                     # name a model directly and must keep working.
+                    profiles = store.list_model_profiles()
                     known = {
                         str(p.get("id") or ""): p
-                        for p in store.list_model_profiles()
+                        for p in profiles
                         if not p.get("deleted_at")
                     }
+                    # A deleted profile's id is not a model name. A composer list
+                    # read before the delete still offers it, and writing it into
+                    # `llm_model` made every later call ask the provider for a
+                    # model called "mp-...". Refuse it the way activate() refuses
+                    # a tombstone, before anything changes.
+                    retired = {
+                        str(p.get("id") or "") for p in profiles if p.get("deleted_at")
+                    }
+                    if chosen and chosen not in known and chosen in retired:
+                        self._json({"error": "profile not found"}, 404)
+                        return
                     if chosen in known:
                         try:
                             _payload, effective = model_profiles.activate(chosen)
@@ -16087,6 +16097,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         if effective:
                             store.set_setting("llm_model", effective)
                     elif chosen:
+                        _default_model["id"] = chosen
                         store.set_setting("llm_model", chosen)
                     _disconnect_datapro_if_auth_context_changed(
                         previous_datapro_credential, previous_provider

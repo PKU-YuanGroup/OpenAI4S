@@ -13,10 +13,9 @@
  * pinned dispatch id, never whatever `currentId` happens to hold.
  */
 
-import { LANG, planModePayload, t } from "../../i18n/runtime";
+import { LANG, onLanguageChange, planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
-  skillsCatalog,
   standardProfileReadiness,
 } from "../../stores/customize";
 import {
@@ -31,6 +30,7 @@ import {
   exploreMode,
   planMode,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -45,6 +45,7 @@ import {
   type UploadCreation,
   type UploadResult,
 } from "../chrome/upload";
+import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { effProject } from "../customize/host";
 import { $, el } from "../messages/dom";
 import { down } from "../messages/scroll";
@@ -76,6 +77,7 @@ import {
   retireTurnTicket,
 } from "./ticket";
 import { turnDone } from "./turn";
+import { sendCopy } from "./copy";
 
 type Annotation = {
   id?: string;
@@ -139,17 +141,6 @@ async function loadAnnotationsLocal(fid: string): Promise<boolean> {
   annotations.value = (res && res.annotations) || [];
   callLane("updateAnnotBadge");
   return true;
-}
-
-async function loadSkillsCatalog(): Promise<Array<{ name?: unknown }>> {
-  if (skillsCatalog.value) return skillsCatalog.value as Array<{ name?: unknown }>;
-  try {
-    const d = (await api("/skills/catalog")) as { skills?: Array<{ name?: unknown }> };
-    skillsCatalog.value = (d && d.skills) || [];
-  } catch {
-    skillsCatalog.value = [];
-  }
-  return (skillsCatalog.value as Array<{ name?: unknown }>) || [];
 }
 
 export function annotAttachment(anns: Annotation[]): HTMLElement {
@@ -405,6 +396,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // all await, and another tab or a recovered turn can take ownership in that
   // window.
   const sawRunningAtDispatch = running.value;
+  // Which turn the plan flag waits on: queued behind a running turn, the end
+  // of that turn is not this one's (turn.ts `endedAnotherTurn`).
+  const planTurn = planNow ? { queued: sawRunningAtDispatch, executionId: null as string | null } : null;
+  if (planTurn) planPendingTurn.value = planTurn;
   const turnTicketToken = sawRunningAtDispatch ? null : openTurnTicket();
   if (!turnTicketToken) hint(t("queue.accepted"));
   else {
@@ -415,9 +410,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   }
   // The textarea remains editable while FileReader/upload is pending. Clear
   // only the draft that this invocation captured; text typed during that wait
-  // belongs to the next message and must survive.
+  // belongs to the next message and must survive. And only when that draft is
+  // what this call sends: a programmatic send (a permission's Continue, a plan
+  // approval) carries its own text, and the user's unrelated draft is theirs.
   const composer = $("#composer") as HTMLTextAreaElement | null;
-  if (composer && composer.value === composerDraft) composer.value = "";
+  if (composer && composer.value === composerDraft && composerDraft.trim() === text) composer.value = "";
   grow();
   renderComposerRefChips();
   if (annIds.length) {
@@ -449,6 +446,9 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     };
     if (accepted?.request_id) confirmHistorySubmission();
     if (accepted && accepted.execution_id) w.dataset.executionId = String(accepted.execution_id);
+    if (planTurn && planPendingTurn.value === planTurn && accepted && accepted.execution_id) {
+      planPendingTurn.value = { ...planTurn, executionId: String(accepted.execution_id) };
+    }
     if (!acceptTurnTicket(turnTicketToken, accepted)) retireTurnTicket(turnTicketToken);
     if (annIds.length) {
       const said = accepted && accepted.annotations;
@@ -470,6 +470,18 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     }
   } catch (e) {
     const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
+    // The refusal belongs to the session this message was sent from, and the
+    // composer, the hint line and Customize are shared by every session. Once
+    // the user has opened another one, putting this draft back or asking about
+    // this refusal would land it there (a rebind would even re-bind the
+    // session no longer on screen): the refused text goes with its bubble.
+    const onDispatchFrame = (): boolean => currentId.value === dispatchFrameId;
+    // A plan send the server refused never runs, so no end will come for
+    // the plan flag to wait on; a queued one would otherwise sit there.
+    if (planTurn && planPendingTurn.value === planTurn && refused && Number((e as { status?: number }).status) < 500) {
+      planPending.value = false;
+      planPendingTurn.value = null;
+    }
     // A refusal is a definite answer. A transport failure is indeterminate:
     // the server may still commit the admission, so hold the optimistic
     // bubble for one bounded grace rather than for the rest of the visit —
@@ -497,10 +509,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         standardProfileReadiness.value = unavailableReadinessSnapshot();
         renderEnvironmentReadinessBanner();
       }
-      settleRefusedBubble(w, text);
+      if (onDispatchFrame()) settleRefusedBubble(w, text);
       if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
-      callLane("openCust", "compute");
-      hint(t("environment.readiness.sendBlocked"), true);
+      if (onDispatchFrame()) {
+        callLane("openCust", "compute");
+        hint(t("environment.readiness.sendBlocked"), true);
+      }
       void loadSessions();
       return;
     }
@@ -513,10 +527,14 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // the bubble is the only copy left and stays, marked not sent. A 5xx may
     // still have been admitted, and keeps both as before.
     const notAdmitted = refused && Number(err.status) < 500;
-    if (notAdmitted) settleRefusedBubble(w, text);
+    if (notAdmitted && onDispatchFrame()) settleRefusedBubble(w, text);
     let lasting = t("toast.sendFailed", apiErrorText(e));
     let settingsCode = err?.code;
-    if (err && (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")) {
+    if (
+      onDispatchFrame() &&
+      err &&
+      (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")
+    ) {
       const ask =
         typeof globalThis.confirm === "function" ? globalThis.confirm(rebindConfirmText(err)) : false;
       if (ask) {
@@ -525,7 +543,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
             method: "POST",
           });
           if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
-          hint(rebindDoneText(rebound));
+          if (onDispatchFrame()) hint(rebindDoneText(rebound));
           void loadSessions();
           return;
         } catch (rebindError) {
@@ -538,9 +556,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // it goes first: the server's reason is the hint that has to stay.
     if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
     else if (!notAdmitted) w.classList.add("cancelled");
-    hint(lasting, true);
-    if (settingsCode === "model_profile_needs_key" || settingsCode === "model_profile_needs_active") {
-      callLane("openCust", "models");
+    if (onDispatchFrame()) {
+      hint(lasting, true);
+      if (settingsCode === "model_profile_needs_key" || settingsCode === "model_profile_needs_active") {
+        callLane("openCust", "models");
+      }
     }
     void loadSessions();
     return;
@@ -707,6 +727,17 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       hint(exploreMode.value ? t("explore.toggle.on") : "");
     };
   }
+  const sendBtn = document.getElementById("send-btn");
+  if (sendBtn && !sendBtn.dataset.sendBound) {
+    sendBtn.dataset.sendBound = "1";
+    const label = () => {
+      const text = sendCopy("send");
+      sendBtn.title = text;
+      sendBtn.setAttribute("aria-label", text);
+    };
+    label();
+    onLanguageChange(label);
+  }
   // Delegated on the document root, not on the node: a re-created #composer
   // (a keyed or conditional subtree, a second render()) keeps its Enter
   // handler with nothing to rebind. Bubble phase, so the autocomplete's
@@ -715,11 +746,31 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
   const root = document.documentElement;
   if (root && !root.dataset.sendBound) {
     root.dataset.sendBound = "1";
-    // One dispatch at a time. send() clears the composer only after its first
-    // awaits (POST /frames on a fresh session, the skills catalog for a /skill
-    // token), so a held or double Enter inside that window would create a
-    // second session and send the same text twice.
+    // One dispatch at a time, for Enter and the send button alike. send()
+    // clears the composer only after its first awaits (POST /frames on a
+    // fresh session, the skills catalog for a /skill token), so a held or
+    // double Enter inside that window would create a second session and send
+    // the same text twice.
     let inFlight: Promise<unknown> | null = null;
+    const dispatchComposer = (text: string): void => {
+      if (inFlight) {
+        // Dropping the request is right -- one dispatch at a time -- but
+        // dropping it SILENTLY is the "dead composer" this branch's own
+        // preparation latch exists to explain. `send()`'s hint can never fire
+        // from here because the dispatch it guards never happens, so say the
+        // same thing at the point that actually swallowed it, and only when a
+        // pending upload is the reason.
+        if (pendingUploadsFor(currentId.value || null, effProject() || project.value || null, null).length) {
+          hint(t("upload.pendingSend"), false, true);
+        }
+        return;
+      }
+      const pending = Promise.resolve(dispatch(text));
+      inFlight = pending;
+      void pending.finally(() => {
+        if (inFlight === pending) inFlight = null;
+      });
+    };
     root.addEventListener("keydown", (e) => {
       const c = e.target as HTMLTextAreaElement | null;
       if (!c || c.id !== "composer") return;
@@ -728,23 +779,17 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       if (ac && ac.open) return;
       if (e.key !== "Enter" || e.shiftKey) return;
       e.preventDefault();
-      if (inFlight) {
-        // Dropping the keystroke is right -- one dispatch at a time -- but
-        // dropping it SILENTLY is the "dead composer" this branch's own
-        // preparation latch exists to explain. `send()`'s hint can never fire
-        // from here because the dispatch it guards never happens, so say the
-        // same thing at the point that actually swallowed the Enter, and only
-        // when a pending upload is the reason.
-        if (pendingUploadsFor(currentId.value || null, effProject() || project.value || null, null).length) {
-          hint(t("upload.pendingSend"), false, true);
-        }
-        return;
-      }
-      const pending = Promise.resolve(dispatch(c.value));
-      inFlight = pending;
-      void pending.finally(() => {
-        if (inFlight === pending) inFlight = null;
-      });
+      dispatchComposer(c.value);
+    });
+    // The round send button beside the model picker (Shell.tsx #send-btn).
+    root.addEventListener("click", (e) => {
+      const target = e.target as { closest?: (selector: string) => unknown } | null;
+      if (!target || typeof target.closest !== "function" || !target.closest("#send-btn")) return;
+      const c = document.getElementById("composer") as HTMLTextAreaElement | null;
+      if (!c) return;
+      e.preventDefault();
+      dispatchComposer(c.value);
+      if (typeof c.focus === "function") c.focus();
     });
   }
 }

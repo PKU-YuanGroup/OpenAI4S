@@ -2,27 +2,20 @@ import { beginNavigation } from "./navigation";
 /** Home dashboard. app.js:6616-6764, 2685. */
 
 import { LANG, t } from "../../i18n";
-import {
-  _openGen,
-  _projectsLoadingMore,
-  currentId,
-  projects,
-  projectsHasMore,
-  projectsLoadError,
-  projectsNextCursor,
-  projectsQuery,
-} from "../../stores/session";
+import { _openGen, currentId, projects, projectsQuery } from "../../stores/session";
 import { _dashPoll } from "../../stores/ui";
+import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
-import { ensureActivateKeys } from "./chrome";
+import { ensureActivateKeys, reportFailure } from "./chrome";
+import { sessionCopy } from "./copy";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import {
   canLoadMoreProjects,
+  dashProjectList,
   loadProjects,
+  normalizeProjectQuery,
   projectDashView,
-  projectsLoadedQuery,
-  projectsReplaceInFlight,
   type ProjectLike,
 } from "./load";
 import {
@@ -32,6 +25,7 @@ import {
   runningDashboardFrames,
   type SessionLike,
 } from "./paging";
+import { openProject } from "./projects";
 
 let exampleTimer = 0;
 let visBound = false;
@@ -91,11 +85,12 @@ export function bindProjectSearch(): void {
 }
 
 export async function loadMoreProjects(): Promise<void> {
+  const list = dashProjectList();
   if (
     !canLoadMoreProjects({
-      loadingMore: !!_projectsLoadingMore.value || projectsReplaceInFlight(),
-      hasMore: !!projectsHasMore.value,
-      cursor: projectsNextCursor.value,
+      loadingMore: !!list.loadingMore.value || list.replaceInFlight,
+      hasMore: !!list.hasMore.value,
+      cursor: list.nextCursor.value,
     })
   ) {
     return;
@@ -104,7 +99,15 @@ export async function loadMoreProjects(): Promise<void> {
   renderDashProjects();
 }
 
+/**
+ * The example CTA that may run `exampleTimer`. A CTA replaced by a repaint, or
+ * stopped with the dashboard, loses it: its late replies can neither start an
+ * interval nothing would stop nor reload a dashboard that is not on screen.
+ */
+let exampleOwner: object | null = null;
+
 function stopExamplePoll(): void {
+  exampleOwner = null;
   if (exampleTimer) {
     clearInterval(exampleTimer);
     exampleTimer = 0;
@@ -135,37 +138,53 @@ export function paintDashSkeleton(): void {
  * annotates its fresh server rows (which carry no `running_count`) from
  * these, so the running badge survives a keystroke. */
 let _dashFrames: SessionLike[] = [];
+/**
+ * The last `/frames` read failed. An unread list is not an empty one: the
+ * lists keep the rows last confirmed and say so, instead of painting "no
+ * sessions yet" and offering the example over sessions that exist.
+ */
+let dashFramesFailed = false;
 
 export async function loadDashboard(): Promise<void> {
   bindProjectSearch();
   paintDashSkeleton();
-  // The search box persists across dashboard visits; the list must match it.
-  await loadProjects({ q: String(projectsQuery.value || "") });
-  let frames: SessionLike[] = [];
+  // The search box persists across dashboard visits; the card must match it.
+  // While it holds a query the directory is read too: the Running and Recent
+  // rows, and the attention cards, name their projects from it.
+  const q = normalizeProjectQuery(String(projectsQuery.value || ""));
+  await Promise.all([loadProjects({ q }), q ? loadProjects() : null]);
   try {
     const d = (await api("/frames?limit=50")) as { frames?: SessionLike[] };
-    frames = filterRootFrames((d && d.frames) || []);
+    _dashFrames = filterRootFrames((d && d.frames) || []);
+    dashFramesFailed = false;
   } catch {
-    frames = [];
+    dashFramesFailed = true;
   }
-  _dashFrames = frames;
   renderDashProjects();
-  renderDashRunning(frames);
-  renderDashRecent(frames);
+  renderDashRunning(_dashFrames);
+  renderDashRecent(_dashFrames);
+}
+
+/** Paint the lists again from what the last reads returned; a language switch needs no new reads. */
+export function repaintDashboard(): void {
+  renderDashProjects();
+  renderDashRunning(_dashFrames);
+  renderDashRecent(_dashFrames);
 }
 
 export function renderDashProjects(): void {
   const pc = $("#dash-projects");
   if (!pc) return;
   pc.innerHTML = "";
-  const list = projects.value as ProjectLike[];
+  const shown = dashProjectList();
+  const list = shown.rows.value as ProjectLike[];
   annotateRunningCounts(list, _dashFrames);
   const view = projectDashView({
-    error: !!projectsLoadError.value,
+    error: !!shown.loadError.value,
     count: list.length,
     query: String(projectsQuery.value || ""),
-    hasMore: !!projectsHasMore.value,
-    loadingMore: !!_projectsLoadingMore.value,
+    hasMore: !!shown.hasMore.value,
+    loadingMore: !!shown.loadingMore.value,
   });
   if (view.kind === "error") {
     const box = el("div", "dash-empty", projectCopy("error"));
@@ -206,7 +225,7 @@ export function renderDashProjects(): void {
     row.appendChild(el("div", "d-meta", ago(p.last_active_at || p.updated_at)));
     const open = () => {
       const id = p.project_id || p.id;
-      if (id) import("./projects").then((mod) => mod.openProject(id));
+      if (id) openProject(id).catch(reportFailure);
     };
     row.onclick = open;
     ensureActivateKeys(row);
@@ -230,13 +249,22 @@ export function renderDashProjects(): void {
 
 function exampleSeedCta(): HTMLElement {
   stopExamplePoll();
+  const owner = {};
+  exampleOwner = owner;
+  const live = () => exampleOwner === owner;
   const box = el("div", "dash-example");
   const btn = el("button", "btn", t("dash.example.cta"));
   btn.type = "button";
   const note = el("div", "dash-example-hint", t("dash.example.hint"));
   box.appendChild(btn);
   box.appendChild(note);
+  const startPoll = () => {
+    if (!live()) return;
+    if (exampleTimer) clearInterval(exampleTimer);
+    exampleTimer = window.setInterval(poll, 1500) as unknown as number;
+  };
   const paint = (st: { running?: boolean; error?: string; seeded?: boolean }) => {
+    if (!live()) return;
     if (st.running) {
       btn.disabled = true;
       btn.textContent = t("dash.example.running");
@@ -253,14 +281,15 @@ function exampleSeedCta(): HTMLElement {
   const poll = () =>
     api("/example/session")
       .then((st) => paint(st as { running?: boolean; error?: string; seeded?: boolean }))
-      .catch(stopExamplePoll);
+      .catch(() => {
+        if (live()) stopExamplePoll();
+      });
   btn.onclick = () => {
     btn.disabled = true;
     api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true }) })
       .then((st) => {
         paint(st as { running?: boolean; error?: string; seeded?: boolean });
-        stopExamplePoll();
-        exampleTimer = window.setInterval(poll, 1500) as unknown as number;
+        startPoll();
       })
       .catch((e) => {
         btn.disabled = false;
@@ -269,10 +298,11 @@ function exampleSeedCta(): HTMLElement {
   };
   api("/example/session")
     .then((raw) => {
+      if (!live()) return;
       const st = raw as { running?: boolean; error?: string; seeded?: boolean };
       if (st.seeded) box.remove();
       else paint(st);
-      if (st.running) exampleTimer = window.setInterval(poll, 1500) as unknown as number;
+      if (st.running) startPoll();
     })
     .catch(() => box.remove());
   return box;
@@ -283,7 +313,18 @@ export function renderDashRecent(frames: SessionLike[]): void {
   const sc = $("#dash-sessions");
   if (!sc) return;
   sc.innerHTML = "";
-  if (!recent.length) {
+  if (dashFramesFailed) {
+    const notice = el("div", "dash-empty", sessionCopy("sessionsError"));
+    notice.setAttribute("role", "alert");
+    const retry = el("button", "outline-btn small", sessionCopy("retry"));
+    retry.type = "button";
+    retry.id = "dash-sessions-retry";
+    retry.onclick = () => {
+      void loadDashboard().catch(() => undefined);
+    };
+    sc.appendChild(notice);
+    sc.appendChild(retry);
+  } else if (!recent.length) {
     sc.appendChild(el("div", "dash-empty", t("dash.sessions.empty")));
     sc.appendChild(exampleSeedCta());
   }
@@ -377,6 +418,11 @@ export async function refreshDashRunning(): Promise<void> {
   // emptied -- a wrong badge where the old code merely had none.
   _dashFrames = frames;
   renderDashRunning(frames);
+  if (dashFramesFailed) {
+    // This poll is the retry the failed read was waiting for.
+    dashFramesFailed = false;
+    renderDashRecent(frames);
+  }
 }
 
 export function stopDashPoll(): void {
@@ -387,16 +433,36 @@ export function stopDashPoll(): void {
   stopExamplePoll();
 }
 
+/**
+ * Refreshes that ride the dashboard's 4s poll besides its Running card (the
+ * attention stream): one interval and one visibility listener for all of
+ * them, started and stopped with the dashboard, where each feature used to
+ * keep its own interval, listener and class observer.
+ */
+const dashPollers = new Set<() => void>();
+
+export function onDashPoll(refresh: () => void): () => void {
+  dashPollers.add(refresh);
+  return () => {
+    dashPollers.delete(refresh);
+  };
+}
+
+function pollDashboard(): void {
+  void refreshDashRunning();
+  dashPollers.forEach((refresh) => refresh());
+}
+
 export function startDashPoll(): void {
   stopDashPoll();
-  _dashPoll.value = setInterval(() => {
-    void refreshDashRunning();
-  }, 4000);
+  // loadDashboard reads the lists; the riders read now, not a tick from now.
+  dashPollers.forEach((refresh) => refresh());
+  _dashPoll.value = setInterval(pollDashboard, 4000);
   if (!visBound && typeof document !== "undefined") {
     visBound = true;
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && !$("#dashboard")?.classList.contains("hidden")) {
-        void refreshDashRunning();
+        pollDashboard();
       }
     });
   }
@@ -412,6 +478,13 @@ export function showDashboard(): void {
   beginNavigation();
   $("#workspace")?.classList.add("hidden");
   $("#dashboard")?.classList.remove("hidden");
+  // Leaving a conversation releases its subscription, as switching to another
+  // one does. Kept subscribed, a running session's events went on advancing
+  // its resume cursor with nothing showing them; reopening it from here then
+  // read a history that moved under it (deferred, so no Stop, an unlocked
+  // composer and no watchdog) and resubscribed past everything it had missed.
+  const leaving = currentId.value;
+  if (leaving) unsub(leaving);
   currentId.value = null;
   void loadDashboard();
   startDashPoll();
@@ -426,23 +499,6 @@ export function showWorkspace(): void {
     clearTimeout(searchTimer);
     searchTimer = 0;
   }
-  // The workspace header, the switcher and the session labels read
-  // `projects.value` as the whole directory. Opening a session from a
-  // dashboard card leaves the search box's page in place; reload it here
-  // so a project outside the filter does not render under a fallback name.
-  if (projectsLoadedQuery() !== "") {
-    const filtered = projects.value as ProjectLike[];
-    void loadProjects().then(() => {
-      // `loadProjects` empties the store when a *replace* fails, which is
-      // right for the dashboard card (it renders an error and a Retry) and
-      // wrong for this background refresh: an emptied store is exactly the
-      // fallback-name symptom this reload exists to remove.
-      if (projectsLoadError.value && !(projects.value as ProjectLike[]).length) {
-        projects.value = filtered;
-      }
-      binds.renderProjMenu();
-    });
-  }
   $("#dashboard")?.classList.add("hidden");
   $("#workspace")?.classList.remove("hidden");
   const view = $("#conv-view");
@@ -451,8 +507,4 @@ export function showWorkspace(): void {
 }
 
 binds.loadDashboard = loadDashboard;
-binds.startDashPoll = startDashPoll;
-binds.stopDashPoll = stopDashPoll;
 binds.renderDashProjects = renderDashProjects;
-binds.showDashboard = showDashboard;
-binds.showWorkspace = showWorkspace;

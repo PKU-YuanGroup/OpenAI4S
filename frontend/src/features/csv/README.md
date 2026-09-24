@@ -8,5 +8,5 @@ CSV/TSV parser. `scientific_renderers.js` is not modified; the RFC-4180-ish loop
 
 | File | Responsibility |
 | --- | --- |
-| [`csv.ts`](csv.ts) | `parseDelimited`, `csvFields`/`csv`, `delimiterFor`, `parseTable`. |
-| [`csv.test.ts`](csv.test.ts) | Quoted-newline sample: three paths, same grid. |
+| [`csv.ts`](csv.ts) | `parseDelimited`, `csvFields`/`csv`, `delimiterFor`, `parseTable`, and `tableShape` (row count and columns in one pass, for thumbnails). |
+| [`csv.test.ts`](csv.test.ts) | Quoted-newline sample: three paths, same grid; a declared CSV is never sniffed as JSON; repeated headers and cells past the header keep their own columns; `tableShape` agrees with `parseTable`. |

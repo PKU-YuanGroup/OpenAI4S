@@ -2,11 +2,11 @@ import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
-import { renderTableArtifact as renderTableArtifactM04 } from "../table";
-import { artifactWorkbench, _kc } from "../../stores/notebook";
+import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { applyArtifactIframeSandbox } from "../../islands/frames";
 import {
   callWindow,
+  controlDense,
   el,
   fetchArtifactText,
   hostWindow,
@@ -29,18 +29,6 @@ import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
-
-type RendererHost = HTMLElement & { _rendererRequest?: number };
-
-/** app.js:8710 */
-export function artifactWorkbenchOn(): boolean {
-  if (artifactWorkbench.value) return true;
-  const st = _kc.value.st;
-  if (st && typeof st === "object" && (st as { artifact_workbench?: unknown }).artifact_workbench) {
-    return true;
-  }
-  return false;
-}
 
 export function rendererFailure(container: HTMLElement, a: ArtifactRow, url: string): void {
   container.innerHTML = "";
@@ -84,21 +72,6 @@ export function renderMarkdownArtifact(container: HTMLElement, url: string): voi
 }
 
 const SOURCE_PREVIEW_CHARACTERS = 300000;
-
-/**
- * Control-character density only. `looksBinary` also flags long base64-like
- * runs, which is exactly what a JSON document with a big string value is.
- */
-function controlDense(text: string): boolean {
-  const sample = text.slice(0, 4096);
-  let ctrl = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const c = sample.charCodeAt(i);
-    if (c === 9 || c === 10 || c === 13) continue;
-    if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
-  }
-  return sample.length > 0 && ctrl / sample.length > 0.12;
-}
 
 function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
   const pre = el("pre", "renderer-source");
@@ -151,7 +124,9 @@ export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: 
       const nm = String(a.filename || "").toLowerCase();
       // Long string values are valid JSON even when they resemble encoded bytes.
       if (/json/.test(ct) || /\.json$/i.test(nm)) return renderStructuredText(container, a, text, url);
-      if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
+      // The tile directly, as the JSON branch does: `renderDownloadArtifact`
+      // sends a text-like name straight back here, which fetched forever.
+      if (looksBinary(text)) return renderDownloadCard(container, a, url);
       renderRawSource(container, a, text, url);
     })
     .catch(() => rendererFailure(container, a, url));
@@ -446,7 +421,7 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 }
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
-  if (artifactWorkbenchOn()) {
+  if (readWorkbenchFlag()) {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
     open.onclick = () => {
@@ -582,12 +557,12 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
   frame.dataset.currentPage = "1";
   frame.src = url + "#page=1";
   content.appendChild(frame);
-  if (artifactWorkbenchOn()) callWindow("renderLocatorComments", content, a, "pdf", frame);
+  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);
 }
 
 function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
   renderHtmlPreview(content, a);
-  if (artifactWorkbenchOn()) callWindow("renderLocatorComments", content, a, "html");
+  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "html");
 }
 
 function renderMolecule3dGlue(content: HTMLElement, url: string, nm: string): void {
@@ -655,10 +630,18 @@ export function renderArtifactDescriptor(
   else renderDownloadArtifact(content, a, url);
 }
 
-/** app.js:8637-8647 */
+/**
+ * app.js:8637-8647.
+ *
+ * A descriptor paints only while this call's loading row is still in the
+ * document. The guard used to be a counter on `body`, but `renderViewer`
+ * builds a fresh body every time, so a late descriptor for the previous
+ * artifact always matched its own counter and ran its glue: molecule()
+ * tore down the 3Dmol viewer now showing, and the image glue dropped the
+ * annotation draft being written. The row detaches with its body, and when
+ * any later render (or another modal) clears a reused body.
+ */
 export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
-  const host = body as RendererHost;
-  const request = (host._rendererRequest = (host._rendererRequest || 0) + 1);
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");
   loading.appendChild(iconEl("loader", 16, "spin"));
@@ -666,11 +649,11 @@ export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   body.appendChild(loading);
   artifactRendererDescriptor(a)
     .then((descriptor) => {
-      if (host._rendererRequest !== request) return;
+      if (!loading.isConnected) return;
       renderArtifactDescriptor(body, a, descriptor);
     })
     .catch(() => {
-      if (host._rendererRequest !== request) return;
+      if (!loading.isConnected) return;
       renderArtifactDescriptor(body, a, compatibilityRendererDescriptor(a));
     });
 }

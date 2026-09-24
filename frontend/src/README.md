@@ -8,9 +8,9 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 
 | File | Responsibility |
 | --- | --- |
-| [`app.test.ts`](app.test.ts) | Scaffold Vitest: `@preact/signals` updates. |
-| [`app.tsx`](app.tsx) | Workbench `App`. F-13 mounts the dashboard/workspace `Shell`. |
-| [`app.tsx`](app.tsx) | Empty-shell `App`. Replaced as real views land. |
+| [`app.test.ts`](app.test.ts) | Scaffold Vitest: `@preact/signals` updates; the app root repaints when the language changes. |
+| [`app.tsx`](app.tsx) | Workbench `App`. F-13 mounts the dashboard/workspace `Shell`; it reads `languageRevision`, so a language switch repaints the whole Shell tree. |
+| [`lane-names.test.ts`](lane-names.test.ts) | Every name passed to `callLane` / `callWindow` / `hostFn` / `laneCall` / `runIsland` is assigned somewhere: those lookups return undefined for a missing name, which ships as a control that silently does nothing. |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-20 imports `features/chrome` (`bootChrome`). Later items may add one module import here. |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-19 imports `features/customize` (`bootCustomize`). Later items may add one module import here. |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-17 imports `features/artifacts` (`bootArtifacts`). Later items may add one module import here. |
@@ -32,5 +32,5 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | [`features/`](features/) | F-series domain kernels. F-08 lands the pure-function markdown / highlight / CSV / stream-cap / scrub modules. |
 | [`i18n/`](i18n/) | F-07: extracted zh/en dictionaries, `t()` / `tOptional` runtime, plan-mode payload helper. |
 | [`stores/`](stores/) | F-05 signal modules. Later lanes import these files; they do not edit them. |
-| [`components/`](components/) | View containers. F-15 adds `timeline/` (island host for `#dock-timeline`). |
+| [`components/`](components/) | View containers. The Action Timeline has no container here: it is the imperative island in `features/timeline/`. |
 | [`islands/`](islands/) | F-18 imperative islands: 3Dmol lazy inject, image annotator, Ketcher, PDF/html-preview sandbox. |

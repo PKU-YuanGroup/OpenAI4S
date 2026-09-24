@@ -12,6 +12,7 @@ import { $, messagesHost } from "./dom";
 import { cancelFrame, scheduleFrame } from "./raf";
 
 let scrollRaf = 0;
+let pendingDown = false;
 let pendingForce = false;
 let pendingMeasure = false;
 let boundHost: HTMLElement | null = null;
@@ -39,9 +40,14 @@ function flushScroll(): void {
     _messagesFollow.value = messagesAtBottom(m);
     pendingMeasure = false;
   }
+  const follow = pendingDown;
   const force = pendingForce;
+  pendingDown = false;
   pendingForce = false;
-  if (force || _messagesFollow.value !== false) {
+  // Only down() scrolls. A scroll event (or updateJumpPill) measures and
+  // paints the pill, as app.js's onscroll did: scrolling there too snapped a
+  // reader who had moved up by less than the 80px pad straight back down.
+  if (follow && (force || _messagesFollow.value !== false)) {
     m.scrollTop = m.scrollHeight;
     _messagesFollow.value = true;
   }
@@ -57,6 +63,7 @@ function scheduleScroll(): void {
 
 /** app.js:12936. `force` pins follow and jumps even if the user had scrolled up. */
 export function down(force?: boolean): void {
+  pendingDown = true;
   if (force) pendingForce = true;
   scheduleScroll();
 }
@@ -76,6 +83,12 @@ function onJumpPillClick(): void {
   down(true);
 }
 
+/**
+ * Bind the throttled scroll listener and the jump pill. Call it after the
+ * Shell has rendered `#messages` (the workbench bind, not module import): a
+ * host created before `render()` is reused by Preact for the Shell's first
+ * `<div>`, which is how this listener once ended up on `#conn-banner`.
+ */
 export function bindMessageScroll(host?: HTMLElement | null): void {
   unbindMessageScroll();
   const m = host || messagesHost();
@@ -101,6 +114,7 @@ export function unbindMessageScroll(): void {
   }
   cancelFrame(scrollRaf);
   scrollRaf = 0;
+  pendingDown = false;
   pendingForce = false;
   pendingMeasure = false;
 }

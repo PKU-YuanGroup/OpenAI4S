@@ -21,6 +21,7 @@ class BranchNode {
   textContent = "";
   tagName: string;
   disabled = false;
+  dataset: Record<string, string> = {};
   onclick?: () => unknown;
   constructor(tag: string) { this.tagName = tag; }
   appendChild(child: BranchNode): BranchNode { this.children.push(child); return child; }

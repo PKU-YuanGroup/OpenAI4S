@@ -1,6 +1,10 @@
 import { field } from "./signal-field";
 
-/** S.projects — app.js:120 */
+/**
+ * S.projects — app.js:120. The project directory: the header, the switcher and
+ * every session or attention label name projects from it. A dashboard search
+ * never writes it; its page lives in `projectSearch`.
+ */
 export const projects = field(() => [] as unknown[]);
 /** S.sessions — app.js:120 */
 export const sessions = field(() => [] as unknown[]);
@@ -49,6 +53,17 @@ export const projectsHasMore = field(() => false);
 export const projectsTotal = field(() => 0);
 export const _projectsLoadingMore = field(() => false);
 export const projectsLoadError = field(() => false);
+/**
+ * The dashboard project search's pages, with their own paging state: while
+ * the box holds a query the project card shows these instead of the
+ * directory. Not part of the frozen S field set.
+ */
+export const projectSearch = field(() => [] as unknown[]);
+export const projectSearchNextCursor = field(() => null as string | null);
+export const projectSearchHasMore = field(() => false);
+export const projectSearchTotal = field(() => 0);
+export const _projectSearchLoadingMore = field(() => false);
+export const projectSearchLoadError = field(() => false);
 /** S._openGen — app.js:7137 */
 export const _openGen = field(() => 0);
 /** S.msgCursor — app.js:7134 */

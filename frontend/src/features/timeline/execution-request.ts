@@ -21,8 +21,9 @@
 
 import { pendingReplIdentity } from "../../stores/notebook";
 import { t } from "../../i18n/runtime";
+import { identityForOwner } from "../notebook/kernel";
 import { api, hint, optionalApi } from "./api";
-import { identityForOwner, rememberExecutionQueue } from "./island";
+import { rememberExecutionQueue } from "./island";
 import { S } from "./s";
 import { sanitizeExecutionQueue } from "./sanitize";
 
@@ -61,7 +62,7 @@ export async function exactExecutionIdentity(
       : null;
   if (pending && pending.owner && pending.owner.kind === ownerKind) return pending;
   if (frameId === S.currentId) {
-    const cached = identityForOwner(S.executionQueue, ownerKind) as ExecutionIdentity | null;
+    const cached = identityForOwner(S.executionQueue, ownerKind ?? null);
     if (cached) return cached;
     if (!ownerKind && S.executionIdentity) return S.executionIdentity as ExecutionIdentity;
   }
@@ -72,7 +73,7 @@ export async function exactExecutionIdentity(
   if (!snapshot) return null;
   const safe = sanitizeExecutionQueue(snapshot);
   if (frameId === S.currentId) rememberExecutionQueue(snapshot);
-  return identityForOwner(safe, ownerKind) as ExecutionIdentity | null;
+  return identityForOwner(safe, ownerKind ?? null);
 }
 
 /**

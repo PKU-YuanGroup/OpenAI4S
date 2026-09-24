@@ -1,8 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
-import { nestedEditor } from "../../features/customize/state";
+import { refreshCustTab } from "../../features/customize/actions";
+import { nestedEditor, type SkillSeed } from "../../features/customize/state";
+import { backdropClicked, notePress } from "../../features/customize/dismiss";
 import { skillReadinessNoteText } from "../../features/customize/environment";
 import {
   asList,
@@ -24,14 +25,33 @@ function skillVersionPath(name: string, scope: string, projectId: string | null)
   return `/skills/${encodedName}`;
 }
 
+const editorKeys = new WeakMap<object, number>();
+let lastEditorKey = 0;
+
+/**
+ * One key per opened editor. A form seeds its fields from props once, so
+ * without a key an editor opened over another of the same kind (a seeded
+ * "Save as skill" over an empty new skill) kept the fields it replaced.
+ */
+function editorKey(editor: object): number {
+  let key = editorKeys.get(editor);
+  if (key === undefined) {
+    key = ++lastEditorKey;
+    editorKeys.set(editor, key);
+  }
+  return key;
+}
+
 export function NestedEditor() {
   const editor = nestedEditor.value;
   if (!editor) return null;
+  const key = editorKey(editor);
   return (
     <div
       class="cust-nested"
+      onPointerDown={notePress}
       onClick={(e) => {
-        if (e.target === e.currentTarget) nestedEditor.value = null;
+        if (backdropClicked(e)) nestedEditor.value = null;
       }}
     >
       <div class="cust-nested-box">
@@ -47,17 +67,25 @@ export function NestedEditor() {
             <Icon name="x" size={16} />
           </button>
         </div>
-        {editor.kind === "skill" ? <SkillForm name={editor.name} /> : null}
+        {editor.kind === "skill" ? <SkillForm key={key} name={editor.name} seed={editor.seed} /> : null}
         {editor.kind === "skill-import" ? <SkillImport /> : null}
         {editor.kind === "skill-history" ? (
           <SkillHistory name={editor.name} scope={editor.scope} projectId={editor.projectId} />
         ) : null}
-        {editor.kind === "specialist" ? <SpecialistForm name={editor.name} /> : null}
+        {editor.kind === "specialist" ? <SpecialistForm key={key} name={editor.name} /> : null}
         {editor.kind === "connector" ? <ConnectorForm k={editor.connector} /> : null}
         {editor.kind === "job" ? <JobOutput id={editor.id} /> : null}
       </div>
     </div>
   );
+}
+
+/**
+ * Close `editor` once its save lands -- unless the user has already closed it
+ * or opened another, which a late save must not close in its place.
+ */
+function closeEditor(editor: typeof nestedEditor.value): void {
+  if (nestedEditor.value === editor) nestedEditor.value = null;
 }
 
 function titleFor(editor: NonNullable<typeof nestedEditor.value>): string {
@@ -73,30 +101,80 @@ function titleFor(editor: NonNullable<typeof nestedEditor.value>): string {
   return "";
 }
 
-function SkillForm({ name }: { name: string | null }) {
+/**
+ * An edit form's first read. Until it has succeeded there is nothing to save:
+ * the blank fields a failed read left behind used to be saved over the Skill
+ * or specialist on the server, and specialists keep no history to restore.
+ */
+function useEditorRead(path: string | null, apply: (row: Record<string, unknown>) => void) {
   const alive = useAlive();
-  const [nm, setNm] = useState(name || "");
-  const [desc, setDesc] = useState("");
-  const [body, setBody] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [read, setRead] = useState<{ loaded: boolean; error: string | null }>({
+    loaded: !path,
+    error: null,
+  });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (!name) return;
+    if (!path) return;
     void (async () => {
       try {
-        const cur = await api(`/skills/${encodeURIComponent(name)}`);
+        const row = await api(path);
         if (!alive()) return;
-        setNm(asString(cur.name, name));
-        setDesc(asString(cur.description));
-        setBody(asString(cur.body));
-      } catch {
-        /* keep blanks */
+        apply(row);
+        setRead({ loaded: true, error: null });
+      } catch (e) {
+        if (!alive()) return;
+        setRead({ loaded: false, error: t("versions.load.err", apiErrorText(e)) });
       }
     })();
-  }, [alive, name]);
+  }, [alive, path, attempt]);
+
+  const retry = () => {
+    setRead({ loaded: false, error: null });
+    setAttempt((n) => n + 1);
+  };
+  return { ...read, retry };
+}
+
+function EditorReadStatus({
+  read,
+}: {
+  read: { loaded: boolean; error: string | null; retry: () => void };
+}) {
+  if (read.loaded) return null;
+  if (!read.error) {
+    return (
+      <div class="cust-load-status" role="status" aria-live="polite">
+        {t("common.loading")}
+      </div>
+    );
+  }
+  return (
+    <div class="cust-load-status" role="alert" data-editor-read-error="1">
+      <div class="timeline-error">{read.error}</div>
+      <div class="form-actions">
+        <button type="button" class="outline-btn small" onClick={read.retry}>
+          {t("common.retry")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SkillForm({ name, seed }: { name: string | null; seed?: SkillSeed }) {
+  const [nm, setNm] = useState(name || seed?.name || "");
+  const [desc, setDesc] = useState(seed?.description || "");
+  const [body, setBody] = useState(seed?.body || "");
+  const [saving, setSaving] = useState(false);
+  const read = useEditorRead(name ? `/skills/${encodeURIComponent(name)}` : null, (cur) => {
+    setNm(asString(cur.name, name || ""));
+    setDesc(asString(cur.description));
+    setBody(asString(cur.body));
+  });
 
   return (
     <div class="skill-form">
+      <EditorReadStatus read={read} />
       <label class="skill-lbl">{t("cust.connectors.namePlaceholder")}</label>
       <input
         class="cust-input"
@@ -110,6 +188,7 @@ function SkillForm({ name }: { name: string | null }) {
         class="cust-input"
         placeholder={t("skill.descPlaceholder")}
         value={desc}
+        disabled={!read.loaded}
         onInput={(e) => setDesc((e.target as HTMLInputElement).value)}
       />
       <label class="skill-lbl">{t("skill.label.body")}</label>
@@ -117,20 +196,23 @@ function SkillForm({ name }: { name: string | null }) {
         class="skill-body"
         placeholder={t("skill.bodyPlaceholder")}
         value={body}
+        disabled={!read.loaded}
         onInput={(e) => setBody((e.target as HTMLTextAreaElement).value)}
       />
       <div class="form-actions">
         <button
           type="button"
           class="solid-btn"
-          disabled={saving}
+          disabled={saving || !read.loaded}
           onClick={async () => {
+            if (!read.loaded) return;
             const next = nm.trim();
             if (!next) {
               hint(t("toast.skill.enterName"), true);
               return;
             }
             setSaving(true);
+            const editor = nestedEditor.value;
             try {
               if (name)
                 await api(`/skills/${encodeURIComponent(name)}`, {
@@ -143,9 +225,9 @@ function SkillForm({ name }: { name: string | null }) {
                   body: JSON.stringify({ name: next, description: desc, body }),
                 });
               dropSkillsCatalog();
-              nestedEditor.value = null;
+              closeEditor(editor);
               hint(t("toast.skill.saved", next));
-              custTab("skills");
+              refreshCustTab("skills");
             } catch (e) {
               setSaving(false);
               hint(t("artifact.save.err", apiErrorText(e)), true);
@@ -206,9 +288,7 @@ export function SkillImport() {
             type="button"
             class="solid-btn"
             onClick={() => {
-              dropSkillsCatalog();
               nestedEditor.value = null;
-              custTab("skills");
             }}
           >
             {t("common.close")}
@@ -228,10 +308,12 @@ export function SkillImport() {
                 });
                 // The write has landed: every reader of the cached catalog
                 // (composer autocomplete, palette, send-time mention
-                // resolution) must see the new Skill even if the review pane
-                // is dismissed by Escape, the backdrop or the header X rather
-                // than the Close button below.
+                // resolution) and the Skills list behind this pane must see
+                // the new Skill even if the review pane is dismissed by
+                // Escape, the backdrop or the header X rather than the Close
+                // button below.
                 dropSkillsCatalog();
+                refreshCustTab("skills");
                 setReview(rec(r.review));
                 setSaving(false);
                 hint(t("toast.skill.imported", asString(r.name)));
@@ -323,7 +405,7 @@ function SkillHistory({
                         });
                         hint(t("skill.rollbackDone", name));
                         await load();
-                        custTab("skills");
+                        refreshCustTab("skills");
                       } catch (e) {
                         hint(t("toast.failed", apiErrorText(e)), true);
                       }
@@ -348,29 +430,19 @@ function rec(value: unknown): Record<string, unknown> {
 }
 
 function SpecialistForm({ name }: { name: string | null }) {
-  const alive = useAlive();
   const [nm, setNm] = useState(name || "");
   const [desc, setDesc] = useState("");
   const [prompt, setPrompt] = useState("");
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!name) return;
-    void (async () => {
-      try {
-        const cur = await api(`/specialists/${encodeURIComponent(name)}`);
-        if (!alive()) return;
-        setNm(asString(cur.name, name));
-        setDesc(asString(cur.description));
-        setPrompt(asString(cur.system_prompt));
-      } catch {
-        /* keep blanks */
-      }
-    })();
-  }, [alive, name]);
+  const read = useEditorRead(name ? `/specialists/${encodeURIComponent(name)}` : null, (cur) => {
+    setNm(asString(cur.name, name || ""));
+    setDesc(asString(cur.description));
+    setPrompt(asString(cur.system_prompt));
+  });
 
   return (
     <div class="skill-form">
+      <EditorReadStatus read={read} />
       <label class="skill-lbl">{t("cust.connectors.namePlaceholder")}</label>
       <input
         class="cust-input"
@@ -384,6 +456,7 @@ function SpecialistForm({ name }: { name: string | null }) {
         class="cust-input"
         placeholder={t("specialist.descPlaceholder")}
         value={desc}
+        disabled={!read.loaded}
         onInput={(e) => setDesc((e.target as HTMLInputElement).value)}
       />
       <label class="skill-lbl">{t("specialist.label.systemPrompt")}</label>
@@ -391,20 +464,23 @@ function SpecialistForm({ name }: { name: string | null }) {
         class="skill-body"
         placeholder={t("specialist.promptPlaceholder")}
         value={prompt}
+        disabled={!read.loaded}
         onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
       />
       <div class="form-actions">
         <button
           type="button"
           class="solid-btn"
-          disabled={saving}
+          disabled={saving || !read.loaded}
           onClick={async () => {
+            if (!read.loaded) return;
             const next = nm.trim();
             if (!next) {
               hint(t("toast.specialist.enterName"), true);
               return;
             }
             setSaving(true);
+            const editor = nestedEditor.value;
             const b = { name: next, description: desc, system_prompt: prompt };
             try {
               if (name)
@@ -413,9 +489,9 @@ function SpecialistForm({ name }: { name: string | null }) {
                   body: JSON.stringify(b),
                 });
               else await api("/specialists", { method: "POST", body: JSON.stringify(b) });
-              nestedEditor.value = null;
+              closeEditor(editor);
               hint(t("toast.specialist.saved", next));
-              custTab("specialists");
+              refreshCustTab("specialists");
             } catch (e) {
               setSaving(false);
               hint(t("artifact.save.err", apiErrorText(e)), true);
@@ -534,6 +610,7 @@ function ConnectorForm({ k }: { k: Record<string, unknown> }) {
               return;
             }
             setSaving(true);
+            const editor = nestedEditor.value;
             try {
               await api(`/connectors/${encodeURIComponent(asString(k.connector_id))}`, {
                 method: "PUT",
@@ -546,9 +623,9 @@ function ConnectorForm({ k }: { k: Record<string, unknown> }) {
                   remove_env: removeEnv,
                 }),
               });
-              nestedEditor.value = null;
+              closeEditor(editor);
               hint(t("cust.connectors.saved", name.trim()));
-              custTab("connectors");
+              refreshCustTab("connectors");
             } catch (e) {
               setSaving(false);
               hint(t("artifact.save.err", apiErrorText(e)), true);

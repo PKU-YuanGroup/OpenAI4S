@@ -14,7 +14,7 @@ import {
   mergeDelegationChildEvent,
   rememberExecutionQueue,
   rememberExecutionState,
-  renderActionTimeline,
+  scheduleActionTimelineRender,
   scheduleBranchConversationResync,
   scheduleWorkbenchRefresh,
   updateActionTimelineLedger,
@@ -22,6 +22,8 @@ import {
 import { S } from "./s";
 import {
   branchUndoFromProjection,
+  carryRevertPreview,
+  keepUnchanged,
   mergeActionTimelines,
   sanitizeActionTimeline,
   sanitizeBranches,
@@ -59,7 +61,7 @@ function handleExecutionQueue(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
   rememberExecutionQueue(m);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -68,15 +70,16 @@ function handleExecutionState(m: WsMessage): void {
   if (!mine(fid)) return;
   if (m.type === "execution_owner") {
     const current = S.executionQueue || sanitizeExecutionQueue({});
-    current.owner = m.owner
-      ? sanitizeExecutionQueue({ owner: { ...m, owner: m.owner } }).owner
-      : null;
-    S.executionQueue = current;
+    // A new object: the notebook's owner chips subscribe to executionQueue.
+    S.executionQueue = {
+      ...current,
+      owner: m.owner ? sanitizeExecutionQueue({ owner: { ...m, owner: m.owner } }).owner : null,
+    };
     if (m.owner && m.execution_id) rememberExecutionState({ ...m, status: "running" });
     else S.executionIdentity = null;
   } else rememberExecutionState(m);
   scheduleWorkbenchRefresh(60);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -93,7 +96,7 @@ function handleRecovery(m: WsMessage): void {
       ),
       log: (previous.log || []).concat(next.log || []).slice(-50),
     };
-  else S.recoveryState = next;
+  else S.recoveryState = keepUnchanged(previous, next);
   if (
     m.type === "recovery_state" ||
     ["completed", "failed", "partial", "cancelled"].includes(
@@ -101,9 +104,22 @@ function handleRecovery(m: WsMessage): void {
     )
   )
     scheduleWorkbenchRefresh(120);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
+
+/**
+ * Branch-list and checkpoint events change the branch projection and the
+ * checkpoint recovery would restore from; a revert or activation can change
+ * everything, so those still re-read the whole workbench.
+ */
+const BRANCH_LIST_EVENTS = new Set([
+  "branch",
+  "branch_state",
+  "checkpoint",
+  "checkpoint_created",
+  "branch_created",
+]);
 
 function handleBranch(m: WsMessage): void {
   const fid = eventFrameId(m);
@@ -123,10 +139,17 @@ function handleBranch(m: WsMessage): void {
       revert_checkpoint_id: publicText(m.checkpoint_id, 96),
     };
   if (m.branches || (m.payload && (m.payload as { branches?: unknown }).branches)) {
-    S.branchState = sanitizeBranches(m);
-    S.branchUndo = branchUndoFromProjection(S.branchState);
-  } else scheduleWorkbenchRefresh(m.type === "branch_activation_state" ? 0 : 80);
-  if (S.activeTab === "timeline") renderActionTimeline();
+    S.branchState = keepUnchanged(
+      S.branchState,
+      carryRevertPreview(S.branchState, sanitizeBranches(m)),
+    );
+    S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
+  } else
+    scheduleWorkbenchRefresh(
+      m.type === "branch_activation_state" ? 0 : 80,
+      BRANCH_LIST_EVENTS.has(String(m.type)) ? ["branches", "recoveryActions"] : undefined,
+    );
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -134,20 +157,15 @@ function handleDelegation(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
   if (m.type === "delegation_child_event") mergeDelegationChildEvent(m);
-  scheduleWorkbenchRefresh(60);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  scheduleWorkbenchRefresh(60, ["delegations"]);
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
 }
 
 function handleSandbox(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
-  S.securityState = sanitizeSecurity(m);
-  if (S.activeTab === "timeline") renderActionTimeline();
-}
-
-/** `kernel_status` is F-14; it also writes sandbox via this helper. */
-export function applyKernelSandbox(sandbox: unknown): void {
-  if (sandbox) S.securityState = sanitizeSecurity({ sandbox });
+  S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(m));
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
 }
 
 export function registerTimelineHandlers(): void {

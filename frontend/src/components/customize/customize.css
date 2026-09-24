@@ -1,26 +1,59 @@
 /* Lane-local Customize chrome. Class names match the frozen contract so F-21
    style.css can take over tokens; these rules keep the modal usable before
-   that lane lands. */
+   that lane lands.
+   Layout follows the design system's settings dialog: a surface-soft rail
+   that carries the "Settings" title, a canvas content column with a serif
+   page heading, and a round close button pinned to the top-right corner. */
 #cust.modal.hidden {
   display: none !important;
 }
 #cust.modal {
   position: fixed;
   inset: 0;
-  background: rgba(20, 18, 14, 0.34);
+  background: var(--scrim, rgba(20, 20, 19, 0.4));
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 60;
 }
 #cust .cust-box {
-  background: var(--panel, #fff);
-  border-radius: 12px;
-  width: min(920px, 94vw);
-  height: min(680px, 86vh);
+  position: relative;
+  background: var(--bg, #faf9f5);
+  border-radius: var(--radius-lg, 16px);
+  width: min(960px, 94vw);
+  height: min(800px, 90vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-shadow: none;
+}
+#cust .modal-head {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 26px 20px 0 28px;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+  font: 400 32px/1.15 var(--serif);
+  letter-spacing: -0.02em;
+  color: var(--text-000);
+}
+#cust .modal-head > * {
+  pointer-events: auto;
+}
+#cust #cust-close {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: 999px;
+  background: var(--bg, #faf9f5);
+}
+#cust #cust-close:hover {
+  background: var(--bg-100, #f5f0e8);
 }
 #cust .cust-body {
   flex: 1;
@@ -28,38 +61,152 @@
   min-height: 0;
 }
 #cust .cust-tabs {
-  width: 160px;
-  border-right: 0.5px solid var(--border, #0002);
-  padding: 10px;
+  flex: none;
+  width: 220px;
+  box-sizing: border-box;
+  border-right: 0;
+  background: var(--bg-100, #f5f0e8);
+  padding: 84px 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
+}
+#cust .cust-tab {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: var(--radius, 8px);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .cust-tab:hover {
+  background: var(--bg-200, #efe9de);
 }
 #cust .cust-tab.active {
-  background: var(--bg-300, #0001);
+  background: var(--bg-300, #e8e0d2);
 }
 #cust .cust-content {
   flex: 1;
   overflow: auto;
-  padding: 18px 22px;
+  padding: 44px 40px 40px;
   position: relative;
+}
+#cust .cust-h {
+  margin: 0 56px 12px 0;
+  font: 400 44px/1.1 var(--serif);
+  letter-spacing: -0.02em;
+  font-variant-numeric: lining-nums;
+  color: var(--text-000);
+}
+/* A later header in the same tab is a section, not the page title. */
+#cust .cust-content :not(:first-child) > .cust-h {
+  margin-top: 32px;
+  font-size: 28px;
+  line-height: 1.2;
+}
+#cust .cust-sub {
+  max-width: 40em;
+  margin-bottom: 24px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text-200);
+}
+#cust .cust-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-soft, #ebe6df);
+  gap: 16px;
+}
+#cust .cust-row .nm {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .cust-row .ds {
+  margin-top: 2px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-400);
+}
+#cust .cust-subhead {
+  padding: 28px 0 8px;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-000);
+}
+#cust .cust-note {
+  font-size: 14px;
+  color: var(--text-400);
+}
+#cust .skill-lbl {
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .skill-form {
+  gap: 6px;
+}
+#cust .cust-input {
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 15px;
+}
+#cust .form-actions {
+  margin-top: 20px;
+}
+/* Row-level actions inside a tab are secondary; coral stays for the page's
+   one primary action (a full-size .solid-btn). */
+#cust .cust-content .solid-btn.small {
+  border: 1px solid var(--border-btn, #e6dfd8);
+  background: var(--bg, #faf9f5);
+  color: var(--text-000, #141413);
+}
+#cust .cust-content .solid-btn.small:hover {
+  background: var(--bg-100, #f5f0e8);
+}
+#cust .cust-content .solid-btn.small:disabled {
+  color: var(--text-400, #6c6a64);
+}
+/* A button right after a field matches the field's height. */
+#cust .cust-input + .solid-btn,
+#cust .cust-input + .outline-btn {
+  height: 40px;
+  padding: 0 14px;
+}
+/* Vendor cards (DataPro, Doubao search) are a surface-soft band, no outline. */
+#cust .datapro-card {
+  border: 0;
+  border-radius: var(--radius-card, 12px);
+  background: var(--bg-100, #f5f0e8);
+  padding: 20px;
 }
 #cust .cust-nested {
   position: absolute;
   inset: 0;
-  background: rgba(20, 18, 14, 0.34);
+  background: var(--scrim, rgba(20, 20, 19, 0.4));
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2;
+  z-index: 3;
 }
 #cust .cust-nested-box {
-  background: var(--panel, #fff);
-  border-radius: 12px;
+  background: var(--bg, #faf9f5);
+  border-radius: var(--radius-lg, 16px);
   width: min(640px, 90%);
   max-height: 80%;
   overflow: auto;
-  padding: 16px 18px;
+  padding: 24px 28px;
+}
+#cust .cust-nested-box .modal-head {
+  position: static;
+  padding: 0 0 12px;
+  font-size: 24px;
+  pointer-events: auto;
 }
 .prof-cap[data-state="true"] {
   color: var(--success-text, inherit);
@@ -72,6 +219,33 @@
 }
 .cust-load-status {
   margin-bottom: 12px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-300, inherit);
+}
+@media (max-width: 900px) {
+  #cust .modal-head {
+    position: static;
+    align-items: center;
+    padding: 16px 16px 8px 20px;
+    font-size: 24px;
+  }
+  #cust .cust-body {
+    flex-direction: column;
+  }
+  #cust .cust-tabs {
+    width: auto;
+    flex-direction: row;
+    padding: 8px 12px;
+    overflow-x: auto;
+  }
+  #cust .cust-tab {
+    white-space: nowrap;
+  }
+  #cust .cust-content {
+    padding: 24px 20px;
+  }
+  #cust .cust-h {
+    margin-right: 0;
+    font-size: 32px;
+  }
 }

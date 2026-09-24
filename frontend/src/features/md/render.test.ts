@@ -140,3 +140,38 @@ describe("renderMd esc-then-markup chain", () => {
     expect(html).toContain("</table></div>");
   });
 });
+
+describe("renderMd on pathological input", () => {
+  it("renders 12,000 nested blockquotes instead of overflowing the stack", () => {
+    const html = renderMd(">".repeat(12000) + " the bottom");
+    expect(html).toContain("the bottom");
+    // Nesting stops at a readable depth; the rest renders as text.
+    expect(html.match(/<blockquote>/g)).toHaveLength(32);
+    expect(renderMd("> a\n>> b\n> c")).toBe(
+      "<blockquote><p>a</p><blockquote><p>b</p></blockquote><p>c</p></blockquote>",
+    );
+  });
+
+  it("renders 12,000 ever-deeper list items instead of overflowing the stack", () => {
+    const lines = Array.from({ length: 12000 }, (_, i) => " ".repeat(i) + "- item " + i);
+    const html = renderMd(lines.join("\n"));
+    expect(html).toContain("item 11999");
+    expect(renderMd("- a\n  - b\n- c")).toBe("<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>");
+  });
+
+  it("does not rescan a long run of [ for every [ (it was quadratic)", () => {
+    const run = "[".repeat(60000);
+    const started = performance.now();
+    expect(mdInline(run)).toBe(run);
+    expect(mdInline("![".repeat(30000))).toBe("![".repeat(30000));
+    // ~1ms linear; the quadratic scan took seconds at this size.
+    expect(performance.now() - started).toBeLessThan(400);
+  });
+
+  it("still links bracket text, and an unbalanced [ stays text", () => {
+    expect(mdInline("[a [b](https://ex.com/x)")).toBe(
+      '[a <a href="https://ex.com/x" target="_blank" rel="noopener">b</a>',
+    );
+    expect(mdInline("![plot](https://ex.com/p.png)")).toBe('<img alt="plot" src="https://ex.com/p.png">');
+  });
+});

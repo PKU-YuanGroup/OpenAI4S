@@ -11,8 +11,8 @@ WebSocket transport for the workbench. Port of `connectWS` / `onEvent` from `ope
 | [`types.ts`](types.ts) | `WsMessage` / `WsHandler`. |
 | [`registry.ts`](registry.ts) | Map registry, `registerWsHandler`, inner `onEvent`. |
 | [`guards.ts`](guards.ts) | `mine`, `isStaleTurnEvent`, `eventFrameId`, `tryLane`. |
-| [`connect.ts`](connect.ts) | `connectWS`, `sub`/`unsub`, ping, reconnect, `handleIncomingMessage` (cursor). |
-| [`handlers.ts`](handlers.ts) | `replay_begin`/`replay_end`; `frame_update` in-place patch + 300ms trailing load; `artifact_created` upsert + 150ms trailing load. |
+| [`connect.ts`](connect.ts) | `connectWS`, `sub`/`unsub`, ping, reconnect, `handleIncomingMessage` (cursor, written in place: sampled, never subscribed). |
+| [`handlers.ts`](handlers.ts) | `replay_begin`/`replay_end`; `frame_update` in-place patch + 300ms trailing load; `artifact_created` upsert (new list, `_artBust` and `_tbl` values, so subscribers see it) + 150ms trailing load. |
 | [`index.ts`](index.ts) | `installWs` / `bootWs` and public re-exports. |
 | [`registry.test.ts`](registry.test.ts) | Duplicate register throws; handler throw does not advance the cursor. |
 | [`handlers.test.ts`](handlers.test.ts) | Epoch mismatch, gap reload, mine / isStaleTurnEvent, session patch, artifact upsert, debounce. |

@@ -1,3 +1,4 @@
+import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   _artBust,
@@ -133,6 +134,27 @@ describe("artifact version cache (app.js:8353-8401)", () => {
     const rows = artifacts.value as ArtifactRow[];
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe("fresh");
+  });
+
+  it("loadArtifacts publishes a new cache-bust map when a version moves (AUDIT S04)", async () => {
+    currentId.value = "f1";
+    _artVer.value.a1 = "v1";
+    const before = _artBust.value;
+    let notified = 0;
+    const stop = effect(() => {
+      void _artBust.value;
+      notified += 1;
+    });
+    setArtifactsFetch(async () => jsonResponse([{ id: "a1", version_id: "v2" }, { id: "a2", version_id: "w1" }]));
+    try {
+      await loadArtifacts("f1");
+      expect(_artBust.value).not.toBe(before);
+      expect(_artBust.value).toEqual({ a1: "v2" });
+      expect(notified).toBe(2);
+      expect(artUrl({ id: "a1" })).toBe("/api/v1/artifacts/a1?_=v2");
+    } finally {
+      stop();
+    }
   });
 
   it("ApiError carries code and request id", () => {

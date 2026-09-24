@@ -72,6 +72,33 @@ export function timelineOrdinal(value: unknown): number | null {
     : null;
 }
 
+/**
+ * Structural equality for sanitized projections: plain objects, arrays and
+ * primitives. Every refresh rebuilds each projection from JSON; comparing
+ * lets an unchanged one keep its identity, which is what the ledger's row
+ * reuse, the inspector and the Timeline's panel cache all key on.
+ */
+export function sameProjection(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, index) => sameProjection(item, b[index]));
+  }
+  const left = a as Record<string, unknown>,
+    right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every(
+    (key) => Object.prototype.hasOwnProperty.call(right, key) && sameProjection(left[key], right[key]),
+  );
+}
+
+/** `previous` when `next` says the same thing, else `next`. */
+export function keepUnchanged<T>(previous: T | null | undefined, next: T): T {
+  return previous != null && sameProjection(previous, next) ? (previous as T) : next;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -227,12 +254,16 @@ export function mergeActionTimelines(
   )
     return incoming;
   const deduped = new Map<string, TimelineGroup>();
+  const known = new Map((current.groups || []).map((group) => [group && group.group_id, group]));
   const ordered =
     direction === "before"
       ? (incoming.groups || []).concat(current.groups || [])
       : (current.groups || []).concat(incoming.groups || []);
   ordered.forEach((group) => {
-    if (group && group.group_id) deduped.set(group.group_id, group);
+    if (!group || !group.group_id) return;
+    // A re-sent group that did not change keeps the object already on screen.
+    const previous = known.get(group.group_id);
+    deduped.set(group.group_id, previous && sameProjection(previous, group) ? previous : group);
   });
   const groups = Array.from(deduped.values()).sort((a, b) => {
     const left = timelineOrdinal(a.ordinal),
@@ -254,7 +285,7 @@ export function mergeActionTimelines(
   const hasMoreAfter = !!afterSource.has_more_after;
   const first = groups[0];
   const last = groups[groups.length - 1];
-  return {
+  const merged: ActionTimeline = {
     ...afterSource,
     root_frame_id: incoming.root_frame_id || current.root_frame_id,
     branch_id: incoming.branch_id || current.branch_id,
@@ -274,6 +305,7 @@ export function mergeActionTimelines(
     last_ordinal: groups.length ? (last ? last.ordinal : null) : null,
     running: direction === "before" ? !!current.running : !!incoming.running,
   };
+  return sameProjection(current, merged) ? current : merged;
 }
 
 export function queueMetadata(raw: unknown): QueueMetadata {
@@ -548,6 +580,31 @@ export function sanitizeBranches(payload: unknown): BranchState {
       }),
     revert_preview: sanitizeRevertPreview(source.revert_preview),
   };
+}
+
+/**
+ * A revert preview is requested by the client and lives only in the client's
+ * branch state, so every projection refresh (sanitizeBranches builds a new
+ * state) used to drop it together with its Revert button. Carry it over while
+ * it still describes the branch: same branch, and a head that has not moved
+ * since the preview was taken (its diff is relative to that head). A refresh
+ * that brings its own preview wins.
+ */
+export function carryRevertPreview(
+  previous: BranchState | null | undefined,
+  next: BranchState,
+): BranchState {
+  const preview = previous && previous.revert_preview;
+  if (!preview || next.revert_preview) return next;
+  if (preview.branch_id && preview.branch_id !== next.branch_id) return next;
+  const branch = (next.branches || []).find((item) => item.branch_id === next.branch_id);
+  if (!branch) return next;
+  const unchanged = preview.current_checkpoint_id
+    ? preview.current_checkpoint_id === branch.head_checkpoint_id
+    : (branch.checkpoints || []).some(
+        (checkpoint) => checkpoint.checkpoint_id === preview.target_checkpoint_id,
+      );
+  return unchanged ? { ...next, revert_preview: preview } : next;
 }
 
 export function branchUndoFromProjection(state: BranchState | null): BranchUndo | null {

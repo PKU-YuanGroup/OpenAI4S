@@ -1,8 +1,10 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import { MOL_VENDOR_SRC } from "./mol";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { _molView } from "../stores/artifacts";
+import { resetStoreFields } from "../stores/signal-field";
+import { MOL_VENDOR_SRC, molecule } from "./mol";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactsDir = join(here, "../features/artifacts");
@@ -60,5 +62,119 @@ describe("3Dmol lazy injection (app.js:9665-9672)", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("one live 3Dmol viewer (AUDIT A37)", () => {
+  class FakeEl {
+    children: FakeEl[] = [];
+    parent: FakeEl | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    src = "";
+    style: Record<string, string> = {};
+    classList = { add() {}, remove() {} };
+    onclick: (() => void) | null = null;
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly tagName = "div") {}
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    set innerHTML(_value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+    }
+    appendChild(child: FakeEl): FakeEl {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    remove(): void {
+      if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+      this.parent = null;
+    }
+    querySelector(): null {
+      return null;
+    }
+  }
+  const walk = (node: FakeEl): FakeEl[] => [node, ...node.children.flatMap(walk)];
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  function setup() {
+    resetStoreFields();
+    const head = new FakeEl("head");
+    head.page = true;
+    vi.stubGlobal("document", { head, createElement: (tag: string) => new FakeEl(tag) });
+    const page = new FakeEl();
+    page.page = true;
+    const views: FakeEl[] = [];
+    const runtime = {
+      createViewer: vi.fn((view: FakeEl) => {
+        views.push(view);
+        return { addModel: () => ({ selectedAtoms: () => [] }), setStyle() {}, zoomTo() {}, render() {}, clear() {} };
+      }),
+    };
+    let releaseA!: () => void;
+    const heldA = new Promise<void>((resolve) => { releaseA = resolve; });
+    const fetch = vi.fn(async (url: string) => {
+      if (url === "/a.pdb") await heldA;
+      return new Response("ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const host = (node: FakeEl) => node as unknown as HTMLElement;
+    return { head, page, views, runtime, releaseA, fetch, host };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("lets only the latest structure create the viewer", async () => {
+    const { page, views, runtime, releaseA, host } = setup();
+    vi.stubGlobal("$3Dmol", runtime);
+    const first = page.appendChild(new FakeEl());
+    const second = page.appendChild(new FakeEl());
+    molecule(host(first), "/a.pdb", "a.pdb");
+    molecule(host(second), "/b.pdb", "b.pdb");
+    await vi.waitFor(() => expect(views).toHaveLength(1));
+    releaseA();
+    for (let i = 0; i < 3; i++) await settle();
+    expect(views).toHaveLength(1);
+    expect(walk(second)).toContain(views[0]);
+    expect(_molView.value).toBe(views[0]);
+  });
+
+  it("creates no viewer for a structure whose view was replaced", async () => {
+    const { page, views, runtime, releaseA, host } = setup();
+    vi.stubGlobal("$3Dmol", runtime);
+    const first = page.appendChild(new FakeEl());
+    molecule(host(first), "/a.pdb", "a.pdb");
+    first.remove();
+    releaseA();
+    for (let i = 0; i < 3; i++) await settle();
+    expect(views).toHaveLength(0);
+    expect(_molView.value).toBeNull();
+  });
+
+  it("injects the vendored script once for structures opened before it loads", async () => {
+    const { head, page, views, runtime, fetch, releaseA, host } = setup();
+    const first = page.appendChild(new FakeEl());
+    const second = page.appendChild(new FakeEl());
+    molecule(host(first), "/a.pdb", "a.pdb");
+    molecule(host(second), "/b.pdb", "b.pdb");
+    const scripts = head.children.filter((node) => node.tagName === "script");
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]!.src).toBe(MOL_VENDOR_SRC);
+    vi.stubGlobal("$3Dmol", runtime);
+    scripts[0]!.onload?.();
+    releaseA();
+    await vi.waitFor(() => expect(views).toHaveLength(1));
+    for (let i = 0; i < 3; i++) await settle();
+    expect(views).toHaveLength(1);
+    expect(walk(second)).toContain(views[0]);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,47 +1,82 @@
-/* M-04 Schema / Distribution / Export. Tokens come from the shell; F-21 owns globals. */
+/* M-04 Schema / Distribution / Export. Tokens come from the shell; F-21 owns globals.
+   Schema and distribution are surface-card panels, export is a hairline card,
+   and the histogram is drawn in ink. */
 
 .wb-table-zones {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 0.5px solid var(--border, #d8d6d0);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+  padding: 0 0 8px;
+  border-top: 0;
+}
+
+.wb-table-schema,
+.wb-table-distribution {
+  padding: 20px 20px 16px;
+  border-radius: var(--radius-card, 12px);
+  background: var(--bg-200, #efe9de);
+}
+
+.wb-table-export-zone {
+  padding: 20px;
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius-card, 12px);
 }
 
 .wb-table-zone-title {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0 0 12px;
+  color: var(--text-000, #141413);
 }
 
 .wb-table-approx {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid var(--warning, #ca8a04);
-  border-radius: 6px;
-  background: var(--surface-1, transparent);
-  color: inherit;
-  font-size: 12px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: var(--radius, 8px);
+  background: var(--warn-bg, #f7ecd2);
+  color: var(--text-200, #3d3d3a);
+  font-size: 13px;
 }
 
 .wb-table-approx strong {
-  color: var(--warning, #ca8a04);
+  color: var(--warn-text, #8a5b08);
 }
 
 .wb-table-schema-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .wb-table-schema-table th,
 .wb-table-schema-table td {
   text-align: left;
-  padding: 4px 8px;
-  border-bottom: 0.5px solid var(--border, #d8d6d0);
+  padding: 8px 8px 8px 0;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(20, 20, 19, 0.07);
+}
+
+.wb-table-schema-table tr:first-child th {
+  padding-top: 0;
+  color: var(--text-300, #55534e);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.wb-table-schema-table th {
+  font-weight: 500;
+  color: var(--text-000, #141413);
+}
+
+.wb-table-schema-table tr:last-child th,
+.wb-table-schema-table tr:last-child td {
+  border-bottom: 0;
 }
 
 .wb-table-unique-approx {
@@ -49,52 +84,55 @@
 }
 
 .wb-table-col-type {
-  color: var(--text-400, #6b6a66);
+  color: var(--text-300, #55534e);
   font-family: var(--mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .wb-table-dist-col {
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 
 .wb-table-dist-head {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
+  font-size: 14px;
 }
 
 .wb-table-stats {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 2px 10px;
-  margin: 0 0 6px;
-  font-size: 12px;
+  gap: 2px 12px;
+  margin: 0 0 10px;
+  font-size: 13px;
 }
 
 .wb-table-stats dt {
-  color: var(--text-400, #6b6a66);
+  color: var(--text-300, #55534e);
 }
 
 .wb-table-stats dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
+  color: var(--text-000, #141413);
 }
 
 .wb-hist {
   display: flex;
   align-items: flex-end;
-  gap: 1px;
-  height: 48px;
+  gap: 2px;
+  height: 64px;
   width: 100%;
 }
 
 .wb-hist-bar {
   flex: 1 1 0;
   min-width: 2px;
-  background: var(--accent, #2563eb);
-  opacity: 0.85;
+  border-radius: 1px;
+  background: var(--ink, #141413);
+  opacity: 0.82;
 }
 
 .wb-hist-meta,
@@ -103,17 +141,21 @@
 .wb-table-export-meta,
 .wb-table-profile-error,
 .wb-table-export-missing {
-  font-size: 12px;
-  color: var(--text-400, #6b6a66);
-  margin: 4px 0;
-}
-
-.wb-table-export-link {
-  display: inline-block;
+  font-size: 13px;
+  color: var(--text-300, #55534e);
   margin: 6px 0;
 }
 
+.wb-table-export-note {
+  color: var(--text-400, #6c6a64);
+}
+
+.wb-table-export-link {
+  display: inline-flex;
+  margin: 8px 0 0;
+}
+
 .wb-table-parquet {
-  font-size: 12px;
-  color: var(--text-400, #6b6a66);
+  font-size: 13px;
+  color: var(--text-400, #6c6a64);
 }

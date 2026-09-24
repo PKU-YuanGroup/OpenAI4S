@@ -9,7 +9,8 @@ M-02 仪表盘「需要处理」卡片流。数据来自 `GET /api/v1/attention`
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | `GET /attention` 分页拉取；页面不可见时丢弃迟到响应。 |
-| [`boot.ts`](boot.ts) | 挂载 `#dash-attention`、4 秒轮询、可见性与仪表盘 class 门闩。 |
+| [`boot.ts`](boot.ts) | 挂载 `#dash-attention`；读取搭仪表盘的 4 秒轮询（`sessions/dashboard.ts` 的 `onDashPoll`），随它启动、停止和暂停；切换语言会重新读取一页（卡片标签在读取时生成）。 |
+| [`boot.test.ts`](boot.test.ts) | 只有真正切换语言时才会重新读取注意力列表；读取搭仪表盘的轮询。 |
 | [`cards.test.ts`](cards.test.ts) | 六类 fixture 各一张卡；idle/completed 为 0；mutation 路由名。 |
 | [`copy.ts`](copy.ts) | M-02 覆盖文案（不改生成的 i18n 字典）。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
@@ -17,6 +18,6 @@ M-02 仪表盘「需要处理」卡片流。数据来自 `GET /api/v1/attention`
 | [`navigate.test.ts`](navigate.test.ts) | 闭集 target → 本地 session 路径 + exact dock；忽略 URL 字段。 |
 | [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`。 |
 | [`parse.ts`](parse.ts) | 闭集 item 解析与 `cardsFromItems` 映射。 |
-| [`poll.ts`](poll.ts) | `shouldFetchAttention` / `ATTENTION_POLL_MS = 4000`。 |
+| [`poll.ts`](poll.ts) | `shouldFetchAttention`：只在仪表盘可见且页面可见时读取。 |
 | [`state.ts`](state.ts) | 车道局部 signal。不上升进 `stores/`。 |
 | [`types.ts`](types.ts) | B-05 item/target 类型，以及闭集 `SOURCE_KINDS` / `SURFACES` / `DOCKS`。 |

@@ -7,10 +7,36 @@
  * `classList.remove("hidden")`.
  */
 
+import { LANG } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import { API } from "./api";
 import { byId, el } from "./dom";
 import { closeModalEl, openModalEl } from "./modal";
+
+/**
+ * Admin-panel section headings. A local table: the generated
+ * `i18n/en.ts` / `zh.ts` extracts are byte-checked and must not grow.
+ */
+const SECTION_COPY: Record<"zh" | "en", Record<string, string>> = {
+  zh: {
+    users: "用户",
+    usage: "用量",
+    quotas: "配额",
+    invites: "邀请",
+    audit: "审计（最近 50 条）",
+  },
+  en: {
+    users: "Users",
+    usage: "Usage",
+    quotas: "Quotas",
+    invites: "Invites",
+    audit: "Audit (latest 50)",
+  },
+};
+
+export function teamSectionTitle(key: string): string {
+  return (SECTION_COPY[LANG] || SECTION_COPY.en)[key] || SECTION_COPY.en[key] || key;
+}
 
 type TeamUser = {
   id?: string;
@@ -34,7 +60,8 @@ type TeamFilesBody = {
   path?: string;
 };
 
-const tfState = { path: "" };
+/** `path` is the directory on screen (and the Upload target); `seq` the latest read. */
+const tfState = { path: "", seq: 0 };
 
 export function resetTeamFilesPath(): void {
   tfState.path = "";
@@ -236,12 +263,23 @@ function probeTeamFiles(): void {
     .catch(() => undefined);
 }
 
+/**
+ * Only the latest read renders, and the path changes when its listing does.
+ * Opening a slow directory A and then its sibling B used to paint A's rows
+ * when A answered last while `tfState.path` said B, and Upload (overwrite=1)
+ * then wrote into B under names read from A.
+ */
 function loadTeamFiles(path: string): void {
-  tfState.path = path || "";
-  const url = API + "/files" + (tfState.path ? "?path=" + encodeURIComponent(tfState.path) : "");
+  const target = path || "";
+  const seq = ++tfState.seq;
+  const url = API + "/files" + (target ? "?path=" + encodeURIComponent(target) : "");
   fetch(url)
     .then((r) => r.json().then((b: TeamFilesBody) => ({ ok: r.ok, body: b })))
-    .then((res) => renderTeamFiles(res))
+    .then((res) => {
+      if (seq !== tfState.seq) return;
+      tfState.path = target;
+      renderTeamFiles(res);
+    })
     .catch(() => undefined);
 }
 
@@ -253,6 +291,9 @@ function renderTeamFiles(res: { ok: boolean; body: TeamFilesBody }): void {
   list.textContent = "";
   if (!res.ok) {
     list.textContent = (res.body && res.body.error) || "unavailable";
+    // Nothing is listed, so there is no directory on screen to upload into.
+    const upBtn = byId("team-files-upload");
+    if (upBtn) upBtn.style.display = "none";
     return;
   }
   const home = document.createElement("a");
@@ -345,6 +386,16 @@ function table(box: HTMLElement, headers: string[], rows: unknown[][]): void {
   }
 }
 
+/**
+ * Audit `ts` is epoch milliseconds (storage/team.py `_clock_ms`). As a string
+ * it parsed as a date string and every row read "Invalid Date".
+ */
+export function auditWhen(ts: unknown): string {
+  const text = ts == null ? "" : String(ts).trim();
+  const when = /^-?\d+(\.\d+)?$/.test(text) ? new Date(Number(text)) : new Date(text);
+  return Number.isNaN(when.getTime()) ? text : when.toLocaleString();
+}
+
 function jget(path: string): Promise<unknown> {
   return fetch(API + path).then((r) => (r.ok ? r.json() : null));
 }
@@ -371,9 +422,9 @@ export async function loadAdmin(): Promise<void> {
     users.forEach((u) => {
       if (u.id && u.username) idName[u.id] = u.username;
     });
-    table(section(body, "Users"), ["user", "role", "state", "id"],
+    table(section(body, teamSectionTitle("users")), ["user", "role", "state", "id"],
       users.map((u) => [u.username, u.role, u.disabled ? "disabled" : "active", u.id]));
-    table(section(body, "Usage"), ["user", "project", "kind", "total", "events"],
+    table(section(body, teamSectionTitle("usage")), ["user", "project", "kind", "total", "events"],
       usage.map((r) => [
         idName[String(r.user_id)] || r.user_id,
         r.project_id,
@@ -381,18 +432,18 @@ export async function loadAdmin(): Promise<void> {
         Math.round(Number(r.total) * 100) / 100,
         r.events,
       ]));
-    table(section(body, "Quotas"), ["scope", "scope id", "kind", "limit", "window"],
+    table(section(body, teamSectionTitle("quotas")), ["scope", "scope id", "kind", "limit", "window"],
       quotas.map((r) => [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]));
-    table(section(body, "Invites"), ["prefix", "project", "by", "state"],
+    table(section(body, teamSectionTitle("invites")), ["prefix", "project", "by", "state"],
       invites.map((r) => [
         r.token_prefix,
         r.project_id,
         r.created_by,
         r.live ? "live" : (r.used_at ? "used/revoked" : "expired"),
       ]));
-    table(section(body, "Audit (latest 50)"), ["when", "actor", "action", "target"],
+    table(section(body, teamSectionTitle("audit")), ["when", "actor", "action", "target"],
       audit.map((r) => [
-        new Date(String(r.ts)).toLocaleString(),
+        auditWhen(r.ts),
         r.actor,
         r.action,
         r.target || r.user_id || "",

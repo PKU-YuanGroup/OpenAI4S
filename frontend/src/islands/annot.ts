@@ -370,7 +370,7 @@ function toggleAnnotList(anchor: HTMLElement): void {
       const art = ((artifactsSignal.value || []) as ArtifactRow[]).find(
         (x) => x.id === an.artifact_id,
       );
-      if (art) openViewer(art);
+      if (art) void openViewer(art);
     };
     const rm = el("button", "annot-mini danger", translate("btn.remove"));
     rm.onclick = async () => {
@@ -378,7 +378,10 @@ function toggleAnnotList(anchor: HTMLElement): void {
         const id = annotationId(an);
         await deleteAnnotations(id ? [id] : []);
         pop.remove();
-        if (openAnnotations().length && anchor.parentElement) toggleAnnotList(anchor);
+        // Deleting repaints the badge (`bar.innerHTML = ""`), so `anchor` is
+        // gone; reopen on the chip that replaced it.
+        const chip = $("#annot-bar .annot-chip");
+        if (openAnnotations().length && chip) toggleAnnotList(chip);
       } catch (err) {
         hint(translate("annot.remove.err", apiErrorText(err)), true);
       }

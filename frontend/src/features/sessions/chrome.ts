@@ -10,6 +10,8 @@
 import { LANG } from "../../i18n";
 import { _menu } from "../../stores/ui";
 import { ws as wsSignal } from "../../stores/stream";
+import { apiErrorText } from "./api";
+import { actionFailedCopy } from "./copy";
 import { $, el } from "./dom";
 import { icon, iconEl } from "./icon";
 import { effect } from "@preact/signals";
@@ -35,6 +37,15 @@ export function hint(text?: string | null, err?: boolean, spin?: boolean): void 
   const s = el("span", null, shown);
   if (err) s.style.color = "var(--danger)";
   h.appendChild(s);
+}
+
+/**
+ * The rejection handler for a fire-and-forget action (a row click that
+ * navigates, a menu opened through a dynamic import): the failure is shown
+ * instead of surfacing as an unhandled rejection nobody sees.
+ */
+export function reportFailure(error: unknown): void {
+  hint(actionFailedCopy(apiErrorText(error)), true);
 }
 
 export type MenuItem =
@@ -148,22 +159,39 @@ export function bindCloseTab(node: HTMLElement, activate: () => void): void {
 
 let activateObserver: MutationObserver | null = null;
 
+/**
+ * Where later lanes insert `.tile` / `.art` / `.t-close` nodes: the dock's tab
+ * bar, the Files pane, and the transcript's artifact strips, which are direct
+ * children of `#messages` and grow later inside their `.gen-tiles` ("more").
+ * Watching only these, instead of the whole body with its subtree, keeps a
+ * streaming transcript's mutations out of the callback.
+ */
+const ACTIVATE_HOSTS: ReadonlyArray<[string, MutationObserverInit]> = [
+  ["#dock-tabs", { childList: true }],
+  ["#dock-files", { childList: true, subtree: true }],
+  ["#messages", { childList: true }],
+];
+const TILE_ROWS = ".gen-tiles";
+
 export function watchActivateKeys(root: ParentNode = document): void {
   root.querySelectorAll(ACTIVATE_SEL).forEach((n) => ensureActivateKeys(n as HTMLElement));
   if (activateObserver || typeof MutationObserver === "undefined") return;
-  activateObserver = new MutationObserver((records) => {
+  const observer = new MutationObserver((records) => {
     for (const rec of records) {
       rec.addedNodes.forEach((n) => {
         if (!(n instanceof HTMLElement)) return;
         if (n.matches(ACTIVATE_SEL)) ensureActivateKeys(n);
         n.querySelectorAll(ACTIVATE_SEL).forEach((child) => ensureActivateKeys(child as HTMLElement));
+        n.querySelectorAll(TILE_ROWS).forEach((row) => observer.observe(row, { childList: true }));
       });
     }
   });
-  activateObserver.observe(root instanceof Document ? root.body : (root as Element), {
-    childList: true,
-    subtree: true,
-  });
+  activateObserver = observer;
+  for (const [selector, init] of ACTIVATE_HOSTS) {
+    const host = root.querySelector(selector);
+    if (host) observer.observe(host, init);
+  }
+  root.querySelectorAll(TILE_ROWS).forEach((row) => observer.observe(row, { childList: true }));
 }
 
 function disconnectCopy(): string {

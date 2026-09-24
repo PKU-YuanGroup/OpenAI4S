@@ -6,7 +6,7 @@
  * deliverables. Stale-response guards keep identity of `S.execSources`.
  */
 
-import { execSources } from "../../stores/notebook";
+import { cells as savedCells, execSources } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { t } from "../../i18n/runtime";
 import { cellNode } from "../notebook/Notebook";
@@ -49,11 +49,32 @@ function paint(): void {
   if (paintExec) paintExec();
 }
 
+/**
+ * The session's saved cells, reduced to what changes when one finishes. The
+ * executed-code view is a snapshot; this says whether it is older than the
+ * Notebook it sits in.
+ */
+export function executedCellsStamp(): string {
+  const list = Array.isArray(savedCells.value) ? (savedCells.value as NotebookCell[]) : [];
+  const last = list[list.length - 1];
+  return last
+    ? `${list.length}:${last.producing_cell_id || last.cell_id || last.cell_index}:${last.status || ""}`
+    : "0";
+}
+
 export function toggleExecutedCode(): void {
   const st = execSourcesState();
   st.open = !st.open;
-  if (st.open && !st.data && !st.loading) void loadExecutionSources();
+  // Every open re-reads: it only ever loaded once, and then showed that first
+  // snapshot for the rest of the session. The old one stays up meanwhile.
+  if (st.open && !st.loading) void loadExecutionSources();
   paint();
+}
+
+/** A loaded, open view whose snapshot predates a cell that finished since. */
+export function refreshExecutedCodeIfStale(st: ExecSourcesState): void {
+  if (st.open && st.data && !st.loading && st.stamp !== executedCellsStamp())
+    void loadExecutionSources();
 }
 
 export async function loadExecutionSources(): Promise<void> {
@@ -63,6 +84,8 @@ export async function loadExecutionSources(): Promise<void> {
   const request = (st.request = (st.request || 0) + 1);
   st.loading = true;
   st.error = "";
+  st.stamp = executedCellsStamp();
+  let loaded = false;
   try {
     const d = (await api(`/frames/${encodeURIComponent(id)}/execution-sources`)) as {
       frames?: ExecFrame[];
@@ -70,6 +93,11 @@ export async function loadExecutionSources(): Promise<void> {
     if (id !== currentId.value || execSources.value !== st || request !== st.request) return;
     st.data = d;
     if (!st.selected) st.selected = (d && d.frames && d.frames[0] && d.frames[0].frame_id) || id;
+    // Cell lists were read against the previous snapshot: keep the selected
+    // one on screen until it is re-read below, let the others reload on click.
+    const kept = st.cells[st.selected];
+    st.cells = kept ? { [st.selected]: kept } : {};
+    loaded = true;
   } catch (e) {
     if (id === currentId.value && execSources.value === st) st.error = publicText(apiErrorText(e), 240);
   } finally {
@@ -78,14 +106,14 @@ export async function loadExecutionSources(): Promise<void> {
       paint();
     }
   }
-  if (execSources.value === st && st.data && st.selected) void selectExecFrame(st.selected);
+  if (execSources.value === st && st.data && st.selected) void selectExecFrame(st.selected, loaded);
 }
 
-export async function selectExecFrame(frameId: string): Promise<void> {
+export async function selectExecFrame(frameId: string, force = false): Promise<void> {
   const st = execSourcesState();
   st.selected = frameId;
   paint();
-  if (st.cells[frameId]) return;
+  if (!force && st.cells[frameId]) return;
   // Guarded like loadExecutionSources: a stale response (frame re-selected,
   // session switched) may still fill its own cache slot, but only the latest
   // request owns the shared error banner.

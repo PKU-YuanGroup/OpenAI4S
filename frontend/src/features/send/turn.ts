@@ -13,6 +13,7 @@ import {
   _resumeTok,
   pendingRequestId,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -28,7 +29,7 @@ import { flushRender, type LiveStream } from "../messages/stream";
 import { notebookOnTurnDone } from "../notebook/kernel";
 import { hint } from "../sessions/chrome";
 import { enableComposer } from "../sessions/dom";
-import { addMsgActions } from "../sessions/transcript";
+import { addMsgActions } from "../messages/list";
 import { callLane, setCancelHidden } from "./host";
 import { renderPlanCard, showPlanApproval } from "./plan";
 import { closeTurnTicket } from "./ticket";
@@ -63,6 +64,9 @@ export function failureHint(detail: unknown): string {
   const id = raw ? String(raw).slice(0, 96) : "";
   return id ? base + " " + t("turn.supportId", id) : base;
 }
+
+/** Terminal statuses of a turn that ran to its end (not failed, stopped or blocked). */
+const PLAN_TURN_FINISHED = ["completed", "success", "done", "ready"];
 
 export function turnDone(status: string, detail?: unknown): void {
   noteHistoryMutation();
@@ -108,8 +112,29 @@ export function turnDone(status: string, detail?: unknown): void {
       ["failed", "blocked_by_guardian"].includes(status) ? "failed" : "completed",
     );
   }
-  if (planPending.value && status !== "failed") {
+  if (planPending.value && !endedAnotherTurn(detail)) {
+    // The flag belongs to the plan-mode turn that just ended, however it
+    // ended; left set by a failure, the next ordinary turn offered to approve
+    // a plan. Only a turn that finished produced something to approve --
+    // a stopped or guardian-blocked one did not.
     planPending.value = false;
-    if (!planReady.value) showPlanApproval();
+    planPendingTurn.value = null;
+    if (PLAN_TURN_FINISHED.includes(status) && !planReady.value) showPlanApproval();
   }
+}
+
+/**
+ * Whether the turn that just ended is not the plan-mode turn `planPending`
+ * waits on. Once the server named the plan turn, only its own execution
+ * ends it (an end with no id is a REPL cell's). Queued and not yet named,
+ * an execution that ended with an id is the turn it waited behind. Sent
+ * with nothing running, the turn that ends is the plan turn itself.
+ */
+function endedAnotherTurn(detail: unknown): boolean {
+  const turn = planPendingTurn.value;
+  if (!turn) return false;
+  const raw = detail && typeof detail === "object" ? (detail as { execution_id?: unknown }).execution_id : null;
+  const ended = typeof raw === "string" && raw ? raw : null;
+  if (turn.executionId) return ended !== turn.executionId;
+  return turn.queued && !!ended;
 }

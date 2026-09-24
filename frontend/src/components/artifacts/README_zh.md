@@ -9,5 +9,6 @@ F-17 Files dock 视图。冻结的 DOM id（`#dock-files`、`#results-list`、`#
 | 文件 | 职责 |
 | --- | --- |
 | [`FilesPanel.tsx`](FilesPanel.tsx) | 文件名搜索、content-type / 来源过滤、Load more。`mountFilesPanel` 挂进壳层 `#dock-files`。 |
+| [`FilesPanel.test.tsx`](FilesPanel.test.tsx) | content-type 过滤框在提交前重渲染也保留已键入的文字。 |
 | [`index.ts`](index.ts) | 再导出 `FilesPanel` / `mountFilesPanel`。 |
 | [`DraftsPanel.tsx`](DraftsPanel.tsx) | 即使源文件已删除也可访问、复制和放弃的内存草稿。 |

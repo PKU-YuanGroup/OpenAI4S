@@ -16,13 +16,12 @@ import {
   _replLanguage,
   execSources,
   kernelFilter,
-  pendingReplIdentity,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
-import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
+import { activeTab, dock } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
-import { appendTextNodeDelta, cellOutput, nbCellKey, notebookDisplayEntries } from "./cells";
+import { cellOutput, nbCellKey, notebookViewEntries, paintStreamedText } from "./cells";
 import {
   notebookArtifactState,
   el,
@@ -34,22 +33,28 @@ import {
   stripAnsi,
 } from "./chrome";
 import {
-  branchCapability,
+  canForkFromCell,
+  canPromote,
+  canRerun,
   copyNotebookCell,
+  currentKernelEnvs,
+  currentKernelStatus,
+  envChoice,
   executeNotebookCode,
+  forkBusy,
   forkNotebookCell,
   identityForOwner,
   interruptRepl,
   kernelCtl,
-  kernelEpoch,
+  kernelIdFromEnv,
   kernelLabel,
-  kernelStatusOf,
-  nbPopulateEnvSelect,
   nbSwitchEnv,
   promoteNotebookCell,
-  refreshKernelState,
-  replEnabledNow,
-  runtimeSummary,
+  replBusy,
+  replEnabled,
+  runtimeBadge,
+  shortRuntime,
+  syncKernel,
 } from "./kernel";
 import {
   bindNotebookScroll,
@@ -58,9 +63,11 @@ import {
   nbRender,
   setNotebookRenderImpl,
 } from "./scroll";
+import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { applyArtifactDeepLink } from "../artifacts/ui";
-import type { NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
+import { iconSvg } from "../icons/paths";
+import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 
 function notebookCellState(cell: NotebookCell): {
   key: string;
@@ -82,20 +89,34 @@ function notebookCellState(cell: NotebookCell): {
   return { key: "current", cls: "current" };
 }
 
-function StreamingOutput({ text, isError }: { text: string; isError: boolean }) {
+/**
+ * The notice an output judged binary shows instead (send/step.ts `binElide`).
+ * It used to be an empty `<div class="bin-elide">`, so the whole output --
+ * and the ordinary log lines before the binary part -- vanished without a word.
+ */
+function BinaryElided({ length }: { length: number }) {
+  return (
+    <div class="bin-elide">
+      <span class="ic" dangerouslySetInnerHTML={{ __html: iconSvg("file", 13) }} />
+      <span>{t("output.binaryElided", bytes(length))}</span>
+    </div>
+  );
+}
+
+/**
+ * One output block for a running and a finished cell. It used to be two
+ * components, and the switch at completion remounted the block, so an output
+ * the reader had opened snapped shut. A running cell appends its chunks; a
+ * finished one shows its final record exactly.
+ */
+export function CellOutput({ text, isError, live }: { text: string; isError: boolean; live: boolean }) {
   const preRef = useRef<HTMLPreElement>(null);
   const seen = useRef(0);
   useLayoutEffect(() => {
-    const pre = preRef.current;
-    if (!pre) return;
-    if (!pre.firstChild) pre.appendChild(document.createTextNode(""));
-    const node = pre.firstChild as Text;
-    seen.current = appendTextNodeDelta(node, seen.current, text);
-  }, [text]);
+    seen.current = paintStreamedText(preRef.current, seen.current, text, !live);
+  }, [text, live]);
   if (!text) return null;
-  if (looksBinary(text)) {
-    return <div class="bin-elide" />;
-  }
+  if (looksBinary(text)) return <BinaryElided length={text.length} />;
   return (
     <details class={"nbc-disclosure" + (isError ? " error" : "")}>
       <summary>output</summary>
@@ -104,25 +125,10 @@ function StreamingOutput({ text, isError }: { text: string; isError: boolean }) 
   );
 }
 
-function StaticOutput({ text, isError }: { text: string; isError: boolean }) {
-  if (!text) return null;
-  if (looksBinary(text)) {
-    return <div class="bin-elide" />;
-  }
-  return (
-    <details class={"nbc-disclosure" + (isError ? " error" : "")}>
-      <summary>output</summary>
-      <pre class={isError ? "nbc-err" : "nbc-out"}>{text}</pre>
-    </details>
-  );
-}
-
-function LiveStdout({ cellKey }: { cellKey: string }) {
-  return <StreamingOutput text={cellOutput(cellKey).stdout.value} isError={false} />;
-}
-
-function LiveStderr({ cellKey }: { cellKey: string }) {
-  return <StreamingOutput text={cellOutput(cellKey).stderr.value} isError={true} />;
+/** A running cell reads its output signal; a finished one its record. */
+function CellStream({ cell, stream, live }: { cell: NotebookCell; stream: "stdout" | "stderr"; live: boolean }) {
+  const text = live ? cellOutput(nbCellKey(cell))[stream].value : String(cell[stream] || "");
+  return <CellOutput text={text} isError={stream === "stderr"} live={live} />;
 }
 
 function CodeBlock(opts: {
@@ -239,12 +245,11 @@ function CellIo({ cell }: { cell: NotebookCell }) {
   );
 }
 
-function CellActions({ cell }: { cell: NotebookCell }) {
-  const st = kernelStatusOf(_kc.value.st);
-  const replEnabled = !!st.repl_enabled;
-  const appendable = replEnabled && !cell.live && !!String(cell.source || "").trim();
+export function CellActions({ cell }: { cell: NotebookCell }) {
+  const appendable =
+    canRerun.value && !replBusy.value && !cell.live && !!String(cell.source || "").trim();
   const canFork =
-    !cell.live && branchCapability("fork_from_cell") && !!publicText(cell.fork_checkpoint_id, 96);
+    !cell.live && canForkFromCell.value && !!publicText(cell.fork_checkpoint_id, 96);
   return (
     <div class="nbc-actions">
       <button class="nbc-action" onClick={() => void copyNotebookCell(cell.source || "")}>
@@ -261,13 +266,13 @@ function CellActions({ cell }: { cell: NotebookCell }) {
         {t("nb.action.rerun")}
       </button>
       {canFork ? (
-        <button class="nbc-action" onClick={() => void forkNotebookCell(cell)}>
+        <button class="nbc-action" disabled={forkBusy.value} onClick={() => void forkNotebookCell(cell)}>
           {t("nb.action.fork")}
         </button>
       ) : null}
       <button
         class="nbc-action"
-        disabled={!branchCapability("promote")}
+        disabled={!canPromote.value}
         onClick={() => void promoteNotebookCell(cell)}
       >
         {t("nb.action.promote")}
@@ -299,7 +304,7 @@ function CellShell({
           </summary>
           <div class="nbc-revision-list">
             {(cell._revisions || []).map((rev) => (
-              <MemoCompletedCell
+              <MemoCellView
                 key={nbCellKey(rev)}
                 cell={{ ...rev, _revisions: [], _historicalRevision: true }}
               />
@@ -321,65 +326,49 @@ function CellShell({
   );
 }
 
-function LiveCode({ cell }: { cell: NotebookCell }) {
-  const rec = cellOutput(nbCellKey(cell));
-  const source = rec.source.value;
-  const status = rec.status.value || "running";
+/** Source and status: a running cell's signals, a finished cell's record. */
+function CellCode({ cell, live }: { cell: NotebookCell; live: boolean }) {
+  const rec = live ? cellOutput(nbCellKey(cell)) : null;
   const k = cell.kernel_id || "python";
   const idx = cell.cell_index != null ? cell.cell_index : "…";
   return (
     <CodeBlock
       cacheKey={nbCellKey(cell)}
-      source={source}
+      source={rec ? rec.source.value : cell.source || ""}
       lang={cell.language || k}
       langLabel={(cell.language || k) + " [" + idx + "]"}
-      status={status}
+      status={rec ? rec.status.value || "running" : cell.status || "ok"}
       env={cell.environment || cell.env}
     />
   );
 }
 
-function LiveFigures({ cell }: { cell: NotebookCell }) {
-  return <CellFigures cell={cell} names={cellOutput(nbCellKey(cell)).figures.value} />;
+function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) {
+  const names = live ? cellOutput(nbCellKey(cell)).figures.value : cell.figures || [];
+  return <CellFigures cell={cell} names={names} />;
 }
 
-function LiveCell({ cell }: { cell: NotebookCell }) {
-  const key = nbCellKey(cell);
+/**
+ * One component for a cell from its first chunk to its final record. A live
+ * cell and a finished one used to be different components under the same
+ * key, so completion unmounted the card: open outputs and revisions
+ * collapsed and the page jumped.
+ */
+function CellView({ cell }: { cell: NotebookCell }) {
+  const live = !!(cell.live || cell.draft);
+  const csvs = live ? [] : (cell.files_written || []).filter((f) => /\.(csv|tsv)$/i.test(f)).slice(0, 4);
   return (
     <CellShell cell={cell}>
-      <LiveCode cell={cell} />
-      <LiveStdout cellKey={key} />
-      <LiveStderr cellKey={key} />
+      <CellCode cell={cell} live={live} />
+      <CellStream cell={cell} stream="stdout" live={live} />
+      <CellStream cell={cell} stream="stderr" live={live} />
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
-      <LiveFigures cell={cell} />
-    </CellShell>
-  );
-}
-
-function CompletedCell({ cell }: { cell: NotebookCell }) {
-  const k = cell.kernel_id || "python";
-  const st = cell.status || "ok";
-  const idx = cell.cell_index != null ? cell.cell_index : "…";
-  const csvs = (cell.files_written || []).filter((f) => /\.(csv|tsv)$/i.test(f)).slice(0, 4);
-  return (
-    <CellShell cell={cell}>
-      <CodeBlock
-        cacheKey={nbCellKey(cell)}
-        source={cell.source || ""}
-        lang={cell.language || k}
-        langLabel={(cell.language || k) + " [" + idx + "]"}
-        status={st}
-        env={cell.environment || cell.env}
-      />
-      <StaticOutput text={cell.stdout || ""} isError={false} />
-      <StaticOutput text={cell.stderr || ""} isError={true} />
-      {cell.error ? <ErrorBlock raw={cell.error} /> : null}
-      <CellFigures cell={cell} names={cell.figures || []} />
+      <CellFiguresSlot cell={cell} live={live} />
       {csvs.map((f) => (
         <TableMount key={f} fname={f} cell={cell} />
       ))}
-      <CellIo cell={cell} />
-      {cell.draft ? null : <CellActions cell={cell} />}
+      {live ? null : <CellIo cell={cell} />}
+      {live || cell.draft ? null : <CellActions cell={cell} />}
     </CellShell>
   );
 }
@@ -401,10 +390,10 @@ function TableMount({ fname, cell }: { fname: string; cell: NotebookCell }) {
   </div>;
 }
 
-const MemoCompletedCell = memo(CompletedCell);
+const MemoCellView = memo(CellView);
 
-function CellList() {
-  const entries = notebookDisplayEntries();
+/** Paints the entries it is handed (the reading gate's list), never the cell stores. */
+export function CellList({ entries }: { entries: NotebookCell[] }) {
   const filter = kernelFilter.value;
   const shown = filter
     ? entries.filter((e) => (e.kernel_id || "python") === filter)
@@ -412,11 +401,9 @@ function CellList() {
   if (!shown.length) return <div class="dock-empty">{t("nb.empty")}</div>;
   return (
     <>
-      {shown.map((cell) => {
-        const key = nbCellKey(cell);
-        if (cell.live || cell.draft) return <LiveCell key={key} cell={cell} />;
-        return <MemoCompletedCell key={key} cell={cell} />;
-      })}
+      {shown.map((cell) => (
+        <MemoCellView key={nbCellKey(cell)} cell={cell} />
+      ))}
     </>
   );
 }
@@ -454,20 +441,14 @@ function toggleExecutedCodeLocal(): void {
   nbRender();
 }
 
-function KernelChips() {
-  kernelEpoch.value;
-  const entries = notebookDisplayEntries();
+export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   const kernels: string[] = [];
   entries.forEach((e) => {
     const k = e.kernel_id || "python";
     if (!kernels.includes(k)) kernels.push(k);
   });
   const filter = kernelFilter.value;
-  const kc = _kc.value;
-  const cachedRunning = !!(running.value || (kc.id === currentId.value && kernelStatusOf(kc.st).turn_running));
-  const cachedReady = !cachedRunning && !!(kc.id === currentId.value && kernelStatusOf(kc.st).alive);
-  const runtimeMode = runtimeSummary().status;
-  const badgeMode = runtimeMode || (cachedRunning ? "busy" : cachedReady ? "live" : "ended");
+  const badgeMode = runtimeBadge.value;
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -537,80 +518,122 @@ function OwnerChips() {
   );
 }
 
-function StatusStrip() {
-  kernelEpoch.value;
-  const lineRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const line = lineRef.current;
-    void refreshKernelState({ strip: { line: line || undefined } });
-  });
+/** The kstate chip: paintKernel()'s text and class, rendered. */
+function kernelStateLabel(st: KernelStatus): { text: string; cls: string } {
+  const names: Record<string, string> = {
+    running: t("nb.kernel.stateActive"),
+    stopped: t("nb.kernel.stateStopped"),
+    none: t("nb.kernel.stateNone"),
+  };
+  const label = st.turn_running ? t("dash.badge.running") : names[st.state || ""] || st.state;
+  return {
+    text: String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : ""),
+    cls: "kstate " + (st.turn_running ? "run" : st.state || ""),
+  };
+}
+
+function kernelTitle(st: KernelStatus): string {
+  const env = st.env || {};
+  return (
+    kernelLabel(kernelIdFromEnv(env)) +
+    " kernel · " +
+    t("nb.kernel.shared") +
+    (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
+    (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
+  );
+}
+
+function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
+  const env = st.env || {};
+  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  const live = !!st.turn_running;
+  const ready = !live && !!st.alive;
+  return {
+    text: live ? t("nb.status.live", rt) : ready ? t("nb.status.ready", rt) : t("nb.status.ended", rt),
+    cls: live ? "live" : ready ? "ready" : "ended",
+  };
+}
+
+/** The read-only status line; its text is the session's last kernel read. */
+export function StatusStrip() {
+  const st = currentKernelStatus();
+  const line = st ? kernelStatusLine(st) : null;
   return (
     <div class="nb-status">
-      <div class="nb-status-line" ref={lineRef}>
-        …
-      </div>
+      <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
       <div class="nb-status-hint">{t("nb.status.hint")}</div>
     </div>
   );
 }
 
+function envOptionLabel(e: KernelEnvRow): string {
+  const notable = e.notable && e.notable.length ? " — " + e.notable.slice(0, 4).join("/") : "";
+  return e.name + (e.runnable ? "" : " · R") + notable;
+}
+
+/** Options from the session's last environment read; a pick shows until the next read answers. */
+function EnvSelect() {
+  const sid = currentId.value;
+  const { envs, cur } = currentKernelEnvs();
+  const choice = envChoice.value;
+  const picked = choice && choice.sid === sid ? choice : null;
+  return (
+    <select
+      class="nb-env-select"
+      title={t("nb.env.selectTitle")}
+      disabled={!sid || !!(picked && picked.posting)}
+      value={picked ? picked.name : cur || undefined}
+      onChange={(ev) => void nbSwitchEnv((ev.currentTarget as HTMLSelectElement).value)}
+    >
+      {envs ? (
+        envs.map((e) => (
+          <option key={e.name} value={e.name} disabled={!e.runnable} title={e.description || ""}>
+            {envOptionLabel(e)}
+          </option>
+        ))
+      ) : (
+        <option>{t("nb.env.placeholder")}</option>
+      )}
+    </select>
+  );
+}
+
 function ReplPanel() {
-  kernelEpoch.value;
-  const envRef = useRef<HTMLSelectElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const runRef = useRef<HTMLButtonElement>(null);
-  const stopRef = useRef<HTMLButtonElement>(null);
-  const titleRef = useRef<HTMLSpanElement>(null);
-  const stateRef = useRef<HTMLSpanElement>(null);
-  const reviveRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    void refreshKernelState({
-      state: stateRef.current || undefined,
-      title: titleRef.current || undefined,
-      revive: reviveRef.current || undefined,
-    });
-    void nbPopulateEnvSelect(envRef.current);
-  });
-  const pending =
-    pendingReplIdentity.value &&
-    (pendingReplIdentity.value as { frame_id?: string }).frame_id === currentId.value
-      ? pendingReplIdentity.value
-      : null;
-  const replIdentity = pending || identityForOwner(executionQueue.value, "user_repl");
-  const replBusy = !!replIdentity;
+  const sid = currentId.value;
+  const st = currentKernelStatus();
+  const state = !sid
+    ? { text: t("nb.kernel.noSession"), cls: "kstate" }
+    : st
+      ? kernelStateLabel(st)
+      : { text: "…", cls: "kstate" };
+  const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
+  const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
+  const busy = replBusy.value;
   const lang = _replLanguage.value === "r" ? "r" : "python";
   const drafts = _replDrafts.value || { python: "", r: "" };
   return (
     <div class="nb-repl">
       <div class="nb-repl-head">
-        <span class="nb-kernel-title" ref={titleRef}>
-          kernel
-        </span>
+        <span class="nb-kernel-title">{st ? kernelTitle(st) : "kernel"}</span>
         <div class="nb-repl-actions">
-          <select
-            class="nb-env-select"
-            ref={envRef}
-            title={t("nb.env.selectTitle")}
-            disabled={!currentId.value}
-            onChange={(ev) => void nbSwitchEnv((ev.currentTarget as HTMLSelectElement).value, ev.currentTarget as HTMLSelectElement)}
-          >
-            <option>{t("nb.env.placeholder")}</option>
-          </select>
-          <span class="kstate" ref={stateRef}>
-            …
-          </span>
-          <button class="kchip" disabled={!currentId.value} onClick={() => void kernelCtl("stop")}>
+          <EnvSelect />
+          <span class={state.cls}>{state.text}</span>
+          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("stop")}>
             {t("nb.kernel.stopLabel")}
           </button>
-          <button class="kchip" disabled={!currentId.value} onClick={() => void kernelCtl("start")}>
+          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("start")}>
             {t("nb.kernel.startLabel")}
           </button>
-          <button class="kchip" disabled={!currentId.value} onClick={() => void kernelCtl("restart")}>
+          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("restart")}>
             {t("nb.kernel.restartLabel")}
           </button>
         </div>
       </div>
-      <div class="nb-revive hidden" ref={reviveRef}>
+      <div
+        class={"nb-revive" + (reviveHidden ? " hidden" : "")}
+        title={quarantined ? t("runtime.quarantineHint") : ""}
+      >
         <span>{t("nb.revive.text")}</span>
         <button class="solid-btn small" onClick={() => void kernelCtl("start")}>
           {t("nb.revive.startBtn")}
@@ -623,7 +646,7 @@ function ReplPanel() {
             {t("nb.repl.language")}
             <select
               class="nb-language-select"
-              disabled={replBusy}
+              disabled={busy}
               value={lang}
               onChange={(ev) => {
                 const next = (ev.currentTarget as HTMLSelectElement).value === "r" ? "r" : "python";
@@ -644,15 +667,13 @@ function ReplPanel() {
           <div class="nb-live-input-actions">
             <button
               class="solid-btn small"
-              ref={runRef}
-              disabled={replBusy || !currentId.value}
+              disabled={busy || !sid}
               onClick={() => void runDraft()}
             >
               {t("nb.repl.run")}
             </button>
             <button
-              class={"repl-stop" + (replBusy ? "" : " hidden")}
-              ref={stopRef}
+              class={"repl-stop" + (busy ? "" : " hidden")}
               title={t("nb.repl.interruptTitle")}
               onClick={() => void interruptRepl()}
             />
@@ -664,7 +685,7 @@ function ReplPanel() {
           rows={7}
           spellcheck={false}
           placeholder={t("nb.repl.inputPlaceholder")}
-          disabled={!currentId.value || replBusy}
+          disabled={!sid || busy}
           defaultValue={drafts[lang] || ""}
           onInput={(ev) => {
             drafts[_replLanguage.value] = (ev.currentTarget as HTMLTextAreaElement).value;
@@ -685,11 +706,7 @@ function ReplPanel() {
     const box = inputRef.current;
     const currentLanguage = _replLanguage.value === "r" ? "r" : "python";
     const code = box ? box.value : drafts[currentLanguage] || "";
-    const ok = await executeNotebookCode(code, currentLanguage, {
-      runButton: runRef.current || undefined,
-      input: box || undefined,
-      stop: stopRef.current || undefined,
-    });
+    const ok = await executeNotebookCode(code, currentLanguage);
     if (ok) {
       drafts[currentLanguage] = "";
       if (box) box.value = "";
@@ -713,18 +730,34 @@ function ExecutedCodeSlot() {
   return <div ref={hostRef} />;
 }
 
-export function NotebookDock() {
-  kernelEpoch.value;
+/**
+ * Runs the kernel reads after a dock render (kernel.ts `syncKernel`). It
+ * reads the cache, the session and the tab so an invalidation, a session
+ * switch or the Notebook coming into view re-runs them.
+ */
+function KernelSync({ envs }: { envs: boolean }) {
+  _kc.value;
+  currentId.value;
+  activeTab.value;
+  dock.value;
+  useLayoutEffect(() => {
+    syncKernel(envs);
+  });
+  return null;
+}
+
+export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
-  const repl = replEnabledNow();
+  const repl = replEnabled.value;
   return (
     <>
-      <KernelChips />
+      <KernelSync envs={repl && !execOpen} />
+      <KernelChips entries={entries} />
       {execOpen ? (
         <ExecutedCodeSlot />
       ) : (
         <>
-          <CellList />
+          <CellList entries={entries} />
           <OwnerChips />
           {repl ? <ReplPanel /> : <StatusStrip />}
         </>
@@ -733,7 +766,11 @@ export function NotebookDock() {
   );
 }
 
-/** app.js:10333-10479 without `innerHTML=""` of the cell list. */
+/**
+ * app.js:10333-10479 without `innerHTML=""` of the cell list. Every caller
+ * (nbRender, the Timeline's refreshes, a tab switch) paints the list the
+ * reading gate allows, computed once for the whole dock.
+ */
 export function renderNotebook(): void {
   if (typeof document === "undefined") return;
   const nb = document.getElementById("dock-notebook");
@@ -741,7 +778,7 @@ export function renderNotebook(): void {
   const body = nb.parentElement as unknown as ScrollBox | null;
   const follow = measureNotebookFollow(body);
   bindNotebookScroll(body);
-  render(<NotebookDock />, nb);
+  render(<NotebookDock entries={notebookViewEntries()} />, nb);
   followLiveOutput(body, follow);
 }
 
@@ -803,21 +840,4 @@ export function cellNode(e: NotebookCell): HTMLElement {
     c.appendChild(box);
   }
   return c;
-}
-
-export function scrollToCell(idx: number | string, kernel?: string | null): void {
-  kernelFilter.value = kernel || null;
-  renderNotebook();
-  requestAnimationFrame(() => {
-    const root = document.getElementById("dock-notebook");
-    if (!root) return;
-    const node = (kernel &&
-      root.querySelector(`.notebook-cell[data-cell="${idx}"][data-kernel="${kernel}"]`)) ||
-      root.querySelector(`.notebook-cell[data-cell="${idx}"]`);
-    if (node) {
-      node.scrollIntoView({ behavior: "smooth", block: "center" });
-      node.classList.add("flash");
-      setTimeout(() => node.classList.remove("flash"), 1600);
-    }
-  });
 }

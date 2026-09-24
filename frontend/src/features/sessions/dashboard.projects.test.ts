@@ -1,12 +1,12 @@
 /**
  * What the dashboard's project card shows after a repaint that is not a full
- * load, and what opening a session leaves behind in the project store.
+ * load, and what the project directory holds.
  *
- * Both behaviours were found by driving the UI, and neither had a test: the
- * running badge vanished on the first keystroke because a search repaint uses
- * fresh server rows that carry no `running_count`, and opening a session from
- * a dashboard card left the *filtered* page in `projects.value`, which the
- * workspace header and the switcher read as the whole directory.
+ * The running badge vanished on the first keystroke because a search repaint
+ * uses fresh server rows that carry no `running_count`. And a search used to
+ * replace `projects.value`, which the workspace header, the switcher and the
+ * session and attention labels read as the whole directory, so every project
+ * outside the filter lost its name while the box held a query.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -52,7 +52,9 @@ function fakeEl(tag = "div", cls: string | null = null, text = ""): FakeEl {
 const dom: Record<string, FakeEl | null> = {};
 
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: (e: unknown) => String(e) }));
-vi.mock("./chrome", () => ({ ensureActivateKeys: () => {} }));
+vi.mock("./chrome", () => ({ ensureActivateKeys: () => {}, reportFailure: vi.fn() }));
+const projectsModule = vi.hoisted(() => ({ openProject: vi.fn() }));
+vi.mock("./projects", () => projectsModule);
 vi.mock("./dom", () => ({
   $: (sel: string) => (sel in dom ? dom[sel] : null),
   el: (tag: string, cls: string | null, text?: string) => fakeEl(tag, cls, text || ""),
@@ -62,6 +64,7 @@ vi.mock("./dom", () => ({
 }));
 
 import { api } from "./api";
+import { reportFailure } from "./chrome";
 import {
   loadDashboard,
   refreshDashRunning,
@@ -69,7 +72,8 @@ import {
   showWorkspace,
 } from "./dashboard";
 import { loadProjects } from "./load";
-import { projects, projectsQuery } from "../../stores/session";
+import { projectSearch, projects, projectsQuery } from "../../stores/session";
+import { resetStoreFields } from "../../stores/signal-field";
 
 /** Every `d-run` badge in the painted card, as its rendered count. */
 function badges(node: FakeEl): string[] {
@@ -94,8 +98,7 @@ beforeEach(() => {
     hidden: false,
     createDocumentFragment: () => fakeEl("fragment"),
   };
-  projects.value = [];
-  projectsQuery.value = "";
+  resetStoreFields();
 });
 
 describe("the running badge across repaints", () => {
@@ -112,6 +115,7 @@ describe("the running badge across repaints", () => {
     expect(badges(dom["#dash-projects"]!)).toEqual(["1"]);
 
     // What a keystroke does: fresh server rows, no running_count on them.
+    projectsQuery.value = "alpha";
     await loadProjects({ q: "alpha" });
     renderDashProjects();
     expect(badges(dom["#dash-projects"]!)).toEqual(["1"]);
@@ -138,31 +142,69 @@ describe("the running badge across repaints", () => {
   });
 });
 
-describe("leaving the dashboard for the workspace", () => {
-  it("reloads the unfiltered directory the header and switcher read", async () => {
-    vi.mocked(api).mockResolvedValue(projectPage as never);
+describe("opening a project from its row", () => {
+  it("reports a failed open instead of leaving an unhandled rejection", async () => {
+    vi.mocked(api).mockImplementation((path: string) =>
+      Promise.resolve(path.startsWith("/frames") ? { frames: [] } : projectPage) as never,
+    );
+    await loadDashboard();
+    const failed = new Error("project did not open");
+    projectsModule.openProject.mockRejectedValueOnce(failed);
+    const row = dom["#dash-projects"]!.children.find((node) => node.cls === "d-row")!;
+    row.onclick!();
+    await vi.waitFor(() => expect(reportFailure).toHaveBeenCalledWith(failed));
+    expect(projectsModule.openProject).toHaveBeenCalledWith("p1");
+  });
+});
+
+describe("the project directory and the dashboard search", () => {
+  const directoryPage = {
+    projects: [
+      { project_id: "p1", name: "alpha lab" },
+      { project_id: "p2", name: "beta lab" },
+    ],
+    total: 2,
+  };
+
+  it("a search has pages of its own and never replaces the directory", async () => {
+    vi.mocked(api).mockImplementation((path: string) =>
+      Promise.resolve(path.includes("q=") ? projectPage : directoryPage) as never,
+    );
+    await loadProjects();
     await loadProjects({ q: "alpha" });
-    vi.mocked(api).mockClear();
-
-    showWorkspace();
-
-    const calls = vi.mocked(api).mock.calls;
-    expect(calls).toHaveLength(1);
-    expect(String(calls[0]?.[0])).not.toContain("q=");
+    expect((projectSearch.value as Array<{ project_id: string }>).map((p) => p.project_id)).toEqual(["p1"]);
+    expect(projects.value).toEqual(directoryPage.projects);
   });
 
-  it("keeps the list it had when that background reload fails", async () => {
-    vi.mocked(api).mockResolvedValue(projectPage as never);
-    await loadProjects({ q: "alpha" });
-    const filtered = projects.value;
-    expect(filtered).toHaveLength(1);
+  it("names a session's project in Recent while the search filters that project out", async () => {
+    dom["#dash-sessions"] = fakeEl();
+    projectsQuery.value = "alpha";
+    vi.mocked(api).mockImplementation((path: string) =>
+      Promise.resolve(
+        path.startsWith("/frames")
+          ? { frames: [{ id: "f2", project_id: "p2", name: "Spectra", message_count: 3 }] }
+          : path.includes("q=") ? projectPage : directoryPage,
+      ) as never,
+    );
+    await loadDashboard();
+    const names: string[] = [];
+    const walk = (n: FakeEl) => {
+      if (n.cls === "d-sub") names.push(n.text);
+      n.children.forEach(walk);
+    };
+    walk(dom["#dash-sessions"]!);
+    expect(names).toEqual(["beta lab"]);
+  });
 
+  it("keeps the directory when a refresh of it fails, and leaving the dashboard does not reload it", async () => {
+    vi.mocked(api).mockResolvedValue(directoryPage as never);
+    await loadProjects();
     vi.mocked(api).mockRejectedValue(new Error("daemon restarting") as never);
-    showWorkspace();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await loadProjects();
+    expect(projects.value).toEqual(directoryPage.projects);
 
-    // A failed *replace* empties the store, which is right for the dashboard
-    // card and wrong here: an empty switcher is the symptom, not the fix.
-    expect(projects.value).toEqual(filtered);
+    vi.mocked(api).mockClear();
+    showWorkspace();
+    expect(vi.mocked(api)).not.toHaveBeenCalled();
   });
 });

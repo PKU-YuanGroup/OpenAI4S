@@ -222,4 +222,58 @@ describe("bindComposer", () => {
     settle();
     await tick();
   });
+
+  it("the send button dispatches the composer text through the same one-at-a-time latch as Enter", async () => {
+    const composer = { ...fakeComposer(), focus: vi.fn() };
+    const attrs: Record<string, string> = {};
+    const sendBtn = {
+      dataset: {} as Record<string, string>,
+      title: "",
+      setAttribute: (name: string, value: string) => {
+        attrs[name] = value;
+      },
+    };
+    const root = stubDocument({ composer, "send-btn": sendBtn });
+    let settle!: () => void;
+    const dispatch = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    bindComposer(dispatch);
+    bindComposer(dispatch);
+    expect(root.listeners.click).toHaveLength(1);
+    // Labelled from the local copy table, identically for sighted and AT users.
+    expect(sendBtn.title).not.toBe("");
+    expect(attrs["aria-label"]).toBe(sendBtn.title);
+
+    const onClick = root.listeners.click![0]!;
+    const click = (inside: boolean) => ({
+      target: { closest: (selector: string) => (inside && selector === "#send-btn" ? sendBtn : null) },
+      preventDefault: vi.fn(),
+    });
+    composer.value = "hello";
+    const elsewhere = click(false);
+    onClick(elsewhere);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(elsewhere.preventDefault).not.toHaveBeenCalled();
+
+    onClick(click(true));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith("hello");
+    expect(composer.focus).toHaveBeenCalled();
+
+    // A second click, or an Enter, while the first dispatch is in flight is dropped.
+    onClick(click(true));
+    root.listeners.keydown![0]!(enter(composer));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+
+    settle();
+    await tick();
+    composer.value = "again";
+    onClick(click(true));
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenLastCalledWith("again");
+  });
 });

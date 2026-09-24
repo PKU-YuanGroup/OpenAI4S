@@ -9,7 +9,8 @@ M-02 Dashboard "needs attention" stream. Cards come from `GET /api/v1/attention`
 | File | Responsibility |
 | --- | --- |
 | [`api.ts`](api.ts) | `GET /attention` page fetch; drops late responses when the page is hidden. |
-| [`boot.ts`](boot.ts) | Mounts `#dash-attention`, 4s poll, visibility + dashboard-class gates. |
+| [`boot.ts`](boot.ts) | Mounts `#dash-attention`; its reads ride the dashboard's 4s poll (`onDashPoll` in `sessions/dashboard.ts`), so they start, stop and pause with it; a language switch reads the page again (card labels are built at read time). |
+| [`boot.test.ts`](boot.test.ts) | A language switch, and only a switch, reads the attention page again; the reads ride the dashboard's poll. |
 | [`cards.test.ts`](cards.test.ts) | Six-kind fixture → one card each; idle/completed → 0; mutation route names. |
 | [`copy.ts`](copy.ts) | M-02 overlay strings (does not rewrite generated i18n). |
 | [`index.ts`](index.ts) | Public re-exports. |
@@ -17,6 +18,6 @@ M-02 Dashboard "needs attention" stream. Cards come from `GET /api/v1/attention`
 | [`navigate.test.ts`](navigate.test.ts) | Closed-set target → local session path + exact dock; URL fields ignored. |
 | [`navigate.ts`](navigate.ts) | `navigationFromTarget` / `applyNavigation` / `localSessionPath`. |
 | [`parse.ts`](parse.ts) | Closed-set item parse and `cardsFromItems` mapping. |
-| [`poll.ts`](poll.ts) | `shouldFetchAttention` / `ATTENTION_POLL_MS = 4000`. |
+| [`poll.ts`](poll.ts) | `shouldFetchAttention`: read only while the dashboard is on screen and the page is visible. |
 | [`state.ts`](state.ts) | Lane-local signals. Not promoted into `stores/`. |
 | [`types.ts`](types.ts) | B-05 item/target types and closed `SOURCE_KINDS` / `SURFACES` / `DOCKS`. |

@@ -3,7 +3,8 @@ import { isTextEditable, renderViewer } from "./viewer";
 import { hint } from "../features/sessions/chrome";
 import { translate } from "../features/artifacts/api";
 import { filesT } from "../features/artifacts/copy";
-import { dockArtifact } from "../stores/artifacts";
+import { copyFailedText } from "../features/chrome/clipboard";
+import { _artBust, dockArtifact } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 const menu = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("../features/sessions/chrome", () => ({ openMenu: (...args: unknown[]) => menu.open(...args), hint: vi.fn() }));
@@ -11,6 +12,7 @@ vi.mock("../features/artifacts/renderers", () => ({ renderArtifactBody: vi.fn() 
 vi.mock("../features/execution/provenance", () => ({ renderProvenanceInto: vi.fn(), decorateViewerWithProvenance: vi.fn() }));
 vi.mock("../features/autocomplete/editor", () => ({ edacTeardown: vi.fn(), bindEditorAutocomplete: vi.fn() }));
 vi.mock("./mol", () => ({ molTeardown: vi.fn() }));
+vi.mock("../features/chrome/modal", () => ({ openModalEl: vi.fn() }));
 
 describe("isTextEditable (app.js:9458-9461)", () => {
   it("rejects images, structures, and PDFs", () => {
@@ -61,6 +63,89 @@ it.each([true, false])("the Viewer menu copy respects exact=%s", (exact) => {
     if (exact) expect(copied).toContain("version_id=v1");
     else expect(copied).not.toContain("version_id=");
   } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+});
+
+
+describe("Viewer Copy link (AUDIT A17, A19)", () => {
+  class Node {
+    children: Node[] = [];
+    innerHTML = ""; textContent = ""; className = ""; title = "";
+    onclick?: () => void;
+    appendChild(child: Node) { this.children.push(child); return child; }
+    append(...children: Node[]) { this.children.push(...children); }
+    dataset: Record<string, string> = {};
+    setAttribute() {}
+  }
+  const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+
+  function mountExactViewer(clipboard: unknown): { root: Node; button: Node | undefined } {
+    resetStoreFields(); vi.mocked(hint).mockClear();
+    const root = new Node();
+    // No `body`: the selection-copy fallback has nothing to select into.
+    vi.stubGlobal("document", { getElementById: () => root, createElement: () => new Node() });
+    vi.stubGlobal("navigator", { clipboard });
+    vi.stubGlobal("location", { pathname: "/", search: "" });
+    dockArtifact.value = { id: "a", filename: "plot.png", version_id: "v1", _exactVersion: true };
+    renderViewer();
+    return { root, button: walk(root).find((node) => node.textContent === filesT("files.deeplink.copy")) };
+  }
+
+  it("writes through the clipboard object and says Copied only once the write lands", async () => {
+    const clipboard = {
+      written: "",
+      async writeText(this: { written: string }, text: string) {
+        // A detached call has no receiver: browsers throw Illegal invocation.
+        if (this !== clipboard) throw new TypeError("Illegal invocation");
+        this.written = text;
+      },
+    };
+    try {
+      const { button } = mountExactViewer(clipboard);
+      button?.onclick?.();
+      await vi.waitFor(() => expect(button?.textContent).toBe(filesT("files.deeplink.copied")));
+      expect(clipboard.written).toBe("/?artifact=a&version_id=v1");
+      expect(hint).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
+  it("shows the link to copy by hand when the write is refused", async () => {
+    try {
+      const { button } = mountExactViewer({ writeText: () => Promise.reject(new Error("denied")) });
+      button?.onclick?.();
+      await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+      expect(hint).toHaveBeenCalledWith(copyFailedText() + " /?artifact=a&version_id=v1", true);
+      expect(button?.textContent).toBe(filesT("files.deeplink.copy"));
+    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
+  function menuCopy(clipboard: unknown): void {
+    menu.open.mockReset();
+    const { root } = mountExactViewer(clipboard);
+    walk(root).find((node) => node.innerHTML.includes('cx="12" cy="5"'))?.onclick?.();
+    const items = menu.open.mock.calls[0]?.[1] as { icon?: string; onClick?: () => void }[];
+    items.find((item) => item.icon === "link")?.onClick?.();
+  }
+
+  it("the menu reports Copied only after a confirmed write", async () => {
+    const writeText = vi.fn(async () => undefined);
+    try {
+      menuCopy({ writeText });
+      await vi.waitFor(() => expect(hint).toHaveBeenCalledWith(translate("artifact.linkCopied")));
+      expect(writeText).toHaveBeenCalledWith("/?artifact=a&version_id=v1");
+    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
+  it.each([
+    ["refused", { writeText: () => Promise.reject(new Error("denied")) }],
+    ["insecure context", undefined],
+  ])("the menu shows the link instead of Copied when the clipboard is %s", async (_label, clipboard) => {
+    try {
+      menuCopy(clipboard);
+      await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+      expect(hint).toHaveBeenCalledWith(copyFailedText() + " /?artifact=a&version_id=v1", true);
+      expect(hint).not.toHaveBeenCalledWith(translate("artifact.linkCopied"));
+    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  });
 });
 
 
@@ -179,5 +264,92 @@ it("an exact legacy version's unknown metadata is exported without borrowing cur
   )), async (blobs) => {
     await vi.waitFor(() => expect(blobs).toHaveLength(1));
     expect(JSON.parse(await blobs[0]!.text())).toMatchObject({ version_id: "v1", filename: null, size_bytes: null, content_type: null });
+  });
+});
+
+
+describe("versions modal ownership (AUDIT A29)", () => {
+  class ModalNode {
+    children: ModalNode[] = [];
+    parent: ModalNode | null = null;
+    root = false;
+    className = ""; title = ""; href = ""; target = ""; disabled = false;
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    onclick?: () => unknown;
+    private text = "";
+    get isConnected(): boolean {
+      let node: ModalNode | null = this;
+      while (node && !node.root) node = node.parent;
+      return !!node;
+    }
+    get textContent(): string { return this.text + this.children.map((c) => c.textContent).join(""); }
+    set textContent(value: string) { this.clear(); this.text = value; }
+    set innerHTML(_value: string) { this.clear(); }
+    appendChild(child: ModalNode) { child.parent = this; this.children.push(child); return child; }
+    setAttribute() {}
+    private clear() {
+      for (const child of this.children) child.parent = null;
+      this.children = []; this.text = "";
+    }
+  }
+  const walk = (n: ModalNode): ModalNode[] => [n, ...n.children.flatMap(walk)];
+  const listFor = (id: string, count: number) => ({
+    versions: Array.from({ length: count }, (_, i) => ({ version_id: `${id}-v${i + 1}`, ordinal: i + 1, is_latest: i === count - 1 })),
+  });
+
+  function mountModal() {
+    resetStoreFields();
+    const modal = new ModalNode(); modal.root = true;
+    const body = modal.appendChild(new ModalNode());
+    const nodes: Record<string, ModalNode> = {
+      "#modal": modal, "#modal-body": body,
+      "#modal-title": modal.appendChild(new ModalNode()), "#modal-download": modal.appendChild(new ModalNode()),
+    };
+    vi.stubGlobal("document", { querySelector: (sel: string) => nodes[sel] ?? null, createElement: () => new ModalNode() });
+    return { body, rows: () => walk(body).filter((n) => n.className.startsWith("ver-row")) };
+  }
+
+  it("drops a late list for the artifact whose modal was replaced", async () => {
+    const { body, rows } = mountModal();
+    let releaseA!: () => void;
+    const heldA = new Promise<void>((resolve) => { releaseA = resolve; });
+    setArtifactsFetch(async (url) => {
+      if (url.includes("/artifacts/A/versions")) { await heldA; return new Response(JSON.stringify(listFor("A", 3))); }
+      return new Response(JSON.stringify(listFor("B", 1)));
+    });
+    try {
+      const { showVersions } = await import("./viewer");
+      void showVersions({ id: "A", filename: "a.png" });
+      void showVersions({ id: "B", filename: "b.png" });
+      await vi.waitFor(() => expect(rows()).toHaveLength(1));
+      releaseA();
+      for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rows()).toHaveLength(1);
+      expect(body.textContent).toContain("v1");
+      expect(body.textContent).not.toContain("v3");
+    } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
+  it("a restore publishes a new cache-bust map (AUDIT S04)", async () => {
+    const { body, rows } = mountModal();
+    let listReads = 0;
+    setArtifactsFetch(async (url) => {
+      if (url.endsWith("/restore")) return new Response(JSON.stringify({ artifact: { id: "A", version_id: "A-v1" } }));
+      listReads += 1;
+      return new Response(JSON.stringify(listFor("A", 2)));
+    });
+    try {
+      const { showVersions } = await import("./viewer");
+      void showVersions({ id: "A", filename: "a.png" });
+      await vi.waitFor(() => expect(rows()).toHaveLength(2));
+      const before = _artBust.value;
+      await walk(body).find((n) => n.textContent === translate("versions.restore"))?.onclick?.();
+      expect(_artBust.value).not.toBe(before);
+      expect(_artBust.value).toHaveProperty("A");
+      // The restore repaints the list; let it finish before the fixture goes.
+      await vi.waitFor(() => expect(listReads).toBe(2));
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally { setArtifactsFetch(null); vi.unstubAllGlobals(); resetStoreFields(); }
   });
 });

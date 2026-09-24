@@ -22,9 +22,6 @@ export const SEVERITIES = ["high", "medium", "low"] as const;
 
 export const DEFAULT_LIMIT = 50;
 
-/** Matches `features/sessions/dashboard.ts` `startDashPoll` (4000ms). */
-export const ATTENTION_POLL_MS = 4000;
-
 export type AttentionSourceKind = (typeof SOURCE_KINDS)[number];
 export type AttentionSurface = (typeof SURFACES)[number];
 export type AttentionDock = (typeof DOCKS)[number];

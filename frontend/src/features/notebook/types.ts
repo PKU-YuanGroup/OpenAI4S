@@ -42,7 +42,6 @@ export type NotebookCell = {
   fork_checkpoint_id?: string;
   environment?: string;
   env?: string;
-  _out?: boolean;
   _revisions?: NotebookCell[];
   _historicalRevision?: boolean;
 };

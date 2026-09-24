@@ -2,22 +2,19 @@ import {
   dockArtifact,
   filesScope,
 } from "../../stores/artifacts";
-import { currentId, project, sessions } from "../../stores/session";
+import { currentId, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
-import { isReady } from "../../compat/stub";
-import { bytes, callWindow, el, hostWindow, icon, translate } from "./api";
+import { bytes, callWindow, el, icon, translate } from "./api";
 import { artifactTabKey } from "./cache";
 import { filesT } from "./copy";
 import {
-  artifactDeepLinkHref,
   parseArtifactDeepLink,
   rememberViewerVersion,
   resolveArtifactVersion,
   versionResolveMessage,
 } from "./deeplink";
-import { browseFiles, currentFilesFilter, filesGridArtifacts, filesListingIsCurrent, visibleArtifacts } from "./files-index";
+import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
-import { renderArtifactBody } from "./renderers";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
@@ -44,7 +41,7 @@ export function closeTab(id: string): void {
       provMode.value = false;
       setActiveTab(artifactTabKey(last));
     } else setActiveTab("notebook");
-  }
+  } else renderDockTabs(); // app.js:2756: a background tab must still leave the bar
 }
 
 function artIcon(a: ArtifactRow): string {
@@ -225,21 +222,42 @@ function paintVersionBanner(list: HTMLElement): void {
   list.appendChild(note);
 }
 
+/** A failed session read says so and offers Retry; it is never "no files". */
+function paintReadError(list: HTMLElement, confirmed: boolean): void {
+  const note = el("div", "files-version-error files-read-error", filesT(confirmed ? "files.read.stale" : "files.read.failed"));
+  note.setAttribute("role", "alert");
+  const retry = el("button", "outline-btn small", translate("common.retry"));
+  retry.onclick = () => {
+    if (currentId.value) void loadArtifacts(currentId.value);
+  };
+  note.appendChild(retry);
+  list.appendChild(note);
+}
+
 export function renderFilesGrid(): void {
   if (typeof document === "undefined") return;
   const list = document.getElementById("results-list");
   const count = document.getElementById("results-count");
   if (!list) return;
   const arts = filesGridArtifacts();
+  const readFailed = filesReadFailed();
+  // No cards yet is not zero files while the read that decides it is pending.
+  const pending = !arts.length && !readFailed && filesGridPending();
   list.innerHTML = "";
-  if (count) count.textContent = String(arts.length);
+  if (count) count.textContent = pending ? "…" : String(arts.length);
   paintVersionBanner(list);
+  if (readFailed) paintReadError(list, arts.length > 0);
   const indexErr = filesListingIsCurrent() ? filesIndexError.value : null;
   if (indexErr && filesIndexItems.value.length === 0 && !arts.length) {
     list.appendChild(el("div", "files-empty", indexErr));
     return;
   }
   if (!arts.length) {
+    if (readFailed) return;
+    if (pending) {
+      list.appendChild(el("div", "files-empty", translate("common.loading")));
+      return;
+    }
     const filter = currentFilesFilter();
     const msg = filter.q || filter.contentType || filter.origin
       ? filesT("files.noMatches")
@@ -265,53 +283,18 @@ export function renderFilesGrid(): void {
 
 let renderViewerImpl: (() => void) | null = null;
 
-/** F-18 island replaces the F-17 skeleton once `bootIslands` runs. */
+/**
+ * The Viewer is the F-18 island (islands/viewer.ts), installed by
+ * `bootIslands` at startup. It imports this module, so it is injected here
+ * rather than imported. The F-17 skeleton that stood in before it was never
+ * reached once main.tsx booted both lanes, and has been removed.
+ */
 export function setRenderViewerImpl(fn: (() => void) | null): void {
   renderViewerImpl = fn;
 }
 
 export function renderViewer(): void {
-  if (renderViewerImpl) {
-    renderViewerImpl();
-    return;
-  }
-  if (typeof document === "undefined") return;
-  const a = dockArtifact.value as ArtifactRow | null;
-  const v = document.getElementById("dock-viewer");
-  if (!v) return;
-  v.innerHTML = "";
-  if (!a) {
-    v.appendChild(el("div", "dock-empty", translate("viewer.empty")));
-    return;
-  }
-  const head = el("div", "viewer-head");
-  head.appendChild(el("div", "vh-name", a.filename || "artifact"));
-  const acts = el("div", "vh-acts");
-  const banner = versionResolveMessage(viewerVersionState.value);
-  if (banner) {
-    v.appendChild(el("div", "files-version-error", banner));
-    if (viewerVersionState.value?.status === "stale" || viewerVersionState.value?.status === "not-found") {
-      return;
-    }
-  }
-  const copy = el("button", "outline-btn small", filesT("files.deeplink.copy"));
-  copy.onclick = () => {
-    const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
-    const clip = (globalThis as { navigator?: { clipboard?: { writeText?: (s: string) => Promise<void> } } })
-      .navigator?.clipboard?.writeText;
-    if (isReady(clip)) void clip(href);
-    copy.textContent = filesT("files.deeplink.copied");
-  };
-  acts.appendChild(copy);
-  head.appendChild(acts);
-  v.appendChild(head);
-  if (provMode.value) {
-    callWindow("renderProvenanceInto", v, a);
-    return;
-  }
-  const body = el("div", "viewer-body");
-  v.appendChild(body);
-  renderArtifactBody(body, a);
+  if (renderViewerImpl) renderViewerImpl();
 }
 
 let viewerRequest = 0;
@@ -351,27 +334,6 @@ export function openViewer(a: ArtifactRow): void | Promise<void> {
   presentViewer(a);
 }
 
-/**
- * M-03: ⌘K / deep link. Open the owning session first, then the Viewer on
- * the exact version. A provided version_id never falls back to latest.
- */
-export async function openArtifactFromHit(hit: {
-  id: string;
-  root_frame_id?: string | null;
-  project_id?: string | null;
-  version_id?: string | null;
-  filename?: string | null;
-}): Promise<void> {
-  const fid = hit.root_frame_id;
-  if (fid && fid !== currentId.value) {
-    callWindow("openConversation", fid, hit.project_id || project.value);
-  }
-  await applyArtifactDeepLink({
-    artifactId: hit.id,
-    versionId: hit.version_id ? String(hit.version_id) : null,
-  }, hit);
-}
-
 export async function applyArtifactDeepLink(link: ArtifactDeepLink, source?: Pick<ArtifactRow, "id" | "root_frame_id" | "project_id">): Promise<void> {
   // The versions endpoint does not carry owning-session metadata. Keep only
   // the stable ownership supplied by the selected real row, never its head's
@@ -406,12 +368,4 @@ export function consumeArtifactDeepLink(
   const link = parseArtifactDeepLink(search);
   if (!link) return;
   return applyArtifactDeepLink(link);
-}
-
-export async function copyArtifactDeepLink(a: ArtifactRow): Promise<string> {
-  const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
-  const clip = hostWindow().navigator as unknown as { clipboard?: { writeText?: (s: string) => Promise<void> } };
-  const write = clip && clip.clipboard && clip.clipboard.writeText;
-  if (isReady(write)) await write(href);
-  return href;
 }

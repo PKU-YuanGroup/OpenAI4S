@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   hint: vi.fn(),
   dropSkillsCatalog: vi.fn(),
   custTab: vi.fn(),
+  refreshCustTab: vi.fn(),
   nestedEditor: { value: { kind: "skill-import" as const } },
 }));
 
@@ -35,6 +36,7 @@ vi.mock("../../features/customize/api", () => ({
 
 vi.mock("../../features/customize/actions", () => ({
   custTab: (...args: unknown[]) => mocks.custTab(...args),
+  refreshCustTab: (...args: unknown[]) => mocks.refreshCustTab(...args),
 }));
 
 vi.mock("../../features/customize/state", () => ({
@@ -113,6 +115,7 @@ describe("SkillImport review", () => {
     mocks.hint.mockReset();
     mocks.dropSkillsCatalog.mockReset();
     mocks.custTab.mockReset();
+    mocks.refreshCustTab.mockReset();
     mocks.nestedEditor.value = { kind: "skill-import" };
   });
 
@@ -178,5 +181,7 @@ describe("SkillImport review", () => {
     // the Close button: Escape, the backdrop and the header X dismiss the
     // review pane too, and every reader of the catalog must see the new Skill.
     expect(mocks.dropSkillsCatalog).toHaveBeenCalledTimes(1);
+    // So is the Skills list behind the pane, in place.
+    expect(mocks.refreshCustTab).toHaveBeenCalledWith("skills");
   });
 });

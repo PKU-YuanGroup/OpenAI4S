@@ -1,13 +1,17 @@
-/** Session title, menus, share dialog, import/export. app.js:7411-7793. */
+/** Session title, menus, import/export, cancel. app.js:7411-7793 (share dialog: share.ts). */
 
 import { t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
+import { openCustomize } from "../customize";
+import { nestedEditor, type SkillSeed } from "../customize/state";
 import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, ApiError, api, apiErrorText } from "./api";
-import { hint, openMenu, type MenuItem } from "./chrome";
+import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
+import { openRunLocationDialog } from "./compute";
+import { composerCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
 // Imported, not reached through `callLane`. Neither name is ever assigned to
 // `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
@@ -18,9 +22,10 @@ import { turnDone } from "../send/turn";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
-import { assignFolder, loadProjects, loadSessions } from "./load";
+import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
 import { publicText } from "../scrub/scrub";
+import { openShareDialog } from "./share";
 import type { SessionLike } from "./paging";
 
 export async function commitTitle(): Promise<void> {
@@ -97,19 +102,37 @@ export async function showContextUsage(): Promise<void> {
   card.className = "prov-card";
   const h = document.createElement("div");
   h.className = "prov-h";
-  h.textContent = `${(input + output).toLocaleString()} tokens`;
+  h.textContent = t("context.tokens", (input + output).toLocaleString());
   card.appendChild(h);
   const meta = document.createElement("div");
   meta.className = "prov-meta";
-  meta.textContent = `Input ${input.toLocaleString()} · Output ${output.toLocaleString()} · Reviewer ${reviewer.toLocaleString()}`;
+  meta.textContent = composerCopy("usage", input.toLocaleString(), output.toLocaleString(), reviewer.toLocaleString());
   card.appendChild(meta);
   body.appendChild(card);
   $("#modal")?.classList.remove("hidden");
 }
 
+
+/**
+ * The new-skill editor of Customize → Skills, opened over that tab. app.js
+ * drew a second copy of the skill form in #modal (`skillEditor`); this port
+ * called that name, which nothing defines, so the menu entry did nothing. The
+ * seed travels on the editor state for the form to start from.
+ */
+export async function openSkillEditor(seed?: SkillSeed): Promise<void> {
+  // Settings is its own chunk: the editor can open only once it has mounted.
+  try {
+    await openCustomize("skills");
+  } catch (error) {
+    reportFailure(error);
+    return;
+  }
+  nestedEditor.value = seed ? { kind: "skill", name: null, seed } : { kind: "skill", name: null };
+}
+
 export async function saveCurrentAsSkill(): Promise<void> {
   if (!currentId.value) {
-    callLane("skillEditor", null);
+    await openSkillEditor();
     return;
   }
   let messages: Array<{ role?: string; content?: unknown }> = [];
@@ -129,7 +152,7 @@ export async function saveCurrentAsSkill(): Promise<void> {
       .slice(0, 48) || "research-workflow";
   const request = String((latestUser && latestUser.content) || "").trim();
   const result = String((latestAssistant && latestAssistant.content) || "").trim();
-  callLane("skillEditor", null, {
+  await openSkillEditor({
     name: title,
     description: request.replace(/\s+/g, " ").slice(0, 180),
     body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,
@@ -141,7 +164,7 @@ export async function requestReview(): Promise<void> {
   running.value = true;
   enableComposer(false);
   $("#cancel-btn")?.classList.remove("hidden");
-  hint("Reviewing", false, true);
+  hint(composerCopy("reviewing"), false, true);
   try {
     await api(`/frames/${currentId.value}/review`, { method: "POST", body: "{}" });
     resumeWatch(currentId.value, _openGen.value);
@@ -175,7 +198,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
             method: "PATCH",
             body: JSON.stringify({ delegation_enabled: on }),
           });
-          hint(t("composer.option.delegation") + ` · ${on ? "On" : "Off"}`);
+          hint(t("composer.option.delegation") + " · " + composerCopy(on ? "on" : "off"));
         } catch (e) {
           hint((e as Error).message, true);
         }
@@ -201,7 +224,7 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
             method: "PATCH",
             body: JSON.stringify({ auto_review: !review.auto_review }),
           });
-          hint(t("composer.option.autoReview") + ` · ${!review.auto_review ? "On" : "Off"}`);
+          hint(t("composer.option.autoReview") + " · " + composerCopy(!review.auto_review ? "on" : "off"));
         } catch (e) {
           hint((e as Error).message, true);
         }
@@ -288,7 +311,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("compute.menu.runLocation"),
       icon: "server",
       onClick: () => {
-        callLane("openRunLocationDialog", fid);
+        void openRunLocationDialog(fid);
       },
     },
     { sep: true },
@@ -312,208 +335,6 @@ export function exportSessionPackage(fid: string, frame: SessionLike = {}): void
     `${API}/frames/${encodeURIComponent(fid)}/session/export`,
     label.replace(/[^\w一-龥-]+/g, "_") + ".openai4s-session.zip",
   );
-}
-
-export async function openShareDialog(fid: string, frame: SessionLike = {}): Promise<void> {
-  let status: Record<string, unknown> = {};
-  let shares: { shares?: Array<Record<string, unknown>> } = { shares: [] };
-  try {
-    const pair = await Promise.all([
-      fetch(`${API}/share/status`).then((r) => r.json()),
-      fetch(`${API}/frames/${encodeURIComponent(fid)}/shares`).then((r) => r.json()),
-    ]);
-    status = pair[0] as Record<string, unknown>;
-    shares = pair[1] as { shares?: Array<Record<string, unknown>> };
-  } catch (error) {
-    hint(t("nb.action.failed", apiErrorText(error)), true);
-    return;
-  }
-
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
-  overlay.setAttribute("role", "dialog");
-  overlay.setAttribute("aria-modal", "true");
-  overlay.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000";
-  const box = document.createElement("div");
-  box.style.cssText =
-    "background:var(--panel,#fff);color:var(--ink,#111);max-width:520px;width:90%;border-radius:12px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)";
-  overlay.appendChild(box);
-  const close = () => overlay.remove();
-  overlay.onclick = (e) => {
-    if (e.target === overlay) close();
-  };
-  overlay.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    }
-  });
-  const h = document.createElement("h3");
-  h.textContent = t("share.title");
-  h.style.marginTop = "0";
-  box.appendChild(h);
-
-  const state = String(status.state || "");
-  if (state === "unconfigured") {
-    box.appendChild(Object.assign(document.createElement("p"), { textContent: t("share.unconfigured") }));
-    box.appendChild(mkBtn(t("share.close"), close));
-    document.body.appendChild(overlay);
-    return;
-  }
-  if (state === "disabled") {
-    box.appendChild(Object.assign(document.createElement("p"), { textContent: t("share.disabled") }));
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
-    if (status.configured) {
-      row.appendChild(
-        mkBtn(
-          t("share.enable"),
-          async () => {
-            await shareCall("PUT", `${API}/share/settings`, { enabled: true });
-            close();
-            void openShareDialog(fid, frame);
-          },
-          false,
-          true,
-        ),
-      );
-    }
-    row.appendChild(mkBtn(t("share.close"), close));
-    box.appendChild(row);
-    document.body.appendChild(overlay);
-    return;
-  }
-
-  const active = (shares.shares || []).find((s) => s.status === "ready" || s.status === "publishing");
-  const scope = document.createElement("p");
-  scope.className = "muted";
-  scope.style.fontSize = "13px";
-  scope.textContent = t("share.scope");
-  box.appendChild(scope);
-
-  if (active) {
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:8px;margin:12px 0";
-    const inp = document.createElement("input");
-    inp.readOnly = true;
-    inp.value = String(active.url || "");
-    inp.style.cssText = "flex:1;padding:8px;border:1px solid var(--line,#ccc);border-radius:8px";
-    row.appendChild(inp);
-    row.appendChild(
-      mkBtn(t("share.copy"), () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(String(active.url || ""));
-        hint(t("share.copied"));
-      }),
-    );
-    box.appendChild(row);
-    const exp = document.createElement("div");
-    exp.className = "muted";
-    exp.style.fontSize = "12px";
-    exp.style.margin = "4px 0 8px";
-    exp.textContent = active.expires_at
-      ? t("share.expiresAt") + " " + new Date(String(active.expires_at)).toLocaleString()
-      : t("share.neverExpires");
-    box.appendChild(exp);
-    const actionsRow = document.createElement("div");
-    actionsRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
-    actionsRow.appendChild(
-      mkBtn(t("share.update"), async () => {
-        await shareCall("PUT", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
-        hint(t("share.updated"));
-        close();
-      }),
-    );
-    actionsRow.appendChild(
-      mkBtn(
-        t("share.revoke"),
-        async () => {
-          if (!confirm(t("share.revokeConfirm"))) return;
-          await shareCall("DELETE", `${API}/shares/${encodeURIComponent(String(active.share_id))}`);
-          hint(t("share.revoked"));
-          close();
-        },
-        true,
-      ),
-    );
-    actionsRow.appendChild(mkBtn(t("share.close"), close));
-    box.appendChild(actionsRow);
-  } else {
-    const expRow = document.createElement("div");
-    expRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:12px 0";
-    const expLabel = document.createElement("span");
-    expLabel.className = "muted";
-    expLabel.style.fontSize = "13px";
-    expLabel.textContent = t("share.expiry");
-    const sel = document.createElement("select");
-    sel.style.cssText = "padding:6px;border:1px solid var(--line,#ccc);border-radius:8px";
-    (
-      [
-        [0, t("share.expiry.never")],
-        [86400, t("share.expiry.1d")],
-        [604800, t("share.expiry.7d")],
-        [2592000, t("share.expiry.30d")],
-      ] as Array<[number, string]>
-    ).forEach(([secs, label]) => {
-      const o = document.createElement("option");
-      o.value = String(secs);
-      o.textContent = label;
-      sel.appendChild(o);
-    });
-    sel.value = "604800";
-    expRow.appendChild(expLabel);
-    expRow.appendChild(sel);
-    box.appendChild(expRow);
-    const actionsRow = document.createElement("div");
-    actionsRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:16px";
-    actionsRow.appendChild(
-      mkBtn(
-        t("share.create"),
-        async () => {
-          const body: { expires_in?: number } = {};
-          const secs = parseInt(sel.value, 10);
-          if (secs > 0) body.expires_in = secs;
-          const rec = await shareCall("POST", `${API}/frames/${encodeURIComponent(fid)}/shares`, body);
-          close();
-          if (rec && (rec as { url?: string }).url) void openShareDialog(fid, frame);
-        },
-        false,
-        true,
-      ),
-    );
-    actionsRow.appendChild(mkBtn(t("share.close"), close));
-    box.appendChild(actionsRow);
-  }
-  document.body.appendChild(overlay);
-  const firstBtn = box.querySelector("button");
-  if (firstBtn instanceof HTMLElement) firstBtn.focus();
-
-  function mkBtn(label: string, onClick: () => void, danger?: boolean, primary?: boolean): HTMLButtonElement {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = label;
-    b.className = danger ? "danger" : primary ? "primary" : "";
-    b.style.cssText =
-      "padding:7px 14px;border-radius:8px;cursor:pointer;border:1px solid var(--line,#ccc)" +
-      (primary ? ";background:var(--accent,#2b6cb0);color:#fff" : "");
-    b.onclick = onClick;
-    return b;
-  }
-  async function shareCall(method: string, path: string, body?: unknown): Promise<unknown> {
-    try {
-      const r = await fetch(path, {
-        method,
-        headers: body ? { "Content-Type": "application/json" } : {},
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new ApiError(j, r.status);
-      return j;
-    } catch (error) {
-      hint(t("nb.action.failed", apiErrorText(error)), true);
-      return null;
-    }
-  }
 }
 
 export function chooseSessionPackage(): void {
@@ -588,15 +409,21 @@ export function moveToFolderAt(anchor: Element, fid: string): void {
     onClick: async () => {
       const n = prompt(t("folder.new.prompt"));
       if (!n || !project.value) return;
+      let r: { folder_id: string };
       try {
-        const r = (await api(`/projects/${project.value}/folders`, {
+        r = (await api(`/projects/${project.value}/folders`, {
           method: "POST",
           body: JSON.stringify({ name: n }),
         })) as { folder_id: string };
-        await assignFolder(fid, r.folder_id);
-      } catch {
-        /* ignore */
+      } catch (e) {
+        hint(t("folder.create.failed", apiErrorText(e)), true);
+        return;
       }
+      // The cached folder list predates this folder: without the invalidation
+      // the refresh behind assignFolder answered from that cache, so the new
+      // folder never appeared and the moved session fell under "ungrouped".
+      invalidateFolders();
+      await assignFolder(fid, r.folder_id);
     },
   });
   openMenu(anchor, items);
@@ -655,9 +482,15 @@ export async function deleteSession(fid: string): Promise<void> {
     return;
   }
   const wasCurrent = fid === currentId.value;
-  await loadSessions();
+  const read = await loadSessions();
+  if (read.status !== "loaded") {
+    // A failed or superseded refresh keeps the rows it had, the deleted one
+    // among them, and that row usually sorts first. It is gone either way.
+    sessions.value = (sessions.value as SessionLike[]).filter((f) => f.id !== fid);
+    renderSessions();
+  }
   if (wasCurrent) {
-    let ss = sessions.value as SessionLike[];
+    let ss = (sessions.value as SessionLike[]).filter((f) => f.id !== fid);
     if (project.value) ss = ss.filter((f) => f.project_id === project.value);
     if (ss.length && ss[0]?.id) void openConversation(ss[0].id, ss[0].project_id);
     else {
