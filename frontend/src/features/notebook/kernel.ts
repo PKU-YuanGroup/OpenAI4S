@@ -64,7 +64,18 @@ function apiErrorText(e: unknown): string {
   return err && err.requestId ? `${msg} [${err.requestId}]` : msg;
 }
 
-/** app.js:9955. Does not reset stBusy / envBusy. */
+/**
+ * The kernel reads in flight, one per session. `kc.stBusy` / `kc.envBusy`
+ * were single flags that neither a session switch nor an invalidation reset:
+ * B's read was skipped while A's was still out, A's answer was then dropped
+ * as another session's, and B's status line stayed at "…".
+ */
+let statusRead: { sid: string } | null = null;
+let envRead: { sid: string } | null = null;
+/** Bumped by every invalidation; an answer from before one is shown but read again. */
+let invalidations = 0;
+
+/** app.js:9955. */
 export function invalidateKernelCache(): void {
   const kc = _kc.value;
   kc.id = null;
@@ -73,6 +84,7 @@ export function invalidateKernelCache(): void {
   kc.envs = null;
   kc.cur = null;
   kc.envAt = 0;
+  invalidations += 1;
   bumpKernelEpoch();
 }
 
@@ -370,18 +382,19 @@ export async function refreshKernelState(els?: KernelPaintEls): Promise<void> {
   }
   const kc = _kc.value;
   if (kc.id === currentId.value && kc.st) paintKernel(paintEls, kernelStatusOf(kc.st));
-  if (kc.stBusy) return;
   if (kc.id === currentId.value && kc.st && Date.now() - kc.stAt < 800) return;
   const sid = currentId.value;
-  kc.stBusy = true;
+  if (statusRead && statusRead.sid === sid) return;
+  const read = (statusRead = { sid });
+  const generation = invalidations;
   let st: Record<string, unknown> | null;
   try {
     st = await notebookFetch(`/frames/${sid}/kernel`);
   } catch {
-    kc.stBusy = false;
     return;
+  } finally {
+    if (statusRead === read) statusRead = null;
   }
-  kc.stBusy = false;
   if (sid !== currentId.value) return;
   const prev = kernelStatusOf(kc.st);
   const previousRuntimeKey = kc.st
@@ -394,7 +407,8 @@ export async function refreshKernelState(els?: KernelPaintEls): Promise<void> {
     kc.envs = null;
   }
   kc.st = st;
-  kc.stAt = Date.now();
+  // An invalidation while this read was out: show it, but read again.
+  kc.stAt = generation === invalidations ? Date.now() : 0;
   artifactWorkbench.value = !!(st && st.artifact_workbench);
   bumpKernelEpoch();
   paintKernel(paintEls, kernelStatusOf(st));
@@ -436,18 +450,19 @@ export async function nbPopulateEnvSelect(envSel: HTMLSelectElement | null): Pro
   };
   const kc = _kc.value;
   if (kc.id === currentId.value && kc.envs) fill(kc.envs as KernelEnvRow[], kc.cur);
-  if (kc.envBusy) return;
   if (kc.id === currentId.value && kc.envs && Date.now() - kc.envAt < 8000) return;
   const sid = currentId.value;
-  kc.envBusy = true;
+  if (envRead && envRead.sid === sid) return;
+  const read = (envRead = { sid });
+  const generation = invalidations;
   let data: Record<string, unknown> | null;
   try {
     data = await notebookFetch(`/frames/${sid}/environments`);
   } catch {
-    kc.envBusy = false;
     return;
+  } finally {
+    if (envRead === read) envRead = null;
   }
-  kc.envBusy = false;
   if (sid !== currentId.value) return;
   if (kc.id !== sid) {
     kc.id = sid;
@@ -455,7 +470,7 @@ export async function nbPopulateEnvSelect(envSel: HTMLSelectElement | null): Pro
   }
   kc.envs = (data && data.environments) || [];
   kc.cur = data && data.current;
-  kc.envAt = Date.now();
+  kc.envAt = generation === invalidations ? Date.now() : 0;
   bumpKernelEpoch();
   fill(kc.envs as KernelEnvRow[], kc.cur);
 }

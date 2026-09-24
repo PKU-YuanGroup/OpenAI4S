@@ -59,7 +59,13 @@ import {
 } from "./chrome";
 import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
-import { invalidateKernelCache, kernelEpoch, nbSwitchEnv, notebookOnTurnDone } from "./kernel";
+import {
+  invalidateKernelCache,
+  kernelEpoch,
+  nbSwitchEnv,
+  notebookOnTurnDone,
+  refreshKernelState,
+} from "./kernel";
 import {
   isNearBottom,
   measureNotebookFollow,
@@ -370,6 +376,50 @@ describe("F-14 Notebook", () => {
       setNotebookApi(async () => ({ ok: true }));
       await nbSwitchEnv("science");
       expectInvalidated();
+    });
+  });
+
+  describe("kernel status reads", () => {
+    type Pending = { path: string; answer: (body: Record<string, unknown>) => void };
+    function deferApi(): Pending[] {
+      const pending: Pending[] = [];
+      setNotebookApi(
+        (path) =>
+          new Promise((resolve) => {
+            pending.push({ path, answer: resolve });
+          }),
+      );
+      return pending;
+    }
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it("a read still out for the previous session does not block the new one", async () => {
+      const pending = deferApi();
+      currentId.value = "frame-a";
+      void refreshKernelState();
+      invalidateKernelCache();
+      currentId.value = "frame-b";
+      void refreshKernelState();
+      expect(pending.map((p) => p.path)).toEqual(["/frames/frame-a/kernel", "/frames/frame-b/kernel"]);
+      pending[1]!.answer({ alive: true, state: "running" });
+      pending[0]!.answer({ alive: false, state: "stopped" });
+      await settle();
+      expect(_kc.value.id).toBe("frame-b");
+      expect(_kc.value.st).toEqual({ alive: true, state: "running" });
+    });
+
+    it("an answer that crossed an invalidation is shown, then read again", async () => {
+      const pending = deferApi();
+      void refreshKernelState();
+      invalidateKernelCache();
+      pending[0]!.answer({ alive: true, generation: 1 });
+      await settle();
+      expect(_kc.value.st).toEqual({ alive: true, generation: 1 });
+      void refreshKernelState();
+      expect(pending).toHaveLength(2);
+      pending[1]!.answer({ alive: true, generation: 2 });
+      await settle();
+      expect(_kc.value.st).toEqual({ alive: true, generation: 2 });
     });
   });
 
