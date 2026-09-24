@@ -159,7 +159,11 @@ export function acPick(i: number): void {
   c.focus();
 }
 
+/** Bumped by every `acUpdate`; an update whose load settles after a newer one started is dropped. */
+let acSeq = 0;
+
 export async function acUpdate(): Promise<void> {
+  const seq = ++acSeq;
   const d = acDetect();
   if (!d) {
     acClose();
@@ -181,7 +185,18 @@ export async function acUpdate(): Promise<void> {
     const sk = await loadSkillsCatalog();
     items = sk.map(skillToAcItem);
   }
-  items = rankComposerItems(items, d.query);
+  // The file and skill lists load asynchronously. Keystrokes in the
+  // meantime started newer updates, and the caret may have moved without
+  // one: filter by, and anchor the replacement on, the token at the caret
+  // now. The one read before the await let Enter replace from a stale start
+  // and swallow what was typed after it.
+  if (seq !== acSeq) return;
+  const now = acDetect();
+  if (!now || now.trigger !== d.trigger) {
+    acClose();
+    return;
+  }
+  items = rankComposerItems(items, now.query);
   if (!items.length) {
     acClose();
     return;
@@ -189,8 +204,8 @@ export async function acUpdate(): Promise<void> {
   ac.open = true;
   ac.items = items;
   ac.idx = 0;
-  ac.trigger = d.trigger;
-  ac.start = d.start;
+  ac.trigger = now.trigger;
+  ac.start = now.start;
   acRender();
 }
 
