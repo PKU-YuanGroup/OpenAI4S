@@ -165,30 +165,39 @@ function encodedSpan(s: string): boolean {
 }
 
 /**
- * app.js:6055-6066. Heuristic: raw binary, a giant base64 blob, or a long
- * `\xNN` escape dump.
+ * Raw bytes decoded as text: control characters (other than tab, newline and
+ * carriage return), DEL and U+FFFD over 12% of the first 4 KiB. This is the
+ * whole test for JSON, whose long string values look like encoded blobs.
  */
-export function looksBinary(s: string | null | undefined): boolean {
-  if (!s) return false;
-  const sample = s.slice(0, 4096);
+export function controlDense(text: string): boolean {
+  const sample = text.slice(0, 4096);
   let ctrl = 0;
   for (let i = 0; i < sample.length; i++) {
     const c = sample.charCodeAt(i);
     if (c === 9 || c === 10 || c === 13) continue;
     if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
   }
-  if (sample.length && ctrl / sample.length > 0.12) return true;
-  return encodedSpan(s);
+  return sample.length > 0 && ctrl / sample.length > 0.12;
 }
 
+/**
+ * app.js:6055-6066. Heuristic: raw binary, a giant base64 blob, or a long
+ * `\xNN` escape dump.
+ */
+export function looksBinary(s: string | null | undefined): boolean {
+  if (!s) return false;
+  return controlDense(s) || encodedSpan(s);
+}
+
+/** The element helper for this lane and islands/dom.ts. */
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string | null,
-  text?: string | null,
+  text?: string | number | null,
 ): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text != null) node.textContent = text;
+  if (text != null) node.textContent = String(text);
   return node;
 }
 

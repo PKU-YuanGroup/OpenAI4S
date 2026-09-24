@@ -2,11 +2,11 @@ import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
-import { renderTableArtifact as renderTableArtifactM04 } from "../table";
-import { artifactWorkbench, _kc } from "../../stores/notebook";
+import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { applyArtifactIframeSandbox } from "../../islands/frames";
 import {
   callWindow,
+  controlDense,
   el,
   fetchArtifactText,
   hostWindow,
@@ -29,16 +29,6 @@ import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
-
-/** app.js:8710 */
-export function artifactWorkbenchOn(): boolean {
-  if (artifactWorkbench.value) return true;
-  const st = _kc.value.st;
-  if (st && typeof st === "object" && (st as { artifact_workbench?: unknown }).artifact_workbench) {
-    return true;
-  }
-  return false;
-}
 
 export function rendererFailure(container: HTMLElement, a: ArtifactRow, url: string): void {
   container.innerHTML = "";
@@ -82,21 +72,6 @@ export function renderMarkdownArtifact(container: HTMLElement, url: string): voi
 }
 
 const SOURCE_PREVIEW_CHARACTERS = 300000;
-
-/**
- * Control-character density only. `looksBinary` also flags long base64-like
- * runs, which is exactly what a JSON document with a big string value is.
- */
-function controlDense(text: string): boolean {
-  const sample = text.slice(0, 4096);
-  let ctrl = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const c = sample.charCodeAt(i);
-    if (c === 9 || c === 10 || c === 13) continue;
-    if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
-  }
-  return sample.length > 0 && ctrl / sample.length > 0.12;
-}
 
 function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
   const pre = el("pre", "renderer-source");
@@ -446,7 +421,7 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 }
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
-  if (artifactWorkbenchOn()) {
+  if (readWorkbenchFlag()) {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
     open.onclick = () => {
@@ -582,12 +557,12 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
   frame.dataset.currentPage = "1";
   frame.src = url + "#page=1";
   content.appendChild(frame);
-  if (artifactWorkbenchOn()) callWindow("renderLocatorComments", content, a, "pdf", frame);
+  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);
 }
 
 function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
   renderHtmlPreview(content, a);
-  if (artifactWorkbenchOn()) callWindow("renderLocatorComments", content, a, "html");
+  if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "html");
 }
 
 function renderMolecule3dGlue(content: HTMLElement, url: string, nm: string): void {

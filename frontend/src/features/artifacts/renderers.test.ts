@@ -91,6 +91,37 @@ describe("text artifacts that look binary (AUDIT A01)", () => {
   });
 });
 
+describe("JSON artifacts judge bytes by control characters only (AUDIT S10)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", { createElement: (tag: string) => new FakeNode(tag) });
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a JSON document with an embedded base64 value as source", async () => {
+    let raw = "";
+    for (let i = 0; i < 3000; i++) raw += String.fromCharCode((i * 97 + 13) % 256);
+    const text = JSON.stringify({ figure: btoa(raw) });
+    serve(text);
+    const container = new FakeNode();
+    renderTextArtifact(host(container), { id: "j", filename: "result.json" }, "/api/v1/artifacts/j");
+    await settle();
+    expect(walk(container).find((node) => node.className === "renderer-source")?.textContent).toBe(text);
+  });
+
+  it("offers a control-dense .json as a download after one read", async () => {
+    const probe = serve("\u0000\u0001\u0002\u0003 ".repeat(200));
+    const container = new FakeNode();
+    renderTextArtifact(host(container), { id: "k", filename: "broken.json" }, "/api/v1/artifacts/k");
+    await settle();
+    await settle();
+    expect(probe.calls()).toBe(1);
+    expect(walk(container).some((node) => node.className === "download-artifact")).toBe(true);
+  });
+});
+
 describe("late renderer descriptors (AUDIT A32)", () => {
   /** Tracks its parent, so `isConnected` means reachable from the page root. */
   class DomNode {
