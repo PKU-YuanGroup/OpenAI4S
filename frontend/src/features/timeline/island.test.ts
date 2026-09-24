@@ -187,6 +187,8 @@ class FakeElement {
       this.dropFocusWithin(kid);
       kid.parentNode = null;
     });
+    // Emptied, the box has nothing to scroll: a browser clamps it to the top.
+    if (this.kids.length) this.scrollTop = 0;
     this.kids = [];
   }
   private adopt(node: FakeElement): FakeElement[] {
@@ -847,11 +849,13 @@ describe("socket-driven repaint", () => {
     expect(doc.querySelector("details.internal-checkpoints")).not.toBeNull();
   }
 
-  it("keeps open details, the search box's focus and caret, and the ledger attached", () => {
+  it("keeps open details, the search box's focus and caret, the scroll position and the ledger", () => {
     const doc = mountDocument();
     const frames = stubFrames();
     stubApi(() => undefined);
     shown(doc);
+    const dock = doc.getElementById("dock-timeline")!;
+    dock.scrollTop = 120;
     doc.querySelector("details.internal-checkpoints")!.open = true;
     doc.querySelector("details.context-history")!.open = true;
     const input = doc.querySelector(".timeline-search-input")!;
@@ -870,6 +874,7 @@ describe("socket-driven repaint", () => {
     expect(doc.activeElement === input).toBe(true);
     expect(doc.blurs).toBe(blurs);
     expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
+    expect(dock.scrollTop).toBe(120);
   });
 
   it("gives a rebuilt panel's button back its focus", () => {
