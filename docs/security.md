@@ -502,6 +502,50 @@ wrong on its own evidence: the same change made `app.out` the file the bundle
 collects, and once an artifact leaves the machine "operator-facing" is not a
 property it still has.
 
+**A Session package is a different boundary from the bundle.** The user
+chooses one session and sends its full content — conversation, code, outputs,
+files — so the package cannot be deny-by-default the way the bundle is. Its
+optional runtime evidence (`runtime/*.json`, see `docs/architecture.md`,
+*Runtime evidence in Session packages*) still keeps what is not the user's to
+send out of it:
+
+- **no endpoint URL, host or port.** A model endpoint is a class
+  (`loopback`/`private`/`hostname`/…), whether it is the provider's default,
+  and a truncated SHA-256 fingerprint of its origin — a relay's host name
+  belongs to whoever runs it;
+- **no credential.** Known secret values from the environment and the settings
+  broker are replaced rather than refused, so a host-call preview that quoted a
+  key cannot make the user's whole export fail; the manifest-wide secret scan
+  still runs, and a member that would still carry secret material is dropped
+  and recorded as `omitted`;
+- **no permission payload** (`payload`, `pattern`, `message`,
+  `resolution_context`) and no compacted message slice;
+- **no content of a file the package refuses as a file.** Artifact and
+  workspace export drop `.env`, `credentials.json`, `*.pem` and the rest by
+  name; an activity card (a Writing card holds up to 6,000 characters of what
+  was written), a host-call preview or a child-ledger entry that names such a
+  file — a preview is also judged by its row's resource keys, and a truncated
+  `write_file`/`edit_file` preview is withheld outright, since the cut can drop
+  the path and keep the body — travels with its payload withheld, so a secret the pattern scrubber
+  cannot recognise is not shipped through the evidence instead;
+- **no free-text failure.** A delegated child's `error` and a compute job's
+  `reason` are stored as `str(exc)` — provider bodies, relay URLs, host names —
+  and travel as a kind (`llm_http_502`, `StreamTimeoutError`, `text`), a length
+  and a fingerprint; a child's model-endpoint override travels as endpoint
+  facts;
+- **no exception text.** A failed turn's `error.detail` holds its category,
+  the same `error_class` fingerprint `record_diagnostic` logs, the type chain,
+  closed LLM codes and flags, and code locations inside `openai4s/` —
+  stdlib frames by relative path, anything else by base name, never an
+  absolute path;
+- the daemon's data directory and the user's home directory are shortened to
+  `<data_dir>` and `~` in these members; a username is not diagnostic.
+
+`DIAGNOSTICS.md` and `runtime/diagnosis.json` reproduce no message, argument,
+Cell source, output, path or URL — counts, recorded codes, tool and method
+names, exception *type* names and durations only — but they do name the model,
+the provider and tool names, which is why the page says so at the top.
+
 ### Credentials at rest
 
 Model and search credentials are held by a **SecretBroker**

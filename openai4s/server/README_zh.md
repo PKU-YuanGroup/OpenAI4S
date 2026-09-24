@@ -113,7 +113,8 @@ gateway.py
 | [`session_branching.py`](session_branching.py) | 让一个会话长出分支所需的全部动作：打 checkpoint、隔离 fork、预览 revert、激活分支，以及把 revert/undo 历史只追加地记下来。revert 从不改写旧的 checkpoint：它先把当前状态记成撤销目标；如果当前 head 之后有外部文件被改动，这次操作会记为 `conflict`，一个字节都不会动。 |
 | [`session_deletion.py`](session_deletion.py) | 会话被持久删除后的清理。会话聚合、工作区、按 root 隔离的 kernel Artifact 输入缓存、快照/CAS 引用和进程内状态都会清掉，而这个会话自己 scope 之外的东西一概不碰。 |
 | [`session_domain.py`](session_domain.py) | 高层的会话领域组合，路由 handler 调它，而不是自己去拼装仓储。它对外承接 checkpoint 与 cursor checkpoint、分支、Timeline、导出、renderer、会话包操作与恢复。 |
-| [`session_package.py`](session_package.py) | 创建和导入会话 ZIP 包，过程确定、带 checksum。传输这一段由过滤秘密、防路径穿越和隔离区中转来把关。导入会先校验整个压缩包再创建任何东西；导入进来的会话落在一个已结束的内核 generation 上，这是一条显式的只读/待恢复边界。 |
+| [`session_package.py`](session_package.py) | 创建和导入会话 ZIP 包，过程确定、带 checksum。传输这一段由过滤秘密、防路径穿越和隔离区中转来把关。导入会先校验整个压缩包再创建任何东西；导入进来的会话落在一个已结束的内核 generation 上，这是一条显式的只读/待恢复边界。导出时附带 `package_runtime.py` 收集的运行时证据和 `DIAGNOSTICS.md`；包里带有活动卡片时，导入会按原始时间恢复它们。 |
+| [`package_runtime.py`](package_runtime.py) | 把会话包的运行时证据收集为可选的 `runtime/*.json`：导出进程与安全姿态、会话实际解析出的模型配置（端点只给类别与指纹，绝不给 URL；以及 `chat()` 实际采用的能力）、带各自账本与 Cell 归属的委派子代理、全部活动卡片、host 调用、不含 payload 的权限请求、不含原始切片的压缩记录。也负责生成失败回合终止事件里不含内容的失败细节。收集永远不会让导出失败：读不出来的部分记为 unavailable。 |
 | [`session_recovery.py`](session_recovery.py) | 启动时协调过期的运行时状态，并在 activity 与恢复阻塞条件的约束下确定性地回收空闲内核。旧 daemon 遗留下来的活 generation 会被标成 `abandoned` 并保持可审计；这里没有任何代码反序列化对象，也不声称内存还活着。 |
 | [`session_runtime.py`](session_runtime.py) | 保存会话的控制平面对象，例如 dispatcher、委派树和动态 capability，让语言 worker 可以启动、替换或停止，而不丢掉这些状态。 |
 | [`skill_network_admission.py`](skill_network_admission.py) | 把已加载 Skill 的网络 manifest 绑到会话，并在两个执行 sink 上准入：下一格 Python/R Cell，以及 shell capability 签发。求交 manifest × 实测 sandbox posture × Host egress × 调用方绑定。manifest 永不授权。 |

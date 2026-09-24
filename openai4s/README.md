@@ -83,3 +83,4 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 - [`doctor.py`](doctor.py) — one command answering whether this installation can do the work: model, runtime, isolation, disk, connectors, remote compute. Runs without the daemon, because the situation that motivates it is usually one where the daemon will not start.
 - [`diagnostics.py`](diagnostics.py) — the redacted support bundle and bounded log retention.
 - [`evidence.py`](evidence.py) — stdlib-only verification of an exported package, for a recipient who does not trust this host yet.
+- [`package_diagnosis.py`](package_diagnosis.py) — stdlib-only reading of an exported Session package: one row per turn, how it ended, and content-free findings (stops, stream stalls with the failing call's own timing, tool errors, Cell and kernel failures, children, host calls). Writes `DIAGNOSTICS.md` at export and backs `openai4s inspect-package`; works on packages from before `runtime/` existed.

@@ -335,6 +335,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_session_deletion.py`](test_session_deletion.py) | 删掉一个会话或 project，同时不能顺手删掉别人的数据。内容寻址存储是共享的，所以它的 GC 要等 checkpoint 的引用发布之后再动；快照清理绝不跟着符号链接走出这棵树；feedback 删除会转义 LIKE 的元字符。 |
 | [`test_session_domain_service.py`](test_session_domain_service.py) | 快照、checkpoint、游标 fork、分支、Timeline、导出、renderer 与恢复背后是同一份组合，全都经由 `Store` 门面到达。游标 checkpoint 失败会被审计下来，且不会声称 fork 成功了。 |
 | [`test_session_package.py`](test_session_package.py) | 会话的导出与导入，也就意味着一整个不可信压缩包的攻击面。路径穿越、符号链接、压缩比异常、重复或悬空的身份、夹带的秘密，全部拒绝；任何形似 replay hook 的东西都会被隔离，直到一次确认过的全新重启才解锁；导入中途出错时，数据库、工作区、环境与 CAS 会被一起回滚。 |
+| [`test_session_package_runtime.py`](test_session_package_runtime.py) | 会话包现在携带的运行时证据，以及它绝不能携带的东西。委派子代理的账本与 Cell 归属、带两个时间戳的全部活动卡片、带总数的有界 host 调用、不含 payload 的权限请求都会随包；已知密钥、home 与数据目录路径、端点 URL、异常文本和研究内容都不会。读不出来的部分被记录而不是让导出失败；导入按原始时间恢复卡片，并在任何写入之前拒绝格式错误的成员；旧包依然能得到诊断；`inspect-package` 对完整/被篡改/不可读分别返回 0/1/2。ChatModel 的调用遥测以 `model_call` 事件进入账本，重放与 Timeline 都会忽略它；一次真实网关回合的流式停顿会记录失败细节并随导出带出。 |
 | [`test_session_recovery.py`](test_session_recovery.py) | 空闲清扫器。释放一个会话之前，每一个阻断条件都必须解除，而正在进行的恢复就是其中之一——清扫器不能把内核从恢复脚下抽走。TTL 解析、持久化的活动记录与启动时的对账也在这里。 |
 | [`test_session_snapshots.py`](test_session_snapshots.py) | 内容寻址存储里的工作区快照。做快照时会排除秘密、符号链接与超大文件；恢复时拒绝盖在被外部改动过的工作区上，也不动未跟踪的文件；分支头部的移动由 compare-and-swap 守着。 |
 | [`test_share_expiry.py`](test_share_expiry.py) | 分享有效期 / 自动撤销：记录 `expires_at`、sweeper 撤销过期而保留未过期、无有效期的从不被扫、update 保留或清除有效期、restore 撤销 daemon 关机期间过期的，以及时长解析。 |

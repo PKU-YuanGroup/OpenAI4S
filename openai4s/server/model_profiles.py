@@ -481,6 +481,15 @@ class ModelProfileService:
             "adapter_streaming": adapter_streaming,
         }
 
+    def capability_receipt(self, profile: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The profile's exact probe receipt, or its stale predecessor.
+
+        SQLite only, like ``public_profile``'s field, but without that
+        projection's credential resolution: a Session package export wants the
+        receipt and has no business touching the keychain for it.
+        """
+        return self._public_receipt(profile)
+
     def _public_receipt(self, profile: Mapping[str, Any]) -> dict[str, Any] | None:
         repo = self._receipts()
         if repo is None:

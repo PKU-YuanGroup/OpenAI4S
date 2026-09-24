@@ -11,6 +11,11 @@ from .actions import Action, NativeToolCall
 
 Message: TypeAlias = dict[str, Any]
 
+#: Reply key under which the runtime hands one provider call's telemetry to
+#: the Action Ledger. It lands in ``ModelReply.extra``, which is never
+#: replayed to a provider.
+CALL_TELEMETRY_KEY = "call_telemetry"
+
 
 @dataclass(frozen=True)
 class KernelEnvSpec:

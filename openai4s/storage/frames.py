@@ -1145,6 +1145,106 @@ class FrameRepository:
             ).fetchone()
         return row["n"] or 0
 
+    def list_steps_for_export(self, frame_id: str) -> list[dict]:
+        """Every activity step of one frame, with both of its timestamps.
+
+        ``list_steps`` serves the transcript: it pages at 800 rows and has no
+        ``updated_at``. A Session package needs the whole record, and the two
+        timestamps are the only durable answer to how long a tool call ran --
+        a ``bash`` card that sat ``running`` for ten minutes and one that
+        failed at once look identical without them.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT step_id,seq,kind,title,summary,input,output,status,"
+                "created_at,updated_at FROM frame_steps WHERE frame_id=? "
+                "ORDER BY seq ASC",
+                (frame_id,),
+            ).fetchall()
+        steps = []
+        for row in rows:
+            step = dict(row)
+            for key in ("input", "output"):
+                if step.get(key):
+                    try:
+                        step[key] = json.loads(step[key])
+                    except (ValueError, TypeError):
+                        pass
+            steps.append(step)
+        self._read_legacy_capture_environments(steps)
+        return steps
+
+    def import_step(
+        self,
+        *,
+        step_id: str,
+        frame_id: str,
+        kind: str,
+        title: str | None,
+        summary: str | None,
+        input: dict | None,
+        output: dict | None,
+        status: str,
+        created_at: int,
+        updated_at: int,
+    ) -> dict:
+        """Insert one historical step with the times it originally had.
+
+        ``add_step`` stamps "now", which is right for a live card and wrong
+        for an imported one: the transcript interleaves steps with messages
+        by ``created_at``, so every imported card would pile up after the
+        last message instead of between the turns it belonged to.
+        """
+        with self._lock:
+            seq = self._connection.execute(
+                "SELECT COALESCE(MAX(seq),-1)+1 AS s FROM frame_steps "
+                "WHERE frame_id=?",
+                (frame_id,),
+            ).fetchone()["s"]
+            self._connection.execute(
+                "INSERT INTO frame_steps(step_id,frame_id,seq,kind,title,summary,"
+                "input,output,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    step_id,
+                    frame_id,
+                    seq,
+                    kind,
+                    title,
+                    summary,
+                    (
+                        json.dumps(input, ensure_ascii=False, default=str)
+                        if input is not None
+                        else None
+                    ),
+                    (
+                        json.dumps(output, ensure_ascii=False, default=str)
+                        if output is not None
+                        else None
+                    ),
+                    status,
+                    int(created_at),
+                    int(updated_at),
+                ),
+            )
+            self._connection.commit()
+        return {"step_id": step_id, "seq": seq, "created_at": int(created_at)}
+
+    def list_session_frames(self, root_frame_id: str) -> list[dict]:
+        """The root frame and every frame recorded under it, oldest first.
+
+        Delegated children, compaction forks and anything else that resolved
+        this root at creation. A child's own Action Ledger is rooted at the
+        child's frame id, so this list is also how a reader finds those.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM frames WHERE root_frame_id=? OR frame_id=? "
+                "ORDER BY created_at ASC,frame_id ASC",
+                (root_frame_id, root_frame_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # --- frame browse/detail/search ----------------------------------
     def browse_frames(
         self,

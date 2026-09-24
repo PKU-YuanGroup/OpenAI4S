@@ -2838,9 +2838,9 @@ def test_http_session_export_waits_for_revert_fifo_and_keeps_head_workspace_alig
     monkeypatch.setattr(runner, "_queue_execution", observed_queue)
     original_export = runner.session_domain.session_export
 
-    def observed_export(root_frame_id):
+    def observed_export(root_frame_id, **kwargs):
         export_entered.set()
-        return original_export(root_frame_id)
+        return original_export(root_frame_id, **kwargs)
 
     monkeypatch.setattr(runner.session_domain, "session_export", observed_export)
     handler_class = gateway_mod.make_handler(config, runner.hub, runner)

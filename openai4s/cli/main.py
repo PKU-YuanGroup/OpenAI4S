@@ -1015,6 +1015,59 @@ def cmd_verify_package(args) -> int:
     return 1
 
 
+def cmd_inspect_package(args) -> int:
+    """Say how an exported session's runtime behaved, from the package alone.
+
+    Integrity first, with the same verifier as `verify-package`, then the
+    diagnosis the exporter writes into DIAGNOSTICS.md -- recomputed here, so a
+    package from an older release (with no `runtime/` members at all) still
+    gets turns, stops, parse errors, gaps and Cell failures from its ledger,
+    messages and Notebook. Exit 0 when the package is intact, 1 when it is
+    not, 2 when it cannot be read. Findings do not change the exit code.
+    """
+    from openai4s.evidence import EvidenceError, verify_package
+    from openai4s.package_diagnosis import (
+        PackageReadError,
+        diagnose,
+        read_package,
+        render_markdown,
+    )
+
+    try:
+        report = verify_package(args.package)
+        diagnosis = diagnose(read_package(args.package))
+    except (EvidenceError, PackageReadError) as e:
+        print(f"cannot inspect: {e}")
+        return 2
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "integrity": {
+                        "ok": report["ok"],
+                        "archive_sha256": report["archive_sha256"],
+                        "problems": report["problems"],
+                    },
+                    "diagnosis": diagnosis,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0 if report["ok"] else 1
+    if not report["ok"]:
+        print(
+            f"WARNING: this package does not verify ({len(report['problems'])} "
+            "problem(s)); what follows describes modified contents."
+        )
+        for problem in report["problems"]:
+            print(f"  - {problem}")
+        print()
+    print(render_markdown(diagnosis))
+    return 0 if report["ok"] else 1
+
+
 def cmd_diagnostics(args) -> int:
     """Write a redacted diagnostic bundle for a bug report."""
     from openai4s.diagnostics import build_bundle
@@ -2464,6 +2517,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pv.add_argument("package", help="path to the .openai4s-session.zip")
     pv.set_defaults(fn=cmd_verify_package)
+    pinspect = sub.add_parser(
+        "inspect-package",
+        help="say how an exported session's runtime behaved: turns, stops, "
+        "failures, children, host calls (no daemon needed)",
+    )
+    pinspect.add_argument("package", help="path to the .openai4s-session.zip")
+    pinspect.add_argument(
+        "--json", action="store_true", help="machine-readable diagnosis"
+    )
+    pinspect.set_defaults(fn=cmd_inspect_package)
     pd = sub.add_parser(
         "diagnostics", help="write a redacted diagnostic bundle for a bug report"
     )

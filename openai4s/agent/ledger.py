@@ -39,7 +39,7 @@ from .events import (
     ReplyReceived,
     RunFinished,
 )
-from .models import ModelReply
+from .models import CALL_TELEMETRY_KEY, ModelReply
 from .recovery import recovery_message
 
 REDACTED = "<redacted>"
@@ -302,6 +302,20 @@ def _tool_policy(
     return side_effect, resources
 
 
+def _call_telemetry(reply: ModelReply) -> dict[str, Any] | None:
+    """The runtime's scalar telemetry for the call that produced ``reply``."""
+
+    value = reply.extra.get(CALL_TELEMETRY_KEY) if reply.extra else None
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        key: item
+        for key, item in value.items()
+        if isinstance(key, str)
+        and (item is None or isinstance(item, (bool, int, float, str)))
+    }
+
+
 @dataclass
 class RuntimeActionLedger:
     """Append engine events for one user turn to the durable ledger."""
@@ -397,6 +411,7 @@ class RuntimeActionLedger:
                 side_effect_class="read_only",
                 resource_keys=["agent:completion"],
             )
+            self._append_call_telemetry(group["group_id"], reply)
         elif isinstance(action, NativeToolBatch):
             events: list[dict[str, Any]] = []
             for sequence, call in enumerate(action.calls):
@@ -429,6 +444,17 @@ class RuntimeActionLedger:
                         "raw_arguments": raw,
                         "side_effect_class": side_effect,
                         "resource_keys": resources,
+                    }
+                )
+            telemetry = _call_telemetry(reply)
+            if telemetry is not None:
+                # One lifecycle fact about the provider call that proposed
+                # this batch. Reducers select events by type and skip it.
+                events.append(
+                    {
+                        "sequence": len(events),
+                        "type": "model_call",
+                        "result": telemetry,
                     }
                 )
             group = self.store.append_tool_action_group(
@@ -483,7 +509,17 @@ class RuntimeActionLedger:
                     else []
                 ),
             )
+            self._append_call_telemetry(group["group_id"], reply)
         self.current_group_id = group["group_id"]
+
+    def _append_call_telemetry(self, group_id: str, reply: ModelReply) -> None:
+        telemetry = _call_telemetry(reply)
+        if telemetry is not None:
+            self.store.append_action_event(
+                group_id=group_id,
+                type="model_call",
+                result=telemetry,
+            )
 
     def _record_team_usage(self, usage: dict[str, int] | None) -> None:
         """Best-effort team-mode metering (M2-5, decision D10 账本).

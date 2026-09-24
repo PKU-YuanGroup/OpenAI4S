@@ -113,7 +113,16 @@ scripts.
   Imported wall-clock timestamps record the import boundary rather than
   trusting source clocks; event cursor order preserves chronology. Raw prompts,
   hidden rationale, permission payloads, and reusable authorization never cross
-  the package boundary.
+  the package boundary. Each export also carries optional `runtime/*.json`
+  evidence and a `DIAGNOSTICS.md` page: the exporting version, platform and
+  posture, the session's resolved model configuration (endpoint class and
+  fingerprint, never its URL, plus the capabilities actually applied),
+  delegated children with their own ledgers, every activity card, host calls,
+  permission requests without payloads, compactions without slices, and
+  per-call model telemetry from the ledger. Import restores the activity cards
+  with their original times, so an imported transcript reads the way the
+  sender saw it; `openai4s inspect-package` prints the same diagnosis without
+  a daemon, for packages from older releases too.
 - **Customize and research UX** — model profiles, Skills/Specialists,
   connectors (catalog, enable/disable, probe, and a secret-preserving launch
   configuration editor), compute, network, memory, permission rules, plan/explore modes,

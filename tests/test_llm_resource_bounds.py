@@ -491,9 +491,9 @@ def test_a_legacy_model_without_cancel_keyword_remains_callable():
         return {"content": "ok"}
 
     model = ChatModel(LLMConfig(), legacy)
-    assert model.complete([{"role": "user", "content": "hi"}], lambda _x: None) == {
-        "content": "ok"
-    }
+    reply = dict(model.complete([{"role": "user", "content": "hi"}], lambda _x: None))
+    reply.pop("call_telemetry", None)
+    assert reply == {"content": "ok"}
 
 
 def test_consumer_exception_releases_a_blocked_model_producer():

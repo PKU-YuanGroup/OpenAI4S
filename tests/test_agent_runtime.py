@@ -97,9 +97,14 @@ def test_chat_model_passes_native_schemas_and_is_blocking_by_default():
 
     model = ChatModel(cfg, fake_chat, tools=[spec])
     source = [{"role": "user", "content": "look it up"}]
-    result = model.complete(source, lambda delta: None)
+    result = dict(model.complete(source, lambda delta: None))
 
+    # The call's own telemetry rides along for the Action Ledger; everything
+    # else is exactly what the provider adapter returned.
+    telemetry = result.pop("call_telemetry")
     assert result == {"content": "done"}
+    assert telemetry["outcome"] == "ok" and telemetry["stream"] is False
+    assert telemetry["deltas"] == 0 and telemetry["first_delta_ms"] is None
     assert len(calls) == 1 and calls[0][:2] == (source, cfg)
     forwarded = dict(calls[0][2])
     probe = forwarded.pop("should_cancel")

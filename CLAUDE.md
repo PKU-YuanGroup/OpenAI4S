@@ -28,7 +28,7 @@ openai4s setup --profile standard   # build Python + R from envs/*.yml
 openai4s setup                      # build all 4 envs (--dry-run to preview)
 ```
 
-CLI subcommands (`openai4s <cmd>`): `serve` · `status` · `stop` · `url` · `run` · `init` · `setup` · `doctor` · `diagnostics` · `verify-package` · `benchmark` · `env` (`plan`/`apply`/`list`/`rollback`/`recover`) · `jupyter` (`describe`/`export`/`install`) · `share` · `relay`. `start.sh` just runs `openai4s serve`.
+CLI subcommands (`openai4s <cmd>`): `serve` · `status` · `stop` · `url` · `run` · `init` · `setup` · `doctor` · `diagnostics` · `verify-package` · `inspect-package` · `benchmark` · `env` (`plan`/`apply`/`list`/`rollback`/`recover`) · `jupyter` (`describe`/`export`/`install`) · `share` · `relay`. `start.sh` just runs `openai4s serve`.
 
 **`uv run pytest` is not the whole gate.** CI runs each of the following as its own job, and each fails independently — a green pytest run says nothing about them:
 

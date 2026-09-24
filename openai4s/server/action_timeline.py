@@ -103,7 +103,14 @@ class ActionTimelineService:
         }
 
     def _group(self, group: Mapping[str, Any], attempts: Sequence[dict]) -> dict:
-        raw_events = list(group.get("events") or ())
+        # `model_call` is the provider call's own telemetry (timing, attempts,
+        # stream deltas) -- evidence for an exported package, not a step of
+        # the action a researcher reads here.
+        raw_events = [
+            event
+            for event in group.get("events") or ()
+            if not (isinstance(event, Mapping) and event.get("type") == "model_call")
+        ]
         title_events = [
             {
                 "type": event.get("type"),

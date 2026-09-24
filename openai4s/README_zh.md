@@ -83,3 +83,4 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 - [`doctor.py`](doctor.py) —— 一条命令回答「这套安装能不能干活」：模型、运行时、隔离、磁盘、连接器、远程计算。不依赖 daemon——需要它的场景往往正是 daemon 起不来的时候。
 - [`diagnostics.py`](diagnostics.py) —— 脱敏诊断包与有界的日志保留。
 - [`evidence.py`](evidence.py) —— 仅用标准库校验导出的包，服务于尚不信任本机的接收方。
+- [`package_diagnosis.py`](package_diagnosis.py) —— 仅用标准库解读导出的会话包：每轮一行、它是怎么结束的，以及不含内容的发现（停止原因、流式中断及失败那次调用自身的计时、工具报错、Cell 与内核失败、子代理、host 调用）。导出时生成 `DIAGNOSTICS.md`，也是 `openai4s inspect-package` 的实现；对 `runtime/` 出现之前导出的旧包同样可用。

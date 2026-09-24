@@ -392,6 +392,75 @@ class HostCallRepository:
             ),
         )
 
+    #: Every column except none: the row is already a scrubbed audit record.
+    _SESSION_COLUMNS = (
+        "h.call_id,h.frame_id,h.action_group_id,h.action_id,"
+        "h.permission_decision_id,h.method,h.args_preview,h.result_preview,"
+        "h.result_digest,h.side_effect_class,h.resource_keys,h.ok,h.created_at"
+    )
+    #: The frames of one Session: the root and everything recorded under it.
+    _SESSION_FRAMES = (
+        "h.frame_id IN (SELECT frame_id FROM frames "
+        "WHERE root_frame_id=? OR frame_id=?)"
+    )
+
+    def list_for_session(self, root_frame_id: str, *, limit: int) -> list[dict]:
+        """The newest ``limit`` audit rows of one Session, oldest first.
+
+        Newest, because a report is about how a session *ended*: when a long
+        run has to be cut, the calls that led into the failure are the ones
+        worth keeping. ``totals_for_session`` still counts every row.
+        """
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT {self._SESSION_COLUMNS} FROM host_call_log AS h "
+                f"WHERE {self._SESSION_FRAMES} "
+                "ORDER BY h.created_at DESC,h.rowid DESC LIMIT ?",
+                (root_frame_id, root_frame_id, limit),
+            ).fetchall()
+        result = []
+        for row in reversed(rows):
+            item = dict(row)
+            try:
+                keys = json.loads(item.get("resource_keys") or "[]")
+            except (TypeError, ValueError):
+                keys = []
+            item["resource_keys"] = keys if isinstance(keys, list) else []
+            try:
+                item["result_preview"] = json.loads(
+                    item.get("result_preview") or "null"
+                )
+            except (TypeError, ValueError):
+                pass
+            item["ok"] = bool(item.get("ok"))
+            result.append(item)
+        return result
+
+    def totals_for_session(self, root_frame_id: str) -> list[dict]:
+        """Per-method call and failure counts over every row of one Session."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT h.method AS method,COUNT(*) AS calls,"
+                "SUM(CASE WHEN h.ok=0 THEN 1 ELSE 0 END) AS failed,"
+                "MIN(h.created_at) AS first_at,MAX(h.created_at) AS last_at "
+                f"FROM host_call_log AS h WHERE {self._SESSION_FRAMES} "
+                "GROUP BY h.method ORDER BY h.method",
+                (root_frame_id, root_frame_id),
+            ).fetchall()
+        return [
+            {
+                "method": row["method"],
+                "calls": int(row["calls"] or 0),
+                "failed": int(row["failed"] or 0),
+                "first_at": row["first_at"],
+                "last_at": row["last_at"],
+            }
+            for row in rows
+        ]
+
     def has_successful_bash_receipt(
         self,
         *,
