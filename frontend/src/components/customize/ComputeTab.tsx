@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab, refreshCustTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import {
   asList,
@@ -11,173 +11,16 @@ import {
   hint,
 } from "../../features/customize/host";
 import { currentId } from "../../stores/session";
-import {
-  environmentStatus,
-  standardProfileReadiness,
-  _environmentStatusPromise,
-  _environmentStatusRefreshFailed,
-} from "../../stores/customize";
+import { standardProfileReadiness } from "../../stores/customize";
 import { _jobPoll } from "../../stores/ui";
-import {
-  sanitizeStandardProfileReadiness,
-  standardReadinessStateText,
-  type StandardReadiness,
-} from "../../features/customize/environment";
+import type { StandardReadiness } from "../../features/customize/environment";
+import { refreshEnvironmentStatus } from "../../features/send/environment";
 import { clearLeaseTimeout, scheduleTimeout } from "../../features/customize/timers";
 import { useAlive, useTimerLease } from "./use-timer-lease";
 import { useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
+import { EnvironmentCard } from "../onboarding/ReadinessPanel";
 import { Hdr, InfoRow } from "./ui";
-
-async function refreshEnvironmentStatus(): Promise<Record<string, unknown> | null> {
-  if (_environmentStatusPromise.value) {
-    return _environmentStatusPromise.value as Promise<Record<string, unknown> | null>;
-  }
-  const pending = (async () => {
-    try {
-      const payload = await api("/environments/status");
-      _environmentStatusRefreshFailed.value = false;
-      environmentStatus.value = payload && typeof payload === "object" ? payload : null;
-      standardProfileReadiness.value = sanitizeStandardProfileReadiness(
-        payload.standard_profile_readiness,
-      );
-    } catch {
-      _environmentStatusRefreshFailed.value = true;
-      const prev = standardProfileReadiness.value as StandardReadiness | null;
-      if (prev && prev.enabled === true) {
-        standardProfileReadiness.value = {
-          ...prev,
-          ready: false,
-          state: "unavailable",
-          reason: "status_refresh_failed",
-        };
-      }
-    }
-    return environmentStatus.value as Record<string, unknown> | null;
-  })();
-  _environmentStatusPromise.value = pending;
-  try {
-    return await pending;
-  } finally {
-    _environmentStatusPromise.value = null;
-  }
-}
-
-function ReadinessCard({
-  readiness,
-  lease,
-  alive,
-}: {
-  readiness: StandardReadiness;
-  lease: ReturnType<typeof useTimerLease>;
-  alive: () => boolean;
-}) {
-  return (
-    <section class={"standard-readiness-card state-" + readiness.state}>
-      <div class="standard-readiness-head">
-        <div>
-          <div class="standard-readiness-title">{t("environment.readiness.cardTitle")}</div>
-          <div class="standard-readiness-summary">
-            {standardReadinessStateText(readiness)}
-          </div>
-        </div>
-        <button
-          type="button"
-          class="outline-btn small"
-          onClick={() => custTab("compute")}
-        >
-          {t("environment.readiness.refresh")}
-        </button>
-      </div>
-      {readiness.missing_environments.length ? (
-        <div class="standard-readiness-gap">
-          <div class="standard-readiness-label">
-            {t("environment.readiness.missingEnvironments")}
-          </div>
-          <ul>
-            {readiness.missing_environments.map((name) => (
-              <li key={name}>{name}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {Object.entries(readiness.missing_packages).map(([environment, packages]) =>
-        packages.length ? (
-          <div class="standard-readiness-gap" key={environment}>
-            <div class="standard-readiness-label">
-              {t("environment.readiness.missingPackages", environment)}
-            </div>
-            <ul class="standard-readiness-packages">
-              {packages.map((packageName) => (
-                <li key={packageName}>{packageName}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null,
-      )}
-      {readiness.remediation &&
-      readiness.remediation.requires_explicit_action &&
-      readiness.remediation.commands.length ? (
-        <div class="standard-readiness-remediation">
-          <div class="standard-readiness-label">{t("environment.readiness.remediation")}</div>
-          <div class="standard-readiness-explicit">
-            {t("environment.readiness.explicitOnly")}
-          </div>
-          {readiness.remediation.commands.map((item) => (
-            <CopyCommand
-              key={item.command}
-              item={item}
-              lease={lease}
-              alive={alive}
-            />
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function CopyCommand({
-  item,
-  lease,
-  alive,
-}: {
-  item: { command: string; label: string };
-  lease: ReturnType<typeof useTimerLease>;
-  alive: () => boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div class="standard-readiness-command">
-      <code aria-label={item.label || undefined}>{item.command}</code>
-      <button
-        type="button"
-        class="outline-btn small"
-        onClick={async () => {
-          try {
-            if (!navigator.clipboard || !navigator.clipboard.writeText) {
-              throw new Error("clipboard unavailable");
-            }
-            await navigator.clipboard.writeText(item.command);
-            setCopied(true);
-            hint(t("environment.readiness.copied"));
-            scheduleTimeout(
-              lease,
-              () => {
-                if (alive()) setCopied(false);
-              },
-              1200,
-            );
-          } catch {
-            hint(t("nb.action.failed"), true);
-          }
-        }}
-      >
-        {copied ? t("code.copied") : t("environment.readiness.copy")}
-      </button>
-    </div>
-  );
-}
 
 export function ComputeTab() {
   const alive = useAlive();
@@ -237,7 +80,9 @@ export function ComputeTab() {
     async (current) => {
       const [g, env, h] = await Promise.all([
         api("/compute/gpu").catch(() => ({ available: false })),
-        refreshEnvironmentStatus().then((status) => status || { environments: [] }),
+        refreshEnvironmentStatus().then(
+          (status) => (status as Record<string, unknown> | null) || { environments: [] },
+        ),
         api("/compute/local/hostinfo").catch(() => ({})),
       ]);
       if (!current()) return;
@@ -275,7 +120,18 @@ export function ComputeTab() {
     <div>
       <Hdr title={t("cust.compute.title")} sub={t("cust.compute.desc")} />
       {readiness && readiness.enabled ? (
-        <ReadinessCard readiness={readiness} lease={lease} alive={alive} />
+        <EnvironmentCard
+          readiness={readiness}
+          action={
+            <button
+              type="button"
+              class="outline-btn small"
+              onClick={() => refreshCustTab("compute")}
+            >
+              {t("environment.readiness.refresh")}
+            </button>
+          }
+        />
       ) : null}
       <InfoRow
         name={t("cust.compute.host")}
