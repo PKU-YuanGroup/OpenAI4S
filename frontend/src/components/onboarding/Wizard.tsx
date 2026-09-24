@@ -15,6 +15,7 @@ import {
   fetchOnboarding,
   probeModelProfile,
   saveModelProfile,
+  updateModelProfile,
 } from "../../features/onboarding/api";
 import { ot } from "../../features/onboarding/copy";
 import {
@@ -25,6 +26,7 @@ import {
   reduceWizard,
   wizardErrorFromUnknown,
   type PathChoice,
+  type PathKind,
   type RequiredStep,
   type WizardState,
 } from "../../features/onboarding/machine";
@@ -51,6 +53,19 @@ function pathFromProfile(profile: Profile): PathChoice {
     baseUrl: asString(profile.base_url),
     name: asString(profile.name || id),
   };
+}
+
+/** A saved profile that already is this configuration (the server trims these fields). */
+function sameProfileId(status: OnboardingStatus | null, body: Record<string, unknown>): string {
+  const bare = (value: unknown) => asString(value).trim().replace(/\/+$/, "");
+  const match = (status?.profiles || []).find(
+    (p) =>
+      bare(p.name) === bare(body.name) &&
+      bare(p.provider) === bare(body.provider) &&
+      bare(p.base_url) === bare(body.base_url) &&
+      bare(p.model) === bare(body.model),
+  );
+  return match ? asString(match.id) : "";
 }
 
 function stepLabel(step: RequiredStep): string {
@@ -312,6 +327,11 @@ export function WizardHost() {
   const [testing, setTesting] = useState(false);
   const probeRun = useRef(0);
   const alive = useRef(true);
+  // The profile this wizard saved for each path. Continue on a path already
+  // saved updates that profile: it used to POST a new one every time, so
+  // coming back to the step left duplicates, and the one activated last could
+  // be a copy without the key (the key field starts empty on a second visit).
+  const savedProfiles = useRef<Partial<Record<PathKind, string>>>({});
 
   useEffect(() => {
     alive.current = true;
@@ -404,9 +424,22 @@ export function WizardHost() {
         model: path.model,
       };
       if (apiKey.trim()) body.api_key = apiKey.trim();
-      const created = await saveModelProfile(body);
-      const id = asString(created.id);
-      if (id) await activateModelProfile(id);
+      let id = "";
+      const known = savedProfiles.current[path.kind] || sameProfileId(status, body);
+      if (known) {
+        try {
+          await updateModelProfile(known, body);
+          id = known;
+        } catch (error) {
+          // Deleted meanwhile (Settings -> Models): save it afresh below.
+          if ((error as { status?: unknown } | null)?.status !== 404) throw error;
+        }
+      }
+      if (!id) id = asString((await saveModelProfile(body)).id);
+      if (id) {
+        savedProfiles.current[path.kind] = id;
+        await activateModelProfile(id);
+      }
       // The composer's `#model-select` lists saved profiles and marks the active one.
       void loadModels();
       if (!alive.current) return;

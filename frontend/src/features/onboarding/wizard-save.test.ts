@@ -38,6 +38,7 @@ const hooks = vi.hoisted(() => {
 
 const api = vi.hoisted(() => ({
   saveModelProfile: vi.fn(),
+  updateModelProfile: vi.fn(),
   activateModelProfile: vi.fn(),
   activateExistingModelProfile: vi.fn(),
   fetchOnboarding: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...original,
     saveModelProfile: api.saveModelProfile,
+    updateModelProfile: api.updateModelProfile,
     activateModelProfile: api.activateModelProfile,
     activateExistingModelProfile: api.activateExistingModelProfile,
     fetchOnboarding: api.fetchOnboarding,
@@ -120,6 +122,18 @@ function saveNew(path: PathChoice, key: string): Promise<void> {
   return (step.props!.onSaveNew as (path: PathChoice, key: string) => Promise<void>)(path, key);
 }
 
+/** Checklist -> "Choose a model path", the way a user goes back to the step. */
+function backToPath(): void {
+  const checklist = find(render(), (node) => node.type === "button" && textOf(node) === ot("onboarding.checklist"))!;
+  (checklist.props!.onClick as () => void)();
+  const step = find(
+    render(),
+    (node) => node.type === "button" && textOf(node).endsWith(ot("onboarding.step.path")),
+  )!;
+  (step.props!.onClick as () => void)();
+  expect(wizard().step).toBe("path");
+}
+
 const CLOUD: PathChoice = {
   kind: "cloud",
   profileId: "",
@@ -133,6 +147,7 @@ beforeEach(() => {
   hooks.reset();
   for (const fn of Object.values(api)) fn.mockReset();
   api.saveModelProfile.mockResolvedValue({ id: "mp-new" });
+  api.updateModelProfile.mockResolvedValue({ ok: true });
   api.activateModelProfile.mockResolvedValue({});
   api.fetchOnboarding.mockResolvedValue(STATUS_BODY);
   api.activateExistingModelProfile.mockResolvedValue(STATUS_BODY);
@@ -164,5 +179,47 @@ describe("first-run wizard: the composer model list", () => {
     await vi.waitFor(() => expect(wizard().step).toBe("test"));
     expect(api.activateExistingModelProfile).toHaveBeenCalledWith("mp-old");
     expect(api.loadModels).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("first-run wizard: saving a path again", () => {
+  it("updates the profile it saved instead of adding another", async () => {
+    await saveNew(CLOUD, "sk-first");
+    expect(api.saveModelProfile).toHaveBeenCalledTimes(1);
+
+    // Back to the path step: the form comes back filled, the key field empty.
+    backToPath();
+    await saveNew({ ...CLOUD, name: "Cloud (renamed)" }, "");
+    expect(api.saveModelProfile).toHaveBeenCalledTimes(1);
+    expect(api.updateModelProfile).toHaveBeenCalledWith("mp-new", {
+      name: "Cloud (renamed)",
+      provider: "chatgpt",
+      base_url: "https://api.example/v1",
+      model: "gpt-test",
+    });
+    expect(api.activateModelProfile).toHaveBeenLastCalledWith("mp-new");
+    expect(wizard().path?.profileId).toBe("mp-new");
+  });
+
+  it("reuses a saved profile that already is this configuration", async () => {
+    hooks.slots[STATUS] = {
+      ...STATUS_BODY,
+      profiles: [{ id: "mp-old", name: "Cloud", provider: "chatgpt", base_url: "https://api.example/v1/", model: "gpt-test" }],
+    };
+    await saveNew(CLOUD, "");
+    expect(api.saveModelProfile).not.toHaveBeenCalled();
+    expect(api.updateModelProfile).toHaveBeenCalledWith("mp-old", expect.not.objectContaining({ api_key: expect.anything() }));
+    expect(api.activateModelProfile).toHaveBeenCalledWith("mp-old");
+  });
+
+  it("saves afresh when the profile it saved has since been deleted", async () => {
+    await saveNew(CLOUD, "sk-first");
+    api.updateModelProfile.mockRejectedValueOnce(Object.assign(new Error("profile not found"), { status: 404 }));
+    api.saveModelProfile.mockResolvedValueOnce({ id: "mp-again" });
+    backToPath();
+    await saveNew(CLOUD, "sk-second");
+    expect(api.saveModelProfile).toHaveBeenCalledTimes(2);
+    expect(api.activateModelProfile).toHaveBeenLastCalledWith("mp-again");
+    expect(wizard().error).toBeNull();
   });
 });
