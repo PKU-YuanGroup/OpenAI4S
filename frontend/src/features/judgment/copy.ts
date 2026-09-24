@@ -1,5 +1,5 @@
 import { LANG } from "../../i18n/runtime";
-import { copyLookup, type CopyTable } from "../onboarding/copy";
+import { copyLookup, type CopyTable } from "../../i18n/copy";
 
 /**
  * Experimental judgment copy. New strings live here so we do not rewrite

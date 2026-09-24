@@ -1,4 +1,6 @@
-import { LANG, tOptional } from "../../i18n/runtime";
+import { copyLookup, type CopyTable } from "../../i18n/copy";
+
+export { copyLookup, type CopyTable };
 
 /**
  * M-01 copy. Existing model/readiness keys stay in the F-07 dictionaries.
@@ -84,26 +86,5 @@ const COPY: CopyTable = {
     "onboarding.load.err": "Could not load first-run setup: {0}",
   },
 };
-
-export type CopyTable = Record<"zh" | "en", Record<string, string>>;
-
-/**
- * The lookup behind a feature-local copy table (`ot` here, `judgmentT` in
- * `features/judgment/copy.ts`): the loaded dictionary wins, then the active
- * language's entry, then English, then the key itself; `{0}`, `{1}` … are
- * filled positionally and a hole with no argument is left as written.
- */
-export function copyLookup(table: CopyTable): (key: string, ...args: unknown[]) => string {
-  return (key, ...args) => {
-    const fromDict = tOptional(key);
-    let s = fromDict != null ? fromDict : table[LANG]?.[key] || table.en[key] || key;
-    if (args.length) {
-      s = String(s).replace(/\{(\d+)\}/g, (m, i) =>
-        args[+i] != null ? String(args[+i]) : m,
-      );
-    }
-    return s;
-  };
-}
 
 export const ot = copyLookup(COPY);

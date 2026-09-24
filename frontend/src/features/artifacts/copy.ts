@@ -1,11 +1,11 @@
-import { LANG, tOptional } from "../../i18n/runtime";
+import { copyLookup, type CopyTable } from "../../i18n/copy";
 
 /**
  * M-03 copy. Existing Files/viewer keys stay in the F-07 dictionaries.
  * New search/filter/pagination/deep-link strings live here so we do not
  * rewrite the generated `i18n/en.ts` / `zh.ts` extract.
  */
-const COPY: Record<"zh" | "en", Record<string, string>> = {
+const COPY: CopyTable = {
   zh: {
     "artifact.invalidMetadata": "响应未包含有效的产物元数据，导出已停止。",
     "editor.drafts": "保留的草稿（{0}）",
@@ -122,13 +122,4 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
   },
 };
 
-export function filesT(key: string, ...args: unknown[]): string {
-  const fromDict = tOptional(key);
-  let s = fromDict != null ? fromDict : COPY[LANG]?.[key] || COPY.en[key] || key;
-  if (args.length) {
-    s = String(s).replace(/\{(\d+)\}/g, (m, i) =>
-      args[+i] != null ? String(args[+i]) : m,
-    );
-  }
-  return s;
-}
+export const filesT = copyLookup(COPY);
