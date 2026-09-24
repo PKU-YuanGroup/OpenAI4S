@@ -410,6 +410,7 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 <a href="https://github.com/EQSTLab" title="EQSTLab"><img src=".github/contributors/EQSTLab.png" width="64" height="64" alt="EQSTLab" /></a>
 <a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
 <a href="https://github.com/Pandasama2025" title="Pandasama2025"><img src=".github/contributors/Pandasama2025.png" width="64" height="64" alt="Pandasama2025" /></a>
+<a href="https://github.com/dvd233" title="dvd233"><img src=".github/contributors/dvd233.png" width="64" height="64" alt="dvd233" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>Auto-generated daily from the GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">contributors graph</a> and a maintained public-recognition list by <code>scripts/update_contributors.py</code>.</sub>

@@ -7,6 +7,10 @@ from typing import Any
 from openai4s.tools.base import Tool
 from openai4s.tools.taxonomy import READ_ONLY, WORKSPACE_WRITE, resource_key
 
+#: An ordinary tool's output limit: about a third of one batch's combined
+#: tool-result budget, so several searches in one reply keep their receipts.
+_OBSERVATION_SHARE = Tool.output_limit
+
 
 def _stage10(runtime: Any) -> bool:
     from openai4s.host.stage10_science import official_stage10_enabled
@@ -73,6 +77,7 @@ class ScienceSearchTool(Tool):
             "database": {
                 "type": "string",
                 "enum": [
+                    "zenodo",
                     "uniprot",
                     "pdb",
                     "ensembl",
@@ -175,6 +180,61 @@ class ScienceSearchTool(Tool):
             return {"error": str(error)}
         except Exception as error:  # noqa: BLE001 - preserve the soft-fail contract
             return {"error": f"science_search: {error}"}
+
+    def render_observation(self, result: Any) -> str | None:
+        """Show the model the receipt first, then records that fit its share.
+
+        The shared renderer shows only the results list, which hid every
+        database's cursor and response receipt. File inventories are listed
+        while the observation stays within an ordinary tool's share of a batch.
+        Past that, the largest ones are replaced by an explicit count instead
+        of being cut mid-list or refusing the page. The returned data, which a
+        Python cell or the Stage 10 Artifact receives, is never trimmed.
+        """
+        if not isinstance(result, dict) or not isinstance(result.get("results"), list):
+            return None
+        import json
+
+        from openai4s.tools.registry import _safe_json
+
+        receipt = {
+            key: result.get(key)
+            for key in ("database", "source", "query", "count", "next_cursor")
+        }
+        receipt["provenance"] = result.get("provenance")
+        receipt["hash_scope"] = "metadata_response_only_not_dataset_file_bytes"
+        if result.get("artifact"):
+            receipt["artifact"] = result["artifact"]
+        records = list(result["results"])
+        items = [_safe_json(item) for item in records]
+        size = sum(len(item) + 1 for item in items) + len(_safe_json(receipt))
+        omitted = 0
+        for index in sorted(range(len(items)), key=lambda i: -len(items[i])):
+            if size <= _OBSERVATION_SHARE:
+                break
+            record = records[index]
+            attributes = record.get("attributes") if isinstance(record, dict) else None
+            files = attributes.get("files") if isinstance(attributes, dict) else None
+            if not isinstance(files, list) or not files:
+                continue
+            kept = {key: value for key, value in attributes.items() if key != "files"}
+            kept["files_omitted_from_view"] = len(files)
+            trimmed = _safe_json({**record, "attributes": kept})
+            size += len(trimmed) - len(items[index])
+            items[index] = trimmed
+            omitted += 1
+        if omitted:
+            receipt["view_note"] = (
+                f"{omitted} file inventories omitted to fit the observation; "
+                "call host.science.search in a Python cell for every entry"
+            )
+        parts = []
+        warning = result.get("_security_warning")
+        if isinstance(warning, str) and warning:
+            parts.append(f"[SECURITY WARNING]\n{warning}")
+        parts.append(json.dumps(receipt, ensure_ascii=False))
+        parts.append(f"results ({len(items)}):\n" + "\n".join(items))
+        return "\n".join(parts)
 
 
 __all__ = ["ScienceListDatabasesTool", "ScienceSearchTool"]

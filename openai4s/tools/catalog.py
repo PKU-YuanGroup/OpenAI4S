@@ -109,6 +109,9 @@ _GROUPS: tuple[dict[str, Any], ...] = (
         "description": "Schema-normalized public scientific database search.",
         "keywords": (
             "scientific database",
+            "zenodo",
+            "dataset search",
+            "数据集检索",
             "uniprot",
             "protein database",
             "pdb",
