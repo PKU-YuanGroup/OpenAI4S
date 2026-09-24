@@ -551,7 +551,12 @@ def test_remote_compute_jobs_travel_scoped_to_the_session(tmp_path):
             owner_key=str(workspace),
         )
         store.update_compute_job(
-            "job-mine", status="failed", exit_code=137, termination_reason="oom"
+            "job-mine",
+            status="failed",
+            exit_code=137,
+            termination_reason="oom",
+            # Recorded as `str(exc)` from the ssh call: a host name inside.
+            reason="ssh: connect to host gpu.private-lab port 22: Connection refused",
         )
         store.append_compute_job_event("job-mine", "submitted", {"cmd": CANARY})
         store.create_compute_job(
@@ -568,13 +573,154 @@ def test_remote_compute_jobs_travel_scoped_to_the_session(tmp_path):
         assert [event["kind"] for event in job["events"]][-1] == "submitted"
         assert all(set(event) == {"seq", "kind", "at"} for event in job["events"])
         text = files["runtime/compute_jobs.json"].decode()
-        for leaked in ("gpu-lab-private", CANARY, "workdir", "receipt"):
+        for leaked in (
+            "gpu-lab-private",
+            "gpu.private-lab",
+            CANARY,
+            "workdir",
+            "receipt",
+        ):
             assert leaked not in text
+        assert (
+            job["reason"]["kind"] == "text" and len(job["reason"]["fingerprint"]) == 12
+        )
         assert "remote compute jobs did not deliver: ssh:failed(oom)×1" in (
             files["DIAGNOSTICS.md"].decode()
         )
     finally:
         store.close()
+
+
+def test_records_naming_a_secret_file_travel_without_their_payload(tmp_path):
+    # No API_KEY/TOKEN/SECRET/PASSWORD in the name: the pattern scrubber keeps
+    # it, so only refusing the *file* protects it -- as the artifact filter does.
+    secret = "DB_PASS=hunter2-not-pattern-shaped"
+    store, service = _service(tmp_path)
+    try:
+        session = _session(store, tmp_path)
+        root, child = session["root"], session["child"]
+        store.add_step(
+            step_id="s-write-env",
+            frame_id=root,
+            kind="write",
+            title="Writing .env",
+            input={"path": "proj/.env", "content": secret},
+            status="running",
+        )
+        store.update_step("s-write-env", status="done", output={"bytes": 35})
+        store.add_step(
+            step_id="s-cat",
+            frame_id=root,
+            kind="bash",
+            title="Running",
+            input={"command": "cat .env"},
+            status="running",
+        )
+        store.update_step("s-cat", status="done", output={"stdout": secret})
+        store.log_host_call(
+            method="write_file",
+            args=[{"path": "keys/id_rsa.pem", "content": secret}],
+            ok=True,
+            frame_id=root,
+        )
+        arguments = {"path": ".env", "content": secret}
+        group = store.append_tool_action_group(
+            root_frame_id=child,
+            turn_id="child-turn-2",
+            provider="ark",
+            model="mock-model",
+            assistant_message={
+                "role": "assistant",
+                "tool_calls": [{"name": "write_file", "arguments": arguments}],
+            },
+            events=[
+                {
+                    "sequence": 0,
+                    "type": "proposed",
+                    "action_id": "w",
+                    "tool_call_id": "w",
+                    "canonical_arguments": {
+                        "name": "write_file",
+                        "arguments": arguments,
+                    },
+                    "raw_arguments": json.dumps(arguments),
+                }
+            ],
+        )
+        store.append_action_event(
+            group_id=group["group_id"],
+            type="result",
+            action_id="w",
+            tool_call_id="w",
+            result={"role": "tool", "name": "write_file", "content": "wrote it"},
+        )
+        files = _unpack(service.export(root)["data"])
+        for name in (
+            "runtime/activity.json",
+            "runtime/host_calls.json",
+            "runtime/frames.json",
+        ):
+            assert "hunter2" not in files[name].decode(), name
+        cards = {
+            step["step_id"]: step
+            for step in json.loads(files["runtime/activity.json"])["frames"][0]["steps"]
+        }
+        withheld = {"withheld": "names_a_secret_file"}
+        assert cards["s-write-env"]["input"] == withheld
+        assert cards["s-write-env"]["title"] == "Writing .env"
+        assert cards["s-write-env"]["status"] == "done"
+        assert cards["s-cat"]["output"] == withheld
+        # An ordinary card is untouched.
+        assert cards["s-save"]["input"] == {"path": "result.csv"}
+        sections = json.loads(files["runtime/collection.json"])["sections"]
+        assert sections["activity"]["withheld"] == 2
+        assert sections["host_calls"]["withheld"] == 1
+        assert sections["frames"]["withheld"] == 1
+        (ledger,) = json.loads(files["runtime/frames.json"])["child_ledgers"]
+        (hidden,) = [g for g in ledger["groups"] if g["turn_id"] == "child-turn-2"]
+        proposed = [e for e in hidden["events"] if e["type"] == "proposed"][0]
+        # The tool name survives, so the diagnosis still counts the call.
+        assert proposed["canonical_arguments"] == {"name": "write_file", **withheld}
+        assert hidden["assistant_message"] == withheld
+    finally:
+        store.close()
+
+
+def test_child_failures_overrides_and_stops_travel_content_free():
+    row = package_runtime._child_row(
+        {
+            "child_id": "c1",
+            "status": "failed",
+            "error": "LLM HTTP 502: <html>gateway at relay.private-lab.example</html>",
+            "stop_reason": "stop: the relay at relay.private-lab.example is down",
+            "task_status": "failed",
+            "overrides": {
+                "model": {
+                    "provider": "ark",
+                    "model": "glm",
+                    "base_url": "https://lab:pw@relay.private-lab.example/v1",
+                },
+                "skill_names": ["a"],
+            },
+            "result": {"output": CANARY},
+        }
+    )
+    assert row["error"]["kind"] == "llm_http_502"
+    assert len(row["error"]["fingerprint"]) == 12
+    assert row["stop_reason"] == "text"
+    assert row["overrides"]["model"]["endpoint"]["class"] == "hostname"
+    assert row["overrides"]["skill_names"] == ["a"]
+    assert "result" not in row
+    encoded = json.dumps(row)
+    for leaked in ("relay.private-lab", "lab:pw", "<html>", CANARY):
+        assert leaked not in encoded
+    # A recorded code travels as it is.
+    assert package_runtime._child_row({"stop_reason": "max_turns"}) == {
+        "stop_reason": "max_turns"
+    }
+    assert package_runtime.error_summary(
+        "openai4s.llm.models.StreamTimeoutError: read timed out"
+    )["kind"] == ("StreamTimeoutError")
 
 
 def test_bookkeeping_groups_are_not_read_as_turns(tmp_path):

@@ -29,9 +29,16 @@ Boundaries, stated because they are the reason for most of the shape below:
 * **No raw exception text.** A failure is recorded as its type chain, stable
   codes, flags, and the code locations it passed through inside this
   package -- never ``str(exc)``, which is where paths, argv and echoed
-  secrets live.
+  secrets live. What the database already holds as ``str(exc)`` -- a
+  delegated child's ``error``, a compute job's ``reason`` -- travels as a
+  kind, a length and a fingerprint; a child's endpoint override as endpoint
+  facts.
 * **Payloads stay out.** Permission payloads and resolution contexts, raw
   compacted slices and delegated children's output text are not collected.
+  An activity card, host-call preview or child-ledger entry that names a file
+  the artifact filter refuses by name (``.env``, ``credentials.json``,
+  ``*.pem`` ...) travels with its payload withheld: refusing the file while
+  shipping what was written to it or read from it would refuse nothing.
 * **Collection never fails an export.** A section that cannot be read is
   recorded as unavailable, with its error category, and the export goes on.
 """
@@ -42,6 +49,7 @@ import hashlib
 import ipaddress
 import os
 import platform
+import re
 import sys
 import sysconfig
 import traceback
@@ -497,6 +505,74 @@ def _frame_row(frame: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: A stored failure string's leading LLM prefix or exception type. Only that
+#: kind survives: the rest of a `str(exc)` is where provider bodies, relay URLs
+#: (userinfo included), host names and paths live.
+_ERROR_KIND = re.compile(
+    r"^\s*(?:(LLM HTTP) (\d{3})|(LLM connection error)|"
+    r"(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*(?:Error|Exception|Timeout|Interrupt|Exit"
+    r"|Failure)))\b"
+)
+_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def error_summary(text: Any) -> dict[str, Any] | None:
+    """A free-text failure as a kind, its length and a fingerprint -- never text.
+
+    A delegated child's `error` and a compute job's `reason` are recorded as
+    `str(exc)`. The fingerprint still lets two reports of one failure match.
+    """
+
+    if not isinstance(text, str) or not text.strip():
+        return None
+    match = _ERROR_KIND.match(text)
+    kind = "text"
+    if match and match.group(1):
+        kind = f"llm_http_{match.group(2)}"
+    elif match and match.group(3):
+        kind = "llm_connection_error"
+    elif match:
+        kind = match.group(4)
+    return {
+        "kind": kind,
+        "length": len(text),
+        "fingerprint": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12],
+    }
+
+
+def _code_or_text(value: Any) -> Any:
+    """A recorded code, or ``"text"`` where free text was recorded instead."""
+
+    if value is None or (isinstance(value, str) and _CODE.fullmatch(value)):
+        return value
+    return "text"
+
+
+def _portable_overrides(value: Any, depth: int = 0) -> Any:
+    """A child's override spec with every endpoint reduced to endpoint facts.
+
+    A parent may point a child at its own model endpoint (`model.base_url`);
+    the package reports endpoints as a class and a fingerprint, never a URL.
+    """
+
+    if depth > 16:
+        return None
+    if isinstance(value, Mapping):
+        out: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if key == "base_url" and isinstance(item, str):
+                out["endpoint"] = endpoint_facts(item)
+            else:
+                out[key] = _portable_overrides(item, depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_portable_overrides(item, depth + 1) for item in value]
+    if isinstance(value, str) and "://" in value:
+        return endpoint_facts(value)
+    return value
+
+
 def _child_row(child: Mapping[str, Any]) -> dict[str, Any]:
     row = {
         key: child.get(key)
@@ -508,8 +584,6 @@ def _child_row(child: Mapping[str, Any]) -> dict[str, Any]:
             "parent_child_id",
             "parent_frame_id",
             "frame_id",
-            "error",
-            "stop_reason",
             "task_status",
             "created_at",
             "started_at",
@@ -517,16 +591,156 @@ def _child_row(child: Mapping[str, Any]) -> dict[str, Any]:
             "request_id",
             "attempt_id",
             "progress",
-            "overrides",
         )
         if key in child
     }
+    # The three fields that can carry free text or an endpoint, each reduced
+    # the way the rest of this module reduces its own: a failure to its kind,
+    # a stop to its code, an endpoint to its facts.
+    if "error" in child:
+        row["error"] = error_summary(child.get("error"))
+    if "stop_reason" in child:
+        row["stop_reason"] = _code_or_text(child.get("stop_reason"))
+    if "overrides" in child:
+        row["overrides"] = _portable_overrides(child.get("overrides"))
     steering = child.get("steering")
     if isinstance(steering, Mapping):
         row["steering"] = {
             key: steering.get(key) for key in ("queued", "delivered", "discarded")
         }
     return row
+
+
+#: What separates a path from the text around it in a command, an argument
+#: list or a JSON preview. Each token is then judged by its path components.
+_PATH_TOKEN_SPLIT = re.compile(r"[\s\"'`,;()\[\]{}<>|&=]+")
+_PATH_PARTS = re.compile(r"[\\/]")
+WITHHELD = "names_a_secret_file"
+
+
+def _secret_file_rules() -> tuple[frozenset[str], frozenset[str]]:
+    """The artifact and workspace filter's own sets, so the three cannot drift.
+
+    Read lazily: ``session_package`` imports this module.
+    """
+
+    from openai4s.server.session_package import _SECRET_NAMES, _SECRET_SUFFIXES
+
+    return _SECRET_NAMES, _SECRET_SUFFIXES
+
+
+def names_secret_file(text: str) -> bool:
+    """Whether a string names a file the package refuses to carry as a file.
+
+    Artifact and workspace export drop `.env`, `credentials.json`, `*.pem` and
+    the rest by name, so the *content* of such a file must not travel through
+    the evidence either: a Writing card holds up to 6,000 characters of what
+    was written, a Reading card what was read, a `cat .env` card what it
+    printed, and a host-call preview the first 500 characters of the call.
+    Deliberately broad -- a false positive withholds one record's payload, a
+    false negative ships a credential.
+    """
+
+    names, suffixes = _secret_file_rules()
+    for token in _PATH_TOKEN_SPLIT.split(text[:65536].lower()):
+        parts = [part for part in _PATH_PARTS.split(token) if part]
+        if not parts:
+            continue
+        if any(part in names or part.startswith(".env.") for part in parts):
+            return True
+        if any(parts[-1].endswith(suffix) for suffix in suffixes):
+            return True
+    return False
+
+
+def _mentions_secret_file(value: Any, depth: int = 0) -> bool:
+    if depth > 32:
+        return False
+    if isinstance(value, str):
+        return names_secret_file(value)
+    if isinstance(value, Mapping):
+        return any(
+            names_secret_file(str(key)) or _mentions_secret_file(item, depth + 1)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_mentions_secret_file(item, depth + 1) for item in value)
+    return False
+
+
+def _withhold_card(step: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    if not (
+        _mentions_secret_file(step.get("input"))
+        or _mentions_secret_file(step.get("output"))
+    ):
+        return dict(step), False
+    return {
+        **step,
+        "input": {"withheld": WITHHELD},
+        "output": {"withheld": WITHHELD},
+    }, True
+
+
+def _withhold_group(group: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    """A child ledger group, with its content withheld if it names a secret file.
+
+    Kinds, ids, timestamps, tool names, parse errors and the call telemetry
+    stay, so the group still counts in the diagnosis.
+    """
+
+    if not _mentions_secret_file(
+        {
+            "assistant_content": group.get("assistant_content"),
+            "assistant_message": group.get("assistant_message"),
+            "events": [
+                event
+                for event in group.get("events") or ()
+                if isinstance(event, Mapping) and event.get("type") != "model_call"
+            ],
+        }
+    ):
+        return dict(group), False
+    events = []
+    for event in group.get("events") or ():
+        if not isinstance(event, Mapping) or event.get("type") == "model_call":
+            events.append(event)
+            continue
+        arguments = event.get("canonical_arguments")
+        kept = (
+            {
+                key: arguments.get(key)
+                for key in ("name", "ordinal", "parse_error")
+                if key in arguments
+            }
+            if isinstance(arguments, Mapping)
+            else {}
+        )
+        events.append(
+            {
+                **event,
+                "canonical_arguments": {**kept, "withheld": WITHHELD},
+                "raw_arguments": None,
+                "result": (
+                    {
+                        **{
+                            key: event["result"].get(key)
+                            for key in ("reason", "progress_reason", "is_error", "name")
+                            if key in event["result"]
+                        },
+                        "withheld": WITHHELD,
+                    }
+                    if isinstance(event.get("result"), Mapping)
+                    else None
+                ),
+            }
+        )
+    return {
+        **group,
+        "assistant_content": None,
+        "assistant_message": {"withheld": WITHHELD},
+        "wire_state": None,
+        "events": events,
+    }, True
 
 
 _PERMISSION_FIELDS = (
@@ -622,6 +836,7 @@ def collect_runtime_documents(
         ledgers = []
         groups_seen = 0
         groups_total = 0
+        withheld = 0
         for frame_id in children:
             groups = store.list_action_groups(frame_id)
             groups_total += len(groups)
@@ -629,10 +844,15 @@ def collect_runtime_documents(
                 continue
             kept = groups[-(MAX_CHILD_GROUPS - groups_seen) :]
             groups_seen += len(kept)
+            safe = []
+            for group in kept:
+                projected, hidden = _withhold_group(safe_group(group))
+                withheld += hidden
+                safe.append(projected)
             ledgers.append(
                 {
                     "frame_id": frame_id,
-                    "groups": [safe_group(group) for group in kept],
+                    "groups": safe,
                     "truncated": len(kept) < len(groups),
                 }
             )
@@ -664,12 +884,14 @@ def collect_runtime_documents(
             "total": len(rows),
             "child_groups": groups_seen,
             "child_groups_total": groups_total,
+            "withheld": withheld,
             "truncated": len(rows) > MAX_FRAMES or groups_seen < groups_total,
         }
 
     def activity() -> tuple[Any, dict[str, Any]]:
         budget = MAX_ACTIVITY_STEPS
         total = 0
+        withheld = 0
         frames_out = []
         for frame_id in [root_frame_id, *child_ids()]:
             steps = store.list_steps_for_export(frame_id)
@@ -678,10 +900,15 @@ def collect_runtime_documents(
                 continue
             kept = steps[-budget:]
             budget -= len(kept)
+            cards = []
+            for step in kept:
+                card, hidden = _withhold_card(step)
+                withheld += hidden
+                cards.append(card)
             frames_out.append(
                 {
                     "frame_id": frame_id,
-                    "steps": kept,
+                    "steps": cards,
                     "truncated": len(kept) < len(steps),
                 }
             )
@@ -690,18 +917,29 @@ def collect_runtime_documents(
             "records": kept_total,
             "total": total,
             "truncated": kept_total < total,
+            "withheld": withheld,
         }
 
     def host_calls() -> tuple[Any, dict[str, Any]]:
         totals = store.session_host_call_totals(root_frame_id)
         total = sum(int(item.get("calls") or 0) for item in totals)
         calls = store.list_session_host_calls(root_frame_id, limit=MAX_HOST_CALLS)
+        withheld = 0
+        for call in calls:
+            if names_secret_file(str(call.get("args_preview") or "")):
+                call["args_preview"] = f"<withheld: {WITHHELD}>"
+                withheld += 1
         return {
             "totals": totals,
             "total": total,
             "calls": calls,
             "truncated": len(calls) < total,
-        }, {"records": len(calls), "total": total, "truncated": len(calls) < total}
+        }, {
+            "records": len(calls),
+            "total": total,
+            "truncated": len(calls) < total,
+            "withheld": withheld,
+        }
 
     def permissions() -> tuple[Any, dict[str, Any]]:
         requests = store.list_permission_requests(root_frame_id=root_frame_id)
@@ -762,12 +1000,14 @@ def collect_runtime_documents(
                         if name
                         else None
                     ),
+                    # `reason` is often `str(exc)` from an ssh or provider
+                    # call; `termination_reason` is the closed vocabulary.
+                    "reason": error_summary(job.get("reason")),
                     **{
                         key: job.get(key)
                         for key in (
                             "status",
                             "exit_code",
-                            "reason",
                             "termination_reason",
                             "created_at",
                             "submitted_at",
@@ -888,8 +1128,10 @@ __all__ = [
     "agent_facts",
     "collect_runtime_documents",
     "endpoint_facts",
+    "error_summary",
     "failure_evidence",
     "llm_facts",
+    "names_secret_file",
     "process_facts",
     "runtime_facts_for",
     "session_capability_receipt",

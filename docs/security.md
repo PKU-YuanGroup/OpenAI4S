@@ -520,6 +520,17 @@ send out of it:
   and recorded as `omitted`;
 - **no permission payload** (`payload`, `pattern`, `message`,
   `resolution_context`) and no compacted message slice;
+- **no content of a file the package refuses as a file.** Artifact and
+  workspace export drop `.env`, `credentials.json`, `*.pem` and the rest by
+  name; an activity card (a Writing card holds up to 6,000 characters of what
+  was written), a host-call preview or a child-ledger entry that names such a
+  file travels with its payload withheld, so a secret the pattern scrubber
+  cannot recognise is not shipped through the evidence instead;
+- **no free-text failure.** A delegated child's `error` and a compute job's
+  `reason` are stored as `str(exc)` — provider bodies, relay URLs, host names —
+  and travel as a kind (`llm_http_502`, `StreamTimeoutError`, `text`), a length
+  and a fingerprint; a child's model-endpoint override travels as endpoint
+  facts;
 - **no exception text.** A failed turn's `error.detail` holds its category,
   the same `error_class` fingerprint `record_diagnostic` logs, the type chain,
   closed LLM codes and flags, and code locations inside `openai4s/` —
