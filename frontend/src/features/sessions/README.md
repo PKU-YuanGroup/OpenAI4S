@@ -8,7 +8,7 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 
 | File | Responsibility |
 | --- | --- |
-| [`actions.ts`](actions.ts) | Session menu, share dialog, import/export, title, cancel. app.js:7411-7793. |
+| [`actions.ts`](actions.ts) | Session menu, import/export, title, cancel. app.js:7411-7793. |
 | [`api.ts`](api.ts) | `API`, `ApiError`, `api()`, `apiErrorText`. app.js:84-119. |
 | [`binds.ts`](binds.ts) | Late bindings so dashboard and conversation do not import each other. |
 | [`boot.ts`](boot.ts) | Window exports, `setLoadSessionsImpl`, workbench click wiring. Binds the Shell at once, but routes to the first view only once the locale chunks have loaded (or failed, or `I18N_ROUTE_WAIT_MS` ran out): the dashboard lists, sidebar and an opened session render through `t()` and are not repainted when the dictionaries land. If the wait runs out, those lists (dashboard, sidebar, empty session) are re-rendered once when the dictionaries do arrive. |
@@ -36,6 +36,7 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`load.navigation.test.ts`](load.navigation.test.ts) | Out-of-order sessions/folders/pages, project-scoped read ownership, read errors and auto-open ownership. |
 | [`actions.export.test.ts`](actions.export.test.ts) | Markdown export requires successful validated reads and freezes the session title. |
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | A superseded project navigation cannot replace the current session or its session/folder lists; menu filtering cancels a pending project open, including repeated A→B→A filters, and the open then hands the view back — it reloads the conversation whose reads its entry retired, or opens the menu's project when the workspace was revealed with none; the current navigation transfers ownership to its conversation. List reads are scoped to their project, not to the view generation: a same-project refresh survives a conversation open or a trip Home that overtakes it. |
+| [`share.ts`](share.ts) | Share dialog: create, copy, update or revoke a session's read-only link. app.js:7560-7697. |
 | [`projects.ts`](projects.ts) | Project menu/modal/research view, `sanitizeProjectLineage`. `renderProjMenu` takes `#proj-current` over from its static `data-i18n` label. |
 | [`static-i18n-ownership.test.ts`](static-i18n-ownership.test.ts) | Once code has written the session title or the current project's name, neither the late locale-chunk repaint nor a language switch puts "Session" / "Project" back; the title input commits on blur, so that repaint renamed the session on the server. |
 | [`transcript.ts`](transcript.ts) | Composer @-ref chips. Re-exports the stored-row names (`renderStored`, `addMsgActions`, `insertMessageByTime`, `renderEmptySession`, `renderMessageRefChips`) from `messages/list.ts`, their one implementation. |
