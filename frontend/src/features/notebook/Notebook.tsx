@@ -34,7 +34,9 @@ import {
   stripAnsi,
 } from "./chrome";
 import {
-  branchCapability,
+  canForkFromCell,
+  canPromote,
+  canRerun,
   copyNotebookCell,
   currentKernelEnvs,
   currentKernelStatus,
@@ -46,11 +48,10 @@ import {
   kernelCtl,
   kernelIdFromEnv,
   kernelLabel,
-  kernelStatusOf,
   nbSwitchEnv,
   promoteNotebookCell,
   replEnabled,
-  runtimeSummary,
+  runtimeBadge,
   shortRuntime,
   syncKernel,
 } from "./kernel";
@@ -243,12 +244,10 @@ function CellIo({ cell }: { cell: NotebookCell }) {
   );
 }
 
-function CellActions({ cell }: { cell: NotebookCell }) {
-  const st = kernelStatusOf(currentKernelStatus());
-  const replEnabled = !!st.repl_enabled;
-  const appendable = replEnabled && !cell.live && !!String(cell.source || "").trim();
+export function CellActions({ cell }: { cell: NotebookCell }) {
+  const appendable = canRerun.value && !cell.live && !!String(cell.source || "").trim();
   const canFork =
-    !cell.live && branchCapability("fork_from_cell") && !!publicText(cell.fork_checkpoint_id, 96);
+    !cell.live && canForkFromCell.value && !!publicText(cell.fork_checkpoint_id, 96);
   return (
     <div class="nbc-actions">
       <button class="nbc-action" onClick={() => void copyNotebookCell(cell.source || "")}>
@@ -271,7 +270,7 @@ function CellActions({ cell }: { cell: NotebookCell }) {
       ) : null}
       <button
         class="nbc-action"
-        disabled={!branchCapability("promote")}
+        disabled={!canPromote.value}
         onClick={() => void promoteNotebookCell(cell)}
       >
         {t("nb.action.promote")}
@@ -440,14 +439,14 @@ function toggleExecutedCodeLocal(): void {
   nbRender();
 }
 
-function KernelChips({ entries }: { entries: NotebookCell[] }) {
+export function KernelChips({ entries }: { entries: NotebookCell[] }) {
   const kernels: string[] = [];
   entries.forEach((e) => {
     const k = e.kernel_id || "python";
     if (!kernels.includes(k)) kernels.push(k);
   });
   const filter = kernelFilter.value;
-  const badgeMode = runtimeSummary().status;
+  const badgeMode = runtimeBadge.value;
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">

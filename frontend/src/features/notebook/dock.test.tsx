@@ -19,10 +19,12 @@ import { effect } from "@preact/signals";
 import { i18nReady, t } from "../../i18n/runtime";
 import { cells, liveCells } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
+import { running } from "../../stores/stream";
+import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
 import { invalidateKernelCache, kernelView } from "./kernel";
-import { CellList, CellOutput, NotebookDock, StatusStrip } from "./Notebook";
+import { CellActions, CellList, CellOutput, KernelChips, NotebookDock, StatusStrip } from "./Notebook";
 
 type VNode = {
   type?: unknown;
@@ -72,16 +74,16 @@ describe("Notebook cell identity across completion", () => {
   it("keeps one component under the cell's key from its first chunk to its record", () => {
     const base = { producing_cell_id: "c1", cell_id: "c1", cell_index: 1, source: "print(1)" };
     liveCells.value = [{ ...base, live: true, status: "running" }];
-    const running = listed(CellList({ entries: notebookDisplayEntries() }));
+    const streaming = listed(CellList({ entries: notebookDisplayEntries() }));
     liveCells.value = [];
     cells.value = [{ ...base, status: "ok", stdout: "1\n" }];
     const finished = listed(CellList({ entries: notebookDisplayEntries() }));
-    expect(running).toHaveLength(1);
+    expect(streaming).toHaveLength(1);
     expect(finished).toHaveLength(1);
     // A different component type under the same key makes Preact unmount the
     // card: open outputs and revisions collapse and the page jumps.
-    expect(finished[0]!.key).toBe(running[0]!.key);
-    expect(finished[0]!.type).toBe(running[0]!.type);
+    expect(finished[0]!.key).toBe(streaming[0]!.key);
+    expect(finished[0]!.type).toBe(streaming[0]!.type);
   });
 });
 
@@ -135,6 +137,50 @@ describe("Notebook kernel status line", () => {
       expect(renders).toBe(2);
     } finally {
       dispose();
+    }
+  });
+});
+
+describe("Notebook subscriptions", () => {
+  function renders(run: () => void): { count: () => number; dispose: () => void } {
+    let count = 0;
+    const dispose = effect(() => {
+      count += 1;
+      run();
+    });
+    return { count: () => count, dispose };
+  }
+
+  it("a cell's action row follows what it shows, not every Timeline refresh or kernel read", () => {
+    currentId.value = "frame-1";
+    branchState.value = { capabilities: { fork_from_cell: true, promote: true } };
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: true }, envs: null, cur: null };
+    const cell = { producing_cell_id: "c", source: "x = 1", fork_checkpoint_id: "cp1" };
+    const row = renders(() => CellActions({ cell }));
+    try {
+      branchState.value = { capabilities: { fork_from_cell: true, promote: true }, branch_id: "b2" };
+      actionTimeline.value = { branch_id: "b2" };
+      kernelView.value = { sid: "frame-1", st: { repl_enabled: true, generation: 3 }, envs: null, cur: null };
+      expect(row.count()).toBe(1);
+      branchState.value = { capabilities: { promote: true } };
+      expect(row.count()).toBe(2);
+    } finally {
+      row.dispose();
+    }
+  });
+
+  it("the kernel chips follow the badge, not branch, Timeline or cell refreshes", () => {
+    currentId.value = "frame-1";
+    const chips = renders(() => KernelChips({ entries: [] }));
+    try {
+      branchState.value = { branch_id: "b1" };
+      actionTimeline.value = { branch_id: "b1" };
+      cells.value = [{ producing_cell_id: "x", state_revision: 4 }];
+      expect(chips.count()).toBe(1);
+      running.value = true;
+      expect(chips.count()).toBe(2);
+    } finally {
+      chips.dispose();
     }
   });
 });

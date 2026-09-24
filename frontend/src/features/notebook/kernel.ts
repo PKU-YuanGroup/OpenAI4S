@@ -193,6 +193,21 @@ function shortRuntime(value: unknown): string {
   return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none");
 }
 
+/** The runtime badge's mode: runtimeSummary().status without the rest. */
+export function runtimeStatus(): string {
+  const queue = (executionQueue.value || {}) as { owner?: unknown };
+  const recoveryStatus = String(
+    ((recoveryState.value || {}) as Record<string, unknown>).status || "",
+  ).toLowerCase();
+  const kcSt = kernelStatusOf(currentKernelStatus());
+  if (/fail|error/.test(recoveryStatus)) return "failed";
+  if (/partial/.test(recoveryStatus)) return "partial";
+  if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) return "restoring";
+  if (queue.owner || running.value || kcSt.turn_running) return "busy";
+  if (kcSt.alive) return "live";
+  return "ended";
+}
+
 /** app.js:3398-3424. Compact port for the notebook badge. */
 export function runtimeSummary(): {
   status: string;
@@ -216,7 +231,6 @@ export function runtimeSummary(): {
   const recovery = (recoveryState.value || {}) as Record<string, unknown>;
   const actions = (recoveryActions.value || {}) as Record<string, unknown>;
   const kcSt = kernelStatusOf(currentKernelStatus());
-  const recoveryStatus = String(recovery.status || "").toLowerCase();
   const trustState = publicText(
     recovery.trust_state || actions.trust_state || kcSt.trust_state,
     32,
@@ -230,12 +244,7 @@ export function runtimeSummary(): {
     recovery.view_only === true ||
     actions.view_only === true ||
     kcSt.view_only === true;
-  let status = "ended";
-  if (/fail|error/.test(recoveryStatus)) status = "failed";
-  else if (/partial/.test(recoveryStatus)) status = "partial";
-  else if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) status = "restoring";
-  else if (ownerTicket || running.value || kcSt.turn_running) status = "busy";
-  else if (kcSt.alive) status = "live";
+  const status = runtimeStatus();
   // One projection for the whole summary; it used to be computed three times.
   const entries = notebookDisplayEntries();
   const pythonCell = latestCellForLanguage(entries, "python");
@@ -277,6 +286,18 @@ export function branchCapability(name: string): boolean {
   const st = branchState.value as { capabilities?: Record<string, unknown> } | null;
   return !!(st && st.capabilities && st.capabilities[name]);
 }
+
+/*
+ * What the chips and every cell's action row show, as computed values: each
+ * notifies its readers only when it changes. The badge read runtimeSummary()
+ * and each action row read branchState and the kernel view, so every
+ * Timeline refresh (a new branchState object) and every kernel read
+ * re-rendered the chips and the action row of every finished cell.
+ */
+export const runtimeBadge = computed(runtimeStatus);
+export const canForkFromCell = computed(() => branchCapability("fork_from_cell"));
+export const canPromote = computed(() => branchCapability("promote"));
+export const canRerun = computed(() => !!kernelStatusOf(currentKernelStatus()).repl_enabled);
 
 /** app.js:9911-9918 */
 export async function kernelCtl(action: string): Promise<void> {
