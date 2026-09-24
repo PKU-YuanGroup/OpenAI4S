@@ -29,6 +29,8 @@ import { t } from "../../i18n/runtime";
 import { copyFailedText, copyText } from "../chrome/clipboard";
 import { forkFromCell } from "../execution/branch";
 import { publicText } from "../scrub/scrub";
+import { sanitizeSecurity } from "../timeline/sanitize";
+import type { SecurityState } from "../timeline/types";
 import type { WsMessage } from "../ws/types";
 import {
   loadExecutionLog,
@@ -493,7 +495,13 @@ export function handleKernelStatus(m: WsMessage): void {
     hint(t("kernel.envChanged", (env && env.name) || t("kernel.envChanged.default")));
   }
   invalidateKernelCache();
-  if (m.sandbox) securityState.value = { sandbox: m.sandbox };
+  if (m.sandbox) {
+    // Scrubbed like every other security write, and only the sandbox half:
+    // the permission half the Timeline read from /security stays.
+    const sandbox = sanitizeSecurity({ sandbox: m.sandbox }).sandbox;
+    const current = securityState.value as SecurityState | null;
+    securityState.value = current ? { ...current, sandbox } : sanitizeSecurity({ sandbox: m.sandbox });
+  }
   scheduleWorkbenchRefresh();
   if (dockIsNotebook()) nbRender();
 }

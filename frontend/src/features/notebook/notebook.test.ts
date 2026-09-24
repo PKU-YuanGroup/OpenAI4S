@@ -26,7 +26,7 @@ import {
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
-import { branchState } from "../../stores/timeline";
+import { branchState, securityState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
 import { copyFailedText } from "../chrome/clipboard";
@@ -370,6 +370,28 @@ describe("F-14 Notebook", () => {
       seedCache();
       onEvent({ type: "kernel_status", frame_id: "frame-1", status: "restarted", generation: 2 });
       expectInvalidated();
+    });
+
+    it("stores a kernel_status sandbox scrubbed, keeping the permission state", () => {
+      securityState.value = {
+        sandbox: { state: "old" },
+        permission: { mode: "ask", pending_count: 2, unattended: "deny" },
+      };
+      onEvent({
+        type: "kernel_status",
+        frame_id: "frame-1",
+        status: "restarted",
+        sandbox: { state: "enforced", mode: 7, runtimes: "not-a-list", detail: "x".repeat(900) },
+      });
+      const state = securityState.value as {
+        sandbox: { state: string; mode: string; runtimes: unknown[]; detail: string };
+        permission: { mode: string; pending_count: number };
+      };
+      expect(state.sandbox.state).toBe("enforced");
+      expect(state.sandbox.mode).toBe("7");
+      expect(state.sandbox.runtimes).toEqual([]);
+      expect(state.sandbox.detail.length).toBeLessThanOrEqual(500);
+      expect(state.permission).toEqual({ mode: "ask", pending_count: 2, unattended: "deny" });
     });
 
     it("does not invalidate kernel_status for another session", () => {
