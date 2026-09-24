@@ -105,7 +105,15 @@ export async function loadMoreProjects(): Promise<void> {
   renderDashProjects();
 }
 
+/**
+ * The example CTA that may run `exampleTimer`. A CTA replaced by a repaint, or
+ * stopped with the dashboard, loses it: its late replies can neither start an
+ * interval nothing would stop nor reload a dashboard that is not on screen.
+ */
+let exampleOwner: object | null = null;
+
 function stopExamplePoll(): void {
+  exampleOwner = null;
   if (exampleTimer) {
     clearInterval(exampleTimer);
     exampleTimer = 0;
@@ -231,13 +239,22 @@ export function renderDashProjects(): void {
 
 function exampleSeedCta(): HTMLElement {
   stopExamplePoll();
+  const owner = {};
+  exampleOwner = owner;
+  const live = () => exampleOwner === owner;
   const box = el("div", "dash-example");
   const btn = el("button", "btn", t("dash.example.cta"));
   btn.type = "button";
   const note = el("div", "dash-example-hint", t("dash.example.hint"));
   box.appendChild(btn);
   box.appendChild(note);
+  const startPoll = () => {
+    if (!live()) return;
+    if (exampleTimer) clearInterval(exampleTimer);
+    exampleTimer = window.setInterval(poll, 1500) as unknown as number;
+  };
   const paint = (st: { running?: boolean; error?: string; seeded?: boolean }) => {
+    if (!live()) return;
     if (st.running) {
       btn.disabled = true;
       btn.textContent = t("dash.example.running");
@@ -254,14 +271,15 @@ function exampleSeedCta(): HTMLElement {
   const poll = () =>
     api("/example/session")
       .then((st) => paint(st as { running?: boolean; error?: string; seeded?: boolean }))
-      .catch(stopExamplePoll);
+      .catch(() => {
+        if (live()) stopExamplePoll();
+      });
   btn.onclick = () => {
     btn.disabled = true;
     api("/example/session", { method: "POST", body: JSON.stringify({ confirm: true }) })
       .then((st) => {
         paint(st as { running?: boolean; error?: string; seeded?: boolean });
-        stopExamplePoll();
-        exampleTimer = window.setInterval(poll, 1500) as unknown as number;
+        startPoll();
       })
       .catch((e) => {
         btn.disabled = false;
@@ -270,10 +288,11 @@ function exampleSeedCta(): HTMLElement {
   };
   api("/example/session")
     .then((raw) => {
+      if (!live()) return;
       const st = raw as { running?: boolean; error?: string; seeded?: boolean };
       if (st.seeded) box.remove();
       else paint(st);
-      if (st.running) exampleTimer = window.setInterval(poll, 1500) as unknown as number;
+      if (st.running) startPoll();
     })
     .catch(() => box.remove());
   return box;
