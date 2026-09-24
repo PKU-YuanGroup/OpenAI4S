@@ -533,6 +533,13 @@ describe("F-14 Notebook", () => {
       paint(second, 6, "abcdefgh");
       expect(second.firstChild?.data).toBe("abcdefgh");
     });
+
+    it("shows a finished record exactly, not as a tail on what streamed", () => {
+      const pre = fakePre();
+      const seen = paint(pre, 0, "partial line");
+      paintStreamedText(pre as unknown as Parameters<typeof paintStreamedText>[0], seen, "final record!", true);
+      expect(pre.firstChild?.data).toBe("final record!");
+    });
   });
 
   describe("projectNotebookCells", () => {

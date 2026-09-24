@@ -98,12 +98,18 @@ function BinaryElided({ length }: { length: number }) {
   );
 }
 
-export function StreamingOutput({ text, isError }: { text: string; isError: boolean }) {
+/**
+ * One output block for a running and a finished cell. It used to be two
+ * components, and the switch at completion remounted the block, so an output
+ * the reader had opened snapped shut. A running cell appends its chunks; a
+ * finished one shows its final record exactly.
+ */
+export function CellOutput({ text, isError, live }: { text: string; isError: boolean; live: boolean }) {
   const preRef = useRef<HTMLPreElement>(null);
   const seen = useRef(0);
   useLayoutEffect(() => {
-    seen.current = paintStreamedText(preRef.current, seen.current, text);
-  }, [text]);
+    seen.current = paintStreamedText(preRef.current, seen.current, text, !live);
+  }, [text, live]);
   if (!text) return null;
   if (looksBinary(text)) return <BinaryElided length={text.length} />;
   return (
@@ -114,23 +120,10 @@ export function StreamingOutput({ text, isError }: { text: string; isError: bool
   );
 }
 
-export function StaticOutput({ text, isError }: { text: string; isError: boolean }) {
-  if (!text) return null;
-  if (looksBinary(text)) return <BinaryElided length={text.length} />;
-  return (
-    <details class={"nbc-disclosure" + (isError ? " error" : "")}>
-      <summary>output</summary>
-      <pre class={isError ? "nbc-err" : "nbc-out"}>{text}</pre>
-    </details>
-  );
-}
-
-function LiveStdout({ cellKey }: { cellKey: string }) {
-  return <StreamingOutput text={cellOutput(cellKey).stdout.value} isError={false} />;
-}
-
-function LiveStderr({ cellKey }: { cellKey: string }) {
-  return <StreamingOutput text={cellOutput(cellKey).stderr.value} isError={true} />;
+/** A running cell reads its output signal; a finished one its record. */
+function CellStream({ cell, stream, live }: { cell: NotebookCell; stream: "stdout" | "stderr"; live: boolean }) {
+  const text = live ? cellOutput(nbCellKey(cell))[stream].value : String(cell[stream] || "");
+  return <CellOutput text={text} isError={stream === "stderr"} live={live} />;
 }
 
 function CodeBlock(opts: {
@@ -307,7 +300,7 @@ function CellShell({
           </summary>
           <div class="nbc-revision-list">
             {(cell._revisions || []).map((rev) => (
-              <MemoCompletedCell
+              <MemoCellView
                 key={nbCellKey(rev)}
                 cell={{ ...rev, _revisions: [], _historicalRevision: true }}
               />
@@ -329,65 +322,49 @@ function CellShell({
   );
 }
 
-function LiveCode({ cell }: { cell: NotebookCell }) {
-  const rec = cellOutput(nbCellKey(cell));
-  const source = rec.source.value;
-  const status = rec.status.value || "running";
+/** Source and status: a running cell's signals, a finished cell's record. */
+function CellCode({ cell, live }: { cell: NotebookCell; live: boolean }) {
+  const rec = live ? cellOutput(nbCellKey(cell)) : null;
   const k = cell.kernel_id || "python";
   const idx = cell.cell_index != null ? cell.cell_index : "…";
   return (
     <CodeBlock
       cacheKey={nbCellKey(cell)}
-      source={source}
+      source={rec ? rec.source.value : cell.source || ""}
       lang={cell.language || k}
       langLabel={(cell.language || k) + " [" + idx + "]"}
-      status={status}
+      status={rec ? rec.status.value || "running" : cell.status || "ok"}
       env={cell.environment || cell.env}
     />
   );
 }
 
-function LiveFigures({ cell }: { cell: NotebookCell }) {
-  return <CellFigures cell={cell} names={cellOutput(nbCellKey(cell)).figures.value} />;
+function CellFiguresSlot({ cell, live }: { cell: NotebookCell; live: boolean }) {
+  const names = live ? cellOutput(nbCellKey(cell)).figures.value : cell.figures || [];
+  return <CellFigures cell={cell} names={names} />;
 }
 
-function LiveCell({ cell }: { cell: NotebookCell }) {
-  const key = nbCellKey(cell);
+/**
+ * One component for a cell from its first chunk to its final record. A live
+ * cell and a finished one used to be different components under the same
+ * key, so completion unmounted the card: open outputs and revisions
+ * collapsed and the page jumped.
+ */
+function CellView({ cell }: { cell: NotebookCell }) {
+  const live = !!(cell.live || cell.draft);
+  const csvs = live ? [] : (cell.files_written || []).filter((f) => /\.(csv|tsv)$/i.test(f)).slice(0, 4);
   return (
     <CellShell cell={cell}>
-      <LiveCode cell={cell} />
-      <LiveStdout cellKey={key} />
-      <LiveStderr cellKey={key} />
+      <CellCode cell={cell} live={live} />
+      <CellStream cell={cell} stream="stdout" live={live} />
+      <CellStream cell={cell} stream="stderr" live={live} />
       {cell.error ? <ErrorBlock raw={cell.error} /> : null}
-      <LiveFigures cell={cell} />
-    </CellShell>
-  );
-}
-
-function CompletedCell({ cell }: { cell: NotebookCell }) {
-  const k = cell.kernel_id || "python";
-  const st = cell.status || "ok";
-  const idx = cell.cell_index != null ? cell.cell_index : "…";
-  const csvs = (cell.files_written || []).filter((f) => /\.(csv|tsv)$/i.test(f)).slice(0, 4);
-  return (
-    <CellShell cell={cell}>
-      <CodeBlock
-        cacheKey={nbCellKey(cell)}
-        source={cell.source || ""}
-        lang={cell.language || k}
-        langLabel={(cell.language || k) + " [" + idx + "]"}
-        status={st}
-        env={cell.environment || cell.env}
-      />
-      <StaticOutput text={cell.stdout || ""} isError={false} />
-      <StaticOutput text={cell.stderr || ""} isError={true} />
-      {cell.error ? <ErrorBlock raw={cell.error} /> : null}
-      <CellFigures cell={cell} names={cell.figures || []} />
+      <CellFiguresSlot cell={cell} live={live} />
       {csvs.map((f) => (
         <TableMount key={f} fname={f} cell={cell} />
       ))}
-      <CellIo cell={cell} />
-      {cell.draft ? null : <CellActions cell={cell} />}
+      {live ? null : <CellIo cell={cell} />}
+      {live || cell.draft ? null : <CellActions cell={cell} />}
     </CellShell>
   );
 }
@@ -409,9 +386,9 @@ function TableMount({ fname, cell }: { fname: string; cell: NotebookCell }) {
   </div>;
 }
 
-const MemoCompletedCell = memo(CompletedCell);
+const MemoCellView = memo(CellView);
 
-function CellList() {
+export function CellList() {
   const entries = notebookDisplayEntries();
   const filter = kernelFilter.value;
   const shown = filter
@@ -420,11 +397,9 @@ function CellList() {
   if (!shown.length) return <div class="dock-empty">{t("nb.empty")}</div>;
   return (
     <>
-      {shown.map((cell) => {
-        const key = nbCellKey(cell);
-        if (cell.live || cell.draft) return <LiveCell key={key} cell={cell} />;
-        return <MemoCompletedCell key={key} cell={cell} />;
-      })}
+      {shown.map((cell) => (
+        <MemoCellView key={nbCellKey(cell)} cell={cell} />
+      ))}
     </>
   );
 }

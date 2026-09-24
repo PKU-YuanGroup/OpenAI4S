@@ -179,12 +179,14 @@ export function appendTextNodeDelta(
  * `<pre>` already shows. No `<pre>` (the output was empty or elided as
  * binary) or a new, empty one starts from zero: the count used to survive
  * the unmount, so a new `<pre>` received only `text.slice(oldSeen)` and the
- * start of the output was gone. Returns the new count.
+ * start of the output was gone. `final` is a finished cell's record: shown
+ * exactly, not as a tail appended to what streamed. Returns the new count.
  */
 export function paintStreamedText(
   pre: { firstChild: ChildNode | null; appendChild: (node: Text) => unknown } | null,
   seen: number,
   text: string,
+  final = false,
 ): number {
   if (!pre) return 0;
   let node = pre.firstChild as Text | null;
@@ -192,6 +194,10 @@ export function paintStreamedText(
     node = document.createTextNode("");
     pre.appendChild(node);
     seen = 0;
+  }
+  if (final) {
+    if (node.data !== text) node.data = text;
+    return text.length;
   }
   return appendTextNodeDelta(node, seen, text);
 }
