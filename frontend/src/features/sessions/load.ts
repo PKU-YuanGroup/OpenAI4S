@@ -1,9 +1,11 @@
 /** Project / session / folder REST walks. app.js:6766, 6964-7086. */
 
+import type { Signal } from "@preact/signals";
 import { t } from "../../i18n";
 import {
   _folderCollapsed,
   _foldersFor,
+  _projectSearchLoadingMore,
   _projectsLoadingMore,
   _sessionScope,
   _sessionsLoadingMore,
@@ -13,10 +15,16 @@ import {
   foldersLoading,
   foldersLoadError,
   project,
+  projectSearch,
+  projectSearchHasMore,
+  projectSearchLoadError,
+  projectSearchNextCursor,
+  projectSearchTotal,
   projects,
   projectsHasMore,
   projectsLoadError,
   projectsNextCursor,
+  projectsQuery,
   projectsTotal,
   sessionPages,
   sessions,
@@ -128,57 +136,85 @@ export function projectDashView(opts: {
   };
 }
 
-let _projectsLoadGen = 0;
-/** The `q` the current page set was loaded with; an append continues it. */
-let _projectsLoadedQuery = "";
+/** One paged project list and its load bookkeeping. */
+export type ProjectList = {
+  rows: Signal<unknown[]>;
+  hasMore: Signal<boolean>;
+  nextCursor: Signal<string | null>;
+  total: Signal<number>;
+  loadingMore: Signal<boolean>;
+  loadError: Signal<boolean>;
+  /** A failed first page keeps the confirmed rows instead of emptying the list. */
+  keepOnFailure: boolean;
+  gen: number;
+  /** The `q` the current page set was loaded with; an append continues it. */
+  loadedQuery: string;
+  /**
+   * A replace (first page, possibly a new `q`) awaiting its reply. An append
+   * admitted meanwhile would take a newer generation with the *old* query and
+   * cursor, and the generation guard would then discard the replace's reply
+   * in favour of page two of the previous one.
+   */
+  replaceInFlight: boolean;
+};
+
 /**
- * A replace (first page, possibly a new `q`) awaiting its reply. An append
- * admitted meanwhile would take a newer generation with the *old* query and
- * cursor, and the generation guard would then discard the search reply in
- * favour of page two of the previous filter.
+ * The directory: `projects`, which the header, the switcher and the session
+ * and attention labels name projects from. An unread refresh is not an empty
+ * directory, so a failed one keeps what it had.
  */
-let _projectsReplaceInFlight = false;
+const directory: ProjectList = {
+  rows: projects, hasMore: projectsHasMore, nextCursor: projectsNextCursor, total: projectsTotal,
+  loadingMore: _projectsLoadingMore, loadError: projectsLoadError, keepOnFailure: true,
+  gen: 0, loadedQuery: "", replaceInFlight: false,
+};
 
-export function projectsReplaceInFlight(): boolean {
-  return _projectsReplaceInFlight;
-}
+/**
+ * The dashboard search's pages. They used to replace the directory, so every
+ * project outside the filter lost its name in session rows and attention
+ * cards for as long as the box held a query.
+ */
+const search: ProjectList = {
+  rows: projectSearch, hasMore: projectSearchHasMore, nextCursor: projectSearchNextCursor,
+  total: projectSearchTotal, loadingMore: _projectSearchLoadingMore, loadError: projectSearchLoadError,
+  keepOnFailure: false, gen: 0, loadedQuery: "", replaceInFlight: false,
+};
 
-/** The `q` the current `projects.value` page set was loaded with. */
-export function projectsLoadedQuery(): string {
-  return _projectsLoadedQuery;
+/** The list the dashboard card shows: the search while the box holds a query, else the directory. */
+export function dashProjectList(): ProjectList {
+  return normalizeProjectQuery(String(projectsQuery.value || "")) ? search : directory;
 }
 
 /**
  * Load the first page (`replace`) or the next page (`append`) of projects.
  *
- * Only the dashboard search passes `q`. Every other caller — open/create/
- * rename/delete project, session-package import, the onboarding wizard —
- * wants the unfiltered directory, because `projects.value` also backs the
- * project name in the header, the project switcher and the session labels.
- * Reading the search signal here for all of them leaked a dashboard filter
- * into places that had no search box to clear it from.
+ * Without a `q` this is the directory. With one it is the dashboard search,
+ * which has its own pages, so a filter never leaks into the views that name
+ * projects. An append continues the list the dashboard card shows.
  */
 export async function loadProjects(opts?: { append?: boolean; q?: string }): Promise<void> {
   const append = !!opts?.append;
+  const query = normalizeProjectQuery(String(opts?.q ?? ""));
+  const list = append ? dashProjectList() : query ? search : directory;
   if (
     append &&
     !canLoadMoreProjects({
-      loadingMore: !!_projectsLoadingMore.value || _projectsReplaceInFlight,
-      hasMore: !!projectsHasMore.value,
-      cursor: projectsNextCursor.value,
+      loadingMore: !!list.loadingMore.value || list.replaceInFlight,
+      hasMore: !!list.hasMore.value,
+      cursor: list.nextCursor.value,
     })
   ) {
     return;
   }
-  const gen = ++_projectsLoadGen;
-  const q = append ? _projectsLoadedQuery : normalizeProjectQuery(String(opts?.q ?? ""));
-  const cursor = append ? projectsNextCursor.value : null;
+  const gen = ++list.gen;
+  const q = append ? list.loadedQuery : query;
+  const cursor = append ? list.nextCursor.value : null;
   const path = projectListQuery({ q, cursor });
   try {
-    if (append) _projectsLoadingMore.value = true;
+    if (append) list.loadingMore.value = true;
     else {
-      projectsLoadError.value = false;
-      _projectsReplaceInFlight = true;
+      list.loadError.value = false;
+      list.replaceInFlight = true;
     }
     const d = (await api(path)) as {
       projects?: ProjectLike[];
@@ -186,33 +222,33 @@ export async function loadProjects(opts?: { append?: boolean; q?: string }): Pro
       has_more?: boolean;
       total?: number;
     } | null;
-    if (gen !== _projectsLoadGen) return;
+    if (gen !== list.gen) return;
     const incoming = (d && d.projects) || [];
-    if (!append) _projectsLoadedQuery = q;
-    projects.value = mergeProjectPage(
-      (projects.value as ProjectLike[]) || [],
+    if (!append) list.loadedQuery = q;
+    list.rows.value = mergeProjectPage(
+      (list.rows.value as ProjectLike[]) || [],
       incoming,
       append ? "append" : "replace",
     );
-    projectsHasMore.value = !!(d && d.has_more);
-    projectsNextCursor.value = (d && d.next_cursor) || null;
-    projectsTotal.value =
-      typeof d?.total === "number" ? d.total : (projects.value as ProjectLike[]).length;
-    projectsLoadError.value = false;
+    list.hasMore.value = !!(d && d.has_more);
+    list.nextCursor.value = (d && d.next_cursor) || null;
+    list.total.value =
+      typeof d?.total === "number" ? d.total : (list.rows.value as ProjectLike[]).length;
+    list.loadError.value = false;
   } catch {
-    if (gen !== _projectsLoadGen) return;
-    projectsLoadError.value = true;
-    if (!append) {
-      projects.value = [];
-      projectsHasMore.value = false;
-      projectsNextCursor.value = null;
-      projectsTotal.value = 0;
+    if (gen !== list.gen) return;
+    list.loadError.value = true;
+    if (!append && !list.keepOnFailure) {
+      list.rows.value = [];
+      list.hasMore.value = false;
+      list.nextCursor.value = null;
+      list.total.value = 0;
     }
   } finally {
     // A superseded request leaves both flags to the newest one to clear.
-    if (gen === _projectsLoadGen) {
-      _projectsLoadingMore.value = false;
-      _projectsReplaceInFlight = false;
+    if (gen === list.gen) {
+      list.loadingMore.value = false;
+      list.replaceInFlight = false;
     }
   }
 }

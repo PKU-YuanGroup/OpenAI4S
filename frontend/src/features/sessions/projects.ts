@@ -18,7 +18,13 @@ import { showDashboard, showWorkspace } from "./dashboard";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
 import { callLane, hostFn } from "./lane";
-import { loadProjects, loadSessions, loadSessionsForScope, sessionListScope } from "./load";
+import {
+  loadProjects,
+  loadSessions,
+  loadSessionsForScope,
+  normalizeProjectQuery,
+  sessionListScope,
+} from "./load";
 import { beginNavigation } from "./navigation";
 
 type ProjectLike = {
@@ -428,10 +434,11 @@ export async function submitProjectModal(): Promise<void> {
           context: ($("#pm-ctx") as HTMLTextAreaElement | null)?.value,
         }),
       });
-      // The dashboard keeps its search box across visits; a repaint must
-      // load the page that box describes, not the unfiltered directory.
+      // The directory carries the new name to the header and the switcher; a
+      // dashboard showing a search reloads the page its box describes too.
       const dashVisible = !$("#dashboard")?.classList.contains("hidden");
-      await loadProjects({ q: dashVisible ? String(projectsQuery.value || "") : "" });
+      const q = dashVisible ? normalizeProjectQuery(String(projectsQuery.value || "")) : "";
+      await Promise.all([loadProjects(), q ? loadProjects({ q }) : null]);
       renderProjMenu();
       if (dashVisible) binds.renderDashProjects();
       closeProjectModal();

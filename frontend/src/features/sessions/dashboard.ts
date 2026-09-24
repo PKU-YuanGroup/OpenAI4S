@@ -2,16 +2,7 @@ import { beginNavigation } from "./navigation";
 /** Home dashboard. app.js:6616-6764, 2685. */
 
 import { LANG, t } from "../../i18n";
-import {
-  _openGen,
-  _projectsLoadingMore,
-  currentId,
-  projects,
-  projectsHasMore,
-  projectsLoadError,
-  projectsNextCursor,
-  projectsQuery,
-} from "../../stores/session";
+import { _openGen, currentId, projects, projectsQuery } from "../../stores/session";
 import { _dashPoll } from "../../stores/ui";
 import { unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
@@ -21,10 +12,10 @@ import { sessionCopy } from "./copy";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import {
   canLoadMoreProjects,
+  dashProjectList,
   loadProjects,
+  normalizeProjectQuery,
   projectDashView,
-  projectsLoadedQuery,
-  projectsReplaceInFlight,
   type ProjectLike,
 } from "./load";
 import {
@@ -93,11 +84,12 @@ export function bindProjectSearch(): void {
 }
 
 export async function loadMoreProjects(): Promise<void> {
+  const list = dashProjectList();
   if (
     !canLoadMoreProjects({
-      loadingMore: !!_projectsLoadingMore.value || projectsReplaceInFlight(),
-      hasMore: !!projectsHasMore.value,
-      cursor: projectsNextCursor.value,
+      loadingMore: !!list.loadingMore.value || list.replaceInFlight,
+      hasMore: !!list.hasMore.value,
+      cursor: list.nextCursor.value,
     })
   ) {
     return;
@@ -155,8 +147,11 @@ let dashFramesFailed = false;
 export async function loadDashboard(): Promise<void> {
   bindProjectSearch();
   paintDashSkeleton();
-  // The search box persists across dashboard visits; the list must match it.
-  await loadProjects({ q: String(projectsQuery.value || "") });
+  // The search box persists across dashboard visits; the card must match it.
+  // While it holds a query the directory is read too: the Running and Recent
+  // rows, and the attention cards, name their projects from it.
+  const q = normalizeProjectQuery(String(projectsQuery.value || ""));
+  await Promise.all([loadProjects({ q }), q ? loadProjects() : null]);
   try {
     const d = (await api("/frames?limit=50")) as { frames?: SessionLike[] };
     _dashFrames = filterRootFrames((d && d.frames) || []);
@@ -173,14 +168,15 @@ export function renderDashProjects(): void {
   const pc = $("#dash-projects");
   if (!pc) return;
   pc.innerHTML = "";
-  const list = projects.value as ProjectLike[];
+  const shown = dashProjectList();
+  const list = shown.rows.value as ProjectLike[];
   annotateRunningCounts(list, _dashFrames);
   const view = projectDashView({
-    error: !!projectsLoadError.value,
+    error: !!shown.loadError.value,
     count: list.length,
     query: String(projectsQuery.value || ""),
-    hasMore: !!projectsHasMore.value,
-    loadingMore: !!_projectsLoadingMore.value,
+    hasMore: !!shown.hasMore.value,
+    loadingMore: !!shown.loadingMore.value,
   });
   if (view.kind === "error") {
     const box = el("div", "dash-empty", projectCopy("error"));
@@ -474,23 +470,6 @@ export function showWorkspace(): void {
   if (searchTimer) {
     clearTimeout(searchTimer);
     searchTimer = 0;
-  }
-  // The workspace header, the switcher and the session labels read
-  // `projects.value` as the whole directory. Opening a session from a
-  // dashboard card leaves the search box's page in place; reload it here
-  // so a project outside the filter does not render under a fallback name.
-  if (projectsLoadedQuery() !== "") {
-    const filtered = projects.value as ProjectLike[];
-    void loadProjects().then(() => {
-      // `loadProjects` empties the store when a *replace* fails, which is
-      // right for the dashboard card (it renders an error and a Retry) and
-      // wrong for this background refresh: an emptied store is exactly the
-      // fallback-name symptom this reload exists to remove.
-      if (projectsLoadError.value && !(projects.value as ProjectLike[]).length) {
-        projects.value = filtered;
-      }
-      binds.renderProjMenu();
-    });
   }
   $("#dashboard")?.classList.add("hidden");
   $("#workspace")?.classList.remove("hidden");
