@@ -7,7 +7,7 @@
  * work that nothing is running.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type FakeNode = {
   tag: string;
@@ -42,20 +42,21 @@ const fake = vi.hoisted(() => {
     };
     return node;
   };
-  return { make, host: make("div", "messages") };
+  return { make, host: make("div", "messages"), live: { card: null as { remove: () => void } | null } };
 });
 
 vi.mock("../messages/dom", () => ({
   el: fake.make,
-  $: (selector: string) => (selector === "#messages" ? fake.host : null),
+  $: (selector: string) =>
+    selector === "#messages" ? fake.host : selector === "#plan-card-live" ? fake.live.card : null,
   messagesHost: () => fake.host,
 }));
 vi.mock("../messages/scroll", () => ({ down: () => {} }));
 
 import { t } from "../../i18n/runtime";
-import { currentId } from "../../stores/session";
-import { planPending, planReady, running } from "../../stores/stream";
-import { renderPlanCard } from "./plan";
+import { _openGen, currentId } from "../../stores/session";
+import { planPending, planReady, planStatus, running } from "../../stores/stream";
+import { discardPlan, renderPlanCard } from "./plan";
 import { turnDone } from "./turn";
 
 function walk(node: FakeNode, found: FakeNode[] = []): FakeNode[] {
@@ -156,6 +157,54 @@ describe("revising a draft plan", () => {
     enter(box);
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(box.value).toBe("use a log scale");
+  });
+});
+
+describe("discarding a plan", () => {
+  afterEach(() => {
+    fake.live.card = null;
+    vi.unstubAllGlobals();
+  });
+
+  it("an answer that lands after the user opened another session leaves that session's plan alone", async () => {
+    let answer: () => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      () =>
+        new Promise((resolve) => {
+          answer = () => resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") });
+        }),
+    );
+    currentId.value = "f-a";
+    const discarding = discardPlan();
+    // Session B opens with its own live plan card.
+    currentId.value = "f-b";
+    _openGen.value += 1;
+    const planOfB = plan(["pending"]);
+    planReady.value = planOfB;
+    planStatus.value = "draft";
+    let removed = false;
+    fake.live.card = { remove: () => void (removed = true) };
+    answer();
+    await discarding;
+    expect(removed).toBe(false);
+    expect(planReady.value).toBe(planOfB);
+    expect(planStatus.value).toBe("draft");
+  });
+
+  it("still clears the plan it discarded", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("{}") }),
+    );
+    currentId.value = "f-a";
+    planReady.value = plan(["pending"]);
+    planStatus.value = "draft";
+    let removed = false;
+    fake.live.card = { remove: () => void (removed = true) };
+    await discardPlan();
+    expect(removed).toBe(true);
+    expect(planReady.value).toBeNull();
+    expect(planStatus.value).toBe("discarded");
   });
 });
 

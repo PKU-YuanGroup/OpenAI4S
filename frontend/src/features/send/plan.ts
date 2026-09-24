@@ -369,12 +369,17 @@ export async function resumePlan(): Promise<void> {
 }
 
 export async function discardPlan(): Promise<void> {
-  if (!currentId.value) return;
+  const fid = currentId.value;
+  if (!fid) return;
+  const gen = _openGen.value;
   try {
-    await api(`/frames/${currentId.value}/plan/discard`, { method: "POST", body: "{}" });
+    await api(`/frames/${fid}/plan/discard`, { method: "POST", body: "{}" });
   } catch {
     /* discard is best-effort */
   }
+  // The live plan card and plan state below belong to whichever session is
+  // on screen now; if that is no longer the one discarded, leave them be.
+  if (currentId.value !== fid || _openGen.value !== gen) return;
   const card = $("#plan-card-live");
   if (card) card.remove();
   planReady.value = null;
