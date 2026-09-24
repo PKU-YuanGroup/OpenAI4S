@@ -31,6 +31,10 @@ export function paintExecutionChrome(): void {
   if (!nb) return;
   const st = execSources.value as ExecSourcesState | null;
   if (st && st.open) {
+    // paintVariableInspector appended this into the Notebook's Preact root,
+    // which does not own it; left behind it sat frozen under the executed code.
+    const inspector = nb.querySelector(".nb-variables");
+    if (inspector) inspector.remove();
     paintExecutedCodeView(nb, st);
     return;
   }
