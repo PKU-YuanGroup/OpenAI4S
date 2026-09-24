@@ -7,6 +7,7 @@
  * bottom flushes. Chunks still update the matching cell output signal.
  */
 
+import { effect } from "@preact/signals";
 import { _nbDirty, _nbReading, _nbSched } from "../../stores/notebook";
 import { running } from "../../stores/stream";
 import { activeTab, dock } from "../../stores/ui";
@@ -23,11 +24,25 @@ export function measureNotebookFollow(body: ScrollBox | null | undefined): boole
   return !body || isNearBottom(body);
 }
 
+function notebookOnScreen(): boolean {
+  const d = dock.value as { open?: boolean } | null;
+  return !!(d && d.open && activeTab.value === "notebook");
+}
+
 /**
  * app.js:10344-10350. Bind once (`_nbScrollBound`). Tracks `_nbReading` and
  * flushes a deferred render when the user returns to the bottom.
+ *
+ * The body that scrolls is `.dock-body`, shared by every dock pane, so
+ * scrolling the Timeline or Files says nothing about the Notebook: while it
+ * is off screen it is not being read. Otherwise opening the Notebook during
+ * a turn after scrolling another pane showed a held, stale cell list.
  */
 export function onNotebookScroll(body: ScrollBox): void {
+  if (!notebookOnScreen()) {
+    _nbReading.value = false;
+    return;
+  }
   const atBottom = isNearBottom(body);
   _nbReading.value = !atBottom;
   if (atBottom && _nbDirty.value) {
@@ -48,6 +63,19 @@ export function bindNotebookScroll(body: ScrollBox | null | undefined): void {
       { passive: true },
     );
   }
+}
+
+let visibilityWatch: (() => void) | null = null;
+
+/**
+ * Clear `_nbReading` whenever the Notebook leaves the screen, so it comes
+ * back painting the current list (install.ts). One watch per page.
+ */
+export function watchNotebookVisibility(): void {
+  if (visibilityWatch) return;
+  visibilityWatch = effect(() => {
+    if (!notebookOnScreen()) _nbReading.value = false;
+  });
 }
 
 let renderImpl: (() => void) | null = null;

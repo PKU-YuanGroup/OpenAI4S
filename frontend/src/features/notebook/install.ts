@@ -13,6 +13,7 @@ import type { WsHandler, WsMessage } from "../ws/types";
 import { mountLiveNotebookFigure, highlightTraceback, notebookExportLink } from "./chrome";
 import { loadExecutionLog, nbCellDraft, nbCellFinished, nbCellStart, nbCellChunk } from "./cells";
 import { handleKernelStatus, scheduleWorkbenchRefresh } from "./kernel";
+import { watchNotebookVisibility } from "./scroll";
 import type { WindowTarget } from "./types";
 
 function registerUnless(type: string, handler: WsHandler): void {
@@ -65,6 +66,7 @@ export function installNotebook(
   registerNotebookHandlers();
   assignWindow(target);
   wireArtifactFigures();
+  watchNotebookVisibility();
 }
 
 export { highlightTraceback, notebookExportLink };

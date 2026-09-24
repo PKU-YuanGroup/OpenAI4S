@@ -625,6 +625,30 @@ describe("F-14 Notebook", () => {
       expect((flushed[0]!._revisions || []).map(nbCellKey)).toEqual(["a"]);
     });
 
+    it("scrolling another dock pane says nothing about the Notebook", () => {
+      // `.dock-body` scrolls for every pane; the Timeline scrolled up must not
+      // hold the Notebook's list the next time it is opened.
+      activeTab.value = "timeline";
+      onNotebookScroll({ scrollHeight: 2000, scrollTop: 0, clientHeight: 400 });
+      expect(_nbReading.value).toBe(false);
+    });
+
+    it("comes back from another pane painting the current list", () => {
+      cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
+      notebookViewEntries();
+      onNotebookScroll({ scrollHeight: 2000, scrollTop: 0, clientHeight: 400 });
+      expect(_nbReading.value).toBe(true);
+      running.value = true;
+      activeTab.value = "files";
+      expect(_nbReading.value).toBe(false);
+      cells.value = [
+        { producing_cell_id: "a", cell_index: 1 },
+        { producing_cell_id: "b", cell_index: 2 },
+      ];
+      activeTab.value = "notebook";
+      expect(notebookViewEntries().map(nbCellKey)).toEqual(["a", "b"]);
+    });
+
     it("never holds back another session's list", () => {
       cells.value = [{ producing_cell_id: "a", cell_index: 1 }];
       notebookViewEntries();

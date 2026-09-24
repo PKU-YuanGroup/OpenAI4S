@@ -491,6 +491,7 @@ export function notebookViewEntries(): NotebookCell[] {
     return painted.entries;
   }
   painted = { frameId, entries: notebookDisplayEntries() };
+  if (_nbDirty.value) _nbDirty.value = false;
   return painted.entries;
 }
 
