@@ -76,8 +76,11 @@ export class ArtifactEditorStore {
   readonly drafts = new Map<string, ArtifactEditor>();
   onChange: (() => void) | null = null;
   constructor(readonly io: EditorIO = defaultIO) {}
+  /** Sum of each draft's kept counts: no draft is re-encoded to answer it. */
   get bytes(): number {
-    return [...this.drafts.values()].reduce((sum, draft) => sum + draft.bytes, 0);
+    let sum = 0;
+    for (const draft of this.drafts.values()) sum += draft.bytes;
+    return sum;
   }
   /**
    * What a load may still stream, halved because a draft costs its original
@@ -124,8 +127,15 @@ export class ArtifactEditor {
   phase: EditorPhase = "loading";
   problem: EditorProblem = null;
   baseline: Baseline | null = null;
-  text = "";
   inputAtCapacity = false;
+  /**
+   * The draft and the UTF-8 sizes behind `bytes`, kept as the text changes.
+   * Every keystroke used to re-encode every draft (original and edit) to
+   * check capacity: up to 8 MiB encoded, and allocated, several times over.
+   */
+  private draft = "";
+  private draftBytes = 0;
+  private originalBytes = 0;
   onChange: (() => void) | null = null;
   /** Read-only reconciliation facts, never an acknowledgement of this write. */
   observed: { versionId: string; matchesDraft: boolean } | null = null;
@@ -133,7 +143,8 @@ export class ArtifactEditor {
   checkFailed = false;
   constructor(readonly store: ArtifactEditorStore, readonly sessionId: string, readonly artifact: Readonly<ArtifactRow>) {}
   get key(): string { return JSON.stringify([this.sessionId, this.artifact.id, this.baseline?.versionId ?? ""]); }
-  get bytes(): number { return this.baseline ? utf8(this.baseline.original) + utf8(this.text) : 0; }
+  get text(): string { return this.draft; }
+  get bytes(): number { return this.baseline ? this.originalBytes + this.draftBytes : 0; }
   get dirty(): boolean { return this.baseline !== null && this.text !== this.baseline.original; }
   get canSave(): boolean { return this.phase === "ready" && this.baseline !== null && this.store.drafts.get(this.key) === this; }
   private emit(): void { this.store.onChange?.(); this.onChange?.(); }
@@ -148,10 +159,12 @@ export class ArtifactEditor {
       if (head.sizeBytes * 2 > EDITOR_MAX_BYTES) throw new EditorCapacityError();
       const text = await this.store.io.text(head.versionId, this.store.readLimit, head.checksum);
       if (this.store.drafts.get(this.key) !== this) return;
-      if (this.store.bytes + 2 * utf8(text) > EDITOR_MAX_BYTES) throw new EditorCapacityError();
+      const size = utf8(text);
+      if (this.store.bytes + 2 * size > EDITOR_MAX_BYTES) throw new EditorCapacityError();
       this.store.drafts.delete(this.key);
       this.baseline = Object.freeze({ sessionId: this.sessionId, artifactId: this.artifact.id, versionId: head.versionId, original: text });
-      this.text = text;
+      this.draft = text;
+      this.originalBytes = this.draftBytes = size;
       this.store.drafts.set(this.key, this);
       this.phase = "ready";
     } catch (error) {
@@ -170,22 +183,24 @@ export class ArtifactEditor {
 
   change(text: string): boolean {
     if (!this.canSave) return false;
-    if (this.store.bytes - utf8(this.text) + utf8(text) > EDITOR_MAX_BYTES) {
+    const size = utf8(text);
+    if (this.store.bytes - this.draftBytes + size > EDITOR_MAX_BYTES) {
       this.inputAtCapacity = true; this.emit(); return false;
     }
-    this.text = text; this.inputAtCapacity = false; this.emit(); return true;
+    this.draft = text; this.draftBytes = size; this.inputAtCapacity = false; this.emit(); return true;
   }
 
   async save(): Promise<Saved | null> {
     if (!this.canSave || !this.baseline) return null;
     const { artifactId, versionId } = this.baseline;
     const content = this.text;
+    const size = this.draftBytes;
     this.phase = "saving"; this.problem = null; this.emit();
     try {
       const result = await this.store.io.save(artifactId, versionId, content) as Partial<Saved> | null;
       if (!result || result.ok !== true || result.artifact_id !== artifactId ||
         typeof result.version_id !== "string" || !result.version_id.trim() ||
-        result.size_bytes !== utf8(content) || typeof result.unchanged !== "boolean" ||
+        result.size_bytes !== size || typeof result.unchanged !== "boolean" ||
         (result.unchanged ? result.version_id !== versionId : result.version_id === versionId)) throw new Error("unconfirmed edit result");
       this.phase = "ready";
       this.store.discard(this);

@@ -137,6 +137,26 @@ describe("conditional editor lifecycle", () => {
   });
 });
 
+describe("draft byte accounting (AUDIT P08)", () => {
+  it("encodes only the edited text per keystroke, however many drafts are open", async () => {
+    const { store } = fixture();
+    const editors = [];
+    for (let i = 0; i < 4; i++) editors.push(await ready(store, { id: String(i), version_id: "v1" }));
+    const encode = vi.spyOn(TextEncoder.prototype, "encode");
+    try {
+      for (const text of ["o", "ol", "old!", "old 中文🙂"]) expect(editors[0]!.change(text)).toBe(true);
+      expect(encode).toHaveBeenCalledTimes(4);
+    } finally {
+      encode.mockRestore();
+    }
+    // The kept counts are still the true UTF-8 sizes: "old" is 3 bytes.
+    const utf8 = (text: string) => new TextEncoder().encode(text).byteLength;
+    expect(store.bytes).toBe(3 * 4 + 3 * 3 + utf8("old 中文🙂"));
+    expect(editors[0]!.change("🙂".repeat(EDITOR_MAX_BYTES / 4))).toBe(false);
+    expect(editors[0]!.inputAtCapacity).toBe(true);
+  });
+});
+
 describe("draft capacity", () => {
   it("does not evict the first ten drafts to accept an eleventh", async () => {
     const { store } = fixture();
