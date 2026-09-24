@@ -14,7 +14,7 @@ import {
   mergeDelegationChildEvent,
   rememberExecutionQueue,
   rememberExecutionState,
-  renderActionTimeline,
+  scheduleActionTimelineRender,
   scheduleBranchConversationResync,
   scheduleWorkbenchRefresh,
   updateActionTimelineLedger,
@@ -61,7 +61,7 @@ function handleExecutionQueue(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
   rememberExecutionQueue(m);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -79,7 +79,7 @@ function handleExecutionState(m: WsMessage): void {
     else S.executionIdentity = null;
   } else rememberExecutionState(m);
   scheduleWorkbenchRefresh(60);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -104,7 +104,7 @@ function handleRecovery(m: WsMessage): void {
     )
   )
     scheduleWorkbenchRefresh(120);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -132,7 +132,7 @@ function handleBranch(m: WsMessage): void {
     );
     S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
   } else scheduleWorkbenchRefresh(m.type === "branch_activation_state" ? 0 : 80);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
 
@@ -141,14 +141,14 @@ function handleDelegation(m: WsMessage): void {
   if (!mine(fid)) return;
   if (m.type === "delegation_child_event") mergeDelegationChildEvent(m);
   scheduleWorkbenchRefresh(60);
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
 }
 
 function handleSandbox(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
   S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(m));
-  if (S.activeTab === "timeline") renderActionTimeline();
+  if (S.activeTab === "timeline") scheduleActionTimelineRender();
 }
 
 export function registerTimelineHandlers(): void {

@@ -28,7 +28,8 @@ import {
 import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
-import { sanitizeActionTimeline } from "./sanitize";
+import { sanitizeActionTimeline, sanitizeBranches, sanitizeContext } from "./sanitize";
+import { LANG, setLang, t } from "../../i18n/runtime";
 
 type Listener = (event: FakeEvent) => void;
 type FakeEvent = { type: string; target?: FakeElement; key?: string; [key: string]: unknown };
@@ -175,7 +176,10 @@ class FakeElement {
     // A browser blurs a focused element the moment it leaves the document,
     // even when it is only being moved; model that so moves are visible.
     const focused = this.ownerDocument.focused;
-    if (focused && node.contains(focused)) this.ownerDocument.focused = null;
+    if (focused && node.contains(focused)) {
+      this.ownerDocument.focused = null;
+      this.ownerDocument.blurs += 1;
+    }
   }
   private detachAll(): void {
     this.kids.forEach((kid) => {
@@ -333,6 +337,8 @@ function matchesSelector(node: FakeElement, selector: string): boolean {
 
 class FakeDocument {
   focused: FakeElement | null = null;
+  /** Focus lost because the focused element left the document. */
+  blurs = 0;
   listeners = new Map<string, Set<Listener>>();
   documentElement: FakeElement;
   body: FakeElement;
@@ -372,10 +378,17 @@ class FakeDocument {
   listenerCount(type: string): number {
     return this.listeners.get(type)?.size || 0;
   }
+  /** Deliver an event to document-level listeners, as if it bubbled up from `target`. */
+  fire(type: string, target: FakeElement | null = null): void {
+    this.listeners.get(type)?.forEach((listener) => listener({ type, target: target || undefined }));
+  }
 }
+
+let mountedDocument: FakeDocument | null = null;
 
 function mountDocument(): FakeDocument {
   const doc = new FakeDocument();
+  mountedDocument = doc;
   for (const id of ["dock-timeline", "queue-strip"]) {
     const node = doc.createElement("div");
     node.id = id;
@@ -408,6 +421,8 @@ function stubApi(respond: (path: string, method: string) => unknown = () => ({ o
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+let stubbedFrames: { run: () => void } | null = null;
+
 /** requestAnimationFrame that runs only when a test says a frame has passed. */
 function stubFrames(): { run: () => void; pending: () => number } {
   let queue = new Map<number, () => void>();
@@ -420,7 +435,7 @@ function stubFrames(): { run: () => void; pending: () => number } {
   vi.stubGlobal("cancelAnimationFrame", (id: number) => {
     queue.delete(id);
   });
-  return {
+  const frames = {
     run: () => {
       const due = queue;
       queue = new Map();
@@ -428,6 +443,8 @@ function stubFrames(): { run: () => void; pending: () => number } {
     },
     pending: () => queue.size,
   };
+  stubbedFrames = frames;
+  return frames;
 }
 
 type Observer = { observed: unknown[]; disconnected: boolean };
@@ -489,6 +506,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The island keeps its repaint scheduler in module state: end any press or
+  // composition a failed test left open and let queued frames run, so the
+  // next test's repaints are neither held nor already "queued".
+  mountedDocument?.fire("pointerup");
+  mountedDocument?.fire("compositionend");
+  stubbedFrames?.run();
+  stubbedFrames?.run();
+  mountedDocument = null;
+  stubbedFrames = null;
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -772,19 +798,135 @@ describe("workbench refresh", () => {
 
   it("that brings nothing new keeps every state object and ledger row", async () => {
     const doc = mountDocument();
-    stubFrames();
+    const frames = stubFrames();
     showTimeline("frame-s", [group("g-1", 1)]);
     serve("frame-s", [group("g-1", 1)]);
     await loadWorkbenchState("frame-s", true);
+    frames.run();
     const held = ["actionTimeline", "branchState", "contextState", "securityState", "executionQueue"].map(
       (name) => S[name],
     );
     const button = doc.querySelector('.timeline-ledger-row[data-group-id="g-1"] .timeline-row-button');
     expect(button).not.toBeNull();
     await loadWorkbenchState("frame-s", true);
+    frames.run();
     ["actionTimeline", "branchState", "contextState", "securityState", "executionQueue"].forEach(
       (name, index) => expect(S[name]).toBe(held[index]),
     );
     expect(doc.querySelector('.timeline-ledger-row[data-group-id="g-1"] .timeline-row-button')).toBe(button);
+  });
+});
+
+describe("socket-driven repaint", () => {
+  const checkpoints = (extra: string[] = []) => ({
+    branch_id: "main",
+    capabilities: { checkpoint: true, fork: true, revert_preview: true },
+    branches: [
+      {
+        branch_id: "main",
+        head_checkpoint_id: "cp-1",
+        checkpoints: [
+          { checkpoint_id: "cp-1", reason: "manual" },
+          ...extra.map((id) => ({ checkpoint_id: id, reason: "manual" })),
+          { checkpoint_id: "cp-auto", reason: "cell", internal: true },
+        ],
+      },
+    ],
+  });
+
+  function shown(doc: FakeDocument): void {
+    installTimeline({});
+    showTimeline("frame-p", [group("g-1", 1), group("g-2", 2)]);
+    S.branchState = sanitizeBranches(checkpoints());
+    S.contextState = sanitizeContext({
+      layers: [{ name: "system" }],
+      compaction_history: [{ archive_id: "arc-1", tokens_before: 90, tokens_after: 30 }],
+    });
+    renderActionTimeline();
+    expect(doc.querySelector("details.internal-checkpoints")).not.toBeNull();
+  }
+
+  it("keeps open details, the search box's focus and caret, and the ledger attached", () => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    shown(doc);
+    doc.querySelector("details.internal-checkpoints")!.open = true;
+    doc.querySelector("details.context-history")!.open = true;
+    const input = doc.querySelector(".timeline-search-input")!;
+    input.focus();
+    input.selectionStart = 1;
+    input.selectionEnd = 2;
+    const blurs = doc.blurs;
+    // One event rebuilds the branch panel (a new checkpoint), one leaves the
+    // context panel as it was; both used to replace the whole Timeline.
+    onEvent({ type: "branch_state", frame_id: "frame-p", ...checkpoints(["cp-2"]) });
+    onEvent({ type: "delegation_state", frame_id: "frame-p" });
+    frames.run();
+    expect(doc.querySelectorAll(".checkpoint-row").length).toBeGreaterThan(2);
+    expect(doc.querySelector("details.internal-checkpoints")!.open).toBe(true);
+    expect(doc.querySelector("details.context-history")!.open).toBe(true);
+    expect(doc.activeElement === input).toBe(true);
+    expect(doc.blurs).toBe(blurs);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
+  });
+
+  it("gives a rebuilt panel's button back its focus", () => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    shown(doc);
+    const fork = () =>
+      doc.querySelectorAll(".checkpoint-row button").find((node) => node.textContent === t("branch.fork"))!;
+    const before = fork();
+    before.focus();
+    onEvent({ type: "branch_state", frame_id: "frame-p", ...checkpoints(["cp-2"]) });
+    frames.run();
+    expect(before.isConnected).toBe(false);
+    expect(doc.activeElement === fork()).toBe(true);
+  });
+
+  it.each([
+    ["a pointer press", "pointerdown", "pointerup"],
+    ["an IME composition", "compositionstart", "compositionend"],
+  ])("waits for %s to end", (_label, start, end) => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    shown(doc);
+    const panel = doc.querySelector(".branch-panel")!;
+    doc.fire(start, doc.querySelector(".checkpoint-row button"));
+    onEvent({ type: "branch_state", frame_id: "frame-p", ...checkpoints(["cp-2"]) });
+    frames.run();
+    expect(panel.isConnected).toBe(true);
+    doc.fire(end);
+    // The repaint follows on the next frame, after the click this press ends in.
+    expect(panel.isConnected).toBe(true);
+    frames.run();
+    frames.run();
+    expect(panel.isConnected).toBe(false);
+    expect(doc.querySelectorAll(".checkpoint-row").length).toBeGreaterThan(2);
+  });
+});
+
+describe("language", () => {
+  it("repaints the cached sections when the words change", async () => {
+    const doc = mountDocument();
+    const frames = stubFrames();
+    stubApi(() => undefined);
+    installTimeline({});
+    showTimeline("frame-l", [group("g-1", 1)]);
+    renderActionTimeline();
+    const top = doc.querySelector(".timeline-top");
+    const panel = doc.querySelector(".branch-panel");
+    const original = LANG;
+    try {
+      await setLang(original === "en" ? "zh" : "en");
+      frames.run();
+      expect(doc.querySelector(".timeline-top")).not.toBe(top);
+      expect(doc.querySelector(".branch-panel")).not.toBe(panel);
+    } finally {
+      await setLang(original);
+    }
   });
 });
