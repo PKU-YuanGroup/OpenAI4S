@@ -442,6 +442,62 @@ state; a separate global reader/deletion barrier covers their shared `uploads/`
 namespace through project-row deletion and confined file cleanup. Flag-off
 paths preserve the previous admission behavior.
 
+#### Runtime evidence in Session packages
+
+A package used to carry what a session said and produced, and nothing about
+how the runtime behaved around it, so a report that arrived as a package was
+still finished from the reporter's SQLite file (#174 rebuilt a stream stall
+from `messages` timestamps and `host_call_log` by hand). Export now adds
+optional, manifest-listed members, collected by
+`server/package_runtime.py`. They ride the listed-extra-file rule above: a
+schema-v1 importer hash-checks and secret-scans them, then ignores them.
+
+| Member | What it records |
+|---|---|
+| `runtime/environment.json` | Exporting process: version, install channel, Python, platform with a numeric kernel release and a WSL flag, posture knobs from a closed vocabulary. The session's resolved model configuration (the `_llm_cfg` a turn dispatches under): provider, wire, model, streaming, read/total timeouts, output limit, the effective capabilities `chat()` applies — a local endpoint drops native tool calls — and the profile's probe receipt. The endpoint is a class (`loopback`/`private`/`hostname`/…), whether it is the provider default, and a truncated origin fingerprint; never the URL. |
+| `runtime/frames.json` | The frame tree, delegated children with status/stop reason/error, each child's own Action Ledger (rooted at the child frame, so never in `ledger.json`), child kernel generations, and which frame ran each Notebook Cell (`notebook.json` stays frame-free). |
+| `runtime/activity.json` | Every activity card of the root and its children with `created_at` and `updated_at`, not only review cards. |
+| `runtime/host_calls.json` | The newest 20,000 `host_call_log` rows plus per-method call and failure totals over all of them. |
+| `runtime/permissions.json` | Permission requests without `payload`, `pattern`, `message` or `resolution_context`. |
+| `runtime/compactions.json` | Compaction archive metadata and summaries, never the compacted slices. |
+| `runtime/collection.json` | Per-section status. A section that cannot be read is recorded `unavailable` with its error category; one that still holds secret material after redaction is `omitted`. Neither fails the export. |
+| `runtime/diagnosis.json`, `DIAGNOSTICS.md` | The content-free diagnosis below. |
+
+Two records are captured at runtime for this. `ChatModel` measures every
+provider call from outside — wall time, stream delta count with first and
+last arrival, transport attempts, retry wait and the closed code an earlier
+attempt was retried after — and the Action Ledger stores it as a
+`model_call` event on the group the reply produced. Reducers select events
+by type, so replay, the progress circuit and branch projection skip it, and
+the Timeline projection drops it. A failed call produced no group; its
+telemetry rides on the exception into the turn's terminal event, whose
+`error.detail` now holds a content-free failure record: category, the
+`error_class` fingerprint the daemon log also carries, the type chain,
+stable LLM codes and flags (`output_committed`, `retryable`,
+`llm_not_started`), and code locations inside `openai4s/` (stdlib frames by
+relative path, anything else by base name). Never `str(exc)`.
+
+`openai4s/package_diagnosis.py` reads a package with the standard library
+only, like `evidence.py`, and writes one row per turn plus findings: stop
+reasons with the failing call's own clock ("57 deltas, last at 12 s, then
+nothing for 600 s"), no-progress trips with repeated tools, parse errors and
+empty argument strings, tool results that came back as errors, Cell
+exception types, abnormal kernel generations, degraded sandboxes, failing
+host methods, cards left running, children's outcomes, withheld
+permissions, retries and output-limit truncation. It reproduces no message,
+argument, Cell source, output, path or URL; it does name the model, the
+provider and tool names. `openai4s inspect-package` runs it after the
+integrity check and, because it derives turns from the ledger and messages,
+it also diagnoses packages exported before `runtime/` existed.
+
+The one member an importer reads is `runtime/activity.json`. When present it
+is validated before any write (bounded count, kind shape, text and payload
+size, timestamps, secret scan) and the source root's cards are restored with
+their original timestamps — the transcript interleaves cards and messages by
+`created_at` — with Cell, Artifact and version ids remapped and `running`
+cards stopped. A malformed member rejects the package. Without it, import
+restores review cards from `review.json` exactly as before.
+
 ## The `host` singleton
 
 Inside the Python science kernel, audited Host capabilities are exposed through
