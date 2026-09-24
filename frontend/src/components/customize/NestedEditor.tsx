@@ -75,30 +75,80 @@ function titleFor(editor: NonNullable<typeof nestedEditor.value>): string {
   return "";
 }
 
-function SkillForm({ name }: { name: string | null }) {
+/**
+ * An edit form's first read. Until it has succeeded there is nothing to save:
+ * the blank fields a failed read left behind used to be saved over the Skill
+ * or specialist on the server, and specialists keep no history to restore.
+ */
+function useEditorRead(path: string | null, apply: (row: Record<string, unknown>) => void) {
   const alive = useAlive();
+  const [read, setRead] = useState<{ loaded: boolean; error: string | null }>({
+    loaded: !path,
+    error: null,
+  });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!path) return;
+    void (async () => {
+      try {
+        const row = await api(path);
+        if (!alive()) return;
+        apply(row);
+        setRead({ loaded: true, error: null });
+      } catch (e) {
+        if (!alive()) return;
+        setRead({ loaded: false, error: t("versions.load.err", apiErrorText(e)) });
+      }
+    })();
+  }, [alive, path, attempt]);
+
+  const retry = () => {
+    setRead({ loaded: false, error: null });
+    setAttempt((n) => n + 1);
+  };
+  return { ...read, retry };
+}
+
+function EditorReadStatus({
+  read,
+}: {
+  read: { loaded: boolean; error: string | null; retry: () => void };
+}) {
+  if (read.loaded) return null;
+  if (!read.error) {
+    return (
+      <div class="cust-load-status" role="status" aria-live="polite">
+        {t("common.loading")}
+      </div>
+    );
+  }
+  return (
+    <div class="cust-load-status" role="alert" data-editor-read-error="1">
+      <div class="timeline-error">{read.error}</div>
+      <div class="form-actions">
+        <button type="button" class="outline-btn small" onClick={read.retry}>
+          {t("common.retry")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SkillForm({ name }: { name: string | null }) {
   const [nm, setNm] = useState(name || "");
   const [desc, setDesc] = useState("");
   const [body, setBody] = useState("");
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!name) return;
-    void (async () => {
-      try {
-        const cur = await api(`/skills/${encodeURIComponent(name)}`);
-        if (!alive()) return;
-        setNm(asString(cur.name, name));
-        setDesc(asString(cur.description));
-        setBody(asString(cur.body));
-      } catch {
-        /* keep blanks */
-      }
-    })();
-  }, [alive, name]);
+  const read = useEditorRead(name ? `/skills/${encodeURIComponent(name)}` : null, (cur) => {
+    setNm(asString(cur.name, name || ""));
+    setDesc(asString(cur.description));
+    setBody(asString(cur.body));
+  });
 
   return (
     <div class="skill-form">
+      <EditorReadStatus read={read} />
       <label class="skill-lbl">{t("cust.connectors.namePlaceholder")}</label>
       <input
         class="cust-input"
@@ -112,6 +162,7 @@ function SkillForm({ name }: { name: string | null }) {
         class="cust-input"
         placeholder={t("skill.descPlaceholder")}
         value={desc}
+        disabled={!read.loaded}
         onInput={(e) => setDesc((e.target as HTMLInputElement).value)}
       />
       <label class="skill-lbl">{t("skill.label.body")}</label>
@@ -119,14 +170,16 @@ function SkillForm({ name }: { name: string | null }) {
         class="skill-body"
         placeholder={t("skill.bodyPlaceholder")}
         value={body}
+        disabled={!read.loaded}
         onInput={(e) => setBody((e.target as HTMLTextAreaElement).value)}
       />
       <div class="form-actions">
         <button
           type="button"
           class="solid-btn"
-          disabled={saving}
+          disabled={saving || !read.loaded}
           onClick={async () => {
+            if (!read.loaded) return;
             const next = nm.trim();
             if (!next) {
               hint(t("toast.skill.enterName"), true);
@@ -350,29 +403,19 @@ function rec(value: unknown): Record<string, unknown> {
 }
 
 function SpecialistForm({ name }: { name: string | null }) {
-  const alive = useAlive();
   const [nm, setNm] = useState(name || "");
   const [desc, setDesc] = useState("");
   const [prompt, setPrompt] = useState("");
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!name) return;
-    void (async () => {
-      try {
-        const cur = await api(`/specialists/${encodeURIComponent(name)}`);
-        if (!alive()) return;
-        setNm(asString(cur.name, name));
-        setDesc(asString(cur.description));
-        setPrompt(asString(cur.system_prompt));
-      } catch {
-        /* keep blanks */
-      }
-    })();
-  }, [alive, name]);
+  const read = useEditorRead(name ? `/specialists/${encodeURIComponent(name)}` : null, (cur) => {
+    setNm(asString(cur.name, name || ""));
+    setDesc(asString(cur.description));
+    setPrompt(asString(cur.system_prompt));
+  });
 
   return (
     <div class="skill-form">
+      <EditorReadStatus read={read} />
       <label class="skill-lbl">{t("cust.connectors.namePlaceholder")}</label>
       <input
         class="cust-input"
@@ -386,6 +429,7 @@ function SpecialistForm({ name }: { name: string | null }) {
         class="cust-input"
         placeholder={t("specialist.descPlaceholder")}
         value={desc}
+        disabled={!read.loaded}
         onInput={(e) => setDesc((e.target as HTMLInputElement).value)}
       />
       <label class="skill-lbl">{t("specialist.label.systemPrompt")}</label>
@@ -393,14 +437,16 @@ function SpecialistForm({ name }: { name: string | null }) {
         class="skill-body"
         placeholder={t("specialist.promptPlaceholder")}
         value={prompt}
+        disabled={!read.loaded}
         onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
       />
       <div class="form-actions">
         <button
           type="button"
           class="solid-btn"
-          disabled={saving}
+          disabled={saving || !read.loaded}
           onClick={async () => {
+            if (!read.loaded) return;
             const next = nm.trim();
             if (!next) {
               hint(t("toast.specialist.enterName"), true);
