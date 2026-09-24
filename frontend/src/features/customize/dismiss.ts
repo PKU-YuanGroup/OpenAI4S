@@ -7,8 +7,10 @@
  * while `customizeOpen` stayed true: the tab stayed mounted and kept polling,
  * and Preact never took `.hidden` back off, because the class string it
  * renders had not changed. So chrome leaves Escape to Customize while `#cust`
- * is the modal on top, and anything else that hides `#cust` (chrome's
- * backdrop / × binding, a direct `closeModalEl`) is followed by `closeCust()`.
+ * is the modal on top, and anything else that hides `#cust` (a direct
+ * `closeModalEl`) is followed by `closeCust()`. Chrome no longer binds
+ * `#cust`'s backdrop or ×: Customize renders both and closes through
+ * `closeCust()`.
  */
 import { FALLBACK_MODAL_SELECTORS, _modalFocus, addModalEscapeBlocker } from "../chrome/modal";
 import { closeCust } from "./actions";

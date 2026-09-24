@@ -127,10 +127,9 @@ export function bootChrome(): void {
   bootStep("palette", bindPaletteButton);
   bootStep("upload", bindUpload);
   bootStep("mic", bindMic);
-  bootStep("modal dismiss", () => {
-    bindModalDismiss($("#cust"), $("#cust-close"));
-    bindModalDismiss($("#modal"), $("#modal-close"));
-  });
+  // `#cust` is not bound here: Customize renders its own × and backdrop,
+  // both through closeCust(), so its open state has one owner.
+  bootStep("modal dismiss", () => bindModalDismiss($("#modal"), $("#modal-close")));
   bootStep("project modal", bindProjectModal);
   bootStep("keys", installWorkbenchKeys);
   bootStep("dock", bindDockChrome);
