@@ -9,7 +9,7 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
-import { buildStepCard } from "./step";
+import { buildStepCard, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
 class El {
@@ -148,6 +148,49 @@ describe("step card copy follows the UI language", () => {
       }),
     );
     expect(finding.querySelector(".review-issue-head")!.querySelector("strong")!.textContent).toBe("审阅发现");
+  });
+});
+
+describe("a collapsed step card builds its body on first expand", () => {
+  const CODE = { kind: "code", input: { code: "print(1)" }, output: { stdout: "1" } };
+
+  it("a history card nobody opened has no body yet; opening builds it", () => {
+    const host = new El("div");
+    const card = renderStoredStep({ step_id: "h-1", status: "done", ...CODE }, host as never) as unknown as El;
+    const body = card.querySelector(".s-body")!;
+    expect(card.classes.has("open")).toBe(false);
+    expect(body.children).toHaveLength(0);
+    card.querySelector(".s-head")!.onclick!();
+    expect(card.classes.has("open")).toBe(true);
+    expect(body.querySelector(".os-code")).not.toBeNull();
+    // Closing and reopening does not rebuild what is already current.
+    const built = body.children[0];
+    card.querySelector(".s-head")!.onclick!();
+    card.querySelector(".s-head")!.onclick!();
+    expect(body.children[0]).toBe(built);
+  });
+
+  it("an update to a collapsed card waits as well, and the expand shows the update", () => {
+    const host = new El("div");
+    const card = renderStoredStep({ step_id: "h-2", status: "running", ...CODE }, host as never) as unknown as El;
+    updateLiveStep({ step_id: "h-2", status: "done", output: { stdout: "the updated output" } });
+    const body = card.querySelector(".s-body")!;
+    expect(body.children).toHaveLength(0);
+    card.querySelector(".s-head")!.onclick!();
+    expect(body.querySelector(".oc-out")!.textContent).toBe("the updated output");
+  });
+
+  it("a card that opens itself builds at once, and the window contract stays eager", () => {
+    const host = new El("div");
+    const artifact = renderStoredStep(
+      { step_id: "h-3", kind: "artifact", status: "done", output: { artifacts: [{ filename: "a.csv" }] } },
+      host as never,
+    ) as unknown as El;
+    expect(artifact.classes.has("open")).toBe(true);
+    expect(artifact.querySelector(".s-body")!.children).toHaveLength(1);
+    // tests/browser_p1_controls.mjs reads a fresh buildStepCard's body unopened.
+    const eager = buildStepCard({ step_id: "w-1", status: "done", ...CODE });
+    expect((eager.body as unknown as El).children).toHaveLength(1);
   });
 });
 
