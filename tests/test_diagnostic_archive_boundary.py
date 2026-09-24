@@ -1212,3 +1212,61 @@ def test_an_alias_key_would_travel_without_the_exact_type_check(
     # The impersonated key does not appear either -- it was dropped, not
     # silently accepted under the name it claimed.
     assert b'"python"' not in blob
+
+
+# --- the turn-stop section --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        # A code the repository never named, as a count key and as a value.
+        {"reasons": {PRIVATE_SNAKE: 1}, "latest": {"reason": PRIVATE_SNAKE}},
+        {"progress_reasons": {RAW_PHRASE: 2}, "wires": {FOREIGN_PATH: 3}},
+        # A lying subclass claiming to be an allowed code, both places.
+        {
+            "reasons": {_Alias(PRIVATE_IDENT, "no_progress"): 1},
+            "latest": {"wire": _Alias(PRIVATE_IDENT, "openai")},
+        },
+        # Free text on the leaves the section does allow.
+        {"status": RAW_PHRASE, "code": FOREIGN_PATH, "window": CREDENTIAL},
+    ],
+)
+def test_the_turn_section_carries_only_codes_written_down_in_source(
+    cfg, tmp_path, monkeypatch, hostile
+):
+    """The builder maps anything unknown to `other`, so this is the second
+    layer: the schema itself admits only the codes, whatever reaches it."""
+    import openai4s.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "turn_stop_report", lambda cfg_: hostile)
+    _names, blob = _bundle_parts(cfg, tmp_path)
+    for private in (PRIVATE_SNAKE, PRIVATE_IDENT, RAW_PHRASE, FOREIGN_PATH, CREDENTIAL):
+        assert private.encode() not in blob, private
+
+
+def test_the_turn_section_still_carries_real_codes(cfg, tmp_path, monkeypatch):
+    import openai4s.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "turn_stop_report",
+        lambda cfg_: {
+            "status": "ok",
+            "window": 20,
+            "terminals": 3,
+            "reasons": {"no_progress": 2, "llm_stream_timeout": 1},
+            "progress_reasons": {"same_action": 2},
+            "wires": {"openai": 3},
+            "latest": {"reason": "no_progress", "progress_reason": "same_action"},
+        },
+    )
+    target = tmp_path / "b.zip"
+    build_bundle(cfg, target)
+    with zipfile.ZipFile(target) as archive:
+        turns = json.loads(archive.read("report.json"))["agent_turns"]
+    assert turns["reasons"] == {"no_progress": 2, "llm_stream_timeout": 1}
+    assert turns["latest"] == {
+        "reason": "no_progress",
+        "progress_reason": "same_action",
+    }
