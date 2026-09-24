@@ -25,8 +25,10 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
+| [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. |
 | [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. |
 | [`icons.tsx`](icons.tsx) | Lucide paths used by this modal. |
+| [`hooks.ts`](hooks.ts) | `useOptimistic` / `useOptimisticToggle`: a control bound to one server setting is disabled until the tab's first read lands (`null`), moves at once, allows one write at a time, and goes back to the confirmed value when a write fails. |
 | [`index.ts`](index.ts) | Re-exports `Customize`. |
 | [`ui.tsx`](ui.tsx) | Shared `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`. |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | `useTimerLease` / `useAlive` bound to unmount. |

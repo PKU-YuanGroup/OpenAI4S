@@ -8,6 +8,7 @@ import {
   readTelemetryConsent,
 } from "../../features/customize/telemetry";
 import { useAlive } from "./use-timer-lease";
+import { useOptimisticToggle } from "./hooks";
 import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
@@ -16,9 +17,9 @@ export function NetworkTab() {
   const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
   const [allow, setAllow] = useState<{
-    enabled: boolean;
+    enabled: boolean | null;
     groups: Array<Record<string, unknown>>;
-  }>({ enabled: false, groups: [] });
+  }>({ enabled: null, groups: [] });
   const [doubao, setDoubao] = useState<{
     config: Record<string, unknown>;
     error: unknown;
@@ -26,6 +27,23 @@ export function NetworkTab() {
   const [search, setSearch] = useState<Record<string, unknown>>({});
   const [searchKey, setSearchKey] = useState("");
   const [savingSearch, setSavingSearch] = useState(false);
+  const network = useOptimisticToggle(
+    allow.enabled,
+    (on) =>
+      api("/network/status", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: on }),
+      }),
+    {
+      done: (_on, r) => {
+        hint(
+          (r as Record<string, unknown>).enabled
+            ? t("toast.network.enabled")
+            : t("toast.network.disabled"),
+        );
+      },
+    },
+  );
 
   useEffect(() => {
     void (async () => {
@@ -68,25 +86,10 @@ export function NetworkTab() {
         <div class="info">
           <div class="nm">{t("cust.network.allowName")}</div>
           <div class="ds">
-            {allow.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc")}
+            {network.on ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc")}
           </div>
         </div>
-        <Toggle
-          on={allow.enabled}
-          onClick={async () => {
-            const on = !allow.enabled;
-            setAllow((prev) => ({ ...prev, enabled: on }));
-            try {
-              const r = await api("/network/status", {
-                method: "PUT",
-                body: JSON.stringify({ enabled: on }),
-              });
-              hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled"));
-            } catch {
-              setAllow((prev) => ({ ...prev, enabled: !on }));
-            }
-          }}
-        />
+        <Toggle on={network.on} disabled={!network.ready} onClick={network.toggle} />
       </div>
       <div class="cust-row">
         <div class="info">

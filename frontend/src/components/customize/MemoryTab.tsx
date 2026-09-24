@@ -5,13 +5,14 @@ import { custTab } from "../../features/customize/actions";
 import { asList, asString, hint } from "../../features/customize/host";
 import { MEMORY_BLOCKS, memScopeLabel, memScopes } from "../../features/customize/memory";
 import { useAlive } from "./use-timer-lease";
+import { useOptimisticToggle } from "./hooks";
 import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 
 export function MemoryTab() {
   const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
-  const [enabled, setEnabled] = useState(false);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const [memories, setMemories] = useState<Record<string, unknown>[]>([]);
   const [cats, setCats] = useState<Record<string, unknown>[]>([]);
   const [ctx, setCtx] = useState<Record<string, unknown> | null>(null);
@@ -20,6 +21,15 @@ export function MemoryTab() {
   const [block, setBlock] = useState("user");
   const [scope, setScope] = useState(active);
   const [content, setContent] = useState("");
+  const memory = useOptimisticToggle(
+    enabled,
+    (on) =>
+      api("/memory/enabled", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: on }),
+      }),
+    { done: (on) => hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled")) },
+  );
 
   useEffect(() => {
     void (async () => {
@@ -63,25 +73,10 @@ export function MemoryTab() {
         <div class="info">
           <div class="nm">{t("cust.memory.enableName")}</div>
           <div class="ds">
-            {enabled ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc")}
+            {memory.on ? t("cust.memory.enabledDesc") : t("cust.memory.disabledDesc")}
           </div>
         </div>
-        <Toggle
-          on={enabled}
-          onClick={async () => {
-            const on = !enabled;
-            setEnabled(on);
-            try {
-              await api("/memory/enabled", {
-                method: "PUT",
-                body: JSON.stringify({ enabled: on }),
-              });
-              hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled"));
-            } catch {
-              setEnabled(!on);
-            }
-          }}
-        />
+        <Toggle on={memory.on} disabled={!memory.ready} onClick={memory.toggle} />
       </div>
       <div class="cust-row">
         <div class="info">
