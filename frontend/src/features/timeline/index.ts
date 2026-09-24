@@ -4,6 +4,7 @@
  * / F-07 t() — the owning module writes window, not window-exports.ts.
  */
 
+import { setScheduleWorkbenchRefresh } from "../notebook/kernel";
 import {
   actionTimelineOverviewVisualExtent,
   actionTimelineSelectionOverlaps,
@@ -19,6 +20,7 @@ import {
   mergeDelegationChildEvent,
   renderActionTimeline,
   renderDelegationPanel,
+  scheduleWorkbenchRefresh,
   steerDelegationChild,
   toggleActionTimelineTurn,
   updateActionTimelineLedger,
@@ -70,7 +72,7 @@ export {
   updateActionTimelineLedger,
 } from "./island";
 export { renderQueueStrip } from "./queue";
-export { registerTimelineHandlers, applyKernelSandbox } from "./ws";
+export { registerTimelineHandlers } from "./ws";
 
 const TIMELINE_WINDOW: Record<string, unknown> = {
   actionTimelineEntryKey,
@@ -99,6 +101,9 @@ export function installTimeline(
   target: WindowExportsTarget = globalThis as unknown as WindowExportsTarget,
 ): void {
   registerTimelineHandlers();
+  // The notebook's cell-finished / kernel_status handlers ask for a workbench
+  // refresh through this seam; until it is set, their request is a no-op.
+  setScheduleWorkbenchRefresh(scheduleWorkbenchRefresh);
   for (const [name, value] of Object.entries(TIMELINE_WINDOW)) {
     target[name] = value;
   }

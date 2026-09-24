@@ -146,11 +146,6 @@ function handleSandbox(m: WsMessage): void {
   if (S.activeTab === "timeline") renderActionTimeline();
 }
 
-/** `kernel_status` is F-14; it also writes sandbox via this helper. */
-export function applyKernelSandbox(sandbox: unknown): void {
-  if (sandbox) S.securityState = sanitizeSecurity({ sandbox });
-}
-
 export function registerTimelineHandlers(): void {
   registerUnlessPresent("action_timeline", handleActionTimeline);
   registerUnlessPresent("action-timeline", handleActionTimeline);

@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
+import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import { loadWorkbenchState, renderActionTimeline, renderBranchPanel } from "./island";
 import { renderQueueStrip } from "./queue";
@@ -656,5 +657,19 @@ describe("revert preview", () => {
     await loadWorkbenchState("frame-r", true);
     expect(S.branchState.revert_preview).toBeNull();
     expect(revertButton()).toBeNull();
+  });
+});
+
+describe("notebook-driven workbench refresh", () => {
+  it("reaches the timeline once installTimeline has run", async () => {
+    vi.useFakeTimers();
+    mountDocument();
+    const calls = stubApi(() => undefined);
+    installTimeline({});
+    S.currentId = "frame-w";
+    // notebook_cell_finished / kernel_status call the notebook's scheduler.
+    notebookScheduleWorkbenchRefresh(0);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(calls.map((call) => call.path)).toContain("/frames/frame-w/branches");
   });
 });
