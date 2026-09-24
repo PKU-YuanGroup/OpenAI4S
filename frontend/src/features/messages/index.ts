@@ -68,8 +68,6 @@ export {
   flushRender,
   scheduleRender,
   sealText,
-  setNbLiveAppendImpl,
-  setNbLiveStartImpl,
   startStream,
 } from "./stream";
 export type { LiveStream } from "./stream";

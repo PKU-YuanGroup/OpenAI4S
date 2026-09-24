@@ -9,7 +9,6 @@
  *   - `down()` via the shared rAF (no sync `scrollTop`)
  */
 
-import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
@@ -62,26 +61,6 @@ export type LiveStream = {
   _raf: number | null;
   _lastFlush: number;
 };
-
-type NbLiveStart = (
-  tool: string,
-  raw: string,
-  kernelId: unknown,
-  cellIndex: unknown,
-  language: unknown,
-) => void;
-type NbLiveAppend = (txt: string) => void;
-
-let nbLiveStartImpl: NbLiveStart | null = null;
-let nbLiveAppendImpl: NbLiveAppend | null = null;
-
-/** F-14 owns notebook live cells. Until then these are no-ops. */
-export function setNbLiveStartImpl(fn: NbLiveStart | null): void {
-  nbLiveStartImpl = fn;
-}
-export function setNbLiveAppendImpl(fn: NbLiveAppend | null): void {
-  nbLiveAppendImpl = fn;
-}
 
 function currentStream(): LiveStream | null {
   return (liveStream.value as LiveStream | null) || null;
@@ -265,12 +244,6 @@ export function ensure(): LiveStream | null {
   return startStream();
 }
 
-function callWindow(name: string, ...args: unknown[]): void {
-  const fn = (globalThis as Record<string, unknown>)[name];
-  if (!isReady(fn)) return;
-  (fn as (...a: unknown[]) => unknown)(...args);
-}
-
 function newToolPre(): { pre: HTMLElement; handle: StreamingPreHandle } {
   const pre = el("pre");
   const textNode = document.createTextNode("");
@@ -297,8 +270,6 @@ export function feed(
   const st = ensure();
   if (!st) return;
   rememberCandidateIdentity(st.wrap, event);
-  const structuredCellId =
-    event && (event.producing_cell_id || event.cell_id);
   if (kind === "tool") {
     const cellHeader = !!(event && event.cell_index != null);
     const subagentHeader = !cellHeader && chunk.startsWith("◆");
@@ -343,34 +314,10 @@ export function feed(
       st.text = "";
       resetMdState(st);
       st._lastFlush = 0;
-      if (!suba && !structuredCellId) {
-        if (nbLiveStartImpl) {
-          nbLiveStartImpl(
-            tool,
-            raw,
-            event && event.kernel_id,
-            event && event.cell_index,
-            event && event.language,
-          );
-        } else {
-          callWindow(
-            "nbLiveStart",
-            tool,
-            raw,
-            event && event.kernel_id,
-            event && event.cell_index,
-            event && event.language,
-          );
-        }
-      }
     } else if (st.toolHandle) {
       const add = chunk.replace(/^↳\s*/, "");
       st.toolHandle.append(add);
       paintToolMeta(st);
-      if (!structuredCellId) {
-        if (nbLiveAppendImpl) nbLiveAppendImpl(add);
-        else callWindow("nbLiveAppend", add);
-      }
     }
   } else {
     // The stopped marker is rendered as a marker, not appended as prose, so
