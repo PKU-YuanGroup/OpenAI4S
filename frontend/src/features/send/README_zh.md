@@ -22,7 +22,8 @@ F-11 发送全链与现场卡片。作曲框 `send()`、turn ticket、步骤 / �
 | [`icon.ts`](icon.ts) | 步骤 / 计划 / 权限多出来的图标（globe、list-check、lock 等）。 |
 | [`index.ts`](index.ts) | `installSend` 往 window 赋值、注册 WS handler。不碰 DOM：作曲框由 `main.tsx` 在 render 之后绑定。 |
 | [`install.test.ts`](install.test.ts) | 十个契约名字通过 `isReady`；不注册 `frame_update`。 |
-| [`permission.ts`](permission.ts) | 权限门卡片。冻结 DOM 类名 `.perm-card` / `.resolved` / `.allowed` / `.denied`。 |
+| [`permission.ts`](permission.ts) | 权限门卡片。冻结 DOM 类名 `.perm-card` / `.resolved` / `.allowed` / `.denied`。202 `decision_resolving`（已受理、仍在落盘）不当作失败：按钮保持禁用并显示中性的状态行（功能内文案），直到 `permission_resolved` 收尾卡片。 |
+| [`permission.test.ts`](permission.test.ts) | 202 `decision_resolving` 不是失败：不再提供重试、不显示失败提示，由 `permission_resolved` 收尾卡片；真正的拒绝（410 已过期）仍会重新启用按钮。 |
 | [`plan.ts`](plan.ts) | 结构化计划卡、进度、批准 / 修订 / 丢弃 / 恢复。仍为 `in_progress` 的步骤只在计划执行中时才闪烁；`completed` 计划若仍带着这样的步骤（服务端开始拒绝这种组合之前写下的行），会用本功能自带的文案表标成「已结束、有步骤未确认完成」。 |
 | [`plan.test.ts`](plan.test.ts) | 结束态计划卡：带着进行中步骤的已完成计划不显示为完成；执行中仍保留实时图标；步骤全部有结论的计划照常显示完成。草稿计划的修改意见未能派发（已有回合在运行、请求失败）时会放回输入框。丢弃计划的请求在用户打开另一个会话之后才返回时，不动那个会话的计划卡与计划状态。旧版审批卡只在计划模式回合正常结束后出现：被停止、被 guardian 拦截或失败的回合不弹卡，也不给下一回合留下待审批状态。 |
 | [`problems.ts`](problems.ts) | 附件问题卡（客户端文案）与 @-引用问题卡（服务端文案）。 |
