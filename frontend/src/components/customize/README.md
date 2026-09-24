@@ -16,7 +16,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, API-key shortcut. A theme or layout pick updates its segment in place. |
 | [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | Picking a theme or layout moves its own segment without remounting or re-reading the tab. |
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. Mounted from General. |
-| [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click. |
+| [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click; the request id copies over plain http, and a copy that did not happen is reported. |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory enable / add / edit / delete with explicit scope. |
 | [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | The first read asks for its four lists at once; Save adds a memory once however often it is pressed while the write is in flight. |
 | [`ModelsTab.tsx`](ModelsTab.tsx) | Profiles, local scan, probe, capability-receipt badges. With no active profile it shows the live `GET /config/llm` model (environment or saved settings) as the active row. |
