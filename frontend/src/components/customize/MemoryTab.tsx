@@ -2,11 +2,23 @@ import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
-import { asList, asString, hint } from "../../features/customize/host";
-import { MEMORY_BLOCKS, memScopeLabel, memScopes } from "../../features/customize/memory";
+import { asList, asString, customizeProject, hint } from "../../features/customize/host";
+import { MEMORY_BLOCKS, memScopeIds, memScopeLabel } from "../../features/customize/memory";
 import { useAlive } from "./use-timer-lease";
 import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
+
+/**
+ * A scope's name. Its own component: the project list it reads changes far
+ * more often than anything else on this tab.
+ */
+function ScopeName({ pid }: { pid: string }) {
+  return <>{memScopeLabel(pid)}</>;
+}
+
+function InjectedInto({ pid }: { pid: string }) {
+  return <>{t("cust.memory.injectedInto", memScopeLabel(pid))}</>;
+}
 
 export function MemoryTab() {
   const alive = useAlive();
@@ -15,8 +27,8 @@ export function MemoryTab() {
   const [memories, setMemories] = useState<Record<string, unknown>[]>([]);
   const [cats, setCats] = useState<Record<string, unknown>[]>([]);
   const [ctx, setCtx] = useState<Record<string, unknown> | null>(null);
-  const scopes = memScopes();
-  const active = scopes[scopes.length - 1]?.id || "global";
+  const scopes = memScopeIds(customizeProject.value);
+  const active = scopes[scopes.length - 1] || "global";
   const [block, setBlock] = useState("user");
   const [scope, setScope] = useState(active);
   const [content, setContent] = useState("");
@@ -84,9 +96,9 @@ export function MemoryTab() {
               value={scope}
               onChange={(e) => setScope((e.target as HTMLSelectElement).value)}
             >
-              {scopes.map((s) => (
-                <option value={s.id} key={s.id}>
-                  {s.label}
+              {scopes.map((id) => (
+                <option value={id} key={id}>
+                  <ScopeName pid={id} />
                 </option>
               ))}
             </select>
@@ -142,7 +154,9 @@ export function MemoryTab() {
       {ctx ? (
         <div class="cust-row">
           <div class="info">
-            <div class="nm">{t("cust.memory.injectedInto", memScopeLabel(active))}</div>
+            <div class="nm">
+              <InjectedInto pid={active} />
+            </div>
             <div class="ds">
               {t(
                 "cust.memory.injectedCounts",
@@ -179,7 +193,9 @@ export function MemoryTab() {
                 <div class="info">
                   <div class="ds">{asString(x.content)}</div>
                   <div class="ds">
-                    <Pill>{memScopeLabel(asString(x.project_id))}</Pill>
+                    <Pill>
+                      <ScopeName pid={asString(x.project_id)} />
+                    </Pill>
                     {x.updated_at ? <Pill>{t("cust.memory.edited")}</Pill> : null}
                   </div>
                 </div>

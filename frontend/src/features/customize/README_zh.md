@@ -15,10 +15,10 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`dismiss.test.ts`](dismiss.test.ts) | 嵌套编辑器里按 Esc 只关编辑器；Customize 之上的模态自己处理 Esc；输入法组字的 Esc 不处理；`#cust` 被别的途径隐藏时 Customize 随之关闭；在对话框内按下、在遮罩上松开的点击不关闭。 |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`。路径必须是单个前导斜杠。 |
 | [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
-| [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`。 |
+| [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`，以及供渲染使用的 `customizeProject`（它的 computed，只在项目变化时通知）。 |
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
-| [`memory.ts`](memory.ts) | Memory 作用域。绝不发送字面 `"default"`。 |
+| [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 |
 | [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取；`loadModels` / `chooseComposerModel` 用 `GET /models` 与 `PUT /models/default` 填充 composer `#model-select` 的 store（由 `bootCustomize` 调用）。 |
 | [`models.test.ts`](models.test.ts) | `loadModels` 请求 `/models` 并填充 `models` / `defaultModel` / `defaultModelName`（配置档条目用模型名命名，id 原样保留）；`bootCustomize` 接好了它。 |
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`。 |

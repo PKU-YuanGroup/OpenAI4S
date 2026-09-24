@@ -12,7 +12,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`ComputeTab.test.tsx`](ComputeTab.test.tsx) | Submit and Cancel re-read the job list without starting a second poll chain; an older read that answers late is dropped. |
 | [`ConnectorsTab.tsx`](ConnectorsTab.tsx) | Connector list; DataPro card is isolated in `vendors/`. |
 | [`Customize.tsx`](Customize.tsx) | `#cust` shell, tablist, Esc / backdrop close. |
-| [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. |
+| [`Customize.test.tsx`](Customize.test.tsx) | A selection drag that ends on the Customize or nested-editor backdrop keeps the dialog open; a press on the backdrop still closes it. The modal does not re-render for a settling load or a nested editor, and the Skills and Memory tabs re-render for a change of project, not for every session-list update. |
 | [`GeneralTab.tsx`](GeneralTab.tsx) | Theme, layout, language, API-key shortcut. |
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. Mounted from General. |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click. |

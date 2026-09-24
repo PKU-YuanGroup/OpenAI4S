@@ -8,8 +8,8 @@ import {
   asList,
   asString,
   confirmAction,
+  customizeProject,
   dropSkillsCatalog,
-  effProject,
   hint,
   insertSkillMention,
 } from "../../features/customize/host";
@@ -103,7 +103,7 @@ export function SkillsTab() {
   const [err, setErr] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [openCollections, setOpenCollections] = useState<Record<string, boolean>>({});
-  const pid = effProject();
+  const pid = customizeProject.value;
 
   useTabRead(
     "skills",

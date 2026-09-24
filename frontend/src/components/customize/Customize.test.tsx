@@ -6,9 +6,19 @@ vi.mock("preact/hooks", () => ({
   useState: (initial: unknown) => [typeof initial === "function" ? (initial as () => unknown)() : initial, vi.fn()],
 }));
 
-import { customizeOpen, nestedEditor } from "../../features/customize/state";
+import { effect } from "@preact/signals";
+import {
+  customizeLoad,
+  customizeOpen,
+  customizeTab,
+  nestedEditor,
+} from "../../features/customize/state";
+import { currentId, projects, sessions } from "../../stores/session";
+import { resetStoreFields } from "../../stores/signal-field";
 import { Customize } from "./Customize";
+import { MemoryTab } from "./MemoryTab";
 import { NestedEditor } from "./NestedEditor";
+import { SkillsTab } from "./SkillsTab";
 
 type Handler = (event: { target: unknown; currentTarget: unknown }) => void;
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
@@ -35,8 +45,20 @@ function dragOnto(backdrop: Node, from: unknown, element: unknown) {
 
 afterEach(() => {
   customizeOpen.value = false;
+  customizeTab.value = "general";
   nestedEditor.value = null;
+  resetStoreFields();
 });
+
+/** How often `render` runs again when the signals it read change. */
+function renders(render: () => unknown): { count: () => number; stop: () => void } {
+  let count = 0;
+  const stop = effect(() => {
+    count += 1;
+    render();
+  });
+  return { count: () => count, stop };
+}
 
 describe("Customize backdrops", () => {
   it("keeps Customize open when a selection drag ends on the backdrop", () => {
@@ -63,5 +85,33 @@ describe("Customize backdrops", () => {
 
     dragOnto(backdrop, element, element);
     expect(nestedEditor.value).toBeNull();
+  });
+});
+
+describe("Customize render subscriptions", () => {
+  it("the modal does not re-render for a settling load or a nested editor", () => {
+    customizeOpen.value = true;
+    const modal = renders(() => Customize());
+    customizeLoad.value = { generation: customizeLoad.value.generation + 1, state: "ready", error: null };
+    nestedEditor.value = { kind: "job", id: "job-1" };
+    expect(modal.count()).toBe(1);
+    customizeTab.value = "memory";
+    expect(modal.count()).toBe(2);
+    modal.stop();
+  });
+
+  it.each([
+    ["Skills", () => SkillsTab()],
+    ["Memory", () => MemoryTab()],
+  ])("the %s tab re-renders when its project changes, not on every session-list update", (_name, tab) => {
+    currentId.value = "s-1";
+    sessions.value = [{ id: "s-1", project_id: "p-1" }];
+    const view = renders(tab);
+    sessions.value = [{ id: "s-1", project_id: "p-1" }, { id: "s-2", project_id: "p-9" }];
+    projects.value = [{ project_id: "p-1", name: "Cells" }];
+    expect(view.count()).toBe(1);
+    sessions.value = [{ id: "s-1", project_id: "p-2" }];
+    expect(view.count()).toBe(2);
+    view.stop();
   });
 });

@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { useEffect } from "preact/hooks";
 import { t } from "../../i18n";
 import { closeCust, custTab } from "../../features/customize/actions";
@@ -17,7 +18,6 @@ import {
   customizeLoad,
   customizeOpen,
   customizeTab,
-  nestedEditor,
 } from "../../features/customize/state";
 import { CUST_TABS, CUST_TAB_I18N, type CustTab } from "../../features/customize/tabs";
 import { Icon } from "./icons";
@@ -54,6 +54,21 @@ function ActiveTab() {
     case "models":
       return <ModelsTab />;
   }
+}
+
+/**
+ * `#cust-content`. The only part of the modal that follows the load state
+ * (`aria-busy`); Customize itself does not read it, so a load settling does
+ * not re-render the tab below.
+ */
+function Content({ open, children }: { open: boolean; children: ComponentChildren }) {
+  const load = customizeLoad.value;
+  const busy = open && load.generation === customizeGeneration.value && load.state === "loading";
+  return (
+    <div id="cust-content" class="cust-content" role="tabpanel" aria-busy={busy ? "true" : "false"}>
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -95,7 +110,6 @@ export function Customize() {
   const open = customizeOpen.value;
   const tab = customizeTab.value;
   const gen = customizeGeneration.value;
-  const loading = customizeLoad.value.generation === gen && customizeLoad.value.state === "loading";
 
   useEffect(() => {
     installCustomizeEscape();
@@ -152,17 +166,12 @@ export function Customize() {
               </button>
             ))}
           </nav>
-          <div
-            id="cust-content"
-            class="cust-content"
-            role="tabpanel"
-            aria-busy={open && loading ? "true" : "false"}
-          >
+          <Content open={open}>
             {open ? <LoadStatus key={`status-${gen}`} tab={tab} generation={gen} /> : null}
             {open ? <ActiveTab key={gen} /> : null}
-          </div>
+          </Content>
         </div>
-        {nestedEditor.value ? <NestedEditor /> : null}
+        <NestedEditor />
       </div>
     </div>
   );
