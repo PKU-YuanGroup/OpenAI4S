@@ -465,9 +465,13 @@ export function recoverConversation(fid: string, gen = _openGen.value): Promise<
   return promise;
 }
 
-/** Open another conversation, or reload this one while preserving confirmed content. */
+/**
+ * Open another conversation, or reload this one while preserving confirmed
+ * content. `replaceUrl` is for routing: the address being resolved is
+ * replaced rather than stacked under the one it resolves to.
+ */
 export async function openConversation(
-  fid: string, pid?: string | null, options?: { resetHistory?: boolean },
+  fid: string, pid?: string | null, options?: { resetHistory?: boolean; replaceUrl?: boolean },
 ): Promise<HistoryLoadResult> {
   if (_branchConversationTimer.value != null) clearTimeout(_branchConversationTimer.value as ReturnType<typeof setTimeout>);
   const previousFid = currentId.value;
@@ -493,7 +497,7 @@ export async function openConversation(
     project.value = pid; _projArtFor.value = null; resetSessionDirectory();
   }
   const found = (sessions.value as Array<{ id?: string; project_id?: string }>).find((x) => x?.id === fid);
-  navURL(framePath(fid, pid || project.value || found?.project_id));
+  navURL(framePath(fid, pid || project.value || found?.project_id), !!options?.replaceUrl);
   showWorkspace(); showConv(); renderProjMenu();
   if (isMobile()) setSidebar(true);
   ensureMessageDom();

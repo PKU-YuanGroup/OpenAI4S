@@ -324,7 +324,8 @@ async function reclaimView(gen: number, filterVersion: number, workspaceShown: b
   else if (workspaceShown && project.value) await openProject(project.value);
 }
 
-export async function openProject(id: string): Promise<void> {
+/** `replaceUrl`: routing resolves a project address, see `routeInitialView`. */
+export async function openProject(id: string, options?: { replaceUrl?: boolean }): Promise<void> {
   // A project trip is navigation: bump the generation so any continuation still
   // parked on an await (an upload-created session about to open its
   // conversation, a resume watchdog) sees a stale token and stands down instead
@@ -365,8 +366,10 @@ export async function openProject(id: string): Promise<void> {
   // next navigation raced the open this call had not finished.
   // The child takes its own generation; ownership checks belong before this
   // handoff, not after it.
-  if (first?.id) await binds.openConversation(first.id, id);
-  else await binds.newSession(id);
+  if (first?.id) {
+    if (options?.replaceUrl) await binds.openConversation(first.id, id, { replaceUrl: true });
+    else await binds.openConversation(first.id, id);
+  } else await binds.newSession(id);
 }
 
 export async function createProject(

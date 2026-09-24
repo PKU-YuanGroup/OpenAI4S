@@ -6,6 +6,7 @@ import { apiGet, fetchRecentMessages, fetchOlderMessages } from "./fetch";
 import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
 import { loadEarlierMessages } from "../sessions/messages";
 import { showDashboard, stopDashPoll } from "../sessions/dashboard";
+import { routeInitialView } from "../sessions/conversation";
 import { handleIncomingMessage } from "../ws/connect";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
 import { _timelineView } from "../../stores/timeline";
@@ -495,6 +496,38 @@ describe("reopening a running session from Home", () => {
     expect(running.value).toBe(true);
     expect(daemon.viewed.has("f")).toBe(true);
     clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
+  });
+});
+
+describe("routing an address", () => {
+  /** A session history: entries, the current index, and the two History API writes. */
+  function fakeHistory(entries: string[]) {
+    let index = entries.length - 1;
+    return {
+      entries,
+      location: { get pathname() { return entries[index]; } },
+      pushState(_state: unknown, _title: string, path: string) {
+        entries.splice(index + 1, entries.length, path);
+        index = entries.length - 1;
+      },
+      replaceState(_state: unknown, _title: string, path: string) {
+        entries[index] = path;
+      },
+    };
+  }
+
+  it("replaces a project deep link with the session it resolves to, so Back can leave it", async () => {
+    const history = fakeHistory(["/", "/projects/P"]);
+    vi.stubGlobal("history", history);
+    vi.stubGlobal("location", history.location);
+    server((path) => {
+      if (path.includes("/projects?")) return response({ projects: [{ project_id: "P", name: "P" }] });
+      if (path.includes("/frames?")) return response({ frames: [{ id: "f", project_id: "P" }], has_more: false });
+      if (path.endsWith("/folders")) return response({ folders: [] });
+    });
+    await routeInitialView();
+    expect(session.currentId.value).toBe("f");
+    expect(history.entries).toEqual(["/", "/projects/P/frames/f"]);
   });
 });
 

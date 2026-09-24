@@ -3,7 +3,7 @@
 import type { HistoryLoadResult } from "../../stores/session";
 
 export type OpenConversation = (
-  fid: string, pid?: string | null, options?: { resetHistory?: boolean },
+  fid: string, pid?: string | null, options?: { resetHistory?: boolean; replaceUrl?: boolean },
 ) => Promise<HistoryLoadResult> | void;
 /** The project override exists so an empty project creates its conversation
  *  in the project just opened, not in whichever one is active by the time the
