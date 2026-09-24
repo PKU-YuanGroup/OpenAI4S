@@ -1,8 +1,8 @@
 /**
- * Fire-and-forget actions report a failure instead of leaving an unhandled
- * rejection: a session row's menu, the project menu's import and download
- * entries (all opened through a dynamic import), and the dashboard reload a
- * sessions refresh starts.
+ * Fire-and-forget actions report a failure instead of letting it escape:
+ * a session row's menu and the project menu's import and download entries
+ * (a throw would leave their click handler unreported), and the dashboard
+ * reload a sessions refresh starts (an unhandled rejection).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

@@ -15,6 +15,7 @@ import { openConversation, recoverConversation } from "../messages/open";
 import { renderProjMenu } from "./projects";
 import { resetNotebookCellCaches } from "../notebook/chrome";
 import { unsub } from "../ws/connect";
+import { openProject } from "./projects";
 
 /**
  * F-11 owns `resumeWatch` (send/ticket.ts). This lane carried a
@@ -141,7 +142,6 @@ export async function routeInitialView(): Promise<void> {
   if (pm) {
     const pid = decodeURIComponent(pm[1] || "");
     const owner = viewOwner();
-    const { openProject } = await import("./projects");
     if (ownsView(owner)) await openProject(pid, { replaceUrl: true });
     return;
   }

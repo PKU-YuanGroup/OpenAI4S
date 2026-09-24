@@ -53,6 +53,7 @@ import {
   ungroupedSessions,
   type SessionLike,
 } from "./paging";
+import { sessionMenu } from "./actions";
 
 export const PROJECT_PAGE_SIZE = 100;
 export const PROJECT_Q_MAX = 128;
@@ -462,7 +463,12 @@ export function sessionRow(f: SessionLike): HTMLElement {
   menu.title = t("session.menu.tip");
   menu.onclick = (e) => {
     e.stopPropagation();
-    if (f.id) import("./actions").then((mod) => mod.sessionMenu(menu, f.id as string)).catch(reportFailure);
+    if (!f.id) return;
+    try {
+      sessionMenu(menu, f.id);
+    } catch (error) {
+      reportFailure(error);
+    }
   };
   d.appendChild(menu);
   d.setAttribute("role", "button");

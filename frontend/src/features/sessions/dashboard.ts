@@ -25,6 +25,7 @@ import {
   runningDashboardFrames,
   type SessionLike,
 } from "./paging";
+import { openProject } from "./projects";
 
 let exampleTimer = 0;
 let visBound = false;
@@ -224,7 +225,7 @@ export function renderDashProjects(): void {
     row.appendChild(el("div", "d-meta", ago(p.last_active_at || p.updated_at)));
     const open = () => {
       const id = p.project_id || p.id;
-      if (id) import("./projects").then((mod) => mod.openProject(id)).catch(reportFailure);
+      if (id) openProject(id).catch(reportFailure);
     };
     row.onclick = open;
     ensureActivateKeys(row);

@@ -28,6 +28,8 @@ import {
   sessionListScope,
 } from "./load";
 import { beginNavigation } from "./navigation";
+import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
+import { recoverConversation } from "../messages/open";
 
 type ProjectLike = {
   project_id?: string;
@@ -272,15 +274,21 @@ export function renderProjMenu(): void {
       void openProjectResearchView("timeline");
     });
     item(t("sessionPackage.import"), "cloud-upload", () => {
-      import("./actions").then((mod) => mod.chooseSessionPackage()).catch(reportFailure);
+      try {
+        chooseSessionPackage();
+      } catch (error) {
+        reportFailure(error);
+      }
     });
     item(t("proj.menu.downloadArtifacts"), "download", () => {
-      import("./actions").then((mod) =>
-        mod.downloadArtifactBundle(
+      try {
+        downloadArtifactBundle(
           `/api/v1/projects/${encodeURIComponent(project.value as string)}/artifacts.zip`,
           `${projName(project.value)}-artifacts.zip`,
-        ),
-      ).catch(reportFailure);
+        );
+      } catch (error) {
+        reportFailure(error);
+      }
     });
     m.appendChild(el("div", "ctx-sep"));
   }
@@ -351,7 +359,6 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
     // and reopening it would rewrite its address with the sidebar's project.
     const retained = currentId.value;
     if (retained) {
-      const { recoverConversation } = await import("../messages/open");
       if (_openGen.value !== gen || currentId.value !== retained) return;
       await Promise.allSettled([
         recoverConversation(retained, gen),
