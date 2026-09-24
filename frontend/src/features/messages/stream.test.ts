@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const work = vi.hoisted(() => ({ rendered: 0 }));
+const work = vi.hoisted(() => ({ rendered: 0, calls: 0 }));
 vi.mock("../md/render", async (importOriginal) => {
   const real = await importOriginal<typeof import("../md/render")>();
   return {
     ...real,
     renderMd: (src: string | null | undefined) => {
       work.rendered += String(src ?? "").length;
+      work.calls += 1;
       return real.renderMd(src);
     },
   };
@@ -58,6 +59,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -101,6 +103,36 @@ describe("streaming markdown", () => {
     const st = stream(text);
     sealText(st);
     expect(shown(st)).toBe(renderMd(text));
+  });
+
+  it("re-renders a growing unclosed code block less often as it grows", () => {
+    const frames: Array<() => void> = [];
+    let clock = 1000;
+    vi.stubGlobal("requestAnimationFrame", (cb: () => void) => frames.push(cb));
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const flushesOver = (seconds: number, chunk: string): number => {
+      const before = work.calls;
+      for (let f = 0; f < seconds * 60; f++) {
+        feed("text", chunk, { type: "text_chunk", block_type: "text" });
+        clock += 1000 / 60;
+        for (const cb of frames.splice(0)) cb();
+      }
+      return work.calls - before;
+    };
+    const st = startStream()!;
+    // Prose settles and flushes at the old cadence: about every other frame.
+    const prose = flushesOver(1, "A sentence of ordinary prose.\n\n");
+    expect(prose).toBeGreaterThan(20);
+    // An open fence: nothing after it can settle, so the tail is the block.
+    feed("text", "```python\n" + "value = compute(value)  # step\n".repeat(1500), {
+      type: "text_chunk",
+      block_type: "text",
+    });
+    flushRender(st);
+    const code = flushesOver(1, "value = compute(value)  # step\n");
+    // ~45K chars of tail: one flush per ~230ms, not twenty a second.
+    expect(code).toBeLessThanOrEqual(6);
+    expect(code).toBeGreaterThan(0);
   });
 
   it("starts over inside a replaced answer instead of writing into the detached one", () => {

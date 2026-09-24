@@ -158,29 +158,42 @@ export function flushRender(st: LiveStream | null, finalRender?: boolean): void 
   if (st.tail) st.tail.innerHTML = renderMd(text.slice(st._stableAt || 0));
 }
 
+/** Past 600 chars a flush is due at most every 48ms (app.js: ~20/s). */
+const FLUSH_GAP_MS = 48;
+/** Unsettled tail chars per extra ms of gap. */
+const TAIL_CHARS_PER_MS = 200;
+
+/**
+ * The tail re-renders whole on every flush, and a tail that cannot settle --
+ * an unclosed code fence, a long loose list -- keeps growing: at 20 flushes a
+ * second a long code block was re-highlighted from its first line twenty
+ * times a second. The gap grows with the tail instead (1ms per 200 chars
+ * past ~10K), which keeps the re-render work per second flat.
+ */
+function flushGap(st: LiveStream): number {
+  const text = st.text || "";
+  if (text.length <= 600 || !st._lastFlush) return 0;
+  return Math.max(FLUSH_GAP_MS, (text.length - (st._stableAt || 0)) / TAIL_CHARS_PER_MS);
+}
+
+function renderFrame(st: LiveStream, deferred: boolean): void {
+  st._raf = null;
+  const gap = flushGap(st);
+  // Within the gap: wait one frame, as app.js did; only a large tail waits
+  // its whole gap out.
+  if (performance.now() - st._lastFlush < gap && (!deferred || gap > FLUSH_GAP_MS)) {
+    st._raf = scheduleFrame(() => renderFrame(st, true));
+    return;
+  }
+  flushRender(st);
+  down();
+}
+
 /** app.js:5427-5440. ~20/s cap on long streams; `down()` is rAF-coalesced. */
 export function scheduleRender(st: LiveStream): void {
   st._dirty = true;
   if (st._raf) return;
-  st._raf = scheduleFrame(() => {
-    st._raf = null;
-    const now = performance.now();
-    if (
-      st.text &&
-      st.text.length > 600 &&
-      st._lastFlush &&
-      now - st._lastFlush < 48
-    ) {
-      st._raf = scheduleFrame(() => {
-        st._raf = null;
-        flushRender(st);
-        down();
-      });
-      return;
-    }
-    flushRender(st);
-    down();
-  });
+  st._raf = scheduleFrame(() => renderFrame(st, false));
 }
 
 /** app.js:5445-5451. */
