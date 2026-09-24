@@ -14,8 +14,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`clipboard.ts`](clipboard.ts) | `copyText()`：所有复制按钮共用的剪贴板写入，只有确认写入成功才返回 `true`。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `hint` / `grow`。`icon` 取自共享的 `icons/paths.ts` 表。 |
 | [`host.ts`](host.ts) | 用 `isReady` 查 window 能力。不 import `window-exports`。 |
-| [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。 |
-| [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制。 |
+| [`index.ts`](index.ts) | `bootChrome()`：window 赋值、快捷键、绑定、`bootTeam`。每一步相互隔离，某一步抛错不会让其余绑定落空。 |
+| [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制、站点存储被禁用，以及某一步抛错后 `bootChrome()` 仍绑定其后各步。 |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`。键 `os-layout`。 |
 | [`mic.ts`](mic.ts) | SpeechRecognition 把口述写进 `#composer`。 |
 | [`modal.test.ts`](modal.test.ts) | 陷阱栈、Tab 循环、Esc、焦点恢复、团队 fallback 选择器。 |

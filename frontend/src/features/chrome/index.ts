@@ -107,19 +107,41 @@ function installWorkbenchKeys(): void {
   });
 }
 
+/**
+ * One boot step. A throw is reported and the remaining steps still bind: a
+ * single failure here used to leave ⌘K, uploads, the modal traps and
+ * everything after bootChrome() in main.tsx unbound.
+ */
+function bootStep(name: string, run: () => void): void {
+  try {
+    run();
+  } catch (error) {
+    console.error("bootChrome: " + name + " failed", error);
+  }
+}
+
 /** F-20 boot. Call after the shell has mounted so team ids can be found. */
 export function bootChrome(): void {
-  assignWindow();
-  addModalEscapeBlocker(() => isPaletteOpen());
-  applyLayout(readStoredLayout());
-  restoreColWidths();
-  initColResizers();
-  bindPaletteButton();
-  bindUpload();
-  bindNotes();
-  bindMic();
-  bindModalDismiss($("#cust"), $("#cust-close"));
-  bindModalDismiss($("#modal"), $("#modal-close"));
+  bootStep("window names", assignWindow);
+  bootStep("palette escape", () => addModalEscapeBlocker(() => isPaletteOpen()));
+  bootStep("layout", () => applyLayout(readStoredLayout()));
+  bootStep("column widths", restoreColWidths);
+  bootStep("column resizers", initColResizers);
+  bootStep("palette", bindPaletteButton);
+  bootStep("upload", bindUpload);
+  bootStep("notes", bindNotes);
+  bootStep("mic", bindMic);
+  bootStep("modal dismiss", () => {
+    bindModalDismiss($("#cust"), $("#cust-close"));
+    bindModalDismiss($("#modal"), $("#modal-close"));
+  });
+  bootStep("project modal", bindProjectModal);
+  bootStep("keys", installWorkbenchKeys);
+  bootStep("dock", bindDockChrome);
+  bootStep("team", bootTeam);
+}
+
+function bindProjectModal(): void {
   const closeProjectModal = hostFn("closeProjectModal");
   const projClose = $("#proj-modal-close");
   const projCancel = $("#pm-cancel");
@@ -135,9 +157,6 @@ export function bootChrome(): void {
       if (e.target === projModal) closeProj();
     });
   }
-  installWorkbenchKeys();
-  bindDockChrome();
-  bootTeam();
 }
 
 function bindDockChrome(): void {

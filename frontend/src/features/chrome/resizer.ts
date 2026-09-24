@@ -11,11 +11,21 @@ let _colClampBound = false;
 /** app.js:13254-13259 */
 export function restoreColWidths(): void {
   if (typeof document === "undefined") return;
-  const sw = parseInt(localStorage.getItem("os-side-w") || "", 10);
+  let side = "";
+  let dock = "";
+  try {
+    side = localStorage.getItem("os-side-w") || "";
+    dock = localStorage.getItem("os-dock-w") || "";
+  } catch {
+    // Blocked site data makes the storage getter itself throw SecurityError;
+    // keep the stylesheet widths like layout, theme and i18n do.
+    return;
+  }
+  const sw = parseInt(side, 10);
   if (sw && sw >= 200 && sw <= 520) {
     document.documentElement.style.setProperty("--side-w", sw + "px");
   }
-  const dw = parseInt(localStorage.getItem("os-dock-w") || "", 10);
+  const dw = parseInt(dock, 10);
   if (dw && dw >= 360) {
     const inner = typeof window !== "undefined" ? window.innerWidth : 1200;
     document.documentElement.style.setProperty(

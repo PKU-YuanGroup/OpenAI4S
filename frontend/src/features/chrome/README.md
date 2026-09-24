@@ -14,8 +14,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`clipboard.ts`](clipboard.ts) | `copyText()`: the one clipboard write behind every Copy control; resolves `true` only for a confirmed write. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `hint` / `grow`. `icon` draws from the shared `icons/paths.ts` table. |
 | [`host.ts`](host.ts) | `isReady` window-capability lookups. Does not import `window-exports`. |
-| [`index.ts`](index.ts) | `bootChrome()`: window assignments, keydown, binds, `bootTeam`. |
-| [`layout.test.ts`](layout.test.ts) | `os-layout` persistence, compact/wide classes, column-width clamp. |
+| [`index.ts`](index.ts) | `bootChrome()`: window assignments, keydown, binds, `bootTeam`. Each step is isolated, so one that throws cannot leave the rest unbound. |
+| [`layout.test.ts`](layout.test.ts) | `os-layout` persistence, compact/wide classes, column-width clamp, blocked site storage, and `bootChrome()` binding every later step after one throws. |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`. Key `os-layout`. |
 | [`mic.ts`](mic.ts) | SpeechRecognition dictation onto `#composer`. |
 | [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors. |
