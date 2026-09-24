@@ -10,6 +10,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | --- | --- |
 | [`api.ts`](api.ts) | Same-origin JSON helper (`/api/v1`, `ApiError`). |
 | [`chrome.css`](chrome.css) | Lane styles for palette / notes / team / resizer class names. |
+| [`clipboard.test.ts`](clipboard.test.ts) | The async API is called as a method, a refusal falls back to a selection copy, and nothing available resolves false. |
+| [`clipboard.ts`](clipboard.ts) | `copyText()`: the one clipboard write behind every Copy control; resolves `true` only for a confirmed write. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `icon` / `ago` / `hint` / `grow`. `icon` draws from the shared `icons/paths.ts` table. |
 | [`host.ts`](host.ts) | `isReady` window-capability lookups. Does not import `window-exports`. |
 | [`index.ts`](index.ts) | `bootChrome()`: window assignments, keydown, binds, `bootTeam`. |
