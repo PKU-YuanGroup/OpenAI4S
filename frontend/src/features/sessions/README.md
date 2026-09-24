@@ -18,6 +18,7 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`conversation.ts`](conversation.ts) | `newSession`, `routeInitialView`. Re-exports `openConversation` (F-10) and `resumeWatch` (F-11) rather than keeping this lane's duplicates. |
 | [`conversation.identity.test.ts`](conversation.identity.test.ts) | Those re-exports are the same function objects the owning lanes install. |
 | [`conversation.newsession.test.ts`](conversation.newsession.test.ts) | `newSession` releases the previous conversation (unsubscribe, notebook caches) before publishing the new id, and on the shared path resolves only after the conversation has opened. |
+| [`actions.directory.test.ts`](actions.directory.test.ts) | Session-menu actions keep the sidebar directory truthful: a folder made by "New folder and move" is listed rather than answered from the cached folders. |
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | A cancel ack is applied to "Stopping…" only when it names the execution this client is still running. |
 | [`dashboard.ts`](dashboard.ts) | Home list, project search / load-more / retry, example CTA poll bound to view lifecycle, dash poll. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer helpers; `FRAME_ROUTE` / `PROJECT_ROUTE` / `routesToWorkspace`, shared by `routeInitialView` and the Shell's first paint. `setTitle` takes `#conv-title` over from its static `data-i18n-val` label. |

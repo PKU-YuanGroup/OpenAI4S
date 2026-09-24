@@ -18,7 +18,7 @@ import { turnDone } from "../send/turn";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
-import { assignFolder, loadProjects, loadSessions } from "./load";
+import { assignFolder, invalidateFolders, loadProjects, loadSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
 import { publicText } from "../scrub/scrub";
 import { openShareDialog } from "./share";
@@ -387,15 +387,21 @@ export function moveToFolderAt(anchor: Element, fid: string): void {
     onClick: async () => {
       const n = prompt(t("folder.new.prompt"));
       if (!n || !project.value) return;
+      let r: { folder_id: string };
       try {
-        const r = (await api(`/projects/${project.value}/folders`, {
+        r = (await api(`/projects/${project.value}/folders`, {
           method: "POST",
           body: JSON.stringify({ name: n }),
         })) as { folder_id: string };
-        await assignFolder(fid, r.folder_id);
-      } catch {
-        /* ignore */
+      } catch (e) {
+        hint(t("folder.create.failed", apiErrorText(e)), true);
+        return;
       }
+      // The cached folder list predates this folder: without the invalidation
+      // the refresh behind assignFolder answered from that cache, so the new
+      // folder never appeared and the moved session fell under "ungrouped".
+      invalidateFolders();
+      await assignFolder(fid, r.folder_id);
     },
   });
   openMenu(anchor, items);
