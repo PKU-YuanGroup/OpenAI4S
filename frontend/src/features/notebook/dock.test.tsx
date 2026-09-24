@@ -22,7 +22,7 @@ import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
 import { invalidateKernelCache, kernelView } from "./kernel";
-import { CellList, CellOutput, StatusStrip } from "./Notebook";
+import { CellList, CellOutput, NotebookDock, StatusStrip } from "./Notebook";
 
 type VNode = {
   type?: unknown;
@@ -117,6 +117,25 @@ describe("Notebook kernel status line", () => {
     expect(textOf(line())).toBe(ready);
     currentId.value = "frame-2";
     expect(textOf(line())).toBe("…");
+  });
+
+  it("a kernel read that leaves the REPL mode alone does not re-render the whole dock", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { alive: true }, envs: null, cur: null };
+    let renders = 0;
+    const dispose = effect(() => {
+      renders += 1;
+      NotebookDock({ entries: [] });
+    });
+    try {
+      kernelView.value = { sid: "frame-1", st: { alive: true, generation: 2 }, envs: null, cur: null };
+      expect(renders).toBe(1);
+      // The REPL panel replacing the status strip is the change the dock owns.
+      kernelView.value = { sid: "frame-1", st: { alive: true, repl_enabled: true }, envs: null, cur: null };
+      expect(renders).toBe(2);
+    } finally {
+      dispose();
+    }
   });
 });
 

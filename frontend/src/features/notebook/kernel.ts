@@ -5,6 +5,7 @@
  * kernel_status, turnDone, nbSwitchEnv (app.js:5352, 5854, 10060).
  */
 
+import { computed } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import {
   _kc,
@@ -132,6 +133,26 @@ export function kernelStatusOf(value: unknown): KernelStatus {
 export function replEnabledNow(): boolean {
   const st = kernelStatusOf(currentKernelStatus());
   return !!(st.repl_enabled && !(st.view_only && st.trust_state === "quarantined"));
+}
+
+/**
+ * The REPL-or-status-strip choice, for the dock. A computed boolean only
+ * notifies when it flips; reading the view directly re-rendered the whole
+ * dock after every kernel read.
+ */
+export const replEnabled = computed(replEnabledNow);
+
+/**
+ * The dock's kernel reads, run after a dock render: only while the Notebook
+ * is on screen, and each read still skips while fresh. They ran from layout
+ * effects after every render of the status strip or REPL panel, shown or
+ * not, so a Notebook opened once kept reading /kernel and /environments from
+ * behind the Files tab.
+ */
+export function syncKernel(envs: boolean): void {
+  if (!dockIsNotebook() || !currentId.value) return;
+  void refreshKernelState();
+  if (envs) void refreshKernelEnvs();
 }
 
 type Identity = { execution_id: string; owner: { kind: string; id: string } };

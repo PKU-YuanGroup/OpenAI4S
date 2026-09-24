@@ -11,6 +11,7 @@ import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import {
+  _kc,
   _replDrafts,
   _replLanguage,
   execSources,
@@ -19,6 +20,7 @@ import {
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { executionQueue } from "../../stores/timeline";
+import { activeTab, dock } from "../../stores/ui";
 import { publicText } from "../scrub/scrub";
 import { cellOutput, nbCellKey, notebookViewEntries, paintStreamedText } from "./cells";
 import {
@@ -47,11 +49,10 @@ import {
   kernelStatusOf,
   nbSwitchEnv,
   promoteNotebookCell,
-  refreshKernelEnvs,
-  refreshKernelState,
-  replEnabledNow,
+  replEnabled,
   runtimeSummary,
   shortRuntime,
+  syncKernel,
 } from "./kernel";
 import {
   bindNotebookScroll,
@@ -555,9 +556,6 @@ function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
 /** The read-only status line; its text is the session's last kernel read. */
 export function StatusStrip() {
   const st = currentKernelStatus();
-  useLayoutEffect(() => {
-    void refreshKernelState();
-  });
   const line = st ? kernelStatusLine(st) : null;
   return (
     <div class="nb-status">
@@ -601,10 +599,6 @@ function EnvSelect() {
 
 function ReplPanel() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    void refreshKernelState();
-    void refreshKernelEnvs();
-  });
   const sid = currentId.value;
   const st = currentKernelStatus();
   const state = !sid
@@ -741,11 +735,28 @@ function ExecutedCodeSlot() {
   return <div ref={hostRef} />;
 }
 
+/**
+ * Runs the kernel reads after a dock render (kernel.ts `syncKernel`). It
+ * reads the cache, the session and the tab so an invalidation, a session
+ * switch or the Notebook coming into view re-runs them.
+ */
+function KernelSync({ envs }: { envs: boolean }) {
+  _kc.value;
+  currentId.value;
+  activeTab.value;
+  dock.value;
+  useLayoutEffect(() => {
+    syncKernel(envs);
+  });
+  return null;
+}
+
 export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
-  const repl = replEnabledNow();
+  const repl = replEnabled.value;
   return (
     <>
+      <KernelSync envs={repl && !execOpen} />
       <KernelChips entries={entries} />
       {execOpen ? (
         <ExecutedCodeSlot />

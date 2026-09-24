@@ -67,6 +67,7 @@ import {
   notebookOnTurnDone,
   refreshKernelState,
   replEnabledNow,
+  syncKernel,
 } from "./kernel";
 import {
   isNearBottom,
@@ -446,6 +447,28 @@ describe("F-14 Notebook", () => {
       currentId.value = "frame-2";
       expect(currentKernelStatus()).toBeNull();
       expect(replEnabledNow()).toBe(false);
+    });
+
+    it("reads only while the Notebook is on screen, and not again while fresh", async () => {
+      const paths: string[] = [];
+      setNotebookApi(async (path) => {
+        paths.push(path);
+        return path.endsWith("/environments") ? { environments: [], current: "python" } : { alive: true };
+      });
+      dock.value = { open: false, tab: "notebook" };
+      syncKernel(true);
+      dock.value = { open: true, tab: "files" };
+      activeTab.value = "files";
+      syncKernel(true);
+      await settle();
+      expect(paths).toEqual([]);
+      activeTab.value = "notebook";
+      syncKernel(true);
+      await settle();
+      expect(paths).toEqual(["/frames/frame-1/kernel", "/frames/frame-1/environments"]);
+      syncKernel(true);
+      await settle();
+      expect(paths).toHaveLength(2);
     });
   });
 
