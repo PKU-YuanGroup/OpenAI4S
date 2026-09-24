@@ -19,6 +19,7 @@ import { down } from "../messages/scroll";
 import { ensure, sealText, type LiveStream } from "../messages/stream";
 import { shortRuntime } from "../notebook/kernel";
 import { publicText } from "../scrub/scrub";
+import { apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { publicList } from "../timeline/sanitize";
 import { appendSemanticSkillSearch } from "../judgment/chips";
@@ -76,13 +77,17 @@ function rec(value: unknown): Record<string, unknown> {
 function openArt(meta: { artifact_id?: unknown; filename?: unknown; content_type?: unknown; size_bytes?: unknown }): void {
   if (!meta || !meta.artifact_id) return;
   dockOpen();
-  openViewer({
-    id: String(meta.artifact_id),
-    artifact_id: String(meta.artifact_id),
-    filename: meta.filename != null ? String(meta.filename) : undefined,
-    content_type: meta.content_type != null ? String(meta.content_type) : undefined,
-    size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
-  } as ArtifactRow);
+  // openViewer may resolve a version first; a failure there belongs to this
+  // click, not to an unhandled rejection.
+  void Promise.resolve(
+    openViewer({
+      id: String(meta.artifact_id),
+      artifact_id: String(meta.artifact_id),
+      filename: meta.filename != null ? String(meta.filename) : undefined,
+      content_type: meta.content_type != null ? String(meta.content_type) : undefined,
+      size_bytes: typeof meta.size_bytes === "number" ? meta.size_bytes : undefined,
+    } as ArtifactRow),
+  ).catch((error: unknown) => hint(t("toast.failed", apiErrorText(error)), true));
 }
 
 export function binElide(len: number): HTMLElement {

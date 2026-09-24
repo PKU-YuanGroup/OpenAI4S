@@ -29,6 +29,7 @@ F-11 send chain and live cards. Composer `send()`, turn tickets, step / plan / p
 | [`problems.ts`](problems.ts) | Attachment problem cards (client wording) and @-ref problem cards (server wording). |
 | [`send.test.ts`](send.test.ts) | `send()` outside refusals and first sends: a programmatic send (a permission's Continue, a plan approval) leaves the user's unrelated draft in the composer, while the composer's own text is cleared once sent; a `/skill` send after a failed catalog read gets its directive on the next send. |
 | [`send.ts`](send.ts) | Composer send chain. Plan-mode payload via F-07 `planModePayload`. `bindComposer` (called from `main.tsx` after `render`) binds Enter and the send button to one dispatch latch. |
-| [`step.ts`](step.ts) | Semantic activity steps, `buildStepCard`, `searchResultHttpUrl`. |
+| [`step.ts`](step.ts) | Semantic activity steps, `buildStepCard`, `searchResultHttpUrl`. Opening an artifact from a step reports a viewer failure as a hint. |
+| [`step.test.ts`](step.test.ts) | Step cards: an artifact the viewer fails to open is reported, not left as an unhandled rejection. |
 | [`ticket.ts`](ticket.ts) | Turn ticket generation, `acceptTurnTicket` / `activateTurnTicket`, `resumeWatch`. |
 | [`turn.ts`](turn.ts) | `turnDone` teardown; calls F-14 `notebookOnTurnDone()`; settles any activity card still running (`messages/cardState.ts`); clears `planPending` on every terminal and offers the legacy approval card only for a finished turn. |
