@@ -18,8 +18,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`layout.test.ts`](layout.test.ts) | `os-layout` persistence, compact/wide classes, column-width clamp, blocked site storage, and `bootChrome()` binding every later step after one throws. |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`. Key `os-layout`. |
 | [`mic.ts`](mic.ts) | SpeechRecognition dictation onto `#composer`. |
-| [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors. |
-| [`modal.ts`](modal.ts) | Verbatim focus trap (stack / Tab / Esc / restore). |
+| [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors, and a drag that ends on the scrim not closing. |
+| [`modal.ts`](modal.ts) | Verbatim focus trap (stack / Tab / Esc / restore). The scrim closes only when the press started on it too. |
 | [`notes.ts`](notes.ts) | Project notes in the Files dock. |
 | [`palette.test.ts`](palette.test.ts) | M-03 Artifact hit, stub-safe `isReady`, out-of-order `PAL.gen`. |
 | [`palette.ts`](palette.ts) | ⌘K palette. Artifact hits open session then exact version. |

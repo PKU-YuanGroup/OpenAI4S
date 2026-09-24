@@ -516,6 +516,25 @@ describe("F-20 modal focus trap", () => {
     expect(list.some((n) => n === (disabled as unknown as HTMLElement))).toBe(false);
   });
 
+  it("a drag that ends on the scrim does not close; a press and release on it does", () => {
+    const modal = makeModal(doc, "cust");
+    const field = doc.createElement("input");
+    (modal.querySelector(".modal-box") as FakeEl).appendChild(field);
+    api.bindModalDismiss(modal as unknown as HTMLElement, null);
+    api.openModalEl(modal as unknown as HTMLElement);
+    const fire = (type: string, target: FakeEl): void => {
+      for (const fn of modal.listeners.get(type) || []) fn({ target });
+    };
+    // Selecting text in the field and releasing over the scrim: the click
+    // lands on the common ancestor, which is the scrim.
+    fire("pointerdown", field);
+    fire("click", modal);
+    expect(modal.classList.contains("hidden")).toBe(false);
+    fire("pointerdown", modal);
+    fire("click", modal);
+    expect(modal.classList.contains("hidden")).toBe(true);
+  });
+
   it("source does not import window-exports (Proxy install is a side effect)", () => {
     const src = readFileSync(join(here, "modal.ts"), "utf8");
     expect(src).not.toContain("window-exports");

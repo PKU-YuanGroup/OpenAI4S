@@ -178,12 +178,25 @@ export function trapModalKeydown(e: ModalKeyEvent | KeyboardEvent): void {
   }
 }
 
-/** Overlay click (target === modal) + close button. app.js:13387-13391. */
+/**
+ * Overlay click + close button. app.js:13387-13391.
+ *
+ * A drag that starts in a field and ends on the scrim fires its click on
+ * their common ancestor, the scrim itself, so `target === modal` alone threw
+ * away an unsaved form after a text selection. The press has to start on the
+ * scrim as well.
+ */
 export function bindModalDismiss(modal: HTMLElement | null, closeBtn?: HTMLElement | null): void {
   if (!modal) return;
   if (closeBtn) closeBtn.addEventListener("click", () => closeModalEl(modal));
+  let pressedOnScrim = false;
+  modal.addEventListener("pointerdown", (e) => {
+    pressedOnScrim = e.target === modal;
+  });
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeModalEl(modal);
+    const fromScrim = pressedOnScrim;
+    pressedOnScrim = false;
+    if (fromScrim && e.target === modal) closeModalEl(modal);
   });
 }
 
