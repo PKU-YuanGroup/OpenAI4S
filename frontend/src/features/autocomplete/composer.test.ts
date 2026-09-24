@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { skillsCatalog } from "../../stores/customize";
 import { project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
+import { loadSkillsCatalog } from "./catalog";
 import { ac, acClose, acPick, acUpdate } from "./composer";
 
 /** Just enough DOM for the composer popup (no jsdom here). */
@@ -60,6 +62,7 @@ function pendingFiles(): Answer[] {
 }
 
 const FILES = [{ filename: "plot.png" }, { filename: "pca.csv" }, { filename: "plan.md" }];
+const SKILLS = [{ name: "plot" }, { name: "pca" }, { name: "plan" }];
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -125,6 +128,25 @@ describe("composer autocomplete after an async load", () => {
     expect(composer.value).toBe("please see @plot.png ");
   });
 
+  it("`/` completions come back after a failed catalog read", async () => {
+    let up = false;
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(
+        up
+          ? { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ skills: SKILLS })) }
+          : { ok: false, status: 503, text: () => Promise.resolve('{"error":"catalog unavailable"}') },
+      ),
+    );
+    type("/pl");
+    await acUpdate();
+    expect(ac.open).toBe(false);
+    up = true;
+    type("/pl");
+    await acUpdate();
+    expect(ac.open).toBe(true);
+    expect(ac.items.map((it) => it.insert)).toEqual(["plot", "plan"]);
+  });
+
   it("closes when the caret has left the token", async () => {
     project.value = "proj-left";
     const answers = pendingFiles();
@@ -135,5 +157,48 @@ describe("composer autocomplete after an async load", () => {
     answers[0]!(FILES);
     await update;
     expect(ac.open).toBe(false);
+  });
+});
+
+describe("the shared skills catalog", () => {
+  it("stores no failed read: the next caller asks again", async () => {
+    let up = false;
+    let requests = 0;
+    vi.stubGlobal("fetch", () => {
+      requests += 1;
+      return Promise.resolve(
+        up
+          ? { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ skills: SKILLS })) }
+          : { ok: false, status: 503, text: () => Promise.resolve('{"error":"catalog unavailable"}') },
+      );
+    });
+    await expect(loadSkillsCatalog()).rejects.toThrow(/catalog unavailable/);
+    expect(skillsCatalog.value).toBeNull();
+    up = true;
+    await expect(loadSkillsCatalog()).resolves.toEqual(SKILLS);
+    expect(requests).toBe(2);
+    // A stored catalog, even an empty one, answers without a request.
+    await loadSkillsCatalog();
+    skillsCatalog.value = [];
+    await expect(loadSkillsCatalog()).resolves.toEqual([]);
+    expect(requests).toBe(2);
+  });
+
+  it("concurrent callers share the one request in flight", async () => {
+    let answer: () => void = () => {};
+    let requests = 0;
+    vi.stubGlobal("fetch", () => {
+      requests += 1;
+      return new Promise((resolve) => {
+        answer = () =>
+          resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ skills: SKILLS })) });
+      });
+    });
+    const first = loadSkillsCatalog();
+    const second = loadSkillsCatalog();
+    expect(second).toBe(first);
+    answer();
+    await expect(first).resolves.toEqual(SKILLS);
+    expect(requests).toBe(1);
   });
 });

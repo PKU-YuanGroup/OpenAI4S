@@ -8,13 +8,13 @@
  */
 
 import { t } from "../../i18n/runtime";
-import { skillsCatalog } from "../../stores/customize";
 import { artifacts } from "../../stores/artifacts";
 import { currentId, sessions } from "../../stores/session";
 import { effProject } from "../customize/host";
 import { api } from "../sessions/api";
 import { $, el, grow } from "../sessions/dom";
 import { renderComposerRefChips } from "../sessions/transcript";
+import { loadSkillsCatalog } from "./catalog";
 import { acDetectFrom, type ComposerDetect } from "./detect";
 import {
   artifactToAcItem,
@@ -54,33 +54,6 @@ export function acDetect(): ComposerDetect | null {
   const pos = c.selectionStart;
   const before = (c.value || "").slice(0, pos);
   return acDetectFrom(before, pos);
-}
-
-async function loadSkillsCatalog(): Promise<
-  Array<{ displayName?: string; name?: string; description?: string }>
-> {
-  if (skillsCatalog.value) {
-    return skillsCatalog.value as Array<{
-      displayName?: string;
-      name?: string;
-      description?: string;
-    }>;
-  }
-  try {
-    const d = (await api("/skills/catalog")) as {
-      skills?: Array<{ displayName?: string; name?: string; description?: string }>;
-    };
-    skillsCatalog.value = (d && d.skills) || [];
-  } catch {
-    skillsCatalog.value = [];
-  }
-  return (
-    (skillsCatalog.value as Array<{
-      displayName?: string;
-      name?: string;
-      description?: string;
-    }>) || []
-  );
 }
 
 export async function acProjectFiles(): Promise<ArtifactLike[]> {
@@ -182,7 +155,8 @@ export async function acUpdate(): Promise<void> {
     }>;
     items = rows.map(sessionToAcItem);
   } else if (d.trigger === "/") {
-    const sk = await loadSkillsCatalog();
+    // A failed read offers nothing this time; the next `/` asks again.
+    const sk = await loadSkillsCatalog().catch(() => []);
     items = sk.map(skillToAcItem);
   }
   // The file and skill lists load asynchronously. Keystrokes in the

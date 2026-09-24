@@ -16,7 +16,6 @@
 import { LANG, onLanguageChange, planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
-  skillsCatalog,
   standardProfileReadiness,
 } from "../../stores/customize";
 import {
@@ -45,6 +44,7 @@ import {
   type UploadCreation,
   type UploadResult,
 } from "../chrome/upload";
+import { loadSkillsCatalog } from "../autocomplete/catalog";
 import { effProject } from "../customize/host";
 import { $, el } from "../messages/dom";
 import { down } from "../messages/scroll";
@@ -140,17 +140,6 @@ async function loadAnnotationsLocal(fid: string): Promise<boolean> {
   annotations.value = (res && res.annotations) || [];
   callLane("updateAnnotBadge");
   return true;
-}
-
-async function loadSkillsCatalog(): Promise<Array<{ name?: unknown }>> {
-  if (skillsCatalog.value) return skillsCatalog.value as Array<{ name?: unknown }>;
-  try {
-    const d = (await api("/skills/catalog")) as { skills?: Array<{ name?: unknown }> };
-    skillsCatalog.value = (d && d.skills) || [];
-  } catch {
-    skillsCatalog.value = [];
-  }
-  return (skillsCatalog.value as Array<{ name?: unknown }>) || [];
 }
 
 export function annotAttachment(anns: Annotation[]): HTMLElement {
