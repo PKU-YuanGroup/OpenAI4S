@@ -1,7 +1,6 @@
 import { dockArtifact, filesScope } from "../../stores/artifacts";
 import { bindNotebookArtifact } from "../notebook/cells";
 import { activeTab, dock } from "../../stores/ui";
-import { callWindow } from "./api";
 import { artifactTabKey, syncArtifactVersion } from "./cache";
 import { browseFiles } from "./files-index";
 import { loadProjectArtifacts, markProjectListingStale } from "./load";
@@ -65,11 +64,13 @@ export function artifactCreatedSideEffects(m: WsMessage): void {
       renderViewer();
     }
   }
-  if (bindNotebookArtifact(m)) callWindow("nbRender");
+  // Repaints the Notebook itself when a cell gained this file.
+  bindNotebookArtifact(m);
   if (filesScope.value === "project") {
     scheduleProjectRefresh();
   } else {
-    // The WS upsert mutates the array in place, so refresh explicitly.
+    // The grid lists the paged Files index, not the store the WS upsert
+    // wrote, so refresh the index explicitly.
     void browseFiles({ refresh: true }).then(() => {
       if (filesVisible()) renderFilesGrid();
     });

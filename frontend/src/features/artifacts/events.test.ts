@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _artVer, dockArtifact, filesScope } from "../../stores/artifacts";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
+import { setNotebookRenderImpl } from "../notebook/scroll";
 import { project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
@@ -19,6 +20,8 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
 
   afterEach(() => {
     delete (globalThis as { nbRender?: unknown }).nbRender;
+    setNotebookRenderImpl(null);
+    vi.useRealTimers();
   });
 
   it("syncs the version cache when a produced file overwrites in place", () => {
@@ -34,14 +37,18 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
   });
 
   it("appends a live figure onto the producing cell while a turn is running", () => {
+    vi.useFakeTimers();
     running.value = true;
+    dock.value = { open: true, tab: "notebook" };
+    activeTab.value = "notebook";
     const cell = { producing_cell_id: "c1", live: true, figures: [] as string[] };
     liveCells.value = [cell];
     _liveCell.value = cell;
+    // The Notebook's own render entry, not a window name nobody assigns.
     let painted = 0;
-    (globalThis as { nbRender?: () => void }).nbRender = () => {
+    setNotebookRenderImpl(() => {
       painted += 1;
-    };
+    });
     artifactCreatedSideEffects({
       type: "artifact_created",
       artifact: {
@@ -51,6 +58,7 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
         producing_cell_id: "c1",
       },
     });
+    vi.runAllTimers();
     expect(cell.figures).toEqual(["fig.png"]);
     expect(painted).toBe(1);
     artifactCreatedSideEffects({
@@ -62,6 +70,7 @@ describe("artifact_created side effects (app.js:5314-5346)", () => {
         producing_cell_id: "c1",
       },
     });
+    vi.runAllTimers();
     expect(cell.figures).toEqual(["fig.png"]);
     expect(painted).toBe(1);
   });
