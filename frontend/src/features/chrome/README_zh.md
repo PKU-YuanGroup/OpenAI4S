@@ -21,7 +21,7 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`modal.test.ts`](modal.test.ts) | 陷阱栈、Tab 循环、Esc、焦点恢复、团队 fallback 选择器，以及在遮罩上松开的拖选不会关闭弹窗。 |
 | [`modal.ts`](modal.ts) | 逐字焦点陷阱（栈 / Tab / Esc / 恢复）。只有按下也发生在遮罩上时，点击遮罩才会关闭。 |
 | [`notes.ts`](notes.ts) | Files dock 里的项目笔记。 |
-| [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、stub 安全的 `isReady`、乱序 `PAL.gen`。 |
+| [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、stub 安全的 `isReady`、乱序 `PAL.gen`、技能目录读取失败时不缓存而是下次重试。 |
 | [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。 |
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |
 | [`resizer.i18n.test.ts`](resizer.i18n.test.ts) | 列宽拖拽柄的提示不会是裸键 `resizer.drag`，并随字典加载和语言切换更新。 |

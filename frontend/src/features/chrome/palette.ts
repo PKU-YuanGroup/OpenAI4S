@@ -188,7 +188,9 @@ async function loadSkillsCatalog(): Promise<SkillRow[]> {
     const d = (await api("/skills/catalog")) as { skills?: SkillRow[] } | null;
     skillsCatalog.value = (d && d.skills) || [];
   } catch {
-    skillsCatalog.value = [];
+    // Not cached: `[]` is truthy, so storing it would hide every skill for
+    // the life of the page after one failed read. The next open retries.
+    return [];
   }
   return (skillsCatalog.value || []) as SkillRow[];
 }

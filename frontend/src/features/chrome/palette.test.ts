@@ -167,6 +167,26 @@ describe("F-20 command palette", () => {
     expect(PAL.items.some((it) => it.label === "stale.csv")).toBe(false);
   });
 
+  it("does not cache a failed skills catalog; the next search retries it", async () => {
+    stubPaletteDom();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => ({ ok: false, status: 503, text: async () => "{}" }))
+      .mockImplementationOnce(async () => ({
+        ok: true,
+        text: async () => JSON.stringify({ skills: [{ name: "plotting", displayName: "Plotting" }] }),
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { PAL, palSearch } = await import("./palette");
+    PAL.listEl = paletteList() as unknown as HTMLElement;
+    await palSearch("");
+    expect(skillsCatalog.value).toBeNull();
+    expect(PAL.items.some((it) => it.label === "Plotting")).toBe(false);
+    await palSearch("");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(PAL.items.some((it) => it.label === "Plotting")).toBe(true);
+  });
+
   it("source gates later-lane names with isReady and never imports window-exports", () => {
     const src = readFileSync(join(here, "palette.ts"), "utf8");
     expect(src).toContain("isReady");
@@ -174,3 +194,25 @@ describe("F-20 command palette", () => {
     expect(src).not.toMatch(/typeof\s+\w+\s*===\s*["']function["']/);
   });
 });
+
+function paletteList(): { innerHTML: string; appendChild: ReturnType<typeof vi.fn>; querySelectorAll: () => never[] } {
+  return { innerHTML: "", appendChild: vi.fn(), querySelectorAll: () => [] };
+}
+
+function stubPaletteDom(): void {
+  vi.stubGlobal("window", {});
+  vi.stubGlobal("document", {
+    createElement: (tag: string) => ({
+      tagName: tag.toUpperCase(),
+      className: "",
+      textContent: "",
+      innerHTML: "",
+      style: {},
+      appendChild: vi.fn(),
+      setAttribute: vi.fn(),
+      addEventListener: vi.fn(),
+      querySelectorAll: () => [],
+    }),
+    body: { appendChild: vi.fn() },
+  });
+}
