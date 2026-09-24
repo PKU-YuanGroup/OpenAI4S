@@ -12,6 +12,15 @@ export const planMode = field(() => false);
 export const exploreMode = field(() => false);
 /** S.planPending — app.js:120 */
 export const planPending = field(() => false);
+/**
+ * The plan-mode turn `planPending` waits on. Not an app.js S field. A plan
+ * send queued behind another turn set `planPending` at once, so that earlier
+ * turn's end offered to approve a plan it never made, and consumed the flag,
+ * so the plan turn's own end offered nothing. `queued`: the send waited
+ * behind a running turn. `executionId`: the execution the server named for
+ * it once the message was accepted.
+ */
+export const planPendingTurn = field(() => null as { queued: boolean; executionId: string | null } | null);
 /** S.planReady — app.js:120 */
 export const planReady = field(() => null as unknown);
 /** S.planStatus — app.js:120 */

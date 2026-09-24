@@ -30,6 +30,7 @@ import {
   exploreMode,
   planMode,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -395,6 +396,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // all await, and another tab or a recovered turn can take ownership in that
   // window.
   const sawRunningAtDispatch = running.value;
+  // Which turn the plan flag waits on: queued behind a running turn, the end
+  // of that turn is not this one's (turn.ts `endedAnotherTurn`).
+  const planTurn = planNow ? { queued: sawRunningAtDispatch, executionId: null as string | null } : null;
+  if (planTurn) planPendingTurn.value = planTurn;
   const turnTicketToken = sawRunningAtDispatch ? null : openTurnTicket();
   if (!turnTicketToken) hint(t("queue.accepted"));
   else {
@@ -441,6 +446,9 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     };
     if (accepted?.request_id) confirmHistorySubmission();
     if (accepted && accepted.execution_id) w.dataset.executionId = String(accepted.execution_id);
+    if (planTurn && planPendingTurn.value === planTurn && accepted && accepted.execution_id) {
+      planPendingTurn.value = { ...planTurn, executionId: String(accepted.execution_id) };
+    }
     if (!acceptTurnTicket(turnTicketToken, accepted)) retireTurnTicket(turnTicketToken);
     if (annIds.length) {
       const said = accepted && accepted.annotations;
@@ -468,6 +476,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // this refusal would land it there (a rebind would even re-bind the
     // session no longer on screen): the refused text goes with its bubble.
     const onDispatchFrame = (): boolean => currentId.value === dispatchFrameId;
+    // A plan send the server refused never runs, so no end will come for
+    // the plan flag to wait on; a queued one would otherwise sit there.
+    if (planTurn && planPendingTurn.value === planTurn && refused && Number((e as { status?: number }).status) < 500) {
+      planPending.value = false;
+      planPendingTurn.value = null;
+    }
     // A refusal is a definite answer. A transport failure is indeterminate:
     // the server may still commit the admission, so hold the optimistic
     // bubble for one bounded grace rather than for the rest of the visit —

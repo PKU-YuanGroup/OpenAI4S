@@ -43,6 +43,7 @@ import {
 import {
   permCards,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -185,6 +186,7 @@ function resetSessionScoped(): void {
   planReady.value = null;
   planStatus.value = null;
   planPending.value = false;
+  planPendingTurn.value = null;
   computeStatus.value = null;
   annotations.value = [];
   _editing.value = null;

@@ -13,6 +13,7 @@ import { defaultModelName } from "../../stores/customize";
 import {
   planMode,
   planPending,
+  planPendingTurn,
   planReady,
   planStatus,
   running,
@@ -385,6 +386,7 @@ export async function discardPlan(): Promise<void> {
   planReady.value = null;
   planStatus.value = "discarded";
   planPending.value = false;
+  planPendingTurn.value = null;
   hint(t("toast.planDiscarded"));
 }
 

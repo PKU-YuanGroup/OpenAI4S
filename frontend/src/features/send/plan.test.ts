@@ -55,7 +55,7 @@ vi.mock("../messages/scroll", () => ({ down: () => {} }));
 
 import { t } from "../../i18n/runtime";
 import { _openGen, currentId } from "../../stores/session";
-import { planPending, planReady, planStatus, running } from "../../stores/stream";
+import { planPending, planPendingTurn, planReady, planStatus, running } from "../../stores/stream";
 import { discardPlan, renderPlanCard } from "./plan";
 import { turnDone } from "./turn";
 
@@ -238,5 +238,33 @@ describe("the approval card after a plan-mode turn without a structured plan", (
     turnDone("completed");
     expect(approvalCards()).toHaveLength(1);
     expect(planPending.value).toBe(false);
+  });
+
+  it("a plan send queued behind a running turn waits for its own turn's end", () => {
+    planPending.value = true;
+    planPendingTurn.value = { queued: true, executionId: "exec-plan" };
+    turnDone("completed", { execution_id: "exec-ahead" });
+    expect(approvalCards()).toHaveLength(0);
+    expect(planPending.value).toBe(true);
+    turnDone("completed", { execution_id: "exec-plan" });
+    expect(approvalCards()).toHaveLength(1);
+    expect(planPending.value).toBe(false);
+    expect(planPendingTurn.value).toBeNull();
+  });
+
+  it("a queued plan send the server has not named yet is not ended by the turn ahead", () => {
+    planPending.value = true;
+    planPendingTurn.value = { queued: true, executionId: null };
+    turnDone("completed", { execution_id: "exec-ahead" });
+    expect(approvalCards()).toHaveLength(0);
+    expect(planPending.value).toBe(true);
+  });
+
+  it("a named plan turn is not ended by an end that names no execution (a REPL cell)", () => {
+    planPending.value = true;
+    planPendingTurn.value = { queued: false, executionId: "exec-plan" };
+    turnDone("completed", {});
+    expect(approvalCards()).toHaveLength(0);
+    expect(planPending.value).toBe(true);
   });
 });
