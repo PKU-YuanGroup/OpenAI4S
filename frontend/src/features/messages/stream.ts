@@ -88,7 +88,10 @@ function currentStream(): LiveStream | null {
 }
 
 function ensureDual(st: LiveStream): void {
-  if (st.sealed && st.tail) return;
+  // A replaced `st.md` (a reviewed answer swapped in by candidate.ts) leaves
+  // sealed/tail and the cut state describing text that is no longer shown.
+  if (st.sealed && st.tail && st.sealed.parentNode === st.md) return;
+  resetMdState(st);
   st.md.innerHTML = "";
   st.sealed = el("div", "md-sealed");
   st.tail = el("div", "md-tail");
@@ -103,7 +106,31 @@ function resetMdState(st: LiveStream): void {
   st.tail = null;
 }
 
-/** app.js:5403-5426. Dual-node: sealed rewritten only when the cut advances. */
+/** A list item, or an indented line that may continue one. */
+const LIST_TAIL = /^(?:\s*(?:[-*+]|\d+[.)])[ \t]|\s+\S)/;
+
+/**
+ * Whether `renderMd` of the text up to `cut` is final no matter what is
+ * appended. A stable cut sits after a blank line or a closing fence, and every
+ * block `renderMd` knows ends there -- except a list, which continues across
+ * blank lines when another item follows. So a region whose last line is
+ * list-ish stays in the tail until a later cut settles it.
+ */
+function settledAt(text: string, from: number, cut: number): boolean {
+  const lines = text.slice(from, cut).split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i] || "";
+    if (line.trim()) return !LIST_TAIL.test(line);
+  }
+  return true;
+}
+
+/**
+ * app.js:5403-5426, dual-node. Settled text is rendered once, into chunks
+ * appended to `sealed`; only the tail after it re-renders each flush.
+ * Re-rendering the whole sealed prefix whenever the cut advanced rendered a
+ * 60KB answer ~86 times over while it streamed.
+ */
 export function flushRender(st: LiveStream | null, finalRender?: boolean): void {
   if (!st) return;
   if (st._raf) {
@@ -123,17 +150,12 @@ export function flushRender(st: LiveStream | null, finalRender?: boolean): void 
   const cutState = mdStableCut(text, st._mdCut);
   st._mdCut = cutState;
   const cut = cutState.stable;
-  if (shouldAdvanceSealed(cut, st._stableAt || 0) && st.sealed) {
+  const settled = st._stableAt || 0;
+  if (st.sealed && shouldAdvanceSealed(cut, settled) && settledAt(text, settled, cut)) {
+    st.sealed.insertAdjacentHTML("beforeend", renderMd(text.slice(settled, cut)));
     st._stableAt = cut;
-    st.sealed.innerHTML = renderMd(text.slice(0, cut));
   }
-  if (st.tail) {
-    if (st._stableAt && text.length > st._stableAt) {
-      st.tail.innerHTML = renderMd(text.slice(st._stableAt));
-    } else {
-      st.tail.innerHTML = renderMd(text);
-    }
-  }
+  if (st.tail) st.tail.innerHTML = renderMd(text.slice(st._stableAt || 0));
 }
 
 /** app.js:5427-5440. ~20/s cap on long streams; `down()` is rAF-coalesced. */

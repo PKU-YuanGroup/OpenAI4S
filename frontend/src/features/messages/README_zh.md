@@ -34,4 +34,5 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`scroll.test.ts`](scroll.test.ts) | scroll 事件从不滚动（位于 80px 容差内的读者不会被拉回底部）；`down()` 只在跟随时滚动；`down(true)` 与跳转按钮总会跳到底部。 |
 | [`stopped.ts`](stopped.ts) | 已停止回合标记：带 `cancelled` 的 `text_chunk` 或存储行渲染为同一个标记（功能内文案），仍在运行的活动卡片经 `cardState.ts` 标为已停止（停止图标，生成的 "Running analysis · cell N" 标题改为"分析 · 单元 N"；已收到自身结果的卡片保持该结果），漏收标记块的 `cancelled` 终态也补上同一标记。 |
 | [`stopped.test.ts`](stopped.test.ts) | 实时渲染为标记而非正文；已停止卡片（图标、替换生成标题、保留单元自带标题）与先完成的卡片区分；终态兜底不重复；两个存储渲染器重开一致；畸形元数据仍按正文渲染。经真实 `notebook_cell_finished` 处理器验证卡片结果：抛错的单元以失败收尾（无对勾、无运行中标题），成功保留对勾，被中断的单元只标一次已停止，只重绘所指单元的卡片，未收到结果的卡片不会在回合结束后仍显示运行中。经两个存储渲染器验证计划模式行：提示行的气泡是任务（中/英），修订行是修改意见，批准种子是计划标记，普通文字不受影响。 |
-| [`stream.ts`](stream.ts) | `feed` / `flushRender` / `scheduleRender` / `startStream` / `sealText`。`startStream` 保留仍在页面上的步骤卡片登记，重开运行中的会话时，重放的回合会更新已存的卡片，而不是再添一张。 |
+| [`stream.ts`](stream.ts) | `feed` / `flushRender` / `scheduleRender` / `startStream` / `sealText`。已稳定的文字只渲染一次，按块追加到 sealed 节点；每次只重渲染尾部（仍可能被后续列表项延续的列表留在尾部）。`startStream` 保留仍在页面上的步骤卡片登记，重开运行中的会话时，重放的回合会更新已存的卡片，而不是再添一张。 |
+| [`stream.test.ts`](stream.test.ts) | 流式回答显示的内容与整段渲染完全一致，同时每个已稳定的段落只渲染一次（线性工作量）；松散列表不会被拆开；最终渲染是整段文字；被替换的回答在新节点里重新开始。 |
