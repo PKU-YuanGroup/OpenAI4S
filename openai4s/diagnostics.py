@@ -7,11 +7,12 @@ mode of getting that wrong is a credential in a public tracker. So the bundle is
 assembled by code that knows what must never go in, and the redaction runs on
 the way out rather than being left to the person in a hurry.
 
-What it contains is deliberately narrow: postures and versions, not data. The
-database holds research work and credentials and is never included. Log lines
-pass through the same shape-based redaction as the structured logger, so an
-opaque credential is replaced by a fingerprint wherever it appears — including
-in a line some future code emits without thinking about this module.
+What it contains is deliberately narrow: postures, versions and the closed-set
+codes recent turns stopped with, not data. The database holds research work
+and credentials and is never included. Log lines pass through the same
+shape-based redaction as the structured logger, so an opaque credential is
+replaced by a fingerprint wherever it appears — including in a line some
+future code emits without thinking about this module.
 
 Retention: structured logs rotate by size with a bounded number of generations.
 Unbounded logs are not a neutral default — they are a slow disk-full that
@@ -302,6 +303,55 @@ _POSTURE_MODES = frozenset(
 _v_posture_mode = _v_enum(_POSTURE_MODES)
 
 
+#: How many of the most recent top-level turns the bundle describes.
+TURN_WINDOW = 20
+
+#: Why a turn ended, as the Action Ledger's terminal event records it: the
+#: Engine's own stops, an executor's (`plan`), the gateway's two fallbacks, the
+#: model-call failures a stopped turn can be continued from, and the Auto Mode
+#: budget refusals. A reason outside this set is counted as `other`; its text
+#: never leaves.
+_TURN_REASONS = frozenset(
+    {
+        "submitted",
+        "max_turns",
+        "cancelled",
+        "no_progress",
+        "plan",
+        "unknown",
+        "runtime_error",
+        "llm_stream_timeout",
+        "llm_stream_interrupted",
+        "llm_deadline_exceeded",
+        "llm_response_too_large",
+        "budget_exhausted",
+        "budget_measurement_unavailable",
+        "loop_detected",
+        "legacy_run_readonly",
+        "other",
+    }
+)
+#: `agent.progress_circuit.PROGRESS_REASONS`, plus `other`.
+_PROGRESS_REASONS = frozenset(
+    {
+        "same_action",
+        "consecutive_malformed",
+        "similar_tool_error",
+        "long_text_repeat",
+        "other",
+    }
+)
+#: `llm.SUPPORTED_WIRES`, plus `unknown` for a provider this process cannot
+#: resolve.
+_WIRE_FAMILIES = frozenset({"openai", "anthropic", "gemini", "responses", "unknown"})
+#: Why the ledger was not read. `interrupted_write` is the schema probe's code
+#: for the same hot journal.
+_TURN_SKIP_CODES = frozenset({"no_database", "no_ledger", "interrupted_write"})
+_v_turn_reason = _v_enum(_TURN_REASONS)
+_v_progress_reason = _v_enum(_PROGRESS_REASONS)
+_v_wire_family = _v_enum(_WIRE_FAMILIES)
+
+
 _ARCHIVE_FIELDS: dict[str, Any] = {
     "ts": _v_number,
     "event": _v_enum(_ARCHIVE_EVENTS),
@@ -478,6 +528,7 @@ _REPORT_SCHEMA: dict[str, Any] = {
         "release": _v_version,
         "machine": _v_enum(_ARCHITECTURES),
         "openai4s": _v_version,
+        "wsl": _v_bool,
     },
     "security": {
         "permissions": {
@@ -521,6 +572,23 @@ _REPORT_SCHEMA: dict[str, Any] = {
         "secret_store_mode": _v_posture_mode,
         "egress": _v_posture_mode,
         "structured_logs": _v_posture_mode,
+    },
+    # Counts keyed by the codes themselves, so the schema is the allowlist: a
+    # key outside these sets is counted in `fields_omitted`, never rendered.
+    "agent_turns": {
+        "status": _v_lower_enum(_ARCHIVE_STATUSES),
+        "code": _v_enum(_TURN_SKIP_CODES),
+        "error_type": _v_type_name,
+        "window": _v_number,
+        "terminals": _v_number,
+        "reasons": {reason: _v_number for reason in sorted(_TURN_REASONS)},
+        "progress_reasons": {reason: _v_number for reason in sorted(_PROGRESS_REASONS)},
+        "wires": {wire: _v_number for wire in sorted(_WIRE_FAMILIES)},
+        "latest": {
+            "reason": _v_turn_reason,
+            "progress_reason": _v_progress_reason,
+            "wire": _v_wire_family,
+        },
     },
 }
 
@@ -573,16 +641,60 @@ def environment_report() -> dict:
         "release": platform.release(),
         "machine": platform.machine(),
         "openai4s": _version(),
+        "wsl": _is_wsl(),
     }
 
 
 def _version() -> str:
+    """This install's version: its metadata, else the package's own literal.
+
+    `importlib.metadata` needs the dist-info an installer writes, and a tree
+    run in place -- or a bundle that ships the package without one -- has
+    none. The `unknown` returned then is not a version, so `_v_version`
+    dropped it, and a WSL user's bundle arrived without the one fact support
+    asks for first, visible only as `environment.fields_omitted: 1`.
+    `openai4s.__version__` is the number the release bumps, and it ships with
+    the code that is actually running.
+    """
     try:
         from importlib.metadata import version
 
         return version("openai4s")
     except Exception:  # noqa: BLE001 - a missing version must not break support
+        pass
+    try:
+        from openai4s import __version__
+    except Exception:  # noqa: BLE001
         return "unknown"
+    return __version__ if _exact_str(__version__) and __version__ else "unknown"
+
+
+#: The kernel's build banner. A module attribute so a test can point it at a
+#: file it controls.
+_PROC_VERSION = Path("/proc/version")
+
+
+def _is_wsl() -> bool:
+    """Whether this Linux kernel is WSL's.
+
+    The release says so -- `6.6.87.2-microsoft-standard-WSL2` on WSL 2,
+    `4.4.0-19041-Microsoft` on WSL 1 -- and so does `/proc/version`. But a
+    release leaves the machine as its numeric prefix only, `6.6.87`, which is
+    all `_v_version` should keep of free text, so a WSL report read like any
+    other Linux host. Only this answer is added; the strings it was read from
+    stay here. A container on Docker Desktop's WSL 2 backend runs on that
+    kernel, and reports true as well.
+    """
+    if platform.system() != "Linux":
+        return False
+    if "microsoft" in platform.release().lower():
+        return True
+    try:
+        with _PROC_VERSION.open("r", encoding="utf-8", errors="replace") as handle:
+            banner = handle.read(4096)
+    except OSError:
+        return False
+    return "microsoft" in banner.lower()
 
 
 def _probe_failure(exc: BaseException) -> dict:
@@ -690,6 +802,162 @@ def security_posture(cfg: Any) -> dict:
     return report
 
 
+def turn_stop_report(cfg: Any, *, window: int = TURN_WINDOW) -> dict:
+    """How the most recent top-level turns ended, as closed-set codes.
+
+    A bundle attached to "it stopped after two steps" carried postures,
+    versions and log-line counts, and nothing about the stop, so the only way
+    to learn why was the database this bundle rightly refuses to ship. The
+    Action Ledger records every turn's terminal -- its `reason` and, for a
+    no-progress stop, the circuit's `progress_reason` -- so those are counted
+    here, with the wire family each turn's provider speaks. A code outside the
+    sets written down in this module is counted as `other`; the provider id
+    and the model name are not reported at all, because an operator names both.
+
+    Only turns whose frame has no parent are counted: a delegated child records
+    its own terminals under its own frame, and one fan-out would otherwise push
+    the user's own turns out of the window.
+
+    The database is read through a `mode=ro` handle, the way the schema probe
+    reads the version, so this cannot upgrade, recover or otherwise write it. A
+    hot journal is left for the read-write open that replays it.
+    """
+    import sqlite3
+    import stat
+
+    from openai4s.storage.migrations import _is_readonly_refusal
+
+    if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+        window = TURN_WINDOW
+    db_path = getattr(cfg, "db_path", None)
+    if db_path is None:
+        return {"status": "skipped", "code": "no_database"}
+    path = Path(db_path)
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return {"status": "skipped", "code": "no_database"}
+    except OSError as e:
+        return _probe_failure(e)
+    if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+        return {"status": "skipped", "code": "no_database"}
+    try:
+        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    except Exception as e:  # noqa: BLE001
+        return _probe_failure(e)
+    try:
+        rows = _ledger_terminals(connection, window)
+    except sqlite3.OperationalError as e:
+        if _is_readonly_refusal(e):
+            return {"status": "skipped", "code": "interrupted_write"}
+        return _probe_failure(e)
+    except Exception as e:  # noqa: BLE001
+        return _probe_failure(e)
+    finally:
+        connection.close()
+    if rows is None:
+        return {"status": "skipped", "code": "no_ledger"}
+    return _count_terminals(rows, window)
+
+
+def _ledger_terminals(connection: Any, window: int) -> list[tuple[Any, Any]] | None:
+    """`(provider, terminal payload)` for the newest top-level terminals.
+
+    None when the database predates the Action Ledger.
+    """
+    tables = {
+        name
+        for (name,) in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('action_groups', 'action_events', 'frames')"
+        )
+    }
+    if tables != {"action_groups", "action_events", "frames"}:
+        return None
+    groups = connection.execute(
+        "SELECT g.group_id, g.provider FROM action_groups AS g "
+        "LEFT JOIN frames AS f ON f.frame_id = g.root_frame_id "
+        "WHERE g.kind = 'terminal' AND f.parent_id IS NULL "
+        "ORDER BY g.created_at DESC, g.rowid DESC LIMIT ?",
+        (window,),
+    ).fetchall()
+    payloads: dict[Any, Any] = {}
+    if groups:
+        marks = ",".join("?" for _ in groups)
+        for group_id, result in connection.execute(
+            "SELECT group_id, result FROM action_events WHERE group_id IN ("
+            + marks
+            + ") ORDER BY group_id, sequence",
+            [group_id for group_id, _provider in groups],
+        ):
+            payloads.setdefault(group_id, result)
+    return [(provider, payloads.get(group_id)) for group_id, provider in groups]
+
+
+def _terminal_payload(raw: Any) -> dict:
+    if not _exact_str(raw):
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _wire_family(provider: Any) -> str:
+    """The wire a ledger row's provider speaks -- never the provider id.
+
+    A custom provider is named by its operator, so the id is free text; the
+    wire it was registered with is one of the few adapters this repository
+    ships. A provider this process cannot resolve is `unknown`, not guessed
+    from its name.
+    """
+    if not _exact_str(provider) or not provider:
+        return "unknown"
+    try:
+        from openai4s.llm.registry import provider_spec
+
+        wire = provider_spec(provider).get("wire")
+    except Exception:  # noqa: BLE001 - an unresolvable provider is a finding
+        return "unknown"
+    return _v_wire_family(wire) or "unknown"
+
+
+def _count_terminals(rows: list[tuple[Any, Any]], window: int) -> dict:
+    reasons: dict[str, int] = {}
+    progress_reasons: dict[str, int] = {}
+    wires: dict[str, int] = {}
+    wire_of: dict[str, str] = {}
+    latest: dict[str, str] | None = None
+    for provider, raw in rows:
+        payload = _terminal_payload(raw)
+        reason = _v_turn_reason(payload.get("reason")) or "other"
+        reasons[reason] = reasons.get(reason, 0) + 1
+        entry = {"reason": reason}
+        if payload.get("progress_reason") is not None:
+            progress = _v_progress_reason(payload.get("progress_reason")) or "other"
+            progress_reasons[progress] = progress_reasons.get(progress, 0) + 1
+            entry["progress_reason"] = progress
+        key = provider if _exact_str(provider) else ""
+        if key not in wire_of:
+            wire_of[key] = _wire_family(provider)
+        wires[wire_of[key]] = wires.get(wire_of[key], 0) + 1
+        entry["wire"] = wire_of[key]
+        if latest is None:
+            latest = entry
+    report: dict[str, Any] = {"status": "ok", "window": window, "terminals": len(rows)}
+    for name, counts in (
+        ("reasons", reasons),
+        ("progress_reasons", progress_reasons),
+        ("wires", wires),
+    ):
+        if counts:
+            report[name] = dict(sorted(counts.items()))
+    if latest is not None:
+        report["latest"] = latest
+    return report
+
+
 def rotate_log(
     path: Path, *, max_bytes: int = LOG_MAX_BYTES, keep: int = LOG_KEEP
 ) -> bool:
@@ -774,6 +1042,7 @@ def _populate_bundle(cfg: Any, bundle: zipfile.ZipFile) -> dict[str, Any]:
     report = {
         "environment": environment_report(),
         "security": security_posture(cfg),
+        "agent_turns": turn_stop_report(cfg),
     }
     # `default=str` rendered any object the encoder did not understand,
     # which is the same "call str() and hope" the diagnostic record
@@ -856,11 +1125,13 @@ __all__ = [
     "BundleTooLarge",
     "LOG_KEEP",
     "LOG_MAX_BYTES",
+    "TURN_WINDOW",
     "archive_safe",
     "build_bundle",
     "environment_report",
     "passive_security_posture",
     "rotate_log",
     "security_posture",
+    "turn_stop_report",
     "write_bundle_file",
 ]

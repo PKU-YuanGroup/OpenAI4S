@@ -396,14 +396,14 @@ bytes are what actually run out. Unbounded logs are not a neutral default; they
 are a slow disk-full that arrives at the least convenient moment.
 
 **`openai4s diagnostics`** writes a redacted bundle for a bug report: postures
-and versions, plus log tails. The database is never included — it holds research
-work and, until every credential is brokered, secrets — and the manifest names
-what was left out, so nobody is tempted into a second, manual, unredacted
-collection. Log lines pass through `observability.redact_text`, which scans
-*word by word*: `redact` asks whether a whole value is a credential, which is
-right for a field and wrong for a log line where a token sits mid-sentence. An
-earlier version of the bundle passed the structured lines and leaked the plain
-one.
+and versions, how the most recent turns ended, plus log tails. The database is
+never included — it holds research work and, until every credential is brokered,
+secrets — and the manifest names what was left out, so nobody is tempted into a
+second, manual, unredacted collection. Log lines pass through
+`observability.redact_text`, which scans *word by word*: `redact` asks whether a
+whole value is a credential, which is right for a field and wrong for a log line
+where a token sits mid-sentence. An earlier version of the bundle passed the
+structured lines and leaked the plain one.
 
 The log tail it collects is `logs/app.out` — the file every packaged launcher
 redirects the daemon's stdout and stderr into, and therefore where structured
@@ -460,6 +460,27 @@ the thing standing between a user's disk and a public issue tracker:
   `json.dumps(..., default=str)` is gone, unknown keys are counted rather than
   rendered, and nothing calls `str()` or `repr()` on a value **or a key**: a
   mapping key can be an object whose `__str__` raises or returns 50 MB.
+  A reduction can also lose the one fact that mattered: WSL 2's release
+  `6.6.87.2-microsoft-standard-WSL2` leaves as `6.6.87`, so whether the kernel
+  is WSL's travels as its own boolean, `wsl`, and the strings it was read from
+  do not. The `openai4s` version falls back to `openai4s.__version__` when no
+  installer metadata exists; the `unknown` it used to report is not a version,
+  so a WSL user's bundle arrived without one.
+- a **turn's stop** travels as codes, never as the conversation. A bundle
+  attached to "it stopped after two steps" used to say nothing about the stop,
+  because the reason lives in the database the bundle refuses to ship.
+  `report.json` now counts how the last 20 top-level turns ended, read through
+  the same `mode=ro` handle the schema probe uses: the terminal `reason`
+  (`no_progress`, `max_turns`, `llm_stream_timeout`, …), a no-progress stop's
+  `progress_reason` (`same_action`, `consecutive_malformed`, …) and the wire
+  family each turn's provider speaks (`openai`, `anthropic`, `gemini`,
+  `responses`). Each is a member of a set written down in `diagnostics.py`;
+  anything else is counted as `other` or `unknown`. The provider id and the
+  model name are not reported, because an operator names both, and a delegated
+  child's own stops are left out, so one fan-out cannot crowd the user's turns
+  out of the window. A test reads every stop reason the source can record out
+  of the code and fails when the set is missing one, so a new reason cannot
+  quietly arrive as `other`.
 
 `record_diagnostic` is the source, and it no longer renders the exception.
 There is no redacted rendering of `str(exc)` on the record, because a rendering
