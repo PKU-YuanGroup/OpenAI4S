@@ -217,15 +217,9 @@ function artifactMenu(anchor: Element, a: ArtifactRow): void {
       label: translate("menu.copyLink"),
       icon: "link",
       onClick: () => {
-        try {
-          const nav = (globalThis as { navigator?: { clipboard?: { writeText?: (s: string) => void } } })
-            .navigator;
-          if (nav && nav.clipboard && nav.clipboard.writeText)
-            nav.clipboard.writeText(artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null));
-        } catch {
-          /* clipboard denied */
-        }
-        hint(translate("artifact.linkCopied"));
+        void copyDeepLink(a).then((ok) => {
+          if (ok) hint(translate("artifact.linkCopied"));
+        });
       },
     },
     {
