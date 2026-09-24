@@ -32,6 +32,8 @@ export type PaletteState = {
   el: HTMLElement | null;
   listEl: HTMLElement | null;
   gen: number;
+  /** The latest query's skills + /search read, while it is in flight. */
+  pending: Promise<void> | null;
 };
 
 /** app.js:10940 */
@@ -42,6 +44,7 @@ export const PAL: PaletteState = {
   el: null,
   listEl: null,
   gen: 0,
+  pending: null,
 };
 
 export function isPaletteOpen(): boolean {
@@ -287,11 +290,24 @@ export function openPalette(): void {
       palRender();
     } else if (e.key === "Enter") {
       e.preventDefault();
-      palPick(PAL.idx);
+      void palEnter();
     }
   });
   void palSearch("");
   inp.focus();
+}
+
+/**
+ * Enter acts on the current query's list. When the query has no local match
+ * yet, wait for its own results rather than pick from an older list.
+ */
+export async function palEnter(): Promise<void> {
+  const gen = PAL.gen;
+  if (!PAL.items.length && PAL.pending) {
+    await PAL.pending;
+    if (!PAL.open || gen !== PAL.gen) return;
+  }
+  palPick(PAL.idx);
 }
 
 /** app.js:11062 */
@@ -302,11 +318,40 @@ export function closePalette(): void {
   PAL.open = false;
   PAL.items = [];
   PAL.idx = 0;
+  PAL.pending = null;
 }
 
 export function resetPalette(): void {
   closePalette();
   PAL.gen = 0;
+}
+
+function skillItems(q: string, sk: SkillRow[]): PaletteItem[] {
+  return sk
+    .filter(
+      (s) =>
+        !q ||
+        (s.name || "").toLowerCase().includes(q) ||
+        (s.displayName || "").toLowerCase().includes(q),
+    )
+    .slice(0, 6)
+    .map((s) => ({
+      group: t("palette.group.skills"),
+      label: s.displayName || s.name || "",
+      sub: s.description || "",
+      icon: "sparkles",
+      run: () => {
+        closePalette();
+        const c = $("#composer") as HTMLTextAreaElement | null;
+        if (c) {
+          c.value = (c.value ? c.value + " " : "") + "/" + s.name + " ";
+          c.focus();
+          const g = hostFn("grow");
+          if (isReady(g)) g();
+          else grow();
+        }
+      },
+    }));
 }
 
 /** app.js:11015-11041 */
@@ -317,33 +362,32 @@ export async function palSearch(query: string): Promise<void> {
   palActions().forEach((a) => {
     if (!q || a.label.toLowerCase().includes(q)) items.push(a);
   });
-  const sk = await loadSkillsCatalog();
-  sk.filter(
-    (s) =>
-      !q ||
-      (s.name || "").toLowerCase().includes(q) ||
-      (s.displayName || "").toLowerCase().includes(q),
-  )
-    .slice(0, 6)
-    .forEach((s) =>
-      items.push({
-        group: t("palette.group.skills"),
-        label: s.displayName || s.name || "",
-        sub: s.description || "",
-        icon: "sparkles",
-        run: () => {
-          closePalette();
-          const c = $("#composer") as HTMLTextAreaElement | null;
-          if (c) {
-            c.value = (c.value ? c.value + " " : "") + "/" + s.name + " ";
-            c.focus();
-            const g = hostFn("grow");
-            if (isReady(g)) g();
-            else grow();
-          }
-        },
-      }),
-    );
+  const cached = skillsCatalog.value as SkillRow[] | null;
+  if (cached) items.push(...skillItems(q, cached));
+  // This query's local matches show at once. The list used to keep the
+  // previous query's rows until /search answered, and Enter picked from
+  // them: "cust" + Enter created an empty session instead of opening
+  // settings. The rows this query still waits on are appended below.
+  const remote = !!q || !cached;
+  PAL.items = items.slice();
+  PAL.idx = 0;
+  PAL.pending = null;
+  if (PAL.items.length || !remote) palRender();
+  else if (PAL.listEl) PAL.listEl.innerHTML = "";
+  if (!remote) return;
+  const pending = palSearchRemote(q, gen, items, !cached);
+  PAL.pending = pending;
+  await pending;
+  if (PAL.pending === pending) PAL.pending = null;
+}
+
+async function palSearchRemote(
+  q: string,
+  gen: number,
+  items: PaletteItem[],
+  loadSkills: boolean,
+): Promise<void> {
+  if (loadSkills) items.push(...skillItems(q, await loadSkillsCatalog()));
   if (q) {
     try {
       const r = (await api("/search?q=" + encodeURIComponent(q))) as {
@@ -385,8 +429,10 @@ export async function palSearch(query: string): Promise<void> {
     }
   }
   if (gen !== PAL.gen) return;
+  // The local rows are a prefix of `items`, so a highlight moved with the
+  // arrow keys while this was in flight still points at the same row.
   PAL.items = items;
-  PAL.idx = 0;
+  PAL.idx = Math.min(PAL.idx, Math.max(0, items.length - 1));
   palRender();
 }
 

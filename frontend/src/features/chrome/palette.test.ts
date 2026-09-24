@@ -210,6 +210,79 @@ describe("F-20 command palette", () => {
     expect(PAL.items.some((it) => it.label === "Plotting")).toBe(true);
   });
 
+  it("Enter acts on the typed query's rows while /search is still in flight", async () => {
+    const inputs: Array<{ value: string; listeners: Record<string, (e: unknown) => void> }> = [];
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => {
+        const listeners: Record<string, (e: unknown) => void> = {};
+        const node = {
+          tagName: tag.toUpperCase(),
+          className: "",
+          textContent: "",
+          innerHTML: "",
+          value: "",
+          style: {},
+          listeners,
+          appendChild: vi.fn(),
+          setAttribute: vi.fn(),
+          remove: vi.fn(),
+          focus: vi.fn(),
+          querySelectorAll: () => [],
+          addEventListener: (type: string, fn: (e: unknown) => void) => {
+            listeners[type] = fn;
+          },
+        };
+        if (tag === "input") inputs.push(node);
+        return node;
+      },
+      body: { appendChild: vi.fn() },
+    });
+    const openCust = vi.fn();
+    const newSession = vi.fn();
+    const openConversation = vi.fn();
+    vi.stubGlobal("window", { openCust, newSession, openConversation });
+    skillsCatalog.value = [];
+    let answer: (body: unknown) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            answer = (body) => resolve({ ok: true, text: async () => JSON.stringify(body) });
+          }),
+      ),
+    );
+    const { t } = await import("../../i18n/runtime");
+    const { PAL, closePalette, openPalette } = await import("./palette");
+    closePalette();
+    openPalette();
+    const input = inputs[inputs.length - 1]!;
+    const type = (value: string): void => {
+      input.value = value;
+      input.listeners.input!({});
+    };
+    const enter = (): void => {
+      input.listeners.keydown!({ key: "Enter", isComposing: false, keyCode: 13, preventDefault: vi.fn() });
+    };
+
+    // The empty query lists "New session" first. Typing a command and
+    // pressing Enter before /search answers must run that command.
+    type(t("palette.action.customize").toLowerCase());
+    enter();
+    expect(openCust).toHaveBeenCalledTimes(1);
+    expect(newSession).not.toHaveBeenCalled();
+
+    // No local match: Enter waits for this query's own results.
+    type("zzz");
+    enter();
+    await Promise.resolve();
+    expect(openConversation).not.toHaveBeenCalled();
+    answer({ sessions: [{ id: "frame_z", name: "zzz notes" }], artifacts: [], datapro: [] });
+    await vi.waitFor(() => expect(openConversation).toHaveBeenCalledWith("frame_z", null));
+    expect(newSession).not.toHaveBeenCalled();
+    expect(PAL.open).toBe(false);
+  });
+
   it("source gates later-lane names with isReady and never imports window-exports", () => {
     const src = readFileSync(join(here, "palette.ts"), "utf8");
     expect(src).toContain("isReady");
