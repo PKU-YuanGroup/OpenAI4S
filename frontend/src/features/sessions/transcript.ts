@@ -2,6 +2,7 @@
 
 import { renderMd } from "../md/render";
 import { failureMeta } from "../messages/failure";
+import { rememberCandidateIdentity, setMessageReviewBadge } from "../messages/identity";
 import { planModeRequestText, planSeed, planSeedMarker } from "../messages/planPrompt";
 import { cancelledIdentity, stoppedMarker } from "../messages/stopped";
 import { publicText } from "../scrub/scrub";
@@ -74,7 +75,10 @@ export function renderStored(m: ChatMessage, target?: ParentNode | null): HTMLEl
     return marker;
   }
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
-  callLane("rememberCandidateIdentity", w, m);
+  // Imported, like `failureMeta` below: no lane ever assigned the window
+  // names `rememberCandidateIdentity` / `setMessageReviewBadge`, so an older
+  // page's rows had neither a candidate identity nor a review badge.
+  rememberCandidateIdentity(w, m);
   (w as HTMLElement & { _messageText?: string })._messageText = text;
   if (m.role === "user") {
     const b = el("div", "bubble");
@@ -94,7 +98,7 @@ export function renderStored(m: ChatMessage, target?: ParentNode | null): HTMLEl
     const rec = review && typeof review === "object" ? (review as Record<string, unknown>) : null;
     const reviewStatus = rec ? rec.status || review : review;
     if (reviewStatus) {
-      callLane("setMessageReviewBadge", w, reviewStatus, rec && rec.user_truth);
+      setMessageReviewBadge(w, String(reviewStatus), rec && rec.user_truth);
       if (reviewStatus !== "candidate" && w.dataset) w.dataset.candidateResolved = "true";
     }
   }
