@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { custTab, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import {
   asList,
@@ -25,7 +25,8 @@ import {
 } from "../../features/customize/environment";
 import { clearLeaseTimeout, scheduleTimeout } from "../../features/customize/timers";
 import { useAlive, useTimerLease } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useTabRead } from "./hooks";
+import { markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, InfoRow } from "./ui";
 
 async function refreshEnvironmentStatus(): Promise<Record<string, unknown> | null> {
@@ -231,37 +232,35 @@ export function ComputeTab() {
     }
   };
 
-  useEffect(() => {
-    void (async () => {
+  useTabRead(
+    "compute",
+    async (current) => {
+      const [g, env, h] = await Promise.all([
+        api("/compute/gpu").catch(() => ({ available: false })),
+        refreshEnvironmentStatus().then((status) => status || { environments: [] }),
+        api("/compute/local/hostinfo").catch(() => ({})),
+      ]);
+      if (!current()) return;
+      setGpu(g);
+      setHost(h);
+      setEnvs(asList(env && env.environments) as Record<string, unknown>[]);
+      markCustomizeLoaded();
       try {
-        const [g, env, h] = await Promise.all([
-          api("/compute/gpu").catch(() => ({ available: false })),
-          refreshEnvironmentStatus().then((status) => status || { environments: [] }),
-          api("/compute/local/hostinfo").catch(() => ({})),
-        ]);
-        if (!alive()) return;
-        setGpu(g);
-        setHost(h);
-        setEnvs(asList(env && env.environments) as Record<string, unknown>[]);
-        markCustomizeLoaded();
-        try {
-          const info = await api("/compute/remote");
-          if (alive()) setRemote(info);
-        } catch {
-          /* original swallowed */
-        }
-        await loadJobs();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
+        const info = await api("/compute/remote");
+        if (current()) setRemote(info);
+      } catch {
+        /* original swallowed */
       }
-    })();
-    return () => {
+      if (current()) await loadJobs();
+    },
+    setErr,
+  );
+  useEffect(
+    () => () => {
       _jobPoll.value = null;
-    };
-  }, [alive, lease]);
+    },
+    [],
+  );
 
   if (err) return <div>{err}</div>;
 
@@ -355,7 +354,7 @@ export function ComputeTab() {
                     await api("/compute/remote/" + encodeURIComponent(asString(h.alias)), {
                       method: "DELETE",
                     });
-                    custTab("compute");
+                    refreshCustTab("compute");
                   } catch (e) {
                     hint((e as Error).message, true);
                   }
@@ -398,7 +397,8 @@ export function ComputeTab() {
                           ? t("cust.remote.added", alias, r.gpus || "")
                           : t("cust.remote.addedUnreachable", alias),
                       );
-                      custTab("compute");
+                      setAlias("");
+                      refreshCustTab("compute");
                     } catch (e) {
                       hint((e as Error).message, true);
                     }
@@ -477,8 +477,11 @@ export function ComputeTab() {
                             t("toast.compute.installSeeLogs"),
                         ),
                   );
-                  if (r.ok) dropEnvSnapshots();
-                  custTab("compute");
+                  if (r.ok) {
+                    dropEnvSnapshots();
+                    setPkg("");
+                  }
+                  refreshCustTab("compute");
                 } catch (e) {
                   hint(t("toast.compute.installFailed", apiErrorText(e)), true);
                 }

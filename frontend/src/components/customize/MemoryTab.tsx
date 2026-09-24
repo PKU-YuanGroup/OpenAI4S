@@ -1,12 +1,11 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, hint } from "../../features/customize/host";
 import { MEMORY_BLOCKS, memScopeLabel, memScopes } from "../../features/customize/memory";
 import { useAlive } from "./use-timer-lease";
-import { useOptimisticToggle } from "./hooks";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 
 export function MemoryTab() {
@@ -32,32 +31,27 @@ export function MemoryTab() {
     { done: (on) => hint(on ? t("toast.memory.enabled") : t("toast.memory.disabled")) },
   );
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const m = await api("/memory/enabled");
-        const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));
-        const cat = await api("/memory/categories?project_id=all").catch(() => ({
-          categories: [],
-        }));
-        const context = await api(
-          `/memory/context?project_id=${encodeURIComponent(active)}`,
-        ).catch(() => null);
-        if (!alive()) return;
-        setEnabled(!!m.enabled);
-        setMemories(asList(mem.memories) as Record<string, unknown>[]);
-        setCats(asList(cat.categories) as Record<string, unknown>[]);
-        setCtx(context);
-        setScope(active);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
-      }
-    })();
-  }, [alive, active]);
+  useTabRead(
+    "memory",
+    async (current) => {
+      const m = await api("/memory/enabled");
+      const mem = await api("/memory?project_id=all").catch(() => ({ memories: [] }));
+      const cat = await api("/memory/categories?project_id=all").catch(() => ({
+        categories: [],
+      }));
+      const context = await api(
+        `/memory/context?project_id=${encodeURIComponent(active)}`,
+      ).catch(() => null);
+      if (!current()) return;
+      setEnabled(!!m.enabled);
+      setMemories(asList(mem.memories) as Record<string, unknown>[]);
+      setCats(asList(cat.categories) as Record<string, unknown>[]);
+      setCtx(context);
+      setScope(active);
+    },
+    setErr,
+    [active],
+  );
 
   if (err) return <div>{err}</div>;
 
@@ -132,7 +126,7 @@ export function MemoryTab() {
                     }),
                   });
                   setContent("");
-                  custTab("memory");
+                  refreshCustTab("memory");
                 } catch (e) {
                   hint(t("artifact.save.err", apiErrorText(e)), true);
                 } finally {
@@ -203,7 +197,7 @@ export function MemoryTab() {
                         `/memory/${x.memory_id}?project_id=${encodeURIComponent(asString(x.project_id, "global"))}`,
                         { method: "PATCH", body: JSON.stringify({ content: value }) },
                       );
-                      custTab("memory");
+                      refreshCustTab("memory");
                     } catch (e) {
                       hint(apiErrorText(e), true);
                     }
@@ -219,7 +213,7 @@ export function MemoryTab() {
                         `/memory/${x.memory_id}?project_id=${encodeURIComponent(asString(x.project_id, "global"))}`,
                         { method: "DELETE" },
                       );
-                      custTab("memory");
+                      refreshCustTab("memory");
                     } catch (e) {
                       hint(apiErrorText(e), true);
                     }

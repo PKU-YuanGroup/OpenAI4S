@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { custTab, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { backdropClicked, notePress } from "../../features/customize/dismiss";
 import { skillReadinessNoteText } from "../../features/customize/environment";
@@ -60,6 +60,14 @@ export function NestedEditor() {
       </div>
     </div>
   );
+}
+
+/**
+ * Close `editor` once its save lands -- unless the user has already closed it
+ * or opened another, which a late save must not close in its place.
+ */
+function closeEditor(editor: typeof nestedEditor.value): void {
+  if (nestedEditor.value === editor) nestedEditor.value = null;
 }
 
 function titleFor(editor: NonNullable<typeof nestedEditor.value>): string {
@@ -186,6 +194,7 @@ function SkillForm({ name }: { name: string | null }) {
               return;
             }
             setSaving(true);
+            const editor = nestedEditor.value;
             try {
               if (name)
                 await api(`/skills/${encodeURIComponent(name)}`, {
@@ -198,9 +207,9 @@ function SkillForm({ name }: { name: string | null }) {
                   body: JSON.stringify({ name: next, description: desc, body }),
                 });
               dropSkillsCatalog();
-              nestedEditor.value = null;
+              closeEditor(editor);
               hint(t("toast.skill.saved", next));
-              custTab("skills");
+              refreshCustTab("skills");
             } catch (e) {
               setSaving(false);
               hint(t("artifact.save.err", apiErrorText(e)), true);
@@ -378,7 +387,7 @@ function SkillHistory({
                         });
                         hint(t("skill.rollbackDone", name));
                         await load();
-                        custTab("skills");
+                        refreshCustTab("skills");
                       } catch (e) {
                         hint(t("toast.failed", apiErrorText(e)), true);
                       }
@@ -453,6 +462,7 @@ function SpecialistForm({ name }: { name: string | null }) {
               return;
             }
             setSaving(true);
+            const editor = nestedEditor.value;
             const b = { name: next, description: desc, system_prompt: prompt };
             try {
               if (name)
@@ -461,9 +471,9 @@ function SpecialistForm({ name }: { name: string | null }) {
                   body: JSON.stringify(b),
                 });
               else await api("/specialists", { method: "POST", body: JSON.stringify(b) });
-              nestedEditor.value = null;
+              closeEditor(editor);
               hint(t("toast.specialist.saved", next));
-              custTab("specialists");
+              refreshCustTab("specialists");
             } catch (e) {
               setSaving(false);
               hint(t("artifact.save.err", apiErrorText(e)), true);
@@ -582,6 +592,7 @@ function ConnectorForm({ k }: { k: Record<string, unknown> }) {
               return;
             }
             setSaving(true);
+            const editor = nestedEditor.value;
             try {
               await api(`/connectors/${encodeURIComponent(asString(k.connector_id))}`, {
                 method: "PUT",
@@ -594,9 +605,9 @@ function ConnectorForm({ k }: { k: Record<string, unknown> }) {
                   remove_env: removeEnv,
                 }),
               });
-              nestedEditor.value = null;
+              closeEditor(editor);
               hint(t("cust.connectors.saved", name.trim()));
-              custTab("connectors");
+              refreshCustTab("connectors");
             } catch (e) {
               setSaving(false);
               hint(t("artifact.save.err", apiErrorText(e)), true);

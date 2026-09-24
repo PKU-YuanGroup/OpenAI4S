@@ -15,6 +15,12 @@ export const customizeTab = signal<CustTab>("general");
  */
 export const customizeGeneration = signal(0);
 
+/**
+ * In-place re-read requests, counted per tab. A tab re-reads its data when
+ * its count moves; `refreshCustTab()` moves it only for the tab on screen.
+ */
+export const customizeRefresh = signal<Partial<Record<CustTab, number>>>({});
+
 export type CustomizeLoadState = "loading" | "ready" | "failed" | "timeout";
 
 /**

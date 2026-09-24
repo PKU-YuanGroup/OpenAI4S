@@ -1,7 +1,7 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { closeCust, custTab } from "../../features/customize/actions";
+import { closeCust, refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { skillReadinessNoteText } from "../../features/customize/environment";
 import {
@@ -13,8 +13,7 @@ import {
   hint,
   insertSkillMention,
 } from "../../features/customize/host";
-import { useAlive } from "./use-timer-lease";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Toggle } from "./ui";
 
 type Skill = Record<string, unknown>;
@@ -80,7 +79,7 @@ function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
                   method: "DELETE",
                 });
                 dropSkillsCatalog();
-                custTab("skills");
+                refreshCustTab("skills");
               } catch (e) {
                 hint(t("toast.deleteFailed", apiErrorText(e)), true);
               }
@@ -110,38 +109,32 @@ function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
 }
 
 export function SkillsTab() {
-  const alive = useAlive();
   const [err, setErr] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [openCollections, setOpenCollections] = useState<Record<string, boolean>>({});
   const pid = effProject();
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const personalRequest = api("/skills/catalog");
-        const projectRequest = pid
-          ? api(`/projects/${encodeURIComponent(pid)}/skills/catalog`).catch(() => ({
-              skills: [],
-            }))
-          : Promise.resolve({ skills: [] });
-        const [personalData, projectData] = await Promise.all([
-          personalRequest,
-          projectRequest,
-        ]);
-        if (!alive()) return;
-        const personalSkills = asList(personalData.skills) as Skill[];
-        const projectSkills = asList(projectData.skills) as Skill[];
-        setSkills([...personalSkills, ...projectSkills]);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
-      }
-    })();
-  }, [alive, pid]);
+  useTabRead(
+    "skills",
+    async (current) => {
+      const personalRequest = api("/skills/catalog");
+      const projectRequest = pid
+        ? api(`/projects/${encodeURIComponent(pid)}/skills/catalog`).catch(() => ({
+            skills: [],
+          }))
+        : Promise.resolve({ skills: [] });
+      const [personalData, projectData] = await Promise.all([
+        personalRequest,
+        projectRequest,
+      ]);
+      if (!current()) return;
+      const personalSkills = asList(personalData.skills) as Skill[];
+      const projectSkills = asList(projectData.skills) as Skill[];
+      setSkills([...personalSkills, ...projectSkills]);
+    },
+    setErr,
+    [pid],
+  );
 
   if (err) return <div>{err}</div>;
 

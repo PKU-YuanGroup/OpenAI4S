@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { closeCust, custTab, openCust } from "./actions";
-import { customizeGeneration, customizeOpen, customizeTab, nestedEditor } from "./state";
+import { closeCust, custTab, openCust, refreshCustTab } from "./actions";
+import {
+  customizeGeneration,
+  customizeOpen,
+  customizeRefresh,
+  customizeTab,
+  nestedEditor,
+} from "./state";
 import {
   CUST_TABS,
   CUST_TAB_ALIASES,
@@ -73,5 +79,38 @@ describe("F-19 tab state machine", () => {
     closeCust();
     expect(customizeOpen.value).toBe(false);
     expect(nestedEditor.value).toBeNull();
+  });
+});
+
+describe("in-place refresh after a write", () => {
+  afterEach(() => {
+    closeCust();
+    customizeRefresh.value = {};
+  });
+
+  it("re-reads the tab on screen without remounting it or closing its editor", () => {
+    openCust("memory");
+    const gen = customizeGeneration.value;
+    const editor = { kind: "job" as const, id: "j1" };
+    nestedEditor.value = editor;
+    refreshCustTab("memory");
+    refreshCustTab("memory");
+    expect(customizeRefresh.value.memory).toBe(2);
+    expect(customizeGeneration.value).toBe(gen);
+    expect(customizeTab.value).toBe("memory");
+    expect(nestedEditor.value).toBe(editor);
+  });
+
+  it("asks nothing of a tab the user has left, or of closed Settings", () => {
+    openCust("memory");
+    custTab("models");
+    const gen = customizeGeneration.value;
+    refreshCustTab("memory");
+    expect(customizeTab.value).toBe("models");
+    expect(customizeGeneration.value).toBe(gen);
+    expect(customizeRefresh.value.memory).toBeUndefined();
+    closeCust();
+    refreshCustTab("models");
+    expect(customizeRefresh.value.models).toBeUndefined();
   });
 });

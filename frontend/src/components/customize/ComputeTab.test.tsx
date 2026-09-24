@@ -44,7 +44,10 @@ vi.mock("../../i18n", () => ({
   onLanguageChange: () => () => undefined,
 }));
 vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive, useTimerLease: () => mocks.lease }));
-vi.mock("../../features/customize/actions", () => ({ custTab: vi.fn() }));
+vi.mock("../../features/customize/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../features/customize/actions")>()),
+  custTab: vi.fn(),
+}));
 
 import { createTimerLease, pendingTimerCount, resetTimerLeases } from "../../features/customize/timers";
 import { ComputeTab } from "./ComputeTab";

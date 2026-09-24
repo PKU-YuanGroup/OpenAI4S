@@ -1,5 +1,52 @@
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { t } from "../../i18n";
+import { hint } from "../../features/customize/host";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { customizeRefresh } from "../../features/customize/state";
+import type { CustTab } from "../../features/customize/tabs";
 import { useAlive } from "./use-timer-lease";
+
+/**
+ * A tab's data: read on mount, and read again in place whenever
+ * `refreshCustTab(tab)` asks (after a write) or a value in `deps` changes.
+ * Only the newest read may apply its answer, and only while the tab is
+ * mounted: `read` gets `current()` to check after each await. The first read
+ * settles the pane's load status and reports a failure through `failed`; a
+ * later read that fails keeps what is shown and says so.
+ */
+export function useTabRead(
+  tab: CustTab,
+  read: (current: () => boolean) => Promise<void>,
+  failed: (message: string) => void,
+  deps: readonly unknown[] = [],
+): void {
+  const alive = useAlive();
+  const seq = useRef(0);
+  const loaded = useRef(false);
+  const nonce = customizeRefresh.value[tab] || 0;
+  useEffect(() => {
+    const mine = ++seq.current;
+    const current = () => alive() && seq.current === mine;
+    const first = !loaded.current;
+    void (async () => {
+      try {
+        await read(current);
+        if (!current()) return;
+        loaded.current = true;
+        markCustomizeLoaded();
+      } catch (e) {
+        if (!current()) return;
+        const message = t("versions.load.err", (e as Error).message);
+        if (first) {
+          failed(message);
+          markCustomizeFailed(message);
+        } else {
+          hint(message, true);
+        }
+      }
+    })();
+  }, [alive, nonce, ...deps]);
+}
 
 export type OptimisticHandlers<T> = {
   /** The write succeeded; `result` is what it answered. */

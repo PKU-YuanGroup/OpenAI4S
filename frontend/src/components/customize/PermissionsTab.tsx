@@ -1,12 +1,10 @@
-import { useEffect, useState } from "preact/hooks";
+import { useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { confirmAction, hint } from "../../features/customize/host";
 import { currentId } from "../../stores/session";
-import { useAlive } from "./use-timer-lease";
-import { useOptimistic } from "./hooks";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimistic, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Note } from "./ui";
 
 type ScopeMeta = { scope: string; scope_id: string; label: string };
@@ -49,7 +47,7 @@ function ResetRow() {
           if (!confirmAction(t("cust.perm.resetConfirm"))) return;
           try {
             await api("/permissions/reset", { method: "POST" });
-            custTab("permissions");
+            refreshCustTab("permissions");
             hint(t("toast.perm.resetDone"));
           } catch (e) {
             hint(t("toast.failed", apiErrorText(e)), true);
@@ -102,7 +100,7 @@ function RuleRow({ g, r }: { g: ScopeMeta; r: Rule }) {
         onClick={async () => {
           try {
             await api(`/permissions/${r.rule_id}`, { method: "DELETE" });
-            custTab("permissions");
+            refreshCustTab("permissions");
           } catch (e) {
             hint(t("toast.deleteFailed", apiErrorText(e)), true);
           }
@@ -150,7 +148,10 @@ function AddRow({ g }: { g: ScopeMeta }) {
                 decision: dec,
               }),
             });
-            custTab("permissions");
+            setTool("");
+            setPat("*");
+            setDec("ask");
+            refreshCustTab("permissions");
           } catch (e) {
             hint(t("toast.addFailed", apiErrorText(e)), true);
           }
@@ -163,30 +164,22 @@ function AddRow({ g }: { g: ScopeMeta }) {
 }
 
 export function PermissionsTab() {
-  const alive = useAlive();
   const [note, setNote] = useState<string | null>(null);
   const [data, setData] = useState<Record<string, unknown> | null>(null);
 
-  useEffect(() => {
-    if (!currentId.value) {
-      setNote(t("cust.perm.noSessionNote"));
-      markCustomizeLoaded();
-      return;
-    }
-    void (async () => {
-      try {
-        const next = await api(`/frames/${currentId.value}/permissions`);
-        if (!alive()) return;
-        setData(next);
-        markCustomizeLoaded();
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setNote(message);
-        markCustomizeFailed(message);
+  useTabRead(
+    "permissions",
+    async (current) => {
+      if (!currentId.value) {
+        setNote(t("cust.perm.noSessionNote"));
+        return;
       }
-    })();
-  }, [alive]);
+      const next = await api(`/frames/${currentId.value}/permissions`);
+      if (!current()) return;
+      setData(next);
+    },
+    setNote,
+  );
 
   const meta: Record<string, ScopeMeta> | null = data
     ? {

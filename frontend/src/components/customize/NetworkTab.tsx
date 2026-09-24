@@ -1,15 +1,15 @@
 import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api } from "../../features/customize/api";
-import { custTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, hint } from "../../features/customize/host";
 import {
   createTelemetryDrain,
   readTelemetryConsent,
 } from "../../features/customize/telemetry";
 import { useAlive } from "./use-timer-lease";
-import { useOptimisticToggle } from "./hooks";
-import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
+import { useOptimisticToggle, useTabRead } from "./hooks";
+import { markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
 
@@ -45,36 +45,31 @@ export function NetworkTab() {
     },
   );
 
-  useEffect(() => {
-    void (async () => {
+  useTabRead(
+    "network",
+    async (current) => {
+      const [d, db] = await Promise.all([
+        api("/preferences/builtin-allowlist"),
+        api("/doubao-search/config")
+          .then((config) => ({ config, error: null as unknown }))
+          .catch((error) => ({ config: {} as Record<string, unknown>, error })),
+      ]);
+      if (!current()) return;
+      setAllow({
+        enabled: !!d.enabled,
+        groups: asList(d.groups) as Array<Record<string, unknown>>,
+      });
+      setDoubao(db);
+      markCustomizeLoaded();
       try {
-        const [d, db] = await Promise.all([
-          api("/preferences/builtin-allowlist"),
-          api("/doubao-search/config")
-            .then((config) => ({ config, error: null as unknown }))
-            .catch((error) => ({ config: {} as Record<string, unknown>, error })),
-        ]);
-        if (!alive()) return;
-        setAllow({
-          enabled: !!d.enabled,
-          groups: asList(d.groups) as Array<Record<string, unknown>>,
-        });
-        setDoubao(db);
-        markCustomizeLoaded();
-        try {
-          const sc = await api("/search/config");
-          if (alive()) setSearch(sc);
-        } catch {
-          /* original swallowed */
-        }
-      } catch (e) {
-        if (!alive()) return;
-        const message = t("versions.load.err", (e as Error).message);
-        setErr(message);
-        markCustomizeFailed(message);
+        const sc = await api("/search/config");
+        if (current()) setSearch(sc);
+      } catch {
+        /* original swallowed */
       }
-    })();
-  }, [alive]);
+    },
+    setErr,
+  );
 
   if (err) return <div>{err}</div>;
 
@@ -123,10 +118,11 @@ export function NetworkTab() {
                   });
                   hint(t("cust.search.saved"));
                   setSearchKey("");
-                  custTab("network");
+                  refreshCustTab("network");
                 } catch (e) {
-                  setSavingSearch(false);
                   hint((e as Error).message, true);
+                } finally {
+                  if (alive()) setSavingSearch(false);
                 }
               }}
             >

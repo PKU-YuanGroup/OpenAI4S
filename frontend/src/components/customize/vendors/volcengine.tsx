@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { t } from "../../../i18n";
 import { publicText } from "../../../features/scrub/scrub";
 import { api, apiErrorText, ApiError } from "../../../features/customize/api";
-import { custTab } from "../../../features/customize/actions";
+import { refreshCustTab } from "../../../features/customize/actions";
+import { customizeRefresh } from "../../../features/customize/state";
 import {
   asList,
   asString,
@@ -183,7 +184,8 @@ export function VolcenginePanel() {
       await loadModels();
       await refreshKeyBanner();
       applyState(rec(result.connection) || current);
-      custTab("models");
+      if (alive()) setBusy(false);
+      refreshCustTab("models");
     } catch (error) {
       setBusy(false);
       const code = error instanceof ApiError ? error.code : "";
@@ -253,6 +255,9 @@ export function VolcenginePanel() {
     }
   };
 
+  // Read again whenever the Models tab re-reads after a write: configure and
+  // disconnect used to remount the whole tab, and this panel with it.
+  const modelsRefresh = customizeRefresh.value.models || 0;
   useEffect(() => {
     void (async () => {
       try {
@@ -262,7 +267,7 @@ export function VolcenginePanel() {
         applyState({ state: "error", _error: apiErrorText(error) });
       }
     })();
-  }, [alive]);
+  }, [alive, modelsRefresh]);
 
   const login = rec(state.login);
   const identity = rec(state.identity);
@@ -754,7 +759,7 @@ export function VolcenginePanel() {
                   });
                   await loadModels();
                   await refreshKeyBanner();
-                  custTab("models");
+                  refreshCustTab("models");
                 } catch (error) {
                   hint(apiErrorText(error), true);
                 }

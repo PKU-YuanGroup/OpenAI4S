@@ -35,7 +35,10 @@ vi.mock("../../i18n", () => ({
 }));
 vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive }));
 vi.mock("./vendors/volcengine", () => ({ VolcenginePanel: () => null }));
-vi.mock("../../features/customize/actions", () => ({ custTab: () => undefined }));
+vi.mock("../../features/customize/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../features/customize/actions")>()),
+  custTab: () => undefined,
+}));
 
 import { LocalEndpointRow, ModelsTab, ProfileRow, profileKeyLabel } from "./ModelsTab";
 

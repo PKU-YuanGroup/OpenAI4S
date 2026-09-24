@@ -26,12 +26,13 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. |
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. A rule's decision is optimistic and goes back when the server refuses it. |
 | [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | A decision the server took stays shown; a refused one goes back to the rule's decision (a render is asked for, so the select resets). |
+| [`refresh.test.tsx`](refresh.test.tsx) | A write that answers after the user moved to another tab, or opened another nested editor, leaves them where they are; a write on the tab still shown re-reads it in place without remounting it. |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
 | [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. |
 | [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. |
 | [`icons.tsx`](icons.tsx) | Lucide paths used by this modal. |
-| [`hooks.ts`](hooks.ts) | `useOptimistic` / `useOptimisticToggle`: a control bound to one server setting is disabled until the tab's first read lands (`null`), moves at once, allows one write at a time, and goes back to the confirmed value when a write fails. |
+| [`hooks.ts`](hooks.ts) | `useTabRead`: a tab's reads, on mount and again in place after a write (`refreshCustTab`); only the newest read applies, the first settles the pane's load status. `useOptimistic` / `useOptimisticToggle`: a control bound to one server setting is disabled until the tab's first read lands (`null`), moves at once, allows one write at a time, and goes back to the confirmed value when a write fails. |
 | [`index.ts`](index.ts) | Re-exports `Customize`. |
 | [`ui.tsx`](ui.tsx) | Shared `Hdr` / `CustRow` / `Seg` / `Toggle` / `Pill`. |
 | [`use-timer-lease.ts`](use-timer-lease.ts) | `useTimerLease` / `useAlive` bound to unmount. |

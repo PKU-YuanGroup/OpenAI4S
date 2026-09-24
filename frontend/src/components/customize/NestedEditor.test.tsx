@@ -39,7 +39,10 @@ vi.mock("../../i18n", () => ({
   tOptional: () => null,
 }));
 vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive, useTimerLease: () => ({}) }));
-vi.mock("../../features/customize/actions", () => ({ custTab: mocks.custTab }));
+vi.mock("../../features/customize/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../features/customize/actions")>()),
+  custTab: mocks.custTab,
+}));
 
 import { nestedEditor } from "../../features/customize/state";
 import { NestedEditor } from "./NestedEditor";
