@@ -16,6 +16,7 @@ import { api } from "./api";
 import { $, el, grow, icon } from "./dom";
 import { hostFn, invokeHost, isReady } from "./host";
 import { anyModalOpen } from "./modal";
+import { loadSkillsCatalog } from "../autocomplete/catalog";
 
 export type PaletteItem = {
   group: string;
@@ -75,19 +76,8 @@ type DataproHit = {
 
 
 
-/** M-03 query `?artifact={id}&version_id={vid}`. Omitted version_id → latest. */
-export function parseArtifactQuery(
-  search: string,
-): { artifactId: string; versionId: string | null } | null {
-  const raw = search.startsWith("?") ? search.slice(1) : search;
-  const q = new URLSearchParams(raw);
-  const artifactId = (q.get("artifact") || "").trim();
-  if (!artifactId) return null;
-  const versionRaw = q.get("version_id");
-  const versionId =
-    versionRaw != null && versionRaw.trim() !== "" ? versionRaw.trim() : null;
-  return { artifactId, versionId };
-}
+/** M-03 query `?artifact={id}&version_id={vid}`: the Files lane's one parser. */
+export { parseArtifactDeepLink as parseArtifactQuery } from "../artifacts/deeplink";
 
 /**
  * M-03 palette artifact hit: session first, then exact-version viewer.
@@ -186,19 +176,6 @@ export function openDataproSearchHit(hit: DataproHit): void {
   }
   const openCust = hostFn("openCust");
   if (isReady(openCust)) openCust("connectors");
-}
-
-async function loadSkillsCatalog(): Promise<SkillRow[]> {
-  if (skillsCatalog.value) return skillsCatalog.value as SkillRow[];
-  try {
-    const d = (await api("/skills/catalog")) as { skills?: SkillRow[] } | null;
-    skillsCatalog.value = (d && d.skills) || [];
-  } catch {
-    // Not cached: `[]` is truthy, so storing it would hide every skill for
-    // the life of the page after one failed read. The next open retries.
-    return [];
-  }
-  return (skillsCatalog.value || []) as SkillRow[];
 }
 
 /** app.js:10963-10972 */
@@ -387,7 +364,9 @@ async function palSearchRemote(
   items: PaletteItem[],
   loadSkills: boolean,
 ): Promise<void> {
-  if (loadSkills) items.push(...skillItems(q, await loadSkillsCatalog()));
+  // The shared loader stores nothing on a failed read, so the next open
+  // retries; this query just shows no skill rows.
+  if (loadSkills) items.push(...skillItems(q, await loadSkillsCatalog().catch((): SkillRow[] => [])));
   if (q) {
     try {
       const r = (await api("/search?q=" + encodeURIComponent(q))) as {
