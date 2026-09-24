@@ -12,8 +12,6 @@ export {
   nbCellStart,
   nbEventCellId,
   nbFindCell,
-  nbLiveAppend,
-  nbLiveStart,
   notebookDisplayEntries,
   projectNotebookCells,
   resetCellOutputs,
@@ -24,7 +22,6 @@ export {
 } from "./cells";
 export {
   NOTEBOOK_EXPORTS,
-  artUrlByName,
   highlightCellSource,
   highlightTraceback,
   looksBinary,
@@ -57,7 +54,7 @@ export {
   setScopedExecutionRequest,
 } from "./kernel";
 export type { KernelView } from "./kernel";
-export { cellNode, NotebookDock, renderNotebook, scrollToCell } from "./Notebook";
+export { cellNode, NotebookDock, renderNotebook } from "./Notebook";
 export {
   NB_FOLLOW_PX,
   bindNotebookScroll,

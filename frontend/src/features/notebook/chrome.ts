@@ -8,7 +8,7 @@ import { fetchArtifactText } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
-import { _artBust, _tbl, artifacts } from "../../stores/artifacts";
+import { _tbl } from "../../stores/artifacts";
 import { t } from "../../i18n/runtime";
 import { delimiterFor, parseDelimited } from "../csv/csv";
 import { esc } from "../md/esc";
@@ -157,23 +157,6 @@ export function notebookExportLink(frameId: string): HTMLElement {
   wrap.appendChild(toggle);
   wrap.appendChild(menu);
   return wrap;
-}
-
-export function artUrl(a: { id?: string }): string {
-  const b = (_artBust.value || {})[String(a.id)];
-  return `${API}/artifacts/${a.id}` + (b ? `?_=${b}` : "");
-}
-
-/** app.js:9676-9681 */
-export function artUrlByName(fname: string): string {
-  if (!fname) return "";
-  const base = String(fname).split("/").pop();
-  const list = Array.isArray(artifacts.value) ? artifacts.value : [];
-  const a = list.find((x) => {
-    const rec = x as { filename?: string };
-    return (rec.filename || "") === fname || (rec.filename || "").split("/").pop() === base;
-  }) as { id?: string } | undefined;
-  return a ? artUrl(a) : `${API}/artifacts/${encodeURIComponent(fname)}`;
 }
 
 export function notebookArtifactState(cell: NotebookCell, filename: string): {

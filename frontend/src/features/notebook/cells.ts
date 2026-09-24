@@ -11,7 +11,6 @@ import { artUrl } from "../artifacts/cache";
 import { dockArtifact } from "../../stores/artifacts";
 import {
   _executionLoadReq,
-  _kc,
   _lineageFor,
   _lineageReq,
   _liveCell,
@@ -29,9 +28,8 @@ import { publicText } from "../scrub/scrub";
 import { appendLiveOutput } from "../stream/cap";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { kernelIdFromEnv } from "./labels";
 import { nbRender } from "./scroll";
-import type { KernelStatus, NotebookCell, NotebookOutputArtifact } from "./types";
+import type { NotebookCell, NotebookOutputArtifact } from "./types";
 
 export function asCells(value: unknown): NotebookCell[] {
   return Array.isArray(value) ? (value as NotebookCell[]) : [];
@@ -370,78 +368,6 @@ export function nbCellFinished(event: WsMessage): void {
   const remaining = asCells(liveCells.value);
   _liveCell.value = remaining[remaining.length - 1] || null;
   syncCellOutput(cell);
-  nbRender();
-}
-
-const _NB_DIV = "----- output -----";
-
-/** app.js:9880-9889. Legacy unstructured tool stream. */
-export function nbLiveStart(
-  tool: string | null | undefined,
-  raw: string | null | undefined,
-  serverKernelId: string | null | undefined,
-  serverCellIndex: number | string | null | undefined,
-  serverLanguage: string | null | undefined,
-): void {
-  const codeTools = /^(run_python|python|exec|run_bash|bash)/;
-  const isCode =
-    serverCellIndex != null ||
-    codeTools.test(tool || "") ||
-    !TOOL_LABELS_HAS(tool || "");
-  if (!isCode) {
-    _liveCell.value = null;
-    return;
-  }
-  const idx =
-    serverCellIndex || ((raw || "").match(/cell\s+(\d+)/) || [])[1];
-  const st = _kc.value.st as KernelStatus | null;
-  const kernelId =
-    serverKernelId || kernelIdFromEnv((st && st.env) || null);
-  const live = asCells(liveCells.value).slice();
-  const cell: NotebookCell = {
-    cell_index: idx ? +idx : live.length + 1,
-    kernel_id: kernelId,
-    language: serverLanguage || "python",
-    source: "",
-    stdout: "",
-    stderr: "",
-    status: "running",
-    figures: [],
-    live: true,
-    _out: false,
-  };
-  live.push(cell);
-  setLive(live);
-  _liveCell.value = cell;
-  syncCellOutput(cell);
-  nbRender();
-}
-
-function TOOL_LABELS_HAS(tool: string): boolean {
-  const w = globalThis as unknown as { TOOL_LABELS?: Record<string, unknown> };
-  const labels = w.TOOL_LABELS;
-  return !!(labels && tool && labels[tool]);
-}
-
-/** app.js:9891-8898 */
-export function nbLiveAppend(txt: string): void {
-  const c = _liveCell.value as NotebookCell | null;
-  if (!c) return;
-  if (!c._out) {
-    const i = txt.indexOf(_NB_DIV);
-    if (i === -1) {
-      c.source = (c.source || "") + txt;
-    } else {
-      c.source = (c.source || "") + txt.slice(0, i);
-      c._out = true;
-      c.stdout = (c.stdout || "") + txt.slice(i + _NB_DIV.length).replace(/^\n/, "");
-    }
-  } else {
-    c.stdout = (c.stdout || "") + txt;
-  }
-  const rec = syncCellOutput(c);
-  rec.stdout.value = String(c.stdout || "");
-  rec.source.value = String(c.source || "");
   nbRender();
 }
 

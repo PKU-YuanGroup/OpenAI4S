@@ -841,20 +841,3 @@ export function cellNode(e: NotebookCell): HTMLElement {
   }
   return c;
 }
-
-export function scrollToCell(idx: number | string, kernel?: string | null): void {
-  kernelFilter.value = kernel || null;
-  renderNotebook();
-  requestAnimationFrame(() => {
-    const root = document.getElementById("dock-notebook");
-    if (!root) return;
-    const node = (kernel &&
-      root.querySelector(`.notebook-cell[data-cell="${idx}"][data-kernel="${kernel}"]`)) ||
-      root.querySelector(`.notebook-cell[data-cell="${idx}"]`);
-    if (node) {
-      node.scrollIntoView({ behavior: "smooth", block: "center" });
-      node.classList.add("flash");
-      setTimeout(() => node.classList.remove("flash"), 1600);
-    }
-  });
-}
