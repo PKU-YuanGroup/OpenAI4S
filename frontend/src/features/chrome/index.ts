@@ -1,5 +1,5 @@
 /**
- * F-20 boot: focus trap, team surface, ⌘K palette, upload/notes/mic,
+ * F-20 boot: focus trap, team surface, ⌘K palette, upload/mic,
  * layout density, column resizers.
  *
  * Assigns this lane's window names from the owning module (same pattern as
@@ -22,7 +22,6 @@ import {
   openModalEl,
   trapModalKeydown,
 } from "./modal";
-import { bindNotes, loadNotes } from "./notes";
 import {
   bindPaletteButton,
   closePalette,
@@ -68,7 +67,6 @@ export {
   probeTeamAuth,
 } from "./team";
 export { uploadFiles } from "./upload";
-export { addNote, effProject, loadNotes } from "./notes";
 
 type ChromeWindow = Record<string, unknown>;
 
@@ -85,7 +83,6 @@ function assignWindow(): void {
   w.setLayout = setLayout;
   w.uploadFiles = uploadFiles;
   w.micDictate = micDictate;
-  w.loadNotes = loadNotes;
 }
 
 function installWorkbenchKeys(): void {
@@ -129,7 +126,6 @@ export function bootChrome(): void {
   bootStep("column resizers", initColResizers);
   bootStep("palette", bindPaletteButton);
   bootStep("upload", bindUpload);
-  bootStep("notes", bindNotes);
   bootStep("mic", bindMic);
   bootStep("modal dismiss", () => {
     bindModalDismiss($("#cust"), $("#cust-close"));

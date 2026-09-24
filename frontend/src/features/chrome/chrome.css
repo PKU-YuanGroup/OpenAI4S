@@ -19,11 +19,6 @@ html[data-theme="dark"] .palette-input{background-image:url("data:image/svg+xml,
 .pi-sub{margin-top:2px;font-size:13px;color:var(--text-400,#6c6a64);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .palette-empty{padding:24px;text-align:center;color:var(--text-400,#6c6a64);font-size:14px}
 
-.note{border:.5px solid var(--border-card);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:13px;position:relative}
-.note .nt-time{font-size:11px;color:var(--text-400);margin-top:5px}
-.note .nt-del{position:absolute;top:8px;right:10px;opacity:0;color:var(--text-400);cursor:pointer;display:inline-flex}
-.note:hover .nt-del{opacity:1}
-
 body.layout-compact{font-size:13px}
 body.layout-wide{--col:1080px}
 

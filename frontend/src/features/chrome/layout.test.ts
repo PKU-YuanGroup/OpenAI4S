@@ -189,11 +189,13 @@ describe("F-20 column width restore", () => {
       return n;
     };
     const searchBtn = node("search-btn");
+    const filesBtn = node("files-btn");
     vi.stubGlobal("document", {
       // No classList on body: applyLayout throws, the first step to fail.
       body: { appendChild: (child: unknown) => child },
       documentElement: { style: { setProperty() {} } },
-      querySelector: (sel: string) => (sel === "#search-btn" ? searchBtn : null),
+      querySelector: (sel: string) =>
+        sel === "#search-btn" ? searchBtn : sel === "#files-btn" ? filesBtn : null,
       getElementById: () => null,
       createElement: (tag: string) => node(tag),
       addEventListener: (type: string) => bound.push("document:" + type),
@@ -208,6 +210,9 @@ describe("F-20 column width restore", () => {
       expect(reported).toHaveBeenCalledWith("bootChrome: layout failed", expect.anything());
       expect(bound).toContain("search-btn:click");
       expect(bound).toContain("document:keydown");
+      // #files-btn belongs to artifacts/boot.ts. The dead notes feature bound
+      // it a second time, so every click opened Files twice.
+      expect(bound.filter((entry) => entry.startsWith("files-btn:"))).toEqual([]);
     } finally {
       restore();
       reported.mockRestore();
