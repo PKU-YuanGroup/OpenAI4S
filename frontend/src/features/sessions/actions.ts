@@ -2,12 +2,15 @@
 
 import { t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
+import { openCust } from "../customize/actions";
+import { nestedEditor, type NestedEditor } from "../customize/state";
 import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, type MenuItem } from "./chrome";
+import { openRunLocationDialog } from "./compute";
 import { openConversation, resumeWatch } from "./conversation";
 // Imported, not reached through `callLane`. Neither name is ever assigned to
 // `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
@@ -108,9 +111,26 @@ export async function showContextUsage(): Promise<void> {
   $("#modal")?.classList.remove("hidden");
 }
 
+/** What "Save as skill" fills the new-skill editor with. */
+export type SkillSeed = { name: string; description: string; body: string };
+
+/**
+ * The new-skill editor of Customize → Skills, opened over that tab. app.js
+ * drew a second copy of the skill form in #modal (`skillEditor`); this port
+ * called that name, which nothing defines, so the menu entry did nothing. The
+ * seed travels on the editor state for the form to start from.
+ */
+export function openSkillEditor(seed?: SkillSeed): void {
+  openCust("skills");
+  const editor: NonNullable<NestedEditor> & { seed?: SkillSeed } = seed
+    ? { kind: "skill", name: null, seed }
+    : { kind: "skill", name: null };
+  nestedEditor.value = editor;
+}
+
 export async function saveCurrentAsSkill(): Promise<void> {
   if (!currentId.value) {
-    callLane("skillEditor", null);
+    openSkillEditor();
     return;
   }
   let messages: Array<{ role?: string; content?: unknown }> = [];
@@ -130,7 +150,7 @@ export async function saveCurrentAsSkill(): Promise<void> {
       .slice(0, 48) || "research-workflow";
   const request = String((latestUser && latestUser.content) || "").trim();
   const result = String((latestAssistant && latestAssistant.content) || "").trim();
-  callLane("skillEditor", null, {
+  openSkillEditor({
     name: title,
     description: request.replace(/\s+/g, " ").slice(0, 180),
     body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,
@@ -289,7 +309,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       label: t("compute.menu.runLocation"),
       icon: "server",
       onClick: () => {
-        callLane("openRunLocationDialog", fid);
+        void openRunLocationDialog(fid);
       },
     },
     { sep: true },

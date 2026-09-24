@@ -1,6 +1,10 @@
 /** Projects: menu, modal, research view. app.js:6767-6913, 6840-6861. */
 
 import { publicText } from "../scrub/scrub";
+import { iconEl as timelineIconEl } from "../timeline/dom";
+import { timelineKind } from "../timeline/island";
+import { latestActionTimelineAttempt, timelineCost, timelineDuration } from "../timeline/model";
+import type { TimelineGroup } from "../timeline/types";
 import { t } from "../../i18n";
 import {
   _openGen,
@@ -17,7 +21,7 @@ import { hint } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
-import { callLane, hostFn } from "./lane";
+import { callLane } from "./lane";
 import {
   loadProjects,
   loadSessions,
@@ -89,6 +93,71 @@ export function sanitizeProjectLineage(payload: unknown): {
   };
 }
 
+const TIMELINE_KIND_ICON: Record<string, string> = {
+  delegate: "users",
+  permission: "lock",
+  recovery: "refresh",
+  finalize: "check",
+  native_tool: "sliders",
+  dynamic_tool: "sliders",
+};
+
+function timelineMetaRow(label: string, value: unknown): HTMLElement | null {
+  if (value == null || value === "" || (Array.isArray(value) && !value.length)) return null;
+  const row = el("div", "timeline-meta");
+  row.appendChild(el("span", "timeline-meta-key", label));
+  const body = el("span", "timeline-meta-value");
+  (Array.isArray(value) ? value : [value]).slice(0, 24).forEach((item) => {
+    body.appendChild(el("span", "timeline-pill", publicText(item, 160)));
+  });
+  row.appendChild(body);
+  return row;
+}
+
+/**
+ * One action group of the project research Timeline. Port of app.js
+ * `actionTimelineCard` (3542) and the details it appends: the Timeline lane
+ * keeps those builders private, and this was a call to a name nobody defined,
+ * so the tab listed session names over nothing.
+ */
+export function projectTimelineCard(group: TimelineGroup): HTMLElement {
+  const kind = timelineKind(group);
+  const status = String(group.status || "completed").toLowerCase();
+  const card = el("article", "timeline-card kind-" + kind + " status-" + status);
+  card.setAttribute("data-action-kind", kind);
+  const head = el("div", "timeline-card-head");
+  const kindLabel = el("span", "timeline-kind");
+  kindLabel.appendChild(timelineIconEl(TIMELINE_KIND_ICON[kind] || "terminal", 14));
+  kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
+  head.appendChild(kindLabel);
+  head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32)));
+  card.appendChild(head);
+  card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  const latest = latestActionTimelineAttempt(group);
+  const resources: string[] = [];
+  const artifacts: string[] = [];
+  (group.events || []).forEach((event) => {
+    (event.resource_keys || []).forEach((value) => { if (!resources.includes(value)) resources.push(value); });
+    (event.artifacts || []).forEach((value) => { if (!artifacts.includes(value)) artifacts.push(value); });
+  });
+  const usage = (group.usage || {}) as Partial<TimelineGroup["usage"]>;
+  [
+    timelineMetaRow(t("timeline.owner"), group.owner || ""),
+    timelineMetaRow(t("timeline.permission"), group.permission ||
+      (group.events || []).map((event) => event.side_effect_class).filter(Boolean)),
+    timelineMetaRow(t("timeline.resources"), resources),
+    timelineMetaRow(t("timeline.artifacts"), artifacts),
+    timelineMetaRow(t("timeline.generation"), latest && latest.generation_id),
+    timelineMetaRow(t("timeline.replay"), group.replay_policy ||
+      (latest && latest.replayed_from_cell_id ? "replayed" : "original")),
+    timelineMetaRow(t("timeline.duration"), timelineDuration(latest)),
+    timelineMetaRow(t("timeline.tokens"), t("timeline.tokensValue", usage.input_tokens || 0, usage.output_tokens || 0)),
+    timelineMetaRow(t("timeline.cost"), timelineCost(group.cost)),
+  ].forEach((row) => { if (row) card.appendChild(row); });
+  if (latest && latest.error) card.appendChild(el("div", "timeline-error", latest.error));
+  return card;
+}
+
 export async function openProjectResearchView(initialTab = "timeline"): Promise<void> {
   if (!project.value) return;
   const projectId = project.value;
@@ -135,11 +204,7 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
           ),
         );
       }
-      const cardFn = hostFn("actionTimelineCard");
-      if (cardFn) {
-        const card = cardFn(group as never);
-        if (card instanceof Node) wrapper.appendChild(card);
-      }
+      wrapper.appendChild(projectTimelineCard(group as TimelineGroup));
       content.appendChild(wrapper);
     });
   };

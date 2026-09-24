@@ -15,9 +15,12 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`boot.i18n-gate.test.ts`](boot.i18n-gate.test.ts) | 字典加载前事件已绑定，首次路由等待字典；语言分块加载失败或卡住时仍会路由；等待超时后才到达的字典会重绘列表（仅此情形）。 |
 | [`chrome.test.ts`](chrome.test.ts) | hint 错误前缀（`错误：` / `Error: `），不新增 i18n 键。 |
 | [`chrome.ts`](chrome.ts) | `hint`、断连横幅、`openMenu` 的 Esc/`role=menu`、键盘激活。 |
+| [`compute.ts`](compute.ts) | 会话在哪里运行（M3b-6）：会话标题栏的徽标（写明尚未满足的就绪条件）、内核状态丢失横幅（INV-11），以及「运行位置」对话框。app.js:8375-8517。 |
+| [`compute.test.ts`](compute.test.ts) | 集群会话的徽标写明它在等什么，本地会话没有徽标；内核状态丢失会一直提示到用户确认，再次丢失会再次提示；已切走的会话不会被绘制；「运行位置」列出本机与已配置的规格，并请求所选的那一个。 |
 | [`conversation.ts`](conversation.ts) | `newSession`、`routeInitialView`。`openConversation`（F-10）与 `resumeWatch`（F-11）改为 re-export，不再保留本车道的副本。 |
 | [`conversation.identity.test.ts`](conversation.identity.test.ts) | 断言这些 re-export 与拥有车道装上的是同一个函数对象。 |
 | [`conversation.newsession.test.ts`](conversation.newsession.test.ts) | `newSession` 在发布新 id 之前先释放上一个对话（取消订阅、Notebook 缓存）；共享路径只在对话真正打开后才 resolve。 |
+| [`actions.menu.test.ts`](actions.menu.test.ts) | 菜单项都接到真实实现：「存为技能」以当前对话为种子打开设置里的技能编辑器，「运行位置」打开运行位置对话框，项目研究视图的时间线把各会话的动作组画成卡片。 |
 | [`actions.directory.test.ts`](actions.directory.test.ts) | 会话菜单操作让侧栏目录保持真实：「新建文件夹并移入」建的文件夹会被列出，而不是被缓存的文件夹列表挡掉；删除当前会话后即使随后的列表刷新失败，也不会重新打开被删的会话。 |
 | [`actions.cancel.test.ts`](actions.cancel.test.ts) | 取消回执只有在它命名的执行仍是本客户端正在运行的那个时，才切换到「正在停止…」。 |
 | [`dashboard.ts`](dashboard.ts) | 首页列表、项目搜索 / 加载更多 / 重试、示例 CTA 轮询绑视图生命周期、仪表盘轮询。 |
@@ -40,6 +43,6 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`projects.navigation.test.ts`](projects.navigation.test.ts) | 已过期的项目导航不能覆盖当前会话及会话/文件夹列表；菜单筛选会取消待处理的项目打开（包含 A→B→A 重复筛选），该次打开随即把视图交还——重新加载被它在入口处退役了读取的那个会话；若工作区已显示而没有会话，则打开菜单所选的项目；当前导航将所有权交给其会话。列表读取以所属项目为界，而不是视图代际：同一项目的刷新即使被打开会话或回到 Home 抢先，也照样生效。 |
 | [`share.test.ts`](share.test.ts) | 只有剪贴板确认写入后，复制才提示“已复制”；写入被拒绝时如实报告失败，并选中链接以便手动复制。 |
 | [`share.ts`](share.ts) | 分享对话框：创建、复制、更新或撤销会话的只读链接。app.js:7560-7697。 |
-| [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。 |
+| [`projects.ts`](projects.ts) | 项目菜单/模态/研究视图（其时间线卡片：`projectTimelineCard`）、`sanitizeProjectLineage`。`renderProjMenu` 从静态 `data-i18n` 标签手中接管 `#proj-current`。 |
 | [`static-i18n-ownership.test.ts`](static-i18n-ownership.test.ts) | 代码写入会话标题或当前项目名之后，迟到的语言分块重绘和切换语言都不会把它改回“会话”/“项目”；标题输入框失焦即提交，那次重绘曾把服务端的会话名改掉。 |
 | [`transcript.ts`](transcript.ts) | 输入框的 @ 引用芯片。已存消息行的名字（`renderStored`、`addMsgActions`、`insertMessageByTime`、`renderEmptySession`、`renderMessageRefChips`）从唯一实现 `messages/list.ts` 转导出。 |

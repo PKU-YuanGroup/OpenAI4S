@@ -88,6 +88,7 @@ import { closeTurnTicket, resumeWatch } from "../send/ticket";
 import { failureHint, lastTerminalFailure } from "../send/turn";
 import { destroyActionTimelineView, renderActionTimeline } from "../timeline/island";
 import { hint } from "../sessions/chrome";
+import { refreshComputeStatus } from "../sessions/compute";
 import { showWorkspace } from "../sessions/dashboard";
 import {
   enableComposer,
@@ -543,7 +544,8 @@ export async function openConversation(
     callLane("edacTeardown"); callLane("_molTeardown"); renderDockTabs();
   }
   openedFrameId.value = fid;
-  callLane("refreshComputeStatus", fid);
+  // Deliberately not awaited: a session must open even where the route is missing.
+  void refreshComputeStatus(fid);
   if (!sessions.value.length || directoryPending) {
     try { await loadSessions(); } catch { /* history has its own independently reported reads */ }
     if (!current(fid, gen)) return obsolete();

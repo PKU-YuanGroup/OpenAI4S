@@ -499,6 +499,12 @@ describe("reopening a running session from Home", () => {
   });
 });
 
+it("reads where the session runs when it is opened", async () => {
+  const fetcher = server();
+  await openConversation("f");
+  expect(fetcher.mock.calls.map(([path]) => String(path))).toContain("/api/v1/sessions/f/compute");
+});
+
 describe("routing an address", () => {
   /** A session history: entries, the current index, and the two History API writes. */
   function fakeHistory(entries: string[]) {
