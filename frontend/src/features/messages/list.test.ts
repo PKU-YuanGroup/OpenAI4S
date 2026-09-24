@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Shell } from "../../components/dashboard/Shell";
 import { setLang } from "../../i18n/runtime";
+import { copyFailedText } from "../chrome/clipboard";
 import { renderStored as renderOlderPage } from "../sessions/transcript";
 import * as messageComponents from "./components";
 import { currentId, _openGen, historyLoad } from "../../stores/session";
@@ -369,5 +370,25 @@ describe("stored rows, first page and older page alike", () => {
     savedUp.onclick!();
     expect(savedUp.classList.contains("on")).toBe(false);
     expect(posts.at(-1)?.body).toEqual({ key, rating: null });
+  });
+
+  it.each(ROW_RENDERERS)("%s: Copy ticks only for a confirmed clipboard write", async (_name, render) => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const row = render({ role: "assistant", content: "Copy me." }) as unknown as RowEl;
+    const copy = row.querySelector(".msg-actions")!.children[0]!;
+    expect(copy.attrs["data-icon"]).toBe("copy");
+    await copy.onclick!();
+    expect(writeText).toHaveBeenCalledWith("Copy me.");
+    expect(copy.attrs["data-icon"]).toBe("check");
+
+    // Refused (a permission prompt, or plain-http LAN with no clipboard API
+    // and no selection fallback): no tick, and the failure is said.
+    vi.stubGlobal("navigator", { clipboard: { writeText: () => Promise.reject(new Error("denied")) } });
+    const refused = render({ role: "assistant", content: "Copy me too." }) as unknown as RowEl;
+    const refusedCopy = refused.querySelector(".msg-actions")!.children[0]!;
+    await refusedCopy.onclick!();
+    expect(refusedCopy.attrs["data-icon"]).toBe("copy");
+    expect(doc.hint.textContent).toContain(copyFailedText());
   });
 });

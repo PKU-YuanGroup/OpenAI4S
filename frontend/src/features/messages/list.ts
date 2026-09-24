@@ -9,6 +9,7 @@
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import { currentId, feedback as feedbackSignal } from "../../stores/session";
+import { copyFailedText, copyText } from "../chrome/clipboard";
 import { paintIcon } from "../icons/paths";
 import { renderMd } from "../md/render";
 import { api } from "../sessions/api";
@@ -112,11 +113,12 @@ export function addMsgActions(wrap: HTMLElement, text: string): void {
   (copy as HTMLButtonElement).type = "button";
   copy.title = t("msgAction.copy");
   paintIcon(copy, "copy");
-  copy.onclick = () => {
-    try {
-      if (navigator.clipboard) void navigator.clipboard.writeText(text || "");
-    } catch {
-      /* ignore */
+  copy.onclick = async () => {
+    // The check is shown only for a confirmed write: a try/catch cannot see
+    // the async rejection, so a blocked or absent clipboard used to tick too.
+    if (!(await copyText(text || ""))) {
+      hint(copyFailedText(), true);
+      return;
     }
     paintIcon(copy, "check");
     setTimeout(() => paintIcon(copy, "copy"), 1200);
