@@ -28,6 +28,7 @@ import {
 } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
+import { forkFromCell } from "../execution/branch";
 import { publicText } from "../scrub/scrub";
 import type { WsMessage } from "../ws/types";
 import {
@@ -299,6 +300,24 @@ export const canForkFromCell = computed(() => branchCapability("fork_from_cell")
 export const canPromote = computed(() => branchCapability("promote"));
 export const canRerun = computed(() => !!kernelStatusOf(currentKernelStatus()).repl_enabled);
 
+/**
+ * A REPL execution for the open session is being submitted, queued or
+ * running: the REPL runs one at a time. `pendingReplIdentity` is set before
+ * the POST goes out, so a second click of Rerun or Run finds it. Rerun
+ * ignored this and a double click ran the cell twice.
+ */
+export const replBusy = computed(() => {
+  const pending = pendingReplIdentity.value as { frame_id?: string } | null;
+  return !!(
+    (pending && pending.frame_id === currentId.value) ||
+    identityForOwner(executionQueue.value, "user_repl")
+  );
+});
+
+/** The session a fork from a cell is in flight for. */
+export const forkPending = field<string | null>(() => null);
+export const forkBusy = computed(() => !!forkPending.value && forkPending.value === currentId.value);
+
 /** app.js:9911-9918 */
 export async function kernelCtl(action: string): Promise<void> {
   if (!currentId.value) return;
@@ -317,7 +336,7 @@ export async function kernelCtl(action: string): Promise<void> {
 export async function executeNotebookCode(code: string, language: string): Promise<boolean> {
   code = String(code || "");
   language = String(language || "python").toLowerCase() === "r" ? "r" : "python";
-  if (!code.trim() || !currentId.value) return false;
+  if (!code.trim() || !currentId.value || replBusy.value) return false;
   const cryptoObj = globalThis.crypto;
   const randomId =
     cryptoObj && typeof cryptoObj.randomUUID === "function"
@@ -533,16 +552,25 @@ export async function copyNotebookCell(source: string): Promise<void> {
   }
 }
 
+/**
+ * Fork from a cell's checkpoint, once. Every click used to POST (each one a
+ * new branch with its own copy of the workspace) and success said nothing.
+ * `forkFromCell` sends one request and presents a refusal, the 409 for a
+ * cell with no exact checkpoint included, with the server's own sentence.
+ */
 export async function forkNotebookCell(cell: NotebookCell): Promise<void> {
+  const frameId = currentId.value;
   const checkpointId = publicText(cell && cell.fork_checkpoint_id, 96);
-  if (!currentId.value || !branchCapability("fork_from_cell") || !checkpointId) return;
+  if (!frameId || !branchCapability("fork_from_cell") || !checkpointId || forkBusy.value) return;
+  forkPending.value = frameId;
   try {
-    await notebookFetch(`/frames/${currentId.value}/branches/fork`, {
-      method: "POST",
-      body: JSON.stringify({ from_cell_id: nbCellKey(cell) }),
-    });
-  } catch (error) {
-    hint(t("nb.action.failed", apiErrorText(error)), true);
+    const refused = await forkFromCell(frameId, nbCellKey(cell));
+    if (!refused && currentId.value === frameId) {
+      hint(t("branch.forked", shortRuntime(checkpointId)));
+      scheduleWorkbenchRefresh();
+    }
+  } finally {
+    if (forkPending.value === frameId) forkPending.value = null;
   }
 }
 

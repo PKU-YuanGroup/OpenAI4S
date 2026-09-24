@@ -16,7 +16,6 @@ import {
   _replLanguage,
   execSources,
   kernelFilter,
-  pendingReplIdentity,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { executionQueue } from "../../stores/timeline";
@@ -42,6 +41,7 @@ import {
   currentKernelStatus,
   envChoice,
   executeNotebookCode,
+  forkBusy,
   forkNotebookCell,
   identityForOwner,
   interruptRepl,
@@ -50,6 +50,7 @@ import {
   kernelLabel,
   nbSwitchEnv,
   promoteNotebookCell,
+  replBusy,
   replEnabled,
   runtimeBadge,
   shortRuntime,
@@ -245,7 +246,8 @@ function CellIo({ cell }: { cell: NotebookCell }) {
 }
 
 export function CellActions({ cell }: { cell: NotebookCell }) {
-  const appendable = canRerun.value && !cell.live && !!String(cell.source || "").trim();
+  const appendable =
+    canRerun.value && !replBusy.value && !cell.live && !!String(cell.source || "").trim();
   const canFork =
     !cell.live && canForkFromCell.value && !!publicText(cell.fork_checkpoint_id, 96);
   return (
@@ -264,7 +266,7 @@ export function CellActions({ cell }: { cell: NotebookCell }) {
         {t("nb.action.rerun")}
       </button>
       {canFork ? (
-        <button class="nbc-action" onClick={() => void forkNotebookCell(cell)}>
+        <button class="nbc-action" disabled={forkBusy.value} onClick={() => void forkNotebookCell(cell)}>
           {t("nb.action.fork")}
         </button>
       ) : null}
@@ -607,13 +609,7 @@ function ReplPanel() {
       : { text: "…", cls: "kstate" };
   const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
   const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
-  const pending =
-    pendingReplIdentity.value &&
-    (pendingReplIdentity.value as { frame_id?: string }).frame_id === sid
-      ? pendingReplIdentity.value
-      : null;
-  const replIdentity = pending || identityForOwner(executionQueue.value, "user_repl");
-  const replBusy = !!replIdentity;
+  const busy = replBusy.value;
   const lang = _replLanguage.value === "r" ? "r" : "python";
   const drafts = _replDrafts.value || { python: "", r: "" };
   return (
@@ -650,7 +646,7 @@ function ReplPanel() {
             {t("nb.repl.language")}
             <select
               class="nb-language-select"
-              disabled={replBusy}
+              disabled={busy}
               value={lang}
               onChange={(ev) => {
                 const next = (ev.currentTarget as HTMLSelectElement).value === "r" ? "r" : "python";
@@ -671,13 +667,13 @@ function ReplPanel() {
           <div class="nb-live-input-actions">
             <button
               class="solid-btn small"
-              disabled={replBusy || !sid}
+              disabled={busy || !sid}
               onClick={() => void runDraft()}
             >
               {t("nb.repl.run")}
             </button>
             <button
-              class={"repl-stop" + (replBusy ? "" : " hidden")}
+              class={"repl-stop" + (busy ? "" : " hidden")}
               title={t("nb.repl.interruptTitle")}
               onClick={() => void interruptRepl()}
             />
@@ -689,7 +685,7 @@ function ReplPanel() {
           rows={7}
           spellcheck={false}
           placeholder={t("nb.repl.inputPlaceholder")}
-          disabled={!sid || replBusy}
+          disabled={!sid || busy}
           defaultValue={drafts[lang] || ""}
           onInput={(ev) => {
             drafts[_replLanguage.value] = (ev.currentTarget as HTMLTextAreaElement).value;

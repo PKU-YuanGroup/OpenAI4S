@@ -17,13 +17,13 @@ vi.mock("preact/hooks", () => ({
 
 import { effect } from "@preact/signals";
 import { i18nReady, t } from "../../i18n/runtime";
-import { cells, liveCells } from "../../stores/notebook";
+import { cells, liveCells, pendingReplIdentity } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { running } from "../../stores/stream";
 import { actionTimeline, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
-import { invalidateKernelCache, kernelView } from "./kernel";
+import { forkPending, invalidateKernelCache, kernelView } from "./kernel";
 import { CellActions, CellList, CellOutput, KernelChips, NotebookDock, StatusStrip } from "./Notebook";
 
 type VNode = {
@@ -182,6 +182,40 @@ describe("Notebook subscriptions", () => {
     } finally {
       chips.dispose();
     }
+  });
+});
+
+describe("Notebook cell actions", () => {
+  function buttons(node: unknown, found: VNode[] = []): VNode[] {
+    if (Array.isArray(node)) {
+      node.forEach((child) => buttons(child, found));
+      return found;
+    }
+    if (!node || typeof node !== "object") return found;
+    const vnode = node as VNode;
+    if (vnode.type === "button") found.push(vnode);
+    buttons(vnode.props?.children, found);
+    return found;
+  }
+
+  it("Rerun and Fork are disabled while their request is out", () => {
+    currentId.value = "frame-1";
+    kernelView.value = { sid: "frame-1", st: { repl_enabled: true }, envs: null, cur: null };
+    branchState.value = { capabilities: { fork_from_cell: true, promote: true } };
+    const cell = { producing_cell_id: "c", source: "x = 1", fork_checkpoint_id: "cp1" };
+    const row = (): VNode[] => buttons(CellActions({ cell }));
+    const [, rerun, fork] = row();
+    expect(rerun!.props?.disabled).toBe(false);
+    expect(fork!.props?.disabled).toBe(false);
+    pendingReplIdentity.value = {
+      frame_id: "frame-1",
+      execution_id: "repl-1",
+      owner: { kind: "user_repl", id: "repl-1" },
+    };
+    forkPending.value = "frame-1";
+    const [, rerunBusy, forkBusyButton] = row();
+    expect(rerunBusy!.props?.disabled).toBe(true);
+    expect(forkBusyButton!.props?.disabled).toBe(true);
   });
 });
 

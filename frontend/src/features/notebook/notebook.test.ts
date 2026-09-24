@@ -25,7 +25,9 @@ import {
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
+import { branchState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
+import { t } from "../../i18n/runtime";
 import { LIVE_OUTPUT_CHAR_CAP, LIVE_OUTPUT_TRUNCATION } from "../stream/cap";
 import { registerBuiltinHandlers, setArtifactCreatedSideEffects } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
@@ -61,12 +63,16 @@ import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
 import {
   currentKernelStatus,
+  executeNotebookCode,
+  forkNotebookCell,
+  forkPending,
   invalidateKernelCache,
   kernelView,
   nbSwitchEnv,
   notebookOnTurnDone,
   refreshKernelState,
   replEnabledNow,
+  shortRuntime,
   syncKernel,
 } from "./kernel";
 import {
@@ -447,6 +453,59 @@ describe("F-14 Notebook", () => {
       currentId.value = "frame-2";
       expect(currentKernelStatus()).toBeNull();
       expect(replEnabledNow()).toBe(false);
+    });
+
+    it("a second REPL submission while the first is in flight sends nothing", async () => {
+      const posts: string[] = [];
+      let answer: (body: Record<string, unknown>) => void = () => undefined;
+      setNotebookApi((path) => {
+        posts.push(path);
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      });
+      const first = executeNotebookCode("print(1)", "python");
+      // A double click on Rerun: each POST carried a new execution_id, and
+      // the server's FIFO ran code with side effects twice.
+      const second = executeNotebookCode("print(1)", "python");
+      expect(posts).toEqual(["/frames/frame-1/kernel/execute"]);
+      expect(await second).toBe(false);
+      answer({ status: "accepted" });
+      expect(await first).toBe(true);
+    });
+
+    it("Fork sends one request while one is out, and says when the branch exists", async () => {
+      branchState.value = { capabilities: { fork_from_cell: true } };
+      const hints: string[] = [];
+      vi.stubGlobal("hint", (message: string) => hints.push(message));
+      const posts: string[] = [];
+      let answer: (response: Response) => void = () => undefined;
+      vi.stubGlobal("fetch", (url: string) => {
+        posts.push(url);
+        return new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+      });
+      const cell = { producing_cell_id: "c7", fork_checkpoint_id: "ckpt-0123456789" };
+      const first = forkNotebookCell(cell);
+      const second = forkNotebookCell(cell);
+      expect(posts).toEqual(["/api/v1/frames/frame-1/branches/fork"]);
+      await second;
+      answer(new Response(JSON.stringify({ branch_id: "b2" }), { status: 200 }));
+      await first;
+      expect(hints).toEqual([t("branch.forked", shortRuntime("ckpt-0123456789"))]);
+      expect(forkPending.value).toBeNull();
+    });
+
+    it("Fork shows the server's refusal, not a success", async () => {
+      branchState.value = { capabilities: { fork_from_cell: true } };
+      const hints: string[] = [];
+      vi.stubGlobal("hint", (message: string) => hints.push(message));
+      const sentence = "historical source has no exact cursor checkpoint";
+      vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ error: sentence }), { status: 409 }));
+      await forkNotebookCell({ producing_cell_id: "c7", fork_checkpoint_id: "ckpt-1" });
+      expect(hints).toEqual([t("branch.actionFailed", sentence)]);
+      expect(forkPending.value).toBeNull();
     });
 
     it("reads only while the Notebook is on screen, and not again while fresh", async () => {
