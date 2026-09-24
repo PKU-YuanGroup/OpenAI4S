@@ -659,3 +659,322 @@ def test_the_bundle_does_not_open_a_database_whose_version_it_could_not_read(
         "error_type": "OperationalError",
     }
     assert security["secret_store"] == security["schema"]
+
+
+# --------------------------------------------------------------------------
+# what a bundle attached to "it stopped" has to say about the stop
+# --------------------------------------------------------------------------
+#
+# A WSL user on 0.3.0 reported "已停止重复动作" two steps into every turn. The
+# bundle carried postures, versions and log-line counts; the version itself
+# was missing and nothing said how any turn had ended.
+
+_MODEL_CANARY = "glm-private-canary-7"
+_PROMPT_CANARY = "the unpublished cohort-seven assay results"
+_PRIVATE_REASON = "private_cohort_alpha_stop"
+_PRIVATE_PROVIDER = "acme-internal-relay"
+
+
+def test_the_version_falls_back_to_the_package_when_metadata_is_missing(monkeypatch):
+    """`importlib.metadata` had no dist-info to read there, `_version()`
+    answered "unknown", and `_v_version` rightly dropped that -- leaving
+    `environment.fields_omitted: 1` where the version should have been."""
+    import importlib.metadata
+
+    import openai4s
+    from openai4s.diagnostics import archive_safe
+
+    def no_dist_info(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", no_dist_info)
+
+    environment = environment_report()
+    archived = archive_safe({"environment": environment})["environment"]
+
+    assert environment["openai4s"] == openai4s.__version__
+    assert archived["openai4s"]
+    assert openai4s.__version__.startswith(archived["openai4s"])
+    assert "fields_omitted" not in archived
+
+
+@pytest.mark.parametrize(
+    "release, banner, wsl, reduced",
+    [
+        # What the WSL user's report showed: the release reduced to 6.6.87.
+        ("6.6.87.2-microsoft-standard-WSL2", "", True, "6.6.87"),
+        ("4.4.0-19041-Microsoft", "", True, "4.4"),
+        (
+            "6.6.87.2",
+            "Linux version 6.6.87.2-microsoft-standard-WSL2 (root@build) #1 SMP",
+            True,
+            "6.6.87.2",
+        ),
+        (
+            "6.5.0-15-generic",
+            "Linux version 6.5.0-15-generic (buildd@lcy02-amd64-027) #15-Ubuntu",
+            False,
+            "6.5",
+        ),
+    ],
+)
+def test_a_wsl_kernel_is_named_without_its_release_string(
+    monkeypatch, tmp_path, release, banner, wsl, reduced
+):
+    """The release is reduced to its numeric prefix, so a WSL report used to
+    read exactly like any other Linux host. The answer travels as a boolean;
+    the strings it was read from do not."""
+    import openai4s.diagnostics as diagnostics
+    from openai4s.diagnostics import archive_safe
+
+    proc_version = tmp_path / "version"
+    proc_version.write_text(banner, encoding="utf-8")
+    monkeypatch.setattr(diagnostics.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(diagnostics.platform, "release", lambda: release)
+    monkeypatch.setattr(diagnostics, "_PROC_VERSION", proc_version)
+
+    archived = archive_safe({"environment": environment_report()})["environment"]
+
+    assert archived["wsl"] is wsl
+    assert archived["release"] == reduced
+    shared = json.dumps(archived).lower()
+    assert "microsoft" not in shared and "wsl2" not in shared
+
+
+def test_only_a_linux_kernel_is_asked_whether_it_is_wsl(monkeypatch, tmp_path):
+    import openai4s.diagnostics as diagnostics
+
+    proc_version = tmp_path / "version"
+    proc_version.write_text("Linux version 6.6.87.2-microsoft-standard-WSL2")
+    monkeypatch.setattr(diagnostics, "_PROC_VERSION", proc_version)
+    monkeypatch.setattr(diagnostics.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(diagnostics.platform, "release", lambda: "24.0.0")
+
+    assert environment_report()["wsl"] is False
+
+
+def _ledger_turn(store, frame_id, reason, *, provider="ark", progress_reason=None):
+    """One real turn's ledger rows: the user message, then its terminal."""
+    from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
+
+    ledger = RuntimeActionLedger(
+        store, frame_id, new_turn_id(), provider=provider, model=_MODEL_CANARY
+    )
+    ledger.append_user({"content": _PROMPT_CANARY})
+    ledger.append_terminal(reason, progress_reason=progress_reason)
+
+
+def test_the_bundle_says_how_the_recent_turns_ended(cfg, tmp_path):
+    from openai4s.diagnostics import TURN_WINDOW
+    from openai4s.store import Store
+
+    store = Store(cfg.db_path)
+    try:
+        root = store.new_frame()
+        child = store.new_frame(parent_id=root, kind="delegate", depth=1)
+        _ledger_turn(store, root, "submitted", provider="claude")
+        _ledger_turn(store, root, "no_progress", progress_reason="same_action")
+        # A delegated child records its own terminal under its own frame; it
+        # is not a turn the user saw end.
+        _ledger_turn(store, child, "max_turns")
+        _ledger_turn(store, root, _PRIVATE_REASON, provider=_PRIVATE_PROVIDER)
+        _ledger_turn(
+            store, root, "no_progress", progress_reason="consecutive_malformed"
+        )
+    finally:
+        store.close()
+    target = tmp_path / "b.zip"
+
+    build_bundle(cfg, target)
+
+    with zipfile.ZipFile(target) as archive:
+        turns = json.loads(archive.read("report.json"))["agent_turns"]
+    assert turns == {
+        "status": "ok",
+        "window": TURN_WINDOW,
+        "terminals": 4,
+        "reasons": {"no_progress": 2, "other": 1, "submitted": 1},
+        "progress_reasons": {"consecutive_malformed": 1, "same_action": 1},
+        "wires": {"anthropic": 1, "openai": 2, "unknown": 1},
+        "latest": {
+            "reason": "no_progress",
+            "progress_reason": "consecutive_malformed",
+            "wire": "openai",
+        },
+    }
+    # Codes from a set written down in source travel; names an operator or a
+    # model chose do not, and neither does anything the turn was about.
+    blob = _bundle_bytes(target)
+    for private in (_PRIVATE_REASON, _PRIVATE_PROVIDER, _MODEL_CANARY, _PROMPT_CANARY):
+        assert private.encode() not in blob, private
+
+
+def test_the_window_holds_the_newest_turns(cfg):
+    from openai4s.diagnostics import turn_stop_report
+    from openai4s.store import Store
+
+    store = Store(cfg.db_path)
+    try:
+        root = store.new_frame()
+        _ledger_turn(store, root, "max_turns")
+        for _ in range(3):
+            _ledger_turn(store, root, "submitted")
+    finally:
+        store.close()
+
+    report = turn_stop_report(cfg, window=3)
+
+    assert report["terminals"] == 3
+    assert report["reasons"] == {"submitted": 3}
+
+
+def test_reading_the_ledger_writes_nothing(cfg):
+    """The same `mode=ro` read the schema probe makes: no upgrade, no journal,
+    not a byte of the database changed."""
+    from openai4s.diagnostics import turn_stop_report
+    from openai4s.store import Store
+
+    store = Store(cfg.db_path)
+    try:
+        _ledger_turn(store, store.new_frame(), "no_progress", progress_reason="x")
+    finally:
+        store.close()
+    before = cfg.db_path.read_bytes()
+
+    report = turn_stop_report(cfg)
+
+    assert report["progress_reasons"] == {"other": 1}
+    assert cfg.db_path.read_bytes() == before
+    assert not cfg.db_path.with_name(cfg.db_path.name + "-journal").exists()
+
+
+def test_a_database_that_needs_recovery_is_left_for_the_open_that_replays_it(
+    tmp_path,
+):
+    """A hot journal can only be replayed by a read-write open. The read-only
+    handle reports that it could not read, rather than failing the bundle or
+    touching either file."""
+    from types import SimpleNamespace
+
+    from openai4s.diagnostics import turn_stop_report
+    from openai4s.store import Store
+    from tests.test_schema_migrations import _leave_hot_rollback_journal
+
+    path = tmp_path / "crashed.db"
+    Store(path).close()
+    _leave_hot_rollback_journal(path)
+    journal = path.with_name(path.name + "-journal")
+    before = (path.read_bytes(), journal.read_bytes())
+
+    assert turn_stop_report(SimpleNamespace(db_path=path)) == {
+        "status": "skipped",
+        "code": "interrupted_write",
+    }
+    assert (path.read_bytes(), journal.read_bytes()) == before
+
+
+def test_a_database_without_turns_to_count_says_why(tmp_path):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from openai4s.diagnostics import archive_safe, turn_stop_report
+
+    absent = tmp_path / "absent.db"
+    predates_ledger = tmp_path / "old.db"
+    with sqlite3.connect(predates_ledger) as conn:
+        conn.execute("CREATE TABLE frames (frame_id TEXT PRIMARY KEY)")
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_bytes(b"invalid SQLite database" * 30)
+
+    reports = [
+        turn_stop_report(SimpleNamespace(db_path=path))
+        for path in (absent, predates_ledger, corrupt)
+    ]
+
+    assert reports == [
+        {"status": "skipped", "code": "no_database"},
+        {"status": "skipped", "code": "no_ledger"},
+        {"status": "unavailable", "error_type": "DatabaseError"},
+    ]
+    assert [archive_safe({"agent_turns": r})["agent_turns"] for r in reports] == (
+        reports
+    )
+    assert not absent.exists()
+
+
+def _recordable_stop_reasons() -> set[str]:
+    """Every terminal reason the source can hand to the Action Ledger.
+
+    Read out of the code rather than listed, so a reason added later fails
+    `test_every_recordable_stop_reason_is_nameable` instead of arriving in
+    bundles as `other`.
+    """
+    import ast
+    from pathlib import Path
+
+    import openai4s
+    from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
+    from openai4s.agent.recovery import recovery_message
+
+    def literals(node):
+        return {
+            item.value
+            for item in ast.walk(node)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        }
+
+    found = {NO_PROGRESS_STOP_REASON}
+    package = Path(openai4s.__file__).parent
+    for source in package.rglob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            if name == "append_terminal" and node.args:
+                found |= literals(node.args[0])
+            elif name == "_finish" and len(node.args) >= 3:
+                found |= literals(node.args[2])
+            elif name == "AutoBudgetDenied" and node.args:
+                if isinstance(node.args[0], ast.Constant):
+                    found |= literals(node.args[0])
+            for keyword in node.keywords:
+                if keyword.arg == "stop_reason" and isinstance(
+                    keyword.value, ast.Constant
+                ):
+                    found |= literals(keyword.value)
+        if source.name == "models.py" and source.parent.name == "llm":
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.FunctionDef)
+                    and node.name == "llm_failure_code"
+                ):
+                    # The gateway records a model-call failure by its own code
+                    # only when a stopped turn can be continued from it.
+                    found |= {
+                        code
+                        for code in literals(node)
+                        if code.startswith("llm_") and recovery_message(code)
+                    }
+    return found
+
+
+def test_every_recordable_stop_reason_is_nameable():
+    from openai4s.diagnostics import _TURN_REASONS
+
+    recordable = _recordable_stop_reasons()
+
+    # The scan itself has to find the reasons this investigation turned on.
+    assert {"no_progress", "max_turns", "submitted", "llm_stream_timeout"} <= (
+        recordable
+    )
+    assert recordable - _TURN_REASONS == set()
+
+
+def test_the_code_sets_track_their_sources():
+    from openai4s.agent.progress_circuit import PROGRESS_REASONS
+    from openai4s.diagnostics import _PROGRESS_REASONS, _WIRE_FAMILIES
+    from openai4s.llm import SUPPORTED_WIRES
+
+    assert _PROGRESS_REASONS == set(PROGRESS_REASONS) | {"other"}
+    assert _WIRE_FAMILIES == set(SUPPORTED_WIRES) | {"unknown"}

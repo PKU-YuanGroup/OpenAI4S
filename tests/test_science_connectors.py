@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +30,11 @@ ARXIV_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 RESPONSES = {
+    "zenodo.org": json.loads(
+        (Path(__file__).parent / "fixtures/zenodo/record-6275421.json").read_text(
+            encoding="utf-8"
+        )
+    ),
     "rest.uniprot.org": {
         "results": [
             {
@@ -151,6 +157,7 @@ class FakeFetch:
 @pytest.mark.parametrize(
     ("database", "query", "filters", "expected_id", "expected_type"),
     [
+        ("zenodo", "hyperspectral", {}, "6275421", "dataset"),
         ("uniprot", "insulin", {"organism_id": "9606"}, "P01308", "protein"),
         ("pdb", "insulin", {}, "4INS", "structure"),
         (
