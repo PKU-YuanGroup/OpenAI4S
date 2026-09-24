@@ -16,10 +16,11 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`。路径必须是单个前导斜杠。 |
 | [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
 | [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`，以及供渲染使用的 `customizeProject`（它的 computed，只在项目变化时通知）。 |
-| [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。 |
+| [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。`window.openCust` / `custTab` 先加载并挂载设置 UI（`ensureCustomizeMounted` / `openCustomize`）；加载失败会提示，下次打开时重试。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
 | [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 |
 | [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取；`loadModels` / `chooseComposerModel` 用 `GET /models` 与 `PUT /models/default` 填充 composer `#model-select` 的 store（由 `bootCustomize` 调用）。 |
+| [`mount.ts`](mount.ts) | `mountCustomize()`：把设置弹窗渲染到 `#cust-root`。它是唯一导入 Customize 组件树的模块，首次打开设置时才加载（`ensureCustomizeMounted`），构建时因此被拆出首屏包。 |
 | [`models.test.ts`](models.test.ts) | `loadModels` 请求 `/models` 并填充 `models` / `defaultModel` / `defaultModelName`（配置档条目用模型名命名，id 原样保留）；`bootCustomize` 接好了它。 |
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`。 |
 | [`tabs.ts`](tabs.ts) | 九个 tab id；`agents` → `specialists`。 |

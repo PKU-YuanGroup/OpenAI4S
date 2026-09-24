@@ -12,12 +12,14 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | [`api.ts`](api.ts) | `GET /onboarding`、`POST /onboarding/complete`、配置档保存/更新/激活/probe。 |
 | [`badges.test.ts`](badges.test.ts) | 三态 badge 行，以及 `CapabilityBadges` 据此渲染的标签；unknown 原因原样保留。 |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` 行 + stale。 |
-| [`boot.ts`](boot.ts) | `bootOnboarding()` 挂载 `#onboarding-root`。 |
+| [`boot.ts`](boot.ts) | `bootOnboarding()` 只在首次设置未完成、或读不到其状态时，才加载并挂载向导（`#onboarding-root`，见 `startOnboarding`）。 |
+| [`boot.test.ts`](boot.test.ts) | 首次设置已完成时不加载向导代码块；未完成、或状态读取失败时才加载。 |
 | [`copy.ts`](copy.ts) | 车道本地 zh/en 文案（`ot`）。不改生成的 i18n。`copyLookup(table)` 是 `ot` 与 `judgmentT` 共用的查表函数。 |
 | [`copy.test.ts`](copy.test.ts) | `copyLookup`：先查当前语言，再查英文，最后返回 key；已加载的词典优先；按位置填充占位符。`ot` 与 `judgmentT` 都基于它。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`machine.test.ts`](machine.test.ts) | skip / 清单 / 带 request id 的错误；Test 前 providerRequests=0；模型身份变化时清除回执和测试决定；为其他配置档测得的 probe 结果会被丢弃。 |
 | [`machine.ts`](machine.ts) | 四步 reducer。模型身份改变时清除旧能力回执和测试决定；仅展示字段变化时保留。`testResult` 带上它实际测的配置档，若不是当前所选路径则忽略。凭据不进入向导状态。 |
+| [`mount.ts`](mount.ts) | `mountOnboarding()`：把 `WizardHost` 渲染到 `#onboarding-root`。它是唯一导入向导 UI 的模块，构建时因此被拆出首屏包。 |
 | [`status.ts`](status.ts) | 清洗 GET 载荷；丢掉凭据形状的键。 |
 | [`wizard-integration.test.ts`](wizard-integration.test.ts) | 现有配置档的 Continue 会等待激活完成，并刷新已编辑配置的模型身份后再进入下一步。 |
 | [`wizard-save.test.ts`](wizard-save.test.ts) | 保存新配置档或激活已有配置档后，重新读取输入框旁的模型列表。已保存过的路径再点「继续」会更新那个配置档（key 输入框为空时保留原 key）；已有完全相同的配置档时直接复用；期间被删除的则重新保存。 |

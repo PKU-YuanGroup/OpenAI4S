@@ -16,10 +16,11 @@ F-19 Customize domain logic. Tab state machine, timer lease (unmount clears ever
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`. Path must be a single leading slash. |
 | [`environment.ts`](environment.ts) | Skill readiness note; `sanitizeStandardProfileReadiness`. |
 | [`host.ts`](host.ts) | `hint` / `openViewer` via `isReady`; re-exports the real `loadModels` from `models.ts` (no window bridge); `effProject`, and `customizeProject` (a computed of it that notifies only when the project changes, for rendering). |
-| [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` and public re-exports. |
+| [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` and public re-exports. `window.openCust` / `custTab` load and mount the Settings UI first (`ensureCustomizeMounted` / `openCustomize`); a failed load says so and the next open retries. |
 | [`layout.ts`](layout.ts) | `os-layout` density. `setLayout` / `applyLayout`. |
 | [`memory.ts`](memory.ts) | Memory scope ids and names. Never send the literal `"default"`. |
 | [`models.ts`](models.ts) | Local-endpoint sanitizer, protocol catalogue, capability-receipt reader; `loadModels` / `chooseComposerModel` fill the composer `#model-select` stores from `GET /models` and `PUT /models/default` (called by `bootCustomize`). |
+| [`mount.ts`](mount.ts) | `mountCustomize()`: renders the Settings modal into `#cust-root`. The only importer of the Customize component tree, loaded on first open (`ensureCustomizeMounted`), so the build keeps it out of the first-load bundle. |
 | [`models.test.ts`](models.test.ts) | `loadModels` requests `/models` and fills `models` / `defaultModel` / `defaultModelName` (a profile entry is named by its model, ids stay verbatim); `bootCustomize` wires it. |
 | [`state.ts`](state.ts) | `customizeOpen` / `customizeTab` / `customizeGeneration` / `customizeRefresh` / `nestedEditor`. |
 | [`tabs.ts`](tabs.ts) | Nine tab ids; `agents` → `specialists`. |

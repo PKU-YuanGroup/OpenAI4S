@@ -2,14 +2,14 @@
 
 import { t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
-import { openCust } from "../customize/actions";
+import { openCustomize } from "../customize";
 import { nestedEditor, type SkillSeed } from "../customize/state";
 import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
 import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, ApiError, api, apiErrorText } from "./api";
-import { hint, openMenu, type MenuItem } from "./chrome";
+import { hint, openMenu, reportFailure, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
 import { composerCopy } from "./copy";
 import { openConversation, resumeWatch } from "./conversation";
@@ -119,14 +119,20 @@ export async function showContextUsage(): Promise<void> {
  * called that name, which nothing defines, so the menu entry did nothing. The
  * seed travels on the editor state for the form to start from.
  */
-export function openSkillEditor(seed?: SkillSeed): void {
-  openCust("skills");
+export async function openSkillEditor(seed?: SkillSeed): Promise<void> {
+  // Settings is its own chunk: the editor can open only once it has mounted.
+  try {
+    await openCustomize("skills");
+  } catch (error) {
+    reportFailure(error);
+    return;
+  }
   nestedEditor.value = seed ? { kind: "skill", name: null, seed } : { kind: "skill", name: null };
 }
 
 export async function saveCurrentAsSkill(): Promise<void> {
   if (!currentId.value) {
-    openSkillEditor();
+    await openSkillEditor();
     return;
   }
   let messages: Array<{ role?: string; content?: unknown }> = [];
@@ -146,7 +152,7 @@ export async function saveCurrentAsSkill(): Promise<void> {
       .slice(0, 48) || "research-workflow";
   const request = String((latestUser && latestUser.content) || "").trim();
   const result = String((latestAssistant && latestAssistant.content) || "").trim();
-  openSkillEditor({
+  await openSkillEditor({
     name: title,
     description: request.replace(/\s+/g, " ").slice(0, 180),
     body: `# Purpose\n\n${request || "Describe when this workflow should be used."}\n\n# Procedure\n\n1. Reproduce the evidence-gathering and analysis workflow.\n2. Preserve data provenance, code, and generated artifacts.\n3. State uncertainty and do not overclaim beyond the evidence.\n\n# Example outcome\n\n${result.slice(0, 6000)}`,

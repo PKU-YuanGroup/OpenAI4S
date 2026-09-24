@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isReady } from "../../compat/stub";
 import { contractStub } from "../../compat/stub";
-import { installCustomize } from "./index";
+import { ensureCustomizeMounted, installCustomize, resetCustomizeMount } from "./index";
+import { customizeOpen, customizeTab } from "./state";
 import {
   createTimerLease,
   disposeTimerLease,
@@ -206,5 +207,26 @@ describe("F-19 window exports", () => {
     expect(isReady(target.openCust)).toBe(true);
     expect(isReady(target.custTab)).toBe(true);
     expect(isReady(target.telemetryRow)).toBe(true);
+  });
+
+  it("window.openCust mounts the Settings UI once, then opens the tab", async () => {
+    const target: Record<string, unknown> = {};
+    installCustomize(target);
+    (target.openCust as (tab?: string) => void)("models");
+    await vi.waitFor(() => expect(customizeOpen.value).toBe(true));
+    expect(customizeTab.value).toBe("models");
+  });
+
+  it("loads the Settings chunk once, and again after a failed load", async () => {
+    resetCustomizeMount();
+    const failing = vi.fn(() => Promise.reject(new Error("chunk failed")));
+    await expect(ensureCustomizeMounted(failing)).rejects.toThrow("chunk failed");
+    const mountCustomize = vi.fn();
+    const loading = vi.fn(() => Promise.resolve({ mountCustomize }));
+    await ensureCustomizeMounted(loading);
+    await ensureCustomizeMounted(loading);
+    expect(failing).toHaveBeenCalledOnce();
+    expect(loading).toHaveBeenCalledOnce();
+    expect(mountCustomize).toHaveBeenCalledOnce();
   });
 });
