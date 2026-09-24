@@ -435,6 +435,55 @@
     }
   },
   {
+    "description": "Import one explicitly selected open Zenodo dataset file as an immutable Artifact before analysis. Supply its exact record ID, file key, declared size and checksum from science_search, a workspace path and byte budget. Refreshes the declaration and verifies the bytes. Web native actions only.",
+    "name": "science_import_dataset",
+    "parameters": {
+      "properties": {
+        "expected_checksum": {
+          "description": "Source-declared md5:<32 hex> or sha256:<64 hex>.",
+          "maxLength": 71,
+          "minLength": 36,
+          "type": "string"
+        },
+        "expected_size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file_key": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "record_id": {
+          "maxLength": 20,
+          "minLength": 1,
+          "type": "string"
+        },
+        "timeout": {
+          "maximum": 120,
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "record_id",
+        "file_key",
+        "expected_size",
+        "expected_checksum",
+        "path",
+        "max_bytes"
+      ]
+    }
+  },
+  {
     "description": "Search hidden control-tool capability groups and activate matching tools for this session.",
     "name": "search_capabilities",
     "parameters": {

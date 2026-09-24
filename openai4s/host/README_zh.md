@@ -14,6 +14,8 @@ service 可以返回单键的 `{"error": message}` 表示软失败。Python work
 
 | 文件 | 职责 |
 | --- | --- |
+| [`datasets.py`](datasets.py) | 精确 Zenodo 记录/文件选择与来源声明刷新；仅读取元数据。 |
+| [`download.py`](download.py) | 共享有界下载与固定工作区目录发布，支持来源完整性检查和执行取消。 |
 | [`__init__.py`](__init__.py) | 重新导出组合代码要用的大部分 service class。`BashAuthorizationService` 和 `ScienceConnectorService` 不在 `__all__` 里，调用方需要各自从它们所在的模块导入。 |
 | [`bash.py`](bash.py) | 授权内核本地的 `host.bash`，但从不执行它；本模块不导入 `subprocess`。受信任的 Host 会把 worker 已经做过的安全与 egress 检查再做一遍，对 proposal 脱敏，然后签发一个短时 token，绑定命令摘要、cwd、worker generation 和 challenge。这张 token 只能兑换一次。worker 上报回来的结果，先限制长度并脱敏，再记录。 |
 | [`accelerators.py`](accelerators.py) | 用 `nvidia-smi` 探测 daemon 本机可见的 GPU，单独报告容器运行时是否存在，并且有意不把硬件可见误报成模型仓库、checkpoint 或 backend 已就绪。 |

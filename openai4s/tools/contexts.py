@@ -70,6 +70,7 @@ class ControlToolContext:
         invoke_control: Callable[..., Any] | None = None,
         dispatch_host: Callable[[str, list[Any]], Any] | None = None,
         search_web: Callable[..., dict[str, Any]] | None = None,
+        get_download_cancelled: Callable[[], Callable[[], bool] | None] | None = None,
     ) -> None:
         self._workspace = workspace
         self._get_active_env_bin = get_active_env_bin
@@ -80,6 +81,11 @@ class ControlToolContext:
         self._invoke_control = invoke_control
         self._dispatch_host = dispatch_host
         self._search_web = search_web
+        self._get_download_cancelled = get_download_cancelled
+
+    def download_cancellation(self) -> Callable[[], bool] | None:
+        """Read the owning execution's cancellation hook, never a model argument."""
+        return self._get_download_cancelled() if self._get_download_cancelled else None
 
     def workspace(self) -> Path:
         return self._workspace.workspace()

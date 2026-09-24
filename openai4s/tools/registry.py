@@ -40,6 +40,7 @@ from openai4s.tools.data import (
     QuerySchemaTool,
     ReadOnlyQueryTool,
 )
+from openai4s.tools.dataset_import import ScienceImportDatasetTool
 from openai4s.tools.delegation import (
     CollectChildrenTool,
     DelegateTaskTool,
@@ -135,6 +136,7 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     WebFetchTool,
     ScienceListDatabasesTool,
     ScienceSearchTool,
+    ScienceImportDatasetTool,
     SearchCapabilitiesTool,
     ListSkillsTool,
     SearchSkillsTool,

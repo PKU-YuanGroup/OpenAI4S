@@ -139,6 +139,7 @@ def test_control_tool_classes_own_their_security_policy():
         # put to the user is the network one.
         "web_download",
         "science_search",
+        "science_import_dataset",
         "save_artifact",
         "restore_artifact_version",
         "delegate",

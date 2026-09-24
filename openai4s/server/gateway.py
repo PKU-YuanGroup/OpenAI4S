@@ -8831,7 +8831,18 @@ class SessionRunner:
         # its final workspace capture.  An already-running background job
         # therefore refuses before ``invoke`` can write, and a new background
         # launch cannot enter the snapshot/action/capture interval.
-        with st.trusted_capture.capture():
+        ticket = self.executions.current(st.root_frame_id)
+        download_binder = getattr(st.dispatcher, "bind_download_cancellation", None)
+        # Capture the ticket on the admitted caller thread. Its cancellation
+        # event is never cleared by a later turn, unlike SessionState.cancel.
+        with (
+            st.trusted_capture.capture(),
+            (
+                download_binder(ticket.cancellation.is_set)
+                if ticket is not None and callable(download_binder)
+                else nullcontext()
+            ),
+        ):
             return self._invoke_writing_control_with_artifacts_bound(
                 st, emit, invoke, tool_name=str(name)
             )
@@ -8912,7 +8923,8 @@ class SessionRunner:
             binder = getattr(st.dispatcher, "bind_native_artifact_committer", None)
             with (
                 binder(commit_artifacts)
-                if tool_name in {"science_search", "compute_result"}
+                if tool_name
+                in {"science_search", "compute_result", "science_import_dataset"}
                 and callable(binder)
                 else nullcontext()
             ):

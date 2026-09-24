@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -176,6 +176,48 @@ class ResponseTooLarge(RuntimeError):
     """A body exceeded the byte ceiling and was abandoned mid-read."""
 
 
+class DownloadIntegrityError(ValueError):
+    """Downloaded bytes do not match an explicitly selected input declaration."""
+
+
+class DownloadCancelled(RuntimeError):
+    """The owning operation cancelled a download before publication."""
+
+
+def validate_download_expectation(
+    expected_size: int | None, expected_checksum: str | None, limit: int
+) -> tuple[str, str] | None:
+    """Validate a source declaration before any network or filesystem write."""
+    if expected_size is not None:
+        if (
+            isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or expected_size < 0
+        ):
+            raise DownloadIntegrityError("expected_size must be a nonnegative integer")
+        if expected_size > limit:
+            raise ResponseTooLarge("declared file size exceeds the download budget")
+    if expected_checksum is None:
+        return None
+    if (
+        not isinstance(expected_checksum, str)
+        or re.fullmatch(
+            r"(?:md5:[0-9a-fA-F]{32}|sha256:[0-9a-fA-F]{64})", expected_checksum
+        )
+        is None
+    ):
+        raise DownloadIntegrityError(
+            "expected_checksum must be md5:<32 hex> or sha256:<64 hex>"
+        )
+    algorithm, digest = expected_checksum.split(":", 1)
+    return algorithm, digest.lower()
+
+
+def check_download_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise DownloadCancelled("download cancelled before publication")
+
+
 def _read_capped(reader: Any, limit: int) -> bytes:
     """Read at most ``limit`` bytes, then stop and say so.
 
@@ -197,22 +239,49 @@ def _read_capped(reader: Any, limit: int) -> bytes:
         chunks.append(chunk)
 
 
-def _copy_capped(reader: Any, writer: BinaryIO, limit: int) -> tuple[int, str]:
+def _copy_capped(
+    reader: Any,
+    writer: BinaryIO,
+    limit: int,
+    *,
+    expected_size: int | None = None,
+    expected_checksum: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> tuple[int, str]:
     """Stream at most ``limit`` bytes to ``writer`` while hashing them."""
 
+    expectation = validate_download_expectation(expected_size, expected_checksum, limit)
+    source_digest = (
+        hashlib.new(expectation[0], usedforsecurity=False) if expectation else None
+    )
     total = 0
     digest = hashlib.sha256()
     while True:
+        check_download_cancelled(cancelled)
         chunk = reader.read(64 * 1024)
+        check_download_cancelled(cancelled)
         if not chunk:
+            if expected_size is not None and total != expected_size:
+                raise DownloadIntegrityError(
+                    "download size does not match expected_size"
+                )
+            if expectation and source_digest is not None:
+                if source_digest.hexdigest() != expectation[1]:
+                    raise DownloadIntegrityError(
+                        "download checksum does not match source declaration"
+                    )
             return total, digest.hexdigest()
         total += len(chunk)
         if total > limit:
             raise ResponseTooLarge(
                 f"response exceeds {limit} bytes; aborted after {total}"
             )
+        if expected_size is not None and total > expected_size:
+            raise DownloadIntegrityError("download exceeds expected_size")
         writer.write(chunk)
         digest.update(chunk)
+        if source_digest is not None:
+            source_digest.update(chunk)
 
 
 def _hash_capped(reader: Any, limit: int) -> tuple[int, str]:
@@ -667,6 +736,9 @@ def web_download(
     timeout: float = 60.0,
     max_bytes: int = 64 * 1024 * 1024,
     user_agent: str | None = None,
+    expected_size: int | None = None,
+    expected_checksum: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict:
     """Fetch a URL straight to a file, bounded, through the same guards.
 
@@ -687,12 +759,14 @@ def web_download(
     """
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
-    path = pathlib.Path(destination)
-    path.parent.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": user_agent} if user_agent else None
     limit = int(max_bytes)
     if limit < 0:
         raise ValueError("max_bytes must be non-negative")
+    expectation = validate_download_expectation(expected_size, expected_checksum, limit)
+    check_download_cancelled(cancelled)
+    path = pathlib.Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
     stage = tempfile.TemporaryDirectory(
         prefix=f".{path.name}.download-",
         dir=path.parent,
@@ -709,7 +783,21 @@ def web_download(
                 final_url,
                 ctype,
             ):
-                first_digest = _copy_capped(reader, target, limit)
+                if (
+                    expected_size is not None
+                    or expectation is not None
+                    or cancelled is not None
+                ):
+                    first_digest = _copy_capped(
+                        reader,
+                        target,
+                        limit,
+                        expected_size=expected_size,
+                        expected_checksum=expected_checksum,
+                        cancelled=cancelled,
+                    )
+                else:
+                    first_digest = _copy_capped(reader, target, limit)
             target.flush()
             verified_identity = os.fstat(target.fileno())
             publication_source = publish_link
@@ -738,6 +826,7 @@ def web_download(
             if not _path_matches_regular_inode(publication_source, verified_identity):
                 raise RuntimeError("download staging path changed before publication")
 
+            check_download_cancelled(cancelled)
             os.replace(publication_source, path)
             if not _path_matches_regular_inode(path, verified_identity):
                 raise RuntimeError("download destination changed during publication")
@@ -749,13 +838,19 @@ def web_download(
             size, sha256 = first_digest
     finally:
         stage.cleanup()
-    return {
+    result = {
         "url": final_url,
         "path": str(path),
         "bytes": size,
         "content_type": ctype,
         "sha256": sha256,
     }
+    if expected_size is not None or expectation is not None:
+        result["verified_expectation"] = {
+            "size_bytes": expected_size,
+            "checksum": ":".join(expectation) if expectation else None,
+        }
+    return result
 
 
 # --------------------------------------------------------------------------- #

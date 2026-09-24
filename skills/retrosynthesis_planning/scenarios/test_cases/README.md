@@ -85,6 +85,16 @@ not be fetched just to acquire these targets, stocks, and references.
 
 ### Decisions and verification still required
 
+The dataset-import acceptance on 2026-09-23 fetched **only `n1-targets.txt`**
+through the native Zenodo importer: 465,689 bytes, matching the published MD5,
+with measured SHA256
+`c0d1b48379e1ceb1129fba4bf3773f73f27bdb22bb4d468417e6e404d3210c15`.
+The opt-in test `tests/test_dataset_import_live.py` pins that byte identity and
+checks immutable Artifact source after Store reopen. This is a one-file
+integrity receipt, not benchmark admission: other files, partitions, stock
+normalization, attribution and budgets still require the review below, and
+`database_sources.json` remains `not_frozen`.
+
 A maintainer must record the license basis and allowed use/redistribution for
 each selected dataset, including attribution obligations. If that basis is
 unresolved, distribute only acquisition instructions and evidence, and keep the

@@ -22,6 +22,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
+from openai4s.artifact_paths import JUNK_DIR_SEGMENTS as _JUNK_DIR_SEGMENTS
+from openai4s.artifact_paths import ignored_artifact_path
 from openai4s.artifact_restore import (
     ArtifactRestoreDenied,
     ArtifactRestoreRefused,
@@ -36,7 +38,6 @@ from openai4s.storage.artifacts import (
     ArtifactDeliveryReferenceError,
 )
 
-_JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 _EMBEDDED_IMAGE_TYPES = frozenset(
     {"image/gif", "image/jpeg", "image/png", "image/webp"}
 )
@@ -4011,15 +4012,7 @@ def _capture_snippet(index: int) -> str:
 
 
 def _ignored_file(path: Path) -> bool:
-    parts = path.parts
-    if any(part.startswith(".") for part in parts):
-        return True
-    if any(
-        part in _JUNK_DIR_SEGMENTS or part.endswith((".egg-info", ".dist-info"))
-        for part in parts
-    ):
-        return True
-    return path.name.endswith((".pyc", ".pyo"))
+    return ignored_artifact_path(path)
 
 
 def is_text_editable(filename: str | None, content_type: str | None) -> bool:
