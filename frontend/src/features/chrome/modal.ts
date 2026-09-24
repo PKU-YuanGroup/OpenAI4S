@@ -139,18 +139,17 @@ function visibleFallbackModal(): HTMLElement | null {
   return null;
 }
 
+/** The modal the trap acts on: the open top of its stack, else the first visible fallback. */
+export function topModal(): HTMLElement | null {
+  const top = _modalFocus.stack[_modalFocus.stack.length - 1];
+  if (top && !top.el.classList.contains("hidden")) return top.el;
+  return visibleFallbackModal();
+}
+
 /** app.js:11095-11120 */
 export function trapModalKeydown(e: ModalKeyEvent | KeyboardEvent): void {
   if (e.key !== "Tab" && e.key !== "Escape") return;
-  // topmost open modal (stack) or first visible modal
-  let modal: HTMLElement | null = null;
-  if (_modalFocus.stack.length) {
-    const top = _modalFocus.stack[_modalFocus.stack.length - 1];
-    modal = top ? top.el : null;
-  }
-  if (!modal || modal.classList.contains("hidden")) {
-    modal = visibleFallbackModal();
-  }
+  const modal = topModal();
   if (!modal) return;
   if (e.key === "Escape") {
     // Don't steal Escape from nested popovers / composer autocomplete
@@ -201,9 +200,5 @@ export function bindModalDismiss(modal: HTMLElement | null, closeBtn?: HTMLEleme
 }
 
 export function anyModalOpen(): boolean {
-  if (_modalFocus.stack.length) {
-    const top = _modalFocus.stack[_modalFocus.stack.length - 1];
-    if (top && !top.el.classList.contains("hidden")) return true;
-  }
-  return visibleFallbackModal() !== null;
+  return topModal() !== null;
 }

@@ -12,7 +12,7 @@
  * `#cust`'s backdrop or ×: Customize renders both and closes through
  * `closeCust()`.
  */
-import { FALLBACK_MODAL_SELECTORS, _modalFocus, addModalEscapeBlocker } from "../chrome/modal";
+import { addModalEscapeBlocker, topModal } from "../chrome/modal";
 import { closeCust } from "./actions";
 import { customizeOpen, nestedEditor } from "./state";
 
@@ -28,13 +28,7 @@ export function customizeOnTop(): boolean {
   if (typeof document === "undefined" || !customizeOpen.value) return false;
   const cust = document.getElementById("cust");
   if (!cust || cust.classList.contains("hidden")) return false;
-  const top = _modalFocus.stack[_modalFocus.stack.length - 1];
-  if (top && !top.el.classList.contains("hidden")) return top.el === cust;
-  for (const sel of FALLBACK_MODAL_SELECTORS) {
-    const node = document.querySelector(sel);
-    if (node && !node.classList.contains("hidden")) return node === cust;
-  }
-  return false;
+  return topModal() === cust;
 }
 
 let escapeInstalled = false;
