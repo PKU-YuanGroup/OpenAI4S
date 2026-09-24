@@ -551,6 +551,24 @@ function appendActionTimelineDetails(container: HTMLElement, group: Group): any 
   return details;
 }
 
+/** app.js:3542. One action group as a card: the project research Timeline's rows. */
+export function actionTimelineCard(group: Group): HTMLElement {
+  const kind = timelineKind(group),
+    status = String(group.status || "completed").toLowerCase();
+  const card = el("article", "timeline-card kind-" + kind + " status-" + status);
+  card.setAttribute("data-action-kind", kind);
+  const head = el("div", "timeline-card-head");
+  const kindLabel = el("span", "timeline-kind");
+  kindLabel.appendChild(iconEl(timelineKindIcon(kind), 14));
+  kindLabel.appendChild(el("span", null, t("timeline.kind." + kind)));
+  head.appendChild(kindLabel);
+  head.appendChild(el("span", "timeline-status " + status, publicText(status || "completed", 32)));
+  card.appendChild(head);
+  card.appendChild(el("div", "timeline-card-title", group.title || t("timeline.kind." + kind)));
+  appendActionTimelineDetails(card, group);
+  return card;
+}
+
 function actionTimelineInspector(group: Group): HTMLElement {
   const kind = timelineKind(group),
     status = String(group.status || "completed").toLowerCase();

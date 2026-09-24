@@ -18,7 +18,8 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { saveCurrentAsSkill, sessionMenu, showContextUsage } from "./actions";
 import { openMenu, type MenuItem } from "./chrome";
 import { openRunLocationDialog } from "./compute";
-import { openProjectResearchView, projectTimelineCard } from "./projects";
+import { openProjectResearchView } from "./projects";
+import { actionTimelineCard } from "../timeline/island";
 
 class FakeNode {
   className = "";
@@ -120,7 +121,7 @@ describe("the project research Timeline", () => {
   it("renders each action group as a card with its details", () => {
     vi.stubGlobal("document", { createElement: () => new FakeNode() });
     try {
-      const card = projectTimelineCard({
+      const card = actionTimelineCard({
         kind: "code", status: "failed", title: "Fit the dose-response curve", owner: "agent",
         events: [{ resource_keys: ["gpu:0"], artifacts: ["fit.png"], side_effect_class: "compute" }],
         attempts: [{ generation_id: "gen-7", started_at: 1000, finished_at: 3500, error: "did not converge" }],
