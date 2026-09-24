@@ -119,6 +119,7 @@ export function VolcenginePanel() {
   const [polling, setPolling] = useState(false);
   const pollStop = useRef<(() => void) | null>(null);
   const configuring = useRef(false);
+  const loggingIn = useRef(false);
 
   const stopPoll = () => {
     pollStop.current?.();
@@ -226,8 +227,20 @@ export function VolcenginePanel() {
     };
   };
 
+  // One sign-in at a time. A second click while the first start was still
+  // pending opened a second blank tab, and the daemon answers a start that
+  // is already "connecting" without an authorize URL, so that tab stayed blank.
   const startLogin = async () => {
+    if (loggingIn.current) return;
+    loggingIn.current = true;
     let authWindow: Window | null = null;
+    const closeAuthWindow = () => {
+      try {
+        if (authWindow && !authWindow.closed) authWindow.close();
+      } catch {
+        /* Ignore blocked popups. */
+      }
+    };
     try {
       authWindow = window.open("about:blank", "_blank");
     } catch {
@@ -243,18 +256,15 @@ export function VolcenginePanel() {
         method: "POST",
         body: JSON.stringify({ mode: "device" }),
       });
-      authWindow = openVolcengineAuthorization(
-        asString(login.authorize_url),
-        authWindow,
-      );
+      const url = asString(login.authorize_url);
+      if (url) authWindow = openVolcengineAuthorization(url, authWindow);
+      else closeAuthWindow();
       applyState((prev) => ({ ...prev, login }));
     } catch (error) {
-      try {
-        if (authWindow && !authWindow.closed) authWindow.close();
-      } catch {
-        /* Ignore blocked popups. */
-      }
+      closeAuthWindow();
       applyState((prev) => ({ ...prev, _error: apiErrorText(error) }));
+    } finally {
+      loggingIn.current = false;
     }
   };
 

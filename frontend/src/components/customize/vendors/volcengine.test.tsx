@@ -107,6 +107,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Volcengine sign-in", () => {
+  it("opens one sign-in tab however often Connect is pressed, and does not leave it blank", async () => {
+    let answer!: (body: unknown) => void;
+    mocks.fetch.mockImplementation((url: string) =>
+      url.endsWith("/volcengine/login")
+        ? new Promise((resolve) => {
+            answer = (body) => resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) });
+          })
+        : reply({ state: "disconnected" }),
+    );
+    const tab = { closed: false, opener: {} as unknown, close: vi.fn(), focus: vi.fn(), location: { href: "" } };
+    const open = vi.fn(() => tab);
+    vi.stubGlobal("window", { open });
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+
+    const connect = () => find(render(), (node) => node.props?.label === "cust.volc.connect")!;
+    (connect().props!.onClick as () => void)();
+    (connect().props!.onClick as () => void)();
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(mocks.fetch.mock.calls.filter(([url]) => String(url).endsWith("/volcengine/login"))).toHaveLength(1);
+
+    // The daemon answers a start already in progress without an authorize URL.
+    answer({ state: "connecting", login_id: "volc-login-1" });
+    await flush();
+    expect(tab.close).toHaveBeenCalledTimes(1);
+    expect(tab.location.href).toBe("");
+  });
+});
+
 describe("Volcengine key wait", () => {
   it("keeps what the last recheck read when the wait runs out", async () => {
     mocks.fetch.mockImplementation((url: string) =>
