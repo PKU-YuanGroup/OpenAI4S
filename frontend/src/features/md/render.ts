@@ -75,18 +75,21 @@ export function mdInline(t: string | null | undefined): string {
   // esc() now also escapes quotes (F-08). Capture groups interpolated into a
   // double-quoted HTML attribute still go through escQuote so an alt/href/src
   // value cannot close the attribute even if a future edit reorders the chain.
+  // Bracket text excludes `[` as well as `]`: with `[^\]]` every `[` of a
+  // long run rescanned the rest of it looking for a `]` (quadratic: 20,000
+  // `[` took ~170ms per render). An unbalanced `[` is not link text anyway.
   t = t.replace(
-    /!\[([^\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g,
+    /!\[([^[\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g,
     (_m, alt: string, src: string) =>
       '<img alt="' + escQuote(alt) + '" src="' + src + '">',
   );
   t = t.replace(
-    /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
+    /!\[([^[\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
     (_m, alt: string, src: string) =>
       '<img alt="' + escQuote(alt) + '" src="' + escQuote(src) + '">',
   );
   t = t.replace(
-    /\[([^\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g,
+    /\[([^[\]]+)\]\(((?:https?:|mailto:|\/|#)[^\s)]+)\)/g,
     (_m, text: string, href: string) =>
       '<a href="' + escQuote(mdHref(href)) + '" target="_blank" rel="noopener">' + text + "</a>",
   );
@@ -106,21 +109,29 @@ export function mdInline(t: string | null | undefined): string {
 type MdListItem = { indent: number; ordered: boolean; text: string };
 type MdListCursor = { v: number };
 
-function mdBuildList(items: MdListItem[], cur: MdListCursor): string {
+/**
+ * Nesting past this renders flat. Both nestings recurse once per level, and
+ * a pathological answer (12,000 `>`, or 12,000 ever-deeper list items)
+ * overflowed the stack and took the whole history render down with it.
+ */
+const MAX_NESTING = 32;
+
+function mdBuildList(items: MdListItem[], cur: MdListCursor, depth = 0): string {
   const start = items[cur.v];
   if (!start) return "<ul></ul>";
   const ordered = start.ordered;
   const indent = start.indent;
+  const nests = depth < MAX_NESTING;
   let html = "<" + (ordered ? "ol" : "ul") + ">";
   while (cur.v < items.length) {
     const item = items[cur.v];
     if (!item || item.indent < indent) break;
-    if (item.indent > indent) break;
+    if (item.indent > indent && nests) break;
     const text = item.text;
     cur.v++;
     let nested = "";
     const next = items[cur.v];
-    if (next && next.indent > indent) nested = mdBuildList(items, cur);
+    if (next && next.indent > indent && nests) nested = mdBuildList(items, cur, depth + 1);
     html += "<li>" + mdInline(text) + nested + "</li>";
   }
   return html + "</" + (ordered ? "ol" : "ul") + ">";
@@ -165,6 +176,10 @@ export function renderMd(src: string | null | undefined): string {
   const lines = String(src == null ? "" : src)
     .replace(/\r\n?/g, "\n")
     .split("\n");
+  return renderLines(lines, 0);
+}
+
+function renderLines(lines: string[], quoteDepth: number): string {
   const n = lines.length;
   let i = 0;
   let html = "";
@@ -238,13 +253,13 @@ export function renderMd(src: string | null | undefined): string {
       i++;
       continue;
     }
-    if (/^\s*>\s?/.test(line)) {
+    if (quoteDepth < MAX_NESTING && /^\s*>\s?/.test(line)) {
       const q: string[] = [];
       while (i < n && /^\s*>\s?/.test(lines[i] || "")) {
         q.push((lines[i] || "").replace(/^\s*>\s?/, ""));
         i++;
       }
-      html += "<blockquote>" + renderMd(q.join("\n")) + "</blockquote>";
+      html += "<blockquote>" + renderLines(q, quoteDepth + 1) + "</blockquote>";
       continue;
     }
     if (looksTable(i)) {
