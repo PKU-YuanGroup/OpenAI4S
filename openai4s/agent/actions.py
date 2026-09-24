@@ -257,3 +257,31 @@ INCOMPLETE_CELL_NUDGE = (
     "```python or ```r cell beginning before its first required dependency. "
     "Do not continue from or paste only the truncated tail."
 )
+
+# Appended to the native results when the same reply also carried a complete
+# cell. ``route_action`` runs only the native calls, and the model used to see
+# nothing but their results: a reply that wrote a script with ``write_file``
+# and ran it in a cell got back the file's byte count and no trace of the run,
+# sent the identical pair again, and the no-progress circuit stopped the turn
+# on its third identical ``write_file``.
+UNEXECUTED_CELL_NOTE = (
+    "\n[system] NOTE: your reply also contained a ```{language} code cell. It "
+    "was NOT executed — a reply that contains native tool calls runs only "
+    "those calls, so nothing from that cell ran and it produced no output. "
+    "If the cell still needs to run, send it as the ONLY action of your next "
+    "reply, with no tool calls."
+)
+
+
+def unexecuted_cell_note(content: str, action: Action | None) -> str:
+    """The note for a native action that displaced a cell, else ``""``.
+
+    It names the cell ``extract_action`` would have run had the reply carried
+    no native calls, so it fires exactly when routing made that choice.
+    """
+    if not isinstance(action, (NativeToolBatch, FinalizeAction)):
+        return ""
+    cell = extract_action(content if isinstance(content, str) else "")
+    if cell is None:
+        return ""
+    return UNEXECUTED_CELL_NOTE.format(language=cell.language)

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping, cast
 
-from .actions import route_action
+from .actions import route_action, unexecuted_cell_note
 from .events import (
     ActionRouted,
     OutcomeProduced,
@@ -125,6 +126,9 @@ class AgentEngine:
             outcome = self.executor.execute(action, reply, state)
             if not isinstance(outcome, ExecutionOutcome):
                 raise TypeError("executor must return ExecutionOutcome")
+            outcome = self._note_unexecuted_cell(
+                outcome, unexecuted_cell_note(reply.content, action)
+            )
             circuit.observe_execution(action, outcome)
             state.messages.extend(dict(message) for message in outcome.history_messages)
             state.turn += 1
@@ -155,6 +159,34 @@ class AgentEngine:
         if state.max_turns < 0:
             raise ValueError("max_turns must be non-negative")
         return state
+
+    @staticmethod
+    def _note_unexecuted_cell(outcome: ExecutionOutcome, note: str) -> ExecutionOutcome:
+        """Put ``note`` on the last tool result the model is about to read.
+
+        Routing is decided here, so this is the one place every executor's
+        outcome passes through after a native action displaced a cell. The
+        note rides inside a tool result because every wire carries that text,
+        while a separate message between a tool batch and its results is a
+        request Anthropic rejects. It is recorded like any other result, so a
+        restored history reads the same words the live run did.
+        """
+        if not note:
+            return outcome
+        history = [dict(message) for message in outcome.history_messages]
+        for message in reversed(history):
+            content = message.get("content")
+            if message.get("role") == "tool" and isinstance(content, str):
+                message["content"] = content + note
+                break
+        else:
+            return outcome
+        observation = outcome.observation
+        if isinstance(observation, str):
+            observation += note
+        return replace(
+            outcome, history_messages=tuple(history), observation=observation
+        )
 
     @staticmethod
     def _reply(value: ModelReply | Mapping[str, Any]) -> ModelReply:

@@ -55,6 +55,15 @@ def _canonical_tool_specs(tools: list[Any] | tuple[Any, ...] | None) -> list[dic
 
 def _parse_tool_arguments(value: Any) -> tuple[str, dict | None, str | None]:
     """Preserve exact arguments while exposing a validated object view."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        # A call to a tool that takes no parameters. OpenAI-compatible relays
+        # forward it as "" (an Anthropic tool_use with an empty input streams
+        # no input_json at all) or leave the field null; the Anthropic adapter
+        # already reads its own empty input as {}. Refusing it answered every
+        # zero-argument call with a parse error the model cannot fix, and the
+        # no-progress circuit stopped the turn after the second identical one.
+        # "{}" is also what goes back on the wire when the call is replayed.
+        return "{}", {}, None
     if isinstance(value, str):
         raw = value
         try:

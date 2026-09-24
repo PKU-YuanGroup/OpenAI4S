@@ -6,6 +6,8 @@ import ast
 import copy
 from pathlib import Path
 
+import pytest
+
 import openai4s.agent.engine as engine_module
 from openai4s.agent.actions import CodeCell, NativeToolBatch
 from openai4s.agent.engine import AgentEngine
@@ -425,3 +427,94 @@ def test_cancelled_model_reply_is_not_recorded_as_history():
         RunFinished,
     ]
     assert result.messages[-1] == {"role": "user", "content": "first request"}
+
+
+_WRITE = {"path": "cell1_setup_probe.py", "content": "import sys\nprint(sys.version)\n"}
+_WRITTEN = '{"path": "cell1_setup_probe.py", "bytes": 32}'
+
+
+@pytest.mark.parametrize("name", ["write_file", "finalize_response"])
+def test_native_call_that_displaces_a_cell_says_the_cell_did_not_run(name):
+    # The Web session that prompted this: the model wrote a probe script with
+    # write_file and ran it in a ```python cell of the SAME reply. Only the
+    # native call runs, the model saw nothing but a byte count, sent the same
+    # pair again, and the circuit stopped the turn on the third write.
+    call = _call(name=name, arguments=dict(_WRITE))
+    result_message = {"role": "tool", "tool_call_id": "call_1", "content": _WRITTEN}
+    engine, model, _, _, events, _, _ = _engine(
+        [
+            _reply(
+                "```python\nexec(open('cell1_setup_probe.py').read())\n```",
+                tool_calls=[call],
+            ),
+            _reply("Done."),
+        ],
+        [
+            ExecutionOutcome(
+                history_messages=(result_message,), observation="[Tool Results]"
+            )
+        ],
+        max_turns=2,
+    )
+
+    engine.run([{"role": "user", "content": "probe the environment"}])
+
+    seen = model.calls[1][-1]
+    note = seen["content"][len(_WRITTEN) :]
+    assert seen["role"] == "tool" and seen["content"].startswith(_WRITTEN)
+    assert "```python code cell. It was NOT executed" in note
+    assert "ONLY action of your next reply" in note
+    # The Action Ledger records OutcomeProduced, so a restored history reads
+    # the same words the live model did.
+    produced = [e.outcome for e in events.events if isinstance(e, OutcomeProduced)]
+    assert produced[0].history_messages[-1] == seen
+    assert produced[0].observation == "[Tool Results]" + note
+    assert result_message["content"] == _WRITTEN
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Writing the probe script now.",
+        '```json\n{"path": "cell1_setup_probe.py"}\n```',
+        "```python\nprint('never closed')\n",
+    ],
+)
+def test_native_call_without_a_displaced_cell_is_left_alone(content):
+    call = _call(name="write_file", arguments=dict(_WRITE))
+    result_message = {"role": "tool", "tool_call_id": "call_1", "content": _WRITTEN}
+    engine, model, _, _, _, _, _ = _engine(
+        [_reply(content, tool_calls=[call]), _reply("Done.")],
+        [ExecutionOutcome(history_messages=(result_message,))],
+        max_turns=2,
+    )
+
+    engine.run([{"role": "user", "content": "probe the environment"}])
+
+    assert model.calls[1][-1] == result_message
+
+
+def test_a_model_that_ignores_the_note_is_still_stopped_by_the_circuit():
+    call = _call(name="write_file", arguments=dict(_WRITE))
+    reply = _reply("```python\nprint(1)\n```", tool_calls=[call])
+
+    def written(action, reply, state):
+        return ExecutionOutcome(
+            history_messages=(
+                {"role": "tool", "tool_call_id": "call_1", "content": _WRITTEN},
+            )
+        )
+
+    engine, model, _, _, _, _, _ = _engine(
+        [copy.deepcopy(reply) for _ in range(4)],
+        executor=FakeExecutor(handler=written),
+        max_turns=4,
+    )
+
+    result = engine.run([{"role": "user", "content": "probe the environment"}])
+
+    assert (result.stop_reason, result.progress_reason) == (
+        "no_progress",
+        "same_action",
+    )
+    assert len(model.calls) == 3
