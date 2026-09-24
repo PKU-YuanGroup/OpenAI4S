@@ -53,8 +53,11 @@ vi.mock("../../features/customize/host", async (importOriginal) => ({
   hint: mocks.hint,
 }));
 
+import { ConnectorRow } from "./ConnectorsTab";
 import { MemoryTab } from "./MemoryTab";
 import { NetworkTab } from "./NetworkTab";
+import { SkillRow } from "./SkillsTab";
+import { BuiltinRow } from "./SpecialistsTab";
 import { Toggle } from "./ui";
 
 type Node = {
@@ -178,5 +181,28 @@ describe("Memory switch", () => {
     await settle();
     expect(firstSwitch(render(MemoryTab)).props!.on).toBe(false);
     expect(mocks.hint).not.toHaveBeenCalled();
+  });
+});
+
+describe.each([
+  ["Skill", (on: boolean) => SkillRow({ s: { name: "fold", enabled: on }, pid: null }), "/skills/catalog/fold/enabled"],
+  ["specialist", (on: boolean) => BuiltinRow({ ag: { name: "planner", enabled: on } }), "/agents/planner/enabled"],
+  ["connector", (on: boolean) => ConnectorRow({ k: { connector_id: "c1", name: "Files", enabled: on } }), "/connectors/c1/enabled"],
+] as const)("%s row switch", (_kind, row, path) => {
+  it("shows what a later read brings and keeps a write the server took", async () => {
+    const write = deferred<Response>();
+    routes({ [`PUT ${path}`]: () => write.promise });
+    expect(firstSwitch(render(() => row(true))).props!.on).toBe(true);
+
+    // The tab re-read in place, and the server now says off.
+    expect(firstSwitch(render(() => row(false))).props!.on).toBe(false);
+
+    firstSwitch(render(() => row(false))).props!.onClick!();
+    firstSwitch(render(() => row(false))).props!.onClick!();
+    expect(writes()).toEqual([["/api/v1" + path, JSON.stringify({ enabled: true })]]);
+    write.resolve(response({ ok: true }));
+    await settle();
+    // The last read (off) is older than the write it did not see.
+    expect(firstSwitch(render(() => row(false))).props!.on).toBe(true);
   });
 });

@@ -11,7 +11,7 @@ import {
   hint,
 } from "../../features/customize/host";
 import { markCustomizeLoaded } from "../../features/customize/load";
-import { useTabRead } from "./hooks";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 import { DataProCard } from "./vendors/datapro";
 
@@ -151,8 +151,13 @@ export function ConnectorsTab() {
   );
 }
 
-function ConnectorRow({ k }: { k: Record<string, unknown> }) {
-  const [on, setOn] = useState(!!k.enabled);
+export function ConnectorRow({ k }: { k: Record<string, unknown> }) {
+  const enabled = useOptimisticToggle(!!k.enabled, (on) =>
+    api(`/connectors/${k.connector_id}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: on }),
+    }),
+  );
   const [testing, setTesting] = useState(false);
   return (
     <div class="cust-row">
@@ -191,21 +196,7 @@ function ConnectorRow({ k }: { k: Record<string, unknown> }) {
       >
         {testing ? t("cust.connectors.testing") : t("cust.connectors.test")}
       </button>
-      <Toggle
-        on={on}
-        onClick={async () => {
-          const next = !on;
-          setOn(next);
-          try {
-            await api(`/connectors/${k.connector_id}/enabled`, {
-              method: "PUT",
-              body: JSON.stringify({ enabled: next }),
-            });
-          } catch {
-            setOn(!next);
-          }
-        }}
-      />
+      <Toggle on={enabled.on} onClick={enabled.toggle} />
       <IconGhost
         name="trash-2"
         title={t("common.delete")}

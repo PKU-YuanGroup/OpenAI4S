@@ -29,7 +29,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`refresh.test.tsx`](refresh.test.tsx) | A write that answers after the user moved to another tab, or opened another nested editor, leaves them where they are; a write on the tab still shown re-reads it in place without remounting it. |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
-| [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. |
+| [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. The Skill, specialist and connector row switches show what a later read brings and keep a write the server took over an older read. |
 | [`customize.css`](customize.css) | Lane-local modal chrome until F-21 ports `style.css`. |
 | [`icons.tsx`](icons.tsx) | Lucide paths used by this modal. |
 | [`hooks.ts`](hooks.ts) | `useTabRead`: a tab's reads, on mount and again in place after a write (`refreshCustTab`); only the newest read applies, the first settles the pane's load status. `useOptimistic` / `useOptimisticToggle`: a control bound to one server setting is disabled until the tab's first read lands (`null`), moves at once, allows one write at a time, and goes back to the confirmed value when a write fails. |

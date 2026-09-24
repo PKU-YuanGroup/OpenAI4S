@@ -13,7 +13,7 @@ import {
   hint,
   insertSkillMention,
 } from "../../features/customize/host";
-import { useTabRead } from "./hooks";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Empty, Hdr, IconGhost, Pill, Toggle } from "./ui";
 
 type Skill = Record<string, unknown>;
@@ -24,11 +24,16 @@ function skillScope(s: Skill): "project" | "bundled" | "personal" {
   return "personal";
 }
 
-function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
+export function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
   const scope = skillScope(s);
   const name = asString(s.displayName || s.name);
   const note = skillReadinessNoteText(s);
-  const [enabled, setEnabled] = useState(s.enabled !== false);
+  const enabled = useOptimisticToggle(s.enabled !== false, (on) =>
+    api(`/skills/catalog/${encodeURIComponent(asString(s.name))}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: on }),
+    }),
+  );
   return (
     <div class="cust-row">
       <div class="info">
@@ -88,21 +93,7 @@ function SkillRow({ s, pid }: { s: Skill; pid: string | null }) {
         </>
       ) : null}
       {scope !== "project" ? (
-        <Toggle
-          on={enabled}
-          onClick={async () => {
-            const on = !enabled;
-            setEnabled(on);
-            try {
-              await api(`/skills/catalog/${encodeURIComponent(asString(s.name))}/enabled`, {
-                method: "PUT",
-                body: JSON.stringify({ enabled: on }),
-              });
-            } catch {
-              setEnabled(!on);
-            }
-          }}
-        />
+        <Toggle on={enabled.on} onClick={enabled.toggle} />
       ) : null}
     </div>
   );

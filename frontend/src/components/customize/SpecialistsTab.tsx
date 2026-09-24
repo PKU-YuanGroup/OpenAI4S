@@ -9,7 +9,7 @@ import {
   confirmAction,
   hint,
 } from "../../features/customize/host";
-import { useTabRead } from "./hooks";
+import { useOptimisticToggle, useTabRead } from "./hooks";
 import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 
 export function SpecialistsTab() {
@@ -90,8 +90,13 @@ export function SpecialistsTab() {
   );
 }
 
-function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
-  const [on, setOn] = useState(ag.enabled !== false);
+export function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
+  const enabled = useOptimisticToggle(ag.enabled !== false, (on) =>
+    api(`/agents/${encodeURIComponent(asString(ag.name))}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: on }),
+    }),
+  );
   return (
     <div class="cust-row">
       <div class="info">
@@ -106,21 +111,7 @@ function BuiltinRow({ ag }: { ag: Record<string, unknown> }) {
         </div>
         <div class="ds">{asString(ag.description)}</div>
       </div>
-      <Toggle
-        on={on}
-        onClick={async () => {
-          const next = !on;
-          setOn(next);
-          try {
-            await api(`/agents/${encodeURIComponent(asString(ag.name))}/enabled`, {
-              method: "PUT",
-              body: JSON.stringify({ enabled: next }),
-            });
-          } catch {
-            setOn(!next);
-          }
-        }}
-      />
+      <Toggle on={enabled.on} onClick={enabled.toggle} />
     </div>
   );
 }
