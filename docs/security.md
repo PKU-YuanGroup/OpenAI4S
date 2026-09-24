@@ -524,7 +524,9 @@ send out of it:
   workspace export drop `.env`, `credentials.json`, `*.pem` and the rest by
   name; an activity card (a Writing card holds up to 6,000 characters of what
   was written), a host-call preview or a child-ledger entry that names such a
-  file travels with its payload withheld, so a secret the pattern scrubber
+  file — a preview is also judged by its row's resource keys, and a truncated
+  `write_file`/`edit_file` preview is withheld outright, since the cut can drop
+  the path and keep the body — travels with its payload withheld, so a secret the pattern scrubber
   cannot recognise is not shipped through the evidence instead;
 - **no free-text failure.** A delegated child's `error` and a compute job's
   `reason` are stored as `str(exc)` — provider bodies, relay URLs, host names —

@@ -623,6 +623,41 @@ def test_records_naming_a_secret_file_travel_without_their_payload(tmp_path):
             ok=True,
             frame_id=root,
         )
+        # Content first: the 500-character preview keeps the secret and loses
+        # the path. The resource key still names the file.
+        long_body = secret + "A" * 600
+        store.log_host_call(
+            method="write_file",
+            args=[{"content": long_body, "path": ".env"}],
+            ok=True,
+            frame_id=root,
+            resource_keys=["workspace:.env"],
+        )
+        # The same without a resource key: a truncated file-content preview
+        # cannot say what it was writing, so it is withheld too.
+        store.log_host_call(
+            method="edit_file",
+            args=[{"new_string": long_body, "path": "config/.env.local"}],
+            ok=True,
+            frame_id=root,
+        )
+        # Any other method whose resource key names the file: a refused
+        # artifact save still leaves its arguments in the audit row.
+        store.log_host_call(
+            method="save_artifact",
+            args=[{"data": long_body, "path": "secrets.pem"}],
+            ok=False,
+            frame_id=root,
+            resource_keys=["workspace:secrets.pem"],
+        )
+        # An ordinary write keeps its preview.
+        store.log_host_call(
+            method="write_file",
+            args=[{"path": "notes.md", "content": "plain"}],
+            ok=True,
+            frame_id=root,
+            resource_keys=["workspace:notes.md"],
+        )
         arguments = {"path": ".env", "content": secret}
         group = store.append_tool_action_group(
             root_frame_id=child,
@@ -674,7 +709,13 @@ def test_records_naming_a_secret_file_travel_without_their_payload(tmp_path):
         assert cards["s-save"]["input"] == {"path": "result.csv"}
         sections = json.loads(files["runtime/collection.json"])["sections"]
         assert sections["activity"]["withheld"] == 2
-        assert sections["host_calls"]["withheld"] == 1
+        assert sections["host_calls"]["withheld"] == 4
+        previews = [
+            call["args_preview"]
+            for call in json.loads(files["runtime/host_calls.json"])["calls"]
+            if call["method"] in {"write_file", "edit_file"}
+        ]
+        assert sum("notes.md" in preview for preview in previews) == 1
         assert sections["frames"]["withheld"] == 1
         (ledger,) = json.loads(files["runtime/frames.json"])["child_ledgers"]
         (hidden,) = [g for g in ledger["groups"] if g["turn_id"] == "child-turn-2"]

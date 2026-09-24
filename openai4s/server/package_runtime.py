@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import os
 import platform
 import re
@@ -668,6 +669,35 @@ def _mentions_secret_file(value: Any, depth: int = 0) -> bool:
     return False
 
 
+#: Host methods whose arguments carry a file's content beside its path.
+_FILE_CONTENT_METHODS = frozenset({"write_file", "edit_file"})
+
+
+def _host_call_names_secret_file(call: Mapping[str, Any]) -> bool:
+    """Whether a host-call row's preview may carry a refused file's content.
+
+    The preview is ``json.dumps(args)[:500]`` and argument order is the
+    caller's, so a content-first ``write_file`` spec can lose its path to the
+    truncation while still carrying the body. The row's resource keys hold
+    the path in full (``workspace:<path>``) and are read too; and a
+    file-content call whose preview was cut short is withheld, because what
+    it was writing can no longer be told from what it wrote.
+    """
+
+    preview = str(call.get("args_preview") or "")
+    if names_secret_file(preview):
+        return True
+    for key in call.get("resource_keys") or ():
+        if isinstance(key, str) and names_secret_file(key.partition(":")[2] or key):
+            return True
+    if str(call.get("method") or "") in _FILE_CONTENT_METHODS:
+        try:
+            json.loads(preview)
+        except ValueError:
+            return True
+    return False
+
+
 def _withhold_card(step: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     if not (
         _mentions_secret_file(step.get("input"))
@@ -926,7 +956,7 @@ def collect_runtime_documents(
         calls = store.list_session_host_calls(root_frame_id, limit=MAX_HOST_CALLS)
         withheld = 0
         for call in calls:
-            if names_secret_file(str(call.get("args_preview") or "")):
+            if _host_call_names_secret_file(call):
                 call["args_preview"] = f"<withheld: {WITHHELD}>"
                 withheld += 1
         return {
