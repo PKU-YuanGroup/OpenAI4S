@@ -9,7 +9,8 @@ M-02 仪表盘「需要处理」卡片流。数据来自 `GET /api/v1/attention`
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | `GET /attention` 分页拉取；页面不可见时丢弃迟到响应。 |
-| [`boot.ts`](boot.ts) | 挂载 `#dash-attention`、4 秒轮询、可见性与仪表盘 class 门闩。 |
+| [`boot.ts`](boot.ts) | 挂载 `#dash-attention`、4 秒轮询、可见性与仪表盘 class 门闩；切换语言会重新读取一页（卡片标签在读取时生成）。 |
+| [`boot.test.ts`](boot.test.ts) | 只有真正切换语言时才会重新读取注意力列表。 |
 | [`cards.test.ts`](cards.test.ts) | 六类 fixture 各一张卡；idle/completed 为 0；mutation 路由名。 |
 | [`copy.ts`](copy.ts) | M-02 覆盖文案（不改生成的 i18n 字典）。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |

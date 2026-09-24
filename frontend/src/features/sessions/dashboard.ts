@@ -164,6 +164,13 @@ export async function loadDashboard(): Promise<void> {
   renderDashRecent(_dashFrames);
 }
 
+/** Paint the lists again from what the last reads returned; a language switch needs no new reads. */
+export function repaintDashboard(): void {
+  renderDashProjects();
+  renderDashRunning(_dashFrames);
+  renderDashRecent(_dashFrames);
+}
+
 export function renderDashProjects(): void {
   const pc = $("#dash-projects");
   if (!pc) return;

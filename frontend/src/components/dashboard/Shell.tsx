@@ -16,6 +16,11 @@ export function Shell() {
   // the router will open in the workspace starts with neither view shown and
   // a neutral indicator instead. `dashboard.css` hides the indicator as soon
   // as either view is revealed, whichever code path reveals it.
+  //
+  // The Shell repaints on a language switch. By then the router keeps the
+  // address and the visible view in step, so deciding again from the address
+  // agrees with it; but nothing below may bind a value the router writes:
+  // `#conv-title` takes a `defaultValue`, or a repaint would reset the name.
   const pendingRoute =
     typeof location !== "undefined" && routesToWorkspace(String(location.pathname || ""));
 
@@ -213,7 +218,7 @@ export function Shell() {
                     id="conv-title"
                     class="conv-title"
                     size={24}
-                    value="会话"
+                    defaultValue="会话"
                     data-i18n-val="conv.title.default"
                     spellcheck={false}
                     data-i18n-title="conv.title.rename"

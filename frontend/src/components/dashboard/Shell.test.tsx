@@ -63,6 +63,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("the Shell repainted after a language switch", () => {
+  it("does not bind the session title the router writes", () => {
+    // A bound `value` is compared with the live input on every repaint, so a
+    // language switch put "会话" back over the session's name.
+    const title = byId(paintAt("/projects/p-1/frames/f-1"), "conv-title");
+    expect(title?.props).not.toHaveProperty("value");
+    expect(title?.props?.defaultValue).toBe("会话");
+  });
+});
+
 describe("the Shell before the first route", () => {
   it("does not paint the dashboard under a session deep link", () => {
     const tree = paintAt("/projects/p-1/frames/f-1");

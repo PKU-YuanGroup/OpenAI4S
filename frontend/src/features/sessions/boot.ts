@@ -1,7 +1,9 @@
 /** Window exports, F-06 loadSessions hook, and workbench event wiring. */
 
-import { applyStaticI18n, i18nReady, onLanguageChange, setLang, t } from "../../i18n";
+import { LANG, applyStaticI18n, i18nReady, onLanguageChange, setLang, t, type Lang } from "../../i18n";
 import { _titleName, currentId, editingProject } from "../../stores/session";
+import { activeTab } from "../../stores/ui";
+import { renderDockTabs } from "../artifacts/ui";
 import { cycleTheme, refreshThemeToggle } from "../theme/theme";
 import { setLoadSessionsImpl } from "../ws/handlers";
 import {
@@ -17,11 +19,11 @@ import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { newSession, routeInitialView } from "./conversation";
 import { setScopedExecutionRequest } from "../notebook/kernel";
 import { scopedExecutionRequest } from "../timeline/execution-request";
-import { loadDashboard, showDashboard } from "./dashboard";
+import { loadDashboard, repaintDashboard, showDashboard } from "./dashboard";
 import { $, down, grow, setSidebar, setTitle, syncMobileChrome, updateJumpPill } from "./dom";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
-import { loadSessions, renderSessions } from "./load";
+import { loadSessions, renderSessions, syncCurrentTitle } from "./load";
 import { renderEmptySession } from "../messages/list";
 import {
   fetchAllMessages,
@@ -115,13 +117,42 @@ function repaintListsRenderedWithoutDictionaries(): void {
   const dash = $("#dashboard");
   if (dash && !dash.classList.contains("hidden")) void loadDashboard();
   renderSessions();
-  // Only an empty session has this node, and it is all that session shows.
+  repaintEmptySession();
+}
+
+/** Only an empty session has this node, and it is all that session shows. */
+function repaintEmptySession(): void {
   const host = $("#messages");
   const empty = host?.querySelector(":scope > .empty-session");
   if (host && empty) {
     empty.remove();
     renderEmptySession(host);
   }
+}
+
+/**
+ * app.js `rerenderI18n`: a language switch repaints the views built through
+ * `t()` from what they already hold, without new reads -- the dashboard lists,
+ * the project menu, the sidebar, an unnamed session's title, the empty
+ * session, the dock tabs and the dock pane on screen. Only a switch: the first
+ * dictionary load keeps the language, routing waits for it, and a first view
+ * that could not wait is repainted by `repaintListsRenderedWithoutDictionaries`.
+ */
+function languageSwitchRepaint(): (lang: Lang) => void {
+  let painted = LANG;
+  return (lang) => {
+    if (lang === painted) return;
+    painted = lang;
+    const dash = $("#dashboard");
+    if (dash && !dash.classList.contains("hidden")) repaintDashboard();
+    renderProjMenu();
+    renderSessions();
+    syncCurrentTitle();
+    repaintEmptySession();
+    renderDockTabs();
+    if (activeTab.value === "timeline") callLane("renderActionTimeline");
+    else if (activeTab.value === "notebook") callLane("renderNotebook");
+  };
 }
 
 export function bindWorkbench(): Promise<void> {
@@ -136,6 +167,7 @@ export function bindWorkbench(): Promise<void> {
   // aria-label, which no data-i18n attribute covers); that includes the
   // first dictionary load.
   onLanguageChange(refreshThemeToggle);
+  onLanguageChange(languageSwitchRepaint());
   applyStaticI18n(document);
   watchActivateKeys(document);
   watchDisconnect();

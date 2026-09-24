@@ -6,6 +6,7 @@ export {
   applyStaticI18n,
   detectLang,
   i18nReady,
+  languageRevision,
   loadLocale,
   onLanguageChange,
   planModePayload,

@@ -2,6 +2,7 @@ import { h, render } from "preact";
 import { effect } from "@preact/signals";
 import { AttentionStream } from "../../components/attention/AttentionStream";
 import "../../components/attention/attention.css";
+import { LANG, onLanguageChange } from "../../i18n/runtime";
 import { refreshAttention } from "./api";
 import { ATTENTION_POLL_MS } from "./types";
 import { readPollFlags, shouldFetchAttention } from "./poll";
@@ -101,6 +102,14 @@ export function bootAttention(): void {
   mountStream();
   bindVisibility();
   bindDashboardObserver();
+  // A card's kind, action and "untitled" labels are built when its page is
+  // read, in the language of that moment: a switch reads the page again.
+  let painted = LANG;
+  onLanguageChange((lang) => {
+    if (lang === painted) return;
+    painted = lang;
+    void refreshAttention();
+  });
   if (shouldFetchAttention(readPollFlags())) {
     startAttentionPoll();
     void refreshAttention();
