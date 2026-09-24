@@ -537,6 +537,13 @@ export async function openConversation(
   if (rescoping) {
     const host = messagesHost();
     if (host) host.innerHTML = "";
+    // The view is emptied, so this session's resume cursor no longer
+    // describes what is on screen: text a running turn streamed before the
+    // switch (or the trip Home) is gone, and resubscribing from that cursor
+    // would not send it again. From zero the daemon replays the running
+    // turn's live buffer, as for a fresh page load; an idle session's replay
+    // is empty.
+    delete _seqSeen.value[fid];
     closeTurnTicket(); resetSessionScoped();
     historyContent.value = null; historyMutation.value = 0; resetHistorySubmissions();
     enableComposer(true); hideCancel(); hint("");

@@ -458,7 +458,7 @@ describe("reopening a running session from Home", () => {
     return { socket, sent, viewed, emit };
   }
 
-  it("shows the run as running and resumes from where it was left, like a switch back from another session", async () => {
+  it("shows the run as running and asks for its live buffer again, like a switch back from another session", async () => {
     const daemon = daemonSocket();
     ws.value = daemon.socket;
     const stillRunning = (path: string) => path.endsWith("/status") ? response({ running: true, status: "processing" }) : undefined;
@@ -480,7 +480,11 @@ describe("reopening a running session from Home", () => {
     expect(session.historyLoad.value?.deferred).toBe(false);
     expect(running.value).toBe(true);
     expect(_resumeTimer.value).not.toBe(armedBefore);
-    expect(daemon.sent.filter((m) => m.type === "view_session").at(-1)).toMatchObject({ root_frame_id: "f", since_seq: cursorWhenLeft });
+    // The reopen emptied the transcript, so the text the turn streamed before
+    // Home is gone from the screen; resubscribing from the old cursor would
+    // not send it again. From zero the daemon replays the running turn.
+    expect(cursorWhenLeft).toBeGreaterThan(0);
+    expect(daemon.sent.filter((m) => m.type === "view_session").at(-1)).toMatchObject({ root_frame_id: "f", since_seq: 0 });
     clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
   });
 
