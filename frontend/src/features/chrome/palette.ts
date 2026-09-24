@@ -108,9 +108,7 @@ export function openPaletteArtifact(hit: ArtifactHit): void {
     }
     // F-17 viewer not mounted yet. Open Files so the hit is not dropped.
     const setActiveTab = hostFn("setActiveTab");
-    const dockTab = hostFn("dockTab");
     if (isReady(setActiveTab)) setActiveTab("files");
-    else if (isReady(dockTab)) dockTab("files");
   };
   const openConversation = hostFn("openConversation");
   const frameId = hit.root_frame_id;
@@ -323,9 +321,7 @@ function skillItems(q: string, sk: SkillRow[]): PaletteItem[] {
         if (c) {
           c.value = (c.value ? c.value + " " : "") + "/" + s.name + " ";
           c.focus();
-          const g = hostFn("grow");
-          if (isReady(g)) g();
-          else grow();
+          grow();
         }
       },
     }));

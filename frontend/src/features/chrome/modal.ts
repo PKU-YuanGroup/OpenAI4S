@@ -185,9 +185,18 @@ export function trapModalKeydown(e: ModalKeyEvent | KeyboardEvent): void {
  * away an unsaved form after a text selection. The press has to start on the
  * scrim as well.
  */
-export function bindModalDismiss(modal: HTMLElement | null, closeBtn?: HTMLElement | null): void {
+/**
+ * × and the scrim close `modal`, through `close` when its owner has state to
+ * reset. The scrim only counts when the press also started on it: a text
+ * selection released over it reports the scrim as the click's target.
+ */
+export function bindModalDismiss(
+  modal: HTMLElement | null,
+  closeBtn?: HTMLElement | null,
+  close: () => void = () => closeModalEl(modal),
+): void {
   if (!modal) return;
-  if (closeBtn) closeBtn.addEventListener("click", () => closeModalEl(modal));
+  if (closeBtn) closeBtn.addEventListener("click", () => close());
   let pressedOnScrim = false;
   modal.addEventListener("pointerdown", (e) => {
     pressedOnScrim = e.target === modal;
@@ -195,7 +204,7 @@ export function bindModalDismiss(modal: HTMLElement | null, closeBtn?: HTMLEleme
   modal.addEventListener("click", (e) => {
     const fromScrim = pressedOnScrim;
     pressedOnScrim = false;
-    if (fromScrim && e.target === modal) closeModalEl(modal);
+    if (fromScrim && e.target === modal) close();
   });
 }
 

@@ -535,6 +535,26 @@ describe("F-20 modal focus trap", () => {
     expect(modal.classList.contains("hidden")).toBe(true);
   });
 
+  it("closes through the owner's callback, from × and from a press and release on the scrim", () => {
+    const modal = makeModal(doc, "proj-modal");
+    const closeBtn = doc.createElement("button");
+    const field = doc.createElement("input");
+    (modal.querySelector(".modal-box") as FakeEl).appendChild(field);
+    const close = vi.fn();
+    api.bindModalDismiss(modal as unknown as HTMLElement, closeBtn as unknown as HTMLElement, close);
+    const fire = (el: FakeEl, type: string, target: FakeEl): void => {
+      for (const fn of el.listeners.get(type) || []) fn({ target });
+    };
+    fire(closeBtn, "click", closeBtn);
+    expect(close).toHaveBeenCalledTimes(1);
+    fire(modal, "pointerdown", field);
+    fire(modal, "click", modal);
+    expect(close).toHaveBeenCalledTimes(1);
+    fire(modal, "pointerdown", modal);
+    fire(modal, "click", modal);
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
   it("source does not import window-exports (Proxy install is a side effect)", () => {
     const src = readFileSync(join(here, "modal.ts"), "utf8");
     expect(src).not.toContain("window-exports");

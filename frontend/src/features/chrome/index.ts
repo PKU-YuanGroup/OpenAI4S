@@ -130,28 +130,9 @@ export function bootChrome(): void {
   // `#cust` is not bound here: Customize renders its own × and backdrop,
   // both through closeCust(), so its open state has one owner.
   bootStep("modal dismiss", () => bindModalDismiss($("#modal"), $("#modal-close")));
-  bootStep("project modal", bindProjectModal);
   bootStep("keys", installWorkbenchKeys);
   bootStep("dock", bindDockChrome);
   bootStep("team", bootTeam);
-}
-
-function bindProjectModal(): void {
-  const closeProjectModal = hostFn("closeProjectModal");
-  const projClose = $("#proj-modal-close");
-  const projCancel = $("#pm-cancel");
-  const projModal = $("#proj-modal");
-  const closeProj = (): void => {
-    if (isReady(closeProjectModal)) closeProjectModal();
-    else closeModalEl(projModal);
-  };
-  if (projClose) projClose.addEventListener("click", closeProj);
-  if (projCancel) projCancel.addEventListener("click", closeProj);
-  if (projModal) {
-    projModal.addEventListener("click", (e) => {
-      if (e.target === projModal) closeProj();
-    });
-  }
 }
 
 function bindDockChrome(): void {

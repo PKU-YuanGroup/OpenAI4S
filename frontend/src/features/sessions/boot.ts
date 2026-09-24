@@ -22,6 +22,7 @@ import { scopedExecutionRequest } from "../timeline/execution-request";
 import { loadDashboard, repaintDashboard, showDashboard } from "./dashboard";
 import { $, grow, setSidebar, setTitle, syncMobileChrome } from "./dom";
 import { bindMessageScroll } from "../messages/scroll";
+import { bindModalDismiss } from "../chrome/modal";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
 import { loadSessions, renderSessions, syncCurrentTitle } from "./load";
@@ -277,16 +278,11 @@ export function bindWorkbench(): Promise<void> {
       renderComposerRefChips();
     });
   }
-  const pmClose = $("#proj-modal-close");
   const pmCancel = $("#pm-cancel");
-  if (pmClose) pmClose.onclick = closeProjectModal;
   if (pmCancel) pmCancel.onclick = closeProjectModal;
-  const projModal = $("#proj-modal");
-  if (projModal) {
-    projModal.onclick = (e) => {
-      if ((e.target as HTMLElement).id === "proj-modal") closeProjectModal();
-    };
-  }
+  // Chrome's dismissal, closing through closeProjectModal: a text selection
+  // released over the scrim used to close the dialog and drop what was typed.
+  bindModalDismiss($("#proj-modal"), $("#proj-modal-close"), closeProjectModal);
   const pmCreate = $("#pm-create");
   if (pmCreate) pmCreate.onclick = () => void submitProjectModal();
   const gear = $("#settings-gear");

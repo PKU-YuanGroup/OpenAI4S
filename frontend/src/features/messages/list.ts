@@ -324,7 +324,6 @@ export function renderHistoryItem(
     const node = renderStoredStepImpl(item.v, target);
     return node instanceof Node ? node : null;
   }
-  callWindow("renderStoredStep", item.v, target);
   return null;
 }
 
