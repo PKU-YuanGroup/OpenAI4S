@@ -205,6 +205,7 @@ _HIDDEN_ONCE_ACTIVE = {
     "stage_model_asset",
     "register_remote_capability",
     "compute_submit",
+    "science_import_dataset",
 }
 
 
