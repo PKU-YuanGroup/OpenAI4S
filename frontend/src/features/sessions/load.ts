@@ -34,7 +34,7 @@ import {
 } from "../../stores/session";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
-import { ensureActivateKeys, hint, openMenu } from "./chrome";
+import { ensureActivateKeys, hint, openMenu, reportFailure } from "./chrome";
 import { $, el, setTitle } from "./dom";
 import { icon, iconEl } from "./icon";
 import { sessionCopy } from "./copy";
@@ -364,7 +364,9 @@ export function loadSessions(options: { more?: boolean } = {}): Promise<SessionR
       if (!current()) return { status: "superseded", rows: [] };
       syncCurrentTitle();
       const dash = $("#dashboard");
-      if (dash && !dash.classList.contains("hidden")) binds.loadDashboard();
+      if (dash && !dash.classList.contains("hidden")) {
+        void Promise.resolve(binds.loadDashboard()).catch(reportFailure);
+      }
       return { status: "loaded", rows: state.rows };
     } catch {
       if (!current()) return { status: "superseded", rows: [] };
@@ -455,7 +457,7 @@ export function sessionRow(f: SessionLike): HTMLElement {
   menu.title = t("session.menu.tip");
   menu.onclick = (e) => {
     e.stopPropagation();
-    if (f.id) import("./actions").then((mod) => mod.sessionMenu(menu, f.id as string));
+    if (f.id) import("./actions").then((mod) => mod.sessionMenu(menu, f.id as string)).catch(reportFailure);
   };
   d.appendChild(menu);
   d.setAttribute("role", "button");

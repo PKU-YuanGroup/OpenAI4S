@@ -10,6 +10,8 @@
 import { LANG } from "../../i18n";
 import { _menu } from "../../stores/ui";
 import { ws as wsSignal } from "../../stores/stream";
+import { apiErrorText } from "./api";
+import { actionFailedCopy } from "./copy";
 import { $, el } from "./dom";
 import { icon, iconEl } from "./icon";
 import { effect } from "@preact/signals";
@@ -35,6 +37,15 @@ export function hint(text?: string | null, err?: boolean, spin?: boolean): void 
   const s = el("span", null, shown);
   if (err) s.style.color = "var(--danger)";
   h.appendChild(s);
+}
+
+/**
+ * The rejection handler for a fire-and-forget action (a row click that
+ * navigates, a menu opened through a dynamic import): the failure is shown
+ * instead of surfacing as an unhandled rejection nobody sees.
+ */
+export function reportFailure(error: unknown): void {
+  hint(actionFailedCopy(apiErrorText(error)), true);
 }
 
 export type MenuItem =

@@ -52,7 +52,9 @@ function fakeEl(tag = "div", cls: string | null = null, text = ""): FakeEl {
 const dom: Record<string, FakeEl | null> = {};
 
 vi.mock("./api", () => ({ api: vi.fn(), apiErrorText: (e: unknown) => String(e) }));
-vi.mock("./chrome", () => ({ ensureActivateKeys: () => {} }));
+vi.mock("./chrome", () => ({ ensureActivateKeys: () => {}, reportFailure: vi.fn() }));
+const projectsModule = vi.hoisted(() => ({ openProject: vi.fn() }));
+vi.mock("./projects", () => projectsModule);
 vi.mock("./dom", () => ({
   $: (sel: string) => (sel in dom ? dom[sel] : null),
   el: (tag: string, cls: string | null, text?: string) => fakeEl(tag, cls, text || ""),
@@ -62,6 +64,7 @@ vi.mock("./dom", () => ({
 }));
 
 import { api } from "./api";
+import { reportFailure } from "./chrome";
 import {
   loadDashboard,
   refreshDashRunning,
@@ -136,6 +139,21 @@ describe("the running badge across repaints", () => {
     await refreshDashRunning();
     renderDashProjects();
     expect(badges(dom["#dash-projects"]!)).toEqual([]);
+  });
+});
+
+describe("opening a project from its row", () => {
+  it("reports a failed open instead of leaving an unhandled rejection", async () => {
+    vi.mocked(api).mockImplementation((path: string) =>
+      Promise.resolve(path.startsWith("/frames") ? { frames: [] } : projectPage) as never,
+    );
+    await loadDashboard();
+    const failed = new Error("project did not open");
+    projectsModule.openProject.mockRejectedValueOnce(failed);
+    const row = dom["#dash-projects"]!.children.find((node) => node.cls === "d-row")!;
+    row.onclick!();
+    await vi.waitFor(() => expect(reportFailure).toHaveBeenCalledWith(failed));
+    expect(projectsModule.openProject).toHaveBeenCalledWith("p1");
   });
 });
 

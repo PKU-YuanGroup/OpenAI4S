@@ -17,7 +17,7 @@ import {
 import { _modalMode } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
-import { hint } from "./chrome";
+import { hint, reportFailure } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
 import { $, closeModalEl, el, openModalEl } from "./dom";
 import { iconEl } from "./icon";
@@ -341,7 +341,7 @@ export function renderProjMenu(): void {
       void openProjectResearchView("timeline");
     });
     item(t("sessionPackage.import"), "cloud-upload", () => {
-      import("./actions").then((mod) => mod.chooseSessionPackage());
+      import("./actions").then((mod) => mod.chooseSessionPackage()).catch(reportFailure);
     });
     item(t("proj.menu.downloadArtifacts"), "download", () => {
       import("./actions").then((mod) =>
@@ -349,7 +349,7 @@ export function renderProjMenu(): void {
           `/api/v1/projects/${encodeURIComponent(project.value as string)}/artifacts.zip`,
           `${projName(project.value)}-artifacts.zip`,
         ),
-      );
+      ).catch(reportFailure);
     });
     m.appendChild(el("div", "ctx-sep"));
   }

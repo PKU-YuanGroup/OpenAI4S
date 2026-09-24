@@ -14,6 +14,11 @@ export function sessionCopy(key: "sessionsError" | "foldersError" | "retry"): st
   return copy[key];
 }
 
+/** An action that failed before it could report anything itself; `detail` is the error's text. */
+export function actionFailedCopy(detail: string): string {
+  return (LANG === "en" ? "Could not complete that action: " : "操作未能完成：") + detail;
+}
+
 /** Share dialog labels the generated dictionaries do not carry. */
 export function shareCopy(key: "linkLabel" | "updateDesc" | "revokeDesc"): string {
   const copy = LANG === "en" ? {
