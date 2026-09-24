@@ -18,11 +18,11 @@ import {
   mergeDelegationChildEvent,
   renderActionTimeline,
   renderDelegationPanel,
-  renderQueueStrip,
   steerDelegationChild,
   toggleActionTimelineTurn,
   updateActionTimelineLedger,
 } from "./island";
+import { renderQueueStrip } from "./queue";
 import { sanitizeActionTimeline } from "./sanitize";
 import { registerTimelineHandlers } from "./ws";
 
@@ -62,13 +62,13 @@ export {
   renderComputeTasksPanel,
   renderContextPanel,
   renderDelegationPanel,
-  renderQueueStrip,
   renderSecurityPanel,
   scheduleWorkbenchRefresh,
   steerDelegationChild,
   toggleActionTimelineTurn,
   updateActionTimelineLedger,
 } from "./island";
+export { renderQueueStrip } from "./queue";
 export { registerTimelineHandlers, applyKernelSandbox } from "./ws";
 
 const TIMELINE_WINDOW: Record<string, unknown> = {

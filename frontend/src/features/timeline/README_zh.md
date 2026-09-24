@@ -17,6 +17,7 @@ F-15 Action Timeline 内核。`sanitize*` / `mergeActionTimelines` 是纯函数�
 | [`island.ts`](island.ts) | 命令式孤岛：46px ledger、overview SVG、五个侧栏面板、`renderActionTimeline`。 |
 | [`island.test.ts`](island.test.ts) | 在假 DOM 上跑的 Vitest：排队条、视图销毁，以及 WS 触发的重绘保留了哪些状态。 |
 | [`model.ts`](model.ts) | span / overview 几何、`actionTimelineEntryKey`、epoch 解析。 |
+| [`queue.ts`](queue.ts) | `#queue-strip`：输入框上方排队的后续消息及其 ✕ 取消（每个执行只发一次 POST）。 |
 | [`s.ts`](s.ts) | `createSProxy()` 别名，保证 `_timelineView` 嵌套写入保持同一性。 |
 | [`sanitize.ts`](sanitize.ts) | `sanitize*` 家族与 `mergeActionTimelines`（app.js:2795-3298）。 |
 | [`sanitize.test.ts`](sanitize.test.ts) | sanitize* 与 merge 的 Vitest。 |

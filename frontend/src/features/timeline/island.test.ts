@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { renderQueueStrip } from "./island";
+import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
 

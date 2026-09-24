@@ -17,6 +17,7 @@ F-15 Action Timeline kernel. `sanitize*` / `mergeActionTimelines` are pure. The 
 | [`island.ts`](island.ts) | Imperative island: 46px ledger, overview SVG, five sidebar panels, `renderActionTimeline`. |
 | [`island.test.ts`](island.test.ts) | Vitest on a fake DOM: queue strip, view teardown, and what a WS-driven re-render keeps. |
 | [`model.ts`](model.ts) | Span / overview geometry, `actionTimelineEntryKey`, epoch parser. |
+| [`queue.ts`](queue.ts) | `#queue-strip`: queued follow-ups above the composer and their ✕ cancel (one POST per execution). |
 | [`s.ts`](s.ts) | `createSProxy()` alias so nested `_timelineView` writes keep identity. |
 | [`sanitize.ts`](sanitize.ts) | `sanitize*` family and `mergeActionTimelines` (app.js:2795-3298). |
 | [`sanitize.test.ts`](sanitize.test.ts) | Vitest for sanitize* and merge. |
