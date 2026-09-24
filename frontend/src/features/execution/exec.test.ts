@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cells } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { setExecutionFetch } from "./api";
 import { paintExecutionChrome } from "./boot";
-import { execSourcesState } from "./exec";
+import { execSourcesState, toggleExecutedCode } from "./exec";
 
 vi.mock("../notebook/Notebook", () => ({
   renderNotebook: vi.fn(),
@@ -100,5 +101,47 @@ describe("notebook dock chrome", () => {
     paintExecutionChrome();
     expect(dock.querySelectorAll(".nb-variables")).toHaveLength(0);
     expect(dock.querySelectorAll(".nb-exec")).toHaveLength(1);
+  });
+});
+
+describe("executed-code snapshot", () => {
+  let log: Array<Record<string, unknown>>;
+  const cell = (index: number) => ({ producing_cell_id: "cell-" + index, cell_index: index, status: "ok" });
+  const settle = async () => {
+    for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  beforeEach(() => {
+    log = [cell(1)];
+    setExecutionFetch(async (url) => {
+      if (url.endsWith("/frames/frame-x/execution-sources"))
+        return new Response(JSON.stringify({ frames: [{ frame_id: "frame-x" }] }));
+      if (url.endsWith("/frames/frame-x/execution-log"))
+        return new Response(JSON.stringify({ entries: log.slice() }));
+      return new Response("{}", { status: 404 });
+    });
+  });
+
+  it("is read again each time the view is opened", async () => {
+    toggleExecutedCode();
+    await settle();
+    expect(execSourcesState().cells["frame-x"]).toHaveLength(1);
+    toggleExecutedCode();
+    log.push(cell(2));
+    toggleExecutedCode();
+    await settle();
+    expect(execSourcesState().cells["frame-x"]).toHaveLength(2);
+  });
+
+  it("is read again when a cell finishes while it is open", async () => {
+    cells.value = [cell(1)];
+    toggleExecutedCode();
+    await settle();
+    log.push(cell(2));
+    // notebook_cell_finished -> loadExecutionLog -> the dock repaints.
+    cells.value = [cell(1), cell(2)];
+    paintExecutionChrome();
+    await settle();
+    expect(execSourcesState().cells["frame-x"]).toHaveLength(2);
   });
 });

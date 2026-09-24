@@ -15,6 +15,7 @@ import {
   buildExecutedCodeView,
   execSourcesState,
   paintExecutedCodeView,
+  refreshExecutedCodeIfStale,
   selectExecFrame,
   setPaintExecutionChrome,
   toggleExecutedCode,
@@ -35,6 +36,8 @@ export function paintExecutionChrome(): void {
     // which does not own it; left behind it sat frozen under the executed code.
     const inspector = nb.querySelector(".nb-variables");
     if (inspector) inspector.remove();
+    // The dock repaints after every finished cell (loadExecutionLog).
+    refreshExecutedCodeIfStale(st);
     paintExecutedCodeView(nb, st);
     return;
   }
