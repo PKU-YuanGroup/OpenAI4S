@@ -374,6 +374,29 @@ describe("F-20 team surface", () => {
     expect(body?.querySelectorAll(".team-admin-table").length).toBeGreaterThan(0);
   });
 
+  it("renders audit times from the epoch-millisecond ts the server stores", async () => {
+    team.bootTeam();
+    const ts = 1727136000000;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string) => ({
+        status: 200,
+        ok: true,
+        json: async () =>
+          String(url).includes("/team/audit")
+            ? { audit: [{ ts, actor: "erika", action: "login", target: "" }] }
+            : {},
+      })),
+    );
+    await team.loadAdmin();
+    const text = doc.getElementById("team-admin-body")?.textContent || "";
+    expect(text).not.toContain("Invalid Date");
+    expect(text).toContain(new Date(ts).toLocaleString());
+    expect(team.auditWhen(String(ts))).toBe(new Date(ts).toLocaleString());
+    expect(team.auditWhen("2026-09-24T08:00:00Z")).toBe(new Date("2026-09-24T08:00:00Z").toLocaleString());
+    expect(team.auditWhen(null)).toBe("");
+  });
+
   it("fmtSize matches app.js:13495-13500", () => {
     expect(team.fmtSize(512)).toBe("512 B");
     expect(team.fmtSize(2048)).toBe("2.0 KB");

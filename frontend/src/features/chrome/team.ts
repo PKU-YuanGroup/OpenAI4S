@@ -345,6 +345,16 @@ function table(box: HTMLElement, headers: string[], rows: unknown[][]): void {
   }
 }
 
+/**
+ * Audit `ts` is epoch milliseconds (storage/team.py `_clock_ms`). As a string
+ * it parsed as a date string and every row read "Invalid Date".
+ */
+export function auditWhen(ts: unknown): string {
+  const text = ts == null ? "" : String(ts).trim();
+  const when = /^-?\d+(\.\d+)?$/.test(text) ? new Date(Number(text)) : new Date(text);
+  return Number.isNaN(when.getTime()) ? text : when.toLocaleString();
+}
+
 function jget(path: string): Promise<unknown> {
   return fetch(API + path).then((r) => (r.ok ? r.json() : null));
 }
@@ -392,7 +402,7 @@ export async function loadAdmin(): Promise<void> {
       ]));
     table(section(body, "Audit (latest 50)"), ["when", "actor", "action", "target"],
       audit.map((r) => [
-        new Date(String(r.ts)).toLocaleString(),
+        auditWhen(r.ts),
         r.actor,
         r.action,
         r.target || r.user_id || "",
