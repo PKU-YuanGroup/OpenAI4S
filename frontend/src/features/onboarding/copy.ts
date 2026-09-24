@@ -4,7 +4,7 @@ import { LANG, tOptional } from "../../i18n/runtime";
  * M-01 copy. Existing model/readiness keys stay in the F-07 dictionaries.
  * New wizard strings live here so we do not rewrite generated i18n/en.ts / zh.ts.
  */
-const COPY: Record<"zh" | "en", Record<string, string>> = {
+const COPY: CopyTable = {
   zh: {
     "onboarding.title": "首次设置",
     "onboarding.subtitle": "四个必需步骤。在你按下「测试连接」之前，不会向模型供应商发请求。",
@@ -85,13 +85,25 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
   },
 };
 
-export function ot(key: string, ...args: unknown[]): string {
-  const fromDict = tOptional(key);
-  let s = fromDict != null ? fromDict : COPY[LANG]?.[key] || COPY.en[key] || key;
-  if (args.length) {
-    s = String(s).replace(/\{(\d+)\}/g, (m, i) =>
-      args[+i] != null ? String(args[+i]) : m,
-    );
-  }
-  return s;
+export type CopyTable = Record<"zh" | "en", Record<string, string>>;
+
+/**
+ * The lookup behind a feature-local copy table (`ot` here, `judgmentT` in
+ * `features/judgment/copy.ts`): the loaded dictionary wins, then the active
+ * language's entry, then English, then the key itself; `{0}`, `{1}` … are
+ * filled positionally and a hole with no argument is left as written.
+ */
+export function copyLookup(table: CopyTable): (key: string, ...args: unknown[]) => string {
+  return (key, ...args) => {
+    const fromDict = tOptional(key);
+    let s = fromDict != null ? fromDict : table[LANG]?.[key] || table.en[key] || key;
+    if (args.length) {
+      s = String(s).replace(/\{(\d+)\}/g, (m, i) =>
+        args[+i] != null ? String(args[+i]) : m,
+      );
+    }
+    return s;
+  };
 }
+
+export const ot = copyLookup(COPY);

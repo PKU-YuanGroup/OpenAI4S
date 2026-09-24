@@ -13,7 +13,8 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | [`badges.test.ts`](badges.test.ts) | 三态 badge 标记；unknown 原因原样保留。 |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` 行 + stale。 |
 | [`boot.ts`](boot.ts) | `bootOnboarding()` 挂载 `#onboarding-root`。 |
-| [`copy.ts`](copy.ts) | 车道本地 zh/en 文案。不改生成的 i18n。 |
+| [`copy.ts`](copy.ts) | 车道本地 zh/en 文案（`ot`）。不改生成的 i18n。`copyLookup(table)` 是 `ot` 与 `judgmentT` 共用的查表函数。 |
+| [`copy.test.ts`](copy.test.ts) | `copyLookup`：先查当前语言，再查英文，最后返回 key；已加载的词典优先；按位置填充占位符。`ot` 与 `judgmentT` 都基于它。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`machine.test.ts`](machine.test.ts) | skip / 清单 / 带 request id 的错误；Test 前 providerRequests=0；模型身份变化时清除回执和测试决定；为其他配置档测得的 probe 结果会被丢弃。 |
 | [`machine.ts`](machine.ts) | 四步 reducer。模型身份改变时清除旧能力回执和测试决定；仅展示字段变化时保留。`testResult` 带上它实际测的配置档，若不是当前所选路径则忽略。凭据不进入向导状态。 |

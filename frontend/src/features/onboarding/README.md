@@ -13,7 +13,8 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 | [`badges.test.ts`](badges.test.ts) | Tri-state badge markup; unknown reason is not rewritten. |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` rows + stale. |
 | [`boot.ts`](boot.ts) | `bootOnboarding()` mounts `#onboarding-root`. |
-| [`copy.ts`](copy.ts) | Lane-local zh/en strings. Does not rewrite generated i18n. |
+| [`copy.ts`](copy.ts) | Lane-local zh/en strings (`ot`). Does not rewrite generated i18n. `copyLookup(table)` is the lookup `ot` and `judgmentT` share. |
+| [`copy.test.ts`](copy.test.ts) | `copyLookup`: active language, then English, then the key; the loaded dictionary wins; positional holes. `ot` and `judgmentT` are built on it. |
 | [`index.ts`](index.ts) | Public re-exports. |
 | [`machine.test.ts`](machine.test.ts) | Skip / checklist / request-id errors; providerRequests=0 before Test; model identity changes clear receipts and Test decisions; a probe result measured for another profile is dropped. |
 | [`machine.ts`](machine.ts) | Four-step reducer. Model identity changes clear the prior capability receipt and Test decision; display-only changes preserve them. A `testResult` names the profile it measured and is ignored unless that is the selected path. Credentials never enter wizard state. |
