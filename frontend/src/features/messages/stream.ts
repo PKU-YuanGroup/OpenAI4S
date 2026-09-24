@@ -199,11 +199,29 @@ export function startStream(): LiveStream | null {
     _lastFlush: 0,
   };
   liveStream.value = st;
-  stepEls.value = Object.create(null);
+  stepEls.value = stepsOnScreen(stepEls.value);
   liveCells.value = [];
   _liveCell.value = null;
   down();
   return st;
+}
+
+/**
+ * The step registry, minus cards no longer in the document. Opening a running
+ * session renders its stored steps (registering them) and then replays the
+ * turn, which starts with text_reset: wiping the registry here made every
+ * replayed step a second card while the stored one stayed "running". Step
+ * ids are unique, so keeping the cards on screen cannot capture another
+ * turn's step; openConversation still starts each session with a fresh one.
+ */
+function stepsOnScreen(current: unknown): Record<string, unknown> {
+  const kept = Object.create(null) as Record<string, unknown>;
+  if (!current || typeof current !== "object") return kept;
+  for (const [id, handle] of Object.entries(current as Record<string, unknown>)) {
+    const card = handle && typeof handle === "object" ? (handle as { card?: { isConnected?: boolean } }).card : null;
+    if (card && card.isConnected) kept[id] = handle;
+  }
+  return kept;
 }
 
 export function ensure(): LiveStream | null {

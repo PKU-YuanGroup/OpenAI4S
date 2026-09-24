@@ -9,7 +9,8 @@ vi.mock("../artifacts/ui", async (importOriginal) => ({
 
 import { setLang, t } from "../../i18n/runtime";
 import { resetStoreFields } from "../../stores/signal-field";
-import { buildStepCard, renderStoredStep, updateLiveStep } from "./step";
+import { startStream } from "../messages/stream";
+import { addLiveStep, buildStepCard, renderStoredStep, updateLiveStep } from "./step";
 
 /** Just enough DOM for step cards (no jsdom here). */
 class El {
@@ -59,6 +60,11 @@ class El {
   get firstChild(): El | null {
     return this.children[0] ?? null;
   }
+  get isConnected(): boolean {
+    let node: El = this;
+    while (node.parent) node = node.parent;
+    return node.tagName === "BODY";
+  }
   appendChild(child: El): El {
     child.parent = this;
     this.children.push(child);
@@ -87,13 +93,19 @@ class El {
 }
 
 let hintBox: El;
+let messages: El;
 
 beforeEach(async () => {
   await setLang("en");
   resetStoreFields();
   viewer.open.mockReset();
   viewer.dock.mockReset();
-  hintBox = new El("div");
+  const body = new El("body");
+  hintBox = body.appendChild(new El("div"));
+  messages = body.appendChild(new El("div"));
+  const byId: Record<string, El> = { "composer-hint": hintBox, messages };
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
   vi.stubGlobal("document", {
     createElement: (tag: string) => new El(tag),
     createTextNode: (text: string) => {
@@ -101,8 +113,8 @@ beforeEach(async () => {
       node.textContent = text;
       return node;
     },
-    getElementById: (id: string) => (id === "composer-hint" ? hintBox : null),
-    querySelector: (sel: string) => (sel === "#composer-hint" ? hintBox : null),
+    getElementById: (id: string) => byId[id] ?? null,
+    querySelector: (sel: string) => (sel.startsWith("#") ? (byId[sel.slice(1)] ?? null) : null),
     querySelectorAll: () => [],
   });
 });
@@ -191,6 +203,36 @@ describe("a collapsed step card builds its body on first expand", () => {
     // tests/browser_p1_controls.mjs reads a fresh buildStepCard's body unopened.
     const eager = buildStepCard({ step_id: "w-1", status: "done", ...CODE });
     expect((eager.body as unknown as El).children).toHaveLength(1);
+  });
+});
+
+describe("opening a session whose turn is still running", () => {
+  it("replayed steps update the stored cards instead of adding a second one", () => {
+    // History renders the step the server persisted when it began.
+    const stored = renderStoredStep({
+      step_id: "s-run",
+      kind: "code",
+      status: "running",
+      input: { code: "fit()" },
+    }) as unknown as El;
+    // The replay of the live turn: text_reset, then the same step's events.
+    startStream();
+    addLiveStep({ step_id: "s-run", kind: "code", status: "running", input: { code: "fit()" } });
+    updateLiveStep({ step_id: "s-run", status: "done", output: { stdout: "converged" } });
+
+    expect(messages.querySelectorAll(".step")).toHaveLength(1);
+    expect(stored.classes.has("running")).toBe(false);
+    stored.querySelector(".s-head")!.onclick!();
+    expect(stored.querySelector(".oc-out")!.textContent).toBe("converged");
+  });
+
+  it("a card no longer on screen is not revived by a new turn", () => {
+    const gone = renderStoredStep({ step_id: "s-old", kind: "code", status: "done" }) as unknown as El;
+    gone.remove();
+    startStream();
+    addLiveStep({ step_id: "s-old", kind: "code", status: "running" });
+    expect(messages.querySelectorAll(".step")).toHaveLength(1);
+    expect(messages.querySelector(".step")).not.toBe(gone);
   });
 });
 
