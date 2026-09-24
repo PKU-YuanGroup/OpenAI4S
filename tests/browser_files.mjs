@@ -43,6 +43,28 @@ async function grid(page, expected, more) {
   return snapshot.ids;
 }
 
+// A read still in flight paints no cards and shows the loading state ("…"
+// count, a Loading row) instead of a "0 files" it has not confirmed.
+async function pendingGrid(page) {
+  let snapshot;
+  try {
+    snapshot = await waitUntil("no cards while the read is pending", async () => {
+      snapshot = await page.evaluate(() => ({
+        ids: [...document.querySelectorAll("#results-list .art")].map((node) => node.dataset.artifactId),
+        count: document.querySelector("#results-count")?.textContent,
+        more: document.querySelectorAll(".files-load-more").length,
+        empty: document.querySelectorAll("#results-list .files-empty").length,
+        emptyText: document.querySelector(".files-empty")?.textContent,
+      }));
+      return snapshot.ids.length === 0 && snapshot.more === 0 && snapshot.empty === 1 && snapshot.count === "…"
+        ? snapshot : false;
+    });
+  } catch (error) {
+    throw new Error(`${error.message}; snapshot=${JSON.stringify(snapshot)}`);
+  }
+  return snapshot;
+}
+
 export async function realArtifactFilesCheck(page, api, { frame_id: fid, project_id: pid, artifacts }) {
   const artifact = artifacts[0];
   const result = await api(`/frames/${fid}/artifacts`);
@@ -137,10 +159,11 @@ export async function filesChecks(page, api) {
     await page.locator("#files-btn").click();
     // An empty filter would match A's entire old source; it must still paint
     // nothing while B is pending, rather than merely filtering A out by name.
+    // The grid says it is loading: B's files are not known to be zero yet.
     await filter(page);
-    await grid(page, 0, false);
+    await pendingGrid(page);
     await filter(page, "other-session");
-    await grid(page, 0, false);
+    await pendingGrid(page);
   } finally { release(); await Promise.all(pending); await page.unroute(pattern, delay); await opening; }
   assert.deepEqual(await grid(page, 1, false), [only]);
   await filter(page); await grid(page, 2, false);
