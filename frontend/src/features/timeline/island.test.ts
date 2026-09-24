@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
+import { activeTab, dock } from "../../stores/ui";
+import { setNotebookRenderImpl } from "../notebook/scroll";
 import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
@@ -730,6 +732,32 @@ describe("shared notebook helpers", () => {
     // the invalidation must publish a new, emptied cache rather than edit it.
     expect(_kc.value).not.toBe(before);
     expect(_kc.value.st).toBeNull();
+  });
+
+  it("a finished REPL run repaints an open Notebook", () => {
+    vi.useFakeTimers();
+    mountDocument();
+    vi.stubGlobal("loadExecutionLog", undefined);
+    S.currentId = "frame-r";
+    dock.value = { open: true, tab: "notebook" };
+    activeTab.value = "notebook";
+    let painted = 0;
+    setNotebookRenderImpl(() => {
+      painted += 1;
+    });
+    try {
+      pendingReplIdentity.value = {
+        frame_id: "frame-r",
+        execution_id: "exec-r",
+        owner: { kind: "user_repl", id: "repl-1" },
+      };
+      rememberExecutionState({ execution_id: "exec-r", status: "completed" });
+      vi.runAllTimers();
+      expect(painted).toBe(1);
+    } finally {
+      setNotebookRenderImpl(null);
+      vi.useRealTimers();
+    }
   });
 });
 

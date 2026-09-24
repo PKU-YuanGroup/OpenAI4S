@@ -14,6 +14,7 @@ import { publicText } from "../scrub/scrub";
 import { pendingReplIdentity } from "../../stores/notebook";
 import { nbFindCell } from "../notebook/cells";
 import { invalidateKernelCache, runtimeSummary, shortRuntime } from "../notebook/kernel";
+import { nbRender } from "../notebook/scroll";
 import {
   ACTION_TIMELINE_OVERSCAN,
   ACTION_TIMELINE_OVERVIEW_WIDTH,
@@ -153,7 +154,9 @@ export function rememberExecutionState(event: any): void {
       }
       laneCall("loadArtifacts", frameId);
       scheduleWorkbenchRefresh();
-      if (S.dock.open && S.activeTab === "notebook") laneCall("scheduleNotebookRender");
+      // No window name: `scheduleNotebookRender` was never assigned, so the
+      // Notebook kept its busy REPL row until something else repainted it.
+      nbRender();
     }
   }
 }
