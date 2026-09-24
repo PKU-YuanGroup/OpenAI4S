@@ -26,6 +26,12 @@ import { useAlive, useTimerLease } from "../use-timer-lease";
 import { Icon } from "../icons";
 
 type VolcState = Record<string, unknown>;
+/**
+ * A new state, or an update of the state as it is when it applies. Anything
+ * written after an await is an update: a spread of the state captured before
+ * the await put back whatever a key poll or recheck had read meanwhile.
+ */
+type VolcUpdate = VolcState | ((prev: VolcState) => VolcState);
 
 function rec(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -124,7 +130,7 @@ export function VolcenginePanel() {
     return () => stopPoll();
   }, []);
 
-  const applyState = (next: VolcState) => {
+  const applyState = (next: VolcUpdate) => {
     if (!alive()) return;
     setState(next);
   };
@@ -197,10 +203,10 @@ export function VolcenginePanel() {
           /* Fall through. */
         }
       }
-      applyState({
-        ...current,
+      applyState((prev) => ({
+        ...prev,
         _error: t("cust.volc.configureFailed", apiErrorText(error)),
-      });
+      }));
     } finally {
       configuring.current = false;
     }
@@ -212,10 +218,7 @@ export function VolcenginePanel() {
     const handle = startVolcengineKeyPolling(lease, {
       isAlive: alive,
       refresh: () => refresh({ autoConfigure: true }),
-      onExhausted: () => {
-        setPolling(false);
-        applyState({ ...state });
-      },
+      onExhausted: () => setPolling(false),
     });
     pollStop.current = () => {
       handle.stop();
@@ -244,14 +247,14 @@ export function VolcenginePanel() {
         asString(login.authorize_url),
         authWindow,
       );
-      applyState({ ...state, login });
+      applyState((prev) => ({ ...prev, login }));
     } catch (error) {
       try {
         if (authWindow && !authWindow.closed) authWindow.close();
       } catch {
         /* Ignore blocked popups. */
       }
-      applyState({ ...state, _error: apiErrorText(error) });
+      applyState((prev) => ({ ...prev, _error: apiErrorText(error) }));
     }
   };
 
@@ -331,7 +334,7 @@ export function VolcenginePanel() {
               onClick={async () => {
                 try {
                   const next = await api("/volcengine/login/cancel", { method: "POST" });
-                  applyState({ ...state, login: next });
+                  applyState((prev) => ({ ...prev, login: next }));
                 } catch (error) {
                   hint(apiErrorText(error), true);
                 }
@@ -737,7 +740,6 @@ export function VolcenginePanel() {
           <RecheckButton
             refresh={refresh}
             applyState={applyState}
-            state={state}
             refreshMessage={refreshMessage}
             setRefreshMessage={setRefreshMessage}
           />
@@ -788,13 +790,11 @@ export function VolcenginePanel() {
 function RecheckButton({
   refresh,
   applyState,
-  state,
   refreshMessage,
   setRefreshMessage,
 }: {
   refresh: (opts?: { announce?: boolean }) => Promise<VolcState>;
-  applyState: (s: VolcState) => void;
-  state: VolcState;
+  applyState: (s: VolcUpdate) => void;
   refreshMessage: string;
   setRefreshMessage: (s: string) => void;
 }) {
@@ -812,10 +812,10 @@ function RecheckButton({
           try {
             await refresh({ announce: true });
           } catch (error) {
-            applyState({
-              ...state,
+            applyState((prev) => ({
+              ...prev,
               _error: t("cust.volc.refreshFailed", apiErrorText(error)),
-            });
+            }));
           } finally {
             setSpin(false);
           }
@@ -834,7 +834,7 @@ function AwaitingCode({
 }: {
   state: VolcState;
   login: Record<string, unknown>;
-  applyState: (s: VolcState) => void;
+  applyState: (s: VolcUpdate) => void;
   refresh: () => Promise<VolcState>;
 }) {
   const [code, setCode] = useState("");
@@ -892,7 +892,7 @@ function AwaitingCode({
           onClick={async () => {
             try {
               const next = await api("/volcengine/login/cancel", { method: "POST" });
-              applyState({ ...state, login: next });
+              applyState((prev) => ({ ...prev, login: next }));
             } catch (error) {
               hint(apiErrorText(error), true);
             }
