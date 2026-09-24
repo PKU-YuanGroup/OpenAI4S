@@ -99,6 +99,7 @@ EGRESS_GROUPS: list[dict] = [
             "trace.ncbi.nlm.nih.gov",
             "cellxgene.cziscience.com",  # CELLxGENE (+ datasets./api.)
             "ftp.ebi.ac.uk",  # ENA / ArrayExpress
+            "zenodo.org",  # Zenodo public dataset metadata
         ],
     },
     {

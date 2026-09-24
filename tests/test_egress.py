@@ -163,6 +163,8 @@ def test_catalog_membership_is_mode_independent_and_preserves_exact_hosts(monkey
     assert egress.egress_mode() == "off"
     assert egress.domain_allowed("evil.example.com") is True
     assert egress.domain_in_allowlist("api.openalex.org") is True
+    assert egress.domain_in_allowlist("zenodo.org") is True
+    assert egress.domain_in_allowlist("api.zenodo.org") is True
     assert egress.domain_in_allowlist("open.feedcoopapi.com") is True
     assert egress.domain_in_allowlist("child.open.feedcoopapi.com") is False
     assert egress.domain_in_allowlist("evil.example.com") is False

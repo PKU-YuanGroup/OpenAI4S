@@ -48,6 +48,16 @@ class ScienceDatabase:
 
 DATABASES: tuple[ScienceDatabase, ...] = (
     ScienceDatabase(
+        "zenodo",
+        "Zenodo datasets",
+        "Published dataset records with version DOIs and declared file metadata; "
+        "no file download.",
+        ("biology", "chemistry", "literature", "ml", "physics"),
+        "dataset",
+        "Dataset search text or Zenodo query syntax; limit 1-25. "
+        "Keep the same query and limit when paging.",
+    ),
+    ScienceDatabase(
         "uniprot",
         "UniProtKB",
         "Curated and unreviewed protein sequence and function records.",
@@ -446,6 +456,11 @@ class ScienceConnectorService:
                 "hashed": "decoded_content",
             }
         self._responses.append(entry)
+
+    def _search_zenodo(self, query, limit, cursor, filters, timeout):
+        from openai4s.host.zenodo import search
+
+        return search(self._json, query, limit, cursor, timeout)
 
     def _search_uniprot(self, query, limit, cursor, filters, timeout):
         del cursor

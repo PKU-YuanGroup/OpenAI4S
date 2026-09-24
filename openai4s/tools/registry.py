@@ -623,7 +623,16 @@ def _truncate_with_marker(text: str, limit: int, marker: str) -> str:
 def format_tool_result(tool: Tool, result: Any) -> str:
     """Produce a readable "[Tool: <name>]\\n<compact result>" string, bounded
     to `tool.output_limit` characters."""
-    text = f"[Tool: {tool.name}]\n{_render_result_body(result)}"
+    body = None
+    render = getattr(tool, "render_observation", None)
+    if callable(render):
+        try:
+            body = render(result)
+        except Exception:  # noqa: BLE001 - a custom view must not lose the result
+            body = None
+    if body is None:
+        body = _render_result_body(result)
+    text = f"[Tool: {tool.name}]\n{body}"
     return _truncate_with_marker(text, tool.output_limit, "\n… [truncated]")
 
 

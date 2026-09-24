@@ -342,6 +342,7 @@
         },
         "database": {
           "enum": [
+            "zenodo",
             "uniprot",
             "pdb",
             "ensembl",
