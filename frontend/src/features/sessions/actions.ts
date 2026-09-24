@@ -3,7 +3,7 @@
 import { t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
 import { openCust } from "../customize/actions";
-import { nestedEditor, type NestedEditor } from "../customize/state";
+import { nestedEditor, type SkillSeed } from "../customize/state";
 import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
@@ -112,8 +112,6 @@ export async function showContextUsage(): Promise<void> {
   $("#modal")?.classList.remove("hidden");
 }
 
-/** What "Save as skill" fills the new-skill editor with. */
-export type SkillSeed = { name: string; description: string; body: string };
 
 /**
  * The new-skill editor of Customize → Skills, opened over that tab. app.js
@@ -123,10 +121,7 @@ export type SkillSeed = { name: string; description: string; body: string };
  */
 export function openSkillEditor(seed?: SkillSeed): void {
   openCust("skills");
-  const editor: NonNullable<NestedEditor> & { seed?: SkillSeed } = seed
-    ? { kind: "skill", name: null, seed }
-    : { kind: "skill", name: null };
-  nestedEditor.value = editor;
+  nestedEditor.value = seed ? { kind: "skill", name: null, seed } : { kind: "skill", name: null };
 }
 
 export async function saveCurrentAsSkill(): Promise<void> {

@@ -132,3 +132,29 @@ describe.each([
     expect(find(tree, (node) => node.props?.value === "d")).not.toBeNull();
   });
 });
+
+describe('the "Save as skill" seed', () => {
+  const seed = { name: "load-and-plot", description: "Load a CSV and plot it.", body: "# Purpose\n\nPlot it." };
+  const skillForm = () =>
+    find(NestedEditor(), (node) => typeof node.type === "function" && node.type.name === "SkillForm")!;
+
+  it("fills the new-skill form it opens", () => {
+    nestedEditor.value = { kind: "skill", name: null, seed };
+    const tree = renderForm();
+    const values = [
+      find(tree, (node) => node.type === "input" && node.props?.placeholder === "skill.namePlaceholder"),
+      find(tree, (node) => node.type === "input" && node.props?.placeholder === "skill.descPlaceholder"),
+      find(tree, (node) => node.type === "textarea"),
+    ].map((node) => node?.props?.value);
+    expect(values).toEqual([seed.name, seed.description, seed.body]);
+  });
+
+  it("gets a form of its own when it opens over another new-skill editor", () => {
+    nestedEditor.value = { kind: "skill", name: null };
+    const first = (skillForm() as unknown as { key?: unknown }).key;
+    nestedEditor.value = { kind: "skill", name: null, seed };
+    const second = skillForm() as unknown as { key?: unknown; props?: { seed?: unknown } };
+    expect(second.key).not.toBe(first);
+    expect(second.props?.seed).toEqual(seed);
+  });
+});

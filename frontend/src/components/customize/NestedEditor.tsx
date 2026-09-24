@@ -2,7 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { refreshCustTab } from "../../features/customize/actions";
-import { nestedEditor } from "../../features/customize/state";
+import { nestedEditor, type SkillSeed } from "../../features/customize/state";
 import { backdropClicked, notePress } from "../../features/customize/dismiss";
 import { skillReadinessNoteText } from "../../features/customize/environment";
 import {
@@ -25,9 +25,27 @@ function skillVersionPath(name: string, scope: string, projectId: string | null)
   return `/skills/${encodedName}`;
 }
 
+const editorKeys = new WeakMap<object, number>();
+let lastEditorKey = 0;
+
+/**
+ * One key per opened editor. A form seeds its fields from props once, so
+ * without a key an editor opened over another of the same kind (a seeded
+ * "Save as skill" over an empty new skill) kept the fields it replaced.
+ */
+function editorKey(editor: object): number {
+  let key = editorKeys.get(editor);
+  if (key === undefined) {
+    key = ++lastEditorKey;
+    editorKeys.set(editor, key);
+  }
+  return key;
+}
+
 export function NestedEditor() {
   const editor = nestedEditor.value;
   if (!editor) return null;
+  const key = editorKey(editor);
   return (
     <div
       class="cust-nested"
@@ -49,12 +67,12 @@ export function NestedEditor() {
             <Icon name="x" size={16} />
           </button>
         </div>
-        {editor.kind === "skill" ? <SkillForm name={editor.name} /> : null}
+        {editor.kind === "skill" ? <SkillForm key={key} name={editor.name} seed={editor.seed} /> : null}
         {editor.kind === "skill-import" ? <SkillImport /> : null}
         {editor.kind === "skill-history" ? (
           <SkillHistory name={editor.name} scope={editor.scope} projectId={editor.projectId} />
         ) : null}
-        {editor.kind === "specialist" ? <SpecialistForm name={editor.name} /> : null}
+        {editor.kind === "specialist" ? <SpecialistForm key={key} name={editor.name} /> : null}
         {editor.kind === "connector" ? <ConnectorForm k={editor.connector} /> : null}
         {editor.kind === "job" ? <JobOutput id={editor.id} /> : null}
       </div>
@@ -143,10 +161,10 @@ function EditorReadStatus({
   );
 }
 
-function SkillForm({ name }: { name: string | null }) {
-  const [nm, setNm] = useState(name || "");
-  const [desc, setDesc] = useState("");
-  const [body, setBody] = useState("");
+function SkillForm({ name, seed }: { name: string | null; seed?: SkillSeed }) {
+  const [nm, setNm] = useState(name || seed?.name || "");
+  const [desc, setDesc] = useState(seed?.description || "");
+  const [body, setBody] = useState(seed?.body || "");
   const [saving, setSaving] = useState(false);
   const read = useEditorRead(name ? `/skills/${encodeURIComponent(name)}` : null, (cur) => {
     setNm(asString(cur.name, name || ""));
