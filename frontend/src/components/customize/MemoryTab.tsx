@@ -21,6 +21,7 @@ export function MemoryTab() {
   const [block, setBlock] = useState("user");
   const [scope, setScope] = useState(active);
   const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
   const memory = useOptimisticToggle(
     enabled,
     (on) =>
@@ -116,9 +117,11 @@ export function MemoryTab() {
             <button
               type="button"
               class="solid-btn small"
+              disabled={saving}
               onClick={async () => {
                 const v = content.trim();
-                if (!v) return;
+                if (!v || saving) return;
+                setSaving(true);
                 try {
                   await api("/memory", {
                     method: "POST",
@@ -132,6 +135,8 @@ export function MemoryTab() {
                   custTab("memory");
                 } catch (e) {
                   hint(t("artifact.save.err", apiErrorText(e)), true);
+                } finally {
+                  if (alive()) setSaving(false);
                 }
               }}
             >

@@ -37,7 +37,7 @@ vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive }));
 vi.mock("./vendors/volcengine", () => ({ VolcenginePanel: () => null }));
 vi.mock("../../features/customize/actions", () => ({ custTab: () => undefined }));
 
-import { ModelsTab, profileKeyLabel } from "./ModelsTab";
+import { LocalEndpointRow, ModelsTab, profileKeyLabel } from "./ModelsTab";
 
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -183,6 +183,33 @@ describe("ModelsTab active configuration", () => {
     });
     expect(tagged(tree, "data-live-model")).toHaveLength(0);
     expect(content(tree)).not.toContain("versions.load.err");
+  });
+});
+
+describe("local endpoint add", () => {
+  it("adds a local model once however often Add is pressed while the write is in flight", async () => {
+    let finish!: (value: Response) => void;
+    mocks.fetch.mockImplementation(() => new Promise<Response>((resolve) => (finish = resolve)));
+    const endpoint = {
+      label: "Ollama",
+      base_url: "http://127.0.0.1:11434/v1",
+      models: ["llama3"],
+      default_model: "llama3",
+    };
+    const row = () => {
+      hookCursor = 0;
+      return LocalEndpointRow({ endpoint, profiles: [] }) as Node;
+    };
+    const add = () => (row().props!.children as Node[]).find((node) => node?.type === "button")!;
+
+    void (add().props!.onClick as () => Promise<void>)();
+    expect(add().props!.disabled).toBe(true);
+    void (add().props!.onClick as () => Promise<void>)();
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+
+    finish(response({ id: "mp-local" }));
+    await vi.waitFor(() => expect(add().props!.disabled).toBe(false));
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 });
 

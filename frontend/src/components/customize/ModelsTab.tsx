@@ -385,7 +385,7 @@ function liveModelRow(live: LiveModel, protocols: ProtocolOption[]) {
   );
 }
 
-function LocalEndpointRow({
+export function LocalEndpointRow({
   endpoint,
   profiles,
 }: {
@@ -398,6 +398,7 @@ function LocalEndpointRow({
   profiles: Profile[];
 }) {
   const [model, setModel] = useState(endpoint.default_model);
+  const [adding, setAdding] = useState(false);
   const configured = profiles.some(
     (profile) =>
       loopbackModelBase(profile.base_url) === endpoint.base_url && profile.model === model,
@@ -428,10 +429,11 @@ function LocalEndpointRow({
       <button
         type="button"
         class="outline-btn small"
-        disabled={configured || !model}
+        disabled={configured || !model || adding}
         onClick={async () => {
           const next = publicText(model, 512);
-          if (!next || configured) return;
+          if (!next || configured || adding) return;
+          setAdding(true);
           try {
             await api("/model-profiles", {
               method: "POST",
@@ -446,6 +448,8 @@ function LocalEndpointRow({
             custTab("models");
           } catch (error) {
             hint(t("artifact.save.err", publicText((error as Error).message, 240)), true);
+          } finally {
+            setAdding(false);
           }
         }}
       >

@@ -17,8 +17,9 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | Passive security posture, explicit checks, and redacted support-bundle download. Mounted from General. |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | Page load is a single status GET; checks and bundle wait for a click. |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory enable / add / edit / delete with explicit scope. |
+| [`MemoryTab.test.tsx`](MemoryTab.test.tsx) | Save adds a memory once however often it is pressed while the write is in flight. |
 | [`ModelsTab.tsx`](ModelsTab.tsx) | Profiles, local scan, probe, capability-receipt badges. With no active profile it shows the live `GET /config/llm` model (environment or saved settings) as the active row. |
-| [`ModelsTab.test.tsx`](ModelsTab.test.tsx) | An `.env`-configured install with no profiles shows its active model instead of "No models configured yet"; no extra row when a profile is active; an unreadable config does not hide profiles; a profile on the environment key is labelled so, not "No key". |
+| [`ModelsTab.test.tsx`](ModelsTab.test.tsx) | An `.env`-configured install with no profiles shows its active model instead of "No models configured yet"; no extra row when a profile is active; an unreadable config does not hide profiles; a profile on the environment key is labelled so, not "No key"; a local model is added once however often Add is pressed while the write is in flight. |
 | [`NestedEditor.tsx`](NestedEditor.tsx) | Skill / specialist / connector / job-output overlay. An edit form cannot save until its first read has succeeded. |
 | [`NestedEditor.test.tsx`](NestedEditor.test.tsx) | A failed Skill or specialist read is shown with Retry and blocks Save, so blank fields are never saved over the server copy. |
 | [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable. |
