@@ -13,6 +13,7 @@ import {
 } from "./model";
 import {
   commitActionTimelineOverviewSelection,
+  destroyActionTimelineView,
   loadEarlierActionTimeline,
   loadWorkbenchState,
   mergeDelegationChildEvent,
@@ -77,6 +78,8 @@ const TIMELINE_WINDOW: Record<string, unknown> = {
   actionTimelineSelectionOverlaps,
   actionTimelineSpan,
   commitActionTimelineOverviewSelection,
+  // messages/open.ts calls it on every session switch / branch reset.
+  destroyActionTimelineView,
   loadEarlierActionTimeline,
   loadWorkbenchState,
   mergeDelegationChildEvent,

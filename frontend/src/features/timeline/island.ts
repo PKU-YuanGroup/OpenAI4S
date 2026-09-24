@@ -1921,7 +1921,16 @@ export function sortedActionTimelineGroups(timeline: ActionTimeline | null = S.a
     }) as Group[];
 }
 
-export function destroyActionTimelineView(view: View = S._timelineView): void {
+/**
+ * The view this module created and has not destroyed yet. `S._timelineView`
+ * is also cleared from outside -- messages/open.ts resets session state
+ * before it asks for destroyActionTimelineView -- and a view nobody destroys
+ * keeps its document keydown listener and ResizeObserver (and so its whole
+ * DOM) alive for the page's lifetime.
+ */
+let liveTimelineView: View | null = null;
+
+export function destroyActionTimelineView(view: View = S._timelineView || liveTimelineView): void {
   if (!view) return;
   if (view.raf) cancelAnimationFrame(view.raf);
   if (view.overview && view.overview.raf) cancelAnimationFrame(view.overview.raf);
@@ -1930,6 +1939,7 @@ export function destroyActionTimelineView(view: View = S._timelineView): void {
   clearActionTimelineOverviewHover(view);
   if (view.resizeObserver) view.resizeObserver.disconnect();
   if (S._timelineView === view) S._timelineView = null;
+  if (liveTimelineView === view) liveTimelineView = null;
 }
 
 function actionTimelineViewMatches(view: View, rootFrameId: string, branchId: string): boolean {
@@ -2091,6 +2101,7 @@ export function toggleActionTimelineTurn(view: View, turnId: string): void {
 }
 
 function createActionTimelineView(rootFrameId: string, branchId: string): View {
+  if (liveTimelineView) destroyActionTimelineView(liveTimelineView);
   const region = el("div", "timeline-ledger-region");
   region.dataset.rootFrameId = rootFrameId;
   region.dataset.branchId = branchId;
@@ -2314,6 +2325,7 @@ function createActionTimelineView(rootFrameId: string, branchId: string): View {
     view.resizeObserver.observe(scroll);
   }
   S._timelineView = view;
+  liveTimelineView = view;
   return view;
 }
 

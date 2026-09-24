@@ -10,9 +10,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
+import { renderActionTimeline } from "./island";
 import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
+import { sanitizeActionTimeline } from "./sanitize";
 
 type Listener = (event: FakeEvent) => void;
 type FakeEvent = { type: string; target?: FakeElement; key?: string; [key: string]: unknown };
@@ -392,6 +394,72 @@ function stubApi(respond: (path: string, method: string) => unknown = () => ({ o
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** requestAnimationFrame that runs only when a test says a frame has passed. */
+function stubFrames(): { run: () => void; pending: () => number } {
+  let queue = new Map<number, () => void>();
+  let next = 1;
+  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => {
+    const id = next++;
+    queue.set(id, callback);
+    return id;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+    queue.delete(id);
+  });
+  return {
+    run: () => {
+      const due = queue;
+      queue = new Map();
+      due.forEach((callback) => callback());
+    },
+    pending: () => queue.size,
+  };
+}
+
+type Observer = { observed: unknown[]; disconnected: boolean };
+
+function stubResizeObserver(): Observer[] {
+  const made: Observer[] = [];
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      record: Observer = { observed: [], disconnected: false };
+      constructor() {
+        made.push(this.record);
+      }
+      observe(node: unknown) {
+        this.record.observed.push(node);
+      }
+      disconnect() {
+        this.record.disconnected = true;
+      }
+    },
+  );
+  return made;
+}
+
+function group(id: string, ordinal: number, overrides: Record<string, unknown> = {}) {
+  return {
+    group_id: id,
+    ordinal,
+    turn_id: "turn-1",
+    kind: "code",
+    title: "Action " + ordinal,
+    status: "completed",
+    attempts: [
+      { attempt_ordinal: 1, allocated_at: 1000 + ordinal, started_at: 1100 + ordinal, finished_at: 1200 + ordinal },
+    ],
+    events: [],
+    ...overrides,
+  };
+}
+
+function showTimeline(frameId: string, groups: unknown[], branchId = "branch-" + frameId): void {
+  S.currentId = frameId;
+  S.activeTab = "timeline";
+  S.actionTimeline = sanitizeActionTimeline({ root_frame_id: frameId, branch_id: branchId, groups });
+}
+
 function queued(executionId: string, preview = "follow-up") {
   return {
     execution_id: executionId,
@@ -496,5 +564,40 @@ describe("queue strip", () => {
     retry.click();
     await flush();
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("timeline view lifetime", () => {
+  it("is destroyed through the window lane after the session reset cleared S._timelineView", () => {
+    const doc = mountDocument();
+    stubFrames();
+    const observers = stubResizeObserver();
+    const target: Record<string, unknown> = {};
+    installTimeline(target);
+    showTimeline("frame-a", [group("g-1", 1)]);
+    renderActionTimeline();
+    expect(doc.listenerCount("keydown")).toBe(1);
+    expect(observers).toHaveLength(1);
+
+    // messages/open.ts: resetSessionScoped() nulls the view, then
+    // callLane("destroyActionTimelineView").
+    S._timelineView = null;
+    expect(typeof target.destroyActionTimelineView).toBe("function");
+    (target.destroyActionTimelineView as () => void)();
+    expect(doc.listenerCount("keydown")).toBe(0);
+    expect(observers[0]!.disconnected).toBe(true);
+  });
+
+  it("releases the previous view when a new one replaces it, even if nobody destroyed it", () => {
+    const doc = mountDocument();
+    stubFrames();
+    const observers = stubResizeObserver();
+    for (const frame of ["frame-a", "frame-b", "frame-c"]) {
+      S._timelineView = null;
+      showTimeline(frame, [group("g-" + frame, 1)]);
+      renderActionTimeline();
+    }
+    expect(doc.listenerCount("keydown")).toBe(1);
+    expect(observers.map((observer) => observer.disconnected)).toEqual([true, true, false]);
   });
 });
