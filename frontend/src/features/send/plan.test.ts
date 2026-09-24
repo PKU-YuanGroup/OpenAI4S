@@ -34,6 +34,7 @@ const fake = vi.hoisted(() => {
       children: [] as unknown[],
       firstChild: null,
       remove() {},
+      querySelectorAll: () => [],
     };
     node.appendChild = (child: unknown) => {
       (node.children as unknown[]).push(child);
@@ -47,12 +48,15 @@ const fake = vi.hoisted(() => {
 vi.mock("../messages/dom", () => ({
   el: fake.make,
   $: (selector: string) => (selector === "#messages" ? fake.host : null),
+  messagesHost: () => fake.host,
 }));
 vi.mock("../messages/scroll", () => ({ down: () => {} }));
 
 import { t } from "../../i18n/runtime";
 import { currentId } from "../../stores/session";
+import { planPending, planReady } from "../../stores/stream";
 import { renderPlanCard } from "./plan";
+import { turnDone } from "./turn";
 
 function walk(node: FakeNode, found: FakeNode[] = []): FakeNode[] {
   found.push(node);
@@ -127,5 +131,38 @@ describe("terminal plan card", () => {
     const card = lastCard();
     expect(one(card, "pc-eyebrow").textContent).toBe(t("plan.eyebrow.completed"));
     expect(one(card, "pc-status").textContent).toBe(t("plan.status.completed", 2, 2));
+  });
+});
+
+describe("the approval card after a plan-mode turn without a structured plan", () => {
+  function approvalCards(): FakeNode[] {
+    return (fake.host as unknown as FakeNode).children.filter((node) => node.className === "plan-card");
+  }
+
+  beforeEach(() => {
+    (fake.host as unknown as FakeNode).children = [];
+    // No session: turnDone's artifact and execution-log reloads stay idle.
+    currentId.value = null;
+    planReady.value = null;
+  });
+
+  it.each(["cancelled", "blocked_by_guardian", "failed"])(
+    "a %s plan turn offers nothing to approve and leaves nothing for the next turn",
+    (status) => {
+      planPending.value = true;
+      turnDone(status);
+      expect(approvalCards()).toHaveLength(0);
+      expect(planPending.value).toBe(false);
+      // The next, ordinary turn finishes.
+      turnDone("completed");
+      expect(approvalCards()).toHaveLength(0);
+    },
+  );
+
+  it("a plan turn that finished offers it", () => {
+    planPending.value = true;
+    turnDone("completed");
+    expect(approvalCards()).toHaveLength(1);
+    expect(planPending.value).toBe(false);
   });
 });

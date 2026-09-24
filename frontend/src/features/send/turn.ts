@@ -64,6 +64,9 @@ export function failureHint(detail: unknown): string {
   return id ? base + " " + t("turn.supportId", id) : base;
 }
 
+/** Terminal statuses of a turn that ran to its end (not failed, stopped or blocked). */
+const PLAN_TURN_FINISHED = ["completed", "success", "done", "ready"];
+
 export function turnDone(status: string, detail?: unknown): void {
   noteHistoryMutation();
   running.value = false;
@@ -108,8 +111,12 @@ export function turnDone(status: string, detail?: unknown): void {
       ["failed", "blocked_by_guardian"].includes(status) ? "failed" : "completed",
     );
   }
-  if (planPending.value && status !== "failed") {
+  if (planPending.value) {
+    // The flag belongs to the plan-mode turn that just ended, however it
+    // ended; left set by a failure, the next ordinary turn offered to approve
+    // a plan. Only a turn that finished produced something to approve --
+    // a stopped or guardian-blocked one did not.
     planPending.value = false;
-    if (!planReady.value) showPlanApproval();
+    if (PLAN_TURN_FINISHED.includes(status) && !planReady.value) showPlanApproval();
   }
 }
