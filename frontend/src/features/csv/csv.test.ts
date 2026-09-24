@@ -82,6 +82,36 @@ describe("heterogeneous JSON tables", () => {
   });
 });
 
+describe("delimited tables keep every column (AUDIT A44)", () => {
+  it("does not sniff a declared CSV/TSV as JSON when a header opens with a bracket", () => {
+    expect(parseTable("[Na+],[Cl-],conc\n1,2,3\n", { filename: "ions.csv" })).toEqual([
+      { "[Na+]": "1", "[Cl-]": "2", conc: "3" },
+    ]);
+    expect(parseTable("{a}\tb\n1\t2\n", { filename: "t", content_type: "text/tab-separated-values" })).toEqual([
+      { "{a}": "1", b: "2" },
+    ]);
+    // Undeclared text that looks like JSON is still read as JSON.
+    expect(parseTable('[{"a":1}]', { filename: "rows.txt" })).toEqual([{ a: 1 }]);
+  });
+
+  it("suffixes a repeated header instead of overwriting its twin", () => {
+    expect(parseTable("mean,mean,sd,mean\n1,2,3,4\n", { filename: "t.csv" })).toEqual([
+      { mean: "1", "mean.1": "2", sd: "3", "mean.2": "4" },
+    ]);
+  });
+
+  it("keeps cells past the header under their position; trailing separators add nothing", () => {
+    expect(parseTable("a,b\n1,2,3\n4,5\n", { filename: "t.csv" })).toEqual([
+      { a: "1", b: "2", "2": "3" },
+      { a: "4", b: "5", "2": "" },
+    ]);
+    expect(parseTable("a,b\n1,2,\n3,4,,\n", { filename: "t.csv" })).toEqual([
+      { a: "1", b: "2" },
+      { a: "3", b: "4" },
+    ]);
+  });
+});
+
 describe("array-of-array JSON tables", () => {
   it("renders a homogeneous array of arrays as positional columns", () => {
     expect(parseTable("[[1,2],[3,4]]", { filename: "values.json" })).toEqual([

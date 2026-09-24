@@ -96,6 +96,32 @@ function isBlankRow(row: string[]): boolean {
   return !row.some((c) => String(c).trim());
 }
 
+/** Cells up to the last non-blank one; trailing separators add no column. */
+function filledWidth(row: string[]): number {
+  let width = row.length;
+  while (width > 0 && !String(row[width - 1]).trim()) width--;
+  return width;
+}
+
+/**
+ * One key per column. Row objects are keyed by header, so a repeated name
+ * (`mean,mean,sd`) used to overwrite its twin and cells past the header were
+ * dropped. A repeat takes pandas' `.1`, `.2` suffix; a cell past the header is
+ * keyed by its position, as array rows are.
+ */
+function columnNames(header: string[], width: number): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (let i = 0; i < width; i++) {
+    const base = i < header.length ? header[i] || "" : String(i);
+    let name = base;
+    for (let n = 1; seen.has(name); n++) name = `${base}.${n}`;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
 /**
  * Artifact table parse. JSON branch is app.js:12878; the CSV branch uses
  * parseDelimited so a newline inside quotes is one cell, not a new row.
@@ -105,7 +131,11 @@ export function parseTable(
   a: ArtifactRef = {},
 ): Record<string, unknown>[] | null {
   const nm = (a.filename || "").toLowerCase();
-  if (nm.endsWith(".json") || /^\s*[\[{]/.test(text)) {
+  const type = String(a.content_type || "").toLowerCase();
+  // A declared CSV/TSV is not sniffed for JSON: its first header cell can
+  // open with a bracket (`[Na+],[Cl-],conc`).
+  const delimited = /\.(csv|tsv)$/.test(nm) || /\bcsv\b|tab-separated/.test(type);
+  if (nm.endsWith(".json") || (!delimited && /^\s*[\[{]/.test(text))) {
     try {
       let j: unknown = JSON.parse(text);
       if (!Array.isArray(j)) {
@@ -136,7 +166,10 @@ export function parseTable(
   const sep = delimiterFor(nm, a.content_type, firstLine);
   const rows = parseDelimited(raw, sep).filter((r) => !isBlankRow(r));
   if (rows.length < 2) return null;
-  const cols = (rows[0] || []).map((c) => c.trim());
+  const header = (rows[0] || []).map((c) => c.trim());
+  let width = header.length;
+  for (let i = 1; i < rows.length; i++) width = Math.max(width, filledWidth(rows[i] || []));
+  const cols = columnNames(header, width);
   return rows.slice(1).map((l) => {
     const o: Record<string, unknown> = {};
     cols.forEach((c, i) => {
