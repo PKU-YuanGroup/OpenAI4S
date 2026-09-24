@@ -21,6 +21,7 @@ import { onEvent } from "../ws/registry";
 import {
   loadWorkbenchState,
   mergeDelegationChildEvent,
+  scheduleWorkbenchRefresh,
   rememberExecutionState,
   renderActionTimeline,
   renderBranchPanel,
@@ -928,5 +929,70 @@ describe("language", () => {
     } finally {
       await setLang(original);
     }
+  });
+});
+
+describe("scheduled workbench refresh", () => {
+  function recordReads(): { paths: string[]; release: () => void; hold: () => void } {
+    const paths: string[] = [];
+    let gate: Promise<void> | null = null;
+    let open: () => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        paths.push(String(url).replace(/^.*\/api\/v1/, ""));
+        if (gate) await gate;
+        return { ok: true, status: 200, text: async () => "{}" };
+      }),
+    );
+    return {
+      paths,
+      hold: () => {
+        gate = new Promise((resolve) => {
+          open = resolve;
+        });
+      },
+      release: () => {
+        gate = null;
+        open();
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mountDocument();
+    installTimeline({});
+    S.currentId = "frame-q";
+  });
+
+  it("re-reads only the delegation projection for a delegation event", async () => {
+    const reads = recordReads();
+    onEvent({ type: "delegation_progress", frame_id: "frame-q" });
+    onEvent({ type: "delegation_state", frame_id: "frame-q" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(reads.paths).toEqual(["/frames/frame-q/delegations"]);
+  });
+
+  it("re-reads branches and recovery actions for a checkpoint", async () => {
+    const reads = recordReads();
+    onEvent({ type: "checkpoint_created", frame_id: "frame-q", checkpoint_id: "cp-9" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(reads.paths.sort()).toEqual(["/frames/frame-q/branches", "/frames/frame-q/recovery/actions"]);
+  });
+
+  it("does not start a read while one is in flight, and reads what was asked for after it", async () => {
+    const reads = recordReads();
+    reads.hold();
+    scheduleWorkbenchRefresh(0);
+    await vi.advanceTimersByTimeAsync(1);
+    const first = reads.paths.length;
+    expect(first).toBeGreaterThanOrEqual(9);
+    onEvent({ type: "delegation_progress", frame_id: "frame-q" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(reads.paths).toHaveLength(first);
+    reads.release();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(reads.paths.slice(first)).toEqual(["/frames/frame-q/delegations"]);
   });
 });

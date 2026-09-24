@@ -295,66 +295,148 @@ export async function loadEarlierActionTimeline(): Promise<void> {
   }
 }
 
-export async function loadWorkbenchState(id: string | null, force = false): Promise<void> {
+/** The workbench projections, each read from its own endpoint. */
+export const WORKBENCH_PARTS = [
+  "timeline",
+  "execution",
+  "branches",
+  "context",
+  "security",
+  "delegations",
+  "recovery",
+  "recoveryActions",
+  "computeTasks",
+] as const;
+export type WorkbenchPart = (typeof WORKBENCH_PARTS)[number];
+
+let workbenchLoadsInFlight = 0;
+
+export async function loadWorkbenchState(
+  id: string | null,
+  force = false,
+  parts: readonly WorkbenchPart[] = WORKBENCH_PARTS,
+): Promise<void> {
   if (!id || id !== S.currentId) return;
-  if (!force && S._workbenchLoading === id) return;
+  const wanted = new Set(parts);
+  // Only a read of everything is "the" workbench load that the loading flag,
+  // the empty-state text and non-forced callers wait on.
+  const full = WORKBENCH_PARTS.every((part) => wanted.has(part));
+  if (!force && full && S._workbenchLoading === id) return;
   const request = (S._workbenchReq = (S._workbenchReq || 0) + 1);
-  S._workbenchLoading = id;
-  const base = `/frames/${id}`;
-  const [
-    timeline,
-    execution,
-    branches,
-    context,
-    security,
-    delegation,
-    recovery,
-    recoveryActions,
-    computeTasks,
-  ] = await Promise.all([
-    optionalApi([base + `/action-timeline?limit=${ACTION_TIMELINE_PAGE_SIZE}`]),
-    optionalApi([base + "/execution-queue", base + "/execution"]),
-    optionalApi([base + "/branches"]),
-    optionalApi([base + "/context"]),
-    optionalApi([base + "/security"]),
-    optionalApi([base + "/delegations"]),
-    optionalApi([base + "/recovery"]),
-    optionalApi([base + "/recovery/actions"]),
-    optionalApi([base + "/compute/tasks"]),
-  ]);
-  if (request !== S._workbenchReq || id !== S.currentId) return;
-  S._workbenchLoading = null;
-  if (timeline)
-    S.actionTimeline = mergeActionTimelines(
-      S.actionTimeline,
-      sanitizeActionTimeline(timeline),
-      "latest",
-    );
-  if (execution) rememberExecutionQueue(execution);
-  // What did not change keeps its object, so nothing keyed on it is rebuilt.
-  if (branches) {
-    S.branchState = keepUnchanged(
-      S.branchState,
-      carryRevertPreview(S.branchState, sanitizeBranches(branches)),
-    );
-    S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
+  if (full) S._workbenchLoading = id;
+  workbenchLoadsInFlight += 1;
+  try {
+    const base = `/frames/${id}`;
+    const read = (part: WorkbenchPart, paths: string[]) =>
+      wanted.has(part) ? optionalApi(paths) : Promise.resolve(null);
+    const [
+      timeline,
+      execution,
+      branches,
+      context,
+      security,
+      delegation,
+      recovery,
+      recoveryActions,
+      computeTasks,
+    ] = await Promise.all([
+      read("timeline", [base + `/action-timeline?limit=${ACTION_TIMELINE_PAGE_SIZE}`]),
+      read("execution", [base + "/execution-queue", base + "/execution"]),
+      read("branches", [base + "/branches"]),
+      read("context", [base + "/context"]),
+      read("security", [base + "/security"]),
+      read("delegations", [base + "/delegations"]),
+      read("recovery", [base + "/recovery"]),
+      read("recoveryActions", [base + "/recovery/actions"]),
+      read("computeTasks", [base + "/compute/tasks"]),
+    ]);
+    if (request !== S._workbenchReq || id !== S.currentId) return;
+    if (full) S._workbenchLoading = null;
+    if (timeline)
+      S.actionTimeline = mergeActionTimelines(
+        S.actionTimeline,
+        sanitizeActionTimeline(timeline),
+        "latest",
+      );
+    if (execution) rememberExecutionQueue(execution);
+    // What did not change keeps its object, so nothing keyed on it is rebuilt.
+    if (branches) {
+      S.branchState = keepUnchanged(
+        S.branchState,
+        carryRevertPreview(S.branchState, sanitizeBranches(branches)),
+      );
+      S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
+    }
+    if (context) S.contextState = keepUnchanged(S.contextState, sanitizeContext(context));
+    if (security) S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(security));
+    if (delegation)
+      S.delegationState = keepUnchanged(S.delegationState, sanitizeDelegations(delegation));
+    if (recovery) S.recoveryState = keepUnchanged(S.recoveryState, sanitizeRecovery(recovery));
+    if (recoveryActions)
+      S.recoveryActions = keepUnchanged(
+        S.recoveryActions,
+        sanitizeRecoveryActions(recoveryActions),
+      );
+    if (computeTasks)
+      S.computeTasks = keepUnchanged(S.computeTasks, sanitizeComputeTasks(computeTasks));
+    if (S.activeTab === "timeline") scheduleActionTimelineRender();
+    if (S.activeTab === "notebook") laneCall("renderNotebook");
+  } finally {
+    workbenchLoadsInFlight -= 1;
+    if (!workbenchLoadsInFlight) refreshAfterWorkbenchLoad();
   }
-  if (context) S.contextState = keepUnchanged(S.contextState, sanitizeContext(context));
-  if (security) S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(security));
-  if (delegation)
-    S.delegationState = keepUnchanged(S.delegationState, sanitizeDelegations(delegation));
-  if (recovery) S.recoveryState = keepUnchanged(S.recoveryState, sanitizeRecovery(recovery));
-  if (recoveryActions)
-    S.recoveryActions = keepUnchanged(S.recoveryActions, sanitizeRecoveryActions(recoveryActions));
-  if (computeTasks)
-    S.computeTasks = keepUnchanged(S.computeTasks, sanitizeComputeTasks(computeTasks));
-  if (S.activeTab === "timeline") scheduleActionTimelineRender();
-  if (S.activeTab === "notebook") laneCall("renderNotebook");
 }
 
-export function scheduleWorkbenchRefresh(delay = 180): void {
+/**
+ * Scheduled refreshes. Every relevant socket event (and every finished cell)
+ * asks for one; they used to re-read all nine endpoints each time, on top of
+ * any read still in flight. Requests now accumulate the parts they need until
+ * the timer fires, and a refresh due while a read is in flight waits for it.
+ * The timer stays in S._workbenchTimer, so clearing it (a session reset)
+ * still cancels the refresh.
+ */
+let pendingWorkbenchParts: Set<WorkbenchPart> | null = null;
+let pendingWorkbenchScope = "";
+let workbenchRefreshAfterLoad: { parts: Set<WorkbenchPart>; generation: number } | null = null;
+
+export function scheduleWorkbenchRefresh(
+  delay = 180,
+  parts: readonly WorkbenchPart[] = WORKBENCH_PARTS,
+): void {
+  // Parts asked for before a full read (which served them) or a session
+  // reset (which cleared their timer and voided them) are not carried over.
+  const scope = String(S.currentId) + "#" + String(S._workbenchReq || 0);
+  const pending =
+    pendingWorkbenchParts && pendingWorkbenchScope === scope
+      ? pendingWorkbenchParts
+      : new Set<WorkbenchPart>();
+  parts.forEach((part) => pending.add(part));
+  pendingWorkbenchParts = pending;
+  pendingWorkbenchScope = scope;
   clearTimeout(S._workbenchTimer);
-  S._workbenchTimer = setTimeout(() => loadWorkbenchState(S.currentId, true), delay);
+  S._workbenchTimer = setTimeout(runScheduledWorkbenchRefresh, delay);
+}
+
+function runScheduledWorkbenchRefresh(): void {
+  const parts = pendingWorkbenchParts || new Set<WorkbenchPart>(WORKBENCH_PARTS);
+  pendingWorkbenchParts = null;
+  if (workbenchLoadsInFlight) {
+    const follow = workbenchRefreshAfterLoad
+      ? workbenchRefreshAfterLoad.parts
+      : new Set<WorkbenchPart>();
+    parts.forEach((part) => follow.add(part));
+    workbenchRefreshAfterLoad = { parts: follow, generation: S._workbenchReq };
+    return;
+  }
+  void loadWorkbenchState(S.currentId, true, [...parts]);
+}
+
+function refreshAfterWorkbenchLoad(): void {
+  const follow = workbenchRefreshAfterLoad;
+  workbenchRefreshAfterLoad = null;
+  // A newer full read, or a session reset, since it was asked for covers it.
+  if (follow && follow.generation === S._workbenchReq)
+    scheduleWorkbenchRefresh(0, [...follow.parts]);
 }
 
 export function scheduleConversationResync(fid: string, delay = 120, resetHistory = false): void {

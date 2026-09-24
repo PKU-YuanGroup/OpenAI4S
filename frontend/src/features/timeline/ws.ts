@@ -108,6 +108,19 @@ function handleRecovery(m: WsMessage): void {
   if (S.activeTab === "notebook") paintNotebook();
 }
 
+/**
+ * Branch-list and checkpoint events change the branch projection and the
+ * checkpoint recovery would restore from; a revert or activation can change
+ * everything, so those still re-read the whole workbench.
+ */
+const BRANCH_LIST_EVENTS = new Set([
+  "branch",
+  "branch_state",
+  "checkpoint",
+  "checkpoint_created",
+  "branch_created",
+]);
+
 function handleBranch(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
@@ -131,7 +144,11 @@ function handleBranch(m: WsMessage): void {
       carryRevertPreview(S.branchState, sanitizeBranches(m)),
     );
     S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
-  } else scheduleWorkbenchRefresh(m.type === "branch_activation_state" ? 0 : 80);
+  } else
+    scheduleWorkbenchRefresh(
+      m.type === "branch_activation_state" ? 0 : 80,
+      BRANCH_LIST_EVENTS.has(String(m.type)) ? ["branches", "recoveryActions"] : undefined,
+    );
   if (S.activeTab === "timeline") scheduleActionTimelineRender();
   if (S.activeTab === "notebook") paintNotebook();
 }
@@ -140,7 +157,7 @@ function handleDelegation(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
   if (m.type === "delegation_child_event") mergeDelegationChildEvent(m);
-  scheduleWorkbenchRefresh(60);
+  scheduleWorkbenchRefresh(60, ["delegations"]);
   if (S.activeTab === "timeline") scheduleActionTimelineRender();
 }
 
