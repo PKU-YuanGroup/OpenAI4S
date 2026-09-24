@@ -302,22 +302,19 @@ export function bindEditorAutocomplete(
 
 let watching = false;
 
+/**
+ * Bind any `.edit-area` already in the document. Not a document-wide
+ * MutationObserver: that ran `querySelectorAll` on every mutation of the page
+ * (every streamed chunk, every repaint) to find editors the mount point
+ * already binds -- `artifacts/editor-view.ts` calls `bindEditorAutocomplete`
+ * on the textarea it creates. A new editor surface does the same.
+ */
 export function watchEditAreas(): void {
   if (typeof document === "undefined" || watching) return;
   watching = true;
-  const scan = (): void => {
-    document.querySelectorAll("textarea.edit-area").forEach((node) => {
-      const ta = node as HTMLTextAreaElement;
-      if (ta.dataset.edacBound) return;
-      bindEditorAutocomplete(ta, artifactForEditor());
-    });
-  };
-  scan();
-  if (typeof MutationObserver === "function") {
-    const ob = new MutationObserver(scan);
-    ob.observe(document.documentElement || document.body, {
-      childList: true,
-      subtree: true,
-    });
-  }
+  document.querySelectorAll("textarea.edit-area").forEach((node) => {
+    const ta = node as HTMLTextAreaElement;
+    if (ta.dataset.edacBound) return;
+    bindEditorAutocomplete(ta, artifactForEditor());
+  });
 }
