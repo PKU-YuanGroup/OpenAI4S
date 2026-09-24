@@ -19,6 +19,6 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 | [`ketcher.ts`](ketcher.ts) | `openKetcher` iframe onto `/ketcher` (app.js:10834). |
 | [`locator.ts`](locator.ts) | PDF / HTML locator comments (app.js:10835-10897). |
 | [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` lazy inject (app.js:9610-9673). |
-| [`mol.test.ts`](mol.test.ts) | No static 3Dmol import; no live CDN URL; vendored src. |
+| [`mol.test.ts`](mol.test.ts) | No static 3Dmol import; no live CDN URL; vendored src; only the latest attached structure creates a viewer, and the script is injected once. |
 | [`viewer.ts`](viewer.ts) | Dock Viewer chrome, editor, versions (app.js:9430-9609). |
 | [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` extension / content-type gate. |

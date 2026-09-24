@@ -19,6 +19,6 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`ketcher.ts`](ketcher.ts) | `openKetcher` iframe 打开 `/ketcher`（app.js:10834）。 |
 | [`locator.ts`](locator.ts) | PDF / HTML locator 评论（app.js:10835-10897）。 |
 | [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` 懒注入（app.js:9610-9673）。 |
-| [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src。 |
+| [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src；只有最新且仍在页面上的结构创建 viewer，脚本只注入一次。 |
 | [`viewer.ts`](viewer.ts) | Dock Viewer 铬、编辑器、版本（app.js:9430-9609）。 |
 | [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` 扩展名 / content-type 门。 |
