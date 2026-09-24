@@ -11,12 +11,9 @@
 import { effect } from "@preact/signals";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { pendingReplIdentity } from "../../stores/notebook";
+import { _kc, pendingReplIdentity } from "../../stores/notebook";
 import { delegationState, executionQueue } from "../../stores/timeline";
-import {
-  kernelEpoch,
-  scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh,
-} from "../notebook/kernel";
+import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
 import {
   loadWorkbenchState,
@@ -725,11 +722,14 @@ describe("shared notebook helpers", () => {
       execution_id: "exec-k",
       owner: { kind: "user_repl", id: "repl-1" },
     };
-    const epoch = kernelEpoch.value;
+    _kc.value = { ..._kc.value, id: "frame-k", st: { repl_enabled: true }, stAt: 1 };
+    const before = _kc.value;
     rememberExecutionState({ execution_id: "exec-k", status: "completed" });
     expect(pendingReplIdentity.value).toBeNull();
-    // The notebook's KernelChips / StatusStrip only re-read `_kc` on an epoch bump.
-    expect(kernelEpoch.value).toBeGreaterThan(epoch);
+    // The notebook's KernelSync re-reads the kernel when `_kc` is replaced, so
+    // the invalidation must publish a new, emptied cache rather than edit it.
+    expect(_kc.value).not.toBe(before);
+    expect(_kc.value.st).toBeNull();
   });
 });
 
