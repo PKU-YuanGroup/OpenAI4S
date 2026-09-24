@@ -1,4 +1,5 @@
 import { bindEditorAutocomplete } from "../autocomplete/editor";
+import { copyText } from "../chrome/clipboard";
 import { el } from "./api";
 import { filesT } from "./copy";
 import { artifactEditors } from "./state";
@@ -81,13 +82,16 @@ export function renderArtifactEditor(body: HTMLElement, artifact: ArtifactRow, o
     if (result && options.active()) options.saved(result.version_id);
   };
   copy.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(editor.text);
-      if (options.active()) status.textContent = filesT("files.deeplink.copied");
-    } catch {
-      area.disabled = false; area.readOnly = !editor.canSave; area.select();
-      status.textContent = filesT("editor.copyManually");
+    // copyText also covers plain-http deployments, where navigator.clipboard
+    // does not exist; only a write it could not make falls back to selection.
+    const copied = await copyText(editor.text);
+    if (!options.active()) return;
+    if (copied) {
+      status.textContent = filesT("files.deeplink.copied");
+      return;
     }
+    area.disabled = false; area.readOnly = !editor.canSave; area.select();
+    status.textContent = filesT("editor.copyManually");
   };
   latest.onclick = () => {
     if (options.active() && editor.observed) options.latest({ ...editor.artifact, version_id: editor.observed.versionId, _exactVersion: true });
