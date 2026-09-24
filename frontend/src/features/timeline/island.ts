@@ -11,7 +11,9 @@
 
 import { LANG, t, tOptional } from "../../i18n/runtime";
 import { publicText } from "../scrub/scrub";
-import { _kc, cells, liveCells, pendingReplIdentity } from "../../stores/notebook";
+import { pendingReplIdentity } from "../../stores/notebook";
+import { nbFindCell } from "../notebook/cells";
+import { invalidateKernelCache, runtimeSummary, shortRuntime } from "../notebook/kernel";
 import {
   ACTION_TIMELINE_OVERSCAN,
   ACTION_TIMELINE_OVERVIEW_WIDTH,
@@ -67,38 +69,6 @@ import type { ActionTimeline, DelegationState, TimelineGroup } from "./types";
 type View = any;
 type Group = TimelineGroup & Record<string, any>;
 
-function invalidateKernelCache(): void {
-  const cache = _kc.value;
-  cache.id = null;
-  cache.st = null;
-  cache.stAt = 0;
-  cache.envs = null;
-  cache.cur = null;
-  cache.envAt = 0;
-}
-
-function nbCellKey(cell: any): string {
-  if (cell && (cell.producing_cell_id || cell.cell_id))
-    return String(cell.producing_cell_id || cell.cell_id);
-  return (
-    "legacy:" +
-    String((cell && cell.kernel_id) || "python") +
-    ":" +
-    String(cell && cell.cell_index != null ? cell.cell_index : "?")
-  );
-}
-
-function nbFindCell(producingCellId: unknown): any {
-  const key = String(producingCellId || "");
-  const live = (liveCells.value || []) as any[];
-  const stored = (cells.value || []) as any[];
-  return (
-    live.find((cell) => nbCellKey(cell) === key) ||
-    stored.find((cell) => nbCellKey(cell) === key) ||
-    null
-  );
-}
-
 export function timelineKind(group: any): string {
   const kind = String((group && group.kind) || "").toLowerCase();
   const eventKinds = ((group && group.events) || [])
@@ -128,11 +98,6 @@ function timelineKindIcon(kind: string): string {
   if (kind === "finalize") return "check";
   if (kind === "native_tool" || kind === "dynamic_tool") return "sliders";
   return "terminal";
-}
-
-export function shortRuntime(value: unknown): string {
-  const text = publicText(value, 96);
-  return text ? (text.length > 12 ? text.slice(0, 8) + "…" : text) : t("runtime.none");
 }
 
 export function rememberExecutionQueue(payload: unknown): any {
@@ -188,17 +153,6 @@ export function rememberExecutionState(event: any): void {
       if (S.dock.open && S.activeTab === "notebook") laneCall("scheduleNotebookRender");
     }
   }
-}
-
-export function identityForOwner(queue: any, ownerKind: string | null | undefined): any {
-  const safe = queue || sanitizeExecutionQueue({}),
-    candidates = [safe.owner].concat(safe.queue || []).filter(Boolean);
-  const ticket = ownerKind
-    ? candidates.find((item: any) => item.owner && item.owner.kind === ownerKind)
-    : safe.owner;
-  return ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id
-    ? { execution_id: ticket.execution_id, owner: ticket.owner }
-    : null;
 }
 
 export function mergeDelegationChildEvent(m: any): void {
@@ -402,83 +356,6 @@ export function scheduleConversationResync(fid: string, delay = 120, resetHistor
 
 export function scheduleBranchConversationResync(fid: string, delay = 120): void {
   scheduleConversationResync(fid, delay, true);
-}
-
-function latestCellForLanguage(language: string): any {
-  return (
-    (S.cells || [])
-      .concat(S.liveCells || [])
-      .filter((cell: any) =>
-        String(cell.language || cell.kernel_id || "python")
-          .toLowerCase()
-          .startsWith(language),
-      )
-      .slice(-1)[0] || null
-  );
-}
-
-function runtimeSummary(): any {
-  const queue = S.executionQueue || {};
-  const ownerTicket = queue.owner || null;
-  const owner = (ownerTicket && ownerTicket.owner) || {};
-  const recovery = S.recoveryState || {};
-  const recoveryStatus = String(recovery.status || "").toLowerCase();
-  const trustState = publicText(
-    recovery.trust_state ||
-      (S.recoveryActions || {}).trust_state ||
-      (_kc.value.st || ({} as any)).trust_state,
-    32,
-  );
-  const explicitRecoveryRequired =
-    recovery.explicit_recovery_required === true ||
-    (S.recoveryActions || {}).explicit_recovery_required === true ||
-    (_kc.value.st || ({} as any)).explicit_recovery_required === true;
-  const viewOnly =
-    explicitRecoveryRequired ||
-    recovery.view_only === true ||
-    (S.recoveryActions || {}).view_only === true ||
-    (_kc.value.st || ({} as any)).view_only === true;
-  let status = "ended";
-  if (/fail|error/.test(recoveryStatus)) status = "failed";
-  else if (/partial/.test(recoveryStatus)) status = "partial";
-  else if (/restor|recover|bootstrap|validat/.test(recoveryStatus)) status = "restoring";
-  else if (ownerTicket || S.running || (_kc.value.st && (_kc.value.st as any).turn_running))
-    status = "busy";
-  else if (_kc.value.st && (_kc.value.st as any).alive) status = "live";
-  const pythonCell = latestCellForLanguage("python"),
-    rCell = latestCellForLanguage("r");
-  const branch =
-    (S.branchState && S.branchState.branch_id) ||
-    (S.actionTimeline && S.actionTimeline.branch_id) ||
-    (recovery && recovery.branch_id) ||
-    S.currentId;
-  const stateRevision =
-    recovery.state_revision != null
-      ? recovery.state_revision
-      : Math.max(
-          0,
-          ...((S.cells || []) as any[])
-            .concat(S.liveCells || [])
-            .map((cell: any) => Number(cell.state_revision) || 0),
-        );
-  const pyGeneration =
-    recovery.python_generation_id ||
-    (_kc.value.st &&
-      ((_kc.value.st as any).python_generation_id || (_kc.value.st as any).generation_id)) ||
-    (pythonCell && pythonCell.generation_id);
-  const rGeneration = recovery.r_generation_id || (rCell && rCell.generation_id);
-  return {
-    status,
-    branch: publicText(branch, 96),
-    python: publicText(pyGeneration, 96),
-    r: publicText(rGeneration, 96),
-    viewOnly,
-    trustState,
-    revision: stateRevision || null,
-    owner: publicText(owner.kind || (ownerTicket && ownerTicket.owner_kind), 48),
-    ownerId: publicText(owner.id || (ownerTicket && ownerTicket.owner_id), 96),
-    queue: Number(queue.queued_count || (queue.queue || []).length || 0),
-  };
 }
 
 function runtimeSummaryNode(compact = false): HTMLElement {

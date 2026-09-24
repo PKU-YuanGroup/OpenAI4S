@@ -10,9 +10,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh } from "../notebook/kernel";
+import { pendingReplIdentity } from "../../stores/notebook";
+import {
+  kernelEpoch,
+  scheduleWorkbenchRefresh as notebookScheduleWorkbenchRefresh,
+} from "../notebook/kernel";
 import { onEvent } from "../ws/registry";
-import { loadWorkbenchState, renderActionTimeline, renderBranchPanel } from "./island";
+import {
+  loadWorkbenchState,
+  rememberExecutionState,
+  renderActionTimeline,
+  renderBranchPanel,
+} from "./island";
 import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
@@ -671,5 +680,23 @@ describe("notebook-driven workbench refresh", () => {
     notebookScheduleWorkbenchRefresh(0);
     await vi.advanceTimersByTimeAsync(5);
     expect(calls.map((call) => call.path)).toContain("/frames/frame-w/branches");
+  });
+});
+
+describe("shared notebook helpers", () => {
+  it("invalidating the kernel cache repaints the notebook's kernel chips", () => {
+    mountDocument();
+    vi.stubGlobal("loadExecutionLog", undefined);
+    S.currentId = "frame-k";
+    pendingReplIdentity.value = {
+      frame_id: "frame-k",
+      execution_id: "exec-k",
+      owner: { kind: "user_repl", id: "repl-1" },
+    };
+    const epoch = kernelEpoch.value;
+    rememberExecutionState({ execution_id: "exec-k", status: "completed" });
+    expect(pendingReplIdentity.value).toBeNull();
+    // The notebook's KernelChips / StatusStrip only re-read `_kc` on an epoch bump.
+    expect(kernelEpoch.value).toBeGreaterThan(epoch);
   });
 });
