@@ -3120,6 +3120,15 @@ class Store:
     def step_count(self, frame_id: str) -> int:
         return self._frames.step_count(frame_id)
 
+    def list_steps_for_export(self, frame_id: str) -> list[dict]:
+        return self._frames.list_steps_for_export(frame_id)
+
+    def import_step(self, **fields: Any) -> dict:
+        return self._frames.import_step(**fields)
+
+    def list_session_frames(self, root_frame_id: str) -> list[dict]:
+        return self._frames.list_session_frames(root_frame_id)
+
     # --- frame browse / detail / search --------------------------
     def browse_frames(
         self,
@@ -5677,6 +5686,12 @@ class Store:
             side_effect_class=side_effect_class,
             resource_keys=resource_keys,
         )
+
+    def list_session_host_calls(self, root_frame_id: str, *, limit: int) -> list[dict]:
+        return self._host_calls.list_for_session(root_frame_id, limit=limit)
+
+    def session_host_call_totals(self, root_frame_id: str) -> list[dict]:
+        return self._host_calls.totals_for_session(root_frame_id)
 
     def has_successful_bash_receipt(
         self,

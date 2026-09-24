@@ -111,6 +111,7 @@ from openai4s.server import (
     local_auth,
     onboarding_routes,
     orchestration_routes,
+    package_runtime,
     project_listing,
     retrieval_source,
     sandbox_grants,
@@ -4797,13 +4798,26 @@ class SessionRunner:
         """Serialize an HTTP package read with all session workspace writers."""
 
         st = self._state(root_frame_id, project_id, allow_quarantined=True)
+        # What only the daemon knows: the model configuration this session
+        # resolves to (the same `_llm_cfg` a turn dispatches under) and its
+        # loop limits. Resolved part by part, so a pin that no longer resolves
+        # is recorded as such instead of failing the export.
+        runtime_facts = package_runtime.runtime_facts_for(
+            self.cfg,
+            llm_config=lambda: self._llm_cfg(st),
+            receipt=lambda: package_runtime.session_capability_receipt(
+                self.store, self.cfg, root_frame_id
+            ),
+        )
         with self._session_execution(
             st,
             owner="lifecycle",
             owner_id=f"session-export-{uuid.uuid4().hex[:12]}",
             reason="session package export",
         ):
-            return self.session_domain.session_export(root_frame_id)
+            return self.session_domain.session_export(
+                root_frame_id, runtime_facts=runtime_facts
+            )
 
     def _prepare_revert_unlock(
         self,
@@ -10396,7 +10410,15 @@ class SessionRunner:
                             if recovery is not None
                             else "runtime_error"
                         ),
-                        error={"type": type(e).__name__, "message": err_text},
+                        error={
+                            "type": type(e).__name__,
+                            "message": err_text,
+                            # Where the failure came from, for whoever reads
+                            # an exported package: type chain, stable codes,
+                            # flags, code locations, the failing call's
+                            # timing. Never the exception's text.
+                            "detail": package_runtime.failure_evidence(e),
+                        },
                     )
                     if recovery is not None:
                         st.messages.append(recovery)

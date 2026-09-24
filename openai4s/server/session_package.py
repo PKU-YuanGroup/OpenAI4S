@@ -29,6 +29,8 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from openai4s import package_diagnosis
+from openai4s.server import package_runtime
 from openai4s.server.auto_mode_portability import (
     EFFECTIVE_AUTO_MODE_OFF,
     AutoModePortabilityError,
@@ -787,7 +789,12 @@ class SessionPackageService:
         return records
 
     # ------------------------------------------------------------------ export
-    def export(self, root_frame_id: str) -> dict[str, Any]:
+    def export(
+        self,
+        root_frame_id: str,
+        *,
+        runtime_facts: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         frame = self.store.get_frame(root_frame_id)
         if frame is None:
             raise KeyError(f"unknown session {root_frame_id!r}")
@@ -824,7 +831,8 @@ class SessionPackageService:
             raise SessionPackageError("active session branch metadata is incomplete")
 
         messages = self._export_messages(root_frame_id)
-        cells = self._export_cells(root_frame_id)
+        cell_frames: dict[str, str] = {}
+        cells = self._export_cells(root_frame_id, cell_frames=cell_frames)
         groups: list[dict[str, Any]] = []
         attempts: list[dict[str, Any]] = []
         seen_groups: set[str] = set()
@@ -1120,6 +1128,14 @@ class SessionPackageService:
             artifacts=artifact_projection,
             lineage_edges=lineage_edges,
         )
+        files.update(
+            self._runtime_files(
+                root_frame_id,
+                files=files,
+                runtime_facts=runtime_facts,
+                cell_frames=cell_frames,
+            )
+        )
         for name, payload in files.items():
             if self._contains_secret_bytes(payload):
                 raise SessionPackageError(
@@ -1163,6 +1179,142 @@ class SessionPackageService:
             "immutable": True,
         }
 
+    def _runtime_scrubber(self) -> Callable[[Any], Any]:
+        """Redaction for runtime evidence, which must never fail an export.
+
+        The required documents fail closed: a secret that survives
+        ``_sanitize`` aborts the whole export. Runtime evidence is supporting
+        material, and refusing a user's export because a host-call preview
+        quoted their key would take away the one artifact they were trying to
+        send. So known secret values are replaced rather than refused, and the
+        daemon's data directory and the user's home directory are shortened --
+        a username is not diagnostic, where a path's shape under them is.
+        """
+
+        secrets = [
+            value.decode("utf-8", "ignore")
+            for value in self._known_secret_bytes()
+            if value.decode("utf-8", "ignore")
+        ]
+        replacements: list[tuple[re.Pattern[str], str]] = []
+        home = str(Path.home())
+        for prefix, label in ((str(self.data_dir), "<data_dir>"), (home, "~")):
+            if len(prefix) > 1 and prefix != "/":
+                replacements.append(
+                    (re.compile(re.escape(prefix) + r"(?=[/\\\s\"'),;:]|$)"), label)
+                )
+
+        def text(value: str) -> str:
+            value = _safe_text(value)
+            for secret in secrets:
+                if secret in value:
+                    value = value.replace(secret, _REDACTED)
+            for pattern, label in replacements:
+                value = pattern.sub(label, value)
+            return value
+
+        def walk(value: Any, depth: int = 0) -> Any:
+            if depth > 48:
+                return "[TRUNCATED]"
+            if isinstance(value, Mapping):
+                output: dict[str, Any] = {}
+                for raw_key, item in value.items():
+                    key = str(raw_key)
+                    output[key] = (
+                        _REDACTED if _SECRET_KEY.search(key) else walk(item, depth + 1)
+                    )
+                return output
+            if isinstance(value, (list, tuple)):
+                return [walk(item, depth + 1) for item in value]
+            if isinstance(value, str):
+                return text(value)
+            if value is None or isinstance(value, (bool, int, float)):
+                return value
+            return text(str(value))
+
+        return walk
+
+    def _runtime_files(
+        self,
+        root_frame_id: str,
+        *,
+        files: Mapping[str, bytes],
+        runtime_facts: Mapping[str, Any] | None,
+        cell_frames: Mapping[str, str],
+    ) -> dict[str, bytes]:
+        """``runtime/*.json``, ``runtime/diagnosis.json`` and ``DIAGNOSTICS.md``.
+
+        Every member is optional within schema v1: listed and hashed like the
+        rest, secret-scanned by any importer, and ignored by one that predates
+        it. A member that would still carry secret material after redaction is
+        dropped and the drop is recorded, instead of failing the export.
+        """
+
+        scrub = self._runtime_scrubber()
+        documents, collection = package_runtime.collect_runtime_documents(
+            self.store,
+            root_frame_id,
+            facts=runtime_facts,
+            scrub=scrub,
+            safe_group=self._safe_group,
+            cell_frames=cell_frames,
+        )
+        sections = collection["sections"]
+        output: dict[str, bytes] = {}
+        for path, document in sorted(documents.items()):
+            payload = _canonical_json(document)
+            if self._contains_secret_bytes(payload):
+                name = path.removeprefix("runtime/").removesuffix(".json")
+                sections[name] = {"status": "omitted", "reason": "secret_filter"}
+                continue
+            output[path] = payload
+        readable: dict[str, Any] = {
+            name: json.loads(files[name])
+            for name in (
+                "session.json",
+                "ledger.json",
+                "notebook.json",
+                "environment.json",
+                "snapshots.json",
+            )
+            if name in files
+        }
+        readable.update({path: json.loads(payload) for path, payload in output.items()})
+        readable["manifest.json"] = {
+            "format": PACKAGE_FORMAT,
+            "schema_version": PACKAGE_SCHEMA_VERSION,
+        }
+        readable[package_runtime.COLLECTION_FILE] = collection
+        try:
+            diagnosis = package_diagnosis.diagnose(readable)
+        except Exception as error:  # noqa: BLE001 - a report must not block export
+            from openai4s.server.errors import safe_type_name
+
+            sections["diagnosis"] = {
+                "status": "unavailable",
+                "reason": safe_type_name(error),
+            }
+        else:
+            derived = {
+                package_runtime.DIAGNOSIS_FILE: _canonical_json(scrub(diagnosis)),
+                package_runtime.DIAGNOSTICS_FILE: scrub(
+                    package_diagnosis.render_markdown(diagnosis)
+                ).encode("utf-8"),
+            }
+            for path, payload in derived.items():
+                if self._contains_secret_bytes(payload):
+                    sections["diagnosis"] = {
+                        "status": "omitted",
+                        "reason": "secret_filter",
+                    }
+                    break
+            else:
+                sections["diagnosis"] = {"status": "ok"}
+                output.update(derived)
+        collection["sections"] = dict(sorted(sections.items()))
+        output[package_runtime.COLLECTION_FILE] = _canonical_json(collection)
+        return output
+
     def _export_messages(self, root_frame_id: str) -> list[dict[str, Any]]:
         count = int(self.store.message_count(root_frame_id) or 0)
         if count > _RECORD_LIMITS["messages"]:
@@ -1193,7 +1345,12 @@ class SessionPackageService:
             )
         return self._bounded_records("messages", output)
 
-    def _export_cells(self, root_frame_id: str) -> list[dict[str, Any]]:
+    def _export_cells(
+        self,
+        root_frame_id: str,
+        *,
+        cell_frames: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
         summaries = self._bounded_records("cells", self.store.list_cells(root_frame_id))
         for summary in summaries:
@@ -1202,7 +1359,17 @@ class SessionPackageService:
             safe = _sanitize(cell)
             safe.pop("project_id", None)
             safe.pop("root_frame_id", None)
-            safe.pop("frame_id", None)
+            frame_id = safe.pop("frame_id", None)
+            # The Notebook stays frame-free (import folds every Cell into the
+            # new root), but which delegated child ran a Cell is runtime
+            # evidence: `runtime/frames.json` keeps the attribution.
+            if (
+                cell_frames is not None
+                and cell_id
+                and frame_id
+                and str(frame_id) != root_frame_id
+            ):
+                cell_frames[cell_id] = str(frame_id)
             output.append(safe)
         output.sort(
             key=lambda item: (

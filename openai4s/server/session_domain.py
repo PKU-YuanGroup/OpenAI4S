@@ -742,10 +742,21 @@ class SessionDomainService:
             branch_id=self.store.active_session_branch(root_frame_id),
         )
 
-    def session_export(self, root_frame_id: str) -> dict[str, Any]:
-        """Return one deterministic, versioned Session package."""
+    def session_export(
+        self,
+        root_frame_id: str,
+        *,
+        runtime_facts: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return one deterministic, versioned Session package.
 
-        return self.packages.export(root_frame_id)
+        ``runtime_facts`` is what only the daemon knows -- the model
+        configuration the session resolves to and the loop limits -- and lands
+        in ``runtime/environment.json``; without it that file still records the
+        exporting process's version, platform and posture.
+        """
+
+        return self.packages.export(root_frame_id, runtime_facts=runtime_facts)
 
     def session_import(self, data: bytes) -> dict[str, Any]:
         """Validate an untrusted package and create a new view-only Session."""
