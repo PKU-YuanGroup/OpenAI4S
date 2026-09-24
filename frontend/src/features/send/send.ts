@@ -460,6 +460,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     }
   } catch (e) {
     const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
+    // The refusal belongs to the session this message was sent from, and the
+    // composer, the hint line and Customize are shared by every session. Once
+    // the user has opened another one, putting this draft back or asking about
+    // this refusal would land it there (a rebind would even re-bind the
+    // session no longer on screen): the refused text goes with its bubble.
+    const onDispatchFrame = (): boolean => currentId.value === dispatchFrameId;
     // A refusal is a definite answer. A transport failure is indeterminate:
     // the server may still commit the admission, so hold the optimistic
     // bubble for one bounded grace rather than for the rest of the visit —
@@ -487,10 +493,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         standardProfileReadiness.value = unavailableReadinessSnapshot();
         renderEnvironmentReadinessBanner();
       }
-      settleRefusedBubble(w, text);
+      if (onDispatchFrame()) settleRefusedBubble(w, text);
       if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
-      callLane("openCust", "compute");
-      hint(t("environment.readiness.sendBlocked"), true);
+      if (onDispatchFrame()) {
+        callLane("openCust", "compute");
+        hint(t("environment.readiness.sendBlocked"), true);
+      }
       void loadSessions();
       return;
     }
@@ -503,10 +511,14 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // the bubble is the only copy left and stays, marked not sent. A 5xx may
     // still have been admitted, and keeps both as before.
     const notAdmitted = refused && Number(err.status) < 500;
-    if (notAdmitted) settleRefusedBubble(w, text);
+    if (notAdmitted && onDispatchFrame()) settleRefusedBubble(w, text);
     let lasting = t("toast.sendFailed", apiErrorText(e));
     let settingsCode = err?.code;
-    if (err && (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")) {
+    if (
+      onDispatchFrame() &&
+      err &&
+      (err.code === "model_revision_unavailable" || err.code === "model_revision_ambiguous")
+    ) {
       const ask =
         typeof globalThis.confirm === "function" ? globalThis.confirm(rebindConfirmText(err)) : false;
       if (ask) {
@@ -515,7 +527,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
             method: "POST",
           });
           if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
-          hint(rebindDoneText(rebound));
+          if (onDispatchFrame()) hint(rebindDoneText(rebound));
           void loadSessions();
           return;
         } catch (rebindError) {
@@ -528,9 +540,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // it goes first: the server's reason is the hint that has to stay.
     if (ownsTurnTicket(turnTicketToken)) turnDone("failed");
     else if (!notAdmitted) w.classList.add("cancelled");
-    hint(lasting, true);
-    if (settingsCode === "model_profile_needs_key" || settingsCode === "model_profile_needs_active") {
-      callLane("openCust", "models");
+    if (onDispatchFrame()) {
+      hint(lasting, true);
+      if (settingsCode === "model_profile_needs_key" || settingsCode === "model_profile_needs_active") {
+        callLane("openCust", "models");
+      }
     }
     void loadSessions();
     return;
