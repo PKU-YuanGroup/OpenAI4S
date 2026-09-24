@@ -22,7 +22,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`ModelsTab.test.tsx`](ModelsTab.test.tsx) | An `.env`-configured install with no profiles shows its active model instead of "No models configured yet"; no extra row when a profile is active; an unreadable config does not hide profiles; a profile on the environment key is labelled so, not "No key"; a local model is added once however often Add is pressed while the write is in flight; adding, deleting or adding a local profile re-reads the composer's `#model-select` list. |
 | [`NestedEditor.tsx`](NestedEditor.tsx) | Skill / specialist / connector / job-output overlay. An edit form cannot save until its first read has succeeded. |
 | [`NestedEditor.test.tsx`](NestedEditor.test.tsx) | A failed Skill or specialist read is shown with Retry and blocks Save, so blank fields are never saved over the server copy. |
-| [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable. |
+| [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable; the Skills list behind it re-reads as soon as the import lands, however the review is dismissed. |
 | [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. |
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. A rule's decision is optimistic and goes back when the server refuses it. |
 | [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | A decision the server took stays shown; a refused one goes back to the rule's decision (a render is asked for, so the select resets). |

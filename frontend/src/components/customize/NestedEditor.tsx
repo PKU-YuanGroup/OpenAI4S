@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
-import { custTab, refreshCustTab } from "../../features/customize/actions";
+import { refreshCustTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
 import { backdropClicked, notePress } from "../../features/customize/dismiss";
 import { skillReadinessNoteText } from "../../features/customize/environment";
@@ -270,9 +270,7 @@ export function SkillImport() {
             type="button"
             class="solid-btn"
             onClick={() => {
-              dropSkillsCatalog();
               nestedEditor.value = null;
-              custTab("skills");
             }}
           >
             {t("common.close")}
@@ -292,10 +290,12 @@ export function SkillImport() {
                 });
                 // The write has landed: every reader of the cached catalog
                 // (composer autocomplete, palette, send-time mention
-                // resolution) must see the new Skill even if the review pane
-                // is dismissed by Escape, the backdrop or the header X rather
-                // than the Close button below.
+                // resolution) and the Skills list behind this pane must see
+                // the new Skill even if the review pane is dismissed by
+                // Escape, the backdrop or the header X rather than the Close
+                // button below.
                 dropSkillsCatalog();
+                refreshCustTab("skills");
                 setReview(rec(r.review));
                 setSaving(false);
                 hint(t("toast.skill.imported", asString(r.name)));
