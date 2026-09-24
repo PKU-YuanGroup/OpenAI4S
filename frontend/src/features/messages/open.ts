@@ -86,6 +86,7 @@ import { invalidateKernelCache } from "../notebook/kernel";
 import { renderPlanCard } from "../send/plan";
 import { closeTurnTicket, resumeWatch } from "../send/ticket";
 import { failureHint, lastTerminalFailure } from "../send/turn";
+import { destroyActionTimelineView } from "../timeline/island";
 import { hint } from "../sessions/chrome";
 import { showWorkspace } from "../sessions/dashboard";
 import {
@@ -186,6 +187,9 @@ function resetSessionScoped(): void {
   computeStatus.value = null;
   annotations.value = [];
   _editing.value = null;
+  // Destroyed before it is dropped: its document keydown listener and its
+  // ResizeObserver can only be released through the view object itself.
+  destroyActionTimelineView();
   _timelineView.value = null;
 }
 
@@ -506,7 +510,7 @@ export async function openConversation(
     historyContent.value = null; historyMutation.value = 0; resetHistorySubmissions();
     enableComposer(true); hideCancel(); hint("");
     if (_resumeTimer.value != null) clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
-    callLane("destroyActionTimelineView"); showDockPane("notebook"); invalidateKernelCache();
+    showDockPane("notebook"); invalidateKernelCache();
     if (typeof document !== "undefined") {
       document.getElementById("compute-badge")?.remove();
       document.getElementById("compute-lost")?.remove();

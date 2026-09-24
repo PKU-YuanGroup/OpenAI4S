@@ -8,6 +8,7 @@ import { loadEarlierMessages } from "../sessions/messages";
 import { showDashboard, stopDashPoll } from "../sessions/dashboard";
 import { handleIncomingMessage } from "../ws/connect";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
+import { _timelineView } from "../../stores/timeline";
 import { adoptCreatedFrame } from "../chrome/upload";
 import { loadExecutionLog } from "../notebook/cells";
 
@@ -571,6 +572,18 @@ describe("a stopped read finishes the work of the terminal events it missed", ()
     expect(running.value).toBe(false);
     expect(chrome.hint).toHaveBeenCalledWith("", false);
   });
+});
+
+it.each([
+  ["switching sessions", "g", undefined],
+  ["a same-frame branch reset", "f", { resetHistory: true }],
+])("destroys the Timeline view before dropping it when %s", async (_label, fid, options) => {
+  server(); await openConversation("f");
+  const view = { raf: 0, resizeObserver: { disconnect: vi.fn() } };
+  _timelineView.value = view;
+  await openConversation(fid, undefined, options);
+  expect(view.resizeObserver.disconnect).toHaveBeenCalledTimes(1);
+  expect(_timelineView.value).toBeNull();
 });
 
 it("a branch replacement reopen drops notebook cells the server no longer lists", async () => {
