@@ -57,14 +57,6 @@ export function capabilityBadgeText(row: BadgeRow): string {
   return text;
 }
 
-export function capabilityBadgeMarkup(row: BadgeRow): string {
-  const stale = row.stale ? "true" : "false";
-  return (
-    `<span class="pill prof-cap" data-cap="${row.cap}" data-state="${row.state}"` +
-    ` data-stale="${stale}">${capabilityBadgeText(row)}</span>`
-  );
-}
-
 export function badgesFromProbe(
   receiptRaw: unknown,
   probeDetail = "",

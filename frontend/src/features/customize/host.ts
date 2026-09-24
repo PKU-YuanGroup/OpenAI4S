@@ -67,10 +67,6 @@ export function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-export function asBool(value: unknown): boolean {
-  return !!value;
-}
-
 export function effProject(): string | null {
   if (project.value) return project.value;
   const list = sessions.value as Array<{ id?: string; project_id?: string }>;

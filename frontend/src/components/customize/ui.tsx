@@ -123,7 +123,3 @@ export function Subhead({ children }: { children: ComponentChildren }) {
 export function Empty({ children }: { children: ComponentChildren }) {
   return <div class="dock-empty">{children}</div>;
 }
-
-export function LoadErr({ message }: { message: string }) {
-  return <div class="cust-note">{message}</div>;
-}

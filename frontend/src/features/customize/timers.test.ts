@@ -8,7 +8,6 @@ import {
   liveLeaseCount,
   pendingTimerCount,
   resetTimerLeases,
-  scheduleInterval,
   scheduleTimeout,
 } from "./timers";
 import {
@@ -39,7 +38,7 @@ describe("F-19 timer lease", () => {
     scheduleTimeout(lease, () => {
       fired += 1;
     }, 1000);
-    scheduleInterval(lease, () => {
+    scheduleTimeout(lease, () => {
       fired += 1;
     }, 250);
     expect(liveLeaseCount()).toBe(1);

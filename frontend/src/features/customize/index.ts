@@ -19,7 +19,6 @@ export {
   createTimerLease,
   disposeTimerLease,
   scheduleTimeout,
-  scheduleInterval,
   isLeaseLive,
   liveLeaseCount,
   pendingTimerCount,
@@ -45,25 +44,6 @@ export function installCustomize(target: WindowBag = globalThis as unknown as Wi
   target.telemetryRow = telemetryRow;
 }
 
-function bindShellButtons(): void {
-  if (typeof document === "undefined") return;
-  const dash = document.getElementById("dash-settings");
-  if (dash && !dash.dataset.custBound) {
-    dash.dataset.custBound = "1";
-    dash.addEventListener("click", () => openCust("general"));
-  }
-  const side = document.getElementById("customize-btn");
-  if (side && !side.dataset.custBound) {
-    side.dataset.custBound = "1";
-    side.addEventListener("click", () => openCust());
-  }
-  const gear = document.getElementById("settings-gear");
-  if (gear && !gear.dataset.custBound) {
-    gear.dataset.custBound = "1";
-    gear.addEventListener("click", () => openCust());
-  }
-}
-
 function mountCustomize(): void {
   if (typeof document === "undefined") return;
   if (import.meta.env.MODE === "test") return;
@@ -80,7 +60,6 @@ function mountCustomize(): void {
 export function bootCustomize(target: WindowBag = globalThis as unknown as WindowBag): void {
   installCustomize(target);
   mountCustomize();
-  bindShellButtons();
   // Stores only: `#model-select` renders from them once the shell mounts, so
   // this does not have to wait for the composer to exist.
   void loadModels();

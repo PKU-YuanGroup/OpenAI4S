@@ -2,7 +2,6 @@
  * Volcengine SSO / key-poll helpers. Port of app.js:12152-12259.
  * Key polling is bound to a TimerLease so unmount leaves zero timers.
  */
-import { publicText } from "../scrub/scrub";
 import {
   isLeaseLive,
   scheduleTimeout,
@@ -159,15 +158,6 @@ export function openVolcengineAuthorization(
     /* The fallback button remains available if the browser blocks it. */
   }
   return target;
-}
-
-export function publicVolcError(error: unknown): string {
-  return publicText(
-    error && typeof error === "object" && "message" in error
-      ? (error as { message: unknown }).message
-      : error,
-    240,
-  );
 }
 
 export const VOLC_CONFIGURE_REFRESH_CODES = new Set([

@@ -10,7 +10,7 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 | --- | --- |
 | [`api.test.ts`](api.test.ts) | Existing-profile activation occurs before onboarding status refresh. |
 | [`api.ts`](api.ts) | `GET /onboarding`, `POST /onboarding/complete`, profile save/update/activate/probe. |
-| [`badges.test.ts`](badges.test.ts) | Tri-state badge markup; unknown reason is not rewritten. |
+| [`badges.test.ts`](badges.test.ts) | Tri-state badge rows and the pills `CapabilityBadges` renders from them; unknown reason is not rewritten. |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` rows + stale. |
 | [`boot.ts`](boot.ts) | `bootOnboarding()` mounts `#onboarding-root`. |
 | [`copy.ts`](copy.ts) | Lane-local zh/en strings (`ot`). Does not rewrite generated i18n. `copyLookup(table)` is the lookup `ot` and `judgmentT` share. |

@@ -10,7 +10,7 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | --- | --- |
 | [`api.test.ts`](api.test.ts) | 现有配置档激活先于引导状态刷新的回归覆盖。 |
 | [`api.ts`](api.ts) | `GET /onboarding`、`POST /onboarding/complete`、配置档保存/更新/激活/probe。 |
-| [`badges.test.ts`](badges.test.ts) | 三态 badge 标记；unknown 原因原样保留。 |
+| [`badges.test.ts`](badges.test.ts) | 三态 badge 行，以及 `CapabilityBadges` 据此渲染的标签；unknown 原因原样保留。 |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` 行 + stale。 |
 | [`boot.ts`](boot.ts) | `bootOnboarding()` 挂载 `#onboarding-root`。 |
 | [`copy.ts`](copy.ts) | 车道本地 zh/en 文案（`ot`）。不改生成的 i18n。`copyLookup(table)` 是 `ot` 与 `judgmentT` 共用的查表函数。 |

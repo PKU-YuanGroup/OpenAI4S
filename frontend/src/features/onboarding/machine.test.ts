@@ -11,7 +11,7 @@ import {
   type PathChoice,
   type WizardState,
 } from "./machine";
-import { onboardingStatusHasSecret, sanitizeOnboardingStatus } from "./status";
+import { sanitizeOnboardingStatus } from "./status";
 
 const PATH: PathChoice = {
   kind: "cloud",
@@ -204,7 +204,6 @@ describe("M-01 onboarding status sanitizer", () => {
     expect(status.has_api_key).toBe(true);
     expect(status.outbound).toBe(0);
     expect(status.contacted).toBe(false);
-    expect(onboardingStatusHasSecret(status, secret)).toBe(false);
     expect(JSON.stringify(status)).not.toContain(secret);
     expect(status.profiles[0] && "api_key" in status.profiles[0]).toBe(false);
   });
