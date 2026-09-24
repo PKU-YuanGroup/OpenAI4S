@@ -365,7 +365,13 @@ async function loadHistory(fid: string, gen: number): Promise<HistoryLoadResult>
       callLane("paintEarlierControl");
       // Failed auxiliary history is not evidence for a truly empty session.
       if (!messages.length && result.stepsLoaded && result.runStateLoaded && stopped) renderEmptySession();
-      down();
+      // A transcript with nothing confirmed before it (an open, a branch
+      // reset) starts at its newest message, as app.js's down(true) did.
+      // Unforced, the updateJumpPill() below measured the emptied host at
+      // the top in the same frame and a long session opened at its oldest
+      // loaded row. A re-read of the transcript on screen leaves a reader
+      // who scrolled up where they are.
+      down(!cached);
     }
   }
   if (deferred) {

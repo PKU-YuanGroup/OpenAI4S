@@ -10,7 +10,8 @@ import { routeInitialView } from "../sessions/conversation";
 import { handleIncomingMessage } from "../ws/connect";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
 import { _timelineView } from "../../stores/timeline";
-import { activeTab } from "../../stores/ui";
+import { _messagesFollow, activeTab } from "../../stores/ui";
+import { flushScrollNow, unbindMessageScroll } from "./scroll";
 import { adoptCreatedFrame } from "../chrome/upload";
 import { loadExecutionLog } from "../notebook/cells";
 
@@ -833,5 +834,42 @@ describe("a newly created session's Notebook", () => {
     cells.value = A_CELLS;
     await openConversation("f");
     expect(cells.value).toEqual(A_CELLS);
+  });
+});
+
+describe("where a committed transcript leaves the scroll", () => {
+  function stubHost(scrollTop: number) {
+    // Earlier opens ran with no #messages; drop any scroll they left pending.
+    unbindMessageScroll();
+    const host = {
+      innerHTML: "", scrollTop, scrollHeight: 2000, clientHeight: 500, scrollTo() {},
+      children: [] as unknown[], replaceChildren: vi.fn(), querySelector: () => null,
+    };
+    const stage = { fragment: true };
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) => selector === "#messages" ? host : null,
+      getElementById: (id: string) => id === "messages" ? host : null,
+      createDocumentFragment: () => stage,
+    });
+    return host;
+  }
+
+  it("a transcript with nothing confirmed before it opens at its newest message", async () => {
+    server(); await openConversation("f");
+    session.historyContent.value = null;
+    _messagesFollow.value = false; // the session left behind was scrolled up
+    const host = stubHost(0);
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
+    flushScrollNow();
+    expect(host.scrollTop).toBe(host.scrollHeight);
+  });
+
+  it("a re-read of the transcript on screen leaves a reader who scrolled up where they are", async () => {
+    server(); await openConversation("f");
+    _messagesFollow.value = false;
+    const host = stubHost(100);
+    expect(await recoverConversation("f")).toMatchObject({ messagesLoaded: true });
+    flushScrollNow();
+    expect(host.scrollTop).toBe(100);
   });
 });
