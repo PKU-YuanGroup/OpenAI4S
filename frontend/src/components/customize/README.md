@@ -24,7 +24,8 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`NestedEditor.test.tsx`](NestedEditor.test.tsx) | A failed Skill or specialist read is shown with Retry and blocks Save, so blank fields are never saved over the server copy. |
 | [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable. |
 | [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. |
-| [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. |
+| [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. A rule's decision is optimistic and goes back when the server refuses it. |
+| [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | A decision the server took stays shown; a refused one goes back to the rule's decision (a render is asked for, so the select resets). |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |
 | [`SpecialistsTab.tsx`](SpecialistsTab.tsx) | Custom specialists and builtin roles. |
 | [`switches.test.tsx`](switches.test.tsx) | The Network egress and Memory switches stay disabled until the first read lands, ignore a click while a write is in flight, and go back to the confirmed value when a write fails. |
