@@ -30,8 +30,6 @@ import { renderHtmlPreview } from "./preview";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
-type RendererHost = HTMLElement & { _rendererRequest?: number };
-
 /** app.js:8710 */
 export function artifactWorkbenchOn(): boolean {
   if (artifactWorkbench.value) return true;
@@ -657,10 +655,18 @@ export function renderArtifactDescriptor(
   else renderDownloadArtifact(content, a, url);
 }
 
-/** app.js:8637-8647 */
+/**
+ * app.js:8637-8647.
+ *
+ * A descriptor paints only while this call's loading row is still in the
+ * document. The guard used to be a counter on `body`, but `renderViewer`
+ * builds a fresh body every time, so a late descriptor for the previous
+ * artifact always matched its own counter and ran its glue: molecule()
+ * tore down the 3Dmol viewer now showing, and the image glue dropped the
+ * annotation draft being written. The row detaches with its body, and when
+ * any later render (or another modal) clears a reused body.
+ */
 export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
-  const host = body as RendererHost;
-  const request = (host._rendererRequest = (host._rendererRequest || 0) + 1);
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");
   loading.appendChild(iconEl("loader", 16, "spin"));
@@ -668,11 +674,11 @@ export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   body.appendChild(loading);
   artifactRendererDescriptor(a)
     .then((descriptor) => {
-      if (host._rendererRequest !== request) return;
+      if (!loading.isConnected) return;
       renderArtifactDescriptor(body, a, descriptor);
     })
     .catch(() => {
-      if (host._rendererRequest !== request) return;
+      if (!loading.isConnected) return;
       renderArtifactDescriptor(body, a, compatibilityRendererDescriptor(a));
     });
 }

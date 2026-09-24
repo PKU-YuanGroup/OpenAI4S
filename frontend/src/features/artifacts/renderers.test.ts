@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetStoreFields } from "../../stores/signal-field";
 import { setArtifactsFetch } from "./api";
-import { renderDownloadArtifact, renderTextArtifact } from "./renderers";
+import { renderArtifactBody, renderDownloadArtifact, renderTextArtifact } from "./renderers";
 import type { ArtifactRow } from "./types";
 
 class FakeNode {
@@ -87,5 +88,70 @@ describe("text artifacts that look binary (AUDIT A01)", () => {
     const source = walk(container).find((node) => node.className === "renderer-source");
     expect(source?.textContent).toBe(text);
     expect(walk(container).some((node) => node.className === "download-artifact")).toBe(false);
+  });
+});
+
+describe("late renderer descriptors (AUDIT A32)", () => {
+  /** Tracks its parent, so `isConnected` means reachable from the page root. */
+  class DomNode {
+    children: DomNode[] = [];
+    parent: DomNode | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    href = "";
+    dataset: Record<string, string> = {};
+    constructor(readonly tagName = "div") {}
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    set innerHTML(_value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+    }
+    appendChild(child: DomNode): DomNode {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    remove(): void {
+      if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+      this.parent = null;
+    }
+    setAttribute(): void {}
+  }
+
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("does not run the previous artifact's glue after the dock replaced its body", async () => {
+    resetStoreFields();
+    vi.stubGlobal("document", { createElement: (tag: string) => new DomNode(tag) });
+    const molecule = vi.fn();
+    vi.stubGlobal("molecule", molecule);
+    let refuseA!: () => void;
+    const heldA = new Promise<void>((resolve) => { refuseA = resolve; });
+    // Both descriptor reads fail, so each artifact takes the compatibility
+    // descriptor: `.pdb` is molecule-3d, whose glue tears down the live viewer.
+    setArtifactsFetch(async (url) => {
+      if (url.includes("/artifacts/A/renderer")) await heldA;
+      return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+    });
+    const viewer = new DomNode();
+    viewer.page = true;
+    const bodyA = viewer.appendChild(new DomNode());
+    renderArtifactBody(bodyA as unknown as HTMLElement, { id: "A", filename: "a.pdb" });
+    // renderViewer: the old body goes, a fresh one renders the next artifact.
+    bodyA.remove();
+    const bodyB = viewer.appendChild(new DomNode());
+    renderArtifactBody(bodyB as unknown as HTMLElement, { id: "B", filename: "b.pdb" });
+    await vi.waitFor(() => expect(molecule).toHaveBeenCalledTimes(1));
+    expect(molecule.mock.calls[0]?.[2]).toBe("b.pdb");
+    refuseA();
+    for (let i = 0; i < 5; i++) await settle();
+    expect(molecule).toHaveBeenCalledTimes(1);
   });
 });
