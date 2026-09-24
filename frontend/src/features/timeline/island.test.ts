@@ -10,7 +10,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { renderActionTimeline } from "./island";
+import { onEvent } from "../ws/registry";
+import { loadWorkbenchState, renderActionTimeline, renderBranchPanel } from "./island";
 import { renderQueueStrip } from "./queue";
 import { installTimeline } from "./index";
 import { S } from "./s";
@@ -599,5 +600,61 @@ describe("timeline view lifetime", () => {
     }
     expect(doc.listenerCount("keydown")).toBe(1);
     expect(observers.map((observer) => observer.disconnected)).toEqual([true, true, false]);
+  });
+});
+
+describe("revert preview", () => {
+  const branches = (head: string) => ({
+    root_frame_id: "frame-r",
+    branch_id: "main",
+    capabilities: { revert: true, revert_preview: true },
+    branches: [
+      {
+        branch_id: "main",
+        head_checkpoint_id: head,
+        checkpoints: [{ checkpoint_id: "cp-target" }, { checkpoint_id: "cp-head" }, { checkpoint_id: "cp-next" }],
+      },
+    ],
+  });
+  const preview = {
+    branch_id: "main",
+    current_checkpoint_id: "cp-head",
+    target_checkpoint_id: "cp-target",
+    can_apply: true,
+    messages: { delta: -2 },
+    notebook: { delta: -1 },
+    workspace: { writes_count: 0, deletes_count: 0, conflicts_count: 0 },
+    artifacts: { added_count: 0, removed_count: 0 },
+  };
+  const revertButton = () => renderBranchPanel().querySelector(".revert-preview button");
+
+  function previewed(): void {
+    mountDocument();
+    S.currentId = "frame-r";
+    S.activeTab = "notebook";
+    S.branchState = { ...branches("cp-head"), revert_preview: preview };
+  }
+
+  it("survives a workbench refresh while the branch head has not moved", async () => {
+    previewed();
+    stubApi((path) => (path === "/frames/frame-r/branches" ? branches("cp-head") : undefined));
+    await loadWorkbenchState("frame-r", true);
+    expect(S.branchState.revert_preview).toEqual(preview);
+    expect(revertButton()).not.toBeNull();
+  });
+
+  it("survives a branch projection pushed over the socket", () => {
+    previewed();
+    installTimeline({});
+    onEvent({ type: "branch_state", frame_id: "frame-r", ...branches("cp-head") });
+    expect(S.branchState.revert_preview).toEqual(preview);
+  });
+
+  it("is dropped once the head moved, because its diff no longer describes the branch", async () => {
+    previewed();
+    stubApi((path) => (path === "/frames/frame-r/branches" ? branches("cp-next") : undefined));
+    await loadWorkbenchState("frame-r", true);
+    expect(S.branchState.revert_preview).toBeNull();
+    expect(revertButton()).toBeNull();
   });
 });

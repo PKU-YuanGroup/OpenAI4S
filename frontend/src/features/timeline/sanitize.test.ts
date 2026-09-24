@@ -4,6 +4,7 @@ import { ACTION_TIMELINE_PAGE_SIZE, branchState } from "../../stores/timeline";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   branchUndoFromProjection,
+  carryRevertPreview,
   mergeActionTimelines,
   publicArtifacts,
   publicList,
@@ -485,5 +486,49 @@ describe("publicText still redacts through the sanitizer", () => {
       groups: [group("g", 1, { title: "sk-abcdefghijk" })],
     });
     expect(safe.groups[0]?.title).toBe("[redacted]");
+  });
+});
+
+describe("carryRevertPreview", () => {
+  const state = (head: string, extra: Record<string, unknown> = {}) =>
+    sanitizeBranches({
+      branch_id: "main",
+      branches: [
+        { branch_id: "main", head_checkpoint_id: head, checkpoints: [{ checkpoint_id: "cp-target" }, { checkpoint_id: head }] },
+        // A fork that has not moved yet shares its fork point with main.
+        { branch_id: "side", head_checkpoint_id: head, checkpoints: [{ checkpoint_id: "cp-target" }, { checkpoint_id: head }] },
+      ],
+      ...extra,
+    });
+  const previewOf = (fields: Record<string, unknown>) =>
+    sanitizeRevertPreview({ branch_id: "main", target_checkpoint_id: "cp-target", can_apply: true, ...fields });
+
+  it("keeps a preview whose head is still the branch head, and drops one whose head moved", () => {
+    const preview = previewOf({ current_checkpoint_id: "cp-head" });
+    const previous = { ...state("cp-head"), revert_preview: preview };
+    expect(carryRevertPreview(previous, state("cp-head")).revert_preview).toBe(preview);
+    expect(carryRevertPreview(previous, state("cp-moved")).revert_preview).toBeNull();
+  });
+
+  it("drops a preview for another branch and lets a refreshed preview win", () => {
+    const preview = previewOf({ current_checkpoint_id: "cp-head" });
+    const previous = { ...state("cp-head"), revert_preview: preview };
+    const otherBranch = sanitizeBranches({ ...state("cp-head"), branch_id: "side" });
+    expect(carryRevertPreview(previous, otherBranch).revert_preview).toBeNull();
+    const refreshed = state("cp-head", {
+      revert_preview: { branch_id: "main", current_checkpoint_id: "cp-head", target_checkpoint_id: "cp-head" },
+    });
+    expect(carryRevertPreview(previous, refreshed).revert_preview?.target_checkpoint_id).toBe("cp-head");
+  });
+
+  it("without a recorded head, keeps the preview only while its target is still listed", () => {
+    const preview = previewOf({});
+    const previous = { ...state("cp-head"), revert_preview: preview };
+    expect(carryRevertPreview(previous, state("cp-head")).revert_preview).toBe(preview);
+    const gone = sanitizeBranches({
+      branch_id: "main",
+      branches: [{ branch_id: "main", head_checkpoint_id: "cp-head", checkpoints: [{ checkpoint_id: "cp-head" }] }],
+    });
+    expect(carryRevertPreview(previous, gone).revert_preview).toBeNull();
   });
 });

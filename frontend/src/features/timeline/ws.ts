@@ -22,6 +22,7 @@ import {
 import { S } from "./s";
 import {
   branchUndoFromProjection,
+  carryRevertPreview,
   mergeActionTimelines,
   sanitizeActionTimeline,
   sanitizeBranches,
@@ -123,7 +124,7 @@ function handleBranch(m: WsMessage): void {
       revert_checkpoint_id: publicText(m.checkpoint_id, 96),
     };
   if (m.branches || (m.payload && (m.payload as { branches?: unknown }).branches)) {
-    S.branchState = sanitizeBranches(m);
+    S.branchState = carryRevertPreview(S.branchState, sanitizeBranches(m));
     S.branchUndo = branchUndoFromProjection(S.branchState);
   } else scheduleWorkbenchRefresh(m.type === "branch_activation_state" ? 0 : 80);
   if (S.activeTab === "timeline") renderActionTimeline();

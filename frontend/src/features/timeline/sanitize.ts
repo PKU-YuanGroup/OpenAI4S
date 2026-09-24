@@ -550,6 +550,31 @@ export function sanitizeBranches(payload: unknown): BranchState {
   };
 }
 
+/**
+ * A revert preview is requested by the client and lives only in the client's
+ * branch state, so every projection refresh (sanitizeBranches builds a new
+ * state) used to drop it together with its Revert button. Carry it over while
+ * it still describes the branch: same branch, and a head that has not moved
+ * since the preview was taken (its diff is relative to that head). A refresh
+ * that brings its own preview wins.
+ */
+export function carryRevertPreview(
+  previous: BranchState | null | undefined,
+  next: BranchState,
+): BranchState {
+  const preview = previous && previous.revert_preview;
+  if (!preview || next.revert_preview) return next;
+  if (preview.branch_id && preview.branch_id !== next.branch_id) return next;
+  const branch = (next.branches || []).find((item) => item.branch_id === next.branch_id);
+  if (!branch) return next;
+  const unchanged = preview.current_checkpoint_id
+    ? preview.current_checkpoint_id === branch.head_checkpoint_id
+    : (branch.checkpoints || []).some(
+        (checkpoint) => checkpoint.checkpoint_id === preview.target_checkpoint_id,
+      );
+  return unchanged ? { ...next, revert_preview: preview } : next;
+}
+
 export function branchUndoFromProjection(state: BranchState | null): BranchUndo | null {
   if (!state || !state.branch_id || !state.capabilities || state.capabilities.revert !== true)
     return null;

@@ -46,6 +46,7 @@ import { renderQueueStrip } from "./queue";
 import { S } from "./s";
 import {
   branchUndoFromProjection,
+  carryRevertPreview,
   mergeActionTimelines,
   RECOVERY_ACTION_IDS,
   sanitizeActionTimeline,
@@ -372,7 +373,7 @@ export async function loadWorkbenchState(id: string | null, force = false): Prom
     );
   if (execution) rememberExecutionQueue(execution);
   if (branches) {
-    S.branchState = sanitizeBranches(branches);
+    S.branchState = carryRevertPreview(S.branchState, sanitizeBranches(branches));
     S.branchUndo = branchUndoFromProjection(S.branchState);
   }
   if (context) S.contextState = sanitizeContext(context);
@@ -2885,7 +2886,10 @@ async function previewSessionRevert(checkpointId: string): Promise<void> {
       }),
     })) as { preview?: unknown };
     if (S.currentId === frameId && S.branchState)
-      S.branchState.revert_preview = sanitizeRevertPreview(preview.preview || preview);
+      S.branchState = {
+        ...S.branchState,
+        revert_preview: sanitizeRevertPreview(preview.preview || preview),
+      };
   } catch (error) {
     if (S.currentId === frameId)
       S.workbenchErrors.branchAction = publicText((error as Error).message, 240);
