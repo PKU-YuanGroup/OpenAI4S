@@ -8816,6 +8816,9 @@
               },
               "release": {
                 "type": "string"
+              },
+              "wsl": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -8823,7 +8826,8 @@
               "openai4s",
               "platform",
               "python",
-              "release"
+              "release",
+              "wsl"
             ],
             "type": "object"
           },

@@ -127,6 +127,32 @@ _STREAM_ERROR_STATUS = {
 }
 
 
+def _fragment_index(fragment: dict, calls: dict[int, dict]) -> int:
+    """The streamed tool call a ``tool_calls`` delta fragment belongs to.
+
+    OpenAI keys the fragments by ``index``; some compatible relays leave it
+    out. Reading a missing index as 0 merged parallel calls into one -- each
+    name overwrote the last and the arguments concatenated into
+    ``{"a":1}{"b":2}`` -- so the whole batch reached the engine as one
+    malformed call, and two such replies stopped the turn. Without an index,
+    a fragment carrying a new call ``id`` opens the next call and any other
+    fragment continues the latest one.
+    """
+    raw = fragment.get("index")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return len(calls)
+    if not calls:
+        return 0
+    latest = max(calls)
+    call_id = fragment.get("id")
+    if call_id and calls[latest].get("id") not in (None, call_id):
+        return latest + 1
+    return latest
+
+
 def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> dict:
     payload["stream"] = True
     # Ask for a usage row on the terminal chunk (ignored by proxies that don't
@@ -206,10 +232,7 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
             reasoning.append(rc)
         for fragment in delta.get("tool_calls") or ():
             state["output_committed"] = True
-            try:
-                index = int(fragment.get("index", 0))
-            except (TypeError, ValueError):
-                index = len(state["tool_calls"])
+            index = _fragment_index(fragment, state["tool_calls"])
             acc = state["tool_calls"].setdefault(
                 index, {"id": None, "type": "function", "name": "", "arguments": []}
             )

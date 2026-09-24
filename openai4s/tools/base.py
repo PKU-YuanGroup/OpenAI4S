@@ -211,6 +211,14 @@ class Tool:
         """Return a cheap pre-dispatch error for native/fenced calls, if any."""
         return None
 
+    def render_observation(self, result: Any) -> str | None:
+        """Return the model-facing text for ``result``, or None for the default.
+
+        Only the native observation uses this; a Python cell still receives
+        the unmodified result.
+        """
+        return None
+
     def permission_target(self, arguments: Any) -> str:
         """Return the value matched by the permission broker.
 
