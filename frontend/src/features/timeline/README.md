@@ -14,7 +14,7 @@ F-15 Action Timeline kernel. `sanitize*` / `mergeActionTimelines` are pure. The 
 | [`execution-request.test.ts`](execution-request.test.ts) | Vitest: the interrupt names an exact execution, and refuses when it cannot. |
 | [`index.ts`](index.ts) | `bootTimeline`: WS handlers + window contract assignments. |
 | [`index.test.ts`](index.test.ts) | `installTimeline` publishes `loadWorkbenchState` for later-lane `callWindow`. |
-| [`island.ts`](island.ts) | Imperative island: 46px ledger, overview SVG, five sidebar panels, `renderActionTimeline`. |
+| [`island.ts`](island.ts) | Imperative island: 46px ledger, overview SVG, five sidebar panels, `renderActionTimeline` (a persistent frame whose sections rebuild only when their inputs change; socket-driven repaints go through `scheduleActionTimelineRender`, held during a press or IME composition), and the scheduled workbench refresh (`scheduleWorkbenchRefresh` reads only the parts an event changed). |
 | [`island.test.ts`](island.test.ts) | Vitest on a fake DOM: queue strip, view teardown, and what a WS-driven re-render keeps. |
 | [`model.ts`](model.ts) | Span / overview geometry, `actionTimelineEntryKey`, epoch parser. |
 | [`queue.ts`](queue.ts) | `#queue-strip`: queued follow-ups above the composer and their ✕ cancel (one POST per execution). |
