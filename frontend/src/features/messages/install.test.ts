@@ -79,6 +79,23 @@ describe("F-10 window exports", () => {
     expect(isContractStub(target.down)).toBe(false);
   });
 
+  it("is DOM-free at install: no #messages is created ahead of the Shell's render", () => {
+    // main.tsx imports this module before render(). A div created here was
+    // reused by Preact for the Shell's first <div> (#conn-banner), and the
+    // scroll listener bound to it never saw the real transcript scroll.
+    const createElement = vi.fn();
+    const appendChild = vi.fn();
+    vi.stubGlobal("document", {
+      getElementById: () => null,
+      querySelector: () => null,
+      createElement,
+      body: { appendChild },
+    });
+    installMessages({});
+    expect(createElement).not.toHaveBeenCalled();
+    expect(appendChild).not.toHaveBeenCalled();
+  });
+
   it("restores running-session state through the window-owned opener", async () => {
     vi.useFakeTimers();
     const requested: string[] = [];

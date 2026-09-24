@@ -9,11 +9,10 @@
 
 import { isReady } from "../../compat/stub";
 import "./messages.css";
-import { ensureMessageDom } from "./dom";
 import { registerMessageHandlers } from "./handlers";
 import { insertMessageByTime, renderStored } from "./list";
 import { openConversation, recoverConversation, alignHistoryAfterTurn } from "./open";
-import { bindMessageScroll, down, updateJumpPill } from "./scroll";
+import { down, updateJumpPill } from "./scroll";
 import { feed, flushRender, startStream, _mdStableCut } from "./stream";
 
 export type { MdCutState, MdFence } from "./cut";
@@ -74,13 +73,16 @@ export {
   startStream,
 } from "./stream";
 export type { LiveStream } from "./stream";
-export { MessageList, StreamingPre } from "./components";
+export { HistoryLoadStatus } from "./components";
 
 export type MessagesTarget = Record<string, unknown>;
 
 /**
- * Assign F-10 contract names and bind scroll. Safe to call more than once:
- * WS handlers use `registerUnlessPresent`.
+ * Assign F-10 contract names. Safe to call more than once: WS handlers use
+ * `registerUnlessPresent`. DOM-free: this runs at module import, before the
+ * Shell renders `#messages`. A host created here was reused by Preact for
+ * the Shell's first `<div>` (`#conn-banner`), taking the scroll listener with
+ * it; `bindMessageScroll()` belongs after `render()`.
  */
 export function installMessages(
   target: MessagesTarget = globalThis as unknown as MessagesTarget,
@@ -101,10 +103,6 @@ export function installMessages(
   target.startStream = startStream;
   target.flushRender = flushRender;
   target._mdStableCut = _mdStableCut;
-  if (typeof document !== "undefined") {
-    ensureMessageDom();
-    bindMessageScroll();
-  }
 }
 
 const hostWindow = (globalThis as unknown as { window?: MessagesTarget }).window;
