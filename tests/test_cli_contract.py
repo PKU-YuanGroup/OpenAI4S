@@ -155,6 +155,7 @@ def test_setup_only_accepts_each_documented_environment(name):
         (["jupyter", "describe", "--help"], "--json"),
         (["jupyter", "export", "--help"], "--language"),
         (["jupyter", "install", "--help"], "--prefix"),
+        (["inspect-package", "--help"], "--json"),
     ],
 )
 def test_subcommand_help_advertises_supported_options(argv, expected_fragment, capsys):
@@ -175,8 +176,8 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     )
     assert proc.returncode == 0, proc.stderr
     assert (
-        "{serve,status,doctor,verify-package,diagnostics,stop,url,run,init,setup,"
-        "benchmark,env,jupyter,share,cluster,user,relay}" in proc.stdout
+        "{serve,status,doctor,verify-package,inspect-package,diagnostics,stop,url,"
+        "run,init,setup,benchmark,env,jupyter,share,cluster,user,relay}" in proc.stdout
     )
     for command in (
         "serve",
@@ -192,6 +193,9 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         # A recipient verifying an evidence package has no daemon and no docs
         # open; a command absent from --help may as well not exist.
         "verify-package",
+        # The maintainer holding a user's exported session: the report that
+        # says how it ended has to be one --help away, daemon or not.
+        "inspect-package",
         # A support command has to be discoverable from --help, or the user in
         # trouble hand-collects files instead and shares whatever they grab.
         "diagnostics",
