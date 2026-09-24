@@ -115,3 +115,14 @@ describe("follow-scroll", () => {
     expect(_messagesFollow.value).toBe(false);
   });
 });
+
+describe("one follow-scroll implementation", () => {
+  it("is what sessions/dom exports, so the jump pill and every caller share it", async () => {
+    const sessionsDom = await import("../sessions/dom");
+    const scroll = await import("./scroll");
+    expect(sessionsDom.down).toBe(scroll.down);
+    expect(sessionsDom.updateJumpPill).toBe(scroll.updateJumpPill);
+    expect(sessionsDom.paintJumpPill).toBe(scroll.paintJumpPill);
+    expect(sessionsDom.messagesAtBottom).toBe(scroll.messagesAtBottom);
+  });
+});

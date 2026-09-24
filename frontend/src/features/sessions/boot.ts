@@ -20,7 +20,8 @@ import { newSession, routeInitialView } from "./conversation";
 import { setScopedExecutionRequest } from "../notebook/kernel";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { loadDashboard, repaintDashboard, showDashboard } from "./dashboard";
-import { $, down, grow, setSidebar, setTitle, syncMobileChrome, updateJumpPill } from "./dom";
+import { $, grow, setSidebar, setTitle, syncMobileChrome } from "./dom";
+import { bindMessageScroll } from "../messages/scroll";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
 import { loadSessions, renderSessions, syncCurrentTitle } from "./load";
@@ -267,10 +268,8 @@ export function bindWorkbench(): Promise<void> {
   }
   const cancel = $("#cancel-btn");
   if (cancel) cancel.onclick = () => void cancelTurn();
-  const jump = $("#jump-pill");
-  if (jump) jump.onclick = () => down(true);
-  const msgs = $("#messages");
-  if (msgs) msgs.addEventListener("scroll", updateJumpPill);
+  // The Shell has rendered #messages and #jump-pill by now.
+  bindMessageScroll();
   const composer = $("#composer");
   if (composer) {
     composer.addEventListener("input", () => {
