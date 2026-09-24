@@ -5,6 +5,7 @@ import { resetStoreFields } from "../../stores/signal-field";
 import {
   branchUndoFromProjection,
   carryRevertPreview,
+  keepUnchanged,
   mergeActionTimelines,
   publicArtifacts,
   publicList,
@@ -530,5 +531,33 @@ describe("carryRevertPreview", () => {
       branches: [{ branch_id: "main", head_checkpoint_id: "cp-head", checkpoints: [{ checkpoint_id: "cp-head" }] }],
     });
     expect(carryRevertPreview(previous, gone).revert_preview).toBeNull();
+  });
+});
+
+describe("unchanged projections keep their identity", () => {
+  const timeline = (groups: unknown[]) =>
+    sanitizeActionTimeline({ root_frame_id: "f", branch_id: "br", groups });
+
+  it("a re-sent group that did not change stays the object already held", () => {
+    const current = timeline([group("a", 1), group("b", 2)]);
+    const merged = mergeActionTimelines(current, timeline([group("b", 2), group("c", 3)]), "latest")!;
+    expect(merged).not.toBe(current);
+    expect(merged.groups[1]).toBe(current.groups[1]);
+    const changed = mergeActionTimelines(current, timeline([group("b", 2, { status: "failed" })]), "latest")!;
+    expect(changed.groups[1]).not.toBe(current.groups[1]);
+    expect(changed.groups[1]!.status).toBe("failed");
+  });
+
+  it("a merge that changes nothing returns the current projection", () => {
+    const current = timeline([group("a", 1), group("b", 2)]);
+    expect(mergeActionTimelines(current, timeline([group("a", 1), group("b", 2)]), "latest")).toBe(current);
+  });
+
+  it("keepUnchanged compares content, not identity", () => {
+    const previous = sanitizeContext({ token_count: 3, layers: [{ name: "system" }] });
+    expect(keepUnchanged(previous, sanitizeContext({ token_count: 3, layers: [{ name: "system" }] }))).toBe(previous);
+    const next = sanitizeContext({ token_count: 4, layers: [{ name: "system" }] });
+    expect(keepUnchanged(previous, next)).toBe(next);
+    expect(keepUnchanged(null, next)).toBe(next);
   });
 });

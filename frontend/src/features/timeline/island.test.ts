@@ -752,3 +752,39 @@ describe("signal writes publish new objects", () => {
     expect(initial.children).toEqual([{ child_id: "c-1", status: "running" }]);
   });
 });
+
+describe("workbench refresh", () => {
+  function serve(frameId: string, groups: unknown[]) {
+    const base = "/frames/" + frameId;
+    const payloads: Record<string, unknown> = {
+      [base + "/action-timeline?limit=500"]: { root_frame_id: frameId, branch_id: "main", groups },
+      [base + "/branches"]: { branch_id: "main", branches: [{ branch_id: "main", checkpoints: [] }] },
+      [base + "/context"]: { token_count: 12, layers: [{ name: "system", token_count: 12 }] },
+      [base + "/security"]: { sandbox: { state: "active", enforced: true } },
+      [base + "/delegations"]: { children: [] },
+      [base + "/recovery"]: { status: "none" },
+      [base + "/recovery/actions"]: { actions: [] },
+      [base + "/compute/tasks"]: { tasks: [] },
+      [base + "/execution-queue"]: { owner: null, queue: [] },
+    };
+    return stubApi((path) => payloads[path]);
+  }
+
+  it("that brings nothing new keeps every state object and ledger row", async () => {
+    const doc = mountDocument();
+    stubFrames();
+    showTimeline("frame-s", [group("g-1", 1)]);
+    serve("frame-s", [group("g-1", 1)]);
+    await loadWorkbenchState("frame-s", true);
+    const held = ["actionTimeline", "branchState", "contextState", "securityState", "executionQueue"].map(
+      (name) => S[name],
+    );
+    const button = doc.querySelector('.timeline-ledger-row[data-group-id="g-1"] .timeline-row-button');
+    expect(button).not.toBeNull();
+    await loadWorkbenchState("frame-s", true);
+    ["actionTimeline", "branchState", "contextState", "securityState", "executionQueue"].forEach(
+      (name, index) => expect(S[name]).toBe(held[index]),
+    );
+    expect(doc.querySelector('.timeline-ledger-row[data-group-id="g-1"] .timeline-row-button')).toBe(button);
+  });
+});

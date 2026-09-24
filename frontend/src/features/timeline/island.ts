@@ -49,6 +49,7 @@ import { S } from "./s";
 import {
   branchUndoFromProjection,
   carryRevertPreview,
+  keepUnchanged,
   mergeActionTimelines,
   RECOVERY_ACTION_IDS,
   sanitizeActionTimeline,
@@ -101,12 +102,14 @@ function timelineKindIcon(kind: string): string {
 }
 
 export function rememberExecutionQueue(payload: unknown): any {
-  S.executionQueue = sanitizeExecutionQueue(payload);
+  S.executionQueue = keepUnchanged(S.executionQueue, sanitizeExecutionQueue(payload));
   const ticket = S.executionQueue.owner;
-  S.executionIdentity =
+  S.executionIdentity = keepUnchanged(
+    S.executionIdentity,
     ticket && ticket.execution_id && ticket.owner && ticket.owner.kind && ticket.owner.id
       ? { execution_id: ticket.execution_id, owner: { kind: ticket.owner.kind, id: ticket.owner.id } }
-      : null;
+      : null,
+  );
   renderQueueStrip();
   return S.executionQueue;
 }
@@ -328,16 +331,23 @@ export async function loadWorkbenchState(id: string | null, force = false): Prom
       "latest",
     );
   if (execution) rememberExecutionQueue(execution);
+  // What did not change keeps its object, so nothing keyed on it is rebuilt.
   if (branches) {
-    S.branchState = carryRevertPreview(S.branchState, sanitizeBranches(branches));
-    S.branchUndo = branchUndoFromProjection(S.branchState);
+    S.branchState = keepUnchanged(
+      S.branchState,
+      carryRevertPreview(S.branchState, sanitizeBranches(branches)),
+    );
+    S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
   }
-  if (context) S.contextState = sanitizeContext(context);
-  if (security) S.securityState = sanitizeSecurity(security);
-  if (delegation) S.delegationState = sanitizeDelegations(delegation);
-  if (recovery) S.recoveryState = sanitizeRecovery(recovery);
-  if (recoveryActions) S.recoveryActions = sanitizeRecoveryActions(recoveryActions);
-  if (computeTasks) S.computeTasks = sanitizeComputeTasks(computeTasks);
+  if (context) S.contextState = keepUnchanged(S.contextState, sanitizeContext(context));
+  if (security) S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(security));
+  if (delegation)
+    S.delegationState = keepUnchanged(S.delegationState, sanitizeDelegations(delegation));
+  if (recovery) S.recoveryState = keepUnchanged(S.recoveryState, sanitizeRecovery(recovery));
+  if (recoveryActions)
+    S.recoveryActions = keepUnchanged(S.recoveryActions, sanitizeRecoveryActions(recoveryActions));
+  if (computeTasks)
+    S.computeTasks = keepUnchanged(S.computeTasks, sanitizeComputeTasks(computeTasks));
   if (S.activeTab === "timeline") renderActionTimeline();
   if (S.activeTab === "notebook") laneCall("renderNotebook");
 }

@@ -23,6 +23,7 @@ import { S } from "./s";
 import {
   branchUndoFromProjection,
   carryRevertPreview,
+  keepUnchanged,
   mergeActionTimelines,
   sanitizeActionTimeline,
   sanitizeBranches,
@@ -95,7 +96,7 @@ function handleRecovery(m: WsMessage): void {
       ),
       log: (previous.log || []).concat(next.log || []).slice(-50),
     };
-  else S.recoveryState = next;
+  else S.recoveryState = keepUnchanged(previous, next);
   if (
     m.type === "recovery_state" ||
     ["completed", "failed", "partial", "cancelled"].includes(
@@ -125,8 +126,11 @@ function handleBranch(m: WsMessage): void {
       revert_checkpoint_id: publicText(m.checkpoint_id, 96),
     };
   if (m.branches || (m.payload && (m.payload as { branches?: unknown }).branches)) {
-    S.branchState = carryRevertPreview(S.branchState, sanitizeBranches(m));
-    S.branchUndo = branchUndoFromProjection(S.branchState);
+    S.branchState = keepUnchanged(
+      S.branchState,
+      carryRevertPreview(S.branchState, sanitizeBranches(m)),
+    );
+    S.branchUndo = keepUnchanged(S.branchUndo, branchUndoFromProjection(S.branchState));
   } else scheduleWorkbenchRefresh(m.type === "branch_activation_state" ? 0 : 80);
   if (S.activeTab === "timeline") renderActionTimeline();
   if (S.activeTab === "notebook") paintNotebook();
@@ -143,7 +147,7 @@ function handleDelegation(m: WsMessage): void {
 function handleSandbox(m: WsMessage): void {
   const fid = eventFrameId(m);
   if (!mine(fid)) return;
-  S.securityState = sanitizeSecurity(m);
+  S.securityState = keepUnchanged(S.securityState, sanitizeSecurity(m));
   if (S.activeTab === "timeline") renderActionTimeline();
 }
 
