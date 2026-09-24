@@ -553,3 +553,189 @@ def test_openai_explicit_stream_compatibility_refusal_falls_back_once(
         )
 
     _assert_stream_fallback(monkeypatch, unsupported)
+
+
+_STATUS = ToolSpec(
+    "session_status",
+    "Report the session state.",
+    {"type": "object", "properties": {}},
+)
+
+
+@pytest.mark.parametrize("arguments", ["", "  \n", None])
+def test_zero_argument_call_is_an_empty_object_not_a_parse_error(
+    monkeypatch, arguments
+):
+    # OpenAI-compatible relays forward a call to a parameterless tool with
+    # `arguments: ""` (or null). Read as JSON that was a parse error: the call
+    # never ran, and the no-progress circuit stopped the turn after two.
+    raw_call = {
+        "id": "call-empty-1",
+        "type": "function",
+        "function": {"name": "session_status", "arguments": arguments},
+    }
+    _install(
+        monkeypatch,
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [raw_call],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {},
+        },
+    )
+
+    result = llm.chat([{"role": "user", "content": "Status?"}], _cfg(), tools=[_STATUS])
+
+    assert result["tool_calls"] == [
+        _call("call-empty-1", "{}", {}, name="session_status")
+    ]
+
+
+def test_streamed_zero_argument_call_parses_and_replays_as_an_empty_object(
+    monkeypatch,
+):
+    def relay(url, payload, headers, timeout, on_event):
+        # What an Anthropic -> OpenAI relay streams for an empty tool_use
+        # input: the opening fragment carries `arguments: ""`, and nothing
+        # else ever arrives for that call.
+        on_event(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-empty-2",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "session_status",
+                                        "arguments": "",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        on_event({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+
+    monkeypatch.setattr(llm.transport, "post_sse", relay)
+    monkeypatch.setenv("OPENAI4S_LLM_STREAM", "1")
+    result = llm.chat(
+        [{"role": "user", "content": "Status?"}],
+        _cfg(),
+        tools=[_STATUS],
+        on_delta=lambda _text: None,
+    )
+    call = result["tool_calls"][0]
+
+    assert call == _call(
+        "call-empty-2",
+        "{}",
+        {},
+        name="session_status",
+        meta={"type": "function", "index": 0},
+    )
+
+    # Replayed as history the call goes back as "{}", never as the "" a relay
+    # translating to another wire would have to parse again.
+    cap = _install(monkeypatch, _text_body())
+    llm.chat(
+        [
+            {"role": "user", "content": "Status?"},
+            result["assistant_message"],
+            {
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "wire_id": call["wire_id"],
+                "name": "session_status",
+                "content": "idle",
+            },
+        ],
+        _cfg(),
+        tools=[_STATUS],
+    )
+    replayed = cap.payload["messages"][1]["tool_calls"]
+    assert [item["function"]["arguments"] for item in replayed] == ["{}"]
+
+
+def _index_less_relay(calls):
+    """Stream `calls` the way a relay that omits `tool_calls[].index` does."""
+
+    def relay(url, payload, headers, timeout, on_event):
+        for call_id, name, parts, repeat_id in calls:
+            on_event(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": ""},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+            for part in parts:
+                fragment = {"function": {"arguments": part}}
+                if repeat_id:
+                    fragment["id"] = call_id
+                on_event({"choices": [{"delta": {"tool_calls": [fragment]}}]})
+        on_event({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+
+    return relay
+
+
+def test_streamed_parallel_calls_without_index_stay_separate(monkeypatch):
+    # With every missing index read as 0 the two calls merged into one
+    # `calculate` call whose arguments were '{"query":"ATP synthase"}{"value":2}'
+    # -- a single malformed call, and `lookup` vanished from the batch.
+    monkeypatch.setattr(
+        llm.transport,
+        "post_sse",
+        _index_less_relay(
+            [
+                ("call-a", "lookup", ['{"query":', '"ATP synthase"}'], False),
+                ("call-b", "calculate", ['{"value":', "2}"], True),
+            ]
+        ),
+    )
+    monkeypatch.setenv("OPENAI4S_LLM_STREAM", "1")
+
+    result = llm.chat(
+        [{"role": "user", "content": "Use both tools."}],
+        _cfg(),
+        tools=[_LOOKUP, _CALCULATE],
+        on_delta=lambda _text: None,
+    )
+
+    assert result["tool_calls"] == [
+        _call(
+            "call-a",
+            '{"query":"ATP synthase"}',
+            {"query": "ATP synthase"},
+            meta={"type": "function", "index": 0},
+        ),
+        _call(
+            "call-b",
+            '{"value":2}',
+            {"value": 2},
+            name="calculate",
+            ordinal=1,
+            meta={"type": "function", "index": 1},
+        ),
+    ]
