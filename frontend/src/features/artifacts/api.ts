@@ -101,7 +101,33 @@ export function bytes(b: number | null | undefined): string {
 }
 
 /**
- * app.js:6055-6066. Heuristic: raw binary / giant base64|hex blob.
+ * Whether one unbroken `[A-Za-z0-9+/=]` run of blob length reads as encoded
+ * bytes.
+ *
+ * Length alone is not evidence: a protein or DNA sequence written on one
+ * line is exactly such a run (a 1273-residue spike FASTA record). Base64 of
+ * real bytes mixes both letter cases with digits, `+` and `/` -- 2.7-26% of
+ * its characters across random, float, integer and text payloads -- while a
+ * sequence is letters, carrying at most a name's serial number or a trailing
+ * length. Both cases plus that punctuation at 1% or more of the run separates
+ * the two; a dump of zero bytes ("AAAA...") stays text, as a poly-A tract must.
+ */
+function encodedRun(run: string): boolean {
+  let upper = false;
+  let lower = false;
+  let marks = 0;
+  for (let i = 0; i < run.length; i++) {
+    const c = run.charCodeAt(i);
+    if (c >= 97) lower = true;
+    else if (c >= 65) upper = true;
+    else if (c !== 61) marks++;
+  }
+  return upper && lower && marks * 100 >= run.length;
+}
+
+/**
+ * app.js:6055-6066. Heuristic: raw binary, a giant base64 blob, or a long
+ * `\xNN` escape dump.
  */
 export function looksBinary(s: string | null | undefined): boolean {
   if (!s) return false;
@@ -113,7 +139,10 @@ export function looksBinary(s: string | null | undefined): boolean {
     if (c < 32 || c === 127 || c === 0xfffd) ctrl++;
   }
   if (sample.length && ctrl / sample.length > 0.12) return true;
-  return /[A-Za-z0-9+/=]{1200,}/.test(s) || /(?:\\x[0-9a-fA-F]{2}){400,}/.test(s);
+  for (const run of s.matchAll(/[A-Za-z0-9+/=]{1200,}/g)) {
+    if (encodedRun(run[0])) return true;
+  }
+  return /(?:\\x[0-9a-fA-F]{2}){400,}/.test(s);
 }
 
 export function el<K extends keyof HTMLElementTagNameMap>(

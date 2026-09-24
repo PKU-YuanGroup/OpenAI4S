@@ -9,6 +9,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary`、`el`/`icon`、用 `isReady` 调 window。 |
+| [`api.test.ts`](api.test.ts) | `looksBinary`：单行序列仍是文本；base64 块、控制字符与转义转储仍判为二进制。 |
 | [`artifacts.css`](artifacts.css) | Files 工具条 / 过滤 / Load more / 过期 version 横幅。 |
 | [`boot.test.ts`](boot.test.ts) | DOM 挂载顺序及初始路由先于深链的回归覆盖。 |
 | [`boot.ts`](boot.ts) | `bootArtifacts` / `installArtifacts`。挂上 `parseTable` 与 `renderSheet`。 |
@@ -29,6 +30,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`preview.ts`](preview.ts) | 精确版本的 scoped grant 升级（按版本缓存 grant、改写说明文字），以及 grant 被拒后回退到惰性的 `/preview/<id-or-version>`。 |
 | [`preview.test.ts`](preview.test.ts) | 生产渲染器 grant 生命周期、grant 复用与过期、源与路径拒绝、精确版本回退、非回环源保持惰性及已移除 iframe 回归测试。 |
 | [`renderers.ts`](renderers.ts) | 十个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。 |
+| [`renderers.test.ts`](renderers.test.ts) | 文本渲染器：每次渲染只读一次（无下载/文本循环）；序列按源码显示。 |
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |

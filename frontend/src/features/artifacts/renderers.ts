@@ -151,7 +151,9 @@ export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: 
       const nm = String(a.filename || "").toLowerCase();
       // Long string values are valid JSON even when they resemble encoded bytes.
       if (/json/.test(ct) || /\.json$/i.test(nm)) return renderStructuredText(container, a, text, url);
-      if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
+      // The tile directly, as the JSON branch does: `renderDownloadArtifact`
+      // sends a text-like name straight back here, which fetched forever.
+      if (looksBinary(text)) return renderDownloadCard(container, a, url);
       renderRawSource(container, a, text, url);
     })
     .catch(() => rendererFailure(container, a, url));
