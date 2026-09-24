@@ -11,7 +11,6 @@ import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { isReady } from "../../compat/stub";
 import { t } from "../../i18n/runtime";
 import {
-  _kc,
   _replDrafts,
   _replLanguage,
   execSources,
@@ -19,7 +18,6 @@ import {
   pendingReplIdentity,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
-import { running } from "../../stores/stream";
 import { executionQueue } from "../../stores/timeline";
 import { publicText } from "../scrub/scrub";
 import { cellOutput, nbCellKey, notebookViewEntries, paintStreamedText } from "./cells";
@@ -36,20 +34,24 @@ import {
 import {
   branchCapability,
   copyNotebookCell,
+  currentKernelEnvs,
+  currentKernelStatus,
+  envChoice,
   executeNotebookCode,
   forkNotebookCell,
   identityForOwner,
   interruptRepl,
   kernelCtl,
-  kernelEpoch,
+  kernelIdFromEnv,
   kernelLabel,
   kernelStatusOf,
-  nbPopulateEnvSelect,
   nbSwitchEnv,
   promoteNotebookCell,
+  refreshKernelEnvs,
   refreshKernelState,
   replEnabledNow,
   runtimeSummary,
+  shortRuntime,
 } from "./kernel";
 import {
   bindNotebookScroll,
@@ -62,7 +64,7 @@ import { bytes } from "../artifacts/api";
 import { filesT } from "../artifacts/copy";
 import { applyArtifactDeepLink } from "../artifacts/ui";
 import { iconSvg } from "../icons/paths";
-import type { NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
+import type { KernelEnvRow, KernelStatus, NotebookCell, NotebookOutputArtifact, ScrollBox } from "./types";
 
 function notebookCellState(cell: NotebookCell): {
   key: string;
@@ -241,7 +243,7 @@ function CellIo({ cell }: { cell: NotebookCell }) {
 }
 
 function CellActions({ cell }: { cell: NotebookCell }) {
-  const st = kernelStatusOf(_kc.value.st);
+  const st = kernelStatusOf(currentKernelStatus());
   const replEnabled = !!st.repl_enabled;
   const appendable = replEnabled && !cell.live && !!String(cell.source || "").trim();
   const canFork =
@@ -438,18 +440,13 @@ function toggleExecutedCodeLocal(): void {
 }
 
 function KernelChips({ entries }: { entries: NotebookCell[] }) {
-  kernelEpoch.value;
   const kernels: string[] = [];
   entries.forEach((e) => {
     const k = e.kernel_id || "python";
     if (!kernels.includes(k)) kernels.push(k);
   });
   const filter = kernelFilter.value;
-  const kc = _kc.value;
-  const cachedRunning = !!(running.value || (kc.id === currentId.value && kernelStatusOf(kc.st).turn_running));
-  const cachedReady = !cachedRunning && !!(kc.id === currentId.value && kernelStatusOf(kc.st).alive);
-  const runtimeMode = runtimeSummary().status;
-  const badgeMode = runtimeMode || (cachedRunning ? "busy" : cachedReady ? "live" : "ended");
+  const badgeMode = runtimeSummary().status;
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   return (
     <div class="kernel-chips">
@@ -519,43 +516,107 @@ function OwnerChips() {
   );
 }
 
-function StatusStrip() {
-  kernelEpoch.value;
-  const lineRef = useRef<HTMLDivElement>(null);
+/** The kstate chip: paintKernel()'s text and class, rendered. */
+function kernelStateLabel(st: KernelStatus): { text: string; cls: string } {
+  const names: Record<string, string> = {
+    running: t("nb.kernel.stateActive"),
+    stopped: t("nb.kernel.stateStopped"),
+    none: t("nb.kernel.stateNone"),
+  };
+  const label = st.turn_running ? t("dash.badge.running") : names[st.state || ""] || st.state;
+  return {
+    text: String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : ""),
+    cls: "kstate " + (st.turn_running ? "run" : st.state || ""),
+  };
+}
+
+function kernelTitle(st: KernelStatus): string {
+  const env = st.env || {};
+  return (
+    kernelLabel(kernelIdFromEnv(env)) +
+    " kernel · " +
+    t("nb.kernel.shared") +
+    (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
+    (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "")
+  );
+}
+
+function kernelStatusLine(st: KernelStatus): { text: string; cls: string } {
+  const env = st.env || {};
+  const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
+  const live = !!st.turn_running;
+  const ready = !live && !!st.alive;
+  return {
+    text: live ? t("nb.status.live", rt) : ready ? t("nb.status.ready", rt) : t("nb.status.ended", rt),
+    cls: live ? "live" : ready ? "ready" : "ended",
+  };
+}
+
+/** The read-only status line; its text is the session's last kernel read. */
+export function StatusStrip() {
+  const st = currentKernelStatus();
   useLayoutEffect(() => {
-    const line = lineRef.current;
-    void refreshKernelState({ strip: { line: line || undefined } });
+    void refreshKernelState();
   });
+  const line = st ? kernelStatusLine(st) : null;
   return (
     <div class="nb-status">
-      <div class="nb-status-line" ref={lineRef}>
-        …
-      </div>
+      <div class={"nb-status-line" + (line ? " " + line.cls : "")}>{line ? line.text : "…"}</div>
       <div class="nb-status-hint">{t("nb.status.hint")}</div>
     </div>
   );
 }
 
+function envOptionLabel(e: KernelEnvRow): string {
+  const notable = e.notable && e.notable.length ? " — " + e.notable.slice(0, 4).join("/") : "";
+  return e.name + (e.runnable ? "" : " · R") + notable;
+}
+
+/** Options from the session's last environment read; a pick shows until the next read answers. */
+function EnvSelect() {
+  const sid = currentId.value;
+  const { envs, cur } = currentKernelEnvs();
+  const choice = envChoice.value;
+  const picked = choice && choice.sid === sid ? choice : null;
+  return (
+    <select
+      class="nb-env-select"
+      title={t("nb.env.selectTitle")}
+      disabled={!sid || !!(picked && picked.posting)}
+      value={picked ? picked.name : cur || undefined}
+      onChange={(ev) => void nbSwitchEnv((ev.currentTarget as HTMLSelectElement).value)}
+    >
+      {envs ? (
+        envs.map((e) => (
+          <option key={e.name} value={e.name} disabled={!e.runnable} title={e.description || ""}>
+            {envOptionLabel(e)}
+          </option>
+        ))
+      ) : (
+        <option>{t("nb.env.placeholder")}</option>
+      )}
+    </select>
+  );
+}
+
 function ReplPanel() {
-  kernelEpoch.value;
-  const envRef = useRef<HTMLSelectElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const runRef = useRef<HTMLButtonElement>(null);
-  const stopRef = useRef<HTMLButtonElement>(null);
-  const titleRef = useRef<HTMLSpanElement>(null);
-  const stateRef = useRef<HTMLSpanElement>(null);
-  const reviveRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    void refreshKernelState({
-      state: stateRef.current || undefined,
-      title: titleRef.current || undefined,
-      revive: reviveRef.current || undefined,
-    });
-    void nbPopulateEnvSelect(envRef.current);
+    void refreshKernelState();
+    void refreshKernelEnvs();
   });
+  const sid = currentId.value;
+  const st = currentKernelStatus();
+  const state = !sid
+    ? { text: t("nb.kernel.noSession"), cls: "kstate" }
+    : st
+      ? kernelStateLabel(st)
+      : { text: "…", cls: "kstate" };
+  const quarantined = !!(st && st.view_only === true && st.trust_state === "quarantined");
+  const reviveHidden = !st || !!(st.alive || st.turn_running || quarantined);
   const pending =
     pendingReplIdentity.value &&
-    (pendingReplIdentity.value as { frame_id?: string }).frame_id === currentId.value
+    (pendingReplIdentity.value as { frame_id?: string }).frame_id === sid
       ? pendingReplIdentity.value
       : null;
   const replIdentity = pending || identityForOwner(executionQueue.value, "user_repl");
@@ -565,34 +626,25 @@ function ReplPanel() {
   return (
     <div class="nb-repl">
       <div class="nb-repl-head">
-        <span class="nb-kernel-title" ref={titleRef}>
-          kernel
-        </span>
+        <span class="nb-kernel-title">{st ? kernelTitle(st) : "kernel"}</span>
         <div class="nb-repl-actions">
-          <select
-            class="nb-env-select"
-            ref={envRef}
-            title={t("nb.env.selectTitle")}
-            disabled={!currentId.value}
-            onChange={(ev) => void nbSwitchEnv((ev.currentTarget as HTMLSelectElement).value, ev.currentTarget as HTMLSelectElement)}
-          >
-            <option>{t("nb.env.placeholder")}</option>
-          </select>
-          <span class="kstate" ref={stateRef}>
-            …
-          </span>
-          <button class="kchip" disabled={!currentId.value} onClick={() => void kernelCtl("stop")}>
+          <EnvSelect />
+          <span class={state.cls}>{state.text}</span>
+          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("stop")}>
             {t("nb.kernel.stopLabel")}
           </button>
-          <button class="kchip" disabled={!currentId.value} onClick={() => void kernelCtl("start")}>
+          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("start")}>
             {t("nb.kernel.startLabel")}
           </button>
-          <button class="kchip" disabled={!currentId.value} onClick={() => void kernelCtl("restart")}>
+          <button class="kchip" disabled={!sid} onClick={() => void kernelCtl("restart")}>
             {t("nb.kernel.restartLabel")}
           </button>
         </div>
       </div>
-      <div class="nb-revive hidden" ref={reviveRef}>
+      <div
+        class={"nb-revive" + (reviveHidden ? " hidden" : "")}
+        title={quarantined ? t("runtime.quarantineHint") : ""}
+      >
         <span>{t("nb.revive.text")}</span>
         <button class="solid-btn small" onClick={() => void kernelCtl("start")}>
           {t("nb.revive.startBtn")}
@@ -626,15 +678,13 @@ function ReplPanel() {
           <div class="nb-live-input-actions">
             <button
               class="solid-btn small"
-              ref={runRef}
-              disabled={replBusy || !currentId.value}
+              disabled={replBusy || !sid}
               onClick={() => void runDraft()}
             >
               {t("nb.repl.run")}
             </button>
             <button
               class={"repl-stop" + (replBusy ? "" : " hidden")}
-              ref={stopRef}
               title={t("nb.repl.interruptTitle")}
               onClick={() => void interruptRepl()}
             />
@@ -646,7 +696,7 @@ function ReplPanel() {
           rows={7}
           spellcheck={false}
           placeholder={t("nb.repl.inputPlaceholder")}
-          disabled={!currentId.value || replBusy}
+          disabled={!sid || replBusy}
           defaultValue={drafts[lang] || ""}
           onInput={(ev) => {
             drafts[_replLanguage.value] = (ev.currentTarget as HTMLTextAreaElement).value;
@@ -667,11 +717,7 @@ function ReplPanel() {
     const box = inputRef.current;
     const currentLanguage = _replLanguage.value === "r" ? "r" : "python";
     const code = box ? box.value : drafts[currentLanguage] || "";
-    const ok = await executeNotebookCode(code, currentLanguage, {
-      runButton: runRef.current || undefined,
-      input: box || undefined,
-      stop: stopRef.current || undefined,
-    });
+    const ok = await executeNotebookCode(code, currentLanguage);
     if (ok) {
       drafts[currentLanguage] = "";
       if (box) box.value = "";
@@ -696,7 +742,6 @@ function ExecutedCodeSlot() {
 }
 
 export function NotebookDock({ entries }: { entries: NotebookCell[] }) {
-  kernelEpoch.value;
   const execOpen = !!(execSources.value && (execSources.value as { open?: boolean }).open);
   const repl = replEnabledNow();
   return (

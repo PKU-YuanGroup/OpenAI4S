@@ -37,24 +37,26 @@ export {
 } from "./chrome";
 export { installNotebook, registerNotebookHandlers } from "./install";
 export {
+  currentKernelStatus,
   executeNotebookCode,
   handleKernelStatus,
   identityForOwner,
   invalidateKernelCache,
   kernelCtl,
-  kernelEpoch,
   kernelIdFromEnv,
   kernelLabel,
   kernelStatusOf,
-  nbPopulateEnvSelect,
+  kernelView,
   nbSwitchEnv,
   notebookOnTurnDone,
+  refreshKernelEnvs,
   refreshKernelState,
   replEnabledNow,
   runtimeSummary,
   setScheduleWorkbenchRefresh,
   setScopedExecutionRequest,
 } from "./kernel";
+export type { KernelView } from "./kernel";
 export { cellNode, NotebookDock, renderNotebook, scrollToCell } from "./Notebook";
 export {
   NB_FOLLOW_PX,

@@ -60,11 +60,13 @@ import {
 import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
 import {
+  currentKernelStatus,
   invalidateKernelCache,
-  kernelEpoch,
+  kernelView,
   nbSwitchEnv,
   notebookOnTurnDone,
   refreshKernelState,
+  replEnabledNow,
 } from "./kernel";
 import {
   isNearBottom,
@@ -346,10 +348,12 @@ describe("F-14 Notebook", () => {
 
     it("clears id/st/envs and leaves busy flags (app.js:9955)", () => {
       seedCache();
-      const epoch = kernelEpoch.value;
+      const before = _kc.value;
       invalidateKernelCache();
       expectInvalidated();
-      expect(kernelEpoch.value).toBe(epoch + 1);
+      // A new object, not an in-place edit: whoever reads `_kc` hears about
+      // it without a hand-maintained epoch counter.
+      expect(_kc.value).not.toBe(before);
     });
 
     it("invalidates on kernel_status for the open session", () => {
@@ -420,6 +424,28 @@ describe("F-14 Notebook", () => {
       pending[1]!.answer({ alive: true, generation: 2 });
       await settle();
       expect(_kc.value.st).toEqual({ alive: true, generation: 2 });
+    });
+
+    it("keeps the last read on screen across an invalidation", async () => {
+      setNotebookApi(async () => ({ alive: true, state: "running", repl_enabled: true }));
+      await refreshKernelState();
+      const shown = kernelView.value;
+      expect(replEnabledNow()).toBe(true);
+      invalidateKernelCache();
+      expect(_kc.value.st).toBeNull();
+      // Clearing what was shown flashed the status line to "…" and unmounted
+      // the REPL panel after every turn, until the next read landed.
+      expect(kernelView.value).toBe(shown);
+      expect(currentKernelStatus()).toEqual({ alive: true, state: "running", repl_enabled: true });
+      expect(replEnabledNow()).toBe(true);
+    });
+
+    it("shows nothing read for another session", async () => {
+      setNotebookApi(async () => ({ alive: true, repl_enabled: true }));
+      await refreshKernelState();
+      currentId.value = "frame-2";
+      expect(currentKernelStatus()).toBeNull();
+      expect(replEnabledNow()).toBe(false);
     });
   });
 

@@ -18,9 +18,11 @@ vi.mock("preact/hooks", () => ({
 import { effect } from "@preact/signals";
 import { i18nReady, t } from "../../i18n/runtime";
 import { cells, liveCells } from "../../stores/notebook";
+import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { notebookDisplayEntries } from "./cells";
-import { CellList, CellOutput } from "./Notebook";
+import { invalidateKernelCache, kernelView } from "./kernel";
+import { CellList, CellOutput, StatusStrip } from "./Notebook";
 
 type VNode = {
   type?: unknown;
@@ -80,6 +82,41 @@ describe("Notebook cell identity across completion", () => {
     // card: open outputs and revisions collapse and the page jumps.
     expect(finished[0]!.key).toBe(running[0]!.key);
     expect(finished[0]!.type).toBe(running[0]!.type);
+  });
+});
+
+/** The first host element whose class list contains `name`. */
+function byClass(node: unknown, name: string): VNode | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = byClass(child, name);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (!node || typeof node !== "object") return null;
+  const vnode = node as VNode;
+  if (String(vnode.props?.class || "").split(/\s+/).includes(name)) return vnode;
+  return byClass(vnode.props?.children, name);
+}
+
+describe("Notebook kernel status line", () => {
+  it("renders the session's last kernel read, and keeps it across an invalidation", () => {
+    currentId.value = "frame-1";
+    kernelView.value = {
+      sid: "frame-1",
+      st: { alive: true, env: { python_version: "3.11" } },
+      envs: null,
+      cur: null,
+    };
+    const line = (): VNode => byClass(StatusStrip(), "nb-status-line")!;
+    const ready = t("nb.status.ready", "Python 3.11");
+    expect(textOf(line())).toBe(ready);
+    expect(String(line().props?.class)).toContain("ready");
+    invalidateKernelCache();
+    expect(textOf(line())).toBe(ready);
+    currentId.value = "frame-2";
+    expect(textOf(line())).toBe("…");
   });
 });
 

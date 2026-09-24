@@ -5,7 +5,6 @@
  * kernel_status, turnDone, nbSwitchEnv (app.js:5352, 5854, 10060).
  */
 
-import { signal } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import {
   _kc,
@@ -13,8 +12,10 @@ import {
   _replLanguage,
   artifactWorkbench,
   pendingReplIdentity,
+  type KernelCache,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
+import { field } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
 import {
   actionTimeline,
@@ -35,17 +36,51 @@ import {
   notebookFetch,
   notifyLoadArtifacts,
 } from "./cells";
-import { kernelIdFromEnv, kernelLabel } from "./labels";
 import { nbRender } from "./scroll";
 import type { KernelEnvRow, KernelStatus, NotebookCell } from "./types";
 
 export { kernelIdFromEnv, kernelLabel } from "./labels";
 
-/** Local paint epoch so Preact headers see in-place `_kc` mutations. */
-export const kernelEpoch = signal(0);
+/**
+ * The kernel facts last read for a session, one immutable value the dock
+ * renders from. It replaces paintKernel()'s writes into element refs and the
+ * kernelEpoch counter that told Preact about in-place `_kc` edits.
+ * Invalidation clears the `_kc` read cache, not this: what was last read
+ * stays on screen until the next read replaces it, so the status line does
+ * not flash "…" and the REPL panel does not unmount after every turn.
+ */
+export type KernelView = {
+  sid: string;
+  st: KernelStatus | null;
+  envs: KernelEnvRow[] | null;
+  cur: string | null;
+};
 
-function bumpKernelEpoch(): void {
-  kernelEpoch.value++;
+export const kernelView = field<KernelView | null>(() => null);
+
+/** The environment picked in the select, shown until a read for that session answers. */
+export const envChoice = field<{ sid: string; name: string; posting: boolean } | null>(() => null);
+
+function viewFor(sid: string | null | undefined): KernelView | null {
+  const view = kernelView.value;
+  return view && sid && view.sid === sid ? view : null;
+}
+
+/** The open session's last-read kernel status, or null before its first read. */
+export function currentKernelStatus(): KernelStatus | null {
+  const view = viewFor(currentId.value);
+  return view ? view.st : null;
+}
+
+/** The open session's last-read environments. */
+export function currentKernelEnvs(): { envs: KernelEnvRow[] | null; cur: string | null } {
+  const view = viewFor(currentId.value);
+  return { envs: view ? view.envs : null, cur: view ? view.cur : null };
+}
+
+/** `_kc` is replaced, never edited in place, so a reader of the signal hears about it. */
+function writeKc(patch: Partial<KernelCache>): void {
+  _kc.value = { ..._kc.value, ...patch };
 }
 
 function dockIsNotebook(): boolean {
@@ -77,15 +112,8 @@ let invalidations = 0;
 
 /** app.js:9955. */
 export function invalidateKernelCache(): void {
-  const kc = _kc.value;
-  kc.id = null;
-  kc.st = null;
-  kc.stAt = 0;
-  kc.envs = null;
-  kc.cur = null;
-  kc.envAt = 0;
+  writeKc({ id: null, st: null, stAt: 0, envs: null, cur: null, envAt: 0 });
   invalidations += 1;
-  bumpKernelEpoch();
 }
 
 /**
@@ -102,7 +130,7 @@ export function kernelStatusOf(value: unknown): KernelStatus {
 }
 
 export function replEnabledNow(): boolean {
-  const st = kernelStatusOf(_kc.value.st);
+  const st = kernelStatusOf(currentKernelStatus());
   return !!(st.repl_enabled && !(st.view_only && st.trust_state === "quarantined"));
 }
 
@@ -166,7 +194,7 @@ export function runtimeSummary(): {
   const owner = (ownerTicket && ownerTicket.owner) || {};
   const recovery = (recoveryState.value || {}) as Record<string, unknown>;
   const actions = (recoveryActions.value || {}) as Record<string, unknown>;
-  const kcSt = kernelStatusOf(_kc.value.st);
+  const kcSt = kernelStatusOf(currentKernelStatus());
   const recoveryStatus = String(recovery.status || "").toLowerCase();
   const trustState = publicText(
     recovery.trust_state || actions.trust_state || kcSt.trust_state,
@@ -243,24 +271,11 @@ export async function kernelCtl(action: string): Promise<void> {
   if (dockIsNotebook()) nbRender();
 }
 
-type ReplControls = {
-  runButton?: { disabled: boolean };
-  input?: { disabled: boolean };
-  stop?: { classList: { remove: (c: string) => void; add: (c: string) => void } };
-};
-
-/** app.js:9920-9947 */
-export async function executeNotebookCode(
-  code: string,
-  language: string,
-  controls?: ReplControls,
-): Promise<boolean> {
+/** app.js:9920-9947. The REPL's controls follow `pendingReplIdentity`, set here. */
+export async function executeNotebookCode(code: string, language: string): Promise<boolean> {
   code = String(code || "");
   language = String(language || "python").toLowerCase() === "r" ? "r" : "python";
   if (!code.trim() || !currentId.value) return false;
-  const runButton = controls && controls.runButton;
-  const input = controls && controls.input;
-  const stop = controls && controls.stop;
   const cryptoObj = globalThis.crypto;
   const randomId =
     cryptoObj && typeof cryptoObj.randomUUID === "function"
@@ -273,9 +288,6 @@ export async function executeNotebookCode(
     execution_id: executionId,
     owner: { kind: "user_repl", id: executionId },
   };
-  if (runButton) runButton.disabled = true;
-  if (input) input.disabled = true;
-  if (stop) stop.classList.remove("hidden");
   let accepted = false;
   try {
     const response = await notebookFetch(`/frames/${frameId}/kernel/execute`, {
@@ -289,8 +301,7 @@ export async function executeNotebookCode(
     } | null;
     if (accepted && pending && pending.execution_id === executionId) {
       const owner = response && (response.owner as { kind?: string; id?: string } | undefined);
-      pending.owner =
-        owner && owner.kind && owner.id ? owner : pending.owner;
+      if (owner && owner.kind && owner.id) pendingReplIdentity.value = { ...pending, owner };
     }
     hint(t("nb.action.queued", language === "r" ? "R" : "Python"));
     if (!accepted && currentId.value === frameId) {
@@ -307,83 +318,22 @@ export async function executeNotebookCode(
     if (!accepted && pending && pending.execution_id === executionId) {
       pendingReplIdentity.value = null;
     }
-    if (!accepted) {
-      if (runButton) runButton.disabled = false;
-      if (input) input.disabled = false;
-      if (stop) stop.classList.add("hidden");
-    }
     if (currentId.value === frameId && dockIsNotebook()) nbRender();
   }
 }
 
-export type KernelPaintEls = {
-  state?: HTMLElement | null;
-  bStop?: { disabled: boolean } | null;
-  bStart?: { disabled: boolean } | null;
-  title?: HTMLElement | null;
-  revive?: HTMLElement | null;
-  strip?: { line?: HTMLElement | null };
-  badge?: { root?: HTMLElement | null; label?: HTMLElement | null };
-};
-
-function paintKernel(els: KernelPaintEls, st: KernelStatus): void {
-  const label = st.turn_running
-    ? t("dash.badge.running")
-    : ({ running: t("nb.kernel.stateActive"), stopped: t("nb.kernel.stateStopped"), none: t("nb.kernel.stateNone") }[
-        st.state || ""
-      ] || st.state);
-  if (els.state) {
-    els.state.textContent = String(label || "") + (st.generation ? t("nb.kernel.generation", st.generation) : "");
-    els.state.className = "kstate " + (st.turn_running ? "run" : st.state);
-  }
-  const env = st.env || {};
-  if (els.title) {
-    els.title.textContent =
-      kernelLabel(kernelIdFromEnv(env)) +
-      " kernel · " +
-      t("nb.kernel.shared") +
-      (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "") +
-      (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "");
-  }
-  if (els.badge && els.badge.root && els.badge.label) {
-    const mode = runtimeSummary().status;
-    ["live", "busy", "ended", "restoring", "partial", "failed", "ready", "idle"].forEach((name) => {
-      const root = els.badge && els.badge.root;
-      if (root) root.classList.toggle(name, name === mode);
-    });
-    els.badge.label.textContent = t("runtime.status." + mode);
-  }
-  const quarantined = st.view_only === true && st.trust_state === "quarantined";
-  if (els.bStop) els.bStop.disabled = !st.alive;
-  if (els.bStart) els.bStart.disabled = !!(st.alive || quarantined);
-  if (els.revive) {
-    els.revive.classList.toggle("hidden", !!(st.alive || st.turn_running || quarantined));
-    els.revive.title = quarantined ? t("runtime.quarantineHint") : "";
-  }
-  if (els.strip && els.strip.line) {
-    const rt = kernelLabel(kernelIdFromEnv(env)) + (env.python_version ? " " + env.python_version : "");
-    const live = !!st.turn_running;
-    const ready = !live && !!st.alive;
-    els.strip.line.textContent = live
-      ? t("nb.status.live", rt)
-      : ready
-        ? t("nb.status.ready", rt)
-        : t("nb.status.ended", rt);
-    els.strip.line.className = "nb-status-line " + (live ? "live" : ready ? "ready" : "ended");
-  }
+function runtimeKeyOf(st: KernelStatus | null): string {
+  return st
+    ? [st.state, st.alive, st.turn_running, st.generation_id, st.generation, st.view_only, st.trust_state].join(":")
+    : "";
 }
 
-/** app.js:9993-10018 */
-export async function refreshKernelState(els?: KernelPaintEls): Promise<void> {
-  const paintEls = els || {};
-  if (!currentId.value) {
-    if (paintEls.state) paintEls.state.textContent = t("nb.kernel.noSession");
-    return;
-  }
-  const kc = _kc.value;
-  if (kc.id === currentId.value && kc.st) paintKernel(paintEls, kernelStatusOf(kc.st));
-  if (kc.id === currentId.value && kc.st && Date.now() - kc.stAt < 800) return;
+/** app.js:9993-10018. Reads /kernel when the cache is stale; the dock renders `kernelView`. */
+export async function refreshKernelState(): Promise<void> {
   const sid = currentId.value;
+  if (!sid) return;
+  const kc = _kc.value;
+  if (kc.id === sid && kc.st && Date.now() - kc.stAt < 800) return;
   if (statusRead && statusRead.sid === sid) return;
   const read = (statusRead = { sid });
   const generation = invalidations;
@@ -396,34 +346,20 @@ export async function refreshKernelState(els?: KernelPaintEls): Promise<void> {
     if (statusRead === read) statusRead = null;
   }
   if (sid !== currentId.value) return;
-  const prev = kernelStatusOf(kc.st);
-  const previousRuntimeKey = kc.st
-    ? [prev.state, prev.alive, prev.turn_running, prev.generation_id, prev.generation, prev.view_only, prev.trust_state].join(
-        ":",
-      )
-    : "";
-  if (kc.id !== sid) {
-    kc.id = sid;
-    kc.envs = null;
-  }
-  kc.st = st;
-  // An invalidation while this read was out: show it, but read again.
-  kc.stAt = generation === invalidations ? Date.now() : 0;
+  const held = _kc.value;
+  const shown = viewFor(sid);
+  const previousRuntimeKey = runtimeKeyOf(shown ? shown.st : null);
+  const status = kernelStatusOf(st);
+  writeKc({
+    id: sid,
+    envs: held.id === sid ? held.envs : null,
+    st,
+    // An invalidation while this read was out: show it, but read again.
+    stAt: generation === invalidations ? Date.now() : 0,
+  });
+  kernelView.value = { sid, st: status, envs: shown ? shown.envs : null, cur: shown ? shown.cur : null };
   artifactWorkbench.value = !!(st && st.artifact_workbench);
-  bumpKernelEpoch();
-  paintKernel(paintEls, kernelStatusOf(st));
-  const next = kernelStatusOf(st);
-  const modeChanged = (!!next.repl_enabled && !!paintEls.strip) || (!next.repl_enabled && !!paintEls.state);
-  const runtimeKey = [
-    next.state,
-    next.alive,
-    next.turn_running,
-    next.generation_id,
-    next.generation,
-    next.view_only,
-    next.trust_state,
-  ].join(":");
-  if ((modeChanged || runtimeKey !== previousRuntimeKey) && dockIsNotebook()) {
+  if (runtimeKeyOf(status) !== previousRuntimeKey && dockIsNotebook()) {
     const raf =
       typeof requestAnimationFrame === "function"
         ? requestAnimationFrame
@@ -432,26 +368,12 @@ export async function refreshKernelState(els?: KernelPaintEls): Promise<void> {
   }
 }
 
-/** app.js:10020-10047 */
-export async function nbPopulateEnvSelect(envSel: HTMLSelectElement | null): Promise<void> {
-  if (!currentId.value || !envSel) return;
-  const fill = (envs: KernelEnvRow[], cur: unknown) => {
-    envSel.innerHTML = "";
-    (envs || []).forEach((e) => {
-      const notable = e.notable && e.notable.length ? " — " + e.notable.slice(0, 4).join("/") : "";
-      const o = document.createElement("option");
-      o.textContent = e.name + (e.runnable ? "" : " · R") + notable;
-      o.value = e.name;
-      if (!e.runnable) o.disabled = true;
-      o.title = e.description || "";
-      envSel.appendChild(o);
-    });
-    if (cur) envSel.value = String(cur);
-  };
-  const kc = _kc.value;
-  if (kc.id === currentId.value && kc.envs) fill(kc.envs as KernelEnvRow[], kc.cur);
-  if (kc.id === currentId.value && kc.envs && Date.now() - kc.envAt < 8000) return;
+/** app.js:10020-10047. Reads /environments when stale; the select renders `kernelView`. */
+export async function refreshKernelEnvs(): Promise<void> {
   const sid = currentId.value;
+  if (!sid) return;
+  const kc = _kc.value;
+  if (kc.id === sid && kc.envs && Date.now() - kc.envAt < 8000) return;
   if (envRead && envRead.sid === sid) return;
   const read = (envRead = { sid });
   const generation = invalidations;
@@ -464,23 +386,29 @@ export async function nbPopulateEnvSelect(envSel: HTMLSelectElement | null): Pro
     if (envRead === read) envRead = null;
   }
   if (sid !== currentId.value) return;
-  if (kc.id !== sid) {
-    kc.id = sid;
-    kc.st = null;
-  }
-  kc.envs = (data && data.environments) || [];
-  kc.cur = data && data.current;
-  kc.envAt = generation === invalidations ? Date.now() : 0;
-  bumpKernelEpoch();
-  fill(kc.envs as KernelEnvRow[], kc.cur);
+  const held = _kc.value;
+  const envs = ((data && data.environments) || []) as KernelEnvRow[];
+  const cur = data ? data.current : null;
+  writeKc({
+    id: sid,
+    st: held.id === sid ? held.st : null,
+    envs,
+    cur,
+    envAt: generation === invalidations ? Date.now() : 0,
+  });
+  const shown = viewFor(sid);
+  kernelView.value = { sid, st: shown ? shown.st : null, envs, cur: cur == null ? null : String(cur) };
+  const choice = envChoice.value;
+  if (choice && choice.sid === sid && !choice.posting) envChoice.value = null;
 }
 
 /** app.js:10049-10061 — third `_kc` invalidate site. */
-export async function nbSwitchEnv(name: string, envSel?: HTMLSelectElement | null): Promise<void> {
-  if (!currentId.value || !name) return;
-  if (envSel) envSel.disabled = true;
+export async function nbSwitchEnv(name: string): Promise<void> {
+  const sid = currentId.value;
+  if (!sid || !name) return;
+  envChoice.value = { sid, name, posting: true };
   try {
-    const r = await notebookFetch(`/frames/${currentId.value}/kernel/env`, {
+    const r = await notebookFetch(`/frames/${sid}/kernel/env`, {
       method: "POST",
       body: JSON.stringify({ env: name }),
     });
@@ -489,7 +417,8 @@ export async function nbSwitchEnv(name: string, envSel?: HTMLSelectElement | nul
   } catch (e) {
     hint(t("nb.kernel.envSwitchFailed", apiErrorText(e)), true);
   }
-  if (envSel) envSel.disabled = false;
+  const choice = envChoice.value;
+  if (choice && choice.sid === sid && choice.name === name) envChoice.value = { ...choice, posting: false };
   invalidateKernelCache();
   if (dockIsNotebook()) nbRender();
 }
