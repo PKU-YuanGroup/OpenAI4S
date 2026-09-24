@@ -21,9 +21,9 @@ export function ConnectorsTab() {
   const [conns, setConns] = useState<Record<string, unknown>[]>([]);
   const [directory, setDirectory] = useState<Record<string, unknown>[]>([]);
   const [datapro, setDatapro] = useState<{
-    config: Record<string, unknown>;
+    config: Record<string, unknown> | null;
     error: unknown;
-  }>({ config: {}, error: null });
+  }>({ config: null, error: null });
   const [name, setName] = useState("");
   const [cmd, setCmd] = useState("");
 

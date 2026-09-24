@@ -21,9 +21,9 @@ export function NetworkTab() {
     groups: Array<Record<string, unknown>>;
   }>({ enabled: null, groups: [] });
   const [doubao, setDoubao] = useState<{
-    config: Record<string, unknown>;
+    config: Record<string, unknown> | null;
     error: unknown;
-  }>({ config: {}, error: null });
+  }>({ config: null, error: null });
   const [search, setSearch] = useState<Record<string, unknown>>({});
   const [searchKey, setSearchKey] = useState("");
   const [savingSearch, setSavingSearch] = useState(false);
