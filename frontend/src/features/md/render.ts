@@ -11,19 +11,16 @@
  *  5. Link href scheme whitelist is exactly `(https?:|mailto:|/|#)`.
  *  6. No marked, no DOMPurify.
  *
- * mdCodeBlock copy chrome uses t() key-name fallback until F-07/F-10 wire i18n.
+ * mdCodeBlock's copy chrome reads the real dictionary; `copy.ts` handles its
+ * clicks (one delegated listener, like app.js).
  */
 
+import { t } from "../../i18n/runtime";
 import { esc, escQuote } from "./esc";
 import { mdHighlight } from "./highlight";
 
 const COPY_ICON =
   '<svg class="ic-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
-
-/** F-07 owns t(); key-name fallback matches t() when the dictionary is absent. */
-function t(key: string): string {
-  return key;
-}
 
 export function mdCodeBlock(code: string, lang: string): string {
   const label = (lang || "").trim();
@@ -33,11 +30,11 @@ export function mdCodeBlock(code: string, lang: string): string {
     esc(label || "text") +
     "</span>" +
     '<button class="cb-copy" type="button" title="' +
-    t("code.copy.title") +
+    esc(t("code.copy.title")) +
     '">' +
     COPY_ICON +
     '<span class="cb-copy-t">' +
-    t("msgAction.copy") +
+    esc(t("msgAction.copy")) +
     "</span></button></div>" +
     "<pre><code>" +
     mdHighlight(code, label) +
