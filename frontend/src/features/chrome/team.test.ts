@@ -374,6 +374,48 @@ describe("F-20 team surface", () => {
     expect(body?.querySelectorAll(".team-admin-table").length).toBeGreaterThan(0);
   });
 
+  it("a directory read that answers last cannot repaint over the one opened after it", async () => {
+    team.bootTeam();
+    const answers = new Map<string, (body: unknown) => void>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (url: string) =>
+          new Promise((resolve) => {
+            answers.set(String(url), (body) => resolve({ status: 200, ok: true, json: async () => body }));
+          }),
+      ),
+    );
+    const answer = async (path: string, body: unknown): Promise<void> => {
+      const url = "/api/v1/files" + (path ? "?path=" + encodeURIComponent(path) : "");
+      const respond = answers.get(url);
+      expect(respond, url).toBeTruthy();
+      respond!(body);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    const rows = (): MiniEl[] => doc.getElementById("team-files-list")?.children || [];
+    const open = (label: string): void => {
+      const link = rows()
+        .map((row) => row.children[0])
+        .find((a) => a?.textContent === label);
+      expect(link, label).toBeTruthy();
+      link!.onclick?.({ preventDefault() {} } as unknown as Event);
+    };
+
+    team.openTeamFilesPanel();
+    await answer("", { roots: [{ path: "/data" }] });
+    open("📁 /data");
+    await answer("/data", { path: "/data", entries: [{ name: "big", dir: true }, { name: "small", dir: true }] });
+    open("📁 big");
+    open("📁 small");
+    await answer("/data/small", { path: "/data/small", entries: [{ name: "b.csv", size: 1 }] });
+    await answer("/data/big", { path: "/data/big", entries: [{ name: "a.csv", size: 1 }] });
+    const text = rows().map((row) => row.textContent).join("|");
+    expect(text).toContain("b.csv");
+    expect(text).not.toContain("a.csv");
+    expect(team.teamFilesPath()).toBe("/data/small");
+  });
+
   it("renders audit times from the epoch-millisecond ts the server stores", async () => {
     team.bootTeam();
     const ts = 1727136000000;

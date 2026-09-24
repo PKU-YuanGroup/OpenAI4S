@@ -34,7 +34,8 @@ type TeamFilesBody = {
   path?: string;
 };
 
-const tfState = { path: "" };
+/** `path` is the directory on screen (and the Upload target); `seq` the latest read. */
+const tfState = { path: "", seq: 0 };
 
 export function resetTeamFilesPath(): void {
   tfState.path = "";
@@ -236,12 +237,23 @@ function probeTeamFiles(): void {
     .catch(() => undefined);
 }
 
+/**
+ * Only the latest read renders, and the path changes when its listing does.
+ * Opening a slow directory A and then its sibling B used to paint A's rows
+ * when A answered last while `tfState.path` said B, and Upload (overwrite=1)
+ * then wrote into B under names read from A.
+ */
 function loadTeamFiles(path: string): void {
-  tfState.path = path || "";
-  const url = API + "/files" + (tfState.path ? "?path=" + encodeURIComponent(tfState.path) : "");
+  const target = path || "";
+  const seq = ++tfState.seq;
+  const url = API + "/files" + (target ? "?path=" + encodeURIComponent(target) : "");
   fetch(url)
     .then((r) => r.json().then((b: TeamFilesBody) => ({ ok: r.ok, body: b })))
-    .then((res) => renderTeamFiles(res))
+    .then((res) => {
+      if (seq !== tfState.seq) return;
+      tfState.path = target;
+      renderTeamFiles(res);
+    })
     .catch(() => undefined);
 }
 
@@ -253,6 +265,9 @@ function renderTeamFiles(res: { ok: boolean; body: TeamFilesBody }): void {
   list.textContent = "";
   if (!res.ok) {
     list.textContent = (res.body && res.body.error) || "unavailable";
+    // Nothing is listed, so there is no directory on screen to upload into.
+    const upBtn = byId("team-files-upload");
+    if (upBtn) upBtn.style.display = "none";
     return;
   }
   const home = document.createElement("a");
