@@ -122,6 +122,29 @@ function columnNames(header: string[], width: number): string[] {
   return names;
 }
 
+/** Whether parseTable reads `text` as JSON rather than as a delimited table. */
+function readsAsJson(text: string, a: ArtifactRef): boolean {
+  const nm = (a.filename || "").toLowerCase();
+  const type = String(a.content_type || "").toLowerCase();
+  // A declared CSV/TSV is not sniffed for JSON: its first header cell can
+  // open with a bracket (`[Na+],[Cl-],conc`).
+  const delimited = /\.(csv|tsv)$/.test(nm) || /\bcsv\b|tab-separated/.test(type);
+  return nm.endsWith(".json") || (!delimited && /^\s*[\[{]/.test(text));
+}
+
+/** The first line with any non-space character, else the first line. */
+function firstFilledLine(raw: string): string {
+  for (let start = 0; ; ) {
+    const end = raw.indexOf("\n", start);
+    const line = raw.slice(start, end < 0 ? raw.length : end);
+    if (line.trim()) return line;
+    if (end < 0) break;
+    start = end + 1;
+  }
+  const end = raw.indexOf("\n");
+  return end < 0 ? raw : raw.slice(0, end);
+}
+
 /**
  * Artifact table parse. JSON branch is app.js:12878; the CSV branch uses
  * parseDelimited so a newline inside quotes is one cell, not a new row.
@@ -131,11 +154,7 @@ export function parseTable(
   a: ArtifactRef = {},
 ): Record<string, unknown>[] | null {
   const nm = (a.filename || "").toLowerCase();
-  const type = String(a.content_type || "").toLowerCase();
-  // A declared CSV/TSV is not sniffed for JSON: its first header cell can
-  // open with a bracket (`[Na+],[Cl-],conc`).
-  const delimited = /\.(csv|tsv)$/.test(nm) || /\bcsv\b|tab-separated/.test(type);
-  if (nm.endsWith(".json") || (!delimited && /^\s*[\[{]/.test(text))) {
+  if (readsAsJson(text, a)) {
     try {
       let j: unknown = JSON.parse(text);
       if (!Array.isArray(j)) {
@@ -161,9 +180,7 @@ export function parseTable(
     return null;
   }
   const raw = String(text == null ? "" : text).replace(/\r/g, "");
-  const firstLine =
-    raw.split("\n").find((l) => l.trim()) || raw.split("\n", 1)[0] || "";
-  const sep = delimiterFor(nm, a.content_type, firstLine);
+  const sep = delimiterFor(nm, a.content_type, firstFilledLine(raw));
   const rows = parseDelimited(raw, sep).filter((r) => !isBlankRow(r));
   if (rows.length < 2) return null;
   const header = (rows[0] || []).map((c) => c.trim());
@@ -177,4 +194,87 @@ export function parseTable(
     });
     return o;
   });
+}
+
+/** What String.prototype.trim removes: ECMAScript white space and line terminators. */
+function isTrimmed(c: number): boolean {
+  return c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0x1680 ||
+    (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 ||
+    c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+}
+
+/**
+ * A table's row count and column names (in file order), which is all a Files
+ * thumbnail shows. For a delimited file this is one pass over the text that
+ * keeps only the header's cells: parseTable would build every cell string and
+ * every row object of what can be a file of tens of MB. JSON has no cheaper
+ * reading than parsing it. The answer is parseTable's, row for row.
+ */
+export function tableShape(
+  text: string,
+  a: ArtifactRef = {},
+): { rows: number; columns: string[] } | null {
+  if (readsAsJson(text, a)) {
+    const rows = parseTable(text, a);
+    return rows && rows.length ? { rows: rows.length, columns: Object.keys(rows[0] || {}) } : null;
+  }
+  const src = String(text == null ? "" : text);
+  const nm = (a.filename || "").toLowerCase();
+  // parseTable drops every \r before parsing, so this pass skips them too.
+  const sep = delimiterFor(nm, a.content_type, firstFilledLine(src).replace(/\r/g, "")).charCodeAt(0);
+  let quoted = false;
+  let fieldLen = 0; // parseDelimited's field.length
+  let cells = 0; // cells completed in this row
+  let filled = false; // this field has a character trim() keeps
+  let rowWidth = 0; // filledWidth of this row so far
+  // Assigned inside endRow(); the cast keeps TypeScript from pinning it to null.
+  let header = null as string[] | null;
+  let headerCells: string[] = [];
+  let field = ""; // kept only until the header is known
+  let rows = 0; // non-blank rows, header included
+  let width = 0;
+  const append = (c: number): void => {
+    fieldLen++;
+    if (!isTrimmed(c)) filled = true;
+    if (!header) field += String.fromCharCode(c);
+  };
+  const endField = (): void => {
+    if (filled) rowWidth = cells + 1;
+    if (!header) headerCells.push(field);
+    cells++;
+    fieldLen = 0;
+    filled = false;
+    field = "";
+  };
+  const endRow = (): void => {
+    endField();
+    if (rowWidth > 0) {
+      rows++;
+      if (!header) header = headerCells.map((cell) => cell.trim());
+      else width = Math.max(width, rowWidth);
+    }
+    headerCells = [];
+    cells = 0;
+    rowWidth = 0;
+  };
+  for (let i = 0; i < src.length; i++) {
+    const c = src.charCodeAt(i);
+    if (c === 13) continue;
+    if (quoted) {
+      if (c === 34) {
+        let next = i + 1;
+        while (src.charCodeAt(next) === 13) next++;
+        if (src.charCodeAt(next) === 34) {
+          append(34);
+          i = next;
+        } else quoted = false;
+      } else append(c);
+    } else if (c === 34) quoted = true;
+    else if (c === sep) endField();
+    else if (c === 10) endRow();
+    else append(c);
+  }
+  if (fieldLen || cells) endRow();
+  if (!header || rows < 2) return null;
+  return { rows: rows - 1, columns: columnNames(header, Math.max(header.length, width)) };
 }

@@ -1,21 +1,55 @@
-import { parseTable } from "../csv/csv";
+import { tableShape } from "../csv/csv";
 import { _thumbCache } from "../../stores/artifacts";
-import { artUrl } from "./cache";
-import { artifactsFetch, el, icon, looksBinary } from "./api";
+import { artifactCacheKey, artUrl } from "./cache";
+import { el, fetchArtifactText, icon, looksBinary } from "./api";
 import type { ArtifactRow } from "./types";
 import { MOL_EXT, TEXT_EXT } from "./types";
 
 export type MolPoint = { x: number; y: number; z: number };
 
-/** app.js:8428-8432 */
-export function thumbText(a: ArtifactRow): Promise<string> {
-  const cache = _thumbCache.value;
-  const key = a.id + ":" + (a.size_bytes || 0);
-  const existing = cache[key];
-  if (existing) return existing as Promise<string>;
-  const pending = artifactsFetch(artUrl(a)).then((r) => r.text());
-  cache[key] = pending;
-  return pending;
+/** Tile previews kept at once; the least recently shown goes first. */
+export const THUMB_CACHE_LIMIT = 64;
+
+/**
+ * app.js:8428-8432, keyed and bounded. One read per artifact version and
+ * preview kind, keeping only what the tile shows.
+ *
+ * The key was id + size, so a new version of the same length kept the old
+ * preview; an error page, or a read that failed, stayed cached for the page's
+ * life; and data tiles downloaded and parsed the whole file again on every
+ * Files repaint. Entries now live in a bounded LRU, and a failed read is
+ * dropped so the next paint retries it.
+ */
+function thumbRead<T>(kind: string, a: ArtifactRow, derive: (text: string) => T): Promise<T> {
+  const cache = _thumbCache.value as Record<string, Promise<unknown>>;
+  const key = `${kind}|${artifactCacheKey(a)}|${a.size_bytes ?? ""}`;
+  const hit = cache[key] as Promise<T> | undefined;
+  if (hit) {
+    delete cache[key];
+    cache[key] = hit;
+    return hit;
+  }
+  const read = fetchArtifactText(artUrl(a)).then(derive);
+  cache[key] = read;
+  read.catch(() => {
+    if (cache[key] === read) delete cache[key];
+  });
+  const keys = Object.keys(cache);
+  for (const stale of keys.slice(0, Math.max(0, keys.length - THUMB_CACHE_LIMIT))) delete cache[stale];
+  return read;
+}
+
+/** A text tile: its first 16 lines, at most 900 characters; null when binary. */
+function textSnippet(txt: string): string | null {
+  if (looksBinary(txt)) return null;
+  return txt
+    .slice(0, 4096)
+    .replace(/\r/g, "")
+    .split("\n")
+    .slice(0, 16)
+    .join("\n")
+    .slice(0, 900)
+    .replace(/\s+$/, "");
 }
 
 /** app.js:8435 */
@@ -113,27 +147,20 @@ function dataCol(iconName: string, label: string): HTMLElement {
 }
 
 function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
-  artifactsFetch(artUrl(a))
-    .then((r) => r.text())
-    .then((txt) => {
-      let rows: Record<string, unknown>[] | null = null;
-      try {
-        rows = parseTable(txt, a);
-      } catch {
-        rows = null;
-      }
+  thumbRead("data", a, (txt) => tableShape(txt, a))
+    .then((shape) => {
       d.innerHTML = "";
-      if (!rows || !rows.length) {
+      if (!shape) {
         d.appendChild(dataCol("table", "data"));
         return;
       }
-      const cols = Object.keys(rows[0] || {});
+      const { rows, columns: cols } = shape;
       d.appendChild(
         el(
           "div",
           "rc",
-          rows.length +
-            (rows.length === 1 ? " row · " : " rows · ") +
+          rows +
+            (rows === 1 ? " row · " : " rows · ") +
             cols.length +
             (cols.length === 1 ? " column" : " columns"),
         ),
@@ -147,16 +174,9 @@ function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
 }
 
 function fillTextPreview(d: HTMLElement, a: ArtifactRow): void {
-  thumbText(a)
-    .then((txt) => {
-      if (looksBinary(txt)) return thumbFallback(d, "file");
-      const snip = (txt || "")
-        .replace(/\r/g, "")
-        .split("\n")
-        .slice(0, 16)
-        .join("\n")
-        .slice(0, 900)
-        .replace(/\s+$/, "");
+  thumbRead("text", a, textSnippet)
+    .then((snip) => {
+      if (snip === null) return thumbFallback(d, "file");
       if (!snip.trim()) return thumbFallback(d, "file-text");
       d.textContent = snip;
     })
@@ -164,9 +184,8 @@ function fillTextPreview(d: HTMLElement, a: ArtifactRow): void {
 }
 
 function fillMolPreview(d: HTMLElement, a: ArtifactRow): void {
-  thumbText(a)
-    .then((txt) => {
-      const pts = parseMolPoints(txt);
+  thumbRead("mol", a, parseMolPoints)
+    .then((pts) => {
       if (pts.length < 3) return thumbFallback(d, "atom");
       d.innerHTML = molSvg(pts);
     })

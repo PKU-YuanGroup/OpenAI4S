@@ -34,7 +34,8 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` union keys; 5000×100 cap. |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape` (app.js:8771-8802). |
 | [`state.ts`](state.ts) | Lane-local M-03 signals. Not promoted into `stores/`. |
-| [`thumbs.ts`](thumbs.ts) | Tile thumbs, `parseMolPoints` / `molSvg`. |
+| [`thumbs.ts`](thumbs.ts) | Tile thumbs from a bounded per-version preview cache, `parseMolPoints` / `molSvg`. |
+| [`thumbs.test.ts`](thumbs.test.ts) | One read per artifact version, error pages and failed reads never kept, LRU bound. |
 | [`types.ts`](types.ts) | Artifact DTO, page size 50/100, TEXT_EXT / MOL_EXT. |
 | [`ui.ts`](ui.ts) | Files grid, Viewer, `openViewer`, ⌘K/deep-link hit. Provided `version_id` never silent-latest. |
 | [`ui.test.ts`](ui.test.ts) | Deep-link apply / `openViewer` exact pin / stale does not open latest. |
