@@ -479,11 +479,15 @@ describe("workbench paging (AUDIT A65)", () => {
     };
   }
 
-  function mount(serve: (offset: number) => Promise<unknown>) {
+  function mount(serve: (offset: number) => Promise<unknown>, profile = async () => jsonResponse(profileFixture())) {
     const offsets: number[] = [];
+    const profiles: string[] = [];
     setArtifactsFetch(async (url) => {
       const u = String(url);
-      if (u.includes("/table/profile")) return jsonResponse(profileFixture());
+      if (u.includes("/table/profile")) {
+        profiles.push(u);
+        return profile();
+      }
       const offset = Number(new URL(u, "http://x").searchParams.get("offset"));
       offsets.push(offset);
       return jsonResponse(await serve(offset));
@@ -494,7 +498,7 @@ describe("workbench paging (AUDIT A65)", () => {
     });
     const buttons = host.querySelectorAll("button");
     const meta = host.querySelector("div.wb-table-meta")!;
-    return { offsets, prev: buttons[0]!, next: buttons[1]!, meta };
+    return { host, offsets, profiles, prev: buttons[0]!, next: buttons[1]!, meta };
   }
 
   it("disables paging while a page loads and steps from the page on screen", async () => {
@@ -523,5 +527,32 @@ describe("workbench paging (AUDIT A65)", () => {
     await flush();
     expect(meta.textContent).toBe(translate("wb.table.meta", 0, 0, 0));
     expect([prev.disabled, next.disabled]).toEqual([true, true]);
+  });
+
+  it("reads the profile once per filter, not once per page or sort (AUDIT P13)", async () => {
+    let refuse = false;
+    const { host, profiles, prev, next } = mount(async (offset) => pageOf(120, offset), async () =>
+      refuse ? jsonResponse({ error: "busy" }, 503) : jsonResponse(profileFixture()));
+    await flush();
+    next.onclick?.();
+    await flush();
+    prev.onclick?.();
+    await flush();
+    host.querySelector("th")!.onclick?.();
+    await flush();
+    expect(profiles).toHaveLength(1);
+    const filter = host.querySelector("input.wb-filter")!;
+    filter.value = "n:7";
+    refuse = true;
+    filter.onchange?.();
+    await flush();
+    expect(profiles).toHaveLength(2);
+    expect(profiles[1]).toContain("q_n=7");
+    // A refused read is retried by the next page, not replayed.
+    refuse = false;
+    next.onclick?.();
+    await flush();
+    expect(profiles).toHaveLength(3);
+    expect(host.querySelector(".wb-table-schema")).toBeTruthy();
   });
 });

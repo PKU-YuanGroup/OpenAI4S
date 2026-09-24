@@ -125,6 +125,19 @@ export function renderWorkbenchTable(
     prev.disabled = busy || !shown || shown.offset <= 0;
     next.disabled = busy || !shown || shown.offset + shown.rows >= shown.total;
   };
+  // The profile depends on the version and the filter only, so paging and
+  // sorting reuse it instead of recomputing it server-side on every click.
+  let profileRead: { path: string; result: Promise<TableProfile> } | null = null;
+  const readProfile = (path: string): Promise<TableProfile> => {
+    if (profileRead && profileRead.path === path) return profileRead.result;
+    const read = { path, result: api(path) as Promise<TableProfile> };
+    profileRead = read;
+    // A failed read is retried by the next load, never replayed from here.
+    read.result.catch(() => {
+      if (profileRead === read) profileRead = null;
+    });
+    return read.result;
+  };
   const load = async () => {
     const gen = ++request;
     paging(true);
@@ -205,7 +218,7 @@ export function renderWorkbenchTable(
         if (!search) {
           profileError = tableT("wb.table.profile.needVersion");
         } else {
-          profile = (await api(tableProfilePath(a.id, search))) as TableProfile;
+          profile = await readProfile(tableProfilePath(a.id, search));
         }
       } catch (error) {
         profileError = apiErrorText(error);
