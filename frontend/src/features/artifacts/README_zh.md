@@ -9,7 +9,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary`、`el`/`icon`、用 `isReady` 调 window。 |
-| [`api.test.ts`](api.test.ts) | `looksBinary`：单行序列仍是文本；base64 块、控制字符与转义转储仍判为二进制。 |
+| [`api.test.ts`](api.test.ts) | `looksBinary`：单行序列仍是文本；base64 块、控制字符与转义转储仍判为二进制；只对前 1 MiB 做一次线性扫描。 |
 | [`artifacts.css`](artifacts.css) | Files 工具条 / 过滤 / Load more / 过期 version 横幅。 |
 | [`boot.test.ts`](boot.test.ts) | DOM 挂载顺序及初始路由先于深链的回归覆盖。 |
 | [`boot.ts`](boot.ts) | `bootArtifacts` / `installArtifacts`。挂上 `parseTable` 与 `renderSheet`。 |

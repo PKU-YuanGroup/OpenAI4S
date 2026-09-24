@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { looksBinary } from "./api";
+import { BINARY_SCAN_LIMIT, looksBinary } from "./api";
 
 /** Deterministic letters from `alphabet`, so a failure reproduces exactly. */
 function residues(alphabet: string, length: number, seed = 7): string {
@@ -61,5 +61,26 @@ describe("looksBinary (app.js:6055-6066)", () => {
     expect(looksBinary("The quick brown fox jumps over the lazy dog.\n".repeat(500))).toBe(false);
     expect(looksBinary("")).toBe(false);
     expect(looksBinary(null)).toBe(false);
+  });
+});
+
+describe("looksBinary cost (AUDIT P05)", () => {
+  it("stays linear on runs just short of a blob", () => {
+    // Every run one character short of the minimum made the old regex retry
+    // from each start inside it: about a second per MiB, per streamed chunk.
+    const line = residues(AMINO, 1199) + "\n";
+    const text = line.repeat(Math.ceil((4 * BINARY_SCAN_LIMIT) / line.length));
+    const started = performance.now();
+    expect(looksBinary(text)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it("judges by the first MiB, which holds a whole kernel stream", () => {
+    const blob = base64(pseudoRandomBytes(3000));
+    const logs = "step=1 loss=0.5 acc=0.99\n".repeat(Math.ceil(BINARY_SCAN_LIMIT / 25) + 1);
+    expect(looksBinary(blob + "\n" + logs)).toBe(true);
+    // A cell stream is at most 1,000,000 characters plus its truncation marker.
+    expect(looksBinary(logs.slice(0, 1_000_000 - blob.length) + blob)).toBe(true);
+    expect(looksBinary(logs + blob)).toBe(false);
   });
 });

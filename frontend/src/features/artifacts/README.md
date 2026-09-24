@@ -9,7 +9,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | File | Responsibility |
 | --- | --- |
 | [`api.ts`](api.ts) | Same-origin `api()`, `ApiError`, `bytes`, `looksBinary`, `el`/`icon`, `isReady` window calls. |
-| [`api.test.ts`](api.test.ts) | `looksBinary`: one-line sequences stay text; base64 blobs, control characters and escape dumps do not. |
+| [`api.test.ts`](api.test.ts) | `looksBinary`: one-line sequences stay text; base64 blobs, control characters and escape dumps do not; one linear pass over the first MiB. |
 | [`artifacts.css`](artifacts.css) | Files toolbar / filter / Load more / stale-version banner. |
 | [`boot.test.ts`](boot.test.ts) | DOM mount ordering and initial-route-before-deep-link regression coverage. |
 | [`boot.ts`](boot.ts) | `bootArtifacts` / `installArtifacts`. Assigns `parseTable` + `renderSheet`. |
