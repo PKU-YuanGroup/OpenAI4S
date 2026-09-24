@@ -238,6 +238,50 @@ it("a failed session read shows Retry instead of an empty grid (AUDIT A26)", asy
 });
 
 
+it("the Files grid says Loading, not empty, while the project index read is in flight (AUDIT A63)", async () => {
+  const { filesScope } = await import("../../stores/artifacts");
+  const { project } = await import("../../stores/session");
+  const { renderFilesGrid } = await import("./ui");
+  const { browseFiles } = await import("./files-index");
+  const { resetFilesIndexState } = await import("./state");
+  const { translate } = await import("./api");
+  class Node {
+    children: Node[] = []; className = ""; textContent = "";
+    set innerHTML(_value: string) { this.children = []; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  const list = new Node();
+  const count = new Node();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "results-list" ? list : id === "results-count" ? count : null),
+    createElement: () => new Node(),
+  });
+  resetStoreFields();
+  resetFilesIndexState();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  setArtifactsFetch(async () => { await held; return jsonResponse({ artifacts: [], next_cursor: null, has_more: false }); });
+  try {
+    filesScope.value = "project";
+    project.value = "p";
+    const reading = browseFiles({ reset: true });
+    renderFilesGrid();
+    expect(list.children.map((node) => node.textContent)).toEqual([translate("common.loading")]);
+    expect(count.textContent).toBe("…");
+    release();
+    await reading;
+    renderFilesGrid();
+    expect(list.children.map((node) => node.textContent)).toEqual([translate("files.emptyProject")]);
+    expect(count.textContent).toBe("0");
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});
+
+
 it("fullscreen download keeps the selected immutable version", async () => {
   const { openArtifact } = await import("../../islands/viewer");
   const download = { style: { display: "" }, href: "", setAttribute: vi.fn() };

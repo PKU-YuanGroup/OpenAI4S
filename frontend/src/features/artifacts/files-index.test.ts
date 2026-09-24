@@ -7,6 +7,7 @@ import {
   browseFiles,
   filterArtifactsClient,
   filesGridArtifacts,
+  filesGridPending,
   filesReadFailed,
   setFilesContentType,
   setFilesOrigin,
@@ -502,6 +503,47 @@ describe("session artifact read failures (AUDIT A26)", () => {
     expect(filesGridArtifacts()).toEqual([]);
     expect(artifactsSignal.value).toEqual([]);
     expect(artifactsFrameId.value).toBe("b");
+  });
+});
+
+
+describe("Files grid pending state (AUDIT A63)", () => {
+  beforeEach(() => { resetStoreFields(); resetFilesIndexState(); setArtifactsFetch(null); });
+  afterEach(() => setArtifactsFetch(null));
+
+  it("is pending while the first project index read is in flight, not empty", async () => {
+    filesScope.value = "project";
+    project.value = "p";
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    setArtifactsFetch(async () => { await held; return jsonResponse({ artifacts: [], next_cursor: null, has_more: false }); });
+    const reading = browseFiles({ reset: true });
+    expect(filesGridPending()).toBe(true);
+    release();
+    await reading;
+    expect(filesGridPending()).toBe(false);
+    expect(filesGridArtifacts()).toEqual([]);
+  });
+
+  it("is pending after a filter change until the listing is browsed", async () => {
+    currentId.value = "a";
+    setArtifactsFetch(async () => jsonResponse([row({ id: "1" })]));
+    await loadArtifacts("a");
+    expect(filesGridPending()).toBe(false);
+    setFilesQuery("zzz");
+    expect(filesGridPending()).toBe(true);
+    await browseFiles({ reset: true });
+    expect(filesGridPending()).toBe(false);
+  });
+
+  it("is pending until the open session's list arrives, and not after a failed read", async () => {
+    currentId.value = "a";
+    await browseFiles({ reset: true });
+    expect(filesGridPending()).toBe(true);
+    setArtifactsFetch(async () => jsonResponse({ error: "down" }, 503));
+    await loadArtifacts("a");
+    expect(filesGridPending()).toBe(false);
+    expect(filesReadFailed()).toBe(true);
   });
 });
 

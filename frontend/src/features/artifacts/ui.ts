@@ -15,7 +15,7 @@ import {
   resolveArtifactVersion,
   versionResolveMessage,
 } from "./deeplink";
-import { browseFiles, currentFilesFilter, filesGridArtifacts, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
+import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { renderArtifactBody } from "./renderers";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
@@ -243,10 +243,12 @@ export function renderFilesGrid(): void {
   const count = document.getElementById("results-count");
   if (!list) return;
   const arts = filesGridArtifacts();
-  list.innerHTML = "";
-  if (count) count.textContent = String(arts.length);
-  paintVersionBanner(list);
   const readFailed = filesReadFailed();
+  // No cards yet is not zero files while the read that decides it is pending.
+  const pending = !arts.length && !readFailed && filesGridPending();
+  list.innerHTML = "";
+  if (count) count.textContent = pending ? "…" : String(arts.length);
+  paintVersionBanner(list);
   if (readFailed) paintReadError(list, arts.length > 0);
   const indexErr = filesListingIsCurrent() ? filesIndexError.value : null;
   if (indexErr && filesIndexItems.value.length === 0 && !arts.length) {
@@ -255,6 +257,10 @@ export function renderFilesGrid(): void {
   }
   if (!arts.length) {
     if (readFailed) return;
+    if (pending) {
+      list.appendChild(el("div", "files-empty", translate("common.loading")));
+      return;
+    }
     const filter = currentFilesFilter();
     const msg = filter.q || filter.contentType || filter.origin
       ? filesT("files.noMatches")
