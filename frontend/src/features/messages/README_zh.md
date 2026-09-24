@@ -14,8 +14,8 @@ F-10 消息流。分帧历史绘制（每 rAF 40 条 + 一次 fragment）、流�
 | [`components.tsx`](components.tsx) | `HistoryLoadStatus`：可访问的历史状态/重试入口，由 Shell 挂在命令式消息宿主之外。 |
 | [`cut.ts`](cut.ts) | 增量 `_mdStableCut` / `mdStableCut`（app.js:5378-5402）。 |
 | [`cut.test.ts`](cut.test.ts) | 增量扫描与从零扫描同结果；围栏 / 120 字软尾。 |
-| [`delta.ts`](delta.ts) | `liveOutputDelta`、`bindStreamingPre`（`appendData`）、`toolMetaLabel`（功能内文案：按界面语言显示 "N 行" / "完成"）。 |
-| [`delta.test.ts`](delta.test.ts) | 1MB 截断幂等；换行只数增量；元信息行的中英文。 |
+| [`delta.ts`](delta.ts) | `liveOutputDelta`、`bindStreamingPre`（`appendData`；每块只检查该块本身，经 `liveOutputIncrement`）、`toolMetaLabel`（功能内文案：按界面语言显示 "N 行" / "完成"）。 |
+| [`delta.test.ts`](delta.test.ts) | 1MB 截断幂等；换行只数增量；`append` 不搜索也不切片已有输出；元信息行的中英文。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `#messages` / `ensureMessageDom`（Shell 渲染后是空操作；不得在 `render()` 之前调用）。 |
 | [`fetch.ts`](fetch.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages`（6926-6961）。 |
 | [`handlers.ts`](handlers.ts) | `text_reset` / `text_chunk` WS handler。 |

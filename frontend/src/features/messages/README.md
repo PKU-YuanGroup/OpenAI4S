@@ -14,8 +14,8 @@ F-10 message stream. Framed history paint (40 rows per rAF + one fragment), dual
 | [`components.tsx`](components.tsx) | `HistoryLoadStatus`: accessible history status/retry, mounted by the Shell outside the imperative message host. |
 | [`cut.ts`](cut.ts) | Incremental `_mdStableCut` / `mdStableCut` (app.js:5378-5402). |
 | [`cut.test.ts`](cut.test.ts) | Incremental scan matches the original from-scratch cut; fence / 120-char tail. |
-| [`delta.ts`](delta.ts) | `liveOutputDelta`, `bindStreamingPre` (`appendData`), `toolMetaLabel` (feature-local copy: "N lines" / "done" in the UI language). |
-| [`delta.test.ts`](delta.test.ts) | 1MB truncation idempotent; newlines counted on the increment only; the meta line in both languages. |
+| [`delta.ts`](delta.ts) | `liveOutputDelta`, `bindStreamingPre` (`appendData`; each chunk is examined alone, via `liveOutputIncrement`), `toolMetaLabel` (feature-local copy: "N lines" / "done" in the UI language). |
+| [`delta.test.ts`](delta.test.ts) | 1MB truncation idempotent; newlines counted on the increment only; `append` neither searches nor slices the output it holds; the meta line in both languages. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `#messages` / `ensureMessageDom` (a no-op once the Shell has rendered; never before `render()`). |
 | [`fetch.ts`](fetch.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` (6926-6961). |
 | [`handlers.ts`](handlers.ts) | `text_reset` / `text_chunk` WS handlers. |

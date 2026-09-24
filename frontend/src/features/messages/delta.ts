@@ -11,6 +11,7 @@ import { LANG } from "../../i18n/runtime";
 import {
   LIVE_OUTPUT_TRUNCATION,
   appendLiveOutput,
+  liveOutputIncrement,
 } from "../stream/cap";
 
 export type LiveOutputDelta = {
@@ -53,20 +54,27 @@ export type StreamingPreHandle = {
 /**
  * Bind a text node. `initial` is the text already in the node (do not pass
  * it through `appendData` again). Subsequent `append` calls only push the
- * cap-aware delta.
+ * cap-aware delta, and only the delta is examined: the handle keeps the
+ * length and whether the marker went in, instead of searching and slicing
+ * the whole (up to 1MB) output on every chunk.
  */
 export function bindStreamingPre(
   textNode: AppendableText,
   initial = "",
 ): StreamingPreHandle {
   let text = initial;
+  let length = initial.length;
+  let truncated = initial.includes(LIVE_OUTPUT_TRUNCATION);
   let newlines = countNewlines(initial);
   return {
     append(chunk: string): void {
-      const { next, added, addedNewlines } = liveOutputDelta(text, chunk);
-      if (added) textNode.appendData(added);
-      text = next;
-      newlines += addedNewlines;
+      const step = liveOutputIncrement(length, truncated, chunk);
+      truncated = step.truncated;
+      if (!step.added) return;
+      textNode.appendData(step.added);
+      text += step.added;
+      length += step.added.length;
+      newlines += countNewlines(step.added);
     },
     get text(): string {
       return text;
@@ -75,7 +83,7 @@ export function bindStreamingPre(
       return newlines;
     },
     get truncated(): boolean {
-      return text.includes(LIVE_OUTPUT_TRUNCATION);
+      return truncated;
     },
   };
 }

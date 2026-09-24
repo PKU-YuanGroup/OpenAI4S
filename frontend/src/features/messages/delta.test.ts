@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { setLang } from "../../i18n/runtime";
 import {
   LIVE_OUTPUT_CHAR_CAP,
@@ -64,6 +64,24 @@ describe("liveOutputDelta / truncation", () => {
     expect(handle.text).toBe("head\ntail\n");
     handle.append("");
     expect(pushes).toEqual(["tail\n"]);
+  });
+
+  it("examines only the chunk: no search or slice of the output it already holds", () => {
+    const node = { data: "", appendData(s: string) { this.data += s; } };
+    const handle = bindStreamingPre(node, "");
+    const includes = vi.spyOn(String.prototype, "includes");
+    const slice = vi.spyOn(String.prototype, "slice");
+    try {
+      for (let i = 0; i < 500; i++) handle.append("row " + i + "\n");
+      expect(includes).not.toHaveBeenCalled();
+      expect(slice).not.toHaveBeenCalled();
+    } finally {
+      includes.mockRestore();
+      slice.mockRestore();
+    }
+    expect(handle.newlines).toBe(500);
+    expect(handle.truncated).toBe(false);
+    expect(node.data).toBe(handle.text);
   });
 
   it("does not appendData once truncated", () => {

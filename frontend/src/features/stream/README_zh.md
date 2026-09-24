@@ -8,5 +8,5 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`cap.ts`](cap.ts) | `appendLiveOutput`、`LIVE_OUTPUT_CHAR_CAP`、`LIVE_OUTPUT_TRUNCATION`。 |
-| [`cap.test.ts`](cap.test.ts) | 未超限拼接；截断后幂等。 |
+| [`cap.ts`](cap.ts) | `appendLiveOutput`、`LIVE_OUTPUT_CHAR_CAP`、`LIVE_OUTPUT_TRUNCATION`；`liveOutputIncrement`：同一截断规则，但依据调用方记录的长度与截断标记（不必每块都搜索整段输出）。 |
+| [`cap.test.ts`](cap.test.ts) | 未超限拼接；截断后幂等；增量形式与 `appendLiveOutput` 产出完全一致。 |
