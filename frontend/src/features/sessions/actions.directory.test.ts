@@ -1,6 +1,7 @@
 /**
  * Session-menu actions keep the sidebar directory truthful: a folder made by
- * "New folder and move" is listed.
+ * "New folder and move" is listed, and deleting the open session never
+ * reopens it, even when the list refresh after the delete fails.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,16 +11,18 @@ vi.mock("./chrome", () => ({ hint: vi.fn(), openMenu: vi.fn(), ensureActivateKey
 vi.mock("./conversation", () => ({ openConversation: vi.fn(), resumeWatch: vi.fn() }));
 
 import { t } from "../../i18n";
-import { _foldersFor, _sessionScope, folders, project, sessions } from "../../stores/session";
+import { _foldersFor, _sessionScope, currentId, folders, project, sessions } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
-import { moveToFolderAt } from "./actions";
+import { deleteSession, moveToFolderAt } from "./actions";
 import { api } from "./api";
 import { openMenu, type MenuItem } from "./chrome";
+import { openConversation } from "./conversation";
 
 beforeEach(() => {
   resetStoreFields();
   vi.mocked(api).mockReset();
   vi.mocked(openMenu).mockReset();
+  vi.mocked(openConversation).mockReset();
 });
 
 afterEach(() => {
@@ -53,5 +56,31 @@ describe("New folder and move", () => {
     await create!.onClick!();
 
     expect((folders.value as Array<{ folder_id: string }>).map((row) => row.folder_id)).toEqual(["old", "new"]);
+  });
+});
+
+describe("deleting the open session while the list refresh fails", () => {
+  function deleteWithFailedRefresh(rows: Array<{ id: string; project_id: string }>) {
+    project.value = "P";
+    _sessionScope.value = "P";
+    currentId.value = "f";
+    sessions.value = rows;
+    vi.mocked(api).mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === "/frames/f" && init?.method === "DELETE") return { ok: true };
+      throw new Error("daemon restarting");
+    });
+    return deleteSession("f");
+  }
+
+  it("opens another session, never the one it just deleted", async () => {
+    await deleteWithFailedRefresh([{ id: "f", project_id: "P" }, { id: "g", project_id: "P" }]);
+    expect(openConversation).toHaveBeenCalledExactlyOnceWith("g", "P");
+    expect((sessions.value as Array<{ id: string }>).map((row) => row.id)).toEqual(["g"]);
+  });
+
+  it("clears the conversation when the deleted session was the only one", async () => {
+    await deleteWithFailedRefresh([{ id: "f", project_id: "P" }]);
+    expect(openConversation).not.toHaveBeenCalled();
+    expect(currentId.value).toBeNull();
   });
 });

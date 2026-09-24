@@ -18,7 +18,7 @@ import { turnDone } from "../send/turn";
 import { scopedExecutionRequest } from "../timeline/execution-request";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
-import { assignFolder, invalidateFolders, loadProjects, loadSessions } from "./load";
+import { assignFolder, invalidateFolders, loadProjects, loadSessions, renderSessions } from "./load";
 import { fetchAllMessages, fetchRecentMessages } from "./messages";
 import { publicText } from "../scrub/scrub";
 import { openShareDialog } from "./share";
@@ -460,9 +460,15 @@ export async function deleteSession(fid: string): Promise<void> {
     return;
   }
   const wasCurrent = fid === currentId.value;
-  await loadSessions();
+  const read = await loadSessions();
+  if (read.status !== "loaded") {
+    // A failed or superseded refresh keeps the rows it had, the deleted one
+    // among them, and that row usually sorts first. It is gone either way.
+    sessions.value = (sessions.value as SessionLike[]).filter((f) => f.id !== fid);
+    renderSessions();
+  }
   if (wasCurrent) {
-    let ss = sessions.value as SessionLike[];
+    let ss = (sessions.value as SessionLike[]).filter((f) => f.id !== fid);
     if (project.value) ss = ss.filter((f) => f.project_id === project.value);
     if (ss.length && ss[0]?.id) void openConversation(ss[0].id, ss[0].project_id);
     else {
