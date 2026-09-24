@@ -337,11 +337,9 @@ describe("F-14 Notebook", () => {
       kc.id = "frame-1";
       kc.st = { alive: true, state: "running" };
       kc.stAt = 99;
-      kc.stBusy = true;
       kc.envs = [{ name: "python" }];
       kc.cur = "python";
       kc.envAt = 77;
-      kc.envBusy = true;
     }
 
     function expectInvalidated(): void {
@@ -352,11 +350,9 @@ describe("F-14 Notebook", () => {
       expect(kc.envs).toBeNull();
       expect(kc.cur).toBeNull();
       expect(kc.envAt).toBe(0);
-      expect(kc.stBusy).toBe(true);
-      expect(kc.envBusy).toBe(true);
     }
 
-    it("clears id/st/envs and leaves busy flags (app.js:9955)", () => {
+    it("clears id/st/envs (app.js:9955)", () => {
       seedCache();
       const before = _kc.value;
       invalidateKernelCache();

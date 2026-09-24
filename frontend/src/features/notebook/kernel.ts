@@ -103,8 +103,8 @@ function apiErrorText(e: unknown): string {
 }
 
 /**
- * The kernel reads in flight, one per session. `kc.stBusy` / `kc.envBusy`
- * were single flags that neither a session switch nor an invalidation reset:
+ * The kernel reads in flight, one per session. The `_kc` busy flags these
+ * replace were single flags that neither a session switch nor an invalidation reset:
  * B's read was skipped while A's was still out, A's answer was then dropped
  * as another session's, and B's status line stayed at "…".
  */

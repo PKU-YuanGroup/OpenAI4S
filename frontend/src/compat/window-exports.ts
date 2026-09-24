@@ -132,7 +132,7 @@ export {
 // F-17: window.parseTable / window.renderSheet are assigned by bootArtifacts() in features/artifacts.
 // F-19: window.openCust / window.custTab / window.telemetryRow are assigned by bootCustomize() in features/customize.
 // F-20: window.openModalEl / closeModalEl / trapModalKeydown / openPalette /
-// closePalette / applyLayout / setLayout / uploadFiles / micDictate / loadNotes
+// closePalette / applyLayout / setLayout / uploadFiles / micDictate
 // are assigned by bootChrome() in features/chrome (imported from main.tsx).
 // F-12: window.ac / edacTeardown / bindEditorAutocomplete are assigned by
 // features/autocomplete (imported from main.tsx).
