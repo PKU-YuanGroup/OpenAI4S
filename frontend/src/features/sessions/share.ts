@@ -9,8 +9,8 @@ import { icon } from "./icon";
 import type { SessionLike } from "./paging";
 
 export async function openShareDialog(fid: string, frame: SessionLike = {}): Promise<void> {
-  let status: Record<string, unknown> = {};
-  let shares: { shares?: Array<Record<string, unknown>> } = { shares: [] };
+  let status: Record<string, unknown>;
+  let shares: { shares?: Array<Record<string, unknown>> };
   try {
     const pair = await Promise.all([
       fetch(`${API}/share/status`).then((r) => r.json()),

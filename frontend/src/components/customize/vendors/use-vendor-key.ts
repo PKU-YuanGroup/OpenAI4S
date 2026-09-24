@@ -59,7 +59,7 @@ export function useVendorKey(
 
   const saveKey = async () => {
     if (!config || savingKey) return;
-    let secret = key.trim();
+    const secret = key.trim();
     setKey("");
     if (!secret) {
       hint(t(`${prefix}.keyRequired`), true);
@@ -70,7 +70,6 @@ export function useVendorKey(
       method: "POST",
       body: JSON.stringify({ agent_plan_key: secret }),
     });
-    secret = "";
     try {
       const saved = await request;
       setResult({

@@ -216,7 +216,15 @@ class RowEl {
   }
   set innerHTML(value: string) {
     this.children = [];
-    this.text = String(value).replace(/<[^>]*>/g, "");
+    // Strip to a fixed point, as the other test doubles do: a single pass over
+    // `<<b>script>` leaves `<script>`. Not a sanitiser.
+    let text = String(value),
+      previous: string;
+    do {
+      previous = text;
+      text = text.replace(/<[^>]*>/g, "");
+    } while (text !== previous);
+    this.text = text;
   }
   get firstChild(): RowEl | null {
     return this.children[0] ?? null;
