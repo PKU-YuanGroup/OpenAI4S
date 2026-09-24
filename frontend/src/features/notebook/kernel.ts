@@ -9,8 +9,6 @@ import { computed } from "@preact/signals";
 import { isReady } from "../../compat/stub";
 import {
   _kc,
-  _replDrafts,
-  _replLanguage,
   artifactWorkbench,
   pendingReplIdentity,
   type KernelCache,
@@ -28,6 +26,7 @@ import {
 } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
+import { copyFailedText, copyText } from "../chrome/clipboard";
 import { forkFromCell } from "../execution/branch";
 import { publicText } from "../scrub/scrub";
 import type { WsMessage } from "../ws/types";
@@ -535,21 +534,16 @@ export async function interruptRepl(): Promise<void> {
   }
 }
 
+/**
+ * Copy a cell's source, and say which way it went. Without a clipboard
+ * (plain-http LAN deployments) or with the permission refused, this said
+ * "Code copied" after putting the code in the REPL draft instead -- a draft
+ * hidden unless the REPL is on, set by reassigning the same object, which no
+ * reader hears about. The code is on screen to select when copying fails.
+ */
 export async function copyNotebookCell(source: string): Promise<void> {
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(String(source || ""));
-    } else {
-      throw new Error("clipboard unavailable");
-    }
-    hint(t("nb.action.copied"));
-  } catch {
-    const language = _replLanguage.value === "r" ? "r" : "python";
-    const drafts = _replDrafts.value || { python: "", r: "" };
-    drafts[language] = String(source || "");
-    _replDrafts.value = drafts;
-    hint(t("nb.action.copied"));
-  }
+  if (await copyText(String(source || ""))) hint(t("nb.action.copied"));
+  else hint(copyFailedText(), true);
 }
 
 /**

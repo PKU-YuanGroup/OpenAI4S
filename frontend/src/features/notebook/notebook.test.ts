@@ -19,6 +19,7 @@ import {
   _nbDirty,
   _nbReading,
   _nbSched,
+  _replDrafts,
   cells,
   liveCells,
 } from "../../stores/notebook";
@@ -28,6 +29,7 @@ import { running } from "../../stores/stream";
 import { branchState } from "../../stores/timeline";
 import { activeTab, dock } from "../../stores/ui";
 import { t } from "../../i18n/runtime";
+import { copyFailedText } from "../chrome/clipboard";
 import { LIVE_OUTPUT_CHAR_CAP, LIVE_OUTPUT_TRUNCATION } from "../stream/cap";
 import { registerBuiltinHandlers, setArtifactCreatedSideEffects } from "../ws/handlers";
 import { onEvent, resetWsHandlers } from "../ws/registry";
@@ -62,6 +64,7 @@ import {
 import { installNotebook } from "./install";
 import type { NotebookCell } from "./types";
 import {
+  copyNotebookCell,
   currentKernelStatus,
   executeNotebookCode,
   forkNotebookCell,
@@ -506,6 +509,34 @@ describe("F-14 Notebook", () => {
       await forkNotebookCell({ producing_cell_id: "c7", fork_checkpoint_id: "ckpt-1" });
       expect(hints).toEqual([t("branch.actionFailed", sentence)]);
       expect(forkPending.value).toBeNull();
+    });
+
+    it("Copy says it failed when no write was confirmed, and leaves the REPL draft alone", async () => {
+      const hints: Array<[string, boolean | undefined]> = [];
+      vi.stubGlobal("hint", (message: string, err?: boolean) => hints.push([message, err]));
+      vi.stubGlobal("navigator", { clipboard: { writeText: () => Promise.reject(new Error("denied")) } });
+      vi.stubGlobal("document", undefined);
+      const drafts = _replDrafts.value;
+      await copyNotebookCell("print(1)");
+      expect(hints).toEqual([[copyFailedText(), true]]);
+      expect(_replDrafts.value).toBe(drafts);
+      expect(_replDrafts.value).toEqual({ python: "", r: "" });
+    });
+
+    it("Copy says it copied only after a confirmed write", async () => {
+      const hints: Array<[string, boolean | undefined]> = [];
+      vi.stubGlobal("hint", (message: string, err?: boolean) => hints.push([message, err]));
+      let written = "";
+      vi.stubGlobal("navigator", {
+        clipboard: {
+          writeText: async (text: string) => {
+            written = text;
+          },
+        },
+      });
+      await copyNotebookCell("print(2)");
+      expect(written).toBe("print(2)");
+      expect(hints).toEqual([[t("nb.action.copied"), undefined]]);
     });
 
     it("reads only while the Notebook is on screen, and not again while fresh", async () => {
