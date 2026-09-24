@@ -9,11 +9,17 @@ import { showDashboard, stopDashPoll } from "../sessions/dashboard";
 import { handleIncomingMessage } from "../ws/connect";
 import { _liveCell, cells, liveCells } from "../../stores/notebook";
 import { _timelineView } from "../../stores/timeline";
+import { activeTab } from "../../stores/ui";
 import { adoptCreatedFrame } from "../chrome/upload";
 import { loadExecutionLog } from "../notebook/cells";
 
 const paint = vi.hoisted(() => ({ empty: vi.fn(), batches: vi.fn(), pageRows: vi.fn() }));
 const chrome = vi.hoisted(() => ({ hint: vi.fn() }));
+const timeline = vi.hoisted(() => ({ render: vi.fn() }));
+vi.mock("../timeline/island", async (original) => ({
+  ...await original<typeof import("../timeline/island")>(),
+  renderActionTimeline: () => timeline.render(),
+}));
 vi.mock("../sessions/chrome", async (original) => ({
   ...await original<typeof import("../sessions/chrome")>(),
   hint: (...args: unknown[]) => chrome.hint(...args),
@@ -584,6 +590,42 @@ it.each([
   await openConversation(fid, undefined, options);
   expect(view.resizeObserver.disconnect).toHaveBeenCalledTimes(1);
   expect(_timelineView.value).toBeNull();
+});
+
+describe("a same-frame branch reset and the dock", () => {
+  /** The four dock panes, recording which one the reset leaves visible. */
+  function dockPanes(): Record<string, boolean> {
+    const hidden: Record<string, boolean> = {};
+    vi.stubGlobal("document", {
+      querySelector: () => null,
+      getElementById: (id: string) => /^dock-(viewer|notebook|timeline|files)$/.test(id)
+        ? { classList: { toggle: (_name: string, on: boolean) => { hidden[id] = on; } } }
+        : id === "messages" || id === "jump-pill" ? {} : null,
+      createDocumentFragment: () => ({}),
+    });
+    return hidden;
+  }
+
+  it.each(["timeline", "files"])("stays on the %s pane, in the state and in the DOM", async (tab) => {
+    server(); await openConversation("f");
+    activeTab.value = tab;
+    const hidden = dockPanes();
+    timeline.render.mockClear();
+    expect(await openConversation("f", undefined, { resetHistory: true })).toMatchObject({ messagesLoaded: true });
+    expect(activeTab.value).toBe(tab);
+    expect(hidden).toMatchObject({ [`dock-${tab}`]: false, "dock-notebook": true, "dock-viewer": true });
+    // Repainted for the new branch rather than left frozen on the old one.
+    expect(timeline.render).toHaveBeenCalledTimes(tab === "timeline" ? 1 : 0);
+  });
+
+  it("moves to the Notebook, in the DOM too, when the artifact tab it showed was closed by the reset", async () => {
+    server(); await openConversation("f");
+    activeTab.value = "artifact:a1";
+    const hidden = dockPanes();
+    await openConversation("f", undefined, { resetHistory: true });
+    expect(activeTab.value).toBe("notebook");
+    expect(hidden).toMatchObject({ "dock-notebook": false, "dock-viewer": true, "dock-timeline": true });
+  });
 });
 
 it("a branch replacement reopen drops notebook cells the server no longer lists", async () => {

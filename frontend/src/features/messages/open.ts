@@ -86,7 +86,7 @@ import { invalidateKernelCache } from "../notebook/kernel";
 import { renderPlanCard } from "../send/plan";
 import { closeTurnTicket, resumeWatch } from "../send/ticket";
 import { failureHint, lastTerminalFailure } from "../send/turn";
-import { destroyActionTimelineView } from "../timeline/island";
+import { destroyActionTimelineView, renderActionTimeline } from "../timeline/island";
 import { hint } from "../sessions/chrome";
 import { showWorkspace } from "../sessions/dashboard";
 import {
@@ -191,6 +191,22 @@ function resetSessionScoped(): void {
   // ResizeObserver can only be released through the view object itself.
   destroyActionTimelineView();
   _timelineView.value = null;
+}
+
+/**
+ * A same-frame reset (branch activate/revert/undo) keeps the dock on the pane
+ * the user was using and repaints it. The reset closes every artifact tab, so
+ * only the built-in panes can be kept. Switching `activeTab` to the Notebook
+ * without touching the DOM left the Timeline on screen frozen: its renders are
+ * all gated on `activeTab === "timeline"`.
+ */
+function keepDockPane(tab: string): void {
+  const pane = tab === "timeline" || tab === "files" ? tab : "notebook";
+  activeTab.value = pane;
+  renderDockTabs();
+  showDockPane(pane);
+  if (pane === "timeline") renderActionTimeline();
+  else if (pane === "notebook") callLane("renderNotebook");
 }
 
 const incomplete = (): HistoryLoadResult => ({
@@ -499,9 +515,11 @@ export async function openConversation(
     const host = messagesHost();
     if (host) host.innerHTML = "";
     if (liveStream.value) flushRender(liveStream.value as LiveStream, true);
+    const tab = activeTab.value;
     resetSessionScoped();
     historyContent.value = null;
     historyMutation.value += 1;
+    keepDockPane(tab);
   }
   if (rescoping) {
     const host = messagesHost();
