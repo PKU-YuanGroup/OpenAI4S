@@ -370,7 +370,7 @@ function toggleAnnotList(anchor: HTMLElement): void {
       const art = ((artifactsSignal.value || []) as ArtifactRow[]).find(
         (x) => x.id === an.artifact_id,
       );
-      if (art) openViewer(art);
+      if (art) void openViewer(art);
     };
     const rm = el("button", "annot-mini danger", translate("btn.remove"));
     rm.onclick = async () => {
