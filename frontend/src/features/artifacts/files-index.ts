@@ -3,6 +3,7 @@ import { _openGen, currentId, project } from "../../stores/session";
 import { api, asArtifactList, isApiStatus } from "./api";
 import { filesT } from "./copy";
 import {
+  artifactsReadError,
   filesContentType,
   filesCursorFilter,
   filesHasMore,
@@ -94,6 +95,13 @@ export function currentFilesFingerprint(): string {
 
 export function filesListingIsCurrent(): boolean {
   return filesCursorFilter.value === currentFilesFingerprint();
+}
+
+/** Session scope: the open session's last artifact read failed. */
+export function filesReadFailed(): boolean {
+  const failed = artifactsReadError.value;
+  return filesScope.value !== "project" && !!failed &&
+    failed.frameId === currentId.value && failed.generation === _openGen.value;
 }
 
 /** Cards, count, and pagination share the same owned result set. */

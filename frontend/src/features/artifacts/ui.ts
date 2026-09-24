@@ -15,7 +15,7 @@ import {
   resolveArtifactVersion,
   versionResolveMessage,
 } from "./deeplink";
-import { browseFiles, currentFilesFilter, filesGridArtifacts, filesListingIsCurrent, visibleArtifacts } from "./files-index";
+import { browseFiles, currentFilesFilter, filesGridArtifacts, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { renderArtifactBody } from "./renderers";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
@@ -225,6 +225,18 @@ function paintVersionBanner(list: HTMLElement): void {
   list.appendChild(note);
 }
 
+/** A failed session read says so and offers Retry; it is never "no files". */
+function paintReadError(list: HTMLElement, confirmed: boolean): void {
+  const note = el("div", "files-version-error files-read-error", filesT(confirmed ? "files.read.stale" : "files.read.failed"));
+  note.setAttribute("role", "alert");
+  const retry = el("button", "outline-btn small", translate("common.retry"));
+  retry.onclick = () => {
+    if (currentId.value) void loadArtifacts(currentId.value);
+  };
+  note.appendChild(retry);
+  list.appendChild(note);
+}
+
 export function renderFilesGrid(): void {
   if (typeof document === "undefined") return;
   const list = document.getElementById("results-list");
@@ -234,12 +246,15 @@ export function renderFilesGrid(): void {
   list.innerHTML = "";
   if (count) count.textContent = String(arts.length);
   paintVersionBanner(list);
+  const readFailed = filesReadFailed();
+  if (readFailed) paintReadError(list, arts.length > 0);
   const indexErr = filesListingIsCurrent() ? filesIndexError.value : null;
   if (indexErr && filesIndexItems.value.length === 0 && !arts.length) {
     list.appendChild(el("div", "files-empty", indexErr));
     return;
   }
   if (!arts.length) {
+    if (readFailed) return;
     const filter = currentFilesFilter();
     const msg = filter.q || filter.contentType || filter.origin
       ? filesT("files.noMatches")

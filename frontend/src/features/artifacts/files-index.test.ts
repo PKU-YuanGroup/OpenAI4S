@@ -7,6 +7,7 @@ import {
   browseFiles,
   filterArtifactsClient,
   filesGridArtifacts,
+  filesReadFailed,
   setFilesContentType,
   setFilesOrigin,
   visibleArtifacts,
@@ -465,6 +466,42 @@ describe("M-03 Files index (artifact-index, no array fallback)", () => {
     resetFilesIndexState();
     expect(filesIndexReq.value).toBeGreaterThan(n);
     expect(filesIndexItems.value).toEqual([]);
+  });
+});
+
+
+describe("session artifact read failures (AUDIT A26)", () => {
+  beforeEach(() => { resetStoreFields(); resetFilesIndexState(); setArtifactsFetch(null); });
+  afterEach(() => setArtifactsFetch(null));
+  const refuse = async () => jsonResponse({ error: "daemon restarting" }, 503);
+
+  it("keeps the confirmed list through a failed refresh and reports the read", async () => {
+    currentId.value = "a";
+    const rows = make500().slice(0, 3);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("a");
+    expect(filesGridArtifacts().map((x) => x.id)).toEqual(rows.map((x) => x.id).sort().reverse());
+    setArtifactsFetch(refuse);
+    await loadArtifacts("a");
+    expect(artifactsSignal.value).toEqual(rows);
+    expect(filesGridArtifacts()).toHaveLength(3);
+    expect(filesReadFailed()).toBe(true);
+    setArtifactsFetch(async () => jsonResponse(rows));
+    await loadArtifacts("a");
+    expect(filesReadFailed()).toBe(false);
+  });
+
+  it("reports a failed first read instead of an empty session, without the previous session's rows", async () => {
+    currentId.value = "a";
+    setArtifactsFetch(async () => jsonResponse(make500().slice(0, 3)));
+    await loadArtifacts("a");
+    currentId.value = "b";
+    setArtifactsFetch(refuse);
+    await loadArtifacts("b");
+    expect(filesReadFailed()).toBe(true);
+    expect(filesGridArtifacts()).toEqual([]);
+    expect(artifactsSignal.value).toEqual([]);
+    expect(artifactsFrameId.value).toBe("b");
   });
 });
 

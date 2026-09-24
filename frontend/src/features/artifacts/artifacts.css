@@ -83,6 +83,15 @@
   border-radius: var(--radius, 8px);
 }
 
+/* A failed session read spans the grid, above any confirmed cards. */
+.files-read-error {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
 .files-index-note {
   margin: 0 0 10px;
   font-size: 13px;

@@ -186,6 +186,58 @@ describe("version-specific tabs", () => {
 });
 
 
+it("a failed session read shows Retry instead of an empty grid (AUDIT A26)", async () => {
+  const { currentId } = await import("../../stores/session");
+  const { renderFilesGrid } = await import("./ui");
+  const { loadArtifacts } = await import("./load");
+  const { filesReadFailed } = await import("./files-index");
+  const { resetFilesIndexState } = await import("./state");
+  const { filesT } = await import("./copy");
+  const { translate } = await import("./api");
+  class Node {
+    children: Node[] = []; className = ""; textContent = ""; title = ""; src = "";
+    dataset: Record<string, string> = {};
+    onclick?: () => unknown;
+    set innerHTML(_value: string) { this.children = []; }
+    appendChild(child: Node) { this.children.push(child); return child; }
+    setAttribute() {}
+  }
+  const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+  const list = new Node();
+  vi.stubGlobal("document", {
+    getElementById: (id: string) => (id === "results-list" ? list : id === "results-count" ? new Node() : null),
+    createElement: () => new Node(),
+  });
+  resetStoreFields();
+  resetFilesIndexState();
+  let reads = 0;
+  setArtifactsFetch(async () => {
+    reads += 1;
+    return reads === 1
+      ? jsonResponse({ error: "daemon restarting" }, 503)
+      : jsonResponse([{ id: "x", filename: "x.bin", content_type: "application/octet-stream" }]);
+  });
+  try {
+    currentId.value = "s";
+    await loadArtifacts("s");
+    renderFilesGrid();
+    const texts = walk(list).map((node) => node.textContent);
+    expect(texts).toContain(filesT("files.read.failed"));
+    expect(texts).not.toContain(translate("files.empty"));
+    walk(list).find((node) => node.textContent === translate("common.retry"))?.onclick?.();
+    await vi.waitFor(() => expect(filesReadFailed()).toBe(false));
+    expect(reads).toBe(2);
+    renderFilesGrid();
+    expect(walk(list).some((node) => node.className === "art")).toBe(true);
+    expect(walk(list).some((node) => node.className.includes("files-read-error"))).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+    resetStoreFields();
+  }
+});
+
+
 it("fullscreen download keeps the selected immutable version", async () => {
   const { openArtifact } = await import("../../islands/viewer");
   const download = { style: { display: "" }, href: "", setAttribute: vi.fn() };
