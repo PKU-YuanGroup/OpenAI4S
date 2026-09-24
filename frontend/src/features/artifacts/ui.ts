@@ -44,7 +44,7 @@ export function closeTab(id: string): void {
       provMode.value = false;
       setActiveTab(artifactTabKey(last));
     } else setActiveTab("notebook");
-  }
+  } else renderDockTabs(); // app.js:2756: a background tab must still leave the bar
 }
 
 function artIcon(a: ArtifactRow): string {

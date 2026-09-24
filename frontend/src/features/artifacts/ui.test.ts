@@ -162,6 +162,27 @@ describe("version-specific tabs", () => {
     expect(dockArtifact.value).not.toBe(latest);
     setArtifactsFetch(null);
   });
+  it("closing a background tab takes it off the tab bar (AUDIT A59)", () => {
+    class Node {
+      children: Node[] = []; className = ""; textContent = ""; title = "";
+      classList = { add: (name: string) => { this.className += " " + name; } };
+      onclick: ((event: { stopPropagation(): void }) => void) | null = null;
+      set innerHTML(_value: string) { this.children = []; }
+      appendChild(child: Node) { this.children.push(child); return child; }
+    }
+    const bar = new Node();
+    vi.stubGlobal("document", { getElementById: (id: string) => (id === "dock-tabs" ? bar : null), createElement: () => new Node() });
+    const names = () => bar.children.map((tab) => tab.children.find((node) => node.className === "t-name")?.textContent);
+    try {
+      addOpenTab({ id: "a", filename: "a.txt" });
+      addOpenTab({ id: "b", filename: "b.txt" });
+      setActiveTab("a");
+      expect(names()).toEqual(["a.txt", "b.txt", "Notebook", expect.any(String)]);
+      closeTab("b");
+      expect(activeTab.value).toBe("a");
+      expect(names()).toEqual(["a.txt", "Notebook", expect.any(String)]);
+    } finally { vi.unstubAllGlobals(); }
+  });
 });
 
 
