@@ -82,6 +82,13 @@ export async function loadArtifacts(id: string): Promise<void> {
   }
 }
 
+/** An artifact arrived while Files was hidden: the next project load refreshes. */
+let projectListingStale = false;
+
+export function markProjectListingStale(): void {
+  projectListingStale = true;
+}
+
 /**
  * app.js:8510-8516. Project-wide listing is M-03's paged artifact-index.
  * `force` busts the per-project cache. There is no array-route fallback.
@@ -92,8 +99,10 @@ export async function loadProjectArtifacts(force?: boolean): Promise<void> {
     _projArtFor.value = null;
     return;
   }
-  if (!force && _projArtFor.value === pid && filesScope.value === "project" && filesListingIsCurrent()) return;
-  await browseFiles(force ? { refresh: true } : { reset: true });
+  const refresh = force || projectListingStale;
+  if (!refresh && _projArtFor.value === pid && filesScope.value === "project" && filesListingIsCurrent()) return;
+  projectListingStale = false;
+  await browseFiles(refresh ? { refresh: true } : { reset: true });
   if (project.value === pid && filesScope.value === "project") _projArtFor.value = pid;
 }
 
