@@ -3,6 +3,7 @@ import { isTextEditable, renderViewer } from "./viewer";
 import { hint } from "../features/sessions/chrome";
 import { translate } from "../features/artifacts/api";
 import { filesT } from "../features/artifacts/copy";
+import { copyFailedText } from "../features/chrome/clipboard";
 import { dockArtifact } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 const menu = vi.hoisted(() => ({ open: vi.fn() }));
@@ -61,6 +62,60 @@ it.each([true, false])("the Viewer menu copy respects exact=%s", (exact) => {
     if (exact) expect(copied).toContain("version_id=v1");
     else expect(copied).not.toContain("version_id=");
   } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+});
+
+
+describe("Viewer top-bar Copy link (AUDIT A17)", () => {
+  class Node {
+    children: Node[] = [];
+    innerHTML = ""; textContent = ""; className = ""; title = "";
+    onclick?: () => void;
+    appendChild(child: Node) { this.children.push(child); return child; }
+    append(...children: Node[]) { this.children.push(...children); }
+    dataset: Record<string, string> = {};
+    setAttribute() {}
+  }
+  const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
+
+  function mountExactViewer(clipboard: unknown): Node | undefined {
+    resetStoreFields(); vi.mocked(hint).mockClear();
+    const root = new Node();
+    // No `body`: the selection-copy fallback has nothing to select into.
+    vi.stubGlobal("document", { getElementById: () => root, createElement: () => new Node() });
+    vi.stubGlobal("navigator", { clipboard });
+    vi.stubGlobal("location", { pathname: "/", search: "" });
+    dockArtifact.value = { id: "a", filename: "plot.png", version_id: "v1", _exactVersion: true };
+    renderViewer();
+    return walk(root).find((node) => node.textContent === filesT("files.deeplink.copy"));
+  }
+
+  it("writes through the clipboard object and says Copied only once the write lands", async () => {
+    const clipboard = {
+      written: "",
+      async writeText(this: { written: string }, text: string) {
+        // A detached call has no receiver: browsers throw Illegal invocation.
+        if (this !== clipboard) throw new TypeError("Illegal invocation");
+        this.written = text;
+      },
+    };
+    try {
+      const button = mountExactViewer(clipboard);
+      button?.onclick?.();
+      await vi.waitFor(() => expect(button?.textContent).toBe(filesT("files.deeplink.copied")));
+      expect(clipboard.written).toBe("/?artifact=a&version_id=v1");
+      expect(hint).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  });
+
+  it("shows the link to copy by hand when the write is refused", async () => {
+    try {
+      const button = mountExactViewer({ writeText: () => Promise.reject(new Error("denied")) });
+      button?.onclick?.();
+      await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+      expect(hint).toHaveBeenCalledWith(copyFailedText() + " /?artifact=a&version_id=v1", true);
+      expect(button?.textContent).toBe(filesT("files.deeplink.copy"));
+    } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  });
 });
 
 

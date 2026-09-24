@@ -8,7 +8,6 @@
 import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
-import { isReady } from "../compat/stub";
 import { api, apiErrorText, bytes } from "../features/artifacts/api";
 import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
 import { validateArtifactVersions } from "../features/artifacts/validation";
@@ -26,6 +25,7 @@ import {
   renderProvenanceInto,
 } from "../features/execution/provenance";
 import { edacTeardown } from "../features/autocomplete/editor";
+import { copyFailedText, copyText } from "../features/chrome/clipboard";
 import { openModalEl } from "../features/chrome/modal";
 import { hint, openMenu, type MenuItem } from "../features/sessions/chrome";
 import { ago } from "../features/sessions/dom";
@@ -112,6 +112,17 @@ export function openArtifact(a: ArtifactRow): void {
   const body = $("#modal-body");
   if (body) renderArtifactBody(body, a);
   openModalEl($("#modal"));
+}
+
+/**
+ * Copy the Viewer deep link. A refused write puts the link in the status
+ * line to copy by hand, instead of claiming a copy nobody made.
+ */
+async function copyDeepLink(a: ArtifactRow): Promise<boolean> {
+  const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
+  if (await copyText(href)) return true;
+  hint(copyFailedText() + " " + href, true);
+  return false;
 }
 
 export function editArtifact(a: ArtifactRow): void {
@@ -404,11 +415,9 @@ export function renderViewer(): void {
   const acts = el("div", "vh-acts");
   const copy = el("button", "outline-btn small", filesT("files.deeplink.copy"));
   copy.onclick = () => {
-    const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
-    const clip = (globalThis as { navigator?: { clipboard?: { writeText?: (s: string) => Promise<void> } } })
-      .navigator?.clipboard?.writeText;
-    if (isReady(clip)) void clip(href);
-    copy.textContent = filesT("files.deeplink.copied");
+    void copyDeepLink(a).then((ok) => {
+      if (ok) copy.textContent = filesT("files.deeplink.copied");
+    });
   };
   const menuBtn = ghostIconBtn("more-vertical", translate("viewer.act.more"));
   menuBtn.onclick = () => artifactMenu(menuBtn, a);
