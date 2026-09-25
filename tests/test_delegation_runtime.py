@@ -46,7 +46,7 @@ def _submitted(output=None):
     }
 
 
-def _wait_for(predicate, timeout: float = 2.0) -> None:
+def _wait_for(predicate, timeout: float = _RENDEZVOUS_TIMEOUT) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -1096,9 +1096,11 @@ def test_collect_none_observes_parent_cancel_without_waiting_for_futures():
     cancelled = threading.Event()
     returned = threading.Event()
     result = []
+    waits = []
 
     class ObservedFuture(Future):
         def result(self, timeout=None):
+            waits.append(timeout)
             entered.set()
             return super().result(timeout=timeout)
 
@@ -1117,7 +1119,16 @@ def test_collect_none_observes_parent_cancel_without_waiting_for_futures():
     try:
         assert entered.wait(_RENDEZVOUS_TIMEOUT)
         cancelled.set()
-        assert returned.wait(1), "parent cancellation did not end collect(None)"
+        # A handshake, not a latency budget: these Futures only finish in the
+        # `finally` below, so an unobserved cancel never returns at all. This
+        # was `wait(1)`, a quarter of which the poll slice spends by design,
+        # and a loaded CI runner spent the rest on the stop's return path. How
+        # promptly None notices a cancel is the slice asserted next --
+        # deterministic, where the wall clock was not.
+        assert returned.wait(
+            _RENDEZVOUS_TIMEOUT
+        ), "parent cancellation did not end collect(None)"
+        assert waits and all(wait is not None and wait <= 0.25 for wait in waits)
         assert len(result) == 3
         assert all(child.stop_event.is_set() for child in children)
         # Cancellation is a request, not proof that a running Future exited.
@@ -1272,9 +1283,11 @@ def test_agent_cancel_probe_reaches_collect_through_native_and_python(entry):
     returned = threading.Event()
     outputs = []
     errors = []
+    waits = []
 
     class ObservedFuture(Future):
         def result(self, timeout=None):
+            waits.append(timeout)
             entered.set()
             return super().result(timeout=timeout)
 
@@ -1312,7 +1325,11 @@ def test_agent_cancel_probe_reaches_collect_through_native_and_python(entry):
     try:
         assert entered.wait(_RENDEZVOUS_TIMEOUT)
         cancelled.set()
-        assert returned.wait(1)
+        # Same handshake as collect(None) above, with a kernel round trip on
+        # top: this `wait(1)` is the one that failed CI on a runner running at
+        # a quarter of its usual speed, on a tree whose own PR run was green.
+        assert returned.wait(_RENDEZVOUS_TIMEOUT)
+        assert waits and all(wait is not None and wait <= 0.25 for wait in waits)
         assert not errors
         assert all(child.stop_event.is_set() for child in children)
         assert all(not child.future.done() for child in children)
