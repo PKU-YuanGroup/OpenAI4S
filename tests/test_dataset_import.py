@@ -700,7 +700,7 @@ def test_cancel_during_workspace_copy_stops_before_writing_or_publishing(
 
 @contextlib.contextmanager
 def native_dataset_session(tmp_path, monkeypatch, *, stage1):
-    """Real workspace publication, Gateway capture and Store; offline network."""
+    """Real publication, capture, kernel and Store; network/readiness injected."""
     from openai4s.server.gateway import SessionRunner, WSHub
     from openai4s.tools.registry import execute_tool_call
 
@@ -710,6 +710,10 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
         roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=stage1),
     )
     runner = SessionRunner(cfg, WSHub(), start_idle_sweeper=False)
+    # Standard environment installation has its own readiness contracts. These
+    # workflow cases need no Python/R profile installation on the CI host; the
+    # analysis still executes in the real persistent Python kernel below.
+    monkeypatch.setattr(runner, "standard_profile_readiness", lambda: {"ready": True})
     frame = runner.store.new_frame(
         kind="turn", project_id="dataset-contract", status="ready"
     )
