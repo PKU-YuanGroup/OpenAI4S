@@ -805,15 +805,17 @@ def _discover_dataset_input(runner, state, events):
 
 def _analyse_dataset_version(runner, state, version_id, events):
     """Use a real persistent kernel and let production record the input edge."""
+    pytest.importorskip("pandas")
+    # Use the production scientific reader/writer hooks. csv.DictReader,
+    # scalar conversion and json.dump do not preserve object provenance.
     code = (
-        "import csv, json\n"
+        "import pandas as pd\n"
         f"input_path = host.artifact_path({version_id!r})\n"
-        "with open(input_path, encoding='utf-8') as source:\n"
-        "    rows = list(csv.DictReader(source))\n"
-        "mean = sum(float(row['intensity']) for row in rows) / len(rows)\n"
-        "with open('summary.json', 'w', encoding='utf-8') as target:\n"
-        f"    json.dump({{'input_version': {version_id!r}, 'mean': mean, "
-        "'rows': len(rows)}, target)\n"
+        "data = pd.read_csv(input_path)\n"
+        "data['mean'] = data['intensity'].mean()\n"
+        "data['rows'] = len(data)\n"
+        f"data['input_version'] = {version_id!r}\n"
+        "data.to_json('summary.json', orient='records')\n"
     )
     executed = runner._execute_and_log(
         state, code, "agent", events.append, stream=False, language="python"
@@ -827,11 +829,15 @@ def _analyse_dataset_version(runner, state, version_id, events):
     metadata = runner.store.version_meta(artifact["latest_version_id"])
     assert metadata["producing_cell_id"] == executed["cell_id"]
     assert runner.store.cell_detail(executed["cell_id"])["status"] == "ok"
-    assert json.loads(Path(metadata["snapshot_path"]).read_text(encoding="utf-8")) == {
-        "input_version": version_id,
-        "mean": 0.75,
-        "rows": 1,
-    }
+    assert json.loads(Path(metadata["snapshot_path"]).read_text(encoding="utf-8")) == [
+        {
+            "wavelength": 500,
+            "intensity": 0.75,
+            "input_version": version_id,
+            "mean": 0.75,
+            "rows": 1,
+        }
+    ]
     inputs = runner.store.lineage_inputs(metadata["version_id"])
     assert {entry["version_id"] for entry in inputs} == {version_id}
     return metadata
