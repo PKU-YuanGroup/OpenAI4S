@@ -190,6 +190,10 @@ def _public_dataset(
                 clipped.append(field)
         else:
             dropped += 1
+    if dataset_verified is not True and (result or "file_verification" in value):
+        # Missing local evidence is unknown, not a failed or fabricated import.
+        # A null keeps that state visible through the existing viewer renderer.
+        result["file_verification"] = None
     if not result:
         return None
     if clipped:

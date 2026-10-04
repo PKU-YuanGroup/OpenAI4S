@@ -322,6 +322,8 @@ def test_historical_dataset_claim_requires_a_local_receipt_after_reopen(tmp_path
         row = seen[-1]["versions"][0]
         assert row["version_id"] == artifact["version_id"]
         dataset = row.get("retrieval_source", {}).get("dataset", {})
+        assert "file_verification" in dataset
+        assert dataset["file_verification"] is None
         assert dataset.get("file_verification") != "size_and_source_checksum_verified"
     finally:
         runner.close()
@@ -413,7 +415,7 @@ def test_dataset_sources_remain_version_and_session_bound_after_reopen(tmp_path)
             assert dataset["local_sha256"] == row["checksum"]
             assert dataset["declared_license"] is None
             # These fixtures supply recorded JSON, not a native Host receipt.
-            assert "file_verification" not in dataset
+            assert dataset["file_verification"] is None
             stored = runner.store.version_meta(row["version_id"])
             assert stored["source"] == sources[index]
         assert SECRET not in json.dumps(seen)
@@ -750,7 +752,7 @@ def test_version_route_does_not_verify_a_stale_projection(tmp_path, monkeypatch,
         handler._api("GET", f"/artifacts/{artifact['artifact_id']}/versions")
         projected = seen[-1]["versions"][0]
         dataset = projected["retrieval_source"]["dataset"]
-        assert "file_verification" not in dataset
+        assert dataset["file_verification"] is None
         assert store.version_meta(artifact["version_id"])[field] == original[field]
     finally:
         runner.close()
@@ -830,7 +832,13 @@ def test_source_json_cannot_supply_verification_authority():
             },
         }
     )
-    assert "file_verification" not in out.get("dataset", {})
+    assert out["dataset"]["file_verification"] is None
+
+
+def test_unattested_dataset_reports_an_explicit_unknown_check():
+    out = public_source({"database": "zenodo", "dataset": {"record_id": "123"}})
+    assert "file_verification" in out["dataset"]
+    assert out["dataset"]["file_verification"] is None
 
 
 def test_the_route_sends_provenance_and_never_the_credential(tmp_path):
