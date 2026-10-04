@@ -87,6 +87,12 @@ export function openModalEl(modal: HTMLElement | null): void {
     requestAnimationFrame(() => {
       const box = (modal.querySelector(".modal-box") as HTMLElement | null) || modal;
       if (box && !box.hasAttribute("tabindex")) box.setAttribute("tabindex", "-1");
+      // Focus that already moved into the modal before this frame -- a click,
+      // a Tab, a keyboard user who got there first -- is theirs. Taking it
+      // back to the default control sent the Enter they were pressing to that
+      // control instead: Settings' first tab, which remounts the pane.
+      const active = document.activeElement;
+      if (active && active !== modal && active !== box && modal.contains(active)) return;
       const list = _focusables(box);
       const marked = modal.querySelector("[data-autofocus]") as HTMLElement | null;
       const prefer =

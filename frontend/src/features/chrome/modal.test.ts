@@ -418,6 +418,21 @@ describe("F-20 modal focus trap", () => {
     expect(doc.activeElement?.id).toBe("cust-auto");
   });
 
+  it("leaves focus that reached a control inside the modal before the deferred frame", () => {
+    // The browser smoke focused Settings' Run checks and pressed Enter; the
+    // frame landing in between moved focus to the first tab, which took the
+    // Enter and remounted the pane, so the checks never ran.
+    const modal = makeModal(doc, "cust", { autofocus: true, extraButtons: 2 });
+    api.openModalEl(modal as unknown as HTMLElement);
+    const chosen = doc.getElementById("cust-btn-1");
+    chosen?.focus();
+    flush();
+    expect(doc.activeElement?.id).toBe("cust-btn-1");
+    expect(modal.querySelector(".modal-box")?.getAttribute("tabindex")).toBe("-1");
+    api.closeModalEl(modal as unknown as HTMLElement);
+    expect(doc.activeElement).toBe(outside);
+  });
+
   it("Tab from last cycles to first; Shift+Tab from first cycles to last", () => {
     const modal = makeModal(doc, "cust", { extraButtons: 2 });
     api.openModalEl(modal as unknown as HTMLElement);

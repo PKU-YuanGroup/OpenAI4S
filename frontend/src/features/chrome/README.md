@@ -18,8 +18,8 @@ F-20 workbench chrome: team mode, the modal focus trap, the ⌘K palette, upload
 | [`layout.test.ts`](layout.test.ts) | `os-layout` persistence, compact/wide classes, column-width clamp, blocked site storage, and `bootChrome()` binding every later step after one throws while leaving `#files-btn` to artifacts. |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`. Key `os-layout`. |
 | [`mic.ts`](mic.ts) | SpeechRecognition dictation onto `#composer`. |
-| [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors, and a drag that ends on the scrim not closing. |
-| [`modal.ts`](modal.ts) | Verbatim focus trap (stack / Tab / Esc / restore). The scrim closes only when the press started on it too. |
+| [`modal.test.ts`](modal.test.ts) | Trap stack, Tab cycle, Esc, focus restore, team fallback selectors, a drag that ends on the scrim not closing, and the deferred first focus leaving a control already focused inside the modal. |
+| [`modal.ts`](modal.ts) | Verbatim focus trap (stack / Tab / Esc / restore). The first focus waits a frame for the content and is skipped when focus already moved inside the modal. The scrim closes only when the press started on it too. |
 | [`palette.test.ts`](palette.test.ts) | M-03 Artifact hit, stub-safe `isReady`, out-of-order `PAL.gen`, a failed skills catalog retried rather than cached, a failed session open handled rather than left unhandled, Enter acting on the typed query while `/search` is in flight. |
 | [`palette.ts`](palette.ts) | ⌘K palette. Artifact hits open session then exact version. A query's local commands show at once; Enter never picks from an earlier query's list. |
 | [`resizer.ts`](resizer.ts) | Sidebar / dock column drag. Keys `os-side-w` / `os-dock-w`. The handle's tooltip is a static `data-i18n-title` label, repainted when the dictionaries load and on a language switch. |
