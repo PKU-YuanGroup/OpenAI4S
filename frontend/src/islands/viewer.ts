@@ -96,7 +96,9 @@ export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement 
       const row = el("div", "ver-src-row");
       row.appendChild(el("span", "ver-src-k", label));
       const rendered = value === null || value === ""
-        ? filesT("versions.datasetUnknown")
+        ? filesT(field === "file_verification"
+          ? "versions.datasetVerificationUnknown"
+          : "versions.datasetUnknown")
         : field === "file_verification" && value === "size_and_source_checksum_verified"
           ? filesT("versions.datasetChecksMatched")
           : field === "file_verification" && value === "not_downloaded"
