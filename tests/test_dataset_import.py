@@ -784,6 +784,11 @@ def test_native_import_keeps_same_byte_sources_immutable_across_store_reopen(
         assert first is not None
         first_id = first["latest_version_id"]
         first_meta = runner.store.version_meta(first_id)
+        assert runner.store.dataset_input_is_verified(
+            runner.store.version_meta(first_id),
+            root_frame_id=state.root_frame_id,
+            project_id=state.project_id,
+        )
         first_source = json.loads(first_meta["source"])
         assert first["root_frame_id"] == state.root_frame_id
         assert first["project_id"] == state.project_id
@@ -823,6 +828,26 @@ def test_native_import_keeps_same_byte_sources_immutable_across_store_reopen(
         assert historical["source"] == first_meta["source"]
         assert Path(historical["snapshot_path"]).read_bytes() == BODY
         assert len(reopened.list_versions(first["artifact_id"])) == 2
+        reopened_runner = type(runner)(runner.cfg, runner.hub, start_idle_sweeper=False)
+        try:
+            from openai4s.server.gateway import make_handler
+
+            handler = object.__new__(
+                make_handler(runner.cfg, runner.hub, reopened_runner)
+            )
+            handler.headers = {}
+            handler.path = f"/api/v1/artifacts/{first['artifact_id']}/versions"
+            seen = []
+            handler._json = lambda obj, code=200: seen.append(obj)
+            handler._body = lambda: {}
+            handler._api("GET", f"/artifacts/{first['artifact_id']}/versions")
+            for version in seen[-1]["versions"]:
+                assert (
+                    version["retrieval_source"]["dataset"]["file_verification"]
+                    == "size_and_source_checksum_verified"
+                )
+        finally:
+            reopened_runner.close()
     finally:
         reopened.close()
 
@@ -867,7 +892,7 @@ def test_native_import_into_a_differently_spelled_directory_never_half_succeeds(
     reason="native Artifact capture tests require POSIX file operations",
 )
 @pytest.mark.parametrize("stage1", [False, True])
-@pytest.mark.parametrize("fault", ["freeze", "emit_after_commit"])
+@pytest.mark.parametrize("fault", ["freeze", "receipt", "emit_after_commit"])
 def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
     tmp_path, monkeypatch, stage1, fault
 ):
@@ -886,6 +911,15 @@ def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
             monkeypatch.setattr(
                 runner.artifacts, "freeze_capture_snapshot", fail_freeze
             )
+        elif fault == "receipt":
+            # A real SQLite write refusal at the native committer, after
+            # workspace bytes and their immutable version were captured.
+            runner.store._conn.execute(
+                "CREATE TRIGGER refuse_dataset_receipt "
+                "BEFORE INSERT ON dataset_verification_receipts BEGIN "
+                "SELECT RAISE(ABORT, 'injected receipt persistence failure'); END"
+            )
+            runner.store._conn.commit()
 
         def emit(event):
             if fault == "emit_after_commit" and event.get("type") == "artifact_created":
@@ -896,6 +930,7 @@ def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
         ) as failure:
             invoke(emit)
         assert failure.value.output_committed is True
+        assert not runner.store._conn.in_transaction
         assert (state.workspace / spec()["path"]).read_bytes() == BODY
         assert reads == [selection().metadata_url, selection().download_url]
         artifact = runner.store.artifact_by_filename(
@@ -913,3 +948,32 @@ def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
                 json.loads(meta["source"])["dataset"]["local_sha256"]
                 == meta["checksum"]
             )
+            # artifact_created is emitted inside capture, before the native
+            # committer can issue its receipt. Every injected failure here
+            # therefore remains unverified, including a committed snapshot.
+            assert not runner.store.dataset_input_is_verified(
+                meta,
+                root_frame_id=state.root_frame_id,
+                project_id=state.project_id,
+            )
+            db_path = runner.cfg.db_path
+
+    if fault == "receipt":
+        from openai4s.store import get_store
+
+        runner.store.close()
+        reopened = get_store(db_path)
+        try:
+            assert (
+                reopened._conn.execute(
+                    "SELECT COUNT(*) FROM dataset_verification_receipts"
+                ).fetchone()[0]
+                == 0
+            )
+            assert not reopened.dataset_input_is_verified(
+                reopened.version_meta(meta["version_id"]),
+                root_frame_id=state.root_frame_id,
+                project_id=state.project_id,
+            )
+        finally:
+            reopened.close()

@@ -70,6 +70,7 @@ A SQLite transaction can make a defined set of rows atomic. It cannot stretch ac
 
 ## Consistency and security boundaries
 
+- Dataset check states are projected only with a Host-owned native import receipt in `dataset_verification_receipts`, bound to the exact version, owning project/session, frozen snapshot, source digest and captured size/SHA-256. Agent SQL cannot read this authority table. Schema 35 preserves historical source JSON and creates no inferred receipts; package imports, restored or materialised versions need their own local evidence before claiming a local check.
 - An Artifact version is fully immutable only once its snapshot binding succeeds. Legacy/flag-off capture can keep a live, path-backed reference after snapshot failure, so general callers still have to inspect the metadata. Stage 1 trusted delivery is stricter: it refuses to claim or link a version without a frozen, regular-file snapshot whose stable bytes match the stored size and SHA-256.
 - Workspace restore is conflict-aware and replaces each file atomically, but it is not a transaction over the whole filesystem. A failure partway through can leave a partially restored tree, and diagnosing that needs the operation and recovery records.
 - Checkpoint activation makes the conversation-scoped database projections it lists atomic, and nothing more. Project and global policy stays live, and filesystem and kernel recovery are coordinated separately.

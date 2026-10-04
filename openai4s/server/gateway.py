@@ -8945,6 +8945,13 @@ class SessionRunner:
                         raise RuntimeError(
                             "Artifact capture could not bind the written result"
                         )
+                    if tool_name == "science_import_dataset":
+                        self.store.record_dataset_verification(
+                            match["version_id"],
+                            dict(receipt["source"]),
+                            root_frame_id=st.root_frame_id,
+                            project_id=st.project_id,
+                        )
                     committed.append(
                         {
                             "artifact_id": match.get("artifact_id"),
@@ -18746,6 +18753,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/artifacts/([^/]+)/versions", sub)
             if m and method == "GET":
                 vs = store.list_versions(m.group(1))
+                source_owner = store.get_artifact(m.group(1)) or {}
                 self._json(
                     {
                         "versions": [
@@ -18773,6 +18781,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                         projected := retrieval_source.public_source(
                                             v.get("source"),
                                             artifact_sha256=v.get("checksum"),
+                                            dataset_verified=store.dataset_input_is_verified(
+                                                v,
+                                                root_frame_id=source_owner.get(
+                                                    "root_frame_id"
+                                                ),
+                                                project_id=source_owner.get(
+                                                    "project_id", ""
+                                                ),
+                                            ),
                                         )
                                     )
                                     else {}

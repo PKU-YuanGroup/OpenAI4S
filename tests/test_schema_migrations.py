@@ -168,6 +168,7 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Bounded Web background-cell receipts. Written before the worker
         # starts; a later daemon does not replay an unfinished row.
         "background_exec_receipts",
+        "dataset_verification_receipts",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -176,6 +177,67 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
 def test_an_unversioned_database_reports_version_zero(plain_db):
     conn, _ = plain_db
     assert current_version(conn) == 0
+
+
+def test_v35_preserves_historical_sources_without_inferred_receipts(tmp_path):
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    source = json.dumps(
+        {"dataset": {"file_verification": "size_and_source_checksum_verified"}}
+    )
+    artifact = store.save_artifact(
+        path=str(tmp_path / "historical.csv"),
+        filename="historical.csv",
+        size_bytes=1,
+        content_type="text/csv",
+        checksum="0" * 64,
+        source=source,
+    )
+    store.close()
+    with sqlite3.connect(str(db)) as connection:
+        connection.execute("DROP TABLE dataset_verification_receipts")
+        connection.execute("DELETE FROM schema_migrations WHERE version=35")
+        connection.execute("PRAGMA user_version = 34")
+    upgraded = get_store(db)
+    try:
+        assert upgraded.schema_state()["version"] == 35
+        assert upgraded.version_meta(artifact["version_id"])["source"] == source
+        assert (
+            upgraded._conn.execute(
+                "SELECT COUNT(*) FROM dataset_verification_receipts"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        upgraded.close()
+
+
+def test_v35_receipt_schema_failure_leaves_database_at_v34(tmp_path, monkeypatch):
+    db = Config(data_dir=tmp_path).db_path
+    get_store(db).close()
+    with sqlite3.connect(str(db)) as connection:
+        connection.execute("DROP TABLE dataset_verification_receipts")
+        connection.execute("DELETE FROM schema_migrations WHERE version=35")
+        connection.execute("PRAGMA user_version = 34")
+    install = Store._apply_dataset_verification_receipts
+
+    def fail_after_create(self, connection):
+        install(self, connection)
+        raise sqlite3.OperationalError("injected receipt migration failure")
+
+    monkeypatch.setattr(
+        Store, "_apply_dataset_verification_receipts", fail_after_create
+    )
+    with pytest.raises(MigrationError, match="injected receipt migration failure"):
+        Store(db)
+    with sqlite3.connect(str(db)) as connection:
+        assert current_version(connection) == 34
+        assert not connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='dataset_verification_receipts'"
+        ).fetchall()
+        assert not connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=35"
+        ).fetchall()
 
 
 def test_reopening_a_current_database_does_no_work(tmp_path, monkeypatch):
@@ -2174,7 +2236,7 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     try:
         rows = read_rows(upgraded)
         assert secure_delete_mode(upgraded._conn) == secure_before
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 34
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 35
         assert version_33_names(upgraded) == ["redact_judge_host_call_args"]
     finally:
         upgraded.close()

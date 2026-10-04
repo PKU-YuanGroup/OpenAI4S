@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from typing import Any, Callable
@@ -161,6 +162,22 @@ def _encode_source(source: Any) -> str | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def create_dataset_verification_schema(connection: sqlite3.Connection) -> None:
+    """Install Host-owned receipts without committing the enclosing migration."""
+    connection.execute("""CREATE TABLE IF NOT EXISTS dataset_verification_receipts (
+            version_id TEXT PRIMARY KEY,
+            source_sha256 TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+            snapshot_path TEXT NOT NULL,
+            root_frame_id TEXT,
+            project_id TEXT NOT NULL,
+            verified_at INTEGER NOT NULL,
+            FOREIGN KEY(version_id) REFERENCES artifact_versions(version_id)
+                ON DELETE CASCADE
+        )""")
 
 
 class ArtifactRepository:
@@ -2005,6 +2022,128 @@ class ArtifactRepository:
                 "SELECT * FROM artifact_versions WHERE version_id=?", (version_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    def record_dataset_verification(
+        self,
+        version_id: str,
+        source: Any,
+        *,
+        root_frame_id: str | None,
+        project_id: str,
+    ) -> None:
+        """Consume one native import receipt after its frozen capture committed.
+
+        Only the trusted native committer calls this method. Source JSON is a
+        declaration, not authority: its exact bytes and the captured version
+        must match before this separate receipt is written. There is no Host
+        RPC, package-import field or agent SQL write path to this table.
+        """
+        encoded = _encode_source(source)
+        dataset = source.get("dataset") if isinstance(source, dict) else None
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT v.source,v.checksum,v.size_bytes,v.snapshot_path "
+                "FROM artifact_versions v JOIN artifacts a "
+                "ON a.artifact_id=v.artifact_id WHERE v.version_id=? "
+                "AND a.root_frame_id IS ? AND a.project_id=?",
+                (version_id, root_frame_id, project_id),
+            ).fetchone()
+            if (
+                row is None
+                or not isinstance(encoded, str)
+                or row["source"] != encoded
+                or not row["snapshot_path"]
+                or not isinstance(dataset, dict)
+                or not isinstance(row["checksum"], str)
+                or re.fullmatch(r"[0-9a-fA-F]{64}", row["checksum"]) is None
+                or source.get("kind") != "dataset_input"
+                or source.get("database") != "zenodo"
+                or dataset.get("provider") != "zenodo"
+                or dataset.get("access_right") != "open"
+                or not isinstance(dataset.get("record_id"), str)
+                or re.fullmatch(r"[1-9][0-9]{0,19}", dataset["record_id"]) is None
+                or not isinstance(dataset.get("file_key"), str)
+                or not dataset["file_key"].strip()
+                or len(dataset["file_key"]) > 512
+                or not isinstance(dataset.get("declared_checksum"), str)
+                or re.fullmatch(
+                    r"md5:[0-9a-fA-F]{32}|sha256:[0-9a-fA-F]{64}",
+                    dataset["declared_checksum"],
+                )
+                is None
+                or dataset.get("file_verification")
+                != "size_and_source_checksum_verified"
+                or dataset.get("local_sha256") != row["checksum"]
+                or type(dataset.get("downloaded_bytes")) is not int
+                or dataset["downloaded_bytes"] != row["size_bytes"]
+                or type(dataset.get("declared_size_bytes")) is not int
+                or dataset["declared_size_bytes"] != row["size_bytes"]
+            ):
+                raise ValueError(
+                    "native dataset receipt does not match its Artifact version"
+                )
+            expected = (
+                hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                row["checksum"],
+                row["size_bytes"],
+                row["snapshot_path"],
+                root_frame_id,
+                project_id,
+            )
+            existing = self._connection.execute(
+                "SELECT source_sha256,checksum,size_bytes,snapshot_path,root_frame_id,project_id "
+                "FROM dataset_verification_receipts WHERE version_id=?",
+                (version_id,),
+            ).fetchone()
+            if existing is not None:
+                if tuple(existing) != expected:
+                    raise ValueError("dataset verification receipt is immutable")
+                return
+            try:
+                self._connection.execute(
+                    "INSERT INTO dataset_verification_receipts "
+                    "(version_id,source_sha256,checksum,size_bytes,snapshot_path,root_frame_id,project_id,verified_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (version_id, *expected, self._clock_ms()),
+                )
+                self._connection.commit()
+            except BaseException:
+                # A later audit write shares this connection and must not
+                # commit verification authority from a failed native import.
+                self._connection.rollback()
+                raise
+
+    def dataset_input_is_verified(
+        self, version: dict | None, *, root_frame_id: str | None, project_id: str
+    ) -> bool:
+        """Verify the exact version metadata being projected, not a newer read."""
+        if not isinstance(version, dict):
+            return False
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT v.source,v.checksum,v.size_bytes,v.snapshot_path,r.source_sha256,"
+                "r.checksum AS verified_checksum,r.size_bytes AS verified_size,"
+                "r.snapshot_path AS verified_snapshot "
+                "FROM dataset_verification_receipts r JOIN artifact_versions v "
+                "ON v.version_id=r.version_id JOIN artifacts a "
+                "ON a.artifact_id=v.artifact_id WHERE v.version_id=? "
+                "AND a.root_frame_id IS ? AND a.project_id=? "
+                "AND r.root_frame_id IS a.root_frame_id AND r.project_id=a.project_id",
+                (version.get("version_id"), root_frame_id, project_id),
+            ).fetchone()
+        return bool(
+            row is not None
+            and isinstance(row["source"], str)
+            and version.get("source") == row["source"]
+            and version.get("checksum") == row["checksum"]
+            and type(version.get("size_bytes")) is int
+            and version["size_bytes"] == row["size_bytes"]
+            and hashlib.sha256(row["source"].encode("utf-8")).hexdigest()
+            == row["source_sha256"]
+            and row["checksum"] == row["verified_checksum"]
+            and row["size_bytes"] == row["verified_size"]
+            and row["snapshot_path"] == row["verified_snapshot"]
+        )
 
     def set_version_source(self, version_id: str, source: Any) -> None:
         """Bind harvest/retrieval provenance onto an existing version."""
