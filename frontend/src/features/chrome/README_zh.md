@@ -18,8 +18,8 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`layout.test.ts`](layout.test.ts) | `os-layout` 持久化、compact/wide 类、列宽钳制、站点存储被禁用，以及某一步抛错后 `bootChrome()` 仍绑定其后各步，且不再重复绑定归 artifacts 所有的 `#files-btn`。 |
 | [`layout.ts`](layout.ts) | `applyLayout` / `setLayout`。键 `os-layout`。 |
 | [`mic.ts`](mic.ts) | SpeechRecognition 把口述写进 `#composer`。 |
-| [`modal.test.ts`](modal.test.ts) | 陷阱栈、Tab 循环、Esc、焦点恢复、团队 fallback 选择器，以及在遮罩上松开的拖选不会关闭弹窗。 |
-| [`modal.ts`](modal.ts) | 逐字焦点陷阱（栈 / Tab / Esc / 恢复）。只有按下也发生在遮罩上时，点击遮罩才会关闭。 |
+| [`modal.test.ts`](modal.test.ts) | 陷阱栈、Tab 循环、Esc、焦点恢复、团队 fallback 选择器、在遮罩上松开的拖选不会关闭弹窗，以及延后一帧的初始聚焦不会抢走弹窗内已获得焦点的控件。 |
+| [`modal.ts`](modal.ts) | 逐字焦点陷阱（栈 / Tab / Esc / 恢复）。初始聚焦延后一帧等内容渲染；若焦点在此之前已进入弹窗内部，则不再改动。只有按下也发生在遮罩上时，点击遮罩才会关闭。 |
 | [`palette.test.ts`](palette.test.ts) | M-03 Artifact 命中、stub 安全的 `isReady`、乱序 `PAL.gen`、技能目录读取失败时不缓存而是下次重试、会话打开失败被处理而不是留下未处理的 rejection、`/search` 未返回时回车作用于当前输入的查询。 |
 | [`palette.ts`](palette.ts) | ⌘K palette。Artifact 命中先开会话再 exact version。查询的本地命令立即显示；回车不会作用于上一次查询的列表。 |
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。拖拽柄的提示是静态 `data-i18n-title` 标签，字典加载后和切换语言时随之重绘。 |

@@ -425,11 +425,15 @@ async function correctnessScenes(projectId) {
     } finally {
       await page.evaluate((lang) => lang === null ? localStorage.removeItem("os-lang") : localStorage.setItem("os-lang", lang), priorLang);
       await page.reload({ waitUntil: "networkidle" });
-      await page.evaluate(() => window.openCust("general"));
     }
   } finally {
     await page.unroute(checksUrl);
-    await page.locator("#cust-close").click();
+    // Close Settings only if it is still open. A reload leaves it closed, and
+    // the finally above used to reopen it just to have something to close --
+    // but `openCust` returns before its lazily loaded chunk mounts the modal,
+    // and on CI this click once waited 30s for a `#cust-close` that never
+    // mounted, after every assertion of the scene had passed.
+    if (await page.locator("#cust:not(.hidden)").count()) await page.locator("#cust-close").click();
     await api("/network/status", { method: "PUT", data: { enabled: false } });
   }
   console.log("C5 browser: passive open, keyboard checks, remedy/settings, facts limits, safe text, retained results, config invalidation and 403 passed");
