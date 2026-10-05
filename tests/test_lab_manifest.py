@@ -335,3 +335,15 @@ def test_registry_explicit_thread_safe_registration():
     with pytest.raises(LabError) as caught:
         registry.describe("b", "unknown")
     assert caught.value.code is ErrorCode.UNSUPPORTED_ACTION
+
+
+@pytest.mark.parametrize("value", [10**308, 1e308])
+def test_large_finite_quantities_fail_with_contract_error(value):
+    with pytest.raises(LabError) as caught:
+        normalize_quantity(Quantity(value, "L"), ParameterSpec("mL", (200,)))
+    assert caught.value.code is ErrorCode.UNSUPPORTED_ACTION
+    assert caught.value.details == {
+        "parameter": "value",
+        "allowed": [200],
+        "unit": "mL",
+    }

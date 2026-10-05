@@ -83,7 +83,8 @@ def load_descriptor(data: Mapping[str, Any]) -> DeviceDescriptor:
 def normalize_quantity(q: Quantity, spec: ParameterSpec) -> float:
     q = Quantity.from_dict(q.to_dict())
     spec = ParameterSpec.from_dict(spec.to_dict())
-    value = q.value
+    # Conversion may overflow to infinity; that cannot match a finite setting.
+    value = float(q.value)
     if q.unit != spec.unit:
         if q.unit == "L" and spec.unit == "mL":
             value *= 1000

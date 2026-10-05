@@ -271,7 +271,7 @@ def _json_value(value: Any, path: str) -> Any:
         for key, item in value.items():
             if not isinstance(key, str):
                 _invalid(path, "expected string keys")
-            result[key] = _json_value(item, f"{path}.{key}")
+            result[key] = _json_value(item, f"{path}[value]")
         return result
     if isinstance(value, (list, tuple)):
         return [_json_value(item, f"{path}[{i}]") for i, item in enumerate(value)]
@@ -307,7 +307,7 @@ def _decode(value: Any, annotation: Any, path: str) -> Any:
         if not isinstance(value, Mapping):
             _invalid(path, "expected an object")
         return {
-            _decode(key, args[0], path): _decode(item, args[1], f"{path}.{key}")
+            _decode(key, args[0], path): _decode(item, args[1], f"{path}[value]")
             for key, item in value.items()
         }
     if annotation is float:

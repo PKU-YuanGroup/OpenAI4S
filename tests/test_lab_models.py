@@ -381,3 +381,27 @@ def test_core_imports_are_stdlib():
                     path,
                     name,
                 )
+
+
+@pytest.mark.parametrize(
+    "name,key",
+    [
+        ("Evaluation", "ground_truth"),
+        ("Evaluation", "metrics"),
+        ("SessionOpenRequest", "options"),
+        ("SessionOpened", "evaluation"),
+    ],
+)
+def test_private_mapping_keys_never_reach_validation_errors(name, key):
+    value = next(v for v in EXAMPLES if type(v).__name__ == name)
+    # Arbitrary mapping keys can themselves be material identities. Neither
+    # a nested JSON walk nor the typed Mapping decoder may print those keys.
+    for payload in (
+        {"PRIVATE_SPECIES": float("nan")},
+        {"vessels": [{"moles": {"PRIVATE_SPECIES": float("nan")}}]},
+    ):
+        with pytest.raises(m.LabError, match=key) as caught:
+            type(value).from_dict({**value.to_dict(), key: payload})
+        assert caught.value.code is m.ErrorCode.INVALID_PARAMETERS
+        assert "PRIVATE_SPECIES" not in str(caught.value)
+        assert "PRIVATE_SPECIES" not in json.dumps(caught.value.to_dict())
