@@ -1,6 +1,7 @@
 """Public, side-effect-free Lab contract vocabulary."""
 
 from openai4s.lab.devices import DeviceRegistration, DeviceRegistry
+from openai4s.lab.fake import FakeExtractorDevice, fake_registration
 from openai4s.lab.manifest import (
     load_descriptor,
     match_command,
@@ -62,6 +63,8 @@ from openai4s.lab.models import (
 from openai4s.lab.ports import DevicePort, LabLedgerPort, LabManagerPort
 
 __all__ = [
+    "FakeExtractorDevice",
+    "fake_registration",
     "DeviceRegistration",
     "DeviceRegistry",
     "load_descriptor",
