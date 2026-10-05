@@ -13,6 +13,8 @@ Each 400 test fails if the guard is removed: the route goes back to a 500.
 
 from __future__ import annotations
 
+import json
+
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
@@ -46,8 +48,17 @@ def _drive(cfg, runner, path):
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
     handler = object.__new__(handler_cls)
     seen: list[tuple[dict, int]] = []
-    handler._json = lambda obj, code=200: seen.append((obj, code))
-    handler.headers = {local_auth.TOKEN_HEADER: local_auth.load_or_mint(cfg.data_dir)}
+
+    def capture(code, payload, content_type, extra=None, *, security=None):
+        assert content_type == "application/json; charset=utf-8"
+        seen.append((json.loads(payload), code))
+
+    # Keep the production error enrichment and JSON serialization in the path.
+    handler._send = capture
+    handler.headers = {
+        local_auth.TOKEN_HEADER: local_auth.load_or_mint(cfg.data_dir),
+        "X-Request-Id": "project-view-route-test",
+    }
     handler.path = path
     handler._route("GET")
     return seen[-1]
@@ -61,7 +72,12 @@ def test_action_timeline_rejects_a_non_integer_limit(tmp_path):
             cfg, runner, "/api/v1/projects/default/action-timeline?limit=abc"
         )
         assert code == 400
-        assert body["error"] == "limit must be an integer"
+        assert body == {
+            "error": "limit must be an integer",
+            "code": "invalid_limit",
+            "status": 400,
+            "request_id": "project-view-route-test",
+        }
     finally:
         runner.close()
 
@@ -72,7 +88,12 @@ def test_lineage_rejects_a_non_integer_limit(tmp_path):
     try:
         body, code = _drive(cfg, runner, "/api/v1/projects/default/lineage?limit=xyz")
         assert code == 400
-        assert body["error"] == "limit must be an integer"
+        assert body == {
+            "error": "limit must be an integer",
+            "code": "invalid_limit",
+            "status": 400,
+            "request_id": "project-view-route-test",
+        }
     finally:
         runner.close()
 
