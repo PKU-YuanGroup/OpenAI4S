@@ -138,6 +138,15 @@ function cspBuildGuard(): Plugin {
       if (!existsSync(outDir)) {
         throw new Error(`build output missing: ${outDir}`);
       }
+      // Vite preserves the source index.html's line endings, so a CRLF
+      // checkout (Git for Windows' default core.autocrlf) emits a CRLF
+      // dist/index.html and the committed-dist drift gate fails on a clean
+      // build. The emitted shell is canonical LF on every checkout.
+      const emittedHtml = join(outDir, "index.html");
+      writeFileSync(
+        emittedHtml,
+        readFileSync(emittedHtml, "utf8").replace(/\r\n/g, "\n"),
+      );
       scanHtmlForInlineScripts(outDir);
       writeDistReadmes(outDir, "Workbench build output", "Workbench 构建产物");
       const assetsDir = join(outDir, "assets");
