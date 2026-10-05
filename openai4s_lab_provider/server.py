@@ -1,0 +1,145 @@
+"""One process, one session, one reader. Receipt retention is process-local."""
+
+import sys
+import traceback
+from collections import OrderedDict
+
+from . import PROTOCOL_VERSION
+from .protocol import (
+    MAX_FRAME_BYTES,
+    BackendError,
+    ProtocolError,
+    decode_frame,
+    encode_frame,
+    failed_receipt,
+)
+
+
+class Server:
+    def __init__(self, backend):
+        self.backend = backend
+        self.opened = False
+        self.receipts = OrderedDict()
+        self.fences = {}
+
+    def dispatch(self, op, args):
+        keys = {
+            "hello": set(),
+            "describe": {"profile"},
+            "open": {"profile", "seed", "options", "expected_capability_revision"},
+            "execute": {"provider_command_id", "command", "fencing_tokens"},
+            "query": {"provider_command_id"},
+            "stop": {"reason"},
+            "close": set(),
+        }
+        if op not in keys:
+            raise ProtocolError("unknown operation")
+        if set(args) != keys[op]:
+            raise BackendError("invalid_parameters", "invalid operation arguments")
+        if op == "hello":
+            return {
+                "protocol": PROTOCOL_VERSION,
+                "backend": self.backend.name,
+                "backend_version": self.backend.version,
+            }
+        if op == "describe":
+            return self.backend.describe(**args)
+        if op == "close":
+            self.backend.close()
+            return {"closed": True}
+        if op == "open":
+            if self.opened:
+                raise BackendError("invalid_parameters", "a session was already opened")
+            result = self.backend.open(**args)
+            self.opened = True
+            return result
+        if not self.opened:
+            raise BackendError("run_not_found", "no open session")
+        if op == "stop":
+            return self.backend.stop(**args)
+        command_id = args["provider_command_id"]
+        if not isinstance(command_id, str) or not 1 <= len(command_id) <= 128:
+            raise BackendError("invalid_parameters", "invalid provider command id")
+        if command_id in self.receipts:
+            self.receipts.move_to_end(command_id)
+            return self.receipts[command_id]
+        if op == "query":
+            return {"known": False}
+        tokens = args["fencing_tokens"]
+        if (
+            not isinstance(args["command"], dict)
+            or not isinstance(tokens, dict)
+            or any(
+                not isinstance(k, str) or type(v) is not int or v < 0
+                for k, v in tokens.items()
+            )
+        ):
+            raise BackendError(
+                "invalid_parameters", "invalid command or fencing tokens"
+            )
+        stale = any(
+            token < self.fences.get(resource, -1) for resource, token in tokens.items()
+        )
+        # Remember every observed maximum, including other resources of a stale batch.
+        for resource, token in tokens.items():
+            self.fences[resource] = max(token, self.fences.get(resource, -1))
+        if stale:
+            result = failed_receipt(
+                command_id, "resource_busy", "stale resource fencing token"
+            )
+        else:
+            result = self.backend.execute(**args)
+        self.receipts[command_id] = result
+        if len(self.receipts) > 256:
+            self.receipts.popitem(last=False)
+        return result
+
+    def serve(self, source, sink):
+        try:
+            while True:
+                data = source.readline(MAX_FRAME_BYTES + 1)
+                if not data:
+                    return
+                request_id = "invalid"
+                close = False
+                try:
+                    frame = decode_frame(data)
+                    request_id = frame["id"]
+                    result = self.dispatch(frame["op"], frame["args"])
+                    response = {"v": 1, "id": request_id, "ok": True, "result": result}
+                    close = frame["op"] == "close"
+                except (ProtocolError, BackendError) as exc:
+                    # Invalid framing is unrecoverable: do not consume the rest of an oversized line.
+                    response = {
+                        "v": 1,
+                        "id": request_id,
+                        "ok": False,
+                        "error": {
+                            "code": getattr(exc, "code", "provider_protocol_error"),
+                            "message": str(exc),
+                        },
+                    }
+                    close = isinstance(exc, ProtocolError)
+                except Exception as exc:
+                    # Arbitrary exception text and source lines can embed simulator truth.
+                    # Emit stack locations only, never locals, source, or exception values.
+                    print("Backend traceback (values redacted):", file=sys.stderr)
+                    for item in traceback.extract_tb(exc.__traceback__):
+                        print(f"  {item.name}:{item.lineno}", file=sys.stderr)
+                    message = f"{type(exc).__name__}: backend operation failed"
+                    print(message, file=sys.stderr)
+                    response = {
+                        "v": 1,
+                        "id": request_id,
+                        "ok": False,
+                        "error": {
+                            "code": "provider_protocol_error",
+                            "message": message,
+                        },
+                    }
+                sink.write(encode_frame(response, response=True))
+                sink.flush()
+                if close:
+                    return
+        finally:
+            self.backend.close()
