@@ -1,3 +1,4 @@
+import type { ComputeReadState } from "../features/sessions/compute";
 import { field } from "./signal-field";
 
 /** app.js:2784 — ledger page size; window export in F-05. */
@@ -58,7 +59,7 @@ export const _workbenchTimer = field(() => null as unknown);
 /** S._branchConversationTimer — app.js:3391 */
 export const _branchConversationTimer = field(() => null as unknown);
 /** S.computeStatus — app.js:7153 */
-export const computeStatus = field(() => null as unknown);
+export const computeStatus = field<ComputeReadState | null>(() => null);
 
 export const timelineSignals = {
   actionTimeline,
