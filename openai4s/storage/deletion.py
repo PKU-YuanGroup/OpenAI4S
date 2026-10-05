@@ -468,6 +468,19 @@ class SessionDeletionRepository:
                 execution_params,
             )
         if roots:
+            # Both session and project deletion arrive here with their roots.
+            # Lab rows have no project_id: delete them before the frames vanish.
+            for table in (
+                "lab_events",
+                "lab_leases",
+                "lab_evaluations",
+                "lab_observations",
+                "lab_commands",
+                "lab_runs",
+            ):
+                self._delete_counted(
+                    deleted_rows, table, f"root_frame_id IN {self._marks(roots)}", roots
+                )
             self._delete_counted(
                 deleted_rows,
                 "background_exec_receipts",
