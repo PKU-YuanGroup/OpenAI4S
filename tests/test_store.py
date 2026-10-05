@@ -6,6 +6,7 @@ that drops or renames a column fails here first.
 """
 
 import hashlib
+import os
 import sqlite3
 
 import pytest
@@ -512,6 +513,84 @@ def test_version_for_path_breaks_timestamp_ties_by_newest_row(monkeypatch, tmp_p
             "/live/tied.txt", root_frame_id=None, project_id="default"
         )
         == second["version_id"]
+    )
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "exact",
+        "normalised",
+        pytest.param(
+            "symlink",
+            marks=pytest.mark.skipif(
+                os.name != "posix", reason="snapshot symlink aliases require POSIX"
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("live_exists", [False, True])
+def test_version_for_path_resolves_frozen_inputs_with_exact_version_and_scope(
+    tmp_path, alias, live_exists
+):
+    """The kernel reads immutable snapshots returned by host.artifact_path."""
+    store = _store(tmp_path / "data")
+    frame = store.new_frame(kind="turn", project_id="snapshot-inputs")
+    sibling = store.new_frame(kind="turn", project_id="snapshot-inputs")
+    live = tmp_path / "input.csv"
+    body = b"value\n1\n"
+    if live_exists:
+        live.write_bytes(body)
+    snapshots = [tmp_path / "first.csv", tmp_path / "second.csv"]
+    versions = []
+    for index, snapshot in enumerate(snapshots):
+        snapshot.write_bytes(body)
+        versions.append(
+            store.save_artifact(
+                path=str(live),
+                snapshot_path=str(snapshot),
+                filename="input.csv",
+                content_type="text/csv",
+                size_bytes=len(body),
+                checksum=hashlib.sha256(body).hexdigest(),
+                frame_id=frame,
+                artifact_id=versions[0]["artifact_id"] if versions else None,
+                source={"annotation": index},
+            )
+        )
+
+    for index, snapshot in enumerate(snapshots):
+        read_path = snapshot
+        if alias == "normalised":
+            alias_parent = tmp_path / f"alias-{index}"
+            alias_parent.mkdir()
+            read_path = alias_parent / ".." / snapshot.name
+        elif alias == "symlink":
+            read_path = tmp_path / f"alias-{index}.csv"
+            read_path.symlink_to(snapshot)
+        assert (
+            store.version_for_path(
+                str(read_path), root_frame_id=frame, project_id="snapshot-inputs"
+            )
+            == versions[index]["version_id"]
+        )
+        assert (
+            store.version_for_path(
+                str(read_path), root_frame_id=sibling, project_id="snapshot-inputs"
+            )
+            is None
+        )
+        assert (
+            store.version_for_path(
+                str(read_path), root_frame_id=frame, project_id="other-project"
+            )
+            is None
+        )
+    assert (
+        store.version_for_path(
+            str(live), root_frame_id=frame, project_id="snapshot-inputs"
+        )
+        == versions[1]["version_id"]
     )
 
 
