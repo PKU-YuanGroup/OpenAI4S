@@ -34,6 +34,7 @@ vi.mock("preact/hooks", () => ({
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
+  hint: vi.fn(),
   alive: (): boolean => true,
   lease: null as unknown,
 }));
@@ -44,6 +45,10 @@ vi.mock("../../i18n", () => ({
   onLanguageChange: () => () => undefined,
 }));
 vi.mock("./use-timer-lease", () => ({ useAlive: () => mocks.alive, useTimerLease: () => mocks.lease }));
+vi.mock("../../features/customize/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../features/customize/host")>()),
+  hint: mocks.hint,
+}));
 vi.mock("../../features/customize/actions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../features/customize/actions")>()),
   custTab: vi.fn(),
@@ -103,6 +108,7 @@ beforeEach(() => {
   hookCursor = 0;
   effects.length = 0;
   mocks.lease = createTimerLease();
+  mocks.hint.mockReset();
   mocks.fetch.mockReset().mockImplementation((url: string) =>
     reply(url === "/api/v1/compute/jobs" ? RUNNING : url === "/api/v1/compute/gpu" ? { available: false } : {}),
   );
@@ -135,6 +141,27 @@ describe("Compute job polling", () => {
     await flush();
     expect(jobReads()).toBe(4);
     expect(pendingTimerCount()).toBe(1);
+  });
+
+  it("reports a failed cancel and still re-reads the jobs", async () => {
+    // A cancel that could not stop the job is a 500 now. It used to land in
+    // an empty catch that also skipped the re-read, so nothing said it failed.
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/compute/jobs/job-1/cancel" && init?.method === "POST") {
+        const body = { error: "the job is still running: killed", code: "job_cancel_failed" };
+        return Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve(JSON.stringify(body)) });
+      }
+      return reply(url === "/api/v1/compute/jobs" ? RUNNING : url === "/api/v1/compute/gpu" ? { available: false } : {});
+    });
+    render();
+    effects.splice(0).forEach((effect) => effect());
+    await flush();
+    expect(jobReads()).toBe(1);
+
+    await button("common.cancel").props!.onClick!();
+    await flush();
+    expect(mocks.hint).toHaveBeenCalledWith("toast.failed the job is still running: killed", true);
+    expect(jobReads()).toBe(2);
   });
 
   it("drops an older job read that answers after a newer one", async () => {

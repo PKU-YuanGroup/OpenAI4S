@@ -430,12 +430,15 @@ export function ComputeTab() {
                   type="button"
                   class="outline-btn small"
                   onClick={async () => {
+                    // A failed cancel is a non-2xx now (404 gone, 500 still
+                    // running): say so, and re-read either way so the row
+                    // shows the job's real state rather than a stale Cancel.
                     try {
                       await api(`/compute/jobs/${j.id}/cancel`, { method: "POST" });
-                      await loadJobs();
-                    } catch {
-                      /* original swallowed */
+                    } catch (e) {
+                      hint(t("toast.failed", apiErrorText(e)), true);
                     }
+                    await loadJobs();
                   }}
                 >
                   {t("common.cancel")}

@@ -487,9 +487,22 @@ def _skill_result_status(payload: object) -> int:
     the thing this change exists to remove, and an unrecognised code answers
     400 rather than 200 -- a failure whose kind is unknown is still a failure.
     """
+    return _soft_failure_status(payload, SKILL_FAILURE_STATUS)
+
+
+def _soft_failure_status(payload: object, statuses: Mapping[str, int]) -> int:
+    """Project a service's soft ``{"error", "code"}`` dict onto an HTTP status.
+
+    One projection for every surface that returns soft dictionaries (skills,
+    local compute jobs), so they cannot drift on the rule that matters: keyed
+    on the code, and an error whose code is missing or unmapped is 400, never
+    200. The compute-jobs routes had their own copy that defaulted to 200 and
+    decided "not found" from the mere presence of ``error`` -- which answered
+    a cancel that could not stop a live job with 404.
+    """
     if not isinstance(payload, dict) or not payload.get("error"):
         return 200
-    return SKILL_FAILURE_STATUS.get(str(payload.get("code") or ""), 400)
+    return statuses.get(str(payload.get("code") or ""), 400)
 
 
 #: What one turn may attach as images, in three dimensions. None of these
@@ -14227,7 +14240,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 "before " + operation,
             )
 
-    from openai4s.jobs import JobManager
+    from openai4s.jobs import JOB_FAILURE_STATUS, JobManager
 
     _jobs_mgr = JobManager(cfg.data_dir / "compute-jobs")
     # M2: the daemon exposes code-exec endpoints (kernel/execute, compute/jobs,
@@ -19680,25 +19693,33 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if sub == "/compute/jobs" and method == "POST":
                 b = self._body()
-                self._json(
-                    _jobs_mgr.submit(
-                        b.get("command") or b.get("code") or "",
-                        kind=b.get("kind") or "bash",
-                        cwd=b.get("cwd"),
-                        # Optional, and bounded by the manager. Omitting it
-                        # takes the default deadline rather than the unbounded
-                        # run this route used to give every caller.
-                        deadline_s=b.get("deadline_s"),
-                    )
+                payload = _jobs_mgr.submit(
+                    b.get("command") or b.get("code") or "",
+                    kind=b.get("kind") or "bash",
+                    cwd=b.get("cwd"),
+                    # Optional, and bounded by the manager. Omitting it
+                    # takes the default deadline rather than the unbounded
+                    # run this route used to give every caller.
+                    deadline_s=b.get("deadline_s"),
                 )
+                # The manager refuses with soft dicts; the gateway is where a
+                # domain failure becomes an HTTP one. As 200 a refused submit
+                # read as an accepted one -- `api()` only throws on non-2xx.
+                self._json(payload, _soft_failure_status(payload, JOB_FAILURE_STATUS))
                 return
             m = re.fullmatch(r"/compute/jobs/([^/]+)/cancel", sub)
             if m and method == "POST":
-                self._json(_jobs_mgr.cancel(m.group(1)))
+                # Two failures, told apart by code: `job_not_found` is 404, and
+                # `job_cancel_failed` -- the job exists and is still running --
+                # is 500. Deciding 404 from the mere presence of `error`
+                # answered the second one as "no such job".
+                payload = _jobs_mgr.cancel(m.group(1))
+                self._json(payload, _soft_failure_status(payload, JOB_FAILURE_STATUS))
                 return
             m = re.fullmatch(r"/compute/jobs/([^/]+)", sub)
             if m and method == "GET":
-                self._json(_jobs_mgr.get(m.group(1)))
+                payload = _jobs_mgr.get(m.group(1))
+                self._json(payload, _soft_failure_status(payload, JOB_FAILURE_STATUS))
                 return
             if sub == "/environments/status" and method == "GET":
                 self._json(self._environments_status())

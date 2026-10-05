@@ -8261,15 +8261,102 @@
         "type": "object"
       }
     },
-    "GET /compute/jobs/([^/]+) [ok]": {
+    "GET /compute/jobs/([^/]+) [error]": {
       "schema": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
           }
         },
         "required": [
-          "error"
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /compute/jobs/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "number"
+          },
+          "deadline_s": {
+            "type": "number"
+          },
+          "dropped_bytes": {
+            "type": "integer"
+          },
+          "duration_s": {
+            "type": "number"
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          },
+          "retained_bytes": {
+            "type": "integer"
+          },
+          "seen_bytes": {
+            "type": "integer"
+          },
+          "started_at": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command",
+          "created_at",
+          "deadline_s",
+          "dropped_bytes",
+          "duration_s",
+          "exit_code",
+          "finished_at",
+          "id",
+          "kind",
+          "output",
+          "retained_bytes",
+          "seen_bytes",
+          "started_at",
+          "status",
+          "truncated"
         ],
         "type": "object"
       }
@@ -29438,15 +29525,92 @@
         "type": "object"
       }
     },
-    "POST /compute/jobs [ok]": {
+    "POST /compute/jobs [error]": {
       "schema": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
           }
         },
         "required": [
-          "error"
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /compute/jobs [ok]": {
+      "schema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "number"
+          },
+          "deadline_s": {
+            "type": "number"
+          },
+          "dropped_bytes": {
+            "type": "integer"
+          },
+          "duration_s": {
+            "type": "number"
+          },
+          "exit_code": {
+            "type": "null"
+          },
+          "finished_at": {
+            "type": "null"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "retained_bytes": {
+            "type": "integer"
+          },
+          "seen_bytes": {
+            "type": "integer"
+          },
+          "started_at": {
+            "type": "number"
+          },
+          "status": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command",
+          "created_at",
+          "deadline_s",
+          "dropped_bytes",
+          "duration_s",
+          "exit_code",
+          "finished_at",
+          "id",
+          "kind",
+          "retained_bytes",
+          "seen_bytes",
+          "started_at",
+          "status",
+          "truncated"
         ],
         "type": "object"
       }
@@ -29484,15 +29648,44 @@
         "type": "object"
       }
     },
+    "POST /compute/jobs/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /compute/jobs/([^/]+)/cancel [ok]": {
       "schema": {
         "properties": {
-          "error": {
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
             "type": "string"
           }
         },
         "required": [
-          "error"
+          "ok",
+          "status"
         ],
         "type": "object"
       }

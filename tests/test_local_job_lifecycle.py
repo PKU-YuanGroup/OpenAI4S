@@ -339,7 +339,10 @@ def test_a_cleanly_finished_job_leaves_no_receipt_behind(tmp_path):
 
     second = JobManager(root=tmp_path / "jobs")
 
-    assert second.get(submitted["id"]) == {"error": "job not found"}
+    assert second.get(submitted["id"]) == {
+        "error": "job not found",
+        "code": "job_not_found",
+    }
     assert list((tmp_path / "jobs" / "receipts").glob("*.json")) == []
 
 
@@ -355,7 +358,10 @@ def test_a_corrupt_receipt_does_not_stop_the_daemon_starting(tmp_path):
     manager = JobManager(root=root)
 
     assert manager.get("job-live")["status"] == "abandoned"
-    assert manager.get("job-broken") == {"error": "job not found"}
+    assert manager.get("job-broken") == {
+        "error": "job not found",
+        "code": "job_not_found",
+    }
 
 
 # --- no raw exception text on a public surface ------------------------------

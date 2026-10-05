@@ -12,6 +12,7 @@ registry (bounded), live output capture.
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import subprocess
@@ -72,6 +73,32 @@ MAX_JOB_DEADLINE_S = 24 * 3600.0
 #: `abandoned` is terminal in exactly the same sense, and deliberately distinct
 #: from `cancelled`: nobody cancelled it, the daemon that was watching it died.
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled", "timeout", "abandoned"})
+
+#: Every refusal `JobManager` can report, as a stable machine-readable code and
+#: the HTTP status the gateway turns it into -- the jobs counterpart of
+#: `server/skills.py`'s `SKILL_FAILURE_STATUS`, kept beside the codes it maps.
+#:
+#: The soft-dictionary return shape stays: the manager is called from tests and
+#: not only from a request. What was missing is that the compute-jobs routes
+#: answered all of these 200, and `api()` in the web client only throws on a
+#: non-2xx, so a missing job read as "output empty" and a refused submit as an
+#: accepted one. The code is the contract; the status is a projection of it.
+JOB_FAILURE_STATUS: dict[str, int] = {
+    "job_empty_command": 400,
+    "job_bad_command": 400,
+    "job_bad_kind": 400,
+    "job_bad_deadline": 400,
+    "job_bad_cwd": 400,
+    "job_cwd_escape": 400,
+    "job_not_found": 404,
+    "job_capacity": 429,
+    "job_workspace_unavailable": 500,
+    # The job exists and is still running: the stop the daemon sent did not
+    # end it. Not 404 -- the one thing certain about this job is that it is
+    # there.
+    "job_cancel_failed": 500,
+    "job_manager_closed": 503,
+}
 
 #: What `Job.receipt` writes and `JobManager._adopt_abandoned` may read back.
 #: One tuple because the two are one contract read from opposite ends of a
@@ -423,17 +450,35 @@ class JobManager:
         *,
         deadline_s: float | None = None,
     ) -> dict:
+        # Typed refusals, not crashes. These arrive straight from a JSON body,
+        # and `.strip()` on a number or `os.path.join` on a list raised out of
+        # the route as a 500 for what is squarely a client error.
+        if command is not None and not isinstance(command, str):
+            return {"error": "command must be a string", "code": "job_bad_command"}
+        if cwd is not None and (not isinstance(cwd, str) or "\x00" in cwd):
+            return {"error": "cwd must be a path string", "code": "job_bad_cwd"}
         command = (command or "").strip()
         if not command:
-            return {"error": "empty command"}
-        kind = kind if kind in ("bash", "python") else "bash"
+            return {"error": "empty command", "code": "job_empty_command"}
+        # Refused, not coerced. A mistyped kind used to fall back to bash, so
+        # `{"kind": "Python", "command": "import os"}` ran Python source under
+        # `bash -c` and was reported as an accepted job.
+        if kind not in ("bash", "python"):
+            return {"error": 'kind must be "bash" or "python"', "code": "job_bad_kind"}
         try:
             deadline = float(
                 DEFAULT_JOB_DEADLINE_S if deadline_s is None else deadline_s
             )
         except (TypeError, ValueError):
             return {"error": "deadline_s must be a number", "code": "job_bad_deadline"}
-        if deadline <= 0 or deadline > MAX_JOB_DEADLINE_S:
+        # NaN compares False against both bounds, so without `isfinite` it
+        # passed this check: the Timer fired at once, and the job row carried a
+        # bare `NaN` that `JSON.parse` rejects -- blanking the whole Jobs list.
+        if (
+            not math.isfinite(deadline)
+            or deadline <= 0
+            or deadline > MAX_JOB_DEADLINE_S
+        ):
             return {
                 "error": (
                     f"deadline_s must be between 0 and {MAX_JOB_DEADLINE_S:g} seconds"
@@ -456,7 +501,7 @@ class JobManager:
             # nothing was gained by making it first.
             wd = os.path.realpath(candidate)
             if wd != base and os.path.commonpath((base, wd)) != base:
-                return {"error": "cwd escapes the jobs root"}
+                return {"error": "cwd escapes the jobs root", "code": "job_cwd_escape"}
         else:
             wd = base
         try:
@@ -675,7 +720,7 @@ class JobManager:
         """
         job = self._jobs.get(job_id)
         if not job:
-            return {"error": "job not found"}
+            return {"error": "job not found", "code": "job_not_found"}
         with job._lock:  # atomic with _run's spawn claim and terminal write
             if job.status in TERMINAL_STATUSES:
                 return {"ok": True, "status": job.status}
@@ -740,6 +785,7 @@ class JobManager:
                 "ok": False,
                 "status": status,
                 "error": f"the job is still running: {detail}",
+                "code": "job_cancel_failed",
             }
         self._persist(job)
         return {"ok": True, "status": status}
@@ -752,7 +798,7 @@ class JobManager:
     def get(self, job_id: str) -> dict:
         job = self._jobs.get(job_id)
         if not job:
-            return {"error": "job not found"}
+            return {"error": "job not found", "code": "job_not_found"}
         return job.to_dict(with_output=True)
 
     def close(self) -> dict:
