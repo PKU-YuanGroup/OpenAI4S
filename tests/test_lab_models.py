@@ -171,23 +171,23 @@ def test_missing_required(value, key):
 
 
 @pytest.mark.parametrize(
-    "bad", [True, float("nan"), float("inf"), -float("inf"), "200", None]
-)
-@pytest.mark.parametrize(
-    "name,key",
+    "name,key,bad",
     [
-        ("Quantity", "value"),
-        ("CommandRequest", "expected_revision"),
-        ("Receipt", "step_index"),
-        ("Observation", "sim_time"),
-        ("Evaluation", "reward"),
-        ("Budgets", "max_steps"),
-        ("SessionOpenRequest", "seed"),
+        (name, key, bad)
+        for name, key in (
+            ("Quantity", "value"),
+            ("CommandRequest", "expected_revision"),
+            ("Receipt", "step_index"),
+            ("Observation", "sim_time"),
+            ("Evaluation", "reward"),
+            ("Budgets", "max_steps"),
+            ("SessionOpenRequest", "seed"),
+        )
+        for bad in (True, float("nan"), float("inf"), -float("inf"), "200", None)
+        if not (name == "SessionOpenRequest" and bad is None)
     ],
 )
 def test_numeric_types(name, key, bad):
-    if name == "SessionOpenRequest" and bad is None:
-        return  # seed explicitly allows null
     value = next(v for v in EXAMPLES if type(v).__name__ == name)
     data = value.to_dict()
     data[key] = bad
