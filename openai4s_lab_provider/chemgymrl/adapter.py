@@ -255,8 +255,11 @@ class Backend:
                 "channels": mapping.decode_observation(vector.tolist(), layout),
                 "sim_time": 0.0,
             }
-            # reset supplies no reward; unknown is null, not a fabricated zero.
-            evaluation = {"reward": None, "ground_truth": _truth(env)}
+            # Upstream reset computes this baseline before returning its observation.
+            evaluation = {
+                "reward": float(env.unwrapped.initial_reward),
+                "ground_truth": _truth(env),
+            }
         except BaseException:
             env.close()
             raise
@@ -270,15 +273,25 @@ class Backend:
             "evaluation": evaluation,
         }
 
+    def _failure(self, command_id, code, message, *, status="failed"):
+        return failed_receipt(
+            command_id,
+            code,
+            message,
+            status=status,
+            sim_time=self.sim_time,
+            step_index=self.step_index,
+        )
+
     @_quiet
     def execute(self, provider_command_id, command, fencing_tokens):
         if provider_command_id in self.receipts:
             return self.receipts[provider_command_id]
         if not self.opened or self.ended:
-            return failed_receipt(provider_command_id, "run_ended", "session has ended")
+            return self._failure(provider_command_id, "run_ended", "session has ended")
         index = mapping.command_to_action(self.rows, self.labels, command)
         if index is None:
-            return failed_receipt(
+            return self._failure(
                 provider_command_id,
                 "unsupported_action",
                 "command has no exact action mapping",
@@ -297,13 +310,13 @@ class Backend:
                 else _drain_volume(source, int(row["parameters"][0][0]))
             )
             if volume <= 0 or float(source.filled_volume()) < volume:
-                return failed_receipt(
+                return self._failure(
                     provider_command_id,
                     "precondition_failed",
                     "source volume is insufficient",
                 )
             if float(target.filled_volume()) + volume > float(target.volume):
-                return failed_receipt(
+                return self._failure(
                     provider_command_id,
                     "precondition_failed",
                     "target capacity would be exceeded",

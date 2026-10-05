@@ -103,6 +103,7 @@ def channel_specs(layout):
         {
             "name": "targets",
             "kind": "category",
+            "shape": [],
             "unit": "dimensionless",
             "source": "simulated_sensor",
             "available": True,

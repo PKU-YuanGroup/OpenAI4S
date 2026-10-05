@@ -125,6 +125,7 @@ def test_live_manifest_receipts_and_seed_reproducibility(provider, profile):
                 "expected_capability_revision": descriptor["capability_revision"],
             },
         )
+        assert type(opened["evaluation"]["reward"]) is float
         stream = [opened["observation"]]
         caps = descriptor["capabilities"]
         empty = next(

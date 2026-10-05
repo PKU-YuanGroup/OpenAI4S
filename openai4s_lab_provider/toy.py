@@ -32,7 +32,12 @@ class Backend:
 
     @property
     def version(self):
-        return {"package": "toy", "version": "1", "adapter_version": ADAPTER_VERSION}
+        return {
+            "package": "toy",
+            "version": "1",
+            "source_sha": "builtin",
+            "adapter_version": ADAPTER_VERSION,
+        }
 
     def describe(self, profile):
         if profile != PROFILE:
@@ -228,14 +233,24 @@ class Backend:
             return None
         return int(volume["value"])
 
+    def _failure(self, command_id, code, message, *, status="failed"):
+        return failed_receipt(
+            command_id,
+            code,
+            message,
+            status=status,
+            sim_time=float(self._step_index),
+            step_index=self._step_index,
+        )
+
     def execute(self, provider_command_id, command, fencing_tokens):
         if not self._opened:
             raise BackendError("run_not_found", "no open session")
         if self._ended:
-            return failed_receipt(provider_command_id, "run_ended", "session has ended")
+            return self._failure(provider_command_id, "run_ended", "session has ended")
         action = self._action(command)
         if action is None:
-            return failed_receipt(
+            return self._failure(
                 provider_command_id,
                 "unsupported_action",
                 "command does not match a toy capability",
@@ -244,7 +259,7 @@ class Backend:
         if isinstance(action, int) and (
             action > self._volumes[SOURCE] or self._volumes[TARGET] + action > 1000
         ):
-            return failed_receipt(
+            return self._failure(
                 provider_command_id,
                 "precondition_failed",
                 "insufficient source volume or target capacity",

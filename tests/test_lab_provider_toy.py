@@ -120,6 +120,7 @@ def _assert_no_truth(value):
 def test_toy_process_full_lifecycle(provider):
     client = provider()
     hello = _request(client, "hello", {})
+    assert hello["backend_version"]["source_sha"] == "builtin"
     assert hello["protocol"] == 1
     assert hello["backend"] == "toy"
     opened = _open(client)
@@ -347,3 +348,18 @@ def test_fencing_requires_all_capability_resources(provider):
     assert failure.value.code == "invalid_parameters"
     assert _query(client, "missing-fence") == {"known": False}
     assert _execute(client, "complete-fence")["step_index"] == 1
+
+
+def test_failed_receipts_preserve_current_simulation_position(provider):
+    client = provider()
+    _open(client)
+    _execute(client, "first", command=_command(600))
+    failed = _execute(client, "insufficient", command=_command(600))
+    rejected = _execute(client, "off-grid", command=_command(201))
+    stale = _execute(client, "stale", tokens={SOURCE: 0, TARGET: 0})
+    _request(client, "stop", {"reason": "test"})
+    ended = _execute(client, "ended")
+    for receipt in (failed, rejected, stale, ended):
+        assert not receipt["applied"]
+        assert receipt["sim_time"] == 1.0
+        assert receipt["step_index"] == 1

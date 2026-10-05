@@ -87,8 +87,10 @@ All line references below refer to the fixed upstream commit.
   convention: sum each applied action's `dt` plus its positive mix parameter,
   once per multi-vessel action. Negative mixing does not reverse time.
   This is not wall-clock time and adds no physical-model assumption.
-- Full states and rewards exist only under `evaluation`; initial reward is
-  null because reset returns no reward. Third-party stdout/stderr are discarded
+- Full states and rewards exist only under `evaluation`. Initial evaluation
+  reads the actual baseline `env.unwrapped.initial_reward` computed by upstream
+  `_reset` (`benches/general_bench.py:230–231`); subsequent rewards are the
+  raw values returned by step (including its terminal baseline subtraction). Third-party stdout/stderr are discarded
   at fd level. Unexpected exceptions expose type and generic summary plus
   stack locations, never exception values, locals or source lines.
 

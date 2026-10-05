@@ -103,7 +103,9 @@ def encode_frame(frame, *, response=False, max_frame_bytes=MAX_FRAME_BYTES):
     return data
 
 
-def failed_receipt(command_id, code, message, *, status="failed"):
+def failed_receipt(
+    command_id, code, message, *, status="failed", sim_time=0.0, step_index=0
+):
     return {
         "provider_command_id": command_id,
         "applied": False,
@@ -111,8 +113,8 @@ def failed_receipt(command_id, code, message, *, status="failed"):
         "error": {"code": code, "message": message},
         "raw": {"terminated": False, "truncated": False},
         "end_reason": None,
-        "sim_time": None,
-        "step_index": None,
+        "sim_time": sim_time,
+        "step_index": step_index,
         "observation": None,
         "evaluation": None,
     }

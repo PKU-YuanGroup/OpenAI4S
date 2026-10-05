@@ -129,6 +129,7 @@ def test_observation_vessel_major_and_no_truth():
     assert channels[0]["value"] == [[0.2] * 100, [0.8] * 100]
     assert channels[0]["shape"] == [2, 100]
     assert channels[1]["kind"] == "category" and channels[1]["value"] == "NaCl"
+    assert channels[1]["shape"] == []
     assert all(
         c["source"] == "simulated_sensor" and c["quality"] == "ok" for c in channels
     )

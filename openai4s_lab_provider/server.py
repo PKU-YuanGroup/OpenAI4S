@@ -23,6 +23,8 @@ class Server:
         self.receipts = getattr(backend, "receipts", OrderedDict())
         self.fences = {}
         self.resource_sets = {}
+        self.sim_time = 0.0
+        self.step_index = 0
 
     def dispatch(self, op, args):
         keys = {
@@ -54,6 +56,7 @@ class Server:
                 raise BackendError("invalid_parameters", "a session was already opened")
             result = self.backend.open(**args)
             self.opened = True
+            self.sim_time = result["observation"]["sim_time"]
             self.resource_sets = {
                 c["capability_id"]: set(c["resources"])
                 for c in result["descriptor"]["capabilities"]
@@ -97,10 +100,17 @@ class Server:
             self.fences[resource] = max(token, self.fences.get(resource, -1))
         if stale:
             result = failed_receipt(
-                command_id, "resource_busy", "stale resource fencing token"
+                command_id,
+                "resource_busy",
+                "stale resource fencing token",
+                sim_time=self.sim_time,
+                step_index=self.step_index,
             )
         else:
             result = self.backend.execute(**args)
+        if result["applied"]:
+            self.sim_time = result["sim_time"]
+            self.step_index = result["step_index"]
         self.receipts[command_id] = result
         if len(self.receipts) > 256:
             self.receipts.popitem(last=False)
