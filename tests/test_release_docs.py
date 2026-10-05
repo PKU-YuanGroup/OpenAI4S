@@ -233,10 +233,10 @@ def test_the_upgrade_guide_says_what_old_records_and_a_failed_upgrade_look_like(
     assert "包列表未知" in chinese
 
 
-# -- upgrading to the next release (schema 32 → 34) ---------------------------
+# -- upgrading to the next release (schema 32 → 35) ---------------------------
 
-NEXT_RELEASE_EN = "## Upgrading to the next release (schema 32 → 34)"
-NEXT_RELEASE_ZH = "## 升级到下一版本（schema 32 → 34）"
+NEXT_RELEASE_EN = "## Upgrading to the next release (schema 32 → 35)"
+NEXT_RELEASE_ZH = "## 升级到下一版本（schema 32 → 35）"
 
 
 def test_the_next_release_upgrade_section_names_the_migration_the_backup_and_no_downgrade():
@@ -250,7 +250,7 @@ def test_the_next_release_upgrade_section_names_the_migration_the_backup_and_no_
         re.search(r"^SCHEMA_VERSION = (\d+)$", MIGRATIONS.read_text("utf-8"), re.M)[1]
     )
     assert (
-        current >= 34
+        current >= 35
     ), "the next-release section names a schema this tree does not reach"
     english = " ".join(_section(UPGRADING, NEXT_RELEASE_EN).split())
     chinese = " ".join(_section(UPGRADING_ZH, NEXT_RELEASE_ZH).split())

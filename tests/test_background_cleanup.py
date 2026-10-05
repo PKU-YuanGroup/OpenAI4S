@@ -1536,9 +1536,9 @@ def test_v34_migration_denies_agent_sql_and_session_delete_removes_receipts(
 
     cfg, store = _cfg_store(tmp_path)
     try:
-        assert store.schema_state()["version"] == SCHEMA_VERSION == 34
-        names = [row["name"] for row in store.schema_state()["applied"]]
-        assert names[-1] == "background_exec_receipts"
+        assert store.schema_state()["version"] == SCHEMA_VERSION == 35
+        names = {row["version"]: row["name"] for row in store.schema_state()["applied"]}
+        assert names[34] == "background_exec_receipts"
         assert "background_exec_receipts" not in store.schema()
         with pytest.raises(PermissionError, match="background_exec_receipts"):
             store.query("SELECT output FROM background_exec_receipts")
