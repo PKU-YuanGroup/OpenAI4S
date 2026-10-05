@@ -114,7 +114,11 @@ def test_folders_order_rename_assignment_and_delete(tmp_path):
         "Zulu",
     ]
 
-    repository.rename(zulu["folder_id"], "Beta")
+    assert repository.rename(zulu["folder_id"], "Beta") is True
+    # A matched row whose value does not change is still a match, and an id no
+    # row has is reported rather than silently accepted.
+    assert repository.rename(zulu["folder_id"], "Beta") is True
+    assert repository.rename("fold_missing", "Beta") is False
     assert [row["name"] for row in repository.list("science")] == [
         "Alpha",
         "Beta",

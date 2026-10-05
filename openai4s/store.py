@@ -4755,8 +4755,8 @@ class Store:
     def project_of_folder(self, folder_id: str) -> str | None:
         return self._folders.project_of(folder_id)
 
-    def rename_folder(self, folder_id: str, name: str) -> None:
-        self._folders.rename(folder_id, name)
+    def rename_folder(self, folder_id: str, name: str) -> bool:
+        return self._folders.rename(folder_id, name)
 
     def delete_folder(self, folder_id: str) -> None:
         self._folders.delete(folder_id)
@@ -5649,8 +5649,8 @@ class Store:
                     pass
         return updated
 
-    def set_connector_enabled(self, connector_id: str, enabled: bool) -> None:
-        self._connectors.set_enabled(connector_id, enabled)
+    def set_connector_enabled(self, connector_id: str, enabled: bool) -> bool:
+        return self._connectors.set_enabled(connector_id, enabled)
 
     # --- compute jobs ----------------------------------------------------
     def create_compute_job(self, **kw) -> dict:

@@ -14906,7 +14906,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 except Exception:  # noqa: BLE001 — undecidable is refused
                     raise GatewayError(404, "not found") from None
                 if project_id is None:
-                    return  # unknown id: the handler answers for it
+                    # Not left to the handler: it answers a missing id with
+                    # its own body -- a rename's `folder not found`, an
+                    # idempotent DELETE's 200 -- which told a member whether
+                    # a guessed id exists in a project they cannot read.
+                    raise GatewayError(404, "not found")
                 if not team_policy.may_read_project(store, identity, project_id):
                     raise GatewayError(404, "not found")
                 return
@@ -17015,7 +17019,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m:
                 folder_id = m.group(1)
                 if method in ("PUT", "PATCH"):
-                    store.rename_folder(folder_id, self._body().get("name") or "")
+                    # A rename naming no row answered 200, indistinguishable
+                    # from one that landed — the same defect #206 closed for
+                    # project edits. Keyed on whether the UPDATE itself matched,
+                    # so a DELETE racing a separate existence check cannot turn
+                    # it back into a false success. DELETE below stays
+                    # idempotent by design.
+                    name = self._body().get("name")
+                    if not isinstance(name, str) or not name.strip():
+                        # `{}` blanked the name and a non-string reached
+                        # sqlite3 as a bound parameter (a 500). Existence is
+                        # answered first, as the connector edit route does, so
+                        # an unknown id stays a 404 whatever the body says.
+                        if store.project_of_folder(folder_id) is None:
+                            raise GatewayError(404, "folder not found")
+                        raise GatewayError(400, "folder name cannot be empty")
+                    if not store.rename_folder(folder_id, name):
+                        raise GatewayError(404, "folder not found")
                     self._json({"ok": True})
                     return
                 if method == "DELETE":
@@ -19039,6 +19059,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method in ("PUT", "PATCH"):
                 name = unquote(m.group(1))
                 enabled = bool(self._body().get("enabled", True))
+                # The GET sibling answers 404 for a name no known agent has,
+                # while this route wrote a capability row for ANY name and
+                # answered ok — an orphan state row and a false success. Asked
+                # of the two sources directly: `_agents_payload` builds every
+                # descriptor and swallows a store failure, which would answer
+                # a real custom agent 404 on a transient error.
+                if (
+                    not any(a["name"] == name for a in _BUILTIN_AGENTS)
+                    and store.get_agent(name, include_disabled=True) is None
+                ):
+                    self._json({"error": "unknown agent"}, 404)
+                    return
                 state = store.set_capability_enabled(
                     "specialist",
                     name,
@@ -19384,7 +19416,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/connectors/([^/]+)/enabled", sub)
             if m and method in ("PUT", "PATCH"):
                 enabled = bool(self._body().get("enabled", True))
-                store.set_connector_enabled(m.group(1), enabled)
+                # An unknown id matched no row and still answered ok, while the
+                # edit and probe siblings answer 404 for the same id. Keyed on
+                # whether the UPDATE itself matched, not on a separate read a
+                # concurrent DELETE could invalidate.
+                if not store.set_connector_enabled(m.group(1), enabled):
+                    self._json({"error": "connector not found"}, 404)
+                    return
                 if not enabled:
                     # Disabling wrote the row and left the child running. A
                     # connector the user has switched off should not still be a
