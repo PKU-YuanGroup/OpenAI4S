@@ -874,6 +874,9 @@ _CAPTURE_TEXT_BYTES = b"contract capture, editable\n"
 _CAPTURE_RESERVATION = "resv-contractcapture000000001"
 #: Fixed, so the resolved decision is byte-identical across runs.
 _CAPTURE_DECISION_ID = "dec-contractcapture0001"
+#: A connector row for the toggle route to find. Never spawned: enabling it
+#: only writes the row.
+_CAPTURE_CONNECTOR_ID = "contract-capture-connector"
 #: How long the seeded pass waits for the turns its 202s accepted. Not a budget
 #: for the turn -- it fails immediately without a provider -- but a ceiling, so
 #: a gate can never block on one.
@@ -1123,7 +1126,34 @@ def _drive_seeded_downloads(
         body="capture pin",
     )["annotation_id"]
 
+    # The two toggle routes answer 404 for a name that matches nothing, which
+    # is all the sweep's probe id can elicit -- so the contract published
+    # `statuses: [404]` for routes that succeed on every real toggle, and the
+    # capability row a real enable writes (`metadata.source`) vanished from the
+    # checkpoint shapes captured below. Toggle a real built-in and a real row.
+    from openai4s.specialists import BUILTIN_SPECIALISTS
+
+    store.upsert_connector(
+        connector_id=_CAPTURE_CONNECTOR_ID,
+        name="contract capture",
+        command=["contract-capture"],
+        enabled=True,
+    )
     writes: tuple[tuple[str, str, str, dict[str, list[str]], dict], ...] = (
+        (
+            "PUT",
+            r"/agents/([^/]+)/enabled",
+            f"/agents/{next(iter(BUILTIN_SPECIALISTS))}/enabled",
+            {},
+            {"enabled": True},
+        ),
+        (
+            "PUT",
+            r"/connectors/([^/]+)/enabled",
+            f"/connectors/{_CAPTURE_CONNECTOR_ID}/enabled",
+            {},
+            {"enabled": True},
+        ),
         (
             "POST",
             r"/artifacts/([^/]+)/sandbox-grant",

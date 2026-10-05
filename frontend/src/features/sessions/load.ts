@@ -581,6 +581,27 @@ export function renderSessions(): void {
   list.appendChild(frag);
 }
 
+/**
+ * A folder rename/delete, then a fresh read of both lists either way. A refused
+ * write is usually a folder another tab already deleted (`404`): it used to be
+ * swallowed before the re-read, so the stale row stayed and the menu did
+ * nothing. Now the refusal is reported and the re-read still drops that row.
+ */
+async function folderWrite(write: () => Promise<unknown>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    reportFailure(error);
+  }
+  try {
+    invalidateFolders();
+    await loadFolders({ render: false });
+    await loadSessions();
+  } catch {
+    /* ignore */
+  }
+}
+
 function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string }): void {
   openMenu(anchor, [
     {
@@ -589,17 +610,12 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
       onClick: async () => {
         const n = prompt(t("folder.rename.prompt"), fold.name);
         if (!n) return;
-        try {
-          await api(`/folders/${fold.folder_id}`, {
+        await folderWrite(() =>
+          api(`/folders/${fold.folder_id}`, {
             method: "PATCH",
             body: JSON.stringify({ name: n }),
-          });
-          invalidateFolders();
-          await loadFolders({ render: false });
-          await loadSessions();
-        } catch {
-          /* ignore */
-        }
+          }),
+        );
       },
     },
     {
@@ -608,14 +624,7 @@ function folderMenu(anchor: HTMLElement, fold: { folder_id: string; name: string
       danger: true,
       onClick: async () => {
         if (!confirm(t("folder.delete.confirm", fold.name))) return;
-        try {
-          await api(`/folders/${fold.folder_id}`, { method: "DELETE" });
-          invalidateFolders();
-          await loadFolders({ render: false });
-          await loadSessions();
-        } catch {
-          /* ignore */
-        }
+        await folderWrite(() => api(`/folders/${fold.folder_id}`, { method: "DELETE" }));
       },
     },
   ]);

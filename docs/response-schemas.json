@@ -8605,6 +8605,68 @@
       "schema": {
         "properties": {
           "connectors": {
+            "items": {
+              "properties": {
+                "args": {
+                  "type": "array"
+                },
+                "command": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "command_display": {
+                  "type": "string"
+                },
+                "connector_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "env_keys": {
+                  "type": "array"
+                },
+                "has_env": {
+                  "type": "boolean"
+                },
+                "managed": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "args",
+                "command",
+                "command_display",
+                "connector_id",
+                "created_at",
+                "description",
+                "enabled",
+                "env_keys",
+                "has_env",
+                "managed",
+                "name",
+                "transport",
+                "updated_at"
+              ],
+              "type": "object"
+            },
             "type": "array"
           }
         },
@@ -21062,6 +21124,31 @@
         "type": "object"
       }
     },
+    "PATCH /agents/([^/]+)/enabled [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /agents/([^/]+)/enabled [ok]": {
       "schema": {
         "properties": {
@@ -22445,6 +22532,31 @@
         "type": "object"
       }
     },
+    "PATCH /connectors/([^/]+)/enabled [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /connectors/([^/]+)/enabled [ok]": {
       "schema": {
         "properties": {
@@ -23243,6 +23355,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /folders/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],
@@ -41819,6 +41956,31 @@
         "type": "object"
       }
     },
+    "PUT /agents/([^/]+)/enabled [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /agents/([^/]+)/enabled [ok]": {
       "schema": {
         "properties": {
@@ -43138,6 +43300,31 @@
         "type": "object"
       }
     },
+    "PUT /connectors/([^/]+)/enabled [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /connectors/([^/]+)/enabled [ok]": {
       "schema": {
         "properties": {
@@ -43939,6 +44126,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /folders/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],

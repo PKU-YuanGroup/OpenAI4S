@@ -199,7 +199,8 @@ def test_enabled_toggle_delete_and_store_facade_feed_mcp_service(tmp_path):
     ]
 
     previous_updated_at = created["updated_at"]
-    store.set_connector_enabled("science", False)
+    assert store.set_connector_enabled("science", False) is True
+    assert store.set_connector_enabled("missing", False) is False
     disabled = store.get_connector("science")
     assert disabled["enabled"] is False
     assert disabled["updated_at"] >= previous_updated_at
