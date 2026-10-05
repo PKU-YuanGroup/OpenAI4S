@@ -630,6 +630,12 @@ class LabLedger:
         sources = _sources(to_state, from_states, _COMMAND_SOURCES)
         values = _fields(fields, _COMMAND_FIELDS)
         with self._transaction():
+            # The state graph includes reconciliation edges, but a bare CAS has
+            # no receipt. It must not consume the only chance to record truth.
+            if "outcome_unknown" in sources:
+                current = self._one("lab_commands", "command_id", command_id)
+                if current is not None and current["state"] == "outcome_unknown":
+                    raise ValueError("Unknown command requires receipt reconciliation")
             now = self._clock_ms()
             values["updated_at"] = now
             if to_state in _COMMAND_TERMINAL:
@@ -822,11 +828,11 @@ class LabLedger:
             run = self._run(command["run_id"])
             now = self._clock_ms()
             applied = receipt["applied"]
-            if type(applied) is not bool or receipt["status"] not in {
-                "succeeded",
-                "failed",
-                "rejected",
-            }:
+            if (
+                type(applied) is not bool
+                or receipt["status"] not in {"succeeded", "failed", "rejected"}
+                or (applied and receipt["status"] != "succeeded")
+            ):
                 raise _ledger_error("invalid_parameters", "Invalid receipt outcome")
             state = (
                 "succeeded"
@@ -842,17 +848,16 @@ class LabLedger:
                 _COMMAND_FIELDS,
             )
             raw = receipt.get("raw") or {}
-            run_fields = (
-                _fields(
-                    {
-                        "raw_terminated": raw.get("terminated"),
-                        "raw_truncated": raw.get("truncated"),
-                    },
-                    _RUN_FIELDS,
-                )
-                if applied
-                else {}
+            # Even an unapplied receipt can signal termination. Validate the
+            # flags before interpreting them, rather than trusting truthiness.
+            raw_fields = _fields(
+                {
+                    "raw_terminated": raw.get("terminated"),
+                    "raw_truncated": raw.get("truncated"),
+                },
+                _RUN_FIELDS,
             )
+            run_fields = raw_fields if applied else {}
             run_fields["updated_at"] = now
             obs = None
             if applied:

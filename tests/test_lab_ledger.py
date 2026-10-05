@@ -732,3 +732,62 @@ def test_sqlite_boundary_errors_never_fall_back(ledger, store, stage):
     )
     assert "secret payload" not in str(error)
     assert snapshot(store) == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"applied": True, "status": "failed"},
+        {"applied": True, "status": "rejected"},
+        {"applied": False, "status": "failed", "raw": {"terminated": "false"}},
+        {"applied": False, "status": "failed", "raw": {"truncated": 1}},
+    ],
+    ids=[
+        "applied-failed",
+        "applied-rejected",
+        "string-termination",
+        "integer-truncation",
+    ],
+)
+def test_invalid_receipt_cannot_advance_or_end_run(ledger, store, changes):
+    ready(ledger)
+    dispatched(ledger)
+    before = snapshot(store)
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.record_receipt(
+            "c1", receipt=receipt(**changes), observation=observation(), evaluation=None
+        ),
+    )
+    assert snapshot(store) == before
+
+
+@pytest.mark.parametrize("target", ["succeeded", "failed"])
+def test_unknown_requires_receipt_reconciliation(ledger, store, target):
+    ready(ledger)
+    dispatched(ledger)
+    ledger.mark_outcome_unknown("c1", error="lost response")
+    before = snapshot(store)
+    with pytest.raises(ValueError, match="receipt reconciliation"):
+        ledger.transition_command("c1", to_state=target)
+    assert snapshot(store) == before
+    # Reconciliation remains possible after refusing the unverified terminal.
+    applied = target == "succeeded"
+    result = ledger.record_receipt(
+        "c1",
+        receipt=receipt(
+            applied=applied,
+            status=target,
+            error=(
+                None
+                if applied
+                else {"code": "precondition_failed", "message": "refused"}
+            ),
+        ),
+        observation=observation() if applied else None,
+        evaluation=None,
+    )
+    assert result["command"]["state"] == target
+    assert result["command"]["receipt"] is not None
+    assert result["run"]["status"] == "ready"
+    assert store._conn.execute("SELECT state FROM lab_leases").fetchone()[0] == "free"
