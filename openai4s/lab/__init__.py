@@ -1,5 +1,13 @@
 """Public, side-effect-free Lab contract vocabulary."""
 
+from openai4s.lab.devices import DeviceRegistration, DeviceRegistry
+from openai4s.lab.manifest import (
+    load_descriptor,
+    match_command,
+    normalize_quantity,
+    project_descriptor,
+    project_observation,
+)
 from openai4s.lab.models import (
     COMMAND_TRANSITIONS,
     CONTRACT,
@@ -54,6 +62,13 @@ from openai4s.lab.models import (
 from openai4s.lab.ports import DevicePort, LabLedgerPort, LabManagerPort
 
 __all__ = [
+    "DeviceRegistration",
+    "DeviceRegistry",
+    "load_descriptor",
+    "match_command",
+    "normalize_quantity",
+    "project_descriptor",
+    "project_observation",
     "Budgets",
     "COMMAND_TRANSITIONS",
     "CONTRACT",
