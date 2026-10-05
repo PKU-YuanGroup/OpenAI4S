@@ -18,6 +18,7 @@ The offline correctness gate for OpenAI4S. `uv run pytest` runs every module her
 
 | File | Responsibility |
 | --- | --- |
+| [`test_provenance_groupby.py`](test_provenance_groupby.py) | Known Artifact tags survive pandas grouped aggregation and column selection; real pandas values/errors, disabled/untracked data, tracing failure, external grouping operands and real Kernel/Store reopen are checked without manually seeded output edges. |
 | [`test_compute_job_routes.py`](test_compute_job_routes.py) | The compute-jobs routes must give a domain failure an HTTP status: an unknown job read or cancel and every refused submit were serialized as 200 carrying a soft `{"error": ...}`, so the workbench showed a missing job as "output empty" and a refused submit as accepted. Now 404 for a missing job, 500 for a cancel that did not stop a live job (not 404 — it exists), 400 for client-input refusals including mistyped fields and a `NaN` deadline, 429/500/503 for capacity/workspace/shutdown, and 400 rather than 200 for an unmapped code — one code-keyed projection (`_soft_failure_status`) shared with skills, and every code the manager returns must be in `JOB_FAILURE_STATUS`. |
 | [`test_dataset_import_live.py`](test_dataset_import_live.py) | Opt-in real PaRoutes import and Store reopen through the native capture transaction; never part of the default offline suite. |
 | [`test_dataset_import.py`](test_dataset_import.py) | Selected-file, permissions, cancellation, native capture, immutable source/reopen and failure/replay contracts using offline fixtures. |

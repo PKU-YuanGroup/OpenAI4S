@@ -885,6 +885,14 @@ independent background-kernel factories, so the host never guesses where a
 relative path came from. Store lookup first uses the exact live path, then a
 physical-path fallback for legacy relative rows and symlink aliases.
 
+Pandas object tags also follow `DataFrame.groupby` / `Series.groupby`, column
+selection, and `agg` / `aggregate` / `count` / `size` / `sum` / `mean` / `min` /
+`max` results. Only known parent, direct operand and result tags are forwarded;
+the normal pandas values and exceptions remain unchanged. This is bounded
+operator coverage, not exhaustive tracking of `apply`, `transform` or hidden
+reads inside user-defined functions. Use `host.save_artifact(input_version_ids=...)`
+when those unsupported transformations require explicit input declarations.
+
 ## Standard-profile readiness admission
 
 [`kernel/readiness.py`](../openai4s/kernel/readiness.py) is the Stage 1,
