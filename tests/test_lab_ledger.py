@@ -201,3 +201,534 @@ def test_transition_cas_and_fields(ledger, store):
     row = ledger.get_command("c1")
     assert row["approval_ref"] == "approved" and row["completed_at"] == 123456
     assert len(row["error"]) == 2000 and row["error"].endswith("…[truncated]")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "stale_revision",
+        "busy",
+        "creating",
+        "quarantined",
+        "ended",
+        "failed",
+        "held",
+        "lease_quarantined",
+        "unknown_holder",
+    ],
+)
+def test_dispatch_refusal_rolls_back_every_table(ledger, store, reason):
+    ready(ledger)
+    ledger.insert_command(command_input())
+    revision = 0
+    expected_code = {
+        "busy": "resource_busy",
+        "creating": "resource_busy",
+        "quarantined": "resource_quarantined",
+        "ended": "run_ended",
+        "failed": "run_ended",
+        "held": "resource_busy",
+        "lease_quarantined": "resource_quarantined",
+        "unknown_holder": "resource_busy",
+    }.get(reason, reason)
+    if reason == "stale_revision":
+        revision = 99
+    elif reason in {"busy", "creating", "quarantined", "ended", "failed"}:
+        store._conn.execute("UPDATE lab_runs SET status=?", (reason,))
+    else:
+        ledger.insert_command(
+            command_input(
+                "holder",
+                state="outcome_unknown" if reason == "unknown_holder" else "running",
+            )
+        )
+        store._conn.execute(
+            "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,holder_command_id,updated_at) VALUES('z-held','r1','root1',?,'holder',1)",
+            ("quarantined" if reason == "lease_quarantined" else "held",),
+        )
+    store._conn.commit()
+    before = snapshot(store)
+    error = assert_code(
+        expected_code,
+        lambda: ledger.begin_dispatch(
+            "c1", resource_keys=["a-new", "z-held"], expected_revision=revision
+        ),
+    )
+    if reason == "stale_revision":
+        assert error.details == {"revision": 0}
+    assert snapshot(store) == before
+
+
+def test_dispatch_fencing_stale_lease_and_order(ledger, store):
+    ready(ledger)
+    ledger.insert_command(command_input("old", state="failed"))
+    store._conn.execute(
+        "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,holder_command_id,fencing_token,updated_at) VALUES('b','r1','root1','held','old',8,1)"
+    )
+    store._conn.commit()
+    ledger.insert_command(command_input())
+    assert (
+        ledger.begin_dispatch(
+            "c1", resource_keys=["b", "a", "b"], expected_revision=0, now_ms=777
+        )
+        == 9
+    )
+    command = ledger.get_command("c1")
+    assert command["resources"] == ["a", "b"] and command["fencing_token"] == 9
+    assert command["dispatched_at"] == command["updated_at"] == 777
+    assert ledger.get_run("r1")["status"] == "busy"
+    leases = [
+        dict(row)
+        for row in store._conn.execute("SELECT * FROM lab_leases ORDER BY resource_key")
+    ]
+    assert [row["fencing_token"] for row in leases] == [9, 9]
+    assert all(
+        row["state"] == "held"
+        and row["holder_command_id"] == "c1"
+        and row["acquired_at"] == 777
+        for row in leases
+    )
+    assert ledger.mark_not_dispatched(
+        "c1", error_code="provider_unavailable", error="not sent"
+    )
+    ledger.insert_command(command_input("c2"))
+    assert ledger.begin_dispatch("c2", resource_keys=["b"], expected_revision=0) == 10
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "begin_dispatch",
+        "record_receipt",
+        "mark_outcome_unknown",
+        "mark_not_dispatched",
+        "append_initial_observation",
+    ],
+)
+def test_composite_writes_are_one_transaction_and_roll_back(ledger, store, operation):
+    if operation == "append_initial_observation":
+        ledger.create_run(run_input())
+
+        def invoke():
+            return ledger.append_initial_observation(
+                "r1", observation=observation(), evaluation=evaluation()
+            )
+
+    else:
+        ready(ledger)
+        ledger.insert_command(command_input())
+        if operation != "begin_dispatch":
+            ledger.begin_dispatch("c1", resource_keys=["a", "b"], expected_revision=0)
+        invoke = {
+            "begin_dispatch": lambda: ledger.begin_dispatch(
+                "c1", resource_keys=["a", "b"], expected_revision=0
+            ),
+            "record_receipt": lambda: ledger.record_receipt(
+                "c1",
+                receipt=receipt(),
+                observation=observation(),
+                evaluation=evaluation(),
+            ),
+            "mark_outcome_unknown": lambda: ledger.mark_outcome_unknown(
+                "c1", error="lost"
+            ),
+            "mark_not_dispatched": lambda: ledger.mark_not_dispatched(
+                "c1", error_code="provider_unavailable", error="not sent"
+            ),
+        }[operation]
+    # Failure happens after the main writes, including observation/evaluation.
+    store._conn.execute(
+        "CREATE TEMP TRIGGER fail_event BEFORE INSERT ON lab_events BEGIN SELECT RAISE(ABORT,'injected private payload'); END"
+    )
+    before = snapshot(store)
+    trace = []
+    store._conn.set_trace_callback(trace.append)
+    try:
+        error = assert_code("persistence_unavailable", invoke)
+    finally:
+        store._conn.set_trace_callback(None)
+    assert "private payload" not in str(error)
+    assert snapshot(store) == before
+    assert trace.count("BEGIN IMMEDIATE") == 1 and trace.count("ROLLBACK") == 1
+    assert "COMMIT" not in trace
+    store._conn.execute("DROP TRIGGER fail_event")
+    trace.clear()
+    store._conn.set_trace_callback(trace.append)
+    try:
+        invoke()
+    finally:
+        store._conn.set_trace_callback(None)
+    assert trace.count("BEGIN IMMEDIATE") == 1 and trace.count("COMMIT") == 1
+    assert "ROLLBACK" not in trace
+
+
+def test_receipt_applies_all_records_and_isolates_evaluation(ledger, store):
+    ready(ledger)
+    dispatched(ledger)
+    original = receipt()
+    result = ledger.record_receipt(
+        "c1", receipt=original, observation=observation(), evaluation=evaluation()
+    )
+    run, command, obs = result["run"], result["command"], result["observation"]
+    assert (
+        run["revision"] == run["step_count"] == 1 and run["consecutive_failures"] == 0
+    )
+    assert (
+        run["status"] == "ready"
+        and run["raw_terminated"] is False
+        and run["raw_truncated"] is False
+    )
+    assert command["state"] == "succeeded" and command["applied_revision"] == 1
+    assert (
+        command["completed_at"] == 123456
+        and command["observation_id"] == obs["observation_id"]
+    )
+    assert (
+        obs["sequence"] == 1
+        and obs["command_id"] == "c1"
+        and obs["root_frame_id"] == "root1"
+    )
+    assert (
+        ledger.list_evaluations("r1")[-1]["ground_truth"]
+        == evaluation()["ground_truth"]
+    )
+    assert ledger.list_evaluations("r1")[-1]["sequence"] == 1
+    lease = store._conn.execute("SELECT * FROM lab_leases").fetchone()
+    assert lease["state"] == "free" and lease["holder_command_id"] is None
+    assert [e["kind"] for e in ledger.events_since("root1")[-3:]] == [
+        "command",
+        "observation",
+        "run",
+    ]
+    assert command["provider_action"] == {"index": 3}
+    assert (
+        "provider_action" not in command["receipt"]
+        and "evaluation" not in command["receipt"]
+    )
+    assert "private_test_value" not in json.dumps(
+        result
+    ) and "reward" not in json.dumps(result)
+    assert original == receipt()
+    before = snapshot(store)
+    with pytest.raises(ValueError):
+        ledger.record_receipt(
+            "c1", receipt=original, observation=observation(), evaluation=evaluation()
+        )
+    assert snapshot(store) == before
+    # Close/reopen the actual Store rather than relying on this repository's reads.
+    path = store.db_path
+    store.close()
+    reopened = Store(path)
+    try:
+        assert reopened.lab.get_command("c1") == command
+        assert reopened.lab.get_run("r1") == run
+    finally:
+        reopened.close()
+
+
+def test_unapplied_receipt_does_not_create_observation(ledger):
+    ready(ledger)
+    dispatched(ledger)
+    result = ledger.record_receipt(
+        "c1",
+        receipt=receipt(
+            applied=False,
+            status="failed",
+            error={"code": "precondition_failed", "message": "x" * 2100},
+        ),
+        observation=None,
+        evaluation=evaluation(),
+    )
+    assert result["observation"] is None and result["command"]["observation_id"] is None
+    assert result["run"]["revision"] == result["run"]["step_count"] == 0
+    assert (
+        result["run"]["consecutive_failures"] == 1
+        and result["run"]["status"] == "ready"
+    )
+    assert (
+        result["command"]["state"] == "failed"
+        and result["command"]["error_code"] == "precondition_failed"
+    )
+    assert (
+        len(result["command"]["error"])
+        == len(result["command"]["receipt"]["error"]["message"])
+        == 2000
+    )
+    assert (
+        len(ledger.list_observations("r1")) == len(ledger.list_evaluations("r1")) == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "flags,reason,expected",
+    [
+        ({"terminated": True, "truncated": False}, None, "env_terminated"),
+        ({"terminated": False, "truncated": True}, None, "env_terminated"),
+        ({"terminated": False, "truncated": False}, "end_action", "end_action"),
+    ],
+)
+def test_receipt_ends_run(ledger, flags, reason, expected):
+    ready(ledger)
+    dispatched(ledger)
+    result = ledger.record_receipt(
+        "c1",
+        receipt=receipt(raw=flags, end_reason=reason),
+        observation=observation(),
+        evaluation=None,
+    )
+    assert (
+        result["run"]["status"] == "ended" and result["run"]["end_reason"] == expected
+    )
+    assert result["run"]["ended_at"] == 123456
+    assert (
+        result["run"]["raw_terminated"] is flags["terminated"]
+        and result["run"]["raw_truncated"] is flags["truncated"]
+    )
+    assert ledger.nonterminal_runs() == []
+
+
+@pytest.mark.parametrize("another_unknown", [False, True])
+def test_unknown_quarantines_and_receipt_reconciles(ledger, store, another_unknown):
+    ready(ledger)
+    dispatched(ledger)
+    assert ledger.mark_outcome_unknown("c1", error="lost")
+    assert not ledger.mark_outcome_unknown("c1", error="lost twice")
+    assert ledger.get_command("c1")["completed_at"] is None
+    assert ledger.get_run("r1")["status"] == "quarantined"
+    assert (
+        store._conn.execute("SELECT state FROM lab_leases").fetchone()[0]
+        == "quarantined"
+    )
+    ledger.insert_command(command_input("c2"))
+    before = snapshot(store)
+    assert_code(
+        "resource_quarantined",
+        lambda: ledger.begin_dispatch(
+            "c2", resource_keys=["other"], expected_revision=0
+        ),
+    )
+    assert snapshot(store) == before
+    if another_unknown:
+        ledger.insert_command(command_input("c3", state="outcome_unknown"))
+    result = ledger.record_receipt(
+        "c1", receipt=receipt(), observation=observation(), evaluation=None
+    )
+    assert result["run"]["status"] == ("quarantined" if another_unknown else "ready")
+    assert store._conn.execute("SELECT state FROM lab_leases").fetchone()[0] == "free"
+    assert (
+        result["command"]["state"] == "succeeded"
+        and result["command"]["error_code"] is None
+    )
+
+
+def test_not_dispatched_only_frees_its_own_busy_run(ledger, store):
+    ready(ledger)
+    dispatched(ledger)
+    ledger.insert_command(command_input("c2"))
+    assert ledger.mark_not_dispatched(
+        "c2", error_code="approval_denied", error="denied"
+    )
+    assert ledger.get_run("r1")["status"] == "busy"
+    assert ledger.mark_not_dispatched(
+        "c1", error_code="provider_unavailable", error="not sent"
+    )
+    assert ledger.get_run("r1")["status"] == "ready"
+    assert store._conn.execute("SELECT state FROM lab_leases").fetchone()[0] == "free"
+    assert ledger.get_command("c1")["completed_at"] == 123456
+    before = snapshot(store)
+    assert not ledger.mark_not_dispatched(
+        "c1", error_code="provider_unavailable", error="again"
+    )
+    assert snapshot(store) == before
+
+
+def test_run_status_cas_end_and_quarantined_lease_survival(ledger, store):
+    ledger.create_run(run_input())
+    before = snapshot(store)
+    assert not ledger.set_run_status("r1", to_status="quarantined")
+    assert snapshot(store) == before
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.set_run_status("r1", to_status="ready", revision=9),
+    )
+    assert ledger.set_run_status("r1", to_status="ready", daemon_instance="daemon-test")
+    dispatched(ledger)
+    store._conn.execute(
+        "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,updated_at) VALUES('quarantine','r1','root1','quarantined',1)"
+    )
+    store._conn.commit()
+    assert ledger.end_run("r1", end_reason="provider_lost")
+    assert ledger.get_run("r1")["ended_at"] == 123456
+    assert ledger.get_run("r1")["daemon_instance"] == "daemon-test"
+    assert [
+        r[0]
+        for r in store._conn.execute(
+            "SELECT state FROM lab_leases ORDER BY resource_key"
+        )
+    ] == ["quarantined", "free"]
+    before = snapshot(store)
+    assert not ledger.end_run("r1", end_reason="deleted")
+    assert snapshot(store) == before
+    assert ledger.mark_outcome_unknown("c1", error="provider lost")
+    assert ledger.get_run("r1")["status"] == "ended"
+
+
+def test_initial_observation_json_and_pagination(ledger, store):
+    run = ready(ledger)
+    assert run["status"] == "ready" and run["revision"] == run["step_count"] == 0
+    initial = ledger.latest_observation("r1")
+    assert (
+        initial["sequence"] == 0
+        and initial["command_id"] is None
+        and initial["wall_time_ms"] == 123456
+    )
+    assert ledger.latest_observation("missing") is None
+    assert ledger.list_observations("r1", after_sequence=0) == []
+    assert ledger.list_evaluations("r1", limit=0) == []
+    assert initial["channels"] == observation()["channels"]
+    assert ledger.list_evaluations("r1")[0]["metrics"] == {"test": True}
+    for row in [run, initial, ledger.list_evaluations("r1")[0]]:
+        assert all(not k.endswith("_json") for k in row)
+    assert (
+        run["descriptor"] == {}
+        and run["config"] == {"seed": 7}
+        and run["budgets"] == {}
+    )
+    before = snapshot(store)
+    with pytest.raises(ValueError):
+        ledger.append_initial_observation(
+            "r1", observation=observation(), evaluation=None
+        )
+    assert snapshot(store) == before
+
+
+def lab_tables(store):
+    return [
+        r[0]
+        for r in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'lab_*' ORDER BY name"
+        )
+    ]
+
+
+@pytest.mark.parametrize("team_mode", ["0", "1"])
+def test_every_lab_table_is_denied_to_agent_sql(store, monkeypatch, team_mode):
+    monkeypatch.setenv("OPENAI4S_TEAM_MODE", team_mode)
+    tables = lab_tables(store)
+    assert len(tables) == 6
+    for table in tables:
+        with pytest.raises(PermissionError):
+            store.query(f'SELECT * FROM "{table}"')
+        assert table not in store.schema()
+
+
+@pytest.mark.parametrize("entry", ["session", "project"])
+def test_mechanical_lab_deletion_completeness(store, ledger, entry):
+    store.create_project(project_id="deleted", name="Deleted")
+    store.create_project(project_id="kept", name="Kept")
+    roots = [
+        store.new_frame(project_id=project, status="ready")
+        for project in ("deleted", "kept")
+    ]
+    for i, root in enumerate(roots):
+        ready(ledger, f"r{i}", root)
+        dispatched(ledger, f"c{i}", f"r{i}", keys=[f"resource{i}"])
+    tables = lab_tables(store)
+    for table in tables:
+        columns = store._conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+        assert "root_frame_id" in {r[1] for r in columns}
+        # A future seventh table is seeded too: forgetting its cleanup must fail.
+        for i, root in enumerate(roots):
+            if store._conn.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE root_frame_id=?', (root,)
+            ).fetchone()[0]:
+                continue
+            values = {
+                r[1]: (i + 1 if r[2] in {"INTEGER", "REAL"} else f"row-{i}")
+                for r in columns
+            }
+            values["root_frame_id"] = root
+            store._conn.execute(
+                f'INSERT INTO "{table}" ({",".join(values)}) VALUES ({",".join("?" for _ in values)})',
+                tuple(values.values()),
+            )
+    store._conn.commit()
+    kept = {
+        table: [
+            tuple(r)
+            for r in store._conn.execute(
+                f'SELECT * FROM "{table}" WHERE root_frame_id=?', (roots[1],)
+            )
+        ]
+        for table in tables
+    }
+    counts = {
+        table: store._conn.execute(
+            f'SELECT COUNT(*) FROM "{table}" WHERE root_frame_id=?', (roots[0],)
+        ).fetchone()[0]
+        for table in tables
+    }
+    result = (
+        store.delete_frame(roots[0])
+        if entry == "session"
+        else store.delete_project("deleted")
+    )
+    for table in tables:
+        assert not store._conn.execute(
+            f'SELECT * FROM "{table}" WHERE root_frame_id=?', (roots[0],)
+        ).fetchall(), table
+        assert [
+            tuple(r)
+            for r in store._conn.execute(
+                f'SELECT * FROM "{table}" WHERE root_frame_id=?', (roots[1],)
+            )
+        ] == kept[table]
+        assert result["deleted_rows"][table] == counts[table]
+
+
+def test_events_are_scoped_monotonic_and_never_reused(ledger, store):
+    root = store.new_frame(status="ready")
+    ready(ledger, root=root)
+    ready(ledger, "r2", "other")
+    events = ledger.events_since(root)
+    assert all(e["root_frame_id"] == root and e["run_id"] == "r1" for e in events)
+    seqs = [e["event_seq"] for e in events]
+    assert seqs == sorted(set(seqs)) and len(seqs) == 3
+    assert ledger.latest_event_seq(root) == seqs[-1]
+    assert ledger.events_since(root, after_seq=seqs[0], limit=1) == events[1:2]
+    assert ledger.latest_event_seq("missing") == 0
+    high = ledger.latest_event_seq("other")
+    store.delete_frame(root)
+    store._conn.execute("DELETE FROM lab_events WHERE root_frame_id='other'")
+    store._conn.commit()
+    assert ledger.events_since(root) == []
+    ledger.create_run(run_input("r3", "third"))
+    assert ledger.latest_event_seq("third") > high
+
+
+@pytest.mark.parametrize("stage", ["begin", "commit", "read"])
+def test_sqlite_boundary_errors_never_fall_back(ledger, store, stage):
+    class FaultConnection:
+        def execute(self, sql, params=()):
+            if (stage == "begin" and sql == "BEGIN IMMEDIATE") or (
+                stage == "read" and sql.startswith("SELECT")
+            ):
+                raise sqlite3.OperationalError("injected secret payload")
+            return store._conn.execute(sql, params)
+
+        def commit(self):
+            raise sqlite3.OperationalError("injected secret payload")
+
+        def rollback(self):
+            store._conn.rollback()
+
+    faulty = LabLedger(FaultConnection(), store._lock, clock_ms=lambda: 123456)
+    before = snapshot(store)
+    error = assert_code(
+        "persistence_unavailable",
+        lambda: (
+            faulty.get_run("r1") if stage == "read" else faulty.create_run(run_input())
+        ),
+    )
+    assert "secret payload" not in str(error)
+    assert snapshot(store) == before
