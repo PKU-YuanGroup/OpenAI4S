@@ -18,6 +18,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| `test_lab_models.py` | Lab 对象、严格解码、状态机与哈希。 |
+| `test_lab_manifest.py` | Lab 能力校验、单位、登记与投影。 |
+| `test_lab_fake_device.py` | 离线假设备生命周期、幂等、隔离令牌与故障。 |
 | [`test_compute_job_routes.py`](test_compute_job_routes.py) | compute-jobs 路由必须给领域失败一个 HTTP 状态：读取或取消不存在的作业、以及每一次被拒绝的提交，过去都被序列化为携带软 `{"error": ...}` 的 200——于是工作台把不存在的作业显示为「输出为空」，把被拒绝的提交显示为已接受。现在不存在的作业是 404；未能停止一个仍在运行的作业的取消是 500（不是 404——它存在）；客户端输入错误（含字段类型错误与 `NaN` 截止时间）是 400；容量/工作区/关停分别是 429/500/503；未登记的 code 是 400 而不是 200——与 skills 共用同一个按 code 投影的 `_soft_failure_status`，且管理器返回的每个 code 都必须登记在 `JOB_FAILURE_STATUS` 中。 |
 | [`test_dataset_import_live.py`](test_dataset_import_live.py) | 显式启用的真实 PaRoutes 原生导入与 Store 重开验收；不属于默认离线套件。 |
 | [`test_dataset_import.py`](test_dataset_import.py) | 离线 fixture 覆盖文件选择、权限、取消、原生捕获、来源不可变/重开及失败重放合同。 |

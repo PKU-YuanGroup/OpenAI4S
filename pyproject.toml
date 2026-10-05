@@ -286,6 +286,9 @@ files = [
     # and a wrong type here is discovered on a cluster at 2am.
     "openai4s/orchestration/models.py",
     "openai4s/orchestration/ports.py",
+    # Lab contracts are strict from birth: all backends share this boundary.
+    "openai4s/lab/models.py",
+    "openai4s/lab/ports.py",
     "openai4s/judgment/disclosure.py",
     "openai4s/judgment/flags.py",
     "openai4s/judgment/port.py",

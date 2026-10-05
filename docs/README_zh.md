@@ -10,6 +10,7 @@
 
 | 文件 | 职责与状态 |
 | --- | --- |
+| `lab.md` | 内部仿真 Lab 合同、端口、校验与诚实投影。 |
 | `windows-wsl-parity-audit.md` | bca1183f 基线的 WSL2/macOS 对齐调查：已复现缺口、脚本/进程盘点、用户流程验收及修复顺序，不代表发版认证。 |
 | `windows-wsl-parity-audit_zh.md` | WSL2/macOS 对齐调查的中文正文。 |
 | `windows-wsl-parity-evidence.json` | 真实 WSL 下使用合成数据的探针回执，包含 Windows 互操作边界与安全密钥存储观察。 |
