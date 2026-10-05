@@ -131,6 +131,59 @@ async function dumpBranchForkState(frameId) {
   return { snapshot, apiBranches };
 }
 
+// The entries are real persisted Cells; only their response ordering is fault-injected.
+async function executionHistoryRaceScene(fid, projectId) {
+  await page.evaluate(async ({ fid, projectId }) => window.openConversation(fid, projectId), { fid, projectId });
+  await ensureDockOpen();
+  await page.evaluate(() => window.setActiveTab("notebook"));
+  const before = await api(`/frames/${fid}/execution-log`);
+  assert.ok(before.entries.length >= 2, "race fixture has real execution history");
+  await page.evaluate(() => { if (!window.execSourcesState().open) window.toggleExecutedCode(); });
+  await waitUntil("execution history initial snapshot", () => page.evaluate((fid) => {
+    const st = window.execSourcesState();
+    return !st.loading && st.cells[fid]?.length >= 2;
+  }, fid));
+  const url = `**/api/v1/frames/${fid}/execution-log`;
+  let held;
+  let reads = 0;
+  let writes = 0;
+  const recordWrite = (request) => {
+    if (new URL(request.url()).pathname.startsWith(`/api/v1/frames/${fid}/`) && request.method() !== "GET") writes++;
+  };
+  page.on("request", recordWrite);
+  await page.route(url, async (route) => {
+    reads++;
+    if (reads === 1) held = route;
+    else await route.continue();
+  });
+  try {
+    await page.evaluate((fid) => { window.__executionRaceRead = window.selectExecFrame(fid, true); }, fid);
+    await waitUntil("held older execution response", () => Boolean(held));
+    await page.evaluate((fid) => window.selectExecFrame(fid, true), fid);
+    // Model an older snapshot using a prefix of the real stored history.
+    await held.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...before, entries: before.entries.slice(0, -1) }) });
+    await page.evaluate(() => window.__executionRaceRead);
+    assert.deepEqual(await page.evaluate((fid) => window.execSourcesState().cells[fid], fid), before.entries);
+    const reopenedLog = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/v1/frames/${fid}/execution-log`);
+    await page.evaluate(() => { window.toggleExecutedCode(); window.toggleExecutedCode(); });
+    const refreshed = await reopenedLog;
+    assert.ok(refreshed.ok(), "reopening successfully re-reads execution history");
+    await refreshed.finished();
+    await waitUntil("reopened execution history", () => page.evaluate(({ fid, length }) => {
+      const st = window.execSourcesState();
+      return st.open && !st.loading && st.cells[fid]?.length === length;
+    }, { fid, length: before.entries.length }));
+    assert.deepEqual((await api(`/frames/${fid}/execution-log`)).entries, before.entries, "reads and reopening preserve source and never replay cells");
+    assert.equal(writes, 0, "execution-history navigation is read-only");
+  } finally {
+    await page.unroute(url);
+    page.off("request", recordWrite);
+    await page.evaluate(() => { delete window.__executionRaceRead; if (window.execSourcesState().open) window.toggleExecutedCode(); });
+  }
+  console.log("Execution history: reverse-order same-frame reads, close/reopen, original source preserved, zero cell replay passed");
+}
+
 // C1/C3/C7 correctness cases use real persisted Cells/Artifacts. REST faults
 // and anonymous event interleavings are explicitly injected UI fault fixtures.
 async function correctnessScenes(projectId) {
@@ -437,6 +490,7 @@ async function correctnessScenes(projectId) {
     await api("/network/status", { method: "PUT", data: { enabled: false } });
   }
   console.log("C5 browser: passive open, keyboard checks, remedy/settings, facts limits, safe text, retained results, config invalidation and 403 passed");
+  await executionHistoryRaceScene(fid, projectId);
 
 }
 
