@@ -256,7 +256,8 @@ def _number(value: Any, path: str) -> float:
         finite = False
     if not finite:
         _invalid(path, "expected a finite number")
-    return float(value)
+    # Preserve the advertised JSON number: 200 and 200.0 hash differently.
+    return value
 
 
 def _json_value(value: Any, path: str) -> Any:

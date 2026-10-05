@@ -43,7 +43,7 @@ def descriptor():
         CapabilityScope.SHARED,
         "a",
         "b",
-        {"volume": ParameterSpec("mL", (200.0, 400.0))},
+        {"volume": ParameterSpec("mL", (200, 400))},
         SideEffect.MOVES_MATERIAL,
         ("a", "b"),
         ("layers",),
@@ -163,7 +163,9 @@ def test_action_identity_precedes_parameters(changes):
 def test_descriptor_rejects(case):
     data = descriptor().to_dict()
     if case == "duplicate":
-        data["capabilities"].append(data["capabilities"][0])
+        data["capabilities"].append(
+            {**data["capabilities"][0], "operation": "settle_model"}
+        )
     elif case == "resource":
         data["capabilities"][0]["resources"] = ["missing"]
     elif case == "descending":
