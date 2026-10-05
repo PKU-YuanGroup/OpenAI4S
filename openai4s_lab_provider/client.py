@@ -71,6 +71,7 @@ class ProviderClient:
         self._stderr = bytearray()
         self._buffer = bytearray()
         self._stderr_thread = None
+        self._disposed = False
 
     def start(self):
         with self._lock:
@@ -117,7 +118,7 @@ class ProviderClient:
         return self.process is not None and self.process.poll() is None
 
     def _signal_group(self, sig):
-        if self.process is None:
+        if self.process is None or self._disposed:
             return
         try:
             # Signal the group even if its leader has exited; descendants may hold pipes.
@@ -136,6 +137,7 @@ class ProviderClient:
                 pass
         self._signal_group(signal.SIGKILL)
         self.process.wait()
+        self._disposed = True
         if self._stderr_thread:
             self._stderr_thread.join(timeout=1)
 
@@ -188,6 +190,8 @@ class ProviderClient:
                         raise ProviderTimeout()
                     continue
                 if not frame["ok"]:
+                    if frame["error"]["code"] == "provider_protocol_error":
+                        raise ProtocolError("provider reported a protocol error")
                     raise ProviderError(
                         frame["error"]["code"], frame["error"]["message"]
                     )
@@ -244,6 +248,7 @@ class ProviderClient:
                         self._terminate(graceful=True)
                 # Also dispose descendants after an orderly leader exit.
                 self._signal_group(signal.SIGKILL)
+                self._disposed = True
                 if self._stderr_thread:
                     self._stderr_thread.join(timeout=1)
             finally:

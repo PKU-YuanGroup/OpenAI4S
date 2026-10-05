@@ -7,3 +7,5 @@
 | `protocol.py` | Bounded JSON frames and safe errors. |
 | `server.py` | Single-session dispatch, receipts and fencing. |
 | `client.py` | Serialized subprocess client with deadlines and process-group cleanup. |
+| `toy.py` | Deterministic stdlib test backend / 确定性的标准库测试后端。 |
+| `chemgymrl/` | Isolated upstream adapter and manifests / 隔离的上游适配器和清单。 |

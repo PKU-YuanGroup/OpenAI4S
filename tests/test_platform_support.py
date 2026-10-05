@@ -324,7 +324,12 @@ def test_the_floor_is_tested_and_no_claim_sits_below_it():
 _MUTABLE_DEFAULT_CALLS = frozenset(
     {"MappingProxyType", "dict", "list", "set", "bytearray"}
 )
-_SCANNED_PACKAGES = ("openai4s", "openai4s_compute_provider", "openai4s_worker_runtime")
+_SCANNED_PACKAGES = (
+    "openai4s",
+    "openai4s_compute_provider",
+    "openai4s_lab_provider",
+    "openai4s_worker_runtime",
+)
 
 
 def _is_dataclass_decorator(node) -> bool:

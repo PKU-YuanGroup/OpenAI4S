@@ -75,3 +75,77 @@ def test_unknown_op_and_exception_redaction(capsys):
     stderr = capsys.readouterr().err
     assert "RuntimeError" in stderr
     assert "private simulator" not in stderr
+
+
+def test_client_rejects_raw_oversize_and_invalid_response(tmp_path):
+    import os
+    import sys
+
+    from openai4s_lab_provider.client import ProviderClient, ProviderProtocolError
+
+    for payload in (b"x" * (MAX_FRAME_BYTES + 1), b"not-json\n"):
+        peer = (
+            "import sys; sys.stdin.buffer.readline(); sys.stdout.buffer.write("
+            + ("b'x' * (8*1024*1024+1)" if len(payload) > 100 else repr(payload))
+            + "); sys.stdout.buffer.flush()"
+        )
+        client = ProviderClient(
+            [sys.executable, "-I", "-c", peer],
+            env={"HOME": str(tmp_path)},
+            cwd=tmp_path,
+        ).start()
+        try:
+            with pytest.raises(ProviderProtocolError):
+                client.request("hello", {}, timeout=5)
+            assert not client.alive()
+            with pytest.raises(ProcessLookupError):
+                os.kill(client.process.pid, 0)
+        finally:
+            client.close()
+
+
+def test_timeout_kills_descendant_even_after_leader_exit(tmp_path):
+    import os
+    import signal
+    import sys
+    import time
+
+    from openai4s_lab_provider.client import ProviderClient, ProviderTimeout
+
+    # The child retains stdout and ignores TERM. Leader exits after replying once.
+    peer = """import json,os,signal,sys,time
+child=os.fork()
+if child==0:
+    signal.signal(signal.SIGTERM,signal.SIG_IGN)
+    time.sleep(30)
+    os._exit(0)
+f=json.loads(sys.stdin.readline())
+print(json.dumps({'v':1,'id':f['id'],'ok':True,'result':{'child':child}}),flush=True)
+sys.stdin.readline()
+os._exit(0)
+"""
+    client = ProviderClient(
+        [sys.executable, "-I", "-c", peer], env={"HOME": str(tmp_path)}, cwd=tmp_path
+    ).start()
+    child = None
+    try:
+        child = client.request("hello", {}, timeout=5)["child"]
+        with pytest.raises(ProviderTimeout):
+            client.request("execute", {}, timeout=0.2)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() > deadline:
+                pytest.fail("provider descendant survived timeout")
+            time.sleep(0.01)
+        assert client.process.returncode == 0
+    finally:
+        if child is not None:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        client.close()

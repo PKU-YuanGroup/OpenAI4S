@@ -143,6 +143,7 @@ LEGACY_INTERNAL_IMPORT_DEBT: dict[str, frozenset[str]] = {
 _SOURCE_ROOTS = (
     "openai4s",
     "openai4s_compute_provider",
+    "openai4s_lab_provider",
     "openai4s_worker_runtime",
     "harness",
 )

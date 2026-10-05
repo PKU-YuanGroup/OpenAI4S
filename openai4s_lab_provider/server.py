@@ -19,8 +19,10 @@ class Server:
     def __init__(self, backend):
         self.backend = backend
         self.opened = False
-        self.receipts = OrderedDict()
+        # Share the adapter cache so rejected commands and queries use the same 256 slots.
+        self.receipts = getattr(backend, "receipts", OrderedDict())
         self.fences = {}
+        self.resource_sets = {}
 
     def dispatch(self, op, args):
         keys = {
@@ -52,6 +54,10 @@ class Server:
                 raise BackendError("invalid_parameters", "a session was already opened")
             result = self.backend.open(**args)
             self.opened = True
+            self.resource_sets = {
+                c["capability_id"]: set(c["resources"])
+                for c in result["descriptor"]["capabilities"]
+            }
             return result
         if not self.opened:
             raise BackendError("run_not_found", "no open session")
@@ -76,6 +82,12 @@ class Server:
         ):
             raise BackendError(
                 "invalid_parameters", "invalid command or fencing tokens"
+            )
+        required = self.resource_sets.get(args["command"].get("capability_id"))
+        if required is not None and set(tokens) != required:
+            raise BackendError(
+                "invalid_parameters",
+                "fencing tokens must cover the capability resources",
             )
         stale = any(
             token < self.fences.get(resource, -1) for resource, token in tokens.items()
@@ -137,7 +149,23 @@ class Server:
                             "message": message,
                         },
                     }
-                sink.write(encode_frame(response, response=True))
+                try:
+                    encoded = encode_frame(response, response=True)
+                except ProtocolError:
+                    encoded = encode_frame(
+                        {
+                            "v": 1,
+                            "id": request_id,
+                            "ok": False,
+                            "error": {
+                                "code": "provider_protocol_error",
+                                "message": "provider response exceeds wire limits",
+                            },
+                        },
+                        response=True,
+                    )
+                    close = True
+                sink.write(encoded)
                 sink.flush()
                 if close:
                     return

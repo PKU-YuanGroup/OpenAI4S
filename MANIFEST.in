@@ -20,5 +20,6 @@ recursive-include workflows *.json
 recursive-include openai4s/compute/templates *.tmpl
 recursive-include openai4s/kernel *.R
 recursive-include openai4s/server/webui *.css *.gif *.html *.js *.woff2
+recursive-include openai4s_lab_provider *.md *.json *.in *.lock
 global-exclude *.py[cod]
 global-exclude __pycache__

@@ -24,7 +24,8 @@ def scrub_secret_env():
     for name in list(os.environ):
         upper = name.upper()
         if re.search(
-            r"(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)", upper
+            r"(?:^|_)(?:KEY|TOKEN|SECRET|PASS(?:WORD|WD)?|PWD|PW|PAT|CREDENTIALS?|AUTH|BEARER|COOKIE)(?:_|$)",
+            upper,
         ) or upper.startswith(
             ("AWS_", "AZURE_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "OPENAI4S_SECRET_")
         ):
@@ -68,4 +69,10 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(
+            f"{type(exc).__name__}: provider startup or service failed", file=sys.stderr
+        )
+        raise SystemExit(1) from None

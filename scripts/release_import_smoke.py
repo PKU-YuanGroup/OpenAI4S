@@ -101,6 +101,7 @@ def main() -> int:
         "openai4s.tools.registry",
         "openai4s.adapters.jupyter",
         "openai4s_compute_provider",
+        "openai4s_lab_provider",
         "openai4s_worker_runtime",
     )
     imported = [importlib.import_module(name) for name in modules]

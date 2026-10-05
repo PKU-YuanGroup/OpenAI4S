@@ -1,0 +1,129 @@
+# ChemGymRL source and provider environment
+
+## Source and license
+
+Upstream: https://github.com/chemgymrl/chemgymrl
+
+Fixed commit: `ab8227b6b33f13617b7e551bdf6b894df7eec68d`.
+The installed distribution is `chemistrygym==2.0.0` (`setup.py:20,37`);
+upstream documentation reports 1.5.8 (`docs/conf.py:35–38`). The repository
+LICENSE is GPL-3.0; source headers explicitly permit version 3 **or later**
+(`setup.py:4–7`). OpenAI4S distributes its own adapter and metadata only, **no
+upstream source**. Upstream is downloaded into a separate environment only
+when the user explicitly installs it. The simulation process boundary does
+not assert any change to the upstream license.
+
+## Installation
+
+From the OpenAI4S source root, with all temporary files outside the repository:
+
+```sh
+export CG_DATA="$PWD/../_data/W1-B"
+mkdir -p "$CG_DATA"
+export TMPDIR="$CG_DATA" PIP_CACHE_DIR="$CG_DATA/pip-cache"
+export MPLBACKEND=Agg MPLCONFIGDIR="$CG_DATA/mpl" NUMBA_CACHE_DIR="$CG_DATA/numba"
+python3.10 -m venv "$CG_DATA/provider-env"
+uv pip compile openai4s_lab_provider/chemgymrl/requirements.in \
+  --generate-hashes --python-version 3.10 --universal \
+  --output-file openai4s_lab_provider/chemgymrl/requirements.lock
+"$CG_DATA/provider-env/bin/python" -m pip install --require-hashes --no-deps \
+  -r openai4s_lab_provider/chemgymrl/requirements.lock
+"$CG_DATA/provider-env/bin/python" -m pip install --use-pep517 --no-deps \
+  'git+https://github.com/chemgymrl/chemgymrl@ab8227b6b33f13617b7e551bdf6b894df7eec68d'
+"$CG_DATA/provider-env/bin/python" -c 'import importlib.metadata as m,json; d=m.distribution("chemistrygym"); assert d.version=="2.0.0"; assert json.loads(d.read_text("direct_url.json"))["vcs_info"]["commit_id"]=="ab8227b6b33f13617b7e551bdf6b894df7eec68d"'
+```
+
+The universal runtime lock includes distribution hashes for multiple platforms,
+not only this machine's wheels. It excludes chemistrygym itself. It also pins
+upstream's pandas, Pillow, cmocean and PyYAML dependencies and their transitive
+dependencies. Build isolation for the upstream legacy setup.py may download
+build tooling; that tooling is outside the runtime lock. On the validation
+machine pip 23.0.1's legacy `setup.py install` omitted `direct_url.json`.
+`--use-pep517` is therefore required; the adapter refuses a missing or mismatched
+commit receipt. An existing legacy installation must be reinstalled with
+`--force-reinstall --use-pep517 --no-deps`.
+
+Export each descriptor using the provider's own entrypoint:
+
+```sh
+for profile in WaterOilExtract-v0 GenWurtzExtract-v2; do
+  "$CG_DATA/provider-env/bin/python" -I openai4s_lab_provider/__main__.py \
+    --backend chemgymrl --describe "$profile" \
+    > "openai4s_lab_provider/chemgymrl/manifests/$profile.json"
+done
+OPENAI4S_LAB_CHEMGYMRL_PYTHON="$CG_DATA/provider-env/bin/python" \
+  uv run pytest -m external tests/test_lab_chemgymrl_external.py -q
+```
+
+## Mapping evidence
+
+All line references below refer to the fixed upstream commit.
+
+- Both profiles are registered (`chemistrylab/__init__.py:15–23`). Both expand
+  to 41 actions, with max_steps 50 (`benches/general_bench.py:59–99`,
+  `benches/extract_bench.py:166–189,210–232`).
+- Pour parameters are litres (`vessel.py:419–427`), converted to mL without
+  rounding the upstream levels. Host normalization chooses an exact advertised
+  level; the provider requires exact equality and never picks a nearby action.
+- Drain parameters count bottom layer pixels (`vessel.py:429–472`), not mL.
+  Before stepping, the adapter predicts solvent and dissolved-solute transfer
+  from the already sampled layer state to reject overflow without mutation.
+- Negative mix values shake/mix, positive values settle
+  (`extract_algorithms/separate.py:212–215,283–312`). `mix_model.duration`
+  preserves the negative control value; `settle_model.duration` is positive.
+  The name `duration` is a **model control parameter**, not elapsed physical
+  time. Settling acts on three vessels together; there is one capability with
+  all three resources, no independently controllable per-vessel substitutes.
+- Resources derive from unique snake_case labels. A stock source has outgoing
+  transfers and no incoming transfer. Waste Vessel is a vessel, despite being
+  outside WaterOil's observed working shelf (`lab/shelf.py:25–29`).
+- Observation vectors are vessel-major (`benches/characterization_bench.py:90–104`).
+  Layers have shape [2,100] (WaterOil) or [3,100] (GenWurtz); target one-hots
+  decode to the declared task target, independent of actual material contents
+  (`:177–186`). No material legend, pressure, reward or composition is included.
+- Pressure is not modeled here. The adapter never calls `render()` (whose
+  legends expose materials, `util/Visualization.py:215–220`) or `Lab()`.
+- There is no upstream global model clock. Provider `sim_time` is an accounting
+  convention: sum each applied action's `dt` plus its positive mix parameter,
+  once per multi-vessel action. Negative mixing does not reverse time.
+  This is not wall-clock time and adds no physical-model assumption.
+- Full states and rewards exist only under `evaluation`; initial reward is
+  null because reset returns no reward. Third-party stdout/stderr are discarded
+  at fd level. Unexpected exceptions expose type and generic summary plus
+  stack locations, never exception values, locals or source lines.
+
+## Reproducibility
+
+Measured on **2026-10-05**, macOS 27.0.1 arm64, CPython **3.10.21**, with this
+runtime lock and the fixed source commit. These results are **not evidence for
+other platforms, profiles, dependency versions, seeds or arbitrary action sequences**.
+
+Each profile was run twice with seed **42** and the same provider-normalized
+sequence corresponding to internal actions
+`[30,9,35,0,3,35,8,35,0,4,35,0,40]`. All 13 commands were applied, ending by the
+explicit end action. We compared all 14 observations (including initial state),
+final ground truth and final reward, without writing those values to logs.
+
+| Profile | Numba seeded | All observations equal | First differing observation | Final truth equal | Final reward equal |
+| --- | --- | --- | --- | --- | --- |
+| WaterOilExtract-v0 | No | No | 0 (initial) | No | No |
+| WaterOilExtract-v0 | Yes | Yes | None | Yes | Yes |
+| GenWurtzExtract-v2 | No | No | 0 (initial) | Yes | Yes |
+| GenWurtzExtract-v2 | Yes | Yes | None | Yes | Yes |
+
+Both profiles are `verified_for_profile` within this measured scope. The
+controlled change was adding `np.random.seed(seed)` inside a `numba.njit`
+function. Python `random.seed` and NumPy global seeding were retained in both
+conditions; all seeding occurred after `gym.make` and before explicit
+`env.reset(seed=42)`. The constructor itself calls reset with seed=None, so
+seeding only before creation is insufficient. The unseeded Numba generator
+changes layer pixel sampling (`extract_algorithms/separate.py:126`); the
+experiment establishes that seeding it resolves the observed difference for
+these runs, not that all future randomness has been exhaustively excluded.
+
+The external regression repeats the seeded comparison in separate real
+provider processes and requires exact descriptor equality with the committed
+manifests. To reproduce the unseeded control, keep `_seed`'s Python/NumPy calls
+but omit only `seed_compiled(seed)` in a disposable copy, then repeat the same
+sequence twice. Restore that call for the seeded condition. The W1-B handoff
+records the actual script, commands, durations and comparison-only JSON report.
