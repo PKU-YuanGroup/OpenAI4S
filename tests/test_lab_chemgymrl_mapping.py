@@ -162,3 +162,42 @@ def test_ground_truth_is_a_separate_projection():
             }
         ]
     }
+
+
+def test_reproducibility_status_requires_measured_runtime(monkeypatch):
+    from openai4s_lab_provider.chemgymrl import adapter
+
+    versions = dict(
+        line.split("==")
+        for line in Path(adapter.__file__)
+        .with_name("requirements.in")
+        .read_text()
+        .splitlines()
+        if line and not line.startswith("#")
+    )
+    monkeypatch.setattr(
+        adapter.platform, "platform", lambda: "macOS-27.0.1-arm64-arm-64bit"
+    )
+    monkeypatch.setattr(adapter.platform, "python_version", lambda: "3.10.21")
+    monkeypatch.setattr(adapter.importlib.metadata, "version", versions.__getitem__)
+    assert adapter._verified_runtime()
+    versions["numpy"] = "different"
+    assert not adapter._verified_runtime()
+
+
+def test_describe_active_session_does_not_create_another_environment(monkeypatch):
+    from openai4s_lab_provider.chemgymrl import adapter
+    from openai4s_lab_provider.protocol import BackendError
+
+    backend = adapter.Backend()
+    backend.opened = True
+    backend.descriptor = {"profile": "WaterOilExtract-v0"}
+
+    def forbidden_make(profile):
+        raise AssertionError("read-only describe recreated the session RNGs")
+
+    monkeypatch.setattr(adapter, "_make", forbidden_make)
+    assert backend.describe("WaterOilExtract-v0") == backend.descriptor
+    with pytest.raises(BackendError) as failure:
+        backend.describe("GenWurtzExtract-v2")
+    assert failure.value.code == "invalid_parameters"

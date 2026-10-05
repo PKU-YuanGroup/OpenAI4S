@@ -161,6 +161,8 @@ def test_live_manifest_receipts_and_seed_reproducibility(provider, profile):
             else:
                 cap = next(c for c in caps if c["operation"] == "drain_layers")
                 value = cap["parameters"]["pixels"]["allowed"][index]
+            if repeat == 1:
+                assert request(client, "describe", {"profile": profile}) == descriptor
             receipt = execute(client, cap, f"step-{step}", value)
             step += 1
             assert receipt["status"] == "succeeded" and receipt["applied"]
@@ -177,7 +179,8 @@ def test_live_manifest_receipts_and_seed_reproducibility(provider, profile):
         assert client.process.returncode == 0
         assert client.stderr_tail() == ""
     assert streams[0] == streams[1]
-    assert evaluations[0] == evaluations[1]
+    evaluations_match = evaluations[0] == evaluations[1]
+    assert evaluations_match
     assert expected["reproducibility"]["status"] == "verified_for_profile"
     source = (ROOT / "openai4s_lab_provider/chemgymrl/SOURCE.md").read_text()
     assert profile in source and "verified_for_profile" in source

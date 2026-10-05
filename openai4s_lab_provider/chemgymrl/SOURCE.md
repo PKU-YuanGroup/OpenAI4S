@@ -111,7 +111,16 @@ final ground truth and final reward, without writing those values to logs.
 | GenWurtzExtract-v2 | No | No | 0 (initial) | Yes | Yes |
 | GenWurtzExtract-v2 | Yes | Yes | None | Yes | Yes |
 
-Both profiles are `verified_for_profile` within this measured scope. The
+Both profiles are `verified_for_profile` within this measured scope. Runtime
+platform, Python and every pinned distribution version are checked against the
+measured SHA-256 fingerprint
+`1183b4fe19b2ae3a83a3181b03a455ac399b42e008965bc428d67ab2e30831b2`.
+Any different runtime reports `unverified`, even when the upstream commit
+matches. The fingerprint is SHA-256 of canonical JSON with keys `platform`
+(`platform.platform()`), `python` (`platform.python_version()`) and `packages`
+(distribution name to installed version for every requirements.in entry).
+Describe after open returns the cached descriptor for the active profile;
+other profiles are refused so inspection cannot consume the session RNGs. The
 controlled change was adding `np.random.seed(seed)` inside a `numba.njit`
 function. Python `random.seed` and NumPy global seeding were retained in both
 conditions; all seeding occurred after `gym.make` and before explicit

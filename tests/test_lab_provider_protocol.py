@@ -149,3 +149,45 @@ os._exit(0)
             except ProcessLookupError:
                 pass
         client.close()
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999"])
+@pytest.mark.parametrize("response", [False, True])
+def test_numeric_overflow_is_rejected(number, response):
+    envelope = (
+        '{"v":1,"id":"x","ok":true,"result":{"sim_time":NUMBER}}'
+        if response
+        else '{"v":1,"id":"x","op":"open","args":{"seed":NUMBER}}'
+    )
+    with pytest.raises(ProtocolError):
+        decode_frame(
+            (envelope.replace("NUMBER", number) + "\n").encode(), response=response
+        )
+
+
+def test_native_output_is_flushed_before_restoring_diagnostic_fds(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    entry = Path(__file__).resolve().parents[1] / "openai4s_lab_provider/__main__.py"
+    peer = """import ctypes,runpy,sys
+namespace=runpy.run_path(sys.argv[1],run_name="bootstrap_only")
+namespace["_load_own_package"]()
+from openai4s_lab_provider.chemgymrl.adapter import _quiet
+libc=ctypes.CDLL(None)
+@_quiet
+def output():
+    libc.printf(b"NATIVE_OUTPUT_SENTINEL\\n")
+output()
+libc.fflush(None)
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", peer, str(entry)],
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path)},
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0
+    assert result.stdout == b"" and result.stderr == b""

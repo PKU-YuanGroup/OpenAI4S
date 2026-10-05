@@ -1,6 +1,7 @@
 """Strict, bounded newline-delimited JSON. No backend or host imports."""
 
 import json
+import math
 
 from . import PROTOCOL_VERSION
 
@@ -23,6 +24,13 @@ class BackendError(Exception):
 
 def _reject_constant(value):
     raise ProtocolError("non-finite JSON number")
+
+
+def _finite_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise ProtocolError("non-finite JSON number")
+    return number
 
 
 def _object(pairs):
@@ -71,6 +79,7 @@ def decode_frame(data, *, response=False, max_frame_bytes=MAX_FRAME_BYTES):
         frame = json.loads(
             data.decode("utf-8"),
             parse_constant=_reject_constant,
+            parse_float=_finite_float,
             object_pairs_hook=_object,
         )
     except (ValueError, UnicodeError, RecursionError):

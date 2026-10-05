@@ -1,18 +1,30 @@
 """Pinned single-bench adapter. Third-party code runs only inside this process."""
 
-import contextlib
+import ctypes
 import functools
+import hashlib
 import importlib.metadata
 import json
 import os
+import platform
 import random
 import secrets
 import sys
 from collections import OrderedDict
+from pathlib import Path
 
 from .. import ADAPTER_VERSION
 from ..protocol import BackendError, failed_receipt
 from . import PROFILES, SOURCE_SHA, mapping
+
+
+def _flush_native():
+    """Flush POSIX C stdio while its descriptors still point at the discard sink."""
+    library = ctypes.CDLL(None)
+    flush = library.fflush
+    flush.argtypes = [ctypes.c_void_p]
+    flush.restype = ctypes.c_int
+    flush(None)
 
 
 def _quiet(method):
@@ -22,6 +34,7 @@ def _quiet(method):
     def wrapped(*args, **kwargs):
         sys.stdout.flush()
         sys.stderr.flush()
+        _flush_native()
         saved = [os.dup(fd) for fd in (1, 2)]
         try:
             with open(os.devnull, "wb") as sink:
@@ -32,12 +45,40 @@ def _quiet(method):
                 finally:
                     sys.stdout.flush()
                     sys.stderr.flush()
+                    _flush_native()
         finally:
             for fd, original in zip((1, 2), saved):
                 os.dup2(original, fd)
                 os.close(original)
 
     return wrapped
+
+
+def _verified_runtime():
+    """A profile result is evidence only for the actually measured runtime."""
+    try:
+        names = [
+            line.split("==")[0]
+            for line in Path(__file__)
+            .with_name("requirements.in")
+            .read_text()
+            .splitlines()
+            if line and not line.startswith("#")
+        ]
+        runtime = {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "packages": {name: importlib.metadata.version(name) for name in names},
+        }
+        fingerprint = hashlib.sha256(
+            mapping.canonical_json(runtime).encode()
+        ).hexdigest()
+        return (
+            fingerprint
+            == "1183b4fe19b2ae3a83a3181b03a455ac399b42e008965bc428d67ab2e30831b2"
+        )
+    except (OSError, importlib.metadata.PackageNotFoundError):
+        return False
 
 
 def _seed(seed):
@@ -174,13 +215,19 @@ class Backend:
             self.version,
         )
         descriptor["reproducibility"] = {
-            "status": "verified_for_profile",
+            "status": "verified_for_profile" if _verified_runtime() else "unverified",
             "evidence": "openai4s_lab_provider/chemgymrl/SOURCE.md#reproducibility",
         }
         return descriptor, rows, labels, layout
 
     @_quiet
     def describe(self, profile):
+        if self.opened:
+            if profile != self.descriptor["profile"]:
+                raise BackendError(
+                    "invalid_parameters", "active session fixes the provider profile"
+                )
+            return self.descriptor
         env = _make(profile)
         try:
             return self._descriptor(profile, env)[0]
@@ -215,6 +262,7 @@ class Backend:
             raise
         self.env, self.rows, self.labels, self.layout = env, rows, labels, layout
         self.opened = True
+        self.descriptor = descriptor
         return {
             "session_id": "labprovider-" + secrets.token_hex(6),
             "descriptor": descriptor,
