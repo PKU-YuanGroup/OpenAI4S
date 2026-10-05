@@ -993,6 +993,61 @@ def test_unknown_and_hidden_session_resources_are_indistinguishable(daemon):
     assert daemon.store.get_permission_rule(rule_id) is not None
 
 
+def _send(daemon, method: str, path: str, body: dict, cookie: str):
+    payload = json.dumps(body).encode("utf-8")
+    lines = [
+        f"{method} {path} HTTP/1.1",
+        f"Host: 127.0.0.1:{daemon.port}",
+        "Content-Type: application/json",
+        f"Content-Length: {len(payload)}",
+        f"Cookie: {cookie}",
+        "Connection: close",
+    ]
+    head = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
+    return _speak(daemon.port, head + payload)
+
+
+def test_unknown_and_hidden_project_resources_are_indistinguishable(daemon):
+    """A folder or note in a project the caller cannot read answers exactly
+    like an id that does not exist. The handlers answer a missing id with
+    their own body -- a rename's `404 folder not found`, an idempotent
+    DELETE's `200 ok` -- so the owned-resource guard must answer it first."""
+
+    bob = _login(daemon, "bob", "fake-pw-b")
+    hidden_pid = daemon.store.create_project(
+        name="proj-two", description="", context=""
+    )["project_id"]
+    daemon.store.governance.set_member(hidden_pid, _uid(daemon, "alice"), "member")
+    folder = daemon.store.create_folder(project_id=hidden_pid, name="private folder")
+    note = daemon.store.add_note(project_id=hidden_pid, content="private note")
+
+    def signature(raw: bytes) -> tuple:
+        body = _body(raw)
+        return body.get("error"), body.get("code"), body.get("status")
+
+    hidden_folder = f"/folders/{folder['folder_id']}"
+    cases = (
+        ("PUT", "/folders/fold_missing", hidden_folder, {"name": "renamed"}),
+        ("PATCH", "/folders/fold_missing", hidden_folder, {"name": "renamed"}),
+        ("DELETE", "/folders/fold_missing", hidden_folder, {}),
+        ("DELETE", "/notes/note_missing", f"/notes/{note['note_id']}", {}),
+    )
+    for method, missing, hidden, body in cases:
+        label = f"{method} {missing}"
+        missing_status, missing_raw = _send(
+            daemon, method, "/api/v1" + missing, body, bob
+        )
+        hidden_status, hidden_raw = _send(daemon, method, "/api/v1" + hidden, body, bob)
+        assert (missing_status, hidden_status) == (404, 404), label
+        assert signature(missing_raw) == signature(hidden_raw), label
+
+    # Every hidden write was refused before it reached the store.
+    assert daemon.store.list_folders(hidden_pid) == [
+        {**folder, "name": "private folder"}
+    ]
+    assert daemon.store.project_of_note(note["note_id"]) == hidden_pid
+
+
 def test_permission_writable_barrier_is_reported_only_after_team_authorization(daemon):
     alice = _login(daemon, "alice", "fake-pw-a")
     bob = _login(daemon, "bob", "fake-pw-b")

@@ -522,11 +522,11 @@ identifiers, tokens, authorization codes, and API Keys are never returned.
 | `DELETE /projects/{pid}` | Deletes project + frames, unlinks artifact files and session workspaces → `{"ok":true,"freed_files","freed_sessions"}`. |
 | `GET /projects/{pid}/notes` | `{"notes":[note…]}`. |
 | `POST /projects/{pid}/notes` | Body `{content}` → note JSON. |
-| `DELETE /notes/{note_id}` | `{"ok":true}`. |
+| `DELETE /notes/{note_id}` | `{"ok":true}`, also for an unknown id. Team mode answers a non-admin's unknown id `404` `not found`, the same as a note in a project they cannot read (INV-13). |
 | `GET /projects/{pid}/folders` | `{"folders":[…]}`. |
 | `POST /projects/{pid}/folders` | Body `{name}` → folder row. |
-| `PUT|PATCH /folders/{fid}` | Rename → `{"ok":true}`. |
-| `DELETE /folders/{fid}` | `{"ok":true}`. |
+| `PUT|PATCH /folders/{fid}` | Rename → `{"ok":true}`. An unknown id is `404` `folder not found` and nothing is written; it used to answer `200 {"ok":true}`, which a client could not tell from a rename that landed. A missing, blank or non-string `name` is `400` `folder name cannot be empty` (an unknown id is still `404`); `{}` used to blank the name and a non-string answered `500`. Team mode answers a non-admin's unknown id and a folder in a project they cannot read with the same `404` `not found` (INV-13). |
+| `DELETE /folders/{fid}` | `{"ok":true}`, also for an unknown id. Team mode answers a non-admin's unknown id `404` `not found`, the same as a folder in a project they cannot read (INV-13). |
 | `POST|PUT|PATCH /frames/{fid}/folder` | Body `{folder_id}` (or null) → `{"ok":true}`. |
 | `GET /example/session` | `{seeded,frame_id,project_id,started,running,seeds_at_startup,error}` — state of the bundled example analysis. `started` is always `false` on a GET. |
 | `POST /example/session` | Body **must** be `{"confirm": true}`; anything else is `400 confirmation_required` and seeds nothing. Idempotent: already seeded → `{"seeded": true, "started": false}`; already running → `{"started": false, "running": true}`, which is distinguishable from a refusal. Seeding happens on a background thread, so this returns immediately and the client polls the `GET`. |
@@ -866,7 +866,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `GET /projects/{project_id}/skills/{name}/versions` | Exact project-scoped immutable history. Unknown projects fail closed. |
 | `POST /projects/{project_id}/skills/{name}/rollback` | Body `{version_id}` activates a retained version in that project only. In team mode a member may reactivate a recipe-only Web-authored version; versions containing `kernel.py` and un-attributed legacy Host versions require an administrator and otherwise return the route's established `409` envelope with `code: "skill_admin_required"`. |
 | `GET /agents` | Bare array of built-in agent descriptors (with `enabled`). |
-| `PUT|PATCH /agents/{name}/enabled` | `{"ok":true}`. This legacy built-in-agent roster toggle remains process-local; persisted Specialist capability policy is enforced in delegation separately. |
+| `PUT|PATCH /agents/{name}/enabled` | `{"ok":true}`; a name no known agent has is `404` `unknown agent` — the same body `GET /agents/{name}` answers — and no capability row is written. It used to persist an orphan capability row for any name and answer `{"ok":true}`. This legacy built-in-agent roster toggle remains process-local; persisted Specialist capability policy is enforced in delegation separately. |
 | `GET /agents/{name}` | Agent descriptor or `404 {"error":"unknown agent"}`. |
 | `GET /specialists` | `{"builtin":[…],"specialists":[…]}`. |
 | `POST /specialists` | Upsert by `name` (400 when missing) → agent row. |
@@ -875,7 +875,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `POST /connectors` | `{name,command}` required (400) → connector row. |
 | `GET /connectors/directory` | `{"directory":[…]}` — the curated install list. In-tree Python entries use the portable `@openai4s/python` command token; it is resolved to the current daemon interpreter only at spawn time, and matching legacy absolute-path rows are migrated on startup. |
 | `PUT|PATCH /connectors/{id}` | Edit generic connector metadata and launch configuration. Body fields are optional: `{name,description,command,args,enabled,env_updates,remove_env}`. Existing environment values are never returned to the browser; omitted names are retained, `env_updates` explicitly replaces selected values through SecretBroker, and `remove_env` explicitly deletes selected names. The cached process is disconnected after a successful edit so the next call lazily starts the new configuration. DataPro is managed and rejects this route. |
-| `PUT|PATCH /connectors/{id}/enabled` | `{"ok":true}`. |
+| `PUT|PATCH /connectors/{id}/enabled` | `{"ok":true}`; an unknown id is `404` `connector not found` — the probe sibling's body; the edit sibling adds `path` and `method` — and nothing is written. It used to answer `{"ok":true}` for an id that matched no row. |
 | `POST /connectors/{id}/probe` | Spawns the server, lists tools; unknown id → 404. |
 | `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; a failing call answers `502` with `code: "connector_failed"` (the MCP server's own message is not echoed — it quotes the argv and env it was launched with). |
 | `DELETE /connectors/{id}` | Disconnect + delete → `{"ok":true}`. |

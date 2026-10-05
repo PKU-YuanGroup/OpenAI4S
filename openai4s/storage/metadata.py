@@ -304,11 +304,15 @@ class FolderRepository:
             ).fetchone()
         return str(row["project_id"]) if row and row["project_id"] else None
 
-    def rename(self, folder_id: str, name: str) -> None:
-        self._execute(
-            "UPDATE folders SET name=? WHERE folder_id=?",
-            (name, folder_id),
-        )
+    def rename(self, folder_id: str, name: str) -> bool:
+        """False when no folder has that id -- the UPDATE matched nothing."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE folders SET name=? WHERE folder_id=?",
+                (name, folder_id),
+            )
+            self._connection.commit()
+        return cursor.rowcount > 0
 
     def delete(self, folder_id: str) -> None:
         # Keep the historical two-transaction boundary: frames are un-filed and
