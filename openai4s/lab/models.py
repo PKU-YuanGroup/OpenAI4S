@@ -14,13 +14,14 @@ import math
 import secrets
 import types
 from collections.abc import Mapping, Sequence
-from dataclasses import MISSING, dataclass, fields
+from dataclasses import MISSING, dataclass, field, fields
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 CONTRACT = "openai4s.lab/v1-draft"
 UNITS = frozenset({"mL", "L", "layer_px", "model_time", "dimensionless"})
+POSITIVE_UNITS = frozenset({"mL", "L", "layer_px", "model_time"})
 OPERATIONS = frozenset(
     {"transfer_liquid", "drain_layers", "mix_model", "settle_model", "end_experiment"}
 )
@@ -134,6 +135,20 @@ class ErrorCode(str, Enum):
 # Every non-terminal run can be ended (stop, budget, idle, provider loss,
 # deletion); only a run still being created can fail. A quarantined run returns
 # to ready only when reconciliation has resolved its last unknown command.
+# What a device may say about a command it received and did not apply. Host
+# conditions (timeouts, persistence, approval, budgets...) are never receipts.
+RECEIPT_ERROR_CODES = frozenset(
+    code.value
+    for code in (
+        ErrorCode.INVALID_PARAMETERS,
+        ErrorCode.UNSUPPORTED_ACTION,
+        ErrorCode.UNIT_MISMATCH,
+        ErrorCode.PRECONDITION_FAILED,
+        ErrorCode.RESOURCE_BUSY,
+        ErrorCode.RUN_ENDED,
+    )
+)
+
 RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = MappingProxyType(
     {
         RunStatus.CREATING: frozenset(
@@ -252,6 +267,9 @@ class LabError(Exception):
         self.message = message
         self.details = details
         super().__init__(f"{code.value}: {message}")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.code, self.message, self.details))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"code": self.code.value, "message": self.message}
@@ -381,7 +399,8 @@ class _Value:
         schema = {f.name: f for f in fields(cls)}  # type: ignore[arg-type]
         for key in data:
             if key not in schema:
-                _invalid(f"{cls.__name__}.{key}", "unknown field")
+                # Never echo the key: in a truth payload it can name a material.
+                _invalid(cls.__name__, "unknown field")
         annotations = get_type_hints(cls)
         values: dict[str, Any] = {}
         for name, f in schema.items():
@@ -392,9 +411,11 @@ class _Value:
             values[name] = _decode(
                 data[name], annotations[name], f"{cls.__name__}.{name}"
             )
-        result = cls(**values)
-        result._validate()
-        return result
+        return cls(**values)
+
+    def __post_init__(self) -> None:
+        # Direct construction is held to the same invariants as decoding.
+        self._validate()
 
     def _validate(self) -> None:
         pass
@@ -426,7 +447,7 @@ def _object(
     options = optional or {}
     for key in data:
         if key not in required and key not in options:
-            _invalid(f"{path}.{key}", "unknown field")
+            _invalid(path, "unknown field")
     for key, annotation in required.items():
         if key not in data:
             _invalid(f"{path}.{key}", "required field")
@@ -458,6 +479,10 @@ class ParameterSpec(_Value):
             _invalid(
                 "ParameterSpec.allowed", "must be nonempty and strictly increasing"
             )
+        # Volumes, pixels and model time are amounts; a sign belongs in the
+        # operation (mix vs settle), never in a level.
+        if self.unit in POSITIVE_UNITS and self.allowed[0] <= 0:
+            _invalid("ParameterSpec.allowed", "levels of this unit are positive")
 
 
 @dataclass(frozen=True)
@@ -481,6 +506,17 @@ class Capability(_Value):
             _invalid("Capability.capability_id", "must not be empty")
         if tuple(sorted(set(self.resources))) != self.resources:
             _invalid("Capability.resources", "must be unique and sorted")
+        # A dispatch leases exactly the capability's resources; the vessels it
+        # pours from and into must be among them.
+        if any(
+            end is not None and end not in self.resources
+            for end in (self.source, self.target)
+        ):
+            _invalid("Capability.resources", "must include source and target")
+        if (self.operation == "end_experiment") != self.terminal:
+            _invalid("Capability.terminal", "terminal exactly for end_experiment")
+        if self.terminal and (self.parameters or self.side_effect != "ends_run"):
+            _invalid("Capability.terminal", "ends the run and takes no parameters")
 
 
 @dataclass(frozen=True)
@@ -698,7 +734,16 @@ class Receipt(_Value):
     sim_time: float
     step_index: int
     observation: Mapping[str, Any] | None
-    evaluation: Mapping[str, Any] | None
+    # Simulator truth and the provider's own action: kept out of repr so a
+    # logged receipt cannot print them, and out of every projection.
+    evaluation: Mapping[str, Any] | None = field(repr=False)
+    provider_action: Mapping[str, Any] | None = field(default=None, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        result = super().to_dict()
+        if self.provider_action is None:
+            del result["provider_action"]
+        return result
 
     def _validate(self) -> None:
         if self.status not in (
@@ -707,8 +752,14 @@ class Receipt(_Value):
             CommandState.REJECTED,
         ):
             _invalid("Receipt.status", "expected succeeded, failed or rejected")
-        if self.status is not CommandState.SUCCEEDED and self.applied:
-            _invalid("Receipt.applied", "failed/rejected cannot apply")
+        if self.applied != (self.status is CommandState.SUCCEEDED):
+            _invalid("Receipt.applied", "applied exactly when succeeded")
+        if self.applied and (self.observation is None or self.evaluation is None):
+            _invalid("Receipt.observation", "an applied step reports what changed")
+        if (self.error is None) != (self.status is CommandState.SUCCEEDED):
+            _invalid("Receipt.error", "an error exactly when not succeeded")
+        if self.error is not None and self.error.get("code") not in RECEIPT_ERROR_CODES:
+            _invalid("Receipt.error", "not a device refusal code")
         if self.end_reason not in (
             None,
             EndReason.END_ACTION,
@@ -759,9 +810,9 @@ class Evaluation(_Value):
     run_id: str
     command_id: str | None
     sequence: int
-    reward: float
-    ground_truth: Mapping[str, Any]
-    metrics: Mapping[str, Any]
+    reward: float = field(repr=False)
+    ground_truth: Mapping[str, Any] = field(repr=False)
+    metrics: Mapping[str, Any] = field(repr=False)
 
     def _validate(self) -> None:
         _nonnegative(self.sequence, "Evaluation.sequence")
@@ -780,11 +831,19 @@ class SessionOpened(_Value):
     session_id: str
     descriptor: DeviceDescriptor
     observation: Mapping[str, Any]
-    evaluation: Mapping[str, Any]
+    evaluation: Mapping[str, Any] = field(repr=False)
 
     def _validate(self) -> None:
         _observation_payload(self.observation, "SessionOpened.observation")
         _evaluation_payload(self.evaluation, "SessionOpened.evaluation")
+        # A provider cannot vouch for capabilities it did not describe.
+        if self.descriptor.capability_revision != capability_revision(
+            self.descriptor.capabilities
+        ):
+            raise LabError(
+                ErrorCode.ADAPTER_MISMATCH,
+                "SessionOpened.descriptor: revision differs from its capabilities",
+            )
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,7 @@ objects independently of persistence serializers, which may carry private data.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from openai4s.lab.models import (
@@ -23,8 +23,10 @@ from openai4s.lab.models import (
     NormalizedCommand,
     Observation,
     ObservationChannel,
+    ObservationChannelSpec,
     ParameterSpec,
     Quantity,
+    Receipt,
     capability_revision,
 )
 
@@ -126,6 +128,14 @@ def match_command(
             ErrorCode.INVALID_PARAMETERS, "parameters: names must match capability"
         )
     request = CommandRequest.from_dict(request.to_dict())
+    # §5 step 3 before step 4: every unit is checked before any level, so a
+    # request with one wrong unit reports unit_mismatch, not a level miss.
+    for name, spec in capability.parameters.items():
+        unit = request.parameters[name].unit
+        if unit != spec.unit and {unit, spec.unit} != {"L", "mL"}:
+            raise LabError(
+                ErrorCode.UNIT_MISMATCH, f"parameters.{name}: incompatible units"
+            )
     parameters: dict[str, Quantity] = {}
     for name, spec in capability.parameters.items():
         try:
@@ -213,16 +223,50 @@ def _flatten(value: Any) -> list[float]:
 
 
 def project_observation(
-    obs: Observation, *, full: bool = False, max_elements: int = 256
+    obs: Observation,
+    *,
+    channels: Sequence[ObservationChannelSpec],
+    full: bool = False,
+    max_elements: int = 256,
 ) -> dict[str, Any]:
+    """The agent/UI view of one observation (CONTRACT §10).
+
+    ``channels`` is the run's declared channel list. Only a channel the device
+    declared, with the declared kind, shape and unit, is published; a reading
+    the descriptor never promised is dropped rather than trusted because it
+    calls itself a sensor. A declared but unavailable channel is published as
+    unavailable with a null value.
+    """
     if type(max_elements) is not int or max_elements < 1:
         raise LabError(
             ErrorCode.INVALID_PARAMETERS, "max_elements: expected a positive integer"
         )
-    channels: list[dict[str, Any]] = []
+    declared = {
+        spec.name: spec
+        for spec in channels
+        if spec.source is ChannelSource.SIMULATED_SENSOR
+    }
+    published: list[dict[str, Any]] = []
     for c in obs.channels:
         if c.source != ChannelSource.SIMULATED_SENSOR:
             continue
+        spec = declared.get(c.name)
+        if spec is None or (spec.kind, spec.shape, spec.unit) != (
+            c.kind,
+            c.shape,
+            c.unit,
+        ):
+            continue
+        if not spec.available:
+            c = ObservationChannel(
+                c.name,
+                c.kind,
+                c.unit,
+                c.shape,
+                None,
+                ChannelQuality.UNAVAILABLE,
+                c.source,
+            )
         # Explicit fields also protect against a future private serializer field.
         channel = {
             "name": c.name,
@@ -247,7 +291,7 @@ def project_observation(
                     },
                     "truncated": True,
                 }
-        channels.append(channel)
+        published.append(channel)
     return {
         "observation_id": obs.observation_id,
         "run_id": obs.run_id,
@@ -256,6 +300,120 @@ def project_observation(
         "sim_time": obs.sim_time,
         "sim_time_unit": obs.sim_time_unit,
         "wall_time_ms": obs.wall_time_ms,
-        "channels": channels,
+        "channels": published,
         "artifact_version_id": obs.artifact_version_id,
     }
+
+
+_OBSERVATION_KEYS = (
+    "observation_id",
+    "run_id",
+    "command_id",
+    "sequence",
+    "sim_time",
+    "sim_time_unit",
+    "wall_time_ms",
+    "channels",
+    "artifact_version_id",
+)
+
+
+def observation_from_row(row: Mapping[str, Any]) -> Observation:
+    """An Observation from a ledger row (CONTRACT §3.12); storage-only columns
+    such as root_frame_id and created_at are not part of the value."""
+    return Observation.from_dict({key: row.get(key) for key in _OBSERVATION_KEYS})
+
+
+_RECEIPT_PUBLIC = (
+    "applied",
+    "status",
+    "error",
+    "raw",
+    "end_reason",
+    "sim_time",
+    "step_index",
+)
+
+
+def _public_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    result = {key: receipt[key] for key in _RECEIPT_PUBLIC if key in receipt}
+    error = result.get("error")
+    if isinstance(error, Mapping):
+        result["error"] = {"code": error.get("code"), "message": error.get("message")}
+    return result
+
+
+def project_receipt(receipt: Receipt) -> dict[str, Any]:
+    """What a caller may see of a device receipt: never evaluation, the
+    provider's own action, or the raw observation payload (published through
+    project_observation instead)."""
+    result = _public_receipt(receipt.to_dict())
+    result["provider_command_id"] = receipt.provider_command_id
+    return result
+
+
+_COMMAND_PUBLIC = (
+    "command_id",
+    "run_id",
+    "seq",
+    "idempotency_key",
+    "operation",
+    "capability_id",
+    "request",
+    "expected_revision",
+    "applied_revision",
+    "origin",
+    "state",
+    "error_code",
+    "error",
+    "observation_id",
+    "created_at",
+    "updated_at",
+    "dispatched_at",
+    "completed_at",
+)
+
+
+def project_command(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A ledger command row as agents and the UI see it. Leases, fencing
+    tokens, approval references, owners and provider_action stay internal."""
+    result = {key: row.get(key) for key in _COMMAND_PUBLIC}
+    receipt = row.get("receipt")
+    result["receipt"] = (
+        _public_receipt(receipt) if isinstance(receipt, Mapping) else None
+    )
+    return result
+
+
+_RUN_PUBLIC = (
+    "run_id",
+    "mode",
+    "backend",
+    "device_id",
+    "profile",
+    "adapter_version",
+    "capability_revision",
+    "seed",
+    "status",
+    "revision",
+    "step_count",
+    "command_count",
+    "consecutive_failures",
+    "end_reason",
+    "budgets",
+    "created_at",
+    "updated_at",
+    "ended_at",
+)
+
+
+def project_run(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A ledger run row as agents and the UI see it. The descriptor is
+    published through project_descriptor; config options, owners and the
+    daemon instance stay internal."""
+    result = {key: row.get(key) for key in _RUN_PUBLIC}
+    result["raw"] = {
+        "terminated": row.get("raw_terminated"),
+        "truncated": row.get("raw_truncated"),
+    }
+    return result

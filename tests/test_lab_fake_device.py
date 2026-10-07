@@ -482,7 +482,7 @@ def test_profile_options_and_failure_codes_are_strictly_validated():
     device = FakeExtractorDevice()
     with pytest.raises(LabError) as caught:
         device.describe("unsupported")
-    assert caught.value.code is ErrorCode.UNSUPPORTED_ACTION
+    assert caught.value.code is ErrorCode.DEVICE_NOT_FOUND
     descriptor = device.describe("toy-extract-v0")
     with pytest.raises(LabError) as caught:
         device.open(
@@ -497,3 +497,15 @@ def test_profile_options_and_failure_codes_are_strictly_validated():
     with pytest.raises(LabError) as caught:
         device.fail_next("made_up_code")
     assert caught.value.code is ErrorCode.INVALID_PARAMETERS
+    # A transport failure is not a refusal the device could put in a receipt.
+    with pytest.raises(LabError) as caught:
+        device.fail_next(ErrorCode.PROVIDER_TIMEOUT)
+    assert caught.value.code is ErrorCode.INVALID_PARAMETERS
+
+
+def test_closing_a_session_twice_is_not_an_error():
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    device.close(opened.session_id)
+    device.close(opened.session_id)
+    assert not device.alive(opened.session_id)

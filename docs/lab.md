@@ -112,7 +112,7 @@ must not contain simulator truth. All 21 error codes are fixed:
 | `stale_revision` | Caller revision differs from the current state. |
 | `idempotency_conflict` | Same key, different request. |
 | `run_not_found` | Run absent or outside caller ownership. |
-| `device_not_found` | Device absent. |
+| `device_not_found` | Device absent, or the device has no such profile. |
 | `run_ended` | Run is terminal. |
 | `resource_busy` | Resource occupied or stale fencing token. |
 | `resource_quarantined` | Resource has an unknown outcome. |

@@ -147,9 +147,11 @@ def test_roundtrip(value):
 
 @pytest.mark.parametrize("value", EXAMPLES, ids=lambda v: type(v).__name__)
 def test_unknown_fields(value):
-    with pytest.raises(m.LabError, match="unexpected") as caught:
-        type(value).from_dict({**value.to_dict(), "unexpected": 1})
+    with pytest.raises(m.LabError, match="unknown field") as caught:
+        type(value).from_dict({**value.to_dict(), "NaCl_moles_PRIVATE": 1})
     assert caught.value.code is m.ErrorCode.INVALID_PARAMETERS
+    # The key itself is never echoed: in a truth payload it can name a material.
+    assert "NaCl" not in str(caught.value)
 
 
 REQUIRED = [

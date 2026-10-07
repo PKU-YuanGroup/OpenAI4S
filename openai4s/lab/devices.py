@@ -48,6 +48,7 @@ class DeviceRegistry:
     def describe(self, device_id: str, profile: str) -> DeviceDescriptor:
         reg = self.get(device_id)
         if profile not in reg.profiles:
-            raise LabError(ErrorCode.UNSUPPORTED_ACTION, "Profile is not supported")
+            # CONTRACT §6: a profile the device does not have is device_not_found.
+            raise LabError(ErrorCode.DEVICE_NOT_FOUND, "Profile is not supported")
         # A loader can be slow/reentrant. Do not hold the registry lock here.
         return reg.descriptor_loader(profile)

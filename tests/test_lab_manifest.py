@@ -10,8 +10,11 @@ from openai4s.lab.manifest import (
     load_descriptor,
     match_command,
     normalize_quantity,
+    project_command,
     project_descriptor,
     project_observation,
+    project_receipt,
+    project_run,
 )
 from openai4s.lab.models import (
     CONTRACT,
@@ -21,6 +24,7 @@ from openai4s.lab.models import (
     ChannelQuality,
     ChannelSource,
     CommandRequest,
+    CommandState,
     DeviceDescriptor,
     ErrorCode,
     LabError,
@@ -29,6 +33,7 @@ from openai4s.lab.models import (
     ObservationChannelSpec,
     ParameterSpec,
     Quantity,
+    Receipt,
     ResourceSpec,
     RunMode,
     SideEffect,
@@ -203,6 +208,29 @@ def test_descriptor_computes_missing_revision():
     assert load_descriptor(data) == descriptor()
 
 
+CHANNELS = (
+    ObservationChannelSpec(
+        "layers",
+        ChannelKind.ARRAY,
+        (300,),
+        "dimensionless",
+        ChannelSource.SIMULATED_SENSOR,
+        True,
+        "Visible layers",
+    ),
+    ObservationChannelSpec(
+        "pressure",
+        ChannelKind.SCALAR,
+        (),
+        "dimensionless",
+        ChannelSource.SIMULATED_SENSOR,
+        False,
+        "Pressure",
+        reason="not_modeled",
+    ),
+)
+
+
 def observation():
     return Observation(
         "obs",
@@ -238,23 +266,24 @@ def observation():
 
 def test_sensor_projection_summary_full_and_unavailable():
     obs = observation()
-    projected = project_observation(obs)
+    projected = project_observation(obs, channels=CHANNELS)
     assert projected["channels"][0]["value"] == {
         "shape": [300],
         "summary": {"min": 0.0, "max": 299.0, "mean": 149.5},
         "truncated": True,
     }
-    assert project_observation(obs, full=True)["channels"][0]["value"] == list(
-        range(300)
-    )
-    assert project_observation(obs, max_elements=300)["channels"][0]["value"] == list(
-        range(300)
-    )
-    # Even a stale in-memory numeric value cannot turn unavailable into zero.
-    dirty = replace(obs, channels=(replace(obs.channels[1], value=123.0),))
-    assert project_observation(dirty)["channels"][0]["value"] is None
+    assert project_observation(obs, channels=CHANNELS, full=True)["channels"][0][
+        "value"
+    ] == list(range(300))
+    assert project_observation(obs, channels=CHANNELS, max_elements=300)["channels"][0][
+        "value"
+    ] == list(range(300))
+    # A stale numeric value cannot turn unavailable into zero: values are
+    # validated when built, so such a channel cannot exist to be projected.
     with pytest.raises(LabError):
-        project_observation(obs, max_elements=True)
+        replace(obs.channels[1], value=123.0)
+    with pytest.raises(LabError):
+        project_observation(obs, channels=CHANNELS, max_elements=True)
 
 
 def test_projection_never_serializes_truth(monkeypatch):
@@ -274,7 +303,10 @@ def test_projection_never_serializes_truth(monkeypatch):
     monkeypatch.setattr(
         Observation, "to_dict", lambda self: {"evaluation": {"reward": 42}}
     )
-    output = [project_descriptor(descriptor()), project_observation(obs, full=True)]
+    output = [
+        project_descriptor(descriptor()),
+        project_observation(obs, channels=CHANNELS, full=True),
+    ]
 
     def keys(value):
         if isinstance(value, dict):
@@ -290,17 +322,22 @@ def test_projection_never_serializes_truth(monkeypatch):
         "reward",
         "ground_truth",
     }
-    # Bad category payloads cannot smuggle an evaluation inside channel.value.
-    channel = replace(
-        obs.channels[0],
-        kind=ChannelKind.CATEGORY,
-        shape=(),
-        value={"ground_truth": {"moles": 2}},
-    )
+    # Bad category payloads cannot smuggle an evaluation inside channel.value:
+    # the channel is refused when it is built.
     with pytest.raises(LabError):
-        project_observation(replace(obs, channels=(channel,)))
+        replace(
+            obs.channels[0],
+            kind=ChannelKind.CATEGORY,
+            shape=(),
+            value={"ground_truth": {"moles": 2}},
+        )
     physical = replace(obs.channels[0], source=ChannelSource.PHYSICAL_SENSOR)
-    assert project_observation(replace(obs, channels=(physical,)))["channels"] == []
+    assert (
+        project_observation(replace(obs, channels=(physical,)), channels=CHANNELS)[
+            "channels"
+        ]
+        == []
+    )
 
 
 def test_registry_explicit_thread_safe_registration():
@@ -334,7 +371,8 @@ def test_registry_explicit_thread_safe_registration():
     assert caught.value.code is ErrorCode.DEVICE_NOT_FOUND
     with pytest.raises(LabError) as caught:
         registry.describe("b", "unknown")
-    assert caught.value.code is ErrorCode.UNSUPPORTED_ACTION
+    # CONTRACT §6: a profile the device lacks is device_not_found.
+    assert caught.value.code is ErrorCode.DEVICE_NOT_FOUND
 
 
 @pytest.mark.parametrize("value", [10**308, 1e308])
@@ -347,3 +385,127 @@ def test_large_finite_quantities_fail_with_contract_error(value):
         "allowed": [200],
         "unit": "mL",
     }
+
+
+def test_only_declared_channels_with_their_declared_shape_are_published():
+    obs = observation()
+    secret = ObservationChannel(
+        "true_volumes_mL",
+        ChannelKind.ARRAY,
+        "mL",
+        (3,),
+        [400, 0, 200],
+        ChannelQuality.OK,
+        ChannelSource.SIMULATED_SENSOR,
+    )
+    reshaped = ObservationChannel(
+        "layers",
+        ChannelKind.ARRAY,
+        "dimensionless",
+        (2,),
+        [0.0, 1.0],
+        ChannelQuality.OK,
+        ChannelSource.SIMULATED_SENSOR,
+    )
+    for intruder in (secret, reshaped):
+        published = project_observation(
+            replace(obs, channels=(intruder,)), channels=CHANNELS, full=True
+        )
+        assert published["channels"] == []
+    # A declared-unavailable channel is published as unavailable, never as 0.
+    pressure = project_observation(obs, channels=CHANNELS)["channels"][1]
+    assert pressure["quality"] == "unavailable" and pressure["value"] is None
+
+
+def test_receipt_command_and_run_views_keep_internals_out():
+    receipt = Receipt(
+        "labcmd-1",
+        True,
+        CommandState.SUCCEEDED,
+        None,
+        {"terminated": False, "truncated": False},
+        None,
+        0.5,
+        1,
+        {"channels": [], "sim_time": 0.5},
+        {"reward": 0.9, "ground_truth": {"NaCl": 1.0}},
+        provider_action={"gym_action": 12},
+    )
+    assert "reward" not in repr(receipt) and "gym_action" not in repr(receipt)
+    view = project_receipt(receipt)
+    assert view["provider_command_id"] == "labcmd-1" and view["applied"] is True
+    assert not set(view) & {"evaluation", "provider_action", "observation"}
+    command = project_command(
+        {
+            "command_id": "labcmd-1",
+            "state": "succeeded",
+            "provider_action": {"gym_action": 12},
+            "resources": ["lab:x#r:y"],
+            "fencing_token": 4,
+            "approval_ref": "ref",
+            "owner_user_id": "u",
+            "receipt": {"applied": True, "status": "succeeded", "reward": 0.9},
+        }
+    )
+    assert command["state"] == "succeeded" and command["receipt"] == {
+        "applied": True,
+        "status": "succeeded",
+    }
+    for internal in ("provider_action", "resources", "fencing_token", "approval_ref"):
+        assert internal not in command
+    run = project_run(
+        {
+            "run_id": "labrun-1",
+            "status": "ready",
+            "descriptor": {"capabilities": []},
+            "config": {"options": {"x": 1}},
+            "daemon_instance": "daemon-1",
+            "owner_user_id": "u",
+            "raw_terminated": False,
+            "raw_truncated": None,
+        }
+    )
+    assert run["status"] == "ready" and run["raw"] == {
+        "terminated": False,
+        "truncated": None,
+    }
+    for internal in ("descriptor", "config", "daemon_instance", "owner_user_id"):
+        assert internal not in run
+
+
+def test_every_unit_is_checked_before_any_level():
+    two = Capability(
+        "two",
+        "transfer_liquid",
+        CapabilityScope.SHARED,
+        "a",
+        "b",
+        {
+            "volume": ParameterSpec("mL", (200,)),
+            "pixels": ParameterSpec("layer_px", (1, 2)),
+        },
+        SideEffect.MOVES_MATERIAL,
+        ("a", "b"),
+        (),
+        False,
+        "1",
+    )
+    request = CommandRequest(
+        "run",
+        "transfer_liquid",
+        "a",
+        "b",
+        # volume misses its level first in iteration order; pixels has the
+        # wrong unit. The unit is the error the caller must see.
+        {"volume": Quantity(150, "mL"), "pixels": Quantity(1, "mL")},
+        0,
+        "key",
+    )
+    device = replace(
+        descriptor(),
+        capabilities=(two,),
+        capability_revision=capability_revision((two,)),
+    )
+    with pytest.raises(LabError) as caught:
+        match_command(device, request)
+    assert caught.value.code is ErrorCode.UNIT_MISMATCH

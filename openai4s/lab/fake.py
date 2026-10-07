@@ -26,6 +26,7 @@ from openai4s.lab.devices import DeviceRegistration
 from openai4s.lab.manifest import load_descriptor, match_command
 from openai4s.lab.models import (
     CONTRACT,
+    RECEIPT_ERROR_CODES,
     Capability,
     CapabilityScope,
     ChannelKind,
@@ -64,7 +65,7 @@ _VESSELS = ("extraction_vessel", "beaker_1", "beaker_2")
 
 def _descriptor(profile: str) -> DeviceDescriptor:
     if profile != _PROFILE:
-        raise LabError(ErrorCode.UNSUPPORTED_ACTION, "Profile is not supported")
+        raise LabError(ErrorCode.DEVICE_NOT_FOUND, "Profile is not supported")
     capabilities = []
     for source in _RESOURCES:
         for target in _VESSELS:
@@ -475,9 +476,10 @@ class FakeExtractorDevice:
             return StopResult(True, "end_session")
 
     def close(self, session_id: str) -> None:
+        # Closing twice is not an error: shutdown paths may race.
         with self._lock:
-            self._session(session_id)
-            del self._sessions[session_id]
+            self._check_device()
+            self._sessions.pop(session_id, None)
 
     def alive(self, session_id: str) -> bool:
         with self._lock:
@@ -487,11 +489,18 @@ class FakeExtractorDevice:
         with self._lock:
             self._check_device()
             try:
-                self._failure = ErrorCode(code)
+                failure = ErrorCode(code)
             except (ValueError, TypeError):
                 raise LabError(
                     ErrorCode.INVALID_PARAMETERS, "Unknown failure code"
                 ) from None
+            # fail_next is a device refusal; transport failures have their own
+            # hooks and raise instead of returning a receipt.
+            if failure.value not in RECEIPT_ERROR_CODES:
+                raise LabError(
+                    ErrorCode.INVALID_PARAMETERS, "Not a device refusal code"
+                )
+            self._failure = failure
 
     def lose_response_next(self) -> None:
         with self._lock:
