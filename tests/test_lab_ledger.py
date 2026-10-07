@@ -899,7 +899,9 @@ def test_an_unapproved_command_is_never_dispatched(ledger, store, state):
 
 
 @pytest.mark.parametrize(
-    "keys", ["lab:dev#r1:beaker", b"a", [], [""], [3], ["lab:dev#other:beaker"]]
+    "keys",
+    # A bare string is the bug: it used to lease each of its characters.
+    ["beaker", "lab:dev#r1:beaker", b"a", [], [""], [3], ["lab:dev#other:beaker"]],
 )
 def test_resource_keys_are_names_of_this_run(ledger, store, keys):
     ready(ledger)
