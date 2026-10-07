@@ -163,13 +163,8 @@ class ProviderClient:
             if not selector.select(remaining):
                 raise ProviderTimeout()
 
-    def _exchange(self, op, args, timeout):
+    def _exchange(self, request_id, data, timeout):
         deadline = time.monotonic() + timeout
-        request_id = uuid.uuid4().hex
-        data = encode_frame(
-            {"v": 1, "id": request_id, "op": op, "args": args},
-            max_frame_bytes=self.max_frame_bytes,
-        )
         offset = 0
         while offset < len(data):
             self._wait(self.process.stdin, selectors.EVENT_WRITE, deadline)
@@ -185,6 +180,9 @@ class ProviderClient:
                 frame = decode_frame(
                     line, response=True, max_frame_bytes=self.max_frame_bytes
                 )
+                if frame["id"] == "invalid" and not frame["ok"]:
+                    # The provider could not read our frame and is closing.
+                    raise ProtocolError("provider rejected an unreadable request")
                 if frame["id"] != request_id:
                     if time.monotonic() >= deadline:
                         raise ProviderTimeout()
@@ -220,11 +218,21 @@ class ProviderClient:
             or timeout <= 0
         ):
             raise ValueError("timeout must be finite and positive")
+        request_id = uuid.uuid4().hex
+        try:
+            data = encode_frame(
+                {"v": 1, "id": request_id, "op": op, "args": args},
+                max_frame_bytes=self.max_frame_bytes,
+            )
+        except ProtocolError as exc:
+            # Nothing was written: a host-side argument error must not kill a
+            # healthy provider (and be recorded as a lost one).
+            raise ValueError(f"request cannot be encoded: {exc}") from None
         with self._lock:
             if not self.alive():
                 raise self._gone()
             try:
-                return self._exchange(op, args, timeout)
+                return self._exchange(request_id, data, timeout)
             except ProviderTimeout:
                 self._terminate(graceful=op == "close")
                 raise

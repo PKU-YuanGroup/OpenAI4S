@@ -16,10 +16,22 @@ from openai4s_lab_provider.server import Server
 
 
 def test_roundtrip():
-    frame = {"v": 1, "id": "请求", "op": "hello", "args": {}}
+    frame = {"v": 1, "id": "req-1", "op": "hello", "args": {"note": "请求"}}
     assert decode_frame(encode_frame(frame)) == frame
     with pytest.raises(ProtocolError):
         encode_frame({**frame, "args": {"value": float("nan")}})
+
+
+@pytest.mark.parametrize("ident", ["请求", "a b", "\ud800", "x" * 65, ""])
+def test_request_ids_are_a_closed_alphabet(ident):
+    # An id must survive being echoed back; a lone surrogate is valid JSON but
+    # cannot be encoded, and used to crash the provider's error path.
+    frame = {"v": 1, "id": ident, "op": "hello", "args": {}}
+    with pytest.raises(ProtocolError):
+        encode_frame(frame)
+    raw = (json.dumps(frame) + "\n").encode()
+    with pytest.raises(ProtocolError):
+        decode_frame(raw)
 
 
 @pytest.mark.parametrize(
@@ -303,3 +315,51 @@ def test_a_declared_refusal_does_not_mark_the_id_received():
     assert server.dispatch("query", {"provider_command_id": "refused"}) == {
         "known": False
     }
+
+
+def test_an_unencodable_request_leaves_the_provider_alive(tmp_path):
+    import sys
+    from pathlib import Path
+
+    from openai4s_lab_provider.client import ProviderClient
+
+    entry = (
+        Path(__file__).resolve().parents[1] / "openai4s_lab_provider" / "__main__.py"
+    )
+    client = ProviderClient(
+        [sys.executable, "-I", str(entry), "--backend", "toy"],
+        env={"HOME": str(tmp_path), "PYTHONNOUSERSITE": "1"},
+        cwd=tmp_path,
+    ).start()
+    try:
+        with pytest.raises(ValueError):
+            client.request("stop", {"reason": float("nan")}, timeout=5)
+        # Nothing was written, so the provider is still the same healthy one.
+        assert client.alive()
+        assert client.request("hello", {}, timeout=5)["protocol"] == 1
+    finally:
+        client.close()
+
+
+def test_an_unreadable_request_is_a_protocol_error_not_a_lost_provider(tmp_path):
+    import sys
+
+    from openai4s_lab_provider.client import ProviderClient, ProviderProtocolError
+
+    # A peer answering the way the server does for a frame it cannot read.
+    peer = (
+        "import sys; sys.stdin.buffer.readline(); sys.stdout.buffer.write("
+        'b\'{"v":1,"id":"invalid","ok":false,"error":'
+        '{"code":"provider_protocol_error","message":"bad"}}\\n\''
+        "); sys.stdout.buffer.flush(); sys.stdin.buffer.read()"
+    )
+    client = ProviderClient(
+        [sys.executable, "-I", "-c", peer],
+        env={"HOME": str(tmp_path)},
+        cwd=tmp_path,
+    ).start()
+    try:
+        with pytest.raises(ProviderProtocolError):
+            client.request("hello", {}, timeout=5)
+    finally:
+        client.close()

@@ -98,8 +98,14 @@ def _seed(seed):
 
 def _make(profile):
     if profile not in PROFILES:
-        raise BackendError("invalid_parameters", "unsupported extraction profile")
-    distribution = importlib.metadata.distribution("chemistrygym")
+        raise BackendError("device_not_found", "unsupported extraction profile")
+    try:
+        distribution = importlib.metadata.distribution("chemistrygym")
+    except importlib.metadata.PackageNotFoundError:
+        raise BackendError(
+            "provider_unavailable",
+            "ChemGymRL is not installed in this provider environment",
+        ) from None
     direct = json.loads(distribution.read_text("direct_url.json") or "{}")
     if (
         distribution.version != "2.0.0"
@@ -108,8 +114,14 @@ def _make(profile):
         raise BackendError(
             "adapter_mismatch", "upstream installation does not match the pinned source"
         )
-    import chemistrylab  # Registers only inside the isolated provider.
-    import gymnasium as gym
+    try:
+        import chemistrylab  # Registers only inside the isolated provider.
+        import gymnasium as gym
+    except ImportError:
+        raise BackendError(
+            "provider_unavailable",
+            "the provider environment cannot import ChemGymRL",
+        ) from None
 
     return gym.make(profile)
 

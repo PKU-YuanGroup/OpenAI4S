@@ -303,3 +303,22 @@ def test_transfer_preconditions_follow_upstream_and_tolerate_float_tails():
         )
         == "source volume is insufficient"
     )
+
+
+def test_profiles_and_missing_upstream_are_classified():
+    # The default test environment has no ChemGymRL: that is provider_unavailable,
+    # not a protocol failure that kills the process; an unknown profile is
+    # device_not_found.
+    from openai4s_lab_provider.chemgymrl.adapter import _make
+    from openai4s_lab_provider.protocol import BackendError
+
+    with pytest.raises(BackendError) as unknown:
+        _make("NoSuchExtract-v0")
+    assert unknown.value.code == "device_not_found"
+    import importlib.util
+
+    if importlib.util.find_spec("chemistrylab") is not None:
+        pytest.skip("ChemGymRL is installed in this interpreter")
+    with pytest.raises(BackendError) as missing:
+        _make("WaterOilExtract-v0")
+    assert missing.value.code == "provider_unavailable"

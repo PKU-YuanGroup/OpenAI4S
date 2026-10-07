@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 
 from . import PROTOCOL_VERSION
 
@@ -42,12 +43,17 @@ def _object(pairs):
     return result
 
 
+_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+
+
 def validate_frame(frame, *, response=False):
     if not isinstance(frame, dict):
         raise ProtocolError("frame must be an object")
     if type(frame.get("v")) is not int or frame["v"] != PROTOCOL_VERSION:
         raise ProtocolError("unsupported protocol version")
-    if not isinstance(frame.get("id"), str) or not 1 <= len(frame["id"]) <= 64:
+    # A closed alphabet: an id must always survive being echoed back, which a
+    # lone surrogate (valid JSON, not encodable UTF-8) would not.
+    if not isinstance(frame.get("id"), str) or not _ID.fullmatch(frame["id"]):
         raise ProtocolError("invalid request id")
     if response:
         if type(frame.get("ok")) is not bool:

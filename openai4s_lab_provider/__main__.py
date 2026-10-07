@@ -17,6 +17,35 @@ def _load_own_package():
     return module
 
 
+# The compute provider's baseline (openai4s_compute_provider/_constants.py),
+# copied rather than imported: this package must load on its own.
+_SECRET_PREFIXES = (
+    "NGC_",
+    "NVIDIA_",
+    "HF_",
+    "HUGGING",
+    "INFER_",
+    "AWS_",
+    "AZURE_",
+    "GCP_",
+    "GOOGLE_",
+    "OPENAI_",
+    "ANTHROPIC_",
+    "GEMINI_",
+    "COHERE_",
+    "REPLICATE_",
+    "MODAL_",
+    "WANDB_",
+    "OPENAI4S_SECRET_",
+    "OPENAI4S_LLM_",
+    "OPENAI4S_ARK_",
+    "OPENAI4S_CLAUDE_",
+    "OPENAI4S_CHATGPT_",
+    "OPENAI4S_GEMINI_",
+    "OPENAI4S_DEEPSEEK_",
+)
+
+
 def scrub_secret_env():
     """Baseline name heuristic, independent of the later host-side allowlist."""
     import re
@@ -26,9 +55,7 @@ def scrub_secret_env():
         if re.search(
             r"(?:^|_)(?:KEY|TOKEN|SECRET|PASS(?:WORD|WD)?|PWD|PW|PAT|CREDENTIALS?|AUTH|BEARER|COOKIE)(?:_|$)",
             upper,
-        ) or upper.startswith(
-            ("AWS_", "AZURE_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "OPENAI4S_SECRET_")
-        ):
+        ) or upper.startswith(_SECRET_PREFIXES):
             os.environ.pop(name, None)
 
 
