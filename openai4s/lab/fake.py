@@ -196,6 +196,9 @@ class _Session:
     ended: bool = False
     end_reason: EndReason | None = None
     receipts: OrderedDict[str, Receipt] = field(default_factory=OrderedDict)
+    # Every id this session accepted, so an evicted receipt is never mistaken
+    # for a command that was never received.
+    seen: set[str] = field(default_factory=set)
     fencing_tokens: dict[str, int] = field(default_factory=dict)
 
 
@@ -273,6 +276,12 @@ class FakeExtractorDevice:
             cached = session.receipts.get(dispatch.provider_command_id)
             if cached is not None:
                 return deepcopy(cached)
+            if dispatch.provider_command_id in session.seen:
+                raise LabError(
+                    ErrorCode.OUTCOME_UNKNOWN,
+                    "Receipt is no longer retained; the command will not run again",
+                )
+            session.seen.add(dispatch.provider_command_id)
             if session.ended:
                 receipt = self._failure_receipt(session, dispatch, ErrorCode.RUN_ENDED)
             else:
@@ -450,7 +459,15 @@ class FakeExtractorDevice:
 
     def query(self, session_id: str, provider_command_id: str) -> Receipt | None:
         with self._lock:
-            return deepcopy(self._session(session_id).receipts.get(provider_command_id))
+            session = self._session(session_id)
+            receipt = session.receipts.get(provider_command_id)
+            if receipt is not None:
+                return deepcopy(receipt)
+            if provider_command_id in session.seen:
+                raise LabError(
+                    ErrorCode.OUTCOME_UNKNOWN, "Receipt is no longer retained"
+                )
+            return None
 
     def stop(self, session_id: str, reason: str) -> StopResult:
         with self._lock:

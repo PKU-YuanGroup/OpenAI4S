@@ -7,6 +7,7 @@ import pytest
 
 from openai4s_lab_provider.protocol import (
     MAX_FRAME_BYTES,
+    BackendError,
     ProtocolError,
     decode_frame,
     encode_frame,
@@ -191,3 +192,114 @@ libc.fflush(None)
     )
     assert result.returncode == 0
     assert result.stdout == b"" and result.stderr == b""
+
+
+class _StepBackend:
+    """Enough of a backend to drive Server.dispatch directly."""
+
+    name = "step"
+    version = {"package": "step", "version": "0"}
+
+    def __init__(self, fail_with=None):
+        self.fail_with = fail_with
+        self.steps = 0
+
+    def open(self, profile, seed, options, expected_capability_revision):
+        return {
+            "session_id": "s",
+            "descriptor": {
+                "capabilities": [{"capability_id": "act", "resources": ["vessel"]}]
+            },
+            "observation": {"sim_time": 0.0, "channels": []},
+            "evaluation": None,
+        }
+
+    def execute(self, provider_command_id, command, fencing_tokens):
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.steps += 1
+        return {
+            "provider_command_id": provider_command_id,
+            "applied": True,
+            "status": "succeeded",
+            "error": None,
+            "raw": {"terminated": False, "truncated": False},
+            "end_reason": None,
+            "sim_time": float(self.steps),
+            "step_index": self.steps,
+            "observation": {"sim_time": float(self.steps), "channels": []},
+            "evaluation": None,
+        }
+
+    def close(self):
+        pass
+
+
+def _opened(backend):
+    server = Server(backend)
+    server.dispatch(
+        "open",
+        {
+            "profile": "p",
+            "seed": 1,
+            "options": {},
+            "expected_capability_revision": "r",
+        },
+    )
+    return server
+
+
+def _run(server, command_id):
+    return server.dispatch(
+        "execute",
+        {
+            "provider_command_id": command_id,
+            "command": {"capability_id": "act"},
+            "fencing_tokens": {"vessel": 1},
+        },
+    )
+
+
+def test_known_false_means_never_received_and_evicted_ids_never_run_twice():
+    backend = _StepBackend()
+    server = _opened(backend)
+    for index in range(257):
+        _run(server, f"c{index}")
+    assert backend.steps == 257
+    query = server.dispatch("query", {"provider_command_id": "c0"})
+    assert query == {"known": True, "receipt": None}
+    assert server.dispatch("query", {"provider_command_id": "never"}) == {
+        "known": False
+    }
+    with pytest.raises(BackendError) as again:
+        _run(server, "c0")
+    assert again.value.code == "outcome_unknown"
+    assert backend.steps == 257
+
+
+def test_an_unexpected_backend_failure_poisons_the_session():
+    backend = _StepBackend(fail_with=RuntimeError("half-run step"))
+    server = _opened(backend)
+    with pytest.raises(RuntimeError):
+        _run(server, "broken")
+    # Outcome unknown, not "never received" ...
+    assert server.dispatch("query", {"provider_command_id": "broken"}) == {
+        "known": True,
+        "receipt": None,
+    }
+    # ... and nothing else may run on a simulation in an unknown state.
+    backend.fail_with = None
+    with pytest.raises(BackendError) as refused:
+        _run(server, "after")
+    assert refused.value.code == "outcome_unknown"
+    assert backend.steps == 0
+
+
+def test_a_declared_refusal_does_not_mark_the_id_received():
+    backend = _StepBackend(fail_with=BackendError("invalid_parameters", "no"))
+    server = _opened(backend)
+    with pytest.raises(BackendError):
+        _run(server, "refused")
+    assert server.dispatch("query", {"provider_command_id": "refused"}) == {
+        "known": False
+    }

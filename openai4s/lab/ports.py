@@ -4,6 +4,13 @@ Device failures are LabError, never bare transport exceptions: TIMEOUT can
 leave a live session (query by command identity); UNAVAILABLE and PROTOCOL_ERROR
 mean it is gone; ADAPTER_MISMATCH during open leaves no live session. Explicit
 refusals return an unapplied Receipt. An unknown outcome is never auto-retried.
+
+``query`` answers from a session that remembers every command id it accepted:
+a Receipt when one is retained; ``None`` only when the session never received
+that id, which is the proof that lets a caller record ``not_dispatched``; and
+``LabError(OUTCOME_UNKNOWN)`` when the id was received but its receipt is no
+longer retained. ``execute`` of such an id raises the same error rather than
+running the command a second time.
 Ledger dictionaries use decoded JSON column names, per contract §3.12.
 """
 

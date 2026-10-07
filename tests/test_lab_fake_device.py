@@ -325,9 +325,18 @@ def test_receipt_cache_retains_only_the_latest_256_commands():
         device.fail_next(ErrorCode.PRECONDITION_FAILED)
         receipt = device.execute(opened.session_id, _mix(opened, f"command-{index}"))
         assert not receipt.applied
-    assert device.query(opened.session_id, "command-0") is None
+    # Evicted is not "never received": the fake still knows it took the id.
+    with pytest.raises(LabError) as evicted:
+        device.query(opened.session_id, "command-0")
+    assert evicted.value.code is ErrorCode.OUTCOME_UNKNOWN
+    assert device.query(opened.session_id, "never-sent") is None
     assert device.query(opened.session_id, "command-1").step_index == 0
     assert device.query(opened.session_id, "command-256") == receipt
+    # And an evicted id is never executed a second time.
+    with pytest.raises(LabError) as again:
+        device.execute(opened.session_id, _mix(opened, "command-0"))
+    assert again.value.code is ErrorCode.OUTCOME_UNKNOWN
+    assert device.execute(opened.session_id, _mix(opened, "fresh")).step_index == 1
 
 
 def test_returned_nested_receipts_cannot_mutate_cached_evidence():

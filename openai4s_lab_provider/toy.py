@@ -118,7 +118,12 @@ class Backend:
 
     @staticmethod
     def _validate_options(options):
-        flags = {"print_to_stdout_on_open", "crash_on_execute", "oversize_frame"}
+        flags = {
+            "print_to_stdout_on_open",
+            "crash_on_execute",
+            "raise_on_execute",
+            "oversize_frame",
+        }
         if not isinstance(options, dict) or set(options) - flags - {
             "sleep_on_execute_s",
             "echo_env_keys",
@@ -266,6 +271,9 @@ class Backend:
             )
         if self._options.get("sleep_on_execute_s"):
             time.sleep(self._options["sleep_on_execute_s"])
+        if self._options.get("raise_on_execute"):
+            # An unexpected backend failure mid-step, for the poisoned-session path.
+            raise RuntimeError("toy backend failure")
         if self._options.get("crash_on_execute"):
             os.write(2, b"toy provider: deliberate execute crash\n")
             os._exit(17)

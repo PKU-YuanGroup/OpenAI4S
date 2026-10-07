@@ -333,11 +333,28 @@ def test_receipt_cache_retains_only_recent_256_commands(provider):
     for index in range(256):
         last = _execute(client, f"rejected-{index}", command=_command(201))
         assert last["status"] == "rejected"
-    assert _query(client, "oldest") == {"known": False}
+    # Evicted is not "never received": known:false is reserved for ids the
+    # session never accepted, which is what lets a host record not_dispatched.
+    assert _query(client, "oldest") == {"known": True, "receipt": None}
+    assert _query(client, "never-sent") == {"known": False}
     assert _query(client, "rejected-0")["provider_command_id"] == "rejected-0"
     assert _query(client, "rejected-255") == last
-    # Once evicted, an id is no longer claimed to be a cached execution.
-    assert _execute(client, "oldest")["step_index"] == 2
+    # An evicted id is refused rather than executed a second time.
+    with pytest.raises(ProviderError) as again:
+        _execute(client, "oldest")
+    assert again.value.code == "outcome_unknown"
+    assert _execute(client, "fresh")["step_index"] == 2
+
+
+def test_an_unexpected_backend_failure_ends_the_provider_process(provider):
+    client = provider()
+    _open(client, {"raise_on_execute": True})
+    # The step may have half-run, so the client treats it as a protocol
+    # failure and kills the process: the host sees a lost provider, not a
+    # refusal it could retry on the same simulation.
+    with pytest.raises(ProviderProtocolError):
+        _execute(client, "broken")
+    assert not client.alive()
 
 
 def test_fencing_requires_all_capability_resources(provider):

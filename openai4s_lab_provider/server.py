@@ -21,6 +21,13 @@ class Server:
         self.opened = False
         # Share the adapter cache so rejected commands and queries use the same 256 slots.
         self.receipts = getattr(backend, "receipts", OrderedDict())
+        # Every command id the backend was asked to execute. Receipts are
+        # bounded; this set is what makes ``known: false`` mean "never
+        # received" instead of "evicted", and what refuses to run an id twice.
+        self.seen = set()
+        # An unexpected backend exception leaves the simulation in an unknown
+        # state; no further command may run on it.
+        self.poisoned = False
         self.fences = {}
         self.resource_sets = {}
         self.sim_time = 0.0
@@ -73,7 +80,18 @@ class Server:
             self.receipts.move_to_end(command_id)
             return self.receipts[command_id]
         if op == "query":
+            if command_id in self.seen:
+                return {"known": True, "receipt": None}
             return {"known": False}
+        if command_id in self.seen:
+            raise BackendError(
+                "outcome_unknown",
+                "receipt no longer retained; the command will not run again",
+            )
+        if self.poisoned:
+            raise BackendError(
+                "outcome_unknown", "session state is unknown after a backend failure"
+            )
         tokens = args["fencing_tokens"]
         if (
             not isinstance(args["command"], dict)
@@ -98,6 +116,7 @@ class Server:
         # Remember every observed maximum, including other resources of a stale batch.
         for resource, token in tokens.items():
             self.fences[resource] = max(token, self.fences.get(resource, -1))
+        self.seen.add(command_id)
         if stale:
             result = failed_receipt(
                 command_id,
@@ -107,7 +126,15 @@ class Server:
                 step_index=self.step_index,
             )
         else:
-            result = self.backend.execute(**args)
+            try:
+                result = self.backend.execute(**args)
+            except BackendError:
+                # A declared refusal is raised before the backend touches state.
+                self.seen.discard(command_id)
+                raise
+            except Exception:
+                self.poisoned = True
+                raise
         if result["applied"]:
             self.sim_time = result["sim_time"]
             self.step_index = result["step_index"]
