@@ -131,14 +131,21 @@ class ErrorCode(str, Enum):
     MODE_MISMATCH = "mode_mismatch"
 
 
+# Every non-terminal run can be ended (stop, budget, idle, provider loss,
+# deletion); only a run still being created can fail. A quarantined run returns
+# to ready only when reconciliation has resolved its last unknown command.
 RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = MappingProxyType(
     {
-        RunStatus.CREATING: frozenset({RunStatus.READY, RunStatus.FAILED}),
-        RunStatus.READY: frozenset({RunStatus.BUSY, RunStatus.QUARANTINED}),
+        RunStatus.CREATING: frozenset(
+            {RunStatus.READY, RunStatus.FAILED, RunStatus.ENDED}
+        ),
+        RunStatus.READY: frozenset(
+            {RunStatus.BUSY, RunStatus.QUARANTINED, RunStatus.ENDED}
+        ),
         RunStatus.BUSY: frozenset(
             {RunStatus.READY, RunStatus.ENDED, RunStatus.QUARANTINED}
         ),
-        RunStatus.QUARANTINED: frozenset({RunStatus.ENDED}),
+        RunStatus.QUARANTINED: frozenset({RunStatus.READY, RunStatus.ENDED}),
         RunStatus.ENDED: frozenset(),
         RunStatus.FAILED: frozenset(),
     }
@@ -163,6 +170,10 @@ COMMAND_TRANSITIONS: Mapping[CommandState, frozenset[CommandState]] = MappingPro
                 CommandState.NOT_DISPATCHED,
             }
         ),
+        # not_dispatched after dispatching or outcome_unknown needs proof that
+        # the device never received the command (a failed write, or an
+        # authoritative ``known: false`` from a session that remembers every id
+        # it was sent). Absence of a receipt alone is outcome_unknown.
         CommandState.DISPATCHING: frozenset(
             {
                 CommandState.RUNNING,
@@ -170,6 +181,7 @@ COMMAND_TRANSITIONS: Mapping[CommandState, frozenset[CommandState]] = MappingPro
                 CommandState.FAILED,
                 CommandState.OUTCOME_UNKNOWN,
                 CommandState.STOP_REQUESTED,
+                CommandState.NOT_DISPATCHED,
             }
         ),
         CommandState.RUNNING: frozenset(
@@ -189,7 +201,7 @@ COMMAND_TRANSITIONS: Mapping[CommandState, frozenset[CommandState]] = MappingPro
             }
         ),
         CommandState.OUTCOME_UNKNOWN: frozenset(
-            {CommandState.SUCCEEDED, CommandState.FAILED}
+            {CommandState.SUCCEEDED, CommandState.FAILED, CommandState.NOT_DISPATCHED}
         ),
         CommandState.SUCCEEDED: frozenset(),
         CommandState.FAILED: frozenset(),
@@ -221,6 +233,12 @@ def can_transition_command(a: CommandState, b: CommandState) -> bool:
 def command_sources_for(target: CommandState) -> frozenset[CommandState]:
     return frozenset(
         source for source, targets in COMMAND_TRANSITIONS.items() if target in targets
+    )
+
+
+def run_sources_for(target: RunStatus) -> frozenset[RunStatus]:
+    return frozenset(
+        source for source, targets in RUN_TRANSITIONS.items() if target in targets
     )
 
 

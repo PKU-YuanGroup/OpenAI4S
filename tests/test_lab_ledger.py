@@ -5,7 +5,8 @@ import sqlite3
 
 import pytest
 
-from openai4s.storage.lab import _COMMAND_SOURCES, LabLedger, LabLedgerError
+from openai4s.lab.models import ErrorCode, LabError
+from openai4s.storage.lab import _COMMAND_SOURCES, LabLedger
 from openai4s.store import Store
 
 
@@ -105,9 +106,10 @@ def snapshot(store):
 
 
 def assert_code(code, invoke):
-    with pytest.raises(LabLedgerError) as caught:
+    with pytest.raises(LabError) as caught:
         invoke()
-    assert caught.value.code == code
+    assert isinstance(caught.value.code, ErrorCode)
+    assert caught.value.code == ErrorCode(code)
     return caught.value
 
 
@@ -171,7 +173,15 @@ def test_command_sources_match_contract():
             {"dispatching", "running", "stop_requested", "outcome_unknown"}
         ),
         "rejected": frozenset({"created", "awaiting_approval", "admitted"}),
-        "not_dispatched": frozenset({"created", "awaiting_approval", "admitted"}),
+        "not_dispatched": frozenset(
+            {
+                "created",
+                "awaiting_approval",
+                "admitted",
+                "dispatching",
+                "outcome_unknown",
+            }
+        ),
         "outcome_unknown": frozenset({"dispatching", "running", "stop_requested"}),
         "stop_requested": frozenset({"dispatching", "running"}),
         "stopped": frozenset({"stop_requested"}),
@@ -768,7 +778,7 @@ def test_unknown_requires_receipt_reconciliation(ledger, store, target):
     dispatched(ledger)
     ledger.mark_outcome_unknown("c1", error="lost response")
     before = snapshot(store)
-    with pytest.raises(ValueError, match="receipt reconciliation"):
+    with pytest.raises(ValueError, match="through its receipt"):
         ledger.transition_command("c1", to_state=target)
     assert snapshot(store) == before
     # Reconciliation remains possible after refusing the unverified terminal.
@@ -791,3 +801,49 @@ def test_unknown_requires_receipt_reconciliation(ledger, store, target):
     assert result["command"]["receipt"] is not None
     assert result["run"]["status"] == "ready"
     assert store._conn.execute("SELECT state FROM lab_leases").fetchone()[0] == "free"
+
+
+@pytest.mark.parametrize(
+    "target", ["succeeded", "failed", "outcome_unknown", "not_dispatched", "stopped"]
+)
+def test_a_bare_cas_cannot_take_a_dispatched_command_out_of_dispatch(
+    ledger, store, target
+):
+    # Leaving dispatch also frees leases and moves the run; only the dedicated
+    # methods do both, so a plain state CAS is refused before anything changes.
+    ready(ledger)
+    dispatched(ledger)
+    before = snapshot(store)
+    with pytest.raises(ValueError, match="through its receipt"):
+        ledger.transition_command("c1", to_state=target)
+    assert snapshot(store) == before
+    assert ledger.transition_command("c1", to_state="stop_requested")
+
+
+def test_proof_of_non_receipt_resolves_an_unknown_command_and_its_quarantine(
+    ledger, store
+):
+    ready(ledger)
+    dispatched(ledger)
+    assert ledger.mark_outcome_unknown("c1", error="no reply")
+    assert ledger.get_run("r1")["status"] == "quarantined"
+    assert ledger.mark_not_dispatched(
+        "c1", error_code="outcome_unknown", error="device never received it"
+    )
+    command = ledger.get_command("c1")
+    assert command["state"] == "not_dispatched" and command["completed_at"]
+    assert ledger.get_run("r1")["status"] == "ready"
+    assert store._conn.execute("SELECT state FROM lab_leases").fetchone()[0] == "free"
+    # The run accepts the next dispatch at the unchanged revision.
+    assert dispatched(ledger, "c2") > 0
+
+
+def test_every_non_terminal_run_can_end_but_only_a_creating_run_fails(ledger):
+    ledger.create_run(run_input("creating"))
+    assert ledger.end_run("creating", end_reason="deleted")
+    ready(ledger, "ready-run")
+    assert not ledger.end_run("ready-run", end_reason="create_failed", status="failed")
+    assert ledger.end_run("ready-run", end_reason="stopped")
+    assert ledger.get_run("ready-run")["status"] == "ended"
+    ledger.create_run(run_input("broken"))
+    assert ledger.end_run("broken", end_reason="create_failed", status="failed")

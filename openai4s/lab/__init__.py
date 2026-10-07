@@ -58,6 +58,7 @@ from openai4s.lab.models import (
     config_hash,
     new_id,
     request_hash,
+    run_sources_for,
     sha256_hex,
 )
 from openai4s.lab.ports import DevicePort, LabLedgerPort, LabManagerPort
@@ -120,6 +121,7 @@ __all__ = [
     "canonical_json",
     "capability_revision",
     "command_sources_for",
+    "run_sources_for",
     "config_hash",
     "new_id",
     "request_hash",

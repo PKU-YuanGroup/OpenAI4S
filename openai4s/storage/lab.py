@@ -8,6 +8,17 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping
 
+from openai4s.lab.models import (
+    TERMINAL_COMMAND_STATES,
+    TERMINAL_RUN_STATUSES,
+    CommandState,
+    EndReason,
+    ErrorCode,
+    LabError,
+    RunStatus,
+    command_sources_for,
+    run_sources_for,
+)
 from openai4s.storage.migrations import apply_ddl_script
 
 LAB_LEDGER_SCHEMA = """
@@ -132,95 +143,39 @@ CREATE INDEX IF NOT EXISTS lab_events_root ON lab_events(root_frame_id, event_se
 """
 
 
-# CONTRACT §4.2. Reconciliation is the only way out of outcome_unknown.
+# CONTRACT §4. The state tables live once, in openai4s.lab.models; the ledger
+# derives its CAS sources from them so the two can never disagree.
+# Reconciliation (a receipt, or proof the device never received the command)
+# is the only way out of outcome_unknown.
 _COMMAND_SOURCES: Mapping[str, frozenset[str]] = {
-    "awaiting_approval": frozenset({"created"}),
-    "admitted": frozenset({"created", "awaiting_approval"}),
-    "dispatching": frozenset({"admitted"}),
-    "running": frozenset({"dispatching"}),
-    "succeeded": frozenset(
-        {"dispatching", "running", "stop_requested", "outcome_unknown"}
-    ),
-    "failed": frozenset(
-        {"dispatching", "running", "stop_requested", "outcome_unknown"}
-    ),
-    "rejected": frozenset({"created", "awaiting_approval", "admitted"}),
-    "not_dispatched": frozenset({"created", "awaiting_approval", "admitted"}),
-    "outcome_unknown": frozenset({"dispatching", "running", "stop_requested"}),
-    "stop_requested": frozenset({"dispatching", "running"}),
-    "stopped": frozenset({"stop_requested"}),
+    target.value: frozenset(source.value for source in command_sources_for(target))
+    for target in CommandState
+    if command_sources_for(target)
 }
-_COMMAND_TERMINAL = frozenset(
-    {"succeeded", "failed", "rejected", "not_dispatched", "stopped"}
-)
-_RUN_TERMINAL = frozenset({"ended", "failed"})
-_RUN_SOURCES = {
-    "ready": frozenset({"creating", "busy"}),
-    "busy": frozenset({"ready"}),
-    "quarantined": frozenset({"ready", "busy"}),
-    "ended": frozenset({"busy", "quarantined"}),
-    "failed": frozenset({"creating"}),
+_COMMAND_TERMINAL = frozenset(state.value for state in TERMINAL_COMMAND_STATES)
+_RUN_TERMINAL = frozenset(status.value for status in TERMINAL_RUN_STATUSES)
+_RUN_SOURCES: Mapping[str, frozenset[str]] = {
+    target.value: frozenset(source.value for source in run_sources_for(target))
+    for target in RunStatus
+    if run_sources_for(target)
 }
-_END_REASONS = frozenset(
-    {
-        "end_action",
-        "max_steps",
-        "env_terminated",
-        "stopped",
-        "budget_exhausted",
-        "provider_lost",
-        "idle_timeout",
-        "create_failed",
-        "deleted",
-    }
+_DISPATCHED = frozenset({"dispatching", "running", "stop_requested", "outcome_unknown"})
+_DISPATCH_EXITS = frozenset(
+    {"succeeded", "failed", "outcome_unknown", "not_dispatched", "stopped"}
 )
-_ERROR_CODES = frozenset(
-    {
-        "invalid_parameters",
-        "unsupported_action",
-        "unit_mismatch",
-        "precondition_failed",
-        "stale_revision",
-        "idempotency_conflict",
-        "run_not_found",
-        "device_not_found",
-        "run_ended",
-        "resource_busy",
-        "resource_quarantined",
-        "budget_exhausted",
-        "approval_denied",
-        "persistence_unavailable",
-        "provider_unavailable",
-        "provider_timeout",
-        "provider_protocol_error",
-        "outcome_unknown",
-        "adapter_mismatch",
-        "replay_forbidden",
-        "mode_mismatch",
-    }
-)
+_END_REASONS = frozenset(reason.value for reason in EndReason)
+_ERROR_CODES = frozenset(code.value for code in ErrorCode)
 _RUN_FIELDS = frozenset(
     {"daemon_instance", "end_reason", "raw_terminated", "raw_truncated"}
 )
 _COMMAND_FIELDS = frozenset({"error_code", "error", "approval_ref", "capability_id"})
 
 
-class LabLedgerError(Exception):
-    """Temporary integration seam; the factory will use the shared LabError."""
-
-    def __init__(
-        self, code: str, message: str, details: Mapping[str, Any] | None = None
-    ):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.details = dict(details or {})
-
-
 def _ledger_error(
     code: str, message: str, details: Mapping[str, Any] | None = None
 ) -> Exception:
-    return LabLedgerError(code, message, details)
+    """The single place the ledger builds a domain error (CONTRACT §6)."""
+    return LabError(ErrorCode(code), message, details)
 
 
 def create_lab_ledger_schema(conn: sqlite3.Connection) -> None:
@@ -514,7 +469,7 @@ class LabLedger:
                 run_id,
                 "status",
                 status,
-                ("creating", "ready", "busy", "quarantined"),
+                tuple(sorted(_RUN_SOURCES[status])),
                 values,
             ):
                 return False
@@ -630,12 +585,16 @@ class LabLedger:
         sources = _sources(to_state, from_states, _COMMAND_SOURCES)
         values = _fields(fields, _COMMAND_FIELDS)
         with self._transaction():
-            # The state graph includes reconciliation edges, but a bare CAS has
-            # no receipt. It must not consume the only chance to record truth.
-            if "outcome_unknown" in sources:
+            # Once a command has been sent, leaving dispatch changes leases and
+            # the run row too: record_receipt, mark_outcome_unknown and
+            # mark_not_dispatched own those exits. A bare CAS has no receipt and
+            # must not consume the only chance to record what happened.
+            if to_state in _DISPATCH_EXITS and _DISPATCHED.intersection(sources):
                 current = self._one("lab_commands", "command_id", command_id)
-                if current is not None and current["state"] == "outcome_unknown":
-                    raise ValueError("Unknown command requires receipt reconciliation")
+                if current is not None and current["state"] in _DISPATCHED:
+                    raise ValueError(
+                        "A dispatched command leaves dispatch through its receipt"
+                    )
             now = self._clock_ms()
             values["updated_at"] = now
             if to_state in _COMMAND_TERMINAL:
@@ -978,27 +937,41 @@ class LabLedger:
             command = self._one("lab_commands", "command_id", command_id)
             now = self._clock_ms()
             fields.update(updated_at=now, completed_at=now)
-            # Task-card exception: query proved that dispatching never executed.
+            # The caller holds proof that the device never received the command:
+            # a failed write, or an authoritative ``known: false`` from a session
+            # that remembers every id it was sent. A missing receipt is not proof.
             if not self._cas(
                 "lab_commands",
                 "command_id",
                 command_id,
                 "state",
                 "not_dispatched",
-                ("admitted", "dispatching"),
+                ("admitted", "dispatching", "outcome_unknown"),
                 fields,
             ):
                 return False
             run = self._run(command["run_id"])
             self._release_command_leases(command_id, now)
+            resolved = None
             if run["status"] == "busy" and command["state"] == "dispatching":
+                resolved = "ready"
+            elif (
+                run["status"] == "quarantined" and command["state"] == "outcome_unknown"
+            ):
+                other_unknown = self._conn.execute(
+                    "SELECT 1 FROM lab_commands WHERE run_id=? AND state='outcome_unknown' AND command_id!=? LIMIT 1",
+                    (run["run_id"], command_id),
+                ).fetchone()
+                if other_unknown is None:
+                    resolved = "ready"
+            if resolved is not None:
                 self._update(
                     "lab_runs",
                     "run_id",
                     run["run_id"],
-                    {"status": "ready", "updated_at": now},
+                    {"status": resolved, "updated_at": now},
                 )
-                self._event(run, "run", run["run_id"], "ready", now)
+                self._event(run, "run", run["run_id"], resolved, now)
             self._event(run, "command", command_id, "not_dispatched", now)
             return True
 

@@ -258,10 +258,11 @@ def test_state_machines():
             "failed",
             "outcome_unknown",
             "stop_requested",
+            "not_dispatched",
         },
         "running": {"succeeded", "failed", "outcome_unknown", "stop_requested"},
         "stop_requested": {"stopped", "succeeded", "failed", "outcome_unknown"},
-        "outcome_unknown": {"succeeded", "failed"},
+        "outcome_unknown": {"succeeded", "failed", "not_dispatched"},
     }
     for source in m.CommandState:
         for target in m.CommandState:
@@ -281,11 +282,20 @@ def test_state_machines():
         for v in ("succeeded", "failed", "rejected", "not_dispatched", "stopped")
     )
     assert m.TERMINAL_RUN_STATUSES == {m.RunStatus.ENDED, m.RunStatus.FAILED}
+    assert m.run_sources_for(m.RunStatus.ENDED) == frozenset(
+        {
+            m.RunStatus.CREATING,
+            m.RunStatus.READY,
+            m.RunStatus.BUSY,
+            m.RunStatus.QUARANTINED,
+        }
+    )
+    assert m.run_sources_for(m.RunStatus.FAILED) == {m.RunStatus.CREATING}
     runs = {
-        "creating": {"ready", "failed"},
-        "ready": {"busy", "quarantined"},
+        "creating": {"ready", "failed", "ended"},
+        "ready": {"busy", "quarantined", "ended"},
         "busy": {"ready", "ended", "quarantined"},
-        "quarantined": {"ended"},
+        "quarantined": {"ready", "ended"},
     }
     for source in m.RunStatus:
         for target in m.RunStatus:
