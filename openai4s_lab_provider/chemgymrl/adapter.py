@@ -1,5 +1,6 @@
 """Pinned single-bench adapter. Third-party code runs only inside this process."""
 
+import copy
 import ctypes
 import functools
 import hashlib
@@ -165,26 +166,36 @@ def _truth(env):
     )
 
 
-def _drain_volume(vessel, pixels):
-    """Predict the upstream pixel transfer without mutating or sampling layer state."""
-    hashed = vessel._hashed_layers
-    if hashed is None or len(hashed) == 0:
-        raise ValueError("layer state unavailable")
-    volume = 0.0
-    for index, solvent in enumerate(vessel.solvents):
-        fraction_of_pixels = sum(int(v) == index for v in hashed[:pixels]) / len(hashed)
-        if fraction_of_pixels <= 1e-12:
-            continue
-        layer_volume = float(vessel._layers_volume[index])
-        if layer_volume <= 0:
-            raise ValueError("layer state unavailable")
-        fraction = min(1.0, max(0.0, fraction_of_pixels / layer_volume))
-        volume += float(vessel.material_dict[solvent].litres) * fraction
-        for solute, amounts in vessel.solute_dict.items():
-            removed = fraction * float(amounts[index])
-            if removed > 1e-12:
-                volume += removed * float(vessel.material_dict[solute].litres_per_mol)
-    return volume
+# Litres. Upstream levels come from np.linspace and its sums round differently
+# (0.6000000000000001 L poured into a vessel that then holds 0.6 L), so an
+# exact comparison refuses legitimate commands at volume boundaries.
+_VOLUME_TOLERANCE_L = 1e-9
+
+
+def transfer_precondition(source, target, event_name, parameter):
+    """Why a pour or drain must be refused before stepping, or None.
+
+    Overflow is decided by upstream itself: its event functions return -1 when
+    the target overflows (and then rescale its contents). Running the same
+    event on copies of the two vessels gives upstream's own answer without
+    mutating the simulation, consuming random numbers (the layer update that
+    draws them is not part of the event) or re-deriving upstream arithmetic.
+    A pour that asks for more than the source holds is refused rather than
+    silently clamped, as upstream would do.
+    """
+    available = float(source.filled_volume())
+    if event_name == "pour by volume" and (
+        available <= 1e-12 or float(parameter) - available > _VOLUME_TOLERANCE_L
+    ):
+        return "source volume is insufficient"
+    trial_source, trial_target = copy.deepcopy((source, target))
+    event = type(source)._event_dict[event_name]
+    status = event(trial_source, 0, trial_target, parameter)
+    if available - float(trial_source.filled_volume()) <= 1e-12:
+        return "source volume is insufficient"
+    if status == -1:
+        return "target capacity would be exceeded"
+    return None
 
 
 class Backend:
@@ -300,26 +311,16 @@ class Backend:
         row = self.rows[index]
         if row["event"] in ("pour by volume", "drain by pixel"):
             vessels = self.env.unwrapped.shelf.get_vessels()
-            source, target = (
+            parameter = row["parameters"][0][0]
+            refusal = transfer_precondition(
                 vessels[row["vessels"][0]],
                 vessels[row["affected_vessels"][0]],
+                row["event"],
+                parameter if row["event"] == "pour by volume" else int(parameter),
             )
-            volume = (
-                float(row["parameters"][0][0])
-                if row["event"] == "pour by volume"
-                else _drain_volume(source, int(row["parameters"][0][0]))
-            )
-            if volume <= 0 or float(source.filled_volume()) < volume:
+            if refusal is not None:
                 return self._failure(
-                    provider_command_id,
-                    "precondition_failed",
-                    "source volume is insufficient",
-                )
-            if float(target.filled_volume()) + volume > float(target.volume):
-                return self._failure(
-                    provider_command_id,
-                    "precondition_failed",
-                    "target capacity would be exceeded",
+                    provider_command_id, "precondition_failed", refusal
                 )
         vector, reward, terminated, truncated, _ = self.env.step(index)
         self.step_index += 1

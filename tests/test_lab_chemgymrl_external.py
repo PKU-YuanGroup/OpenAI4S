@@ -214,3 +214,31 @@ def test_live_max_steps_stop_and_revision_mismatch(provider, profile):
         "semantics": "end_session",
     }
     assert execute(client, mix, "after-stop")["error"]["code"] == "run_ended"
+
+
+def test_a_pour_back_of_exactly_what_was_poured_is_not_refused(provider):
+    # W1 review: upstream levels come from np.linspace, so 600 mL is really
+    # 0.6000000000000001 L. Pouring it on and then pouring the same level back
+    # used to fail as "source volume is insufficient" by a float tail.
+    client = provider()
+    profile = "GenWurtzExtract-v2"
+    descriptor = request(client, "describe", {"profile": profile})
+    request(
+        client,
+        "open",
+        {
+            "profile": profile,
+            "seed": 42,
+            "options": {},
+            "expected_capability_revision": descriptor["capability_revision"],
+        },
+    )
+    caps = {c["capability_id"]: c for c in descriptor["capabilities"]}
+    steps = [
+        ("transfer_liquid:diethyl_ether_vessel->extraction_vessel", 200.0),
+        ("transfer_liquid:extraction_vessel->beaker_2", 600.0),
+        ("transfer_liquid:beaker_2->extraction_vessel", 600.0),
+    ]
+    for index, (capability_id, volume) in enumerate(steps):
+        receipt = execute(client, caps[capability_id], f"boundary-{index}", volume)
+        assert receipt["status"] == "succeeded", (capability_id, receipt["error"])

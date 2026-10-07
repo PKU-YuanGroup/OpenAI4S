@@ -242,3 +242,64 @@ def test_describe_active_session_does_not_create_another_environment(monkeypatch
     with pytest.raises(BackendError) as failure:
         backend.describe("GenWurtzExtract-v2")
     assert failure.value.code == "invalid_parameters"
+
+
+class _Vessel:
+    """Just the surface transfer_precondition reads from an upstream vessel."""
+
+    def __init__(self, filled, capacity, *, sticky=False):
+        self.filled, self.volume, self.sticky = filled, capacity, sticky
+
+    def filled_volume(self):
+        return self.filled
+
+    def _pour(self, dt, other, volume):
+        moved = 0.0 if self.sticky else min(volume, self.filled)
+        self.filled -= moved
+        other.filled += moved
+        if other.filled > other.volume:
+            other.filled = other.volume
+            return -1
+        return 0
+
+    _event_dict = {"pour by volume": _pour, "drain by pixel": _pour}
+
+
+def test_transfer_preconditions_follow_upstream_and_tolerate_float_tails():
+    from openai4s_lab_provider.chemgymrl.adapter import transfer_precondition
+
+    # The float tail of an upstream level is not "insufficient".
+    assert (
+        transfer_precondition(
+            _Vessel(0.6, 1.0), _Vessel(0.0, 1.0), "pour by volume", 0.6000000000000001
+        )
+        is None
+    )
+    # A real shortfall is refused rather than clamped as upstream would.
+    assert (
+        transfer_precondition(
+            _Vessel(0.6, 1.0), _Vessel(0.0, 1.0), "pour by volume", 0.6001
+        )
+        == "source volume is insufficient"
+    )
+    assert (
+        transfer_precondition(
+            _Vessel(0.0, 1.0), _Vessel(0.0, 1.0), "pour by volume", 0.1
+        )
+        == "source volume is insufficient"
+    )
+    # Upstream's own overflow status decides capacity.
+    source, target = _Vessel(0.6, 1.0), _Vessel(0.5, 1.0)
+    assert (
+        transfer_precondition(source, target, "pour by volume", 0.6)
+        == "target capacity would be exceeded"
+    )
+    # The check never mutates the simulation it guards.
+    assert (source.filled, target.filled) == (0.6, 0.5)
+    # A drain that would move nothing is refused.
+    assert (
+        transfer_precondition(
+            _Vessel(0.5, 1.0, sticky=True), _Vessel(0.0, 1.0), "drain by pixel", 2
+        )
+        == "source volume is insufficient"
+    )
