@@ -45,7 +45,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("toy", "chemgymrl"), required=True)
     parser.add_argument("--describe", metavar="PROFILE")
+    parser.add_argument(
+        "--portable",
+        action="store_true",
+        help="with --describe: drop runtime-specific claims (committed manifests)",
+    )
     args = parser.parse_args()
+    if args.portable and not args.describe:
+        parser.error("--portable requires --describe")
     if args.backend == "toy":
         from openai4s_lab_provider.toy import Backend
     else:
@@ -54,6 +61,13 @@ def main():
     with os.fdopen(protocol_fd, "wb", buffering=0) as sink:
         if args.describe:
             descriptor = backend.describe(args.describe)
+            if args.portable:
+                # A committed manifest is read on every machine; a
+                # reproducibility claim holds only on the measured runtime.
+                descriptor["reproducibility"] = {
+                    "status": "unverified",
+                    "evidence": None,
+                }
             sink.write(
                 (
                     json.dumps(

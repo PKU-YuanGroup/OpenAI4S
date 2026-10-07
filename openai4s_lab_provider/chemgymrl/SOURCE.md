@@ -23,14 +23,20 @@ mkdir -p "$CG_DATA"
 export TMPDIR="$CG_DATA" PIP_CACHE_DIR="$CG_DATA/pip-cache"
 export MPLBACKEND=Agg MPLCONFIGDIR="$CG_DATA/mpl" NUMBA_CACHE_DIR="$CG_DATA/numba"
 python3.10 -m venv "$CG_DATA/provider-env"
-uv pip compile openai4s_lab_provider/chemgymrl/requirements.in \
-  --generate-hashes --python-version 3.10 --universal \
-  --output-file openai4s_lab_provider/chemgymrl/requirements.lock
 "$CG_DATA/provider-env/bin/python" -m pip install --require-hashes --no-deps \
   -r openai4s_lab_provider/chemgymrl/requirements.lock
 "$CG_DATA/provider-env/bin/python" -m pip install --use-pep517 --no-deps \
   'git+https://github.com/chemgymrl/chemgymrl@ab8227b6b33f13617b7e551bdf6b894df7eec68d'
 "$CG_DATA/provider-env/bin/python" -c 'import importlib.metadata as m,json; d=m.distribution("chemistrygym"); assert d.version=="2.0.0"; assert json.loads(d.read_text("direct_url.json"))["vcs_info"]["commit_id"]=="ab8227b6b33f13617b7e551bdf6b894df7eec68d"'
+```
+
+Installation uses the committed lock as is. Only a maintainer changing a pin
+regenerates it, and then commits the result:
+
+```sh
+uv pip compile openai4s_lab_provider/chemgymrl/requirements.in \
+  --generate-hashes --python-version 3.10 --universal \
+  --output-file openai4s_lab_provider/chemgymrl/requirements.lock
 ```
 
 The universal runtime lock includes distribution hashes for multiple platforms,
@@ -43,12 +49,15 @@ machine pip 23.0.1's legacy `setup.py install` omitted `direct_url.json`.
 commit receipt. An existing legacy installation must be reinstalled with
 `--force-reinstall --use-pep517 --no-deps`.
 
-Export each descriptor using the provider's own entrypoint:
+Export each descriptor using the provider's own entrypoint. `--portable` drops
+the runtime-specific reproducibility claim: a committed manifest is read on every
+machine and says `unverified`; a running provider reports `verified_for_profile`
+only on the measured runtime described under Reproducibility.
 
 ```sh
 for profile in WaterOilExtract-v0 GenWurtzExtract-v2; do
   "$CG_DATA/provider-env/bin/python" -I openai4s_lab_provider/__main__.py \
-    --backend chemgymrl --describe "$profile" \
+    --backend chemgymrl --describe "$profile" --portable \
     > "openai4s_lab_provider/chemgymrl/manifests/$profile.json"
 done
 OPENAI4S_LAB_CHEMGYMRL_PYTHON="$CG_DATA/provider-env/bin/python" \

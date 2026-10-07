@@ -109,7 +109,11 @@ def test_live_manifest_receipts_and_seed_reproducibility(provider, profile):
     for repeat in range(2):
         client = provider()
         descriptor = request(client, "describe", {"profile": profile})
-        assert descriptor == expected
+        # The committed manifest is portable; only the reproducibility claim
+        # depends on the runtime that describes itself.
+        assert {k: v for k, v in descriptor.items() if k != "reproducibility"} == {
+            k: v for k, v in expected.items() if k != "reproducibility"
+        }
         assert not any(
             c["name"] == "pressure" and c["available"]
             for c in descriptor["observation_channels"]
@@ -183,7 +187,13 @@ def test_live_manifest_receipts_and_seed_reproducibility(provider, profile):
     assert streams[0] == streams[1]
     evaluations_match = evaluations[0] == evaluations[1]
     assert evaluations_match
-    assert expected["reproducibility"]["status"] == "verified_for_profile"
+    assert expected["reproducibility"] == {"status": "unverified", "evidence": None}
+    claim = descriptor["reproducibility"]
+    if claim["status"] == "verified_for_profile":
+        # Only the measured runtime may claim it, and it cites the evidence.
+        assert claim["evidence"].endswith("SOURCE.md#reproducibility")
+    else:
+        assert claim == {"status": "unverified", "evidence": None}
     source = (ROOT / "openai4s_lab_provider/chemgymrl/SOURCE.md").read_text()
     assert profile in source and "verified_for_profile" in source
 

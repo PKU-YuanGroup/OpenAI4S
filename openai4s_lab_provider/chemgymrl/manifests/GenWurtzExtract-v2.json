@@ -337,8 +337,8 @@
     "wall_clock_equivalent": null
   },
   "reproducibility": {
-    "status": "verified_for_profile",
-    "evidence": "openai4s_lab_provider/chemgymrl/SOURCE.md#reproducibility"
+    "status": "unverified",
+    "evidence": null
   },
   "assumptions": []
 }

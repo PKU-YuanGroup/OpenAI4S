@@ -225,9 +225,15 @@ class Backend:
             {"max_steps": int(env.unwrapped.max_steps)},
             self.version,
         )
+        verified = _verified_runtime()
         descriptor["reproducibility"] = {
-            "status": "verified_for_profile" if _verified_runtime() else "unverified",
-            "evidence": "openai4s_lab_provider/chemgymrl/SOURCE.md#reproducibility",
+            "status": "verified_for_profile" if verified else "unverified",
+            # Evidence backs a claim; an unverified runtime has none to cite.
+            "evidence": (
+                "openai4s_lab_provider/chemgymrl/SOURCE.md#reproducibility"
+                if verified
+                else None
+            ),
         }
         return descriptor, rows, labels, layout
 
