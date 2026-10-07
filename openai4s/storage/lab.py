@@ -160,9 +160,43 @@ _RUN_SOURCES: Mapping[str, frozenset[str]] = {
     if run_sources_for(target)
 }
 _DISPATCHED = frozenset({"dispatching", "running", "stop_requested", "outcome_unknown"})
+# A command enters the ledger before it is sent. Anything later is reached only
+# through the methods that also move leases and the run.
+_INITIAL_STATES = frozenset({"created", "awaiting_approval", "admitted", "rejected"})
+_IN_DISPATCH = frozenset({"dispatching", "running", "stop_requested"})
+# mark_not_dispatched owns the exits that touch leases or the run; it must stay
+# a subset of what the shared table allows.
+_NOT_DISPATCHED_FROM = ("admitted", "dispatching", "outcome_unknown")
+# CONTRACT §3.7: what a stored receipt may keep. Evaluation, provider_action and
+# the observation payload are persisted separately or not at all.
+_RECEIPT_KEYS = frozenset(
+    {
+        "provider_command_id",
+        "applied",
+        "status",
+        "error",
+        "raw",
+        "end_reason",
+        "sim_time",
+        "step_index",
+    }
+)
+_RUN_REQUIRED = (
+    "run_id",
+    "root_frame_id",
+    "mode",
+    "backend",
+    "device_id",
+    "profile",
+    "adapter_version",
+    "capability_revision",
+    "config_hash",
+    "create_idempotency_key",
+)
 _DISPATCH_EXITS = frozenset(
     {"succeeded", "failed", "outcome_unknown", "not_dispatched", "stopped"}
 )
+assert set(_NOT_DISPATCHED_FROM) <= _COMMAND_SOURCES["not_dispatched"]
 _END_REASONS = frozenset(reason.value for reason in EndReason)
 _ERROR_CODES = frozenset(code.value for code in ErrorCode)
 _RUN_FIELDS = frozenset(
@@ -352,6 +386,11 @@ class LabLedger:
         )
 
     def create_run(self, run) -> tuple[dict, bool]:
+        if any(
+            not isinstance(run.get(key), str) or not run.get(key)
+            for key in _RUN_REQUIRED
+        ):
+            raise _ledger_error("invalid_parameters", "Incomplete Lab run")
         with self._transaction():
             existing = _row(
                 self._conn.execute(
@@ -370,22 +409,10 @@ class LabLedger:
                 raise _ledger_error(
                     "mode_mismatch", "Lab ledger requires simulation mode"
                 )
+            if self._one("lab_runs", "run_id", run["run_id"]) is not None:
+                raise _ledger_error("invalid_parameters", "Lab run id is taken")
             now = self._clock_ms()
-            values = {
-                key: run[key]
-                for key in (
-                    "run_id",
-                    "root_frame_id",
-                    "mode",
-                    "backend",
-                    "device_id",
-                    "profile",
-                    "adapter_version",
-                    "capability_revision",
-                    "config_hash",
-                    "create_idempotency_key",
-                )
-            }
+            values = {key: run[key] for key in _RUN_REQUIRED}
             values.update(
                 {
                     key: run.get(key)
@@ -439,26 +466,11 @@ class LabLedger:
             ).rowcount
         )
 
-    def set_run_status(
-        self, run_id, *, to_status, from_statuses=None, **fields
-    ) -> bool:
-        sources = _sources(to_status, from_statuses, _RUN_SOURCES)
-        values = _fields(fields, _RUN_FIELDS)
-        with self._transaction():
-            now = self._clock_ms()
-            values["updated_at"] = now
-            if to_status in _RUN_TERMINAL:
-                values["ended_at"] = now
-            if not self._cas(
-                "lab_runs", "run_id", run_id, "status", to_status, sources, values
-            ):
-                return False
-            self._event(self._run(run_id), "run", run_id, to_status, now)
-            return True
-
     def end_run(self, run_id, *, end_reason, status="ended") -> bool:
         if status not in _RUN_TERMINAL:
             raise ValueError("Run end status must be terminal")
+        if end_reason not in _END_REASONS:
+            raise _ledger_error("invalid_parameters", "Invalid run end reason")
         values = _fields({"end_reason": end_reason}, _RUN_FIELDS)
         with self._transaction():
             now = self._clock_ms()
@@ -509,8 +521,10 @@ class LabLedger:
                     "invalid_parameters", "Command root does not match run"
                 )
             state = command.get("state", "created")
-            if state not in {"created", *_COMMAND_SOURCES}:
-                raise _ledger_error("invalid_parameters", "Invalid command state")
+            if state not in _INITIAL_STATES:
+                raise _ledger_error(
+                    "invalid_parameters", "Invalid initial command state"
+                )
             if command["origin"] not in {
                 "agent_tool",
                 "host_sdk",
@@ -582,6 +596,8 @@ class LabLedger:
     def transition_command(
         self, command_id, *, to_state, from_states=None, **fields
     ) -> bool:
+        if to_state == "dispatching":
+            raise ValueError("Dispatch goes through begin_dispatch")
         sources = _sources(to_state, from_states, _COMMAND_SOURCES)
         values = _fields(fields, _COMMAND_FIELDS)
         with self._transaction():
@@ -631,12 +647,24 @@ class LabLedger:
     def begin_dispatch(
         self, command_id, *, resource_keys, expected_revision, now_ms=None
     ) -> int:
+        if isinstance(resource_keys, (str, bytes)) or not all(
+            isinstance(key, str) and key for key in resource_keys
+        ):
+            raise _ledger_error("invalid_parameters", "Invalid Lab resource keys")
         keys = sorted(set(resource_keys))
+        if not keys:
+            raise _ledger_error("invalid_parameters", "Invalid Lab resource keys")
         with self._transaction():
             command = self._command(command_id)
             if command["state"] != "admitted":
                 raise ValueError("Dispatch requires an admitted command")
             run = self._run(command["run_id"])
+            # A run-scoped key (CONTRACT §1) must name this run; a lease row is
+            # global, so another run's key would block that run.
+            if any("#" in key and f"#{run['run_id']}:" not in key for key in keys):
+                raise _ledger_error(
+                    "invalid_parameters", "Resource key names another run"
+                )
             if run["status"] in {"busy", "creating"}:
                 raise _ledger_error("resource_busy", "Lab run is busy")
             if run["status"] == "quarantined":
@@ -777,38 +805,45 @@ class LabLedger:
     def record_receipt(self, command_id, *, receipt, observation, evaluation) -> dict:
         with self._transaction():
             command = self._command(command_id)
-            if command["state"] not in {
-                "dispatching",
-                "running",
-                "stop_requested",
-                "outcome_unknown",
-            }:
+            if command["state"] not in _COMMAND_SOURCES["succeeded"]:
                 raise ValueError("Receipt requires a dispatched or unknown command")
+            if command["fencing_token"] is None:
+                raise ValueError("Receipt requires a command sent by begin_dispatch")
+            if receipt.get("provider_command_id") != command_id:
+                raise _ledger_error(
+                    "invalid_parameters", "Receipt belongs to another command"
+                )
             run = self._run(command["run_id"])
             now = self._clock_ms()
-            applied = receipt["applied"]
+            applied = receipt.get("applied")
+            status = receipt.get("status")
+            error = receipt.get("error")
+            # Both directions: applied <=> succeeded, and only a failure carries
+            # an error with a contract code.
             if (
                 type(applied) is not bool
-                or receipt["status"] not in {"succeeded", "failed", "rejected"}
-                or (applied and receipt["status"] != "succeeded")
+                or status not in {"succeeded", "failed", "rejected"}
+                or applied != (status == "succeeded")
+                or (status == "succeeded" and error is not None)
+                or (
+                    status != "succeeded"
+                    and (
+                        not isinstance(error, dict)
+                        or error.get("code") not in _ERROR_CODES
+                    )
+                )
             ):
                 raise _ledger_error("invalid_parameters", "Invalid receipt outcome")
-            state = (
-                "succeeded"
-                if applied and receipt["status"] == "succeeded"
-                else "failed"
-            )
-            error = receipt.get("error") or {}
+            state = "succeeded" if applied else "failed"
             command_fields = _fields(
                 {
-                    "error_code": error.get("code") if state == "failed" else None,
-                    "error": error.get("message") if state == "failed" else None,
+                    "error_code": None if applied else error["code"],
+                    "error": None if applied else error.get("message"),
                 },
                 _COMMAND_FIELDS,
             )
             raw = receipt.get("raw") or {}
-            # Even an unapplied receipt can signal termination. Validate the
-            # flags before interpreting them, rather than trusting truthiness.
+            # Validate the flags before interpreting them: "false" is truthy.
             raw_fields = _fields(
                 {
                     "raw_terminated": raw.get("terminated"),
@@ -816,20 +851,12 @@ class LabLedger:
                 },
                 _RUN_FIELDS,
             )
-            run_fields = raw_fields if applied else {}
-            run_fields["updated_at"] = now
             obs = None
             if applied:
                 if observation is None:
                     raise _ledger_error(
                         "invalid_parameters", "Applied receipt requires an observation"
                     )
-                revision = run["revision"] + 1
-                run_fields.update(
-                    revision=revision,
-                    step_count=run["step_count"] + 1,
-                    consecutive_failures=0,
-                )
                 sequence = self._conn.execute(
                     "SELECT COALESCE(MAX(sequence),-1)+1 FROM lab_observations WHERE run_id=?",
                     (run["run_id"],),
@@ -837,38 +864,60 @@ class LabLedger:
                 obs = self._append_observation(
                     run, command_id, sequence, observation, evaluation, now
                 )
-                command_fields.update(
-                    applied_revision=revision, observation_id=obs["observation_id"]
-                )
+                command_fields["observation_id"] = obs["observation_id"]
+            if run["status"] in _RUN_TERMINAL:
+                # A late receipt (for example, a reconciled unknown command on a
+                # stopped run) records what happened to the command and nothing
+                # about the run: an ended run's reason, time and flags are final.
+                pass
             else:
-                run_fields["consecutive_failures"] = run["consecutive_failures"] + 1
-            end_reason = receipt.get("end_reason")
-            if end_reason or raw.get("terminated") or raw.get("truncated"):
-                run_fields.update(
-                    _fields({"end_reason": end_reason or "env_terminated"}, _RUN_FIELDS)
-                )
-                run_fields.update(status="ended", ended_at=now)
-            elif run["status"] == "busy":
-                run_fields["status"] = "ready"
-            elif (
-                run["status"] == "quarantined" and command["state"] == "outcome_unknown"
-            ):
-                other_unknown = self._conn.execute(
-                    "SELECT 1 FROM lab_commands WHERE run_id=? AND state='outcome_unknown' AND command_id!=? LIMIT 1",
-                    (run["run_id"], command_id),
-                ).fetchone()
-                if other_unknown is None:
-                    run_fields["status"] = "ready"
-            self._update("lab_runs", "run_id", run["run_id"], run_fields)
+                run_fields: dict = {"updated_at": now}
+                if applied:
+                    revision = run["revision"] + 1
+                    run_fields.update(
+                        raw_fields,
+                        revision=revision,
+                        step_count=run["step_count"] + 1,
+                        consecutive_failures=0,
+                    )
+                    command_fields["applied_revision"] = revision
+                else:
+                    run_fields["consecutive_failures"] = run["consecutive_failures"] + 1
+                end_reason = receipt.get("end_reason")
+                if end_reason or raw.get("terminated") or raw.get("truncated"):
+                    run_fields.update(raw_fields)
+                    run_fields.update(
+                        _fields(
+                            {"end_reason": end_reason or "env_terminated"}, _RUN_FIELDS
+                        )
+                    )
+                    run_fields.update(status="ended", ended_at=now)
+                else:
+                    others = self._conn.execute(
+                        "SELECT state FROM lab_commands WHERE run_id=? AND command_id!=? AND state IN ('dispatching','running','stop_requested','outcome_unknown')",
+                        (run["run_id"], command_id),
+                    ).fetchall()
+                    other_states = {row[0] for row in others}
+                    if run["status"] == "busy" and not other_states & _IN_DISPATCH:
+                        run_fields["status"] = (
+                            "quarantined"
+                            if "outcome_unknown" in other_states
+                            else "ready"
+                        )
+                    elif (
+                        run["status"] == "quarantined"
+                        and command["state"] == "outcome_unknown"
+                        and not other_states
+                    ):
+                        run_fields["status"] = "ready"
+                self._update("lab_runs", "run_id", run["run_id"], run_fields)
             self._release_command_leases(command_id, now)
             saved_receipt = {
-                key: value
-                for key, value in receipt.items()
-                if key not in {"evaluation", "provider_action"}
+                key: value for key, value in receipt.items() if key in _RECEIPT_KEYS
             }
             if saved_receipt.get("error"):
                 saved_receipt["error"] = {
-                    **saved_receipt["error"],
+                    "code": saved_receipt["error"].get("code"),
                     "message": _bounded_error(saved_receipt["error"].get("message")),
                 }
             command_fields.update(
@@ -887,7 +936,8 @@ class LabLedger:
             self._event(run, "command", command_id, state, now)
             if obs:
                 self._event(run, "observation", obs["observation_id"], None, now)
-            self._event(run, "run", run["run_id"], updated_run["status"], now)
+            if updated_run["status"] != run["status"]:
+                self._event(run, "run", run["run_id"], updated_run["status"], now)
             return {
                 "run": updated_run,
                 "command": self._command(command_id),
@@ -907,7 +957,7 @@ class LabLedger:
                 command_id,
                 "state",
                 "outcome_unknown",
-                ("dispatching", "running", "stop_requested"),
+                tuple(sorted(_COMMAND_SOURCES["outcome_unknown"])),
                 fields,
             ):
                 return False
@@ -946,7 +996,7 @@ class LabLedger:
                 command_id,
                 "state",
                 "not_dispatched",
-                ("admitted", "dispatching", "outcome_unknown"),
+                _NOT_DISPATCHED_FROM,
                 fields,
             ):
                 return False

@@ -47,7 +47,7 @@ def _port_methods(protocol: type) -> list[str]:
 
 def test_the_ledger_matches_every_ledger_port_signature():
     names = _port_methods(LabLedgerPort)
-    assert len(names) == 21
+    assert len(names) == 20
     for name in names:
         expected = inspect.signature(getattr(LabLedgerPort, name)).parameters
         actual = inspect.signature(getattr(LabLedger, name)).parameters

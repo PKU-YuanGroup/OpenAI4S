@@ -43,7 +43,13 @@ class DevicePort(Protocol):
 
 
 class LabLedgerPort(Protocol):
-    """CAS and atomic writes; callers never assemble transactions themselves."""
+    """CAS and atomic writes; callers never assemble transactions themselves.
+
+    Every run status change happens inside the composite write that also moves
+    leases, observations and commands (create, initial observation, dispatch,
+    receipt, unknown, not-dispatched, end); there is deliberately no free-form
+    run status setter.
+    """
 
     def create_run(self, run: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
         """Insert creating. Duplicate (root_frame_id, create_idempotency_key):
@@ -56,17 +62,6 @@ class LabLedgerPort(Protocol):
 
     def list_runs(self, root_frame_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
         """Newest created_at first."""
-        ...
-
-    def set_run_status(
-        self,
-        run_id: str,
-        *,
-        to_status: str,
-        from_statuses: Sequence[str] | None = None,
-        **fields: Any,
-    ) -> bool:
-        """CAS; omitted from_statuses uses sources derived from RUN_TRANSITIONS."""
         ...
 
     def end_run(self, run_id: str, *, end_reason: str, status: str = "ended") -> bool:

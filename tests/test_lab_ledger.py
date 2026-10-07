@@ -89,6 +89,7 @@ def dispatched(ledger, command_id="c1", run_id="r1", keys=("resource",)):
 
 def receipt(**changes):
     return {
+        "provider_command_id": "c1",
         "applied": True,
         "status": "succeeded",
         "error": None,
@@ -98,6 +99,15 @@ def receipt(**changes):
         "provider_action": {"index": 3},
         **changes,
     }
+
+
+def force_state(store, command_id, state, *, fencing_token=None):
+    """Seed a mid-life command for a fixture; the ledger itself never inserts one."""
+    store._conn.execute(
+        "UPDATE lab_commands SET state=?,fencing_token=? WHERE command_id=?",
+        (state, fencing_token, command_id),
+    )
+    store._conn.commit()
 
 
 def snapshot(store):
@@ -246,11 +256,11 @@ def test_dispatch_refusal_rolls_back_every_table(ledger, store, reason):
     elif reason in {"busy", "creating", "quarantined", "ended", "failed"}:
         store._conn.execute("UPDATE lab_runs SET status=?", (reason,))
     else:
-        ledger.insert_command(
-            command_input(
-                "holder",
-                state="outcome_unknown" if reason == "unknown_holder" else "running",
-            )
+        ledger.insert_command(command_input("holder"))
+        force_state(
+            store,
+            "holder",
+            "outcome_unknown" if reason == "unknown_holder" else "running",
         )
         store._conn.execute(
             "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,holder_command_id,updated_at) VALUES('z-held','r1','root1',?,'holder',1)",
@@ -271,7 +281,8 @@ def test_dispatch_refusal_rolls_back_every_table(ledger, store, reason):
 
 def test_dispatch_fencing_stale_lease_and_order(ledger, store):
     ready(ledger)
-    ledger.insert_command(command_input("old", state="failed"))
+    ledger.insert_command(command_input("old"))
+    force_state(store, "old", "failed")
     store._conn.execute(
         "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,holder_command_id,fencing_token,updated_at) VALUES('b','r1','root1','held','old',8,1)"
     )
@@ -519,7 +530,8 @@ def test_unknown_quarantines_and_receipt_reconciles(ledger, store, another_unkno
     )
     assert snapshot(store) == before
     if another_unknown:
-        ledger.insert_command(command_input("c3", state="outcome_unknown"))
+        ledger.insert_command(command_input("c3"))
+        force_state(store, "c3", "outcome_unknown", fencing_token=1)
     result = ledger.record_receipt(
         "c1", receipt=receipt(), observation=observation(), evaluation=None
     )
@@ -552,16 +564,9 @@ def test_not_dispatched_only_frees_its_own_busy_run(ledger, store):
     assert snapshot(store) == before
 
 
-def test_run_status_cas_end_and_quarantined_lease_survival(ledger, store):
-    ledger.create_run(run_input())
-    before = snapshot(store)
-    assert not ledger.set_run_status("r1", to_status="quarantined")
-    assert snapshot(store) == before
-    assert_code(
-        "invalid_parameters",
-        lambda: ledger.set_run_status("r1", to_status="ready", revision=9),
-    )
-    assert ledger.set_run_status("r1", to_status="ready", daemon_instance="daemon-test")
+def test_end_run_and_quarantined_lease_survival(ledger, store):
+    ledger.create_run(run_input(daemon_instance="daemon-test"))
+    ledger.append_initial_observation("r1", observation=observation(), evaluation=None)
     dispatched(ledger)
     store._conn.execute(
         "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,updated_at) VALUES('quarantine','r1','root1','quarantined',1)"
@@ -847,3 +852,266 @@ def test_every_non_terminal_run_can_end_but_only_a_creating_run_fails(ledger):
     assert ledger.get_run("ready-run")["status"] == "ended"
     ledger.create_run(run_input("broken"))
     assert ledger.end_run("broken", end_reason="create_failed", status="failed")
+
+
+# -- W1 merge review: holes that let a caller skip the composite invariants --
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "dispatching",
+        "running",
+        "stop_requested",
+        "outcome_unknown",
+        "succeeded",
+        "failed",
+        "not_dispatched",
+        "stopped",
+    ],
+)
+def test_a_command_cannot_be_inserted_mid_life(ledger, store, state):
+    ready(ledger)
+    before = snapshot(store)
+    assert_code(
+        "invalid_parameters", lambda: ledger.insert_command(command_input(state=state))
+    )
+    assert snapshot(store) == before
+
+
+def test_only_begin_dispatch_puts_a_command_in_dispatch(ledger, store):
+    ready(ledger)
+    ledger.insert_command(command_input())
+    before = snapshot(store)
+    with pytest.raises(ValueError, match="begin_dispatch"):
+        ledger.transition_command("c1", to_state="dispatching")
+    assert snapshot(store) == before
+
+
+@pytest.mark.parametrize("state", ["created", "awaiting_approval"])
+def test_an_unapproved_command_is_never_dispatched(ledger, store, state):
+    ready(ledger)
+    ledger.insert_command(command_input(state=state))
+    before = snapshot(store)
+    with pytest.raises(ValueError, match="admitted"):
+        ledger.begin_dispatch("c1", resource_keys=["a"], expected_revision=0)
+    assert snapshot(store) == before
+
+
+@pytest.mark.parametrize(
+    "keys", ["lab:dev#r1:beaker", b"a", [], [""], [3], ["lab:dev#other:beaker"]]
+)
+def test_resource_keys_are_names_of_this_run(ledger, store, keys):
+    ready(ledger)
+    ledger.insert_command(command_input())
+    before = snapshot(store)
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.begin_dispatch("c1", resource_keys=keys, expected_revision=0),
+    )
+    assert snapshot(store) == before
+    assert ledger.begin_dispatch(
+        "c1", resource_keys=["lab:dev#r1:beaker"], expected_revision=0
+    )
+
+
+def test_a_held_lease_without_a_holder_row_is_not_free(ledger, store):
+    ready(ledger)
+    store._conn.execute(
+        "INSERT INTO lab_leases(resource_key,run_id,root_frame_id,state,holder_command_id,updated_at) VALUES('a','r1','root1','held','vanished',1)"
+    )
+    store._conn.commit()
+    ledger.insert_command(command_input())
+    assert_code(
+        "resource_busy",
+        lambda: ledger.begin_dispatch("c1", resource_keys=["a"], expected_revision=0),
+    )
+
+
+def test_a_success_resets_consecutive_failures(ledger):
+    ready(ledger)
+    dispatched(ledger)
+    failed = ledger.record_receipt(
+        "c1",
+        receipt=receipt(
+            applied=False,
+            status="failed",
+            error={"code": "precondition_failed", "message": "refused"},
+        ),
+        observation=None,
+        evaluation=None,
+    )
+    assert failed["run"]["consecutive_failures"] == 1
+    dispatched(ledger, "c2")
+    ok = ledger.record_receipt(
+        "c2",
+        receipt=receipt(provider_command_id="c2"),
+        observation=observation(),
+        evaluation=None,
+    )
+    assert ok["run"]["consecutive_failures"] == 0
+
+
+def test_only_simulation_runs_and_complete_rows_are_created(ledger, store):
+    before = snapshot(store)
+    assert_code("mode_mismatch", lambda: ledger.create_run(run_input(mode="physical")))
+    assert_code(
+        "invalid_parameters", lambda: ledger.create_run(run_input(device_id=""))
+    )
+    assert snapshot(store) == before
+    ledger.create_run(run_input())
+    # Another key for a taken run id is a caller error, not an outage.
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.create_run(run_input(create_idempotency_key="other")),
+    )
+
+
+def test_a_command_must_belong_to_its_runs_session(ledger, store):
+    ready(ledger)
+    before = snapshot(store)
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.insert_command(command_input(root_frame_id="another-root")),
+    )
+    assert snapshot(store) == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "pending"},
+        {"provider_command_id": "someone-else"},
+        {"applied": False, "status": "succeeded"},
+        {"applied": False, "status": "failed", "error": None},
+        {"applied": False, "status": "failed", "error": {"code": "bogus"}},
+        {"error": {"code": "precondition_failed", "message": "but applied"}},
+    ],
+)
+def test_a_contradictory_or_foreign_receipt_changes_nothing(ledger, store, changes):
+    ready(ledger)
+    dispatched(ledger)
+    before = snapshot(store)
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.record_receipt(
+            "c1",
+            receipt=receipt(**changes),
+            observation=observation(),
+            evaluation=None,
+        ),
+    )
+    assert snapshot(store) == before
+
+
+def test_a_receipt_needs_a_command_that_begin_dispatch_sent(ledger, store):
+    ready(ledger)
+    ledger.insert_command(command_input())
+    force_state(store, "c1", "dispatching")
+    before = snapshot(store)
+    with pytest.raises(ValueError, match="begin_dispatch"):
+        ledger.record_receipt(
+            "c1", receipt=receipt(), observation=observation(), evaluation=None
+        )
+    assert snapshot(store) == before
+
+
+def test_quarantine_lifts_only_for_the_unknown_command_it_was_for(ledger, store):
+    ready(ledger)
+    dispatched(ledger)
+    ledger.mark_outcome_unknown("c1", error="lost")
+    ledger.insert_command(command_input("c2"))
+    force_state(store, "c2", "dispatching", fencing_token=5)
+    result = ledger.record_receipt(
+        "c2",
+        receipt=receipt(provider_command_id="c2"),
+        observation=observation(),
+        evaluation=None,
+    )
+    assert result["run"]["status"] == "quarantined"
+
+
+def test_a_run_stays_busy_while_another_command_is_in_dispatch(ledger, store):
+    ready(ledger)
+    dispatched(ledger)
+    ledger.insert_command(command_input("c2"))
+    force_state(store, "c2", "dispatching", fencing_token=5)
+    result = ledger.record_receipt(
+        "c1", receipt=receipt(), observation=observation(), evaluation=None
+    )
+    assert result["run"]["status"] == "busy"
+
+
+def test_a_late_receipt_never_rewrites_an_ended_run(ledger, store):
+    ready(ledger)
+    dispatched(ledger)
+    ledger.mark_outcome_unknown("c1", error="lost")
+    assert ledger.end_run("r1", end_reason="stopped")
+    ended = ledger.get_run("r1")
+    result = ledger.record_receipt(
+        "c1",
+        receipt=receipt(
+            end_reason="end_action", raw={"terminated": True, "truncated": False}
+        ),
+        observation=observation(),
+        evaluation=None,
+    )
+    assert result["command"]["state"] == "succeeded"
+    assert result["run"] == ended
+
+
+def test_an_unapplied_terminal_receipt_keeps_the_raw_flags(ledger):
+    ready(ledger)
+    dispatched(ledger)
+    result = ledger.record_receipt(
+        "c1",
+        receipt=receipt(
+            applied=False,
+            status="failed",
+            error={"code": "run_ended", "message": "done"},
+            raw={"terminated": True, "truncated": False},
+        ),
+        observation=None,
+        evaluation=None,
+    )
+    run = result["run"]
+    assert run["status"] == "ended" and run["end_reason"] == "env_terminated"
+    assert run["raw_terminated"] is True and run["raw_truncated"] is False
+
+
+def test_a_stored_receipt_keeps_only_contract_keys(ledger):
+    ready(ledger)
+    dispatched(ledger)
+    result = ledger.record_receipt(
+        "c1",
+        receipt=receipt(reward=0.9, info={"ground_truth": {"private": 1}}),
+        observation=observation(),
+        evaluation=None,
+    )
+    stored = result["command"]["receipt"]
+    assert set(stored) <= {
+        "provider_command_id",
+        "applied",
+        "status",
+        "error",
+        "raw",
+        "end_reason",
+        "sim_time",
+        "step_index",
+    }
+    assert "private" not in json.dumps(result["command"])
+
+
+def test_ending_a_run_needs_a_reason_and_a_valid_error_code_needs_the_table(
+    ledger, store
+):
+    ready(ledger)
+    assert_code("invalid_parameters", lambda: ledger.end_run("r1", end_reason=None))
+    assert ledger.get_run("r1")["status"] == "ready"
+    ledger.insert_command(command_input(state="created"))
+    assert_code(
+        "invalid_parameters",
+        lambda: ledger.transition_command(
+            "c1", to_state="rejected", error_code="bogus", error="no"
+        ),
+    )
