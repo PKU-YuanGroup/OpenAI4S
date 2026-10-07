@@ -491,6 +491,33 @@ class ResourceSpec(_Value):
 
 
 @dataclass(frozen=True)
+class ChannelAxis(_Value):
+    """What one dimension of an array channel indexes.
+
+    ``labels`` names each position when the positions are things a reader must
+    tell apart, such as the vessels whose layers a row shows; it is omitted
+    for an axis of samples such as layer pixels.
+    """
+
+    name: str
+    labels: tuple[str, ...] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result = super().to_dict()
+        if self.labels is None:
+            del result["labels"]
+        return result
+
+    def _validate(self) -> None:
+        if not self.name:
+            _invalid("ChannelAxis.name", "must be nonempty")
+        if self.labels is not None and (
+            not all(self.labels) or len(set(self.labels)) != len(self.labels)
+        ):
+            _invalid("ChannelAxis.labels", "must be unique nonempty names")
+
+
+@dataclass(frozen=True)
 class ObservationChannelSpec(_Value):
     name: str
     kind: ChannelKind
@@ -500,11 +527,14 @@ class ObservationChannelSpec(_Value):
     available: bool
     description: str
     reason: str | None = None
+    axes: tuple[ChannelAxis, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = super().to_dict()
         if self.reason is None:
             del result["reason"]
+        if self.axes is None:
+            del result["axes"]
         return result
 
     def _validate(self) -> None:
@@ -512,6 +542,16 @@ class ObservationChannelSpec(_Value):
         _shape(self.kind, self.shape, "ObservationChannelSpec.shape")
         if not self.available and not self.reason:
             _invalid("ObservationChannelSpec.reason", "required when unavailable")
+        if self.axes is not None:
+            if len(self.axes) != len(self.shape):
+                _invalid("ObservationChannelSpec.axes", "one axis per dimension")
+            if len({axis.name for axis in self.axes}) != len(self.axes):
+                _invalid("ObservationChannelSpec.axes", "axis names must be unique")
+            for axis, size in zip(self.axes, self.shape):
+                if axis.labels is not None and len(axis.labels) != size:
+                    _invalid(
+                        "ObservationChannelSpec.axes", "labels must match the shape"
+                    )
 
 
 @dataclass(frozen=True)

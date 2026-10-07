@@ -94,11 +94,11 @@
         "duration": {
           "unit": "model_time",
           "allowed": [
-            -1.0,
-            -0.8,
-            -0.6000000000000001,
-            -0.4,
-            -0.2
+            0.2,
+            0.4,
+            0.6,
+            0.8,
+            1.0
           ]
         }
       },
@@ -124,8 +124,8 @@
           "allowed": [
             0.01,
             0.02,
-            0.04000000000000001,
-            0.08000000000000002,
+            0.04,
+            0.08,
             0.16
           ]
         }
@@ -154,7 +154,7 @@
           "allowed": [
             200.0,
             400.0,
-            600.0000000000001,
+            600.0,
             800.0,
             1000.0
           ]
@@ -183,7 +183,7 @@
           "allowed": [
             200.0,
             400.0,
-            600.0000000000001,
+            600.0,
             800.0,
             1000.0
           ]
@@ -212,7 +212,7 @@
           "allowed": [
             100.0,
             200.0,
-            300.00000000000006,
+            300.0,
             400.0,
             500.0
           ]
@@ -241,7 +241,7 @@
           "allowed": [
             100.0,
             200.0,
-            300.00000000000006,
+            300.0,
             400.0,
             500.0
           ]
@@ -270,7 +270,7 @@
           "allowed": [
             200.0,
             400.0,
-            600.0000000000001,
+            600.0,
             800.0,
             1000.0
           ]
@@ -288,7 +288,7 @@
       "mapping_version": "1"
     }
   ],
-  "capability_revision": "88c03f0df1d236b55c9dc8a5b415beb8b1415e0d01e38e9db8aec07aeaa871b1",
+  "capability_revision": "b08862b041586843b44bf50e10c248f466923679106b131a7f998eb5169cb12e",
   "observation_channels": [
     {
       "name": "layers",
@@ -300,7 +300,20 @@
       "unit": "dimensionless",
       "source": "simulated_sensor",
       "available": true,
-      "description": "Simulated layer colors; no material legend."
+      "description": "Simulated layer colors; no material legend.",
+      "axes": [
+        {
+          "name": "resource",
+          "labels": [
+            "extraction_vessel",
+            "beaker_1",
+            "beaker_2"
+          ]
+        },
+        {
+          "name": "layer_px"
+        }
+      ]
     },
     {
       "name": "targets",

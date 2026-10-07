@@ -62,23 +62,31 @@ All line references below refer to the fixed upstream commit.
 - Both profiles are registered (`chemistrylab/__init__.py:15–23`). Both expand
   to 41 actions, with max_steps 50 (`benches/general_bench.py:59–99`,
   `benches/extract_bench.py:166–189,210–232`).
-- Pour parameters are litres (`vessel.py:419–427`), converted to mL without
-  rounding the upstream levels. Host normalization chooses an exact advertised
+- Pour parameters are litres (`vessel.py:419–427`), converted to mL (see the
+  float-noise note below). Host normalization chooses an exact advertised
   level; the provider requires exact equality and never picks a nearby action.
 - Drain parameters count bottom layer pixels (`vessel.py:429–472`), not mL.
   Before stepping, the adapter predicts solvent and dissolved-solute transfer
   from the already sampled layer state to reject overflow without mutation.
-- Negative mix values shake/mix, positive values settle
-  (`extract_algorithms/separate.py:212–215,283–312`). `mix_model.duration`
-  preserves the negative control value; `settle_model.duration` is positive.
-  The name `duration` is a **model control parameter**, not elapsed physical
-  time. Settling acts on three vessels together; there is one capability with
-  all three resources, no independently controllable per-vessel substitutes.
+- Upstream `mix` advances a settling clock (`extract_algorithms/separate.py:212–215,283–312`):
+  a negative step shakes the vessel, a positive step lets its layers settle.
+  The operation carries the sign, so both `mix_model.duration` and
+  `settle_model.duration` advertise the positive magnitude (mixing 0.2–1.0,
+  settling 0.01–0.16) and the adapter sends `-duration` upstream for
+  `mix_model`. `duration` is **model time**, not elapsed physical time.
+  Settling acts on three vessels together; there is one capability with all
+  three resources, no independently controllable per-vessel substitutes.
+- Advertised levels drop upstream float noise: 0.6 L arrives as
+  0.6000000000000001 and is advertised as 600.0 mL. Levels are rounded to nine
+  decimals in the one function both directions of the mapping use, so every
+  advertised level still maps back to exactly one upstream action.
 - Resources derive from unique snake_case labels. A stock source has outgoing
   transfers and no incoming transfer. Waste Vessel is a vessel, despite being
   outside WaterOil's observed working shelf (`lab/shelf.py:25–29`).
 - Observation vectors are vessel-major (`benches/characterization_bench.py:90–104`).
-  Layers have shape [2,100] (WaterOil) or [3,100] (GenWurtz); target one-hots
+  Layers have shape [2,100] (WaterOil) or [3,100] (GenWurtz); the channel's
+  `axes` name the vessel each row shows (`extraction_vessel`, `beaker_1`, and
+  `beaker_2` for GenWurtz) and leave the pixel axis unlabelled; target one-hots
   decode to the declared task target, independent of actual material contents
   (`:177–186`). No material legend, pressure, reward or composition is included.
 - Pressure is not modeled here. The adapter never calls `render()` (whose

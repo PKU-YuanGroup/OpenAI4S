@@ -16,7 +16,10 @@ fields are tuples; JSON serializers emit arrays. `from_dict` rejects unknown
 keys, missing required fields, invalid types and nonfinite numbers; booleans
 are not numeric values. Nullable fields are still required unless the value
 class explicitly supplies a default. Unavailable channel specifications have
-a reason; unavailable/unknown readings have a null value.
+a reason; unavailable/unknown readings have a null value. An array channel may
+declare `axes`, one per dimension, so a reader can tell what each index means:
+ChemGymRL's `layers` channel labels its rows with the vessels they show and
+leaves the pixel axis unlabelled.
 
 A `DeviceDescriptor` fixes device, backend, profile, simulation mode, versions,
 resources, capabilities, sensor channels and limits. Its time unit is
@@ -48,15 +51,17 @@ ASCII characters. A new mode or profile requires a new run.
 The immutable tables in `models.py` are the transition authority.
 
 ```text
-creating -> ready <-> busy -> ended
+creating -> ready <-> busy
 creating -> failed
-ready/busy -> quarantined -> ended
+ready/busy -> quarantined -> ready
+creating/ready/busy/quarantined -> ended
 ```
 
-`ended` and `failed` are terminal. The ledger's explicit `end_run` operation
-may end a nonterminal run during lifecycle cleanup; it is a separate contract
-from ordinary status CAS. Quarantine forbids new commands while an execution
-outcome remains uncertain.
+`ended` and `failed` are terminal. Any nonterminal run can end (stop, budget,
+idle timeout, provider loss, deletion); only a run that is still being created
+can fail. Quarantine forbids new commands while an execution outcome remains
+uncertain, and lifts only when reconciliation has resolved the run's last
+unknown command. `run_sources_for` derives the ledger's CAS sources.
 
 ```text
 created -> awaiting_approval -> admitted -> dispatching -> running
@@ -64,13 +69,24 @@ created -> admitted
 created/awaiting_approval/admitted -> rejected | not_dispatched
 dispatching/running -> succeeded | failed | outcome_unknown | stop_requested
 stop_requested -> stopped | succeeded | failed | outcome_unknown
-outcome_unknown -> succeeded | failed
+dispatching/outcome_unknown -> not_dispatched     (proof of non-receipt)
+outcome_unknown -> succeeded | failed             (a queried receipt)
 ```
 
 Command terminal states are `succeeded`, `failed`, `rejected`, `not_dispatched`
 and `stopped`. `outcome_unknown` remains reconcilable; it is never automatic
-permission to resend. `command_sources_for` derives CAS sources from the same
-table. A stop request becomes `stopped` only after provider confirmation.
+permission to resend. It leaves only through reconciliation: a queried receipt,
+or `not_dispatched` when the device proves it never received the command. A
+device proves that by remembering every command id a session accepted, so
+`query` returns `None` only for an id it never saw and raises
+`LabError(OUTCOME_UNKNOWN)` for one whose receipt it no longer retains; it
+refuses to execute such an id again. A provider receipt that was not applied
+(`failed` or `rejected`) is recorded as a `failed` command; the command state
+`rejected` is reserved for host refusals before dispatch. Once a command is
+dispatched its exits also free leases and move the run, so only the ledger's
+`record_receipt`, `mark_outcome_unknown` and `mark_not_dispatched` may take
+them. `command_sources_for` derives CAS sources from the same table. A stop
+request becomes `stopped` only after provider confirmation.
 Run end reasons are `end_action`, `max_steps`, `env_terminated`, `stopped`,
 `budget_exhausted`, `provider_lost`, `idle_timeout`, `create_failed`, `deleted`.
 

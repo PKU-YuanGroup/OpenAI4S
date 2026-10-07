@@ -38,6 +38,7 @@ def examples():
         m.ChannelSource.SIMULATED_SENSOR,
         True,
         "Visible layers",
+        axes=(m.ChannelAxis("resource", ("a", "b")), m.ChannelAxis("layer_px")),
     )
     descriptor = m.DeviceDescriptor(
         m.CONTRACT,
@@ -415,3 +416,34 @@ def test_private_mapping_keys_never_reach_validation_errors(name, key):
         assert caught.value.code is m.ErrorCode.INVALID_PARAMETERS
         assert "PRIVATE_SPECIES" not in str(caught.value)
         assert "PRIVATE_SPECIES" not in json.dumps(caught.value.to_dict())
+
+
+@pytest.mark.parametrize(
+    "axes",
+    [
+        [{"name": "resource", "labels": ["a"]}, {"name": "layer_px"}],
+        [{"name": "resource"}],
+        [{"name": "same"}, {"name": "same"}],
+        [{"name": "resource", "labels": ["a", "a"]}, {"name": "layer_px"}],
+        [{"name": ""}, {"name": "layer_px"}],
+    ],
+)
+def test_channel_axes_must_describe_the_shape(axes):
+    spec = {
+        "name": "layers",
+        "kind": "array",
+        "shape": [2, 3],
+        "unit": "dimensionless",
+        "source": "simulated_sensor",
+        "available": True,
+        "description": "rows are vessels",
+    }
+    labelled = {
+        **spec,
+        "axes": [{"name": "resource", "labels": ["a", "b"]}, {"name": "layer_px"}],
+    }
+    assert m.ObservationChannelSpec.from_dict(labelled).to_dict() == labelled
+    assert "axes" not in m.ObservationChannelSpec.from_dict(spec).to_dict()
+    with pytest.raises(m.LabError) as caught:
+        m.ObservationChannelSpec.from_dict({**spec, "axes": axes})
+    assert caught.value.code is m.ErrorCode.INVALID_PARAMETERS

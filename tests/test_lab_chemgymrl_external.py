@@ -152,7 +152,8 @@ def test_live_manifest_receipts_and_seed_reproducibility(provider, profile):
                 value = cap["parameters"]["volume"]["allowed"][0]
             elif index in (8, 9):
                 cap = mix
-                value = cap["parameters"]["duration"]["allowed"][9 - index]
+                # Actions 5-9 shake for 0.2..1.0 model time (upstream -0.2..-1.0).
+                value = cap["parameters"]["duration"]["allowed"][index - 5]
             elif index == 35:
                 cap = next(c for c in caps if c["operation"] == "settle_model")
                 value = None

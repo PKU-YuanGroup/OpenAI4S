@@ -59,9 +59,38 @@ def test_descriptor_groups_sorted_exact_volumes_and_identity():
         for cap in caps
         if cap["capability_id"] == "transfer_liquid:beaker_1->extraction_vessel"
     )
+    # Litres become millilitres, and upstream float noise
+    # (0.6000000000000001 L) is not advertised as 600.0000000000001 mL.
     assert cap["parameters"]["volume"]["allowed"] == [
-        row["parameters"][0][0] * 1000 for row in ROWS[10:15]
+        200.0,
+        400.0,
+        600.0,
+        800.0,
+        1000.0,
     ]
+    assert [round(row["parameters"][0][0] * 1000, 9) for row in ROWS[10:15]] == (
+        cap["parameters"]["volume"]["allowed"]
+    )
+    stock = next(
+        cap
+        for cap in caps
+        if cap["capability_id"] == "transfer_liquid:c6h14_vessel->extraction_vessel"
+    )
+    assert stock["parameters"]["volume"]["allowed"] == [
+        100.0,
+        200.0,
+        300.0,
+        400.0,
+        500.0,
+    ]
+    # Every advertised level still maps back to exactly one upstream action.
+    for c in caps:
+        for name, spec in c["parameters"].items():
+            for level in spec["allowed"]:
+                assert (
+                    mapping.command_to_action(ROWS, LABELS, command(c, level))
+                    is not None
+                )
     for c in caps:
         for spec in c["parameters"].values():
             assert spec["allowed"] == sorted(set(spec["allowed"]))
@@ -81,21 +110,32 @@ def test_descriptor_groups_sorted_exact_volumes_and_identity():
     )
 
 
-def test_multivessel_settle_and_signed_mix():
+def test_multivessel_settle_and_mix_advertise_positive_model_durations():
     caps = descriptor()["capabilities"]
     settle = next(c for c in caps if c["operation"] == "settle_model")
     assert settle["source"] is None and settle["target"] is None
     assert settle["resources"] == ["beaker_1", "extraction_vessel", "waste_vessel"]
+    assert settle["parameters"]["duration"]["allowed"] == [0.01, 0.02, 0.04, 0.08, 0.16]
     assert mapping.command_to_action(ROWS, LABELS, command(settle)) == 35
     mix = next(c for c in caps if c["operation"] == "mix_model")
-    assert mix["parameters"]["duration"]["allowed"] == [
-        -1.0,
-        -0.8,
-        -0.6000000000000001,
-        -0.4,
-        -0.2,
+    # Upstream shakes with a negative step of its settling clock; the operation
+    # carries the sign, so the advertised duration is the positive magnitude.
+    assert mix["parameters"]["duration"]["allowed"] == [0.2, 0.4, 0.6, 0.8, 1.0]
+    assert mapping.command_to_action(ROWS, LABELS, command(mix)) == 5
+    assert mapping.command_to_action(ROWS, LABELS, command(mix, 1.0)) == 9
+    assert mapping.command_to_action(ROWS, LABELS, command(mix, -0.2)) is None
+
+
+def test_layer_rows_name_the_vessels_they_show():
+    layers = next(
+        channel
+        for channel in descriptor()["observation_channels"]
+        if channel["name"] == "layers"
+    )
+    assert layers["axes"] == [
+        {"name": "resource", "labels": ["extraction_vessel", "beaker_1"]},
+        {"name": "layer_px"},
     ]
-    assert mapping.command_to_action(ROWS, LABELS, command(mix)) == 9
 
 
 def test_exact_mapping_rejects_nearby_or_wrong_unit_and_ambiguity():

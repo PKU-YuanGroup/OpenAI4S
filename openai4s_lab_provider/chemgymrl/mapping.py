@@ -24,6 +24,17 @@ def resource_ids(vessel_labels):
     return ids
 
 
+def _level(value):
+    """An advertised level: upstream float noise removed, -0.0 folded to 0.0.
+
+    0.6 L arrives as 0.6000000000000001 and becomes 600.0000000000001 mL. Nine
+    decimals keep every distinct upstream level distinct while giving agents and
+    people the number they would write; both directions of the mapping go
+    through this one function, so a normalized command still matches its row.
+    """
+    return round(value, 9) + 0.0
+
+
 def _action(row, ids):
     resources = sorted(ids[i] for i in row["vessels"])
     source = target = None
@@ -53,7 +64,7 @@ def _action(row, ids):
                 if event == "pour by volume"
                 else ("drain_layers", "pixels", "layer_px")
             )
-            value = value * 1000 if operation == "transfer_liquid" else value
+            value = _level(value * 1000 if operation == "transfer_liquid" else value)
             effect = "moves_material"
             capability_id = f"{operation}:{source}->{target}"
         elif event == "mix" and value != 0:
@@ -63,7 +74,11 @@ def _action(row, ids):
                 "model_time",
                 "changes_state",
             )
-            # Keep the signed upstream control value; it is not physical duration.
+            # Upstream advances a settling clock (separate.mix): a negative step
+            # shakes the vessel, a positive one lets its layers settle. The
+            # operation carries the sign; the advertised duration is the
+            # magnitude, in model time, never seconds.
+            value = _level(abs(value))
             source = resources[0] if len(resources) == 1 else None
             capability_id = f"{operation}:{source}" if source else operation
         else:
@@ -84,22 +99,29 @@ def _action(row, ids):
     }
 
 
-def channel_specs(layout):
+def channel_specs(layout, ids=None):
     if (
         layout["observation_list"] != ["layers", "targets"]
         or layout["order"] != "vessel_major"
     ):
         raise ValueError("unsupported observation layout")
+    layers = {
+        "name": "layers",
+        "kind": "array",
+        "shape": [len(layout["vessel_indices"]), layout["sizes"]["layers"]],
+        "unit": "dimensionless",
+        "source": "simulated_sensor",
+        "available": True,
+        "description": "Simulated layer colors; no material legend.",
+    }
+    if ids is not None:
+        # Row i shows the layers of shelf vessel vessel_indices[i].
+        layers["axes"] = [
+            {"name": "resource", "labels": [ids[i] for i in layout["vessel_indices"]]},
+            {"name": "layer_px"},
+        ]
     return [
-        {
-            "name": "layers",
-            "kind": "array",
-            "shape": [len(layout["vessel_indices"]), layout["sizes"]["layers"]],
-            "unit": "dimensionless",
-            "source": "simulated_sensor",
-            "available": True,
-            "description": "Simulated layer colors; no material legend.",
-        },
+        layers,
         {
             "name": "targets",
             "kind": "category",
@@ -161,7 +183,7 @@ def derive_descriptor(
         "capability_revision": hashlib.sha256(
             canonical_json(capabilities).encode()
         ).hexdigest(),
-        "observation_channels": channel_specs(observation_layout),
+        "observation_channels": channel_specs(observation_layout, ids),
         "limits": dict(limits),
         "stop": {"supported": True, "semantics": "end_session"},
         "time": {"unit": "model_time", "wall_clock_equivalent": None},
@@ -226,7 +248,9 @@ def decode_observation(vector, layout):
     channels = []
     for spec, value in zip(specs, [layers, targets[0]]):
         channel = {
-            k: v for k, v in spec.items() if k not in ("available", "description")
+            k: v
+            for k, v in spec.items()
+            if k not in ("available", "description", "axes")
         }
         channel.update(value=value, quality="ok")
         channels.append(channel)
