@@ -64,6 +64,30 @@ describe("Lab bench public view", () => {
     obs.channels.push({ ...obs.channels[1]!, name: "undeclared", quality: "ok", value: 91827 });
     expect(text(ObservationView({ descriptor, observation: obs }))).not.toContain("91827");
   });
+  it("draws vessel rows only when the first layers axis indexes resources", () => {
+    const renamed = structuredClone(descriptor);
+    renamed.observation_channels[0]!.axes = [{ name: "sample", labels: ["extraction_vessel", "beaker_1"] }, { name: "layer_px" }];
+    const tree = VesselView({ descriptor: renamed, observation: observation() });
+    expect(elements(tree, "rect")).toHaveLength(0);
+    expect(elements(VesselView({ descriptor, observation: observation() }), "rect")).toHaveLength(8);
+  });
+  it("shows loading rather than an empty bench before the scope's first read", () => {
+    lab.scope("unread-root", 1, true);
+    const unread = text(LabPane());
+    expect(unread).toContain(labT("loading"));
+    expect(unread).not.toContain(labT("noDevices")); expect(unread).not.toContain(labT("noRuns"));
+    lab.state.value = { ...lab.state.value, loaded: true };
+    const loaded = text(LabPane());
+    expect(loaded).toContain(labT("noDevices")); expect(loaded).not.toContain(labT("loading"));
+  });
+  it("summarizes a capability without a source or target as none, not unknown", () => {
+    for (const request of [{ ...command().request, operation: "end_experiment", source: null, target: null, parameters: {} },
+      { run_id: "labrun-one", operation: "mix_model", source: "extraction_vessel", expected_revision: 3 }]) {
+      const line = permActionLine({ tool: "lab_execute", input: request }).text;
+      expect(line).not.toContain(labT("unknown"));
+      expect(line).toContain("→ —");
+    }
+  });
   it("shows rejection reasons and gives outcome_unknown an explicit command query button", () => {
     const query = vi.spyOn(lab, "reconcile").mockResolvedValue();
     const tree = CommandHistory({ commands: [command(), command({ command_id: "rejected", state: "rejected", error: "Allowed volume: 200, 400 mL" })], observation: null, querying: null });
@@ -91,14 +115,14 @@ describe("Lab bench public view", () => {
   it("disables stepping in busy, quarantined and ended states while retaining an independent stop", () => {
     lab.scope("root", 1, true);
     for (const status of ["busy", "quarantined", "ended"] as const) {
-      lab.state.value = { ...lab.state.value, detail: detail({ run: run({ status }) }) };
+      lab.state.value = { ...lab.state.value, loaded: true, detail: detail({ run: run({ status }) }) };
       const buttons = elements(LabPane(), "button");
       expect(buttons.find((b) => text(b) === labT("execute"))!.props.disabled).toBe(true);
       expect(buttons.find((b) => text(b) === labT("end"))!.props.disabled).toBe(status === "ended");
     }
   });
   it("repaints feature copy in both languages without changing confirmed data", async () => {
-    lab.scope("root", 1, true); lab.state.value = { ...lab.state.value, detail: detail() };
+    lab.scope("root", 1, true); lab.state.value = { ...lab.state.value, loaded: true, detail: detail() };
     const confirmed = lab.state.value.detail;
     await setLang("zh"); expect(text(LabPane())).toContain("模型时间，非秒");
     await setLang("en"); expect(text(LabPane())).toContain("Model time, not seconds");

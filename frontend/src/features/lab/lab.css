@@ -1,5 +1,5 @@
 #dock-lab { overflow: auto; }
-.lab-pane { padding: 16px; color: var(--text, #263648); font-size: 13px; line-height: 1.5; }
+.lab-pane { padding: 16px; color: var(--text-100); font-size: 13px; line-height: 1.5; }
 .lab-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .lab-pane h2 { margin: 0; font-size: 18px; }
 .lab-pane h3 { margin: 0 0 10px; font-size: 14px; }

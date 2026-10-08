@@ -7,13 +7,19 @@ import type {
 
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 export const LAB_REQUEST_TIMEOUT_MS = 30_000;
+// Mutations wait past the provider's own deadlines (openai4s_lab_provider/client.py):
+// open 180 s after a 30 s hello, execute 60 s, stop 30 s then close 10 s. A shorter UI
+// deadline reports a timeout for a cold ChemGymRL open that is still succeeding.
+export const LAB_CREATE_TIMEOUT_MS = 240_000;
+export const LAB_EXECUTE_TIMEOUT_MS = 90_000;
+export const LAB_STOP_TIMEOUT_MS = 60_000;
 let fetchImpl: FetchFn | null = null;
 
 export function setLabFetch(fn: FetchFn | null): void {
   fetchImpl = fn;
 }
 
-async function request<T>(path: string, body?: unknown): Promise<T> {
+async function request<T>(path: string, body?: unknown, timeoutMs = LAB_REQUEST_TIMEOUT_MS): Promise<T> {
   const fetcher = fetchImpl ?? (globalThis as { fetch?: FetchFn }).fetch;
   if (!fetcher) throw new Error(labT("apiUnavailable"));
   const controller = new AbortController();
@@ -24,7 +30,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
       const error = new Error(labT("apiTimeout"));
       error.name = "TimeoutError";
       reject(error);
-    }, LAB_REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
   });
   const send = async (): Promise<T> => {
     const response = await fetcher(API + path, {
@@ -70,7 +76,7 @@ export function describeDevice(fid: string, deviceId: string, profile: string): 
 
 export function createRun(fid: string, input: CreateRequest): Promise<CreateResult> {
   const { device_id, profile, seed, budgets, idempotency_key } = input;
-  return request(`${base(fid)}/runs`, { device_id, profile, seed, budgets, idempotency_key });
+  return request(`${base(fid)}/runs`, { device_id, profile, seed, budgets, idempotency_key }, LAB_CREATE_TIMEOUT_MS);
 }
 
 export function getRun(fid: string, runId: string): Promise<DetailResult> {
@@ -93,7 +99,7 @@ export function executeCommand(fid: string, runId: string, input: CommandRequest
   const { operation, source, target, parameters, expected_revision, idempotency_key } = input;
   return request(`${runPath(fid, runId)}/commands`, {
     operation, source, target, parameters, expected_revision, idempotency_key,
-  });
+  }, LAB_EXECUTE_TIMEOUT_MS);
 }
 
 export function reconcileCommand(fid: string, runId: string, commandId: string): Promise<CommandResult> {
@@ -101,7 +107,7 @@ export function reconcileCommand(fid: string, runId: string, commandId: string):
 }
 
 export function stopRun(fid: string, runId: string, reason?: string): Promise<StopResult> {
-  return request(`${runPath(fid, runId)}/stop`, { reason });
+  return request(`${runPath(fid, runId)}/stop`, { reason }, LAB_STOP_TIMEOUT_MS);
 }
 
 export function listEvents(fid: string, afterSeq = 0, limit = 200): Promise<EventPage> {

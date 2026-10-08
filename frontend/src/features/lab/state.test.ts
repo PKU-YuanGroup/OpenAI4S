@@ -88,6 +88,33 @@ describe("confirmed Lab state", () => {
     expect(posts[0]!.body).toMatchObject({ seed: 0, idempotency_key: "same-key" });
   });
 
+  it("drops a create its server refused definitively and keeps one whose outcome is uncertain", async () => {
+    send = async () => json({ error: "Lab provider creation failed", code: "provider_unavailable" }, 503);
+    await controller.create(device, device.profiles[0]!, 0);
+    expect(controller.state.value.pending).toBeNull();
+    expect(controller.state.value.error).toContain("Lab provider creation failed");
+    // The refused key ended its run as failed, so the next attempt uses a new key.
+    send = async () => json({ error: "Store unavailable", code: "persistence_unavailable" }, 503);
+    await controller.create(device, device.profiles[0]!, 0);
+    expect(posts.map((p) => p.body.idempotency_key)).toEqual(["same-key", "new-key-2"]);
+    expect(controller.state.value.pending?.intent.body.idempotency_key).toBe("new-key-2");
+  });
+
+  it("keeps an execute whose 503 never proves the command was not dispatched", async () => {
+    await ready();
+    send = async () => json({ error: "Lab service is unavailable", code: "provider_unavailable" }, 503);
+    await execute();
+    expect(controller.state.value.pending?.intent.kind).toBe("execute");
+    await controller.retry();
+    expect(posts).toHaveLength(2); expect(posts[1]).toEqual(posts[0]);
+  });
+
+  it("marks a scope loaded only after its first index read", async () => {
+    expect(controller.state.value.loaded).toBe(false);
+    await ready(); expect(controller.state.value.loaded).toBe(true);
+    controller.scope("other", 1); expect(controller.state.value.loaded).toBe(false);
+  });
+
   it("accepts HTTP 200 outcome_unknown and queries the command without executing again", async () => {
     await ready(); const unknown = command();
     send = async (_url, body) => {

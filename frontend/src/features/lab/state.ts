@@ -9,13 +9,24 @@ export type LabState = {
   rootId: string | null; generation: number; devices: Device[]; runs: Run[];
   selectedRunId: string | null; detail: DetailResult | null;
   sequences: Record<string, number>; loading: boolean; error: string; pending: Pending | null; stopping: boolean; querying: string | null;
+  /** False until this scope's first index read lands, so an unread scope never shows "no devices". */
+  loaded: boolean;
 };
 const empty = (rootId: string | null, generation: number): LabState => ({
   rootId, generation, devices: [], runs: [], selectedRunId: null, detail: null,
-  sequences: {}, loading: false, error: "", pending: null, stopping: false, querying: null,
+  sequences: {}, loading: false, error: "", pending: null, stopping: false, querying: null, loaded: false,
 });
 const message = (error: unknown): string => error instanceof Error ? error.message : labT("unknown");
 const newKey = (): string => "ui-" + crypto.randomUUID();
+
+/** Whether a failed request can never succeed by resending its key. A structured 4xx is
+ * refused before dispatch. A create refused as provider_unavailable/adapter_mismatch has
+ * already ended its run as failed, and a same-key retry only returns that failed run. */
+function definitive(intent: Intent, error: unknown): boolean {
+  const { status, code } = (error ?? {}) as { status?: number; code?: string };
+  if (status !== undefined && status >= 400 && status < 500) return true;
+  return intent.kind === "create" && status === 503 && (code === "provider_unavailable" || code === "adapter_mismatch");
+}
 
 /** Revisions only count applied actions. Counts and timestamps also protect refusals and stops. */
 function older(candidate: Run, previous: Run | undefined): boolean {
@@ -86,7 +97,7 @@ export class LabController {
       });
       const selected = previous.selectedRunId && runs.some((r) => r.run_id === previous.selectedRunId)
         ? previous.selectedRunId : runs[0]?.run_id || null;
-      this.patch({ devices: index.devices, runs, selectedRunId: selected, error: "",
+      this.patch({ devices: index.devices, runs, selectedRunId: selected, error: "", loaded: true,
         detail: selected === previous.selectedRunId ? previous.detail : null });
       if (!selected) { this.patch({ detail: null }); return; }
       const [detail, observations] = await Promise.all([api.getRun(root, selected), api.listObservations(root, selected, -1, 200, false)]);
@@ -189,9 +200,8 @@ export class LabController {
       void this.refresh();
     } catch (error) {
       saved.sending = false; saved.error = message(error);
-      // A structured 4xx is a confirmed refusal before dispatch, unlike network/5xx errors.
-      const status = (error as { status?: number })?.status;
-      if (saved.confirmed || status && status >= 400 && status < 500) this.retained.delete(root);
+      // Network errors, timeouts and other 5xx leave the outcome uncertain: keep the key.
+      if (saved.confirmed || definitive(saved.intent, error)) this.retained.delete(root);
       if (this.matches(root, epoch)) this.patch({ pending: this.retained.has(root) ? { ...saved } : null, error: saved.error });
     } finally {
       saved.sending = false;

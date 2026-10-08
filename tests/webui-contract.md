@@ -215,7 +215,6 @@ Sorted.
 | `#dashboard .lang-btn[data-lang="*"]` | browser_smoke.mjs | 2 |
 | `#dashboard [data-i18n="dash.col.projects"]` | browser_smoke.mjs | 1 |
 | `#dock-files` | browser_stage1_trusted_delivery.mjs | 1 |
-| `#dock-lab` | W3-C simulation Lab bench (fixture browser acceptance) | 1 |
 | `#dock-files:not(.hidden)` | browser_stage1_trusted_delivery.mjs | 1 |
 | `#dock-notebook` | browser_smoke.mjs | 1 |
 | `#dock-notebook .nb-repl` | browser_stage0_acceptance.mjs | 1 |

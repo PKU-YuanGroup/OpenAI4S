@@ -2,6 +2,9 @@ import { labT } from "./copy";
 
 const rec = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const scalar = (v: unknown): string => typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : labT("unknown");
+/** A capability without a source or target declares null (an omitted key means the same),
+ * which is "none" rather than unknown. */
+const endpoint = (v: unknown): string => v == null ? "—" : scalar(v);
 const parametersByOperation: Record<string, string[]> = {
   transfer_liquid: ["volume"], drain_layers: ["pixels"], mix_model: ["duration"], settle_model: ["duration"], end_experiment: [],
 };
@@ -16,7 +19,7 @@ export function requestSummary(input: unknown): string {
     return typeof q.value === "number" && Number.isFinite(q.value) && typeof q.unit === "string" && units.has(q.unit)
       ? [labT("parameter", name, q.value, q.unit)] : [];
   });
-  return [scalar(r.run_id), scalar(r.operation), `${scalar(r.source)} → ${scalar(r.target)}`,
+  return [scalar(r.run_id), scalar(r.operation), `${endpoint(r.source)} → ${endpoint(r.target)}`,
     ...quantities, labT("expectedRevision", scalar(r.expected_revision))].join(" · ");
 }
 

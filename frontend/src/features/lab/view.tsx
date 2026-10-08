@@ -52,7 +52,9 @@ export function DeviceSetup({ devices, disabled }: { devices: Device[]; disabled
 
 export function VesselView({ descriptor, observation, action }: { descriptor: Descriptor; observation: Observation | null; action?: Capability }) {
   const layer = publicChannels(descriptor, observation).find((c) => c.spec.name === "layers");
-  const labels = layer?.spec.axes?.[0]?.labels;
+  // Rows are drawn per vessel only when the first axis is declared to index resources.
+  const axis = layer?.spec.axes?.[0];
+  const labels = axis?.name === "resource" ? axis.labels : undefined;
   const rows = layer?.quality === "ok" && layer.spec.shape.length === 2 && labels?.length === layer.spec.shape[0]
     ? layer.value as number[][] : null;
   return <section class="lab-card">
@@ -139,18 +141,18 @@ export function LabPane() {
     <header class="lab-heading"><h2>{labT("title")}</h2><button type="button" disabled={!state.rootId || state.loading} onClick={() => void lab.refresh()}>{labT("refresh")}</button></header>
     <p class="lab-connection" role="status">{labT(labConnected.value ? "connected" : "disconnected")}</p>
     {!state.rootId ? <p>{labT("noSession")}</p> : <>
-      {state.loading && <p role="status">{labT("loading")}</p>}
+      {(state.loading || !state.loaded && !state.error) && <p role="status">{labT("loading")}</p>}
       {state.error && <p class="lab-notice" role="alert">{labT("error", state.error)}</p>}
       {pending && <section class="lab-card lab-uncertain"><p>{labT(pending.sending ? "pending" : "retryNotice")}</p>
         <p>{permissionSummary(pending.intent.kind === "create" ? "lab_create" : "lab_execute", { ...pending.intent.body, ...(pending.intent.kind === "execute" ? { run_id: pending.intent.runId } : {}) })}</p>
         <code>{pending.intent.body.idempotency_key}</code>
         {!pending.sending && <button type="button" onClick={() => void lab.retry()}>{labT("retry")}</button>}
       </section>}
-      {detail ? <details class="lab-new"><summary>{labT("create")}</summary><DeviceSetup devices={state.devices} disabled={!!pending || state.stopping} /></details>
+      {state.loaded && <>{detail ? <details class="lab-new"><summary>{labT("create")}</summary><DeviceSetup devices={state.devices} disabled={!!pending || state.stopping} /></details>
         : <DeviceSetup devices={state.devices} disabled={!!pending || state.stopping} />}
       {state.runs.length ? <label>{labT("run")}<select value={state.selectedRunId || ""} disabled={!!pending?.sending || state.stopping || !!state.querying} onChange={(e) => void lab.select(e.currentTarget.value)}>
         {state.runs.map((r) => <option key={r.run_id} value={r.run_id}>{r.profile} · {r.run_id} · {r.status}</option>)}
-      </select></label> : <p>{labT("noRuns")}</p>}
+      </select></label> : <p>{labT("noRuns")}</p>}</>}
       {detail && <>
         <section class="lab-card lab-overview">
           <span class="lab-badge">{labT("simulation", backend(detail.run.backend))}</span>

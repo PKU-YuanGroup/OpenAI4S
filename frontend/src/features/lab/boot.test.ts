@@ -22,7 +22,7 @@ const tick = () => vi.advanceTimersByTimeAsync(LAB_REFRESH_MS);
 class Socket extends EventTarget { readyState = 0; }
 
 describe("Lab lifecycle refresh", () => {
-  it("coalesces hints by current root without advancing the session sequence", async () => {
+  it("coalesces hints by current root and never takes the Lab ledger seq for the session seq", async () => {
     currentId.value = "one"; await tick(); reads = [];
     onEvent({ type: "lab_update", root_frame_id: "another", latest_event_seq: 80 });
     await tick(); expect(reads).toHaveLength(0);

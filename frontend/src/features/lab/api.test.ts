@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../sessions/api";
 import {
-  createRun, describeDevice, executeCommand, getRun, listCommands, listEvents,
-  listLab, listObservations, reconcileCommand, setLabFetch, stopRun, type FetchFn,
+  createRun, describeDevice, executeCommand, getRun, LAB_CREATE_TIMEOUT_MS, LAB_EXECUTE_TIMEOUT_MS,
+  LAB_REQUEST_TIMEOUT_MS, LAB_STOP_TIMEOUT_MS, listCommands, listEvents, listLab, listObservations,
+  reconcileCommand, setLabFetch, stopRun, type FetchFn,
 } from "./api";
 import { labT } from "./copy";
 import type { CommandRequest, CreateRequest } from "./types";
@@ -171,6 +172,29 @@ describe("Lab REST client", () => {
     expect(signal?.aborted).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("waits for mutations past the provider's own open, execute and stop deadlines", async () => {
+    // openai4s_lab_provider/client.py: hello 30 s + open 180 s, execute 60 s, stop 30 s + close 10 s.
+    expect(LAB_CREATE_TIMEOUT_MS).toBeGreaterThan((30 + 180) * 1000);
+    expect(LAB_EXECUTE_TIMEOUT_MS).toBeGreaterThan(60 * 1000);
+    expect(LAB_STOP_TIMEOUT_MS).toBeGreaterThan((30 + 10) * 1000);
+    setLabFetch(() => new Promise<Response>(() => {}));
+    for (const [call, deadline] of [
+      [() => createRun(fid, create), LAB_CREATE_TIMEOUT_MS],
+      [() => executeCommand(fid, runId, command), LAB_EXECUTE_TIMEOUT_MS],
+      [() => stopRun(fid, runId), LAB_STOP_TIMEOUT_MS],
+      [() => listLab(fid), LAB_REQUEST_TIMEOUT_MS],
+    ] as const) {
+      let settled = false;
+      const result = call().catch((error: unknown) => { settled = true; throw error; });
+      const failure = expect(result).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(deadline - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await failure;
+      expect(vi.getTimerCount()).toBe(0);
+    }
   });
 
   it("keeps the deadline active while the response body is stalled", async () => {
