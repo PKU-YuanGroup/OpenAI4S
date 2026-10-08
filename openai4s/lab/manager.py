@@ -208,14 +208,33 @@ class LabManager:
         for run_id in expired:
             self._finish(run_id, "idle_timeout")
 
+    @staticmethod
+    def _availability(reg: Any) -> tuple[bool | None, str | None]:
+        # The registration owns optional installation availability (builtin
+        # registrations read local files only). No provider is started just to
+        # populate the device picker. Only the verdict and the fixed remedy text
+        # are public: interpreter paths and generation names stay operator-only.
+        check = getattr(reg, "availability", None)
+        if not callable(check):
+            return None, None
+        try:
+            state = check()
+        except Exception:
+            return None, "Device availability could not be determined"
+        if not isinstance(state, Mapping):
+            return None, None
+        available = state.get("available")
+        detail = state.get("detail")
+        return (
+            available if isinstance(available, bool) else None,
+            detail if isinstance(detail, str) else None,
+        )
+
     def list_devices(self, caller: LabCaller) -> list[dict[str, Any]]:
         self._sweep(caller)
         result = []
         for reg in self._registry.list():
-            # The registration owns optional installation availability. No
-            # provider is started just to populate the device picker.
-            availability = getattr(reg, "available", None)
-            available = availability() if callable(availability) else None
+            available, detail = self._availability(reg)
             result.append(
                 {
                     "device_id": reg.device_id,
@@ -224,6 +243,7 @@ class LabManager:
                     "title": reg.title,
                     "profiles": list(reg.profiles),
                     "available": available,
+                    "availability_detail": detail,
                 }
             )
         return result
@@ -413,7 +433,23 @@ class LabManager:
                 if isinstance(exc, LabError)
                 else ErrorCode.PROVIDER_UNAVAILABLE
             )
-            raise LabError(code, "Lab provider creation failed") from None
+            message = "Lab provider creation failed"
+            if code is ErrorCode.PROVIDER_UNAVAILABLE:
+                # An uninstalled provider is the common cause; say how to fix it
+                # with the registration's fixed remedy, never a provider message.
+                available, detail = self._availability(
+                    next(
+                        (
+                            r
+                            for r in self._registry.list()
+                            if r.device_id == descriptor.device_id
+                        ),
+                        None,
+                    )
+                )
+                if available is False and detail:
+                    message += ": " + detail
+            raise LabError(code, message) from None
         finally:
             with self._lock:
                 self._opening.pop(run_id, None)
