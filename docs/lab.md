@@ -192,6 +192,10 @@ ChemGymRL accuracy or physical hardware behavior.
 process and reconciles older daemon instances before returning. The provider
 callback resolves the current Store generation on every ledger call. Adapters
 share this manager: W3 connects manual UI, native tools and `host.lab` to it.
+Only the daemon builds one. Startup reconciliation treats every other
+`daemon_instance` as gone, so a second manager over the same database (a CLI
+process, say) would end the daemon's live runs; `openai4s lab status|smoke`
+deliberately use no database.
 `LabLimits` defaults to four live providers (including openings and closing
 sessions) and five seconds waiting for an in-flight receipt during stop.
 No provider is registered or started by importing the package.
@@ -200,45 +204,81 @@ Creation persists the seed, capped step budget and registered descriptor before
 opening a provider. Omitted seeds are generated once; create-key replays reuse
 the durable seed, including after a restart. Opening reservations enforce the
 process limit and a stop/deletion during open cannot register a late session.
-Runtime reproducibility evidence is returned on the initial create response;
-the registered descriptor remains the durable description in this wave.
+Once the session opens, the run's pinned descriptor adopts what that session
+declares about itself: its assumptions (wrapper parameters, the provider
+sandbox posture) and its runtime reproducibility claim. Capabilities and
+channels stay the registered allowlist. Requested budgets can only tighten the
+defaults; an omitted budget is its ceiling and `max_steps` obeys the profile.
 
 Commands are scoped to the caller's root session and owner. Normalized requests
 are hashed before ledger admission. Duplicate keys return the original command
 in every state and never call the device again. Semantic refusals are also
-recorded. The manager enforces step, command, wall-time and consecutive-failure
-budgets; W1's receipt-only failure counter is supplemented by command-history
-reads for admission so host rejections count too. The public run counter still
-reflects W1 receipt failures; aligning that counter requires a ledger change.
-A nonblocking per-run lock
+recorded, with the public details that let a caller correct the request (the
+allowed levels, which budget ran out). The manager enforces step, command,
+wall-time and consecutive-failure budgets. The ledger's `consecutive_failures`
+counts host rejections and failed receipts alike, so admission and the
+published run read the same number. Every budget is monotone: exhausting any
+one rejects that command, ends the run with `budget_exhausted` and releases its
+provider. A nonblocking per-run lock
 and the ledger's atomic resource leases prevent concurrent dispatch. The
 provider is called only after `begin_dispatch` commits the intent and fencing
 token. The manager never opens a transaction around a ledger method.
 
-Lost responses are queried once. A receipt completes the durable command;
-only authoritative non-receipt permits `not_dispatched`. Unavailable evidence
-leaves `outcome_unknown` and quarantines the run. `status` may query this same
+Whenever a port call fails while the session is alive, the same command is
+queried once. A receipt completes the durable command; only authoritative
+non-receipt permits `not_dispatched`. Unavailable evidence leaves
+`outcome_unknown` and quarantines the run. A dead session, or a port raising
+outside the CONTRACT §9 vocabulary, ends the run as `provider_lost`. `status` may query this same
 command later; it never resends it. Provider death ends the run with
 `provider_lost`, retaining unknown commands. A failure to persist an already
-received result blocks further execution until restart reconciliation. Shutdown
-persists unknown intent before ending a run; if that write fails, the run stays
-nonterminal so startup can still find it.
+received result blocks further execution until restart reconciliation, and an
+error after dispatch says the device may have executed and names the command.
+Ending a run for any reason (stop, idle, budget, shutdown) first queries each
+unknown command once while the session can still answer. Shutdown persists
+unknown intent before ending a run; if that write fails, the run stays
+nonterminal so startup can still find it, and the provider is released anyway.
 
 Stop bypasses the command lock, requests stop with CAS, waits the configured
 receipt interval, then closes the session and ends the run. A timely receipt
 remains succeeded/failed; an unresolved dispatch remains unknown. Late receipts
-cannot reopen a stopped run. The receipt wait is bounded; the total close time
-also depends on the DevicePort implementation, which must provide interruptible
-close for a hard process-termination deadline. The manager holds no global lock
-while calling provider methods.
+cannot reopen a stopped run. Close preempts a request still in flight
+(CONTRACT §9), so stop and shutdown finish within the receipt wait plus a kill,
+not the 60 s execute timeout. The manager holds no global lock while calling
+provider methods.
 
 Idle cleanup runs opportunistically on public calls and skips active or blocked
 runs. `observe` is the deliberate exception: it reads and projects the ledger
 only, even after the idle interval, and never invokes a provider. Recovery
 callers cannot create, execute or stop; read paths also skip cleanup and query
-side effects. Public run, command, descriptor and observation values use the
-contract projection functions. Device registration summaries and the ledger's
-metadata-only event rows are the two catalog/cursor envelopes.
+side effects. `describe_run`, `commands` and `observations` are ledger-only
+read views in the same way (paged, scoped, projected). Public run, command,
+descriptor and observation values use the contract projection functions.
+Device summaries publish only `available` and a fixed `availability_detail`
+(never interpreter paths). `events` pages over the rows the caller may see and
+returns `next_after_seq`.
+
+## Provider environment
+
+`openai4s lab setup chemgymrl [--python P] [--dry-run] [--rollback]` builds a
+fresh CPython 3.10 generation under `<data_dir>/lab/providers/chemgymrl/`:
+hash-locked dependencies (including the setuptools/wheel that build upstream's
+legacy `setup.py` without build isolation), upstream pinned by commit and
+checked through `direct_url.json`, and both portable manifests byte-equal to the
+committed ones. A single JSON `current` pointer switches atomically only after
+every check passes; a failure leaves it untouched and keeps the failed
+generation and its `setup.log`. A generation built from another lock is no
+longer verified. The ChemGymRL backend runs only with that generation or an
+explicit `OPENAI4S_LAB_CHEMGYMRL_PYTHON`, never the daemon interpreter; the toy
+backend (daemon interpreter, stdlib only) is registered only with
+`OPENAI4S_LAB_ENABLE_TOY=1`.
+
+Each session is its own sandboxed process (`-I -B`, raw network denied, a
+private run directory, protocol input on a private descriptor). Exit is
+observed without reaping through `os.waitid`, or kqueue on macOS interpreters
+that lack it, so the process group is always disposed of before its leader's
+PID is released. `openai4s lab status` starts nothing; `openai4s lab smoke`
+runs one real step and prints only the projected receipt and the sandbox
+posture; `openai4s doctor` reports a `lab` row.
 
 ## Evaluation and baseline policies
 
@@ -290,14 +330,21 @@ recover `outcome_unknown` states overwritten by reconciliation. Those historic
 metrics are null with reasons; current unresolved commands are counted.
 A future event-history input is required to prove zero duplicate dispatches
 and report subsequent reconciliation outcomes. `compare` refuses numeric
-comparisons unless episodes are terminal and complete paired configuration, backend/adapter versions,
-wrapper assumptions, explicit goal and initial-state fingerprints match.
-Identical seeds alone do not establish comparable initial states.
+comparisons unless episodes are terminal and complete paired configuration,
+backend/adapter versions, wrapper assumptions, explicit goal and initial-state
+fingerprints match. Wrapper assumptions reach the fingerprint because the run's
+descriptor records what its session declared on open. Pass the
+`run_episode` trace as `evaluate_run(..., episode=...)`: an episode the harness
+aborted is incomplete evidence, not a policy result. Identical seeds alone do
+not establish comparable initial states.
 
 `ManagerPolicyEnv` adapts an already-created run to `LabManagerPort`. The
 production fixed and seeded random policies therefore pass through the same
 manager admission, budgets, leases and reconciliation boundary as other
-callers. They receive projected sensors and capabilities only. Random sampling
+callers. They receive projected sensors and capabilities only, read in full
+(as `host.lab.observe(full=True)`) even where the agent view summarizes arrays
+over 256 elements. `run_episode` leaves the run as it found it; stop it when the
+episode ends, or it holds one of the four provider slots. Random sampling
 is uniform over capabilities and then over each advertised parameter level;
 physical preconditions can still fail. The fixed 13-action sequence is a
 readable WaterOil simulation baseline (with toy and GenWurtz compatibility),
@@ -312,7 +359,8 @@ open/execute/query observation delivery without converting model time to real
 time. Noise currently supports `{kind: "gaussian", sigma: ...}` on a declared
 numeric scalar/array channel, is additive and unclipped, and leaves evaluation
 untouched. Its seed/profile/session-seed/provider-step key gives retries the
-same sensor sample. Fault schedules and inclusive busy windows use one-based
+same sensor sample. The wrapper seed is not published: with the run seed,
+profile and step public, it would let a policy subtract the noise exactly. Fault schedules and inclusive busy windows use one-based
 **new-command attempt ordinals** per session, not successful model steps;
 replays do not consume ordinals. A dropped request remains queryable as absent;
 a dropped response leaves the underlying receipt queryable. Refusal receipts
