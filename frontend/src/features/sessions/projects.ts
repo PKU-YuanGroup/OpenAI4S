@@ -30,6 +30,9 @@ import {
 import { beginNavigation } from "./navigation";
 import { chooseSessionPackage, downloadArtifactBundle } from "./actions";
 import { recoverConversation } from "../messages/open";
+import { projectFilesCopy, projectHistoryCopy } from "./copy";
+import { openProjectFiles, resetProjectFolderPicker } from "./project-files";
+import { openProjectHistory } from "./project-history";
 
 type ProjectLike = {
   project_id?: string;
@@ -38,6 +41,7 @@ type ProjectLike = {
   description?: string;
   context?: string;
   agent_context?: string;
+  folder_path?: string | null;
 };
 
 export function projName(id: string | null | undefined): string {
@@ -240,6 +244,13 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
 }
 
 export function renderProjMenu(): void {
+  const selected = (projects.value as ProjectLike[]).find((p) => (p.project_id || p.id) === project.value);
+  const folder = $("#proj-folder-path");
+  if (folder) {
+    folder.textContent = selected?.folder_path || "";
+    folder.title = selected?.folder_path || "";
+    folder.classList.toggle("hidden", !selected?.folder_path);
+  }
   const current = $("#proj-current");
   if (current) {
     // Code owns this label now (see setTitle): a static repaint must not put
@@ -270,6 +281,12 @@ export function renderProjMenu(): void {
       (p) => (p.project_id || p.id) === project.value,
     );
     if (cur) item(t("proj.menu.settings"), "settings", () => openProjectModal(cur));
+    if (cur?.folder_path) item(projectFilesCopy("files"), "files", () => {
+      void openProjectFiles(cur.project_id || cur.id || "", cur.name || t("proj.fallbackName"));
+    });
+    if (cur?.folder_path) item(projectHistoryCopy("menu"), "clock", () => {
+      void openProjectHistory(cur.project_id || cur.id || "", cur.name || t("proj.fallbackName"));
+    });
     item(t("projectResearch.menu"), "provenance", () => {
       void openProjectResearchView("timeline");
     });
@@ -295,9 +312,9 @@ export function renderProjMenu(): void {
   item(t("proj.menu.allProjects"), "arrow-left", showDashboard);
   (projects.value as ProjectLike[]).forEach((p) => {
     if ((p.project_id || p.id) !== project.value) {
-      item((p.name || t("proj.fallbackName")).slice(0, 26), "box", () =>
-        selectProject(p.project_id || p.id || ""),
-      );
+      item((p.name || t("proj.fallbackName")).slice(0, 26), "box", () => {
+        void openProject(p.project_id || p.id || "").catch(reportFailure);
+      });
     }
   });
   m.appendChild(el("div", "ctx-sep"));
@@ -308,6 +325,7 @@ export function renderProjMenu(): void {
 // The menu filters the sidebar without replacing the open conversation. It
 // cancels pending project opens, but must not retire that conversation's reads.
 let projectFilterVersion = 0;
+let pendingProjectOrigin: { frameId: string | null; projectId: string | null } | null = null;
 
 export function selectProject(id: string): void {
   projectFilterVersion += 1;
@@ -340,7 +358,13 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
   // parked on an await (an upload-created session about to open its
   // conversation, a resume watchdog) sees a stale token and stands down instead
   // of yanking the view back to where it started.
+  // Several quick project choices can supersede each other before any has
+  // opened a conversation. Keep the original conversation's project in that
+  // chain, rather than treating an intermediate sidebar scope as its owner.
+  const previousProject = currentId.value && pendingProjectOrigin?.frameId === currentId.value
+    ? pendingProjectOrigin.projectId : project.value;
   const gen = beginNavigation();
+  pendingProjectOrigin = { frameId: currentId.value, projectId: previousProject };
   const filterVersion = projectFilterVersion;
   await loadProjects();
   if (_openGen.value !== gen || projectFilterVersion !== filterVersion) return reclaimView(gen, filterVersion, false);
@@ -352,7 +376,6 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
   // project got a stray empty session.
   const result = await loadSessionsForScope(sessionListScope());
   if (_openGen.value !== gen || projectFilterVersion !== filterVersion || project.value !== id) return reclaimView(gen, filterVersion, true);
-  renderProjMenu();
   if (result.status !== "loaded") {
     // This navigation already retired the visible frame's history and
     // watchdog reads. A failed directory cannot leave that frame ownerless,
@@ -360,15 +383,21 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
     const retained = currentId.value;
     if (retained) {
       if (_openGen.value !== gen || currentId.value !== retained) return;
+      project.value = previousProject;
+      pendingProjectOrigin = null;
+      renderProjMenu();
+      hint(projectFilesCopy("projectOpenFailed", projName(id)), true);
       await Promise.allSettled([
+        loadSessions(),
         recoverConversation(retained, gen),
         Promise.resolve(callLane("loadArtifacts", retained)),
         Promise.resolve(callLane("loadExecutionLog", retained)),
         Promise.resolve(callLane("loadWorkbenchState", retained)),
       ]);
-    }
+    } else renderProjMenu();
     return;
   }
+  renderProjMenu();
   const first = result.rows.find((row) => row.project_id === id);
   // Await the conversation. Fire-and-forget let openProject's callers (routing,
   // dashboard rows, createProject) return before the session existed, so the
@@ -376,22 +405,30 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
   // The child takes its own generation; ownership checks belong before this
   // handoff, not after it.
   if (first?.id) {
+    pendingProjectOrigin = null;
     if (options?.replaceUrl) await binds.openConversation(first.id, id, { replaceUrl: true });
     else await binds.openConversation(first.id, id);
-  } else await binds.newSession(id);
+  } else {
+    const origin = pendingProjectOrigin;
+    const retained = currentId.value;
+    if (retained) await binds.newSession(id, { restoreOnFailure: { frameId: retained, projectId: previousProject } });
+    else await binds.newSession(id);
+    if (pendingProjectOrigin === origin) pendingProjectOrigin = null;
+  }
 }
 
 export async function createProject(
   name: string,
   description: string,
   context: string,
+  folderPath?: string,
 ): Promise<void> {
   // A navigation that started while the POST was in flight owns the view now;
   // this creation must not yank it to the project it just made.
   const gen = _openGen.value;
   const p = (await api("/projects", {
     method: "POST",
-    body: JSON.stringify({ name, description, context }),
+    body: JSON.stringify({ name, description, context, ...(folderPath === undefined ? {} : { folder_path: folderPath.trim() }) }),
   })) as ProjectLike;
   if (_openGen.value !== gen) return;
   await loadProjects();
@@ -400,6 +437,7 @@ export async function createProject(
 }
 
 export function closeProjectModal(): void {
+  resetProjectFolderPicker();
   closeModalEl($("#proj-modal"));
   editingProject.value = null;
 }
@@ -415,6 +453,7 @@ export function openProjectModal(proj?: ProjectLike | null): void {
   if (name) name.value = p ? p.name || "" : "";
   if (desc) desc.value = p ? p.description || "" : "";
   if (ctx) ctx.value = p ? p.context || p.agent_context || "" : "";
+  resetProjectFolderPicker(p?.folder_path || "");
   const create = $("#pm-create");
   if (create) create.textContent = t(p ? "common.save" : "projModal.create");
   $("#pm-delete")?.classList.toggle("hidden", !p);
@@ -435,6 +474,7 @@ export async function submitProjectModal(): Promise<void> {
           name,
           description: ($("#pm-desc") as HTMLTextAreaElement | null)?.value,
           context: ($("#pm-ctx") as HTMLTextAreaElement | null)?.value,
+          folder_path: ($("#pm-folder") as HTMLInputElement | null)?.value.trim() || "",
         }),
       });
       // The directory carries the new name to the header and the switcher; a
@@ -450,6 +490,7 @@ export async function submitProjectModal(): Promise<void> {
         name,
         ($("#pm-desc") as HTMLTextAreaElement | null)?.value || "",
         ($("#pm-ctx") as HTMLTextAreaElement | null)?.value || "",
+        ($("#pm-folder") as HTMLInputElement | null)?.value || "",
       );
       closeProjectModal();
     }

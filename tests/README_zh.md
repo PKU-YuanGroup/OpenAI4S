@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+[`test_project_file_tools.py`](test_project_file_tools.py) 验证项目目录递归读取、二进制文件导入和精确来源凭据、已有权限规则、目录切换与会话工作区隔离。
+
 OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这里的每一个模块，而且必须一直是绿的：供应商无关的 Agent 引擎、Host 服务、常驻 Python/R 内核协议、仓储、安全边界、Tool、Skill 与 Web 组合。可复用的场景和计分评测属于另一层，放在 [`../harness/`](../harness/)。
 
 ## 离线契约
@@ -18,6 +20,11 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`test_project_folders.py`](test_project_folders.py) | 本地项目目录迁移、绑定、安全浏览与有界预览的真实 HTTP 验证；缺失目录、越界、秘密文件、符号链接、硬链接和非本地访问拒绝。 |
+| [`test_project_history.py`](test_project_history.py) | 真实 Store 验证可迁移历史、文件版本、分支投影、安全元数据写入、遗漏清单和完整性校验。 |
+| [`test_project_history_autosave.py`](test_project_history_autosave.py) | 无浏览器时持久化事件保存、重试与失败状态保留、重启补存以及先归档后删除顺序。 |
+| [`test_project_history_routes.py`](test_project_history_routes.py) | 真实 HTTP 验证历史查看、不可变文件下载、本地绑定门禁以及删除并重新绑定项目后保留存档。 |
+| [`browser_project_folders.mjs`](browser_project_folders.mjs) | 独立真实浏览器验证项目目录选择、预览，以及导入源文件后的 Python 分析。 |
 | [`test_compute_job_routes.py`](test_compute_job_routes.py) | compute-jobs 路由必须给领域失败一个 HTTP 状态：读取或取消不存在的作业、以及每一次被拒绝的提交，过去都被序列化为携带软 `{"error": ...}` 的 200——于是工作台把不存在的作业显示为「输出为空」，把被拒绝的提交显示为已接受。现在不存在的作业是 404；未能停止一个仍在运行的作业的取消是 500（不是 404——它存在）；客户端输入错误（含字段类型错误与 `NaN` 截止时间）是 400；容量/工作区/关停分别是 429/500/503；未登记的 code 是 400 而不是 200——与 skills 共用同一个按 code 投影的 `_soft_failure_status`，且管理器返回的每个 code 都必须登记在 `JOB_FAILURE_STATUS` 中。 |
 | [`test_dataset_import_live.py`](test_dataset_import_live.py) | 显式启用的真实 PaRoutes 原生导入与 Store 重开验收；不属于默认离线套件。 |
 | [`test_dataset_import.py`](test_dataset_import.py) | 离线 fixture 覆盖文件选择、权限、取消、原生捕获、来源不可变/重开及失败重放合同。 |

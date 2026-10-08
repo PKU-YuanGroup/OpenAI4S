@@ -112,6 +112,8 @@ from openai4s.server import (
     onboarding_routes,
     orchestration_routes,
     package_runtime,
+    project_folder_routes,
+    project_history_routes,
     project_listing,
     retrieval_source,
     sandbox_grants,
@@ -1035,6 +1037,7 @@ class WSHub:
     def __init__(self) -> None:
         self._conns: set[WSConnection] = set()
         self._lock = threading.Lock()
+        self._event_observers: list[Callable[[str, dict], None]] = []
         # per-frame live-turn buffer: {frame_id: {"events": [...], "running": bool}}
         self._live: dict[str, dict] = {}
         # Monotonic per-frame event counter. Never reset while the daemon lives,
@@ -1066,6 +1069,16 @@ class WSHub:
     def add(self, c: WSConnection) -> None:
         with self._lock:
             self._conns.add(c)
+
+    def add_event_observer(self, observer: Callable[[str, dict], None]) -> None:
+        """Attach a lightweight durable-event consumer, independent of viewers."""
+        with self._lock:
+            self._event_observers.append(observer)
+
+    def remove_event_observer(self, observer: Callable[[str, dict], None]) -> None:
+        with self._lock:
+            if observer in self._event_observers:
+                self._event_observers.remove(observer)
 
     def remove(self, c: WSConnection) -> None:
         with self._lock:
@@ -1806,7 +1819,15 @@ class WSHub:
                         note = getattr(c, "note_delivered", None)
                         if callable(note):
                             note(root_frame_id, int(obj["seq"]))
-                return
+                observers = tuple(self._event_observers)
+                break
+        # Never invoke observers while holding the WebSocket lock. Autosave
+        # only queues an identity here; database/filesystem work is deferred.
+        for observer in observers:
+            try:
+                observer(root_frame_id, obj)
+            except Exception:  # noqa: BLE001 - secondary consumers cannot break turns
+                pass
 
     def is_running(self, root_frame_id: str) -> bool:
         with self._lock:
@@ -2924,9 +2945,7 @@ class SessionRunner:
             self.store,
             data_dir=self.cfg.data_dir,
             cas=self.session_domain.cas,
-            drop_runtime=lambda root_frame_id, reason: self.drop_session(
-                root_frame_id, reason=reason
-            ),
+            drop_runtime=self._archive_before_session_deletion,
             drop_resume_window=getattr(
                 self.hub, "drop_frame", lambda _root_frame_id: None
             ),
@@ -3052,10 +3071,48 @@ class SessionRunner:
             latest_state_revision=self.store.latest_state_revision,
             active_branch=self.store.active_session_branch,
         )
+        from openai4s.project_history import ProjectHistoryService
+        from openai4s.server.project_history_autosave import ProjectHistoryAutosave
+
+        self.project_history = ProjectHistoryService(self.store, self.cfg)
+        self.project_history_autosave = ProjectHistoryAutosave(
+            self.project_history,
+            self.store,
+            workspace_for=self.active_workspace_for,
+            placement_for=self._project_history_placement,
+        )
+        observer = getattr(self.hub, "add_event_observer", None)
+        if callable(observer):
+            observer(self.project_history_autosave.observe)
         if start_idle_sweeper:
             self.recovery.start()
             self._share_boot_restore()
             self._recover_stranded_admissions()
+            self.project_history_autosave.schedule_all()
+
+    def _archive_before_session_deletion(self, root_frame_id: str, reason: str) -> None:
+        # Freeze the execution placement before dropping the runtime; the
+        # private workspace and DB rows still exist throughout this callback.
+        frame = self.store.get_frame(root_frame_id) or {}
+        project_id = str(frame.get("project_id") or "")
+        project = self.store.get_project(project_id) or {}
+        self.project_history_autosave.project_changed(
+            project_id, project.get("folder_path")
+        )
+        workspace, branch_id = self._project_history_placement(root_frame_id)
+        self.drop_session(root_frame_id, reason=reason)
+        result = self.project_history_autosave.flush_session(
+            root_frame_id, workspace=workspace, branch_id=branch_id
+        )
+        if result.get("state") == "error":
+            raise GatewayError(
+                409,
+                "Project history could not be saved; the session was retained. "
+                + str(
+                    result.get("error") or "Retry when the project folder is available."
+                ),
+                "project_history_save_failed",
+            )
 
     def _recover_stranded_admissions(self) -> int:
         """Release pins held by a request that did not survive the process.
@@ -3489,6 +3546,14 @@ class SessionRunner:
             return state.workspace
         branch_id = self.store.active_session_branch(root_frame_id)
         return self.workspace_for_branch(root_frame_id, branch_id)
+
+    def _project_history_placement(self, root_frame_id: str) -> tuple[Path, str]:
+        """Pin a workspace to its own branch during a runtime branch swap."""
+        state = self._existing_state(root_frame_id)
+        if state is not None:
+            return state.workspace, state.branch_id
+        branch_id = self.store.active_session_branch(root_frame_id)
+        return self.workspace_for_branch(root_frame_id, branch_id), branch_id
 
     def _kernel_read_isolation(
         self,
@@ -3971,7 +4036,8 @@ class SessionRunner:
         with self._lock:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
-            if self.store.get_project(project_id) is None:
+            project = self.store.get_project(project_id)
+            if project is None:
                 raise GatewayError(404, "project not found")
             if owner_user_id and not self._may_create_session_in(
                 project_id, owner_user_id
@@ -4003,7 +4069,11 @@ class SessionRunner:
                     )
                 except Exception:  # noqa: BLE001
                     pass
-            return fid
+        self.project_history_autosave.project_changed(
+            project_id, project.get("folder_path")
+        )
+        self.project_history_autosave.schedule_session(fid)
+        return fid
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
         roots: tuple[str, ...] = ()
@@ -4026,6 +4096,21 @@ class SessionRunner:
             with self._project_mutation_condition:
                 while self._frameless_artifact_mutations:
                     self._project_mutation_condition.wait()
+            project = self.store.get_project(project_id) or {}
+            self.project_history_autosave.project_changed(
+                project_id, project.get("folder_path")
+            )
+            archived = self.project_history_autosave.flush_project_settings(project_id)
+            if archived.get("state") == "error":
+                raise GatewayError(
+                    409,
+                    "Project history could not be saved; the project was retained. "
+                    + str(
+                        archived.get("error")
+                        or "Retry when the project folder is available."
+                    ),
+                    "project_history_save_failed",
+                )
             return self.deletions.delete_project(project_id)
         finally:
             with self._lock:
@@ -4445,7 +4530,12 @@ class SessionRunner:
         if tunnel is not None:
             tunnel.close()
         self.executions.close(reason="daemon_shutdown")
+        history_workspaces = {}
         for st in self._session_snapshot():
+            history_workspaces[st.root_frame_id] = (
+                st.workspace,
+                st.branch_id,
+            )
             self.drop_session(st.root_frame_id, reason="daemon_shutdown")
         with self._lock:
             jobs = list(self._jobs.values())
@@ -4466,6 +4556,10 @@ class SessionRunner:
             thread.join(timeout=5.0)
         with self._lock:
             self._jobs.clear()
+        observer = getattr(self.hub, "remove_event_observer", None)
+        if callable(observer):
+            observer(self.project_history_autosave.observe)
+        self.project_history_autosave.close(workspaces=history_workspaces)
 
     # --- artifact version snapshots --------------------------------------
     def _versions_dir(self) -> Path:
@@ -4505,6 +4599,8 @@ class SessionRunner:
                     0, self._frameless_artifact_mutations - 1
                 )
                 self._project_mutation_condition.notify_all()
+
+            self.project_history_autosave.schedule_project(project_id)
 
     @contextmanager
     def _external_artifact_mutation(
@@ -5752,22 +5848,25 @@ class SessionRunner:
                 finally:
                     held.pop()
 
-        if owns_admission:
-            remaining_admission_s = (
-                None
-                if admission_deadline is None
-                else max(0.0, admission_deadline - time.monotonic())
-            )
-            with self.executions.admitted(
-                ticket,
-                cancel_event=st.cancel,
-                timeout=remaining_admission_s,
-            ):
-                with turn_barrier():
-                    yield ticket
-            return
-        with turn_barrier():
-            yield ticket
+        try:
+            if owns_admission:
+                remaining_admission_s = (
+                    None
+                    if admission_deadline is None
+                    else max(0.0, admission_deadline - time.monotonic())
+                )
+                with self.executions.admitted(
+                    ticket,
+                    cancel_event=st.cancel,
+                    timeout=remaining_admission_s,
+                ):
+                    with turn_barrier():
+                        yield ticket
+                return
+            with turn_barrier():
+                yield ticket
+        finally:
+            self.project_history_autosave.schedule_session(st.root_frame_id)
 
     def _seed_messages(self, st: SessionState) -> None:
         """Build the system prompt (+ project context + skills + memory) once,
@@ -12383,6 +12482,8 @@ class SessionRunner:
                     else self.store.active_session_branch(str(root_frame_id))
                 ),
             )
+        if root_frame_id:
+            self.project_history_autosave.schedule_session(str(root_frame_id))
         return cell_id
 
     def _allocate_cell_attempt(
@@ -16170,6 +16271,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # in that project (bare /projects list is filtered at its handler).
             self._team_scope_guard(method, sub)
             self._team_guard_project(method, sub)
+            if project_folder_routes.handle(self, method, sub, q, cfg, store):
+                return
+            if project_history_routes.handle(self, method, sub, q, cfg, store, runner):
+                return
             self._team_guard_owned_resource(method, sub)
             self._team_guard_instance_config(method, sub)
             self._team_guard_share(method, sub)
@@ -16903,10 +17008,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if sub == "/projects" and method == "POST":
                 b = self._body()
+                folder_path = None
+                if "folder_path" in b:
+                    try:
+                        if b["folder_path"] not in (None, ""):
+                            project_folder_routes.require_local_request(self, cfg)
+                        folder_path = project_folder_routes.validate_folder_path(
+                            b["folder_path"], cfg
+                        )
+                    except project_folder_routes.ProjectFolderError as error:
+                        raise GatewayError(
+                            error.status, str(error), error.code
+                        ) from error
                 p = store.create_project(
                     name=b.get("name") or "Untitled project",
                     description=b.get("description") or "",
                     context=b.get("context") or "",
+                    folder_path=folder_path,
+                )
+                runner.project_history_autosave.project_changed(
+                    p["project_id"], p.get("folder_path")
                 )
                 # Team mode: the creator becomes a member, so the project
                 # guard above lets them back into the project they just made.
@@ -16941,17 +17062,34 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # missing and not-yours must not read differently.
                     if store.get_project(pid) is None:
                         raise GatewayError(404, "project not found")
+                    body = self._body()
+                    if "folder_path" in body:
+                        try:
+                            if body["folder_path"] not in (None, ""):
+                                project_folder_routes.require_local_request(self, cfg)
+                            body["folder_path"] = (
+                                project_folder_routes.validate_folder_path(
+                                    body["folder_path"], cfg
+                                )
+                            )
+                        except project_folder_routes.ProjectFolderError as error:
+                            raise GatewayError(
+                                error.status, str(error), error.code
+                            ) from error
                     store.update_project(
                         pid,
                         **{
                             k: v
-                            for k, v in self._body().items()
-                            if k in ("name", "description", "context")
+                            for k, v in body.items()
+                            if k in ("name", "description", "context", "folder_path")
                         },
                     )
                     project = store.get_project(pid)
                     if project is None:  # deleted between the check and this read
                         raise GatewayError(404, "project not found")
+                    runner.project_history_autosave.project_changed(
+                        pid, project.get("folder_path")
+                    )
                     self._json(_project_json(project))
                     return
                 if method == "GET":
@@ -20573,6 +20711,7 @@ def _project_json(p: dict) -> dict:
         "name": p.get("name"),
         "description": p.get("description"),
         "context": p.get("context"),
+        "folder_path": p.get("folder_path"),
         "conversation_count": p.get("conversation_count", 0),
         "last_active_at": _iso(p.get("last_active_at") or p.get("updated_at")),
         "created_at": _iso(p.get("created_at")),

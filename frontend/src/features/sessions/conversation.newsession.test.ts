@@ -39,6 +39,7 @@ import { _msgEarlierLoading, _openGen, currentId, project } from "../../stores/s
 import { resetStoreFields } from "../../stores/signal-field";
 import { UPLOAD_STATE } from "../chrome/upload";
 import { newSession, routeInitialView } from "./conversation";
+import { renderProjMenu } from "./projects";
 
 function stubDom(): void {
   const workspace = { classList: { contains: () => false } };
@@ -74,6 +75,7 @@ describe("newSession", () => {
     recoveryMock.recoverConversation.mockReset().mockResolvedValue(undefined);
     recoveryMock.callLane.mockReset();
     recoveryMock.hint.mockReset();
+    vi.mocked(renderProjMenu).mockClear();
     openMock.openConversation.mockReset().mockImplementation(async (fid) => {
       _openGen.value++;
       openMock.opened.push(fid);
@@ -194,6 +196,40 @@ describe("newSession", () => {
     expect(recoveryMock.hint).toHaveBeenLastCalledWith(expect.stringContaining("unavailable"), true);
     expect(openMock.opened).toEqual([]);
     expect(wsMock.unsub).not.toHaveBeenCalled();
+  });
+
+  it("restores the retained project's folder when an empty project's POST fails", async () => {
+    currentId.value = "frame_A";
+    project.value = "B";
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 503, text: async () => JSON.stringify({ error: "unavailable" }) }));
+    loadMock.loadSessionsForScope.mockImplementationOnce(async () => {
+      expect(project.value).toBe("A");
+      return { status: "loaded" };
+    });
+    await newSession("B", { restoreOnFailure: { frameId: "frame_A", projectId: "A" } });
+    expect(currentId.value).toBe("frame_A");
+    expect(project.value).toBe("A");
+    expect(renderProjMenu).toHaveBeenCalledOnce();
+    expect(loadMock.loadSessionsForScope).toHaveBeenCalledOnce();
+    expect(wsMock.unsub).not.toHaveBeenCalled();
+    expect(openMock.openConversation).not.toHaveBeenCalled();
+  });
+
+  it("does not restore an old project when failed automatic creation was superseded", async () => {
+    currentId.value = "frame_A";
+    project.value = "B";
+    let answer!: (value: unknown) => void;
+    vi.stubGlobal("fetch", () => new Promise((resolve) => { answer = resolve; }));
+    const pending = newSession("B", { restoreOnFailure: { frameId: "frame_A", projectId: "A" } });
+    _openGen.value++;
+    currentId.value = "frame_C";
+    project.value = "C";
+    answer({ ok: false, status: 503, text: async () => JSON.stringify({ error: "old refusal" }) });
+    await pending;
+    expect(currentId.value).toBe("frame_C");
+    expect(project.value).toBe("C");
+    expect(renderProjMenu).not.toHaveBeenCalled();
+    expect(recoveryMock.recoverConversation).not.toHaveBeenCalled();
   });
 
   it("a deep link parked on metadata cannot reopen after Home", async () => {

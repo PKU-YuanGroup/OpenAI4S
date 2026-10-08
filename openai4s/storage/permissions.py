@@ -160,6 +160,11 @@ DEFAULT_PERMISSION_RULES = (
     ("glob", "*", "allow"),
     ("grep", "*", "allow"),
     ("list_dir", "*", "allow"),
+    ("project_list_dir", "*", "allow"),
+    ("project_read_file", "*", "allow"),
+    ("project_glob", "*", "allow"),
+    ("project_grep", "*", "allow"),
+    ("project_import_file", "*", "allow"),
     ("save_artifact", "*", "allow"),
     ("delegate", "*", "allow"),
     ("env_setup", "*", "allow"),
@@ -196,10 +201,17 @@ DEFAULT_PERMISSION_RULES = (
 # marker.  New releases advance this separate version and list only the rules
 # introduced by that version, so upgrades add new defaults without restoring a
 # default that an operator deliberately deleted or changed.
-_DEFAULT_PERMISSION_RULE_VERSION = 4
+_DEFAULT_PERMISSION_RULE_VERSION = 5
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
+    5: (
+        ("project_list_dir", "*", "allow"),
+        ("project_read_file", "*", "allow"),
+        ("project_glob", "*", "allow"),
+        ("project_grep", "*", "allow"),
+        ("project_import_file", "*", "allow"),
+    ),
 }
 
 # Security migrations are deliberately separate from additive defaults.  An

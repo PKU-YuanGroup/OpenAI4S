@@ -66,6 +66,9 @@ gateway.py
 
 | File | Responsibility |
 | --- | --- |
+| [`project_folder_routes.py`](project_folder_routes.py) | Authenticated loopback-only folder picker, project directory listing and bounded UTF-8 preview, reusing the workspace descriptor and secret boundaries. Team and remote deployments cannot bind arbitrary host folders. |
+| [`project_history_autosave.py`](project_history_autosave.py) | Coalesced background archival after durable Web mutations, startup recovery, shutdown flush and preservation before deletion. |
+| [`project_history_routes.py`](project_history_routes.py) | Local history directory/status, manual save, read-only revision views and checksummed attachment downloads. |
 | [`__init__.py`](__init__.py) | The stable package facade. Exports `build_server` and `serve`. |
 | [`action_timeline.py`](action_timeline.py) | Projects the canonical Action Ledger into the Timeline the UI actually shows. An entry carries enough to say what ran, how it ended, which permissions it needed, what it cost, and which artifacts it referenced, all of it bounded and redacted. Provider `wire_state` and raw argument strings are left out on purpose, so a debugging endpoint cannot become a credential or protocol dump. A plan turn's user group is titled by its task, not by the plan-mode prompt in front of it. |
 | [`attention.py`](attention.py) | Cross-session read-only "needs attention" aggregator. It unions running/queued executions, pending approvals, recoverable failures, view-only/blocked sessions, and live/unknown remote compute into a fixed card shape. Team visibility is applied before aggregation, sort, and limit. Targets are a closed set of `surface`/`dock` values so the server never returns an arbitrary URL. GET is side-effect free: no kernel spawn, no provider call, no retry/approve/harvest. There is no materialized table. |

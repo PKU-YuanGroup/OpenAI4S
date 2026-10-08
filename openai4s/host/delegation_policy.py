@@ -46,6 +46,10 @@ _ALIASES: dict[str, frozenset[str]] = {
             "glob_files",
             "grep",
             "content_search",
+            "project_list_dir",
+            "project_read_file",
+            "project_glob",
+            "project_grep",
         }
     ),
     "write_file": frozenset({"write_file", "edit_file"}),
@@ -59,6 +63,11 @@ _ALIASES: dict[str, frozenset[str]] = {
             "glob_files",
             "grep",
             "content_search",
+            "project_list_dir",
+            "project_read_file",
+            "project_glob",
+            "project_grep",
+            "project_import_file",
             "write_file",
             "edit_file",
         }

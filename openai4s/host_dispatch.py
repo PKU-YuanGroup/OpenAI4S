@@ -252,6 +252,21 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "read_file":
         p = a.get("path", "")
         return ("read", f"Reading {p}", {"path": p})
+    if method == "project_read_file":
+        p = a.get("path", "")
+        return ("read", f"Reading project file {p}", {"path": p})
+    if method == "project_import_file":
+        return (
+            "write",
+            f"Importing project file {a.get('source_path', '')}",
+            {"source_path": a.get("source_path"), "path": a.get("path")},
+        )
+    if method in {"project_list_dir", "project_glob", "project_grep"}:
+        return (
+            "files",
+            "Browsing project files",
+            {"path": a.get("path") or ".", "pattern": a.get("pattern")},
+        )
     if method == "glob":
         return ("files", "Finding files", {"pattern": a.get("pattern", "")})
     if method == "grep":
@@ -473,8 +488,21 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
 # the dispatcher commits or queues their receipts; one set keeps the two sides
 # from drifting when another receipt-producing tool is added.
 NATIVE_ARTIFACT_RECEIPT_METHODS = frozenset(
-    {"science_search", "compute_result", "science_import_dataset"}
+    {
+        "science_search",
+        "compute_result",
+        "science_import_dataset",
+        "project_import_file",
+    }
 )
+
+_PROJECT_FILE_METHODS = {
+    "project_list_dir": "list_dir",
+    "project_read_file": "read_file",
+    "project_glob": "glob",
+    "project_grep": "grep",
+    "project_import_file": "read_file",
+}
 
 # Non-control host methods that pass through the permission gate. Concrete
 # control tools declare ``requires_approval`` on their class instead.
@@ -587,6 +615,11 @@ _GUARDIAN_FILE_PATH_KEYS = {
     "glob": "path",
     "grep": "path",
     "list_dir": "path",
+    "project_read_file": "path",
+    "project_list_dir": "path",
+    "project_glob": "path",
+    "project_grep": "path",
+    "project_import_file": "source_path",
     "web_download": "path",
     "science_import_dataset": "path",
     "save_artifact": "path",
@@ -596,6 +629,9 @@ _GUARDIAN_FILE_PATH_DEFAULTS = {
     "glob": ".",
     "grep": ".",
     "list_dir": ".",
+    "project_glob": ".",
+    "project_grep": ".",
+    "project_list_dir": ".",
 }
 
 
@@ -1379,7 +1415,31 @@ class HostDispatcher:
             dispatch_host=lambda method, args: self(method, args, _record=False),
             search_web=self._search_web,
             get_download_cancelled=self._current_download_cancellation,
+            get_project_files=self._project_files,
         )
+
+    def _project_files(self) -> WorkspaceFileService:
+        """Resolve folder authority from the live frame, never model arguments."""
+        from openai4s.project_folders import ReadOnlyProjectFiles, project_folder_path
+        from openai4s.server.session_package import session_import_quarantine_key
+
+        scope = self.store.resolve_frame_scope(self.frame_id)
+        root = scope.get("root_frame_id")
+        if not root or self.store.get_frame(str(root)) is None:
+            raise ValueError("project folder access requires a persisted session")
+        if self.store.get_setting(session_import_quarantine_key(str(root))) is not None:
+            raise ValueError(
+                "imported Session is quarantined; project folder access is unavailable"
+            )
+        path = project_folder_path(
+            self.store, self.cfg, str(scope.get("project_id") or "")
+        )
+        workspace = self.workspace_path or self._files.workspace()
+        if path == workspace or path in workspace.parents or workspace in path.parents:
+            raise ValueError(
+                "project source folder must not overlap the session workspace"
+            )
+        return ReadOnlyProjectFiles(path)
 
     @property
     def compute(self) -> Any:
@@ -1582,7 +1642,7 @@ class HostDispatcher:
         )
 
     def _artifact_scope_required(self, method: str) -> bool:
-        if method == "science_import_dataset":
+        if method in {"science_import_dataset", "project_import_file"}:
             return True
         if method == "science_search":
             return bool(
@@ -1941,7 +2001,18 @@ class HostDispatcher:
                         self._tool_context,
                         spec or {},
                     )
-                return control_tool.execute(self._tool_context, spec or {})
+                context = self._tool_context
+                if method in _PROJECT_FILE_METHODS:
+                    if (
+                        project_files is None
+                        or self._project_files().workspace()
+                        != project_files.workspace()
+                    ):
+                        raise ValueError(
+                            "project folder changed during approval; retry the operation"
+                        )
+                    context = context.with_project_files(project_files)
+                return control_tool.execute(context, spec or {})
 
             handler = control_handler
 
@@ -1971,14 +2042,18 @@ class HostDispatcher:
         except Exception:  # noqa: BLE001 - audit metadata stays total
             audit_resources = [f"host:{method}"]
         audit_side_effect = (
-            str(
-                self.control_tool_execution_metadata(control_tool.name).get(
-                    "side_effect_class"
+            str(control_tool.side_effect_class)
+            if control_tool is not None and method in _PROJECT_FILE_METHODS
+            else (
+                str(
+                    self.control_tool_execution_metadata(control_tool.name).get(
+                        "side_effect_class"
+                    )
+                    or control_tool.side_effect_class
                 )
-                or control_tool.side_effect_class
+                if control_tool is not None
+                else "runtime_mutation"
             )
-            if control_tool is not None
-            else "runtime_mutation"
         )
         # ``dangerous`` was declared on ten control tools and asserted by the
         # policy tests, and then read by nothing: it reached no gate, no audit
@@ -2021,6 +2096,8 @@ class HostDispatcher:
         raised_error: str | None = None
         try:
             child_decision = None
+            project_files = None
+            project_permission_asks = []
             if self._child_execution_policy is not None:
                 if not self._child_execution_policy.allows(method, control_tool):
                     result = {
@@ -2039,6 +2116,60 @@ class HostDispatcher:
                     }
                     ok = False
                     return result
+            if method in _PROJECT_FILE_METHODS:
+                # A new spelling cannot bypass a standing file-read/write deny.
+                # Folder binding itself is human-owned and resolved per call.
+                project_files = self._project_files()
+                spec = args[0] if args and isinstance(args[0], dict) else {}
+                base_method = _PROJECT_FILE_METHODS[method]
+                source_path = str(
+                    spec.get(
+                        "source_path" if method == "project_import_file" else "path"
+                    )
+                    or "."
+                )
+                checks = [
+                    (
+                        base_method,
+                        _gate_target(base_method, [{**spec, "path": source_path}]),
+                    )
+                ]
+                if base_method != "read_file":
+                    checks.append(("read_file", source_path))
+                if method == "project_import_file":
+                    from openai4s.tools.project_files import import_destination
+
+                    checks.append(("write_file", import_destination(spec)))
+                scope = self.store.resolve_frame_scope(self.frame_id)
+                for base_permission, base_target in checks:
+                    if (
+                        self._child_execution_policy is not None
+                        and self._child_execution_policy.decision(base_permission)
+                        == "deny"
+                    ):
+                        result = {
+                            "error": f"Permission denied by delegated child policy: {base_permission}"
+                        }
+                        ok = False
+                        return result
+                    base_decision = self.store.resolve_permission(
+                        root_frame_id=scope.get("root_frame_id"),
+                        project_id=scope.get("project_id") or "default",
+                        tool=base_permission,
+                        pattern_input=base_target,
+                    )
+                    if base_decision == "deny":
+                        result = {
+                            "error": f"Permission denied: {base_permission} for {base_target} is denied"
+                        }
+                        ok = False
+                        return result
+                    if base_decision == "ask" or (
+                        self._child_execution_policy is not None
+                        and self._child_execution_policy.decision(base_permission)
+                        == "ask"
+                    ):
+                        project_permission_asks.append((base_permission, base_target))
             if method == "science_import_dataset":
                 # Renaming the download capability must not bypass a standing deny.
                 # Resolve that hard refusal before native-capture admission so an
@@ -2104,7 +2235,7 @@ class HostDispatcher:
                 )
             )
             secret_check_target = (
-                _secret_pre_gate_path(secret_target, self._files)
+                _secret_pre_gate_path(secret_target, project_files or self._files)
                 if secret_target is not None
                 else None
             )
@@ -2138,12 +2269,25 @@ class HostDispatcher:
                 ) = _guardian_file_review(
                     permission_method,
                     args,
-                    self._files,
+                    project_files or self._files,
                     self.cfg,
                     approvals_reviewer,
                 )
+                if method == "project_import_file":
+                    destination, destination_is_credential = _guardian_file_review(
+                        "write_file",
+                        [{"path": import_destination(args[0])}],
+                        self._files,
+                        self.cfg,
+                        approvals_reviewer,
+                    )
+                    resolved_file_is_credential = (
+                        resolved_file_is_credential or destination_is_credential
+                    )
+                    if destination_is_credential:
+                        resolved_file_path = destination
 
-                gate = permission_broker.gate(
+                gate_arguments = dict(
                     store=self.store,
                     frame_id=self.frame_id,
                     method=permission_method,
@@ -2161,6 +2305,24 @@ class HostDispatcher:
                     guardian_config=self.cfg,
                     approvals_reviewer=approvals_reviewer,
                 )
+                for base_permission, base_target in project_permission_asks:
+                    alias_gate = permission_broker.gate(
+                        **{
+                            **gate_arguments,
+                            "method": base_permission,
+                            "target": base_target,
+                        }
+                    )
+                    permission_decision_id = alias_gate.get(
+                        "decision_id"
+                    ) or alias_gate.get("continuation_decision_id")
+                    if not alias_gate.get("allow", False):
+                        result = {
+                            "error": f"Permission denied: {alias_gate.get('message') or 'denied by user'}"
+                        }
+                        ok = False
+                        return result
+                gate = permission_broker.gate(**gate_arguments)
                 permission_decision_id = gate.get("decision_id") or gate.get(
                     "continuation_decision_id"
                 )

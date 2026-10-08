@@ -264,7 +264,9 @@ describe("session navigation owns every response", () => {
     });
     await openProject("new-project");
     expect(currentId.value).toBe("retained-frame");
-    expect(project.value).toBe("new-project");
+    // The retained conversation still belongs to its original project. A
+    // failed project navigation must restore that folder and sidebar scope.
+    expect(project.value).toBe("old-project");
     expect(_msgEarlierLoading.value).toBe(false);
     expect(sessionsLoadError.value).toBe(true);
     expect(recovery.recoverConversation).toHaveBeenCalledExactlyOnceWith("retained-frame", generation + 1);

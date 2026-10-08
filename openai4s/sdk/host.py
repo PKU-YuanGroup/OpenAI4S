@@ -960,6 +960,48 @@ class _Host:
         """List a workspace directory."""
         return self._call("list_dir", [{"path": path}])
 
+    def project_list_dir(self, path: str = ".") -> dict:
+        """List one directory in the project's attached read-only source folder."""
+        return self._call("project_list_dir", [{"path": path}])
+
+    def project_read_file(
+        self, path: str, *, offset: int = 0, limit: int = 2000
+    ) -> dict:
+        """Read a bounded text window using a project-relative path."""
+        return self._call(
+            "project_read_file", [{"path": path, "offset": offset, "limit": limit}]
+        )
+
+    def project_glob(self, pattern: str, *, path: str | None = None) -> dict:
+        """Find project inputs recursively, e.g. project_glob('**/*.csv')."""
+        return self._call("project_glob", [{"pattern": pattern, "path": path}])
+
+    def project_grep(
+        self, pattern: str, *, path: str | None = None, include: str | None = None
+    ) -> dict:
+        """Search text within the attached project folder recursively."""
+        return self._call(
+            "project_grep", [{"pattern": pattern, "path": path, "include": include}]
+        )
+
+    def project_import_file(
+        self,
+        source_path: str,
+        *,
+        path: str | None = None,
+        max_bytes: int = 256 * 1024 * 1024,
+    ) -> dict:
+        """Copy one project input for analysis; returns its local path and SHA-256.
+
+        The destination defaults to project-inputs/<source_path>. The source
+        stays unchanged. Call in a foreground Cell or as a native action so
+        the imported bytes receive their Artifact provenance.
+        """
+        return self._call(
+            "project_import_file",
+            [{"source_path": source_path, "path": path, "max_bytes": max_bytes}],
+        )
+
     def materialise_artifact(
         self, version_id: str, *, filename: str | None = None
     ) -> dict:

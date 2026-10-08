@@ -514,11 +514,18 @@ identifiers, tokens, authorization codes, and API Keys are never returned.
 | Method & path | Behavior |
 | --- | --- |
 | `GET /projects` | `{"projects":[project…],"total":n}` on an unparameterized request (compatibility full dump). With `q`, `limit`, `cursor`, or `offset`, the envelope also carries `next_cursor` and `has_more`. `limit` is 1–100 (default 100, values above 100 are capped). Official clients page by opaque keyset `cursor` on `(last_active_at DESC NULLS LAST, project_id DESC)`; `offset` is honoured only for one compatibility window and must not be combined with `cursor`. `q` searches project `name` and `description` only: trim, at most 128 Unicode code points, parameterized `LIKE … ESCAPE` with `\`, `%`, `_` treated as literals, ASCII case-insensitive and non-ASCII exact. `total` is the exact count after the team-visibility filter and `q`, not after `LIMIT`. An illegal cursor or one bound to a different `q` / principal returns `400 invalid_cursor` and does not restart at page one. |
-| `POST /projects` | Body `{name?,description?,context?}` → project JSON (with `conversation_count: 0`). |
+| `POST /projects` | Body `{name?,description?,context?,folder_path?}` → project JSON (with `conversation_count: 0`). `folder_path` binds an existing absolute local directory, canonicalized by the server; null/empty leaves it unbound. |
 | `GET /projects/{pid}` | Project JSON, or `{}` when not found (**not** a 404) — a compatibility shape kept deliberately for existing readers; test for `project_id` rather than the status. Team mode answers a project the caller does not participate in, and one that does not exist, `404` `project not found` instead (INV-13); an admin, who passes that guard, still reads `{}`. |
 | `GET /projects/{pid}/action-timeline?limit=` | Bounded cross-session safe Timeline projection with session labels. |
 | `GET /projects/{pid}/lineage?limit=` | Project-wide Artifact/version lineage graph with bounded nodes/edges. |
-| `PUT|PATCH /projects/{pid}` | Updates `name`/`description`/`context` → project JSON. A body naming none of them changes nothing and still answers the full project. An unknown id is `404` `project not found` — the same sentence team mode gives a project the caller may not see — and nothing is written. It used to answer `200 {}`, which a client could not tell from an edit that landed. |
+| `PUT|PATCH /projects/{pid}` | Updates `name`/`description`/`context`/`folder_path` → project JSON. An omitted `folder_path` preserves the binding; null/empty detaches it. A body naming none of these fields changes nothing and still answers the full project. An unknown id is `404` `project not found` — the same sentence team mode gives a project the caller may not see — and nothing is written. |
+| `GET /local-folders?path=` | Local directory picker: `{path,parent_path,entries:[{name,path}],truncated}`. Omitted/empty path starts at the daemon user's home; entries contain directories only. |
+| `GET /projects/{pid}/files?path=` | Read-only immediate children of a project-relative directory: `{folder_path,path,parent_path,entries:[{name,path,kind,size}],truncated}`. Empty path selects the root. Directory entries can be opened recursively. |
+| `GET /projects/{pid}/file?path=` | Bounded UTF-8 preview: `{path,name,size,content,encoding,truncated}`. Binary files return 415; they can still be imported for analysis through the agent's project import tool. |
+| `GET /projects/{pid}/history` | Reads local `.openai4s` history status and session directory: `{directory,status,last_saved_at,error,sessions,truncated}`. Timestamps are epoch milliseconds. Does not trigger a save. |
+| `POST /projects/{pid}/history` | Saves project settings and current sessions, then returns the same directory/status envelope. A failed save returns the standard 503 error with archive status nested under `history`; the conversation remains in the daemon database. |
+| `GET /projects/{pid}/history/{sid}?revision=` | Reads the latest or a specified immutable history revision: `{session_id,title,revision,branch_id,saved_at,can_continue,revisions,messages,cells,files,settings,omissions,read_only,untrusted}`. Messages and Cells describe the saved active branch. `can_continue` requires an existing root session in this same project. Saved records never restore execution authority. |
+| `GET /projects/{pid}/history/{sid}/file?revision=&path=` | Downloads the checksummed file bytes from that revision as an attachment. Paths must match that revision's file manifest; traversal, symlinks and corrupted objects are refused. |
 | `DELETE /projects/{pid}` | Deletes project + frames, unlinks artifact files and session workspaces → `{"ok":true,"freed_files","freed_sessions"}`. |
 | `GET /projects/{pid}/notes` | `{"notes":[note…]}`. |
 | `POST /projects/{pid}/notes` | Body `{content}` → note JSON. |
@@ -530,6 +537,30 @@ identifiers, tokens, authorization codes, and API Keys are never returned.
 | `POST|PUT|PATCH /frames/{fid}/folder` | Body `{folder_id}` (or null) → `{"ok":true}`. |
 | `GET /example/session` | `{seeded,frame_id,project_id,started,running,seeds_at_startup,error}` — state of the bundled example analysis. `started` is always `false` on a GET. |
 | `POST /example/session` | Body **must** be `{"confirm": true}`; anything else is `400 confirmation_required` and seeds nothing. Idempotent: already seeded → `{"seeded": true, "started": false}`; already running → `{"started": false, "running": true}`, which is distinguishable from a refusal. Seeding happens on a background thread, so this returns immediately and the client polls the `GET`. |
+
+Granting a project-folder binding, discovery, and reads require authenticated local access
+to a standalone daemon bound to loopback, without trusted-proxy configuration.
+Team/nonlocal deployments return `403 local_project_folders_only`; existing
+project and session management, including clearing a binding, stays available.
+Source folders must not overlap the daemon's data directory. Project file routes return 404
+for a missing project and `409 no_project_folder` for an unbound one. Reads
+reject traversal, symlinks, credential paths, and multiply linked files through
+the same descriptor-based file boundary used by workspace tools. They never
+create the source directory. Session import does not restore local folder grants.
+
+项目的 `folder_path` 是独立的只读数据来源，并非会话工作区。清空字段可解除绑定；
+业务文件保持只读，只有专用 `.openai4s/` 历史目录会自动写入；删除项目或恢复会话
+检查点不会删除该目录。浏览器选择的是服务端所在电脑的目录，
+只有本机单用户服务开放这一入口；目录内容按需读取，未预加载为模型上下文。
+
+The history endpoints use the same local-only folder grant and project guards.
+Archives remain after deleting their database session; a newly linked project
+can inspect them, while `can_continue` remains false for absent sessions.
+Project metadata and files are retained in immutable revisions. Provider
+credentials and global settings are not exported; known credential paths and
+content are excluded or redacted, without a guarantee of detecting arbitrary
+secrets in user files. History is excluded from ordinary project
+file listing/search, and is available through these explicit history routes.
 
 ### Frames (sessions) and turns
 

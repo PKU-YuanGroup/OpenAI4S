@@ -68,6 +68,8 @@ compromised kernel or arbitrary changes to kernel filesystem semantics.
 
 ## Adding or changing a tool
 
+[`project_files.py`](./project_files.py) reads, lists and searches the current project's attached local folder through the existing confined file boundary. A bounded binary import copies one stable input into the session workspace with SHA-256 source provenance; project inputs are never written.
+
 - Put the schema, side-effect declarations, permission target, resource keys, and the behavior itself on a named `Tool` subclass; instantiate it only through `registry.py:TOOL_TYPES`. Never add a module-level tool singleton: the lowercase names the compatibility facades export are `get_tool(...)` lookups of the registered instance, and a fresh instance of the right class is a tool the registry has never seen, so it carries no permission wiring at all.
 - Never call `execute()` directly on model-originated input. Go in through `invoke()`/`HostDispatcher`, or the security and audit envelope is simply skipped.
 - Keep schemas portable across the supported providers, and enforce them again locally. Mark `writes_files`, network use, dangerous operations and untrusted output accurately. When the honest answer depends on a runtime feature gate, override `writes_files_for()`/`read_only_for()`/`side_effect_class_for()` rather than picking one of the two static answers: the static one is what capture, scheduling and audit believe on every call the gate does not apply to.

@@ -128,6 +128,7 @@ def test_project_create_replace_update_and_derived_listing(tmp_path):
         "name": "Alpha",
         "description": "first",
         "context": "context-a",
+        "folder_path": None,
         "is_example": 1,
         "created_at": 1000,
         "updated_at": 1000,

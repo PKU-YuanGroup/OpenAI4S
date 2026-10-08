@@ -35,7 +35,7 @@
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
 | `startup-guide.md` | 双语 macOS 上手全流程：安装 v0.3.0 预览镜像（Apple Silicon，ad-hoc 签名）及其 Gatekeeper 步骤，或从 PyPI 安装、配置模型，以及在 UI 里用一个 Agent Plan Key 授权豆包搜索；Tavily/免密钥搜索保留为备用。 |
-| `upgrading.md` | 升级指南，新的在前。下一版本（schema 32 到 34）：先停 daemon 并复制数据目录，因为 judge 审计改写成功后会删除自己的升级前副本，且不支持降级；然后是出口 allowlist 关卡、令牌不再进日志、后台 Cell 收据，以及 `GET /frames/{fid}/delegations` 的形状变化。0.2.x 到 0.3.0：首次启动前备份 `openai4s.db`（schema 从 27 升到 32）、为什么不支持退回 0.2.x、现在总是必需的访问令牌，以及升级用户会遇到的其他变化。 |
+| `upgrading.md` | 升级指南，新的在前。下一版本（schema 32 到 35）：先停 daemon 并复制数据目录，因为 judge 审计改写成功后会删除自己的升级前副本，且不支持降级；然后是出口 allowlist 关卡、令牌不再进日志、后台 Cell 收据，以及 `GET /frames/{fid}/delegations` 的形状变化。0.2.x 到 0.3.0：首次启动前备份 `openai4s.db`（schema 从 27 升到 32）、为什么不支持退回 0.2.x、现在总是必需的访问令牌，以及升级用户会遇到的其他变化。 |
 | `upgrading_zh.md` | 升级指南的中文版。 |
 | `team-server.md` / `team-server_zh.md` | 多用户模式的运维页：开什么、按什么顺序开、每个开关到底暴露了什么。里面所有东西默认都是关的，所以默认安装仍是它一直以来的那个单用户工作台（INV-1）。它对两件最容易搞错的事说得很直白——团队模式加的是账号而不是"可以暴露"；relay 也不是访问实验室服务器的第三条路（它发布的是单个会话的脱敏投影，不是工作台）。 |
 | `team-server-plan.md` | 多用户 Team Server 模式的冻结执行计划（M1 多租户 → M2 治理 → M3a/M3b Slurm 编排 → M4）：产品决策、约束性不变量、逐里程碑工作项与门禁，以及为自主执行代理写就的非阻塞规则。该计划是意图记录；执行期间只允许追加其「偏差记录」附录。 |
