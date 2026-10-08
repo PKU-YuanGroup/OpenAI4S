@@ -392,7 +392,8 @@ def evaluate_run(run, commands, observations, evaluations, *, goal: Goal) -> dic
                     else None
                 ),
                 "goal": _fingerprint(asdict(goal)),
-                "complete": not problems
+                "complete": run.get("status") in {"ended", "failed"}
+                and not problems
                 and all(
                     run.get(k) is not None
                     for k in (
@@ -431,7 +432,7 @@ def compare(results_by_policy: Mapping[str, Sequence[Mapping] | Mapping]) -> dic
             evidence = row.get("comparability", {})
             if not evidence.get("complete") or row.get("goal_met") not in (True, False):
                 reasons.append(
-                    f"{name}: complete goal and initial/configuration evidence is required"
+                    f"{name}: complete episode, goal and initial/configuration evidence is required"
                 )
             cohort.append(
                 tuple(

@@ -289,3 +289,117 @@ def test_invalid_wrapper_configuration_and_non_numeric_channels_are_refused():
         with pytest.raises(LabError) as caught:
             create()
         assert caught.value.code is ErrorCode.INVALID_PARAMETERS
+
+
+def test_noise_scalar_and_missing_quality_preserve_declared_sensor_contract():
+    from openai4s.lab.models import ChannelKind
+
+    class ScalarDevice(FakeExtractorDevice):
+        quality = "ok"
+        available = True
+
+        def describe(self, profile):
+            descriptor = super().describe(profile)
+            scalar = replace(
+                descriptor.observation_channels[0],
+                kind=ChannelKind.SCALAR,
+                shape=(),
+                available=self.available,
+                reason=None if self.available else "not_modeled",
+            )
+            return replace(
+                descriptor,
+                observation_channels=(scalar, descriptor.observation_channels[1]),
+            )
+
+        def _observation(self, session):
+            observation = super()._observation(session)
+            observation["channels"][0].update(
+                kind="scalar",
+                shape=[],
+                value=0.5 if self.quality == "ok" else None,
+                quality=self.quality,
+            )
+            return observation
+
+        def open(self, request):
+            result = super().open(request)
+            return replace(result, descriptor=self.describe(request.profile))
+
+    device = ScalarDevice()
+    port = noise(device)
+    o = opened(port)
+    assert o.observation["channels"][0]["value"] != 0.5
+    assert o.observation["channels"][0]["shape"] == []
+    for quality in ("unknown", "unavailable"):
+        device.quality = quality
+        o = opened(port)
+        assert o.observation["channels"][0]["value"] is None
+        assert o.observation["channels"][0]["quality"] == quality
+    device.quality, device.available = "ok", False
+    assert opened(port).observation["channels"][0]["value"] == 0.5
+
+
+@pytest.mark.parametrize("entry", ["open", "execute", "query"])
+def test_noise_protocol_failure_closes_the_session(entry):
+    from copy import deepcopy
+
+    class WrongSensor(FakeExtractorDevice):
+        latest = None
+
+        @staticmethod
+        def wrong(observation):
+            observation = deepcopy(observation)
+            observation["channels"][0]["unit"] = "mL"
+            return observation
+
+        def open(self, request):
+            result = super().open(request)
+            self.latest = result.session_id
+            return (
+                replace(result, observation=self.wrong(result.observation))
+                if entry == "open"
+                else result
+            )
+
+        def execute(self, session_id, dispatch):
+            result = super().execute(session_id, dispatch)
+            return (
+                replace(result, observation=self.wrong(result.observation))
+                if entry == "execute"
+                else result
+            )
+
+        def query(self, session_id, command_id):
+            result = super().query(session_id, command_id)
+            return (
+                replace(result, observation=self.wrong(result.observation))
+                if entry == "query" and result is not None
+                else result
+            )
+
+    base = WrongSensor()
+    port = noise(base)
+    with pytest.raises(LabError) as caught:
+        o = opened(port)
+        port.execute(o.session_id, dispatch(o))
+        port.query(o.session_id, "command")
+    assert caught.value.code is ErrorCode.PROVIDER_PROTOCOL_ERROR
+    assert not port.alive(base.latest) and not base.alive(base.latest)
+    with pytest.raises(LabError) as again:
+        port.query(base.latest, "command")
+    assert again.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+
+
+def test_nested_timeout_reconciles_state_before_synthetic_refusal():
+    base = FakeExtractorDevice()
+    port = FaultInjectionWrapper(base, schedule={2: "busy"})
+    o = opened(port)
+    base.lose_response_next()
+    with pytest.raises(LabError) as caught:
+        port.execute(o.session_id, dispatch(o))
+    assert caught.value.code is ErrorCode.PROVIDER_TIMEOUT
+    busy = port.execute(o.session_id, dispatch(o, "busy"))
+    assert not busy.applied and busy.error["code"] == "resource_busy"
+    assert busy.step_index == 1 and busy.sim_time == 1
+    assert port.execute(o.session_id, dispatch(o, "next")).step_index == 2

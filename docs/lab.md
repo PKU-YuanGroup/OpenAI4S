@@ -290,7 +290,7 @@ recover `outcome_unknown` states overwritten by reconciliation. Those historic
 metrics are null with reasons; current unresolved commands are counted.
 A future event-history input is required to prove zero duplicate dispatches
 and report subsequent reconciliation outcomes. `compare` refuses numeric
-comparisons unless complete paired configuration, backend/adapter versions,
+comparisons unless episodes are terminal and complete paired configuration, backend/adapter versions,
 wrapper assumptions, explicit goal and initial-state fingerprints match.
 Identical seeds alone do not establish comparable initial states.
 

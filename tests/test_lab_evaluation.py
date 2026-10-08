@@ -271,7 +271,8 @@ def test_success_evidence_requires_its_own_observation_and_zero_commands_is_not_
 
 
 @pytest.mark.parametrize(
-    "difference", ["config", "assumption", "initial", "goal", "cohort", "missing"]
+    "difference",
+    ["config", "assumption", "initial", "goal", "cohort", "missing", "unfinished"],
 )
 def test_comparison_refuses_unmatched_evidence_without_numbers(difference):
     first = evaluate()
@@ -285,6 +286,8 @@ def test_comparison_refuses_unmatched_evidence_without_numbers(difference):
         data[3][0]["ground_truth"]["vessels"][1]["moles"]["Na"] = 0.5
     elif difference == "goal":
         goal = replace(goal, min_purity=0.5)
+    elif difference == "unfinished":
+        data[0]["status"] = "ready"
     elif difference == "missing":
         del data[0]["config_hash"]
     second = evaluate(data, goal)
@@ -387,3 +390,91 @@ def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(profile
             env.close()
         else:
             port.close()
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "entry", ["describe", "open", "execute", "query", "stop", "query_identity"]
+)
+def test_probe_invalid_response_kills_provider_instead_of_claiming_live(
+    entry, monkeypatch, tmp_path
+):
+    import sys
+
+    import scripts.lab_evaluate as probe
+    from openai4s.lab.fake import FakeExtractorDevice
+    from openai4s.lab.manifest import match_command
+    from openai4s.lab.models import (
+        CommandRequest,
+        Dispatch,
+        ErrorCode,
+        LabError,
+        Quantity,
+        SessionOpenRequest,
+    )
+
+    base = FakeExtractorDevice()
+    descriptor = base.describe("toy-extract-v0")
+    request = SessionOpenRequest(
+        descriptor.profile, 7, {}, descriptor.capability_revision
+    )
+    o = base.open(request)
+    capability = next(c for c in descriptor.capabilities if c.operation == "mix_model")
+    command = match_command(
+        descriptor,
+        CommandRequest(
+            "run",
+            capability.operation,
+            capability.source,
+            capability.target,
+            {
+                k: Quantity(v.allowed[0], v.unit)
+                for k, v in capability.parameters.items()
+            },
+            0,
+            "key",
+        ),
+    )
+    dispatch = Dispatch("command", command, {r: 1 for r in capability.resources})
+    receipt = base.execute(o.session_id, dispatch)
+    responses = {
+        "hello": {"protocol": 1, "backend": "toy"},
+        "describe": descriptor.to_dict(),
+        "open": o.to_dict(),
+        "execute": receipt.to_dict(),
+        "query": receipt.to_dict(),
+        "stop": {"stopped": True, "semantics": "end_session"},
+    }
+    if entry == "query_identity":
+        responses["query"]["provider_command_id"] = "different"
+    else:
+        responses[entry] = {"malformed": True}
+
+    class Client:
+        live = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return self
+
+        def request(self, op, args, *, timeout):
+            return deepcopy(responses[op])
+
+        def close(self):
+            self.live = False
+
+        def alive(self):
+            return self.live
+
+    monkeypatch.setattr(probe, "ProviderClient", Client)
+    port = probe._ProviderDevice("toy", sys.executable, tmp_path)
+    with pytest.raises(LabError) as caught:
+        port.describe(descriptor.profile)
+        port.open(request)
+        port.execute(o.session_id, dispatch)
+        port.query(o.session_id, "command")
+        port.stop(o.session_id, "test")
+    assert caught.value.code is ErrorCode.PROVIDER_PROTOCOL_ERROR
+    assert not port.alive(o.session_id) and not port._client.alive()

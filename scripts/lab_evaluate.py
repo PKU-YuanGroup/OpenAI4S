@@ -117,6 +117,15 @@ class _ProviderDevice:
                 code = ErrorCode.PROVIDER_PROTOCOL_ERROR
             raise LabError(code, "Development provider operation failed") from None
 
+    def _decode(self, decoder, payload):
+        try:
+            return decoder(payload)
+        except (LabError, TypeError, ValueError, KeyError):
+            self._client.close()
+            raise LabError(
+                ErrorCode.PROVIDER_PROTOCOL_ERROR, "Invalid provider response"
+            ) from None
+
     def _check_session(self, session_id):
         if session_id != self._session_id or not self._client.alive():
             raise LabError(
@@ -124,8 +133,11 @@ class _ProviderDevice:
             )
 
     def describe(self, profile):
-        descriptor = load_descriptor(self._request("describe", {"profile": profile}))
+        descriptor = self._decode(
+            load_descriptor, self._request("describe", {"profile": profile})
+        )
         if descriptor.profile != profile:
+            self._client.close()
             raise LabError(
                 ErrorCode.ADAPTER_MISMATCH, "Provider profile does not match"
             )
@@ -133,7 +145,9 @@ class _ProviderDevice:
         return descriptor
 
     def open(self, request):
-        opened = SessionOpened.from_dict(self._request("open", request.to_dict()))
+        opened = self._decode(
+            SessionOpened.from_dict, self._request("open", request.to_dict())
+        )
         if (
             opened.descriptor.device_id != self.device_id
             or opened.descriptor.profile != request.profile
@@ -149,7 +163,9 @@ class _ProviderDevice:
 
     def execute(self, session_id, dispatch):
         self._check_session(session_id)
-        receipt = Receipt.from_dict(self._request("execute", dispatch.to_dict()))
+        receipt = self._decode(
+            Receipt.from_dict, self._request("execute", dispatch.to_dict())
+        )
         if receipt.provider_command_id != dispatch.provider_command_id:
             self._client.close()
             raise LabError(
@@ -167,8 +183,9 @@ class _ProviderDevice:
             raise LabError(
                 ErrorCode.OUTCOME_UNKNOWN, "Provider receipt is no longer retained"
             )
-        receipt = Receipt.from_dict(result)
+        receipt = self._decode(Receipt.from_dict, result)
         if receipt.provider_command_id != provider_command_id:
+            self._client.close()
             raise LabError(
                 ErrorCode.PROVIDER_PROTOCOL_ERROR,
                 "Provider command identity does not match",
@@ -177,7 +194,9 @@ class _ProviderDevice:
 
     def stop(self, session_id, reason):
         self._check_session(session_id)
-        return StopResult.from_dict(self._request("stop", {"reason": reason}))
+        return self._decode(
+            StopResult.from_dict, self._request("stop", {"reason": reason})
+        )
 
     def close(self, session_id=None):
         self._client.close()

@@ -153,6 +153,7 @@ class ObservationNoiseWrapper(_Wrapper):
         self._sigma = float(model["sigma"])
         self._seed = seed
         self._sessions: dict[str, tuple[DeviceDescriptor, int | None]] = {}
+        self._dead: set[str] = set()
         self._lock = RLock()
         super().__init__(
             port,
@@ -204,6 +205,28 @@ class ObservationNoiseWrapper(_Wrapper):
                 ).to_dict()
         return result
 
+    def _check_session(self, session_id: str) -> None:
+        if session_id in self._dead:
+            raise LabError(
+                ErrorCode.PROVIDER_UNAVAILABLE, "Provider session is unavailable"
+            )
+
+    def _sample(self, session_id, observation, descriptor, seed, step):
+        try:
+            return self._noise(observation, descriptor, seed, step)
+        except (LabError, OverflowError):
+            # An invalid sensor frame or nonfinite transformed sample cannot
+            # remain a usable session after a protocol failure.
+            self._dead.add(session_id)
+            self._sessions.pop(session_id, None)
+            try:
+                self._port.close(session_id)
+            except LabError:
+                pass
+            raise LabError(
+                ErrorCode.PROVIDER_PROTOCOL_ERROR, "Invalid sensor sample"
+            ) from None
+
     def open(self, request: SessionOpenRequest) -> SessionOpened:
         with self._lock:
             self.describe(request.profile)  # Reject invalid channel before opening.
@@ -211,8 +234,12 @@ class ObservationNoiseWrapper(_Wrapper):
             self._sessions[opened.session_id] = (opened.descriptor, request.seed)
             return replace(
                 opened,
-                observation=self._noise(
-                    opened.observation, opened.descriptor, request.seed, 0
+                observation=self._sample(
+                    opened.session_id,
+                    opened.observation,
+                    opened.descriptor,
+                    request.seed,
+                    0,
                 ),
             )
 
@@ -222,25 +249,37 @@ class ObservationNoiseWrapper(_Wrapper):
         descriptor, seed = self._sessions[session_id]
         return replace(
             receipt,
-            observation=self._noise(
-                receipt.observation, descriptor, seed, receipt.step_index
+            observation=self._sample(
+                session_id, receipt.observation, descriptor, seed, receipt.step_index
             ),
         )
 
     def execute(self, session_id: str, dispatch: Dispatch) -> Receipt:
         with self._lock:
+            self._check_session(session_id)
             receipt = self._receipt(session_id, super().execute(session_id, dispatch))
             assert receipt is not None
             return receipt
 
     def query(self, session_id: str, provider_command_id: str) -> Receipt | None:
         with self._lock:
+            self._check_session(session_id)
             return self._receipt(
                 session_id, super().query(session_id, provider_command_id)
             )
 
+    def stop(self, session_id: str, reason: str) -> StopResult:
+        with self._lock:
+            self._check_session(session_id)
+            return super().stop(session_id, reason)
+
+    def alive(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id not in self._dead and super().alive(session_id)
+
     def close(self, session_id: str) -> None:
         with self._lock:
+            self._check_session(session_id)
             super().close(session_id)
             self._sessions.pop(session_id, None)
 
@@ -252,6 +291,7 @@ class _FaultSession:
     seen: set[str] = field(default_factory=set)
     receipts: OrderedDict[str, Receipt] = field(default_factory=OrderedDict)
     fences: dict[str, int] = field(default_factory=dict)
+    pending: set[str] = field(default_factory=set)
     sim_time: float = 0
     step: int = 0
     raw: dict = field(default_factory=lambda: {"terminated": False, "truncated": False})
@@ -332,6 +372,7 @@ class FaultInjectionWrapper(_Wrapper):
                 "Receipt no longer retained; command will not run again",
             )
         receipt = self._port.query(session_id, command_id)
+        session.pending.discard(command_id)
         if receipt is not None:
             self._remember_state(session, receipt)
         return receipt
@@ -364,6 +405,10 @@ class FaultInjectionWrapper(_Wrapper):
             if cached is not None:
                 return cached
             session = self._sessions[session_id]
+            # A nested port may time out after advancing. Reconcile its state
+            # before manufacturing a refusal; never stamp stale step/time.
+            for pending_id in tuple(session.pending):
+                self._cached(session_id, pending_id)
             first = dispatch.provider_command_id not in session.attempts
             session.attempts.add(dispatch.provider_command_id)
             fault = self._fault(len(session.attempts)) if first else None
@@ -411,7 +456,12 @@ class FaultInjectionWrapper(_Wrapper):
                 return self._refuse(session, dispatch, ErrorCode.RESOURCE_BUSY)
             if fault == "precondition_failed":
                 return self._refuse(session, dispatch, ErrorCode.PRECONDITION_FAILED)
-            receipt = self._port.execute(session_id, dispatch)
+            try:
+                receipt = self._port.execute(session_id, dispatch)
+            except LabError as exc:
+                if exc.code in (ErrorCode.PROVIDER_TIMEOUT, ErrorCode.OUTCOME_UNKNOWN):
+                    session.pending.add(dispatch.provider_command_id)
+                raise
             self._remember_state(session, receipt)
             if fault == "lose_response":
                 raise LabError(
