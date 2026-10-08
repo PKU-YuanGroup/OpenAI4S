@@ -219,8 +219,15 @@ report must name:
 | Evaluation basis | The profile's independent default collection goal, distinct from reward and Gym termination. WaterOil uses collected NaCl equivalents in `beaker_1`, excludes water from purity and counts oil contamination; GenWurtz uses the initial public target and non-solvent purity in `beaker_1`. These are benchmark choices, not real-world success criteria. Do not report private evaluation values. |
 | Outcome and limits | Recorded run status/end reason, unresolved commands, missing evidence, and the next bounded decision. State that findings concern this simulation only. |
 
+To hand over exact files, `lab_export` (or `host.lab.export(run_id)`) writes
+the actions, observations JSON/CSV and a report as exact Artifact versions
+after approval; cite the returned version IDs. It reads the ledger only and
+never includes simulation ground truth.
+
 When claiming completion, both `finalize_response` and `host.submit_output`
-require `lab_runs: [{"run_id": <exact run>, "status": "completed"}]`.
+require `lab_runs: [{"run_id": <exact run>, "status": "completed"}]`, with one
+entry for every run this turn created or sent a command to; leaving one out is
+refused.
 `finalize_response` takes this as a top-level field; `host.submit_output`
 takes it inside its output dictionary. The Host independently checks that the
 run ended with `end_action` or `max_steps`, has no unknown commands, has an

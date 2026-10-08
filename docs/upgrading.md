@@ -293,8 +293,11 @@ The right dock adds a **Lab** tab for simulation-only extraction runs. Install
 its optional CPython 3.10 provider with `openai4s lab setup chemgymrl`, inspect
 `openai4s lab status`, then open a session's Lab tab. Agent/`host.lab` create and
 execute calls default to approval; manual controls are direct user actions.
-Lab's experiment stop and the agent's Stop remain separate. Restarting the
-daemon ends lost provider runs instead of replaying them. See [Lab](lab.md)
+**End experiment** (`end_action`) and the safety **Stop** (`stopped`) are
+distinct, and neither is the agent's Stop. Under **Results**, a run exports as
+exact Artifact versions and replays read-only; simulation ground truth is only
+ever a browser download, never stored in the session. Restarting the daemon
+ends lost provider runs instead of replaying them. See [Lab](lab.md)
 for installation, sensor limits and the optional upstream GPL license.
 
 The control that branches from a user message is shown only when the session

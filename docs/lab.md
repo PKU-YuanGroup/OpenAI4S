@@ -24,9 +24,11 @@ openai4s lab smoke --profile WaterOilExtract-v0
 openai4s serve
 ```
 
-Use the authenticated URL printed by `serve` (or `openai4s url`), open a
-session, and select **Lab** in the right dock. Without an installed provider,
-the ChemGymRL device remains listed as unavailable with an installation hint.
+`serve` opens the workbench in your default browser (`--no-open` skips this);
+for any other browser, run `openai4s url` on the same host to print a sign-in
+link. Open a session and select **Lab** in the right dock. Without an installed
+provider, the ChemGymRL device remains listed as unavailable with an
+installation hint.
 `status` only reads installation state; `smoke` starts a real simulation
 provider, takes one step and closes it. Neither operates on a session's Lab
 ledger. First creation can take minutes because each run has its own process
@@ -51,11 +53,13 @@ for rollback, interpreter overrides and sandbox settings.
    idempotency key. Never replace an uncertain command with a new key: it may
    already have been applied. Quarantine prevents further steps until the
    unknown command is reconciled.
-5. To stop the run, use the Lab experiment control or `host.lab.stop(run_id)`.
-   This closes the provider session. The agent's **Stop** controls its agent
-   execution and is separate from stopping the experiment. Conversely, stopping
-   a Lab run does not cancel the agent. The normal terminal capability,
-   `end_experiment`, is an executed command and is distinct from this stop.
+5. **End experiment** asks for confirmation, then executes the profile's
+   terminal `end_experiment` capability as an ordinary command; a confirmed
+   terminal receipt ends the run with `end_action`. **Stop** is the safety
+   stop: it closes the provider session and records `stopped`, which is not a
+   completed experiment. `lab_stop` and `host.lab.stop(run_id)` are the same
+   stop. The agent's **Stop** controls agent execution and is separate from
+   both; stopping a Lab run does not cancel the agent either.
 
 Switching sessions or reloading the page reads the saved ledger; reconnecting
 refreshes confirmed state. A disconnected pane displays its last confirmed
@@ -64,6 +68,29 @@ process: previously opened runs left unfinished end with `provider_lost`; an
 interrupted creation becomes `failed` with `create_failed`. Uncertain dispatched
 commands stay `outcome_unknown`, and no commands are automatically replayed.
 Start a new run when a new simulation is needed.
+
+### Export and replay
+
+Under **Results**, **Export recorded evidence** writes four exact Artifact
+versions from the ledger: the actions (JSON Lines), the observations as JSON
+and as CSV, and a Markdown report that links each version with its SHA-256. It
+never executes or replays a command. Every export creates new versions, while
+each observation keeps the version of its first export, so a reopened link
+still reaches the same bytes. Export is refused with HTTP 409
+`trusted_capture_busy` while an agent turn or Cell owns the session's
+workspace; try again once it finishes.
+
+**Also download simulation ground truth (evaluation) to this computer** is an
+opt-in on that export. The hidden evaluation records (reward and exact
+composition) come back once, in that response, and the browser saves them as
+`<run_id>-simulation-ground-truth.json`, labelled **Simulation ground truth
+(仿真真值)**. They are never stored in the session, where the agent could read
+them; the report only notes that a download was delivered. The agent's
+`lab_export` and `host.lab.export` cannot request ground truth.
+
+**Replay recorded history** loads every recorded command and observation and
+steps through them with a slider. Replay is read-only: it neither executes nor
+queries the simulation.
 
 ### Agent tools and Python
 
@@ -82,11 +109,12 @@ manual Notebook input additionally requires `OPENAI4S_NOTEBOOK_REPL=1`.
 | `lab_execute` | `host.lab.execute(run_id, operation, ..., expected_revision=revision)` | Execute one command / 执行一条命令 | Default ask / 默认询问 |
 | `lab_status` | `host.lab.status(run_id, command_id)` | Read and reconcile the same command / 读取并核实原命令 | No / 无需 |
 | `lab_stop` | `host.lab.stop(run_id)` | End the provider session / 停止 provider 会话 | No / 无需 |
+| `lab_export` | `host.lab.export(run_id)` | Export recorded evidence as exact Artifact versions / 将已记录证据导出为精确 Artifact 版本 | Default ask / 默认询问 |
 | `lab_commands` | `host.lab.commands(run_id, ...)` | Paged command records / 分页命令记录 | No / 无需 |
 | `lab_observations` | `host.lab.observations(run_id, ...)` | Paged observation records / 分页观测记录 | No / 无需 |
 
-The default `ask` rules apply to agent and SDK create/execute calls; existing
-permission rules and remembered approvals still apply. Inspect the device/run,
+Agent and SDK create, execute and export calls ask for approval by default;
+existing permission rules and remembered approvals still apply. Inspect the device/run,
 operation and parameters on the approval card before **Allow** or **Deny**.
 Manual Lab controls express the user's action directly and do not open another
 approval card; team-mode writes still require the session owner.
@@ -115,6 +143,21 @@ private evaluation records; they are excluded from ordinary agent/UI views,
 logs and errors. The interface does not turn those hidden values into observed
 measurements.
 
+The Host checks a completion before it is shown. If this turn created a run or
+sent it a command, a completed `finalize_response` or `host.submit_output` must
+declare every such run in `lab_runs` as `{"run_id": ..., "status":
+"completed"}`. Each must have ended with `end_action` or `max_steps`, have no
+`outcome_unknown` command and an observation for every successful command, and
+meet the profile's independent goal. A stopped, lost or still running
+experiment cannot be reported as completed. To leave a run active, declare it
+`running`, use `task_status` `partial` or `blocked`, and put the sentence
+"Simulation experiment is still running." in the summary. Partial, blocked and
+failed reports need no declaration but cannot word the experiment or its goal
+as achieved. Runs from earlier turns need no declaration, though any declared
+run is verified; a delegated child has no Lab. The toy device's goal exists
+only to exercise this check in CI and is not a chemical claim. The
+[Lab Skill](../skills/lab-simulation/SKILL.md) shows the exact payloads.
+
 ### Source and license
 
 The optional provider installs `chemistrygym==2.0.0` from ChemGymRL commit
@@ -135,8 +178,9 @@ Lab 是默认 Web 工作台中的**仿真实验台**。首个虚拟设备
 先准备 CPython 3.10，按上面的命令依次执行安装预览、安装、`lab status`、
 `lab smoke` 和 `serve`，把 `/path/to/python3.10` 换成解释器路径。安装会下载
 固定提交的上游源码与锁定依赖，放入独立 provider 环境，不给标准库核心加依赖。
-使用 `serve` 或 `openai4s url` 打印的带认证 URL，打开会话，在右侧面板选择
-**Lab**。未安装时 ChemGymRL 仍在设备列表中，但显示不可用及安装提示。
+`serve` 会在默认浏览器中打开工作台（`--no-open` 可跳过）；换用其他浏览器时，在同一台
+机器上运行 `openai4s url` 打印登录链接。打开会话，在右侧面板选择 **Lab**。未安装时
+ChemGymRL 仍在设备列表中，但显示不可用及安装提示。
 `status` 只读取安装状态；`smoke` 实际启动仿真 provider、执行一步并关闭，
 两者都不操作会话的 Lab 账本。每个 run 有独立进程与冷 Numba 缓存，首次创建
 可能需要数分钟。回滚、解释器覆盖和沙箱设置见[配置说明](configuration.md#lab-simulation-providers)。
@@ -151,14 +195,31 @@ Lab 是默认 Web 工作台中的**仿真实验台**。首个虚拟设备
    `failed` 是 provider 返回的未应用失败。收到响应本身不能证明命令成功。
 4. 遇到未知结果，对原命令点**查询结果**。传输失败时，**重试原请求**保留原有幂等键。
    不要换新 key 重发未知命令，它可能已经执行。未知命令核实前，隔离状态会阻止新步骤。
-5. 停止实验用 Lab 的实验控制或 `host.lab.stop(run_id)`，这会关闭 provider 会话。
-   agent 的 **Stop** 控制 agent 执行，两者不能替代；停止 Lab 也不取消 agent。
-   正常终止能力 `end_experiment` 是一条执行命令，与停止会话不同。
+5. **结束实验**先请求确认，再把 profile 的终止能力 `end_experiment` 作为普通命令执行；
+   终止回执得到确认后，run 以 `end_action` 结束。**停止**是安全停止：关闭 provider
+   会话并记为 `stopped`，不代表实验完成；`lab_stop` 与 `host.lab.stop(run_id)` 是同一种
+   停止。agent 的 **Stop** 控制 agent 执行，与两者都不同；停止 Lab 也不取消 agent。
 
 切换会话或重载页面会读取已保存的账本，重连会刷新确认状态。断线时显示的是最近确认
 状态，不是实时测量。daemon 重启不能恢复仿真进程：已打开但未结束的 run 以
 `provider_lost` 结束，创建中断的 run 记为 `failed`/`create_failed`。已派发的未知命令
 保持 `outcome_unknown`，系统不会自动重放；需要新仿真时创建新 run。
+
+### 导出与回放
+
+在**结果**区点**导出已记录证据**，会从账本写出四个精确的 Artifact 版本：动作记录
+（JSON Lines）、观测 JSON、观测 CSV，以及列出各版本及其 SHA-256 的 Markdown 报告。
+导出从不执行或重放命令。每次导出都生成新版本，而每条观测保留首次导出时的版本，
+重新打开的链接仍指向同一份字节。agent 回合或 Cell 占用会话工作区时，导出以 HTTP 409
+`trusted_capture_busy` 拒绝，结束后再试。
+
+导出时可勾选**同时把仿真真值（评价）下载到本机**。隐藏的评价记录（奖励与精确组成）
+只在这一次响应中返回，由浏览器保存为 `<run_id>-simulation-ground-truth.json`，标注为
+**Simulation ground truth (仿真真值)**。它们从不存入会话（agent 能读到会话里的文件），
+报告里只注明已另行下载。agent 的 `lab_export` 和 `host.lab.export` 都不能请求真值。
+
+**回放已记录历史**加载全部已记录的命令和观测，用滑块逐条查看。回放只读，既不执行也不
+查询仿真。
 
 ### Agent、Python 与批准
 
@@ -167,7 +228,7 @@ Lab 是默认 Web 工作台中的**仿真实验台**。首个虚拟设备
 状态和 smoke CLI 独立可用。Web 会话的 Python Cell 可以调用 SDK；手动 Notebook
 输入还需 `OPENAI4S_NOTEBOOK_REPL=1`。完整工具与 SDK 对照见上表。
 
-agent 与 SDK 的创建、执行默认询问批准；已有权限规则和记住的批准仍然生效。
+agent 与 SDK 的创建、执行和导出默认询问批准；已有权限规则和记住的批准仍然生效。
 在批准卡检查设备/实验、操作与参数后再选 **Allow** 或 **Deny**。手动 Lab 操作直接
 表达用户意图，不再弹第二次批准；团队模式的写操作仍要求会话所有者。
 `observe(..., full=True)`、`observations(..., full=True)` 在 Python 内返回完整传感器
@@ -187,6 +248,17 @@ agent 与 SDK 的创建、执行默认询问批准；已有权限规则和记住
 `outcome_unknown` 必须明确保留。奖励和精确组成只保存在独立的私有评价记录中，
 不进入普通 agent/UI 视图、日志或错误，也不应被当成已观测的测量值。
 
+完成结论在显示前由 Host 核验。如果本回合创建过 run 或向它发送过命令，completed 的
+`finalize_response` 或 `host.submit_output` 必须在 `lab_runs` 中逐个声明这些 run，形如
+`{"run_id": ..., "status": "completed"}`。每个 run 都必须以 `end_action` 或 `max_steps`
+结束、没有 `outcome_unknown` 命令、每条成功命令都有对应观测，并达到 profile 独立的
+目标。已停止、丢失或仍在运行的实验不能报告为完成。要让实验继续运行，就声明为
+`running`，`task_status` 用 `partial` 或 `blocked`，并在 summary 中写明
+“仿真实验仍在运行”（或 “Simulation experiment is still running.”）。partial、blocked
+和 failed 报告无需声明，但不能把实验或目标写成已达成。较早回合的 run 无需声明，但声明
+了就会被核验；委派子代理没有 Lab。toy 设备的目标只为在 CI 中走通这项核验，不是化学
+结论。具体载荷见 [Lab Skill](../skills/lab-simulation/SKILL.md)。
+
 可选 provider 安装固定提交 `ab8227b6b33f13617b7e551bdf6b894df7eec68d` 的
 `chemistrygym==2.0.0`。上游采用 GPL-3.0-or-later；OpenAI4S 分发自身适配器与元数据，
 不附带上游源码。独立进程不改变上游许可，详见
@@ -200,7 +272,7 @@ MHS API compatibility. This package is standard-library-only and supports only
 `simulation`. It does not connect to physical hardware. Importing it neither
 registers devices nor starts providers.
 
-## Objects and identity
+### Objects and identity
 
 Frozen dataclasses define quantities, discrete parameter specifications,
 capabilities, resources, sensor channel specifications, device descriptors,
@@ -240,7 +312,7 @@ and expected revision after unit normalization; config hash includes device,
 profile, seed, budgets and options. An idempotency key contains 1–128 printable
 ASCII characters. A new mode or profile requires a new run.
 
-## State and failure semantics
+### State and failure semantics
 
 The immutable tables in `models.py` are the transition authority.
 
@@ -292,7 +364,7 @@ payloads contain `reward`, `ground_truth` and optional `metrics`. The host adds
 ledger IDs, sequence, ownership and timestamps when persisting them. Initial
 observation sequence is zero; subsequent applied commands advance it.
 
-## Errors and units
+### Errors and units
 
 `LabError` carries a code, a safe human message and optional details. Messages
 must not contain simulator truth. All 21 error codes are fixed:
@@ -336,7 +408,7 @@ commands, 30 minutes wall time, 3 consecutive failures and 60 minutes idle time.
 The process manager enforces these budgets and the four-live-provider daemon
 limit through durable admission.
 
-## Ports and registration
+### Ports and registration
 
 `DevicePort` supplies describe, open, execute, query, stop, close and alive.
 Explicit refusals return unapplied receipts. Transport failures are `LabError`,
@@ -357,7 +429,7 @@ Mutating manager operations must reject recovery contexts.
 duplicate IDs and checks profile membership before calling a descriptor loader.
 `fake_registration()` creates a registration without installing it.
 
-## Projections and honesty
+### Projections and honesty
 
 Persistence serializers include evaluation where the contract requires it;
 they are not agent views. `project_observation` exposes simulated sensors only.
@@ -380,7 +452,7 @@ fencing. Fault hooks simulate explicit refusal, response loss with a queryable
 receipt, process death and capability mismatch. It provides no evidence about
 ChemGymRL accuracy or physical hardware behavior.
 
-## Process manager
+### Process manager
 
 `build_lab_manager(ledger_provider=..., registry=...)` composes one manager per
 process and reconciles older daemon instances before returning. The provider
@@ -451,7 +523,7 @@ Device summaries publish only `available` and a fixed `availability_detail`
 (never interpreter paths). `events` pages over the rows the caller may see and
 returns `next_after_seq`.
 
-## Provider environment
+### Provider environment
 
 `openai4s lab setup chemgymrl [--python P] [--dry-run] [--rollback]` builds a
 fresh CPython 3.10 generation under `<data_dir>/lab/providers/chemgymrl/`:
@@ -474,7 +546,7 @@ PID is released. `openai4s lab status` starts nothing; `openai4s lab smoke`
 runs one real step and prints only the projected receipt and the sandbox
 posture; `openai4s doctor` reports a `lab` row.
 
-## Evaluation and baseline policies
+### Evaluation and baseline policies
 
 `lab.evaluation` is a private, simulator-ground-truth evaluation surface. It
 accepts fully paginated, decoded ledger rows, not public projections. Its
@@ -496,6 +568,10 @@ Evidence is pinned to ChemGymRL SHA
   `chemistrylab/benches/extract_bench.py:115-124,202-231` and
   `chemistrylab/util/reward.py:16-39,74-95`. The initial salt inventory is
   1 mol, so the quantity threshold requires at least half of it.
+- `toy-extract-v0` (only with `OPENAI4S_LAB_ENABLE_TOY=1`): at least 0.2 toy
+  units of `toy_component` in `extraction_vessel` at 0.9 purity. This goal
+  exists so CI can exercise the completion check in both directions; it is not
+  a chemical claim.
 - `GenWurtzExtract-v2`: the target is randomly selected at reset; pass the
   initial public `targets` channel value to `default_goal(profile, target=...)`.
   The factory refuses an omitted target. Purity excludes `C6H14` and

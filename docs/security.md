@@ -857,8 +857,18 @@ publish bounded, value-redacted diagnostics rather than third-party exception
 values or raw output. These are application boundaries; they do not encrypt
 SQLite against the machine's owner.
 
-Agent and `host.lab` creation/execution use the normal approval envelope,
-with default `ask` rules. Manual Web controls express the user's own action;
+Exports never write evaluation truth into the session: anything in the
+session's workspace is readable by the agent's Cells. A person can opt in, on
+a workbench export, to receive the evaluation records inline in that one HTTP
+response, which the browser saves as a labelled
+**Simulation ground truth (仿真真值)** download; the report notes only that a
+download was delivered. The agent's `lab_export` tool has no such parameter,
+and the Host refuses `include_evaluation` from every caller except the manual
+workbench. Completion checks read evaluations inside the Host and answer with
+fixed, value-free refusals.
+
+Agent and `host.lab` creation, execution and export use the normal approval
+envelope and ask by default. Manual Web controls express the user's own action;
 team-mode writes require the session owner. Stop requires no extra approval
 and remains scoped to the caller's session. Lab stop and agent cancellation
 are independent. Unknown outcomes are queried by command identity and are
@@ -887,7 +897,13 @@ OS 沙箱请求禁止原始网络，并把可写范围约束到私有 run/cache 
 agent/UI 只得到清单声明的传感器通道。provider 错误只发布有界、值已脱敏的诊断，
 不输出第三方异常值或原始输出。这些是应用边界，不是针对本机所有者的 SQLite 加密。
 
-agent 和 `host.lab` 的创建/执行经过正常批准流程，默认规则为 `ask`；手动 Web 控件
+导出从不把评价真值写进会话：会话工作区里的任何文件，agent 的 Cell 都能读取。只有用户
+在工作台导出时主动勾选，评价记录才会内联在那一次 HTTP 响应中返回，由浏览器保存为标注
+**Simulation ground truth (仿真真值)** 的下载文件；报告只注明已另行下载。agent 的
+`lab_export` 工具没有这个参数，Host 也拒绝除手动工作台以外任何调用方的
+`include_evaluation`。完成核验在 Host 内读取评价，只返回固定、不含数值的拒绝信息。
+
+agent 和 `host.lab` 的创建、执行与导出经过正常批准流程，默认询问；手动 Web 控件
 表达用户本人的操作，团队模式写入要求会话所有者。停止不另需批准，但仅能作用于调用方
 会话；停止 Lab 与取消 agent 相互独立。未知结果按命令身份查询，绝不自动重发。
 

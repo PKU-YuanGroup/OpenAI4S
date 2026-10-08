@@ -19,8 +19,9 @@ scripts.
   and artifacts stream over WebSocket. Reopening an in-flight session replays
   the bounded current-turn buffer; completed history reloads over REST.
 - **Simulation Lab** — a session-scoped extraction bench with optional ChemGymRL
-  profiles, manual steps, agent/`host.lab` approval, sensor observations and
-  durable command records. See [the Lab walkthrough](lab.md).
+  profiles, manual steps, agent/`host.lab` approval, sensor observations,
+  durable command records, exact-version evidence export and read-only replay.
+  See [the Lab walkthrough](lab.md).
 - **Versioned artifacts** — file writes become immutable versions with
   provenance, environment snapshots, lineage, annotations, priority, edit,
   rename, restore, and artifact/project ZIP download. The current viewers cover
@@ -186,8 +187,14 @@ an uncertain command, **Query result** reconciles that same command; **Retry
 same request** preserves the request's idempotency key after a transport
 failure. Neither means a new experimental step. Reconnection and page reload
 read confirmed server records; daemon restart ends lost provider sessions
-rather than reconstructing their simulation state. The Lab experiment control
-stops the simulation session; the agent's **Stop** is a separate operation.
+rather than reconstructing their simulation state. **End experiment** executes
+`end_experiment` and records `end_action`; **Stop** is a safety stop that
+records `stopped`. Neither is the agent's **Stop**. Under **Results**, **Export
+recorded evidence** writes the actions, the observations (JSON and CSV) and a
+report as exact Artifact versions, and **Replay recorded history** steps
+through the records without executing anything. Opting in to simulation
+ground truth on an export downloads it to this computer only; it is never
+stored in the session.
 See [Lab](lab.md) for the SDK, limits, outcome rules and installation details.
 
 先用 `openai4s lab setup chemgymrl` 安装可选 provider，再打开会话与右侧 **Lab**
@@ -198,8 +205,11 @@ See [Lab](lab.md) for the SDK, limits, outcome rules and installation details.
 手动操作不再弹批准卡；agent 和 Python `host.lab` 的创建/执行按已配置的批准策略处理
 （默认 `ask`）。未知命令用**查询结果**核实原命令；传输失败后的**重试原请求**保留原有
 幂等键，两者都不表示新的一步。重连和重载读取服务器确认记录；daemon 重启会结束丢失
-provider 的会话，不重建仿真状态。Lab 的实验控制停止仿真会话，agent 的 **Stop** 是
-独立操作。SDK、限额、结果规则和安装细节见 [Lab 中文指南](lab.md#中文用户指南)。
+provider 的会话，不重建仿真状态。**结束实验**执行 `end_experiment` 并记为 `end_action`；
+**停止**是安全停止，记为 `stopped`；两者都不是 agent 的 **Stop**。**结果**区的
+**导出已记录证据**把动作、观测（JSON 与 CSV）和报告写成精确 Artifact 版本，
+**回放已记录历史**逐条查看记录而不执行任何操作。导出时勾选仿真真值，它只下载到本机，
+从不存入会话。SDK、限额、结果规则和安装细节见 [Lab 中文指南](lab.md#中文用户指南)。
 
 ## Notebook lifecycle and truthfulness
 

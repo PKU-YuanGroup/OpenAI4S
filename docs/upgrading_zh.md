@@ -130,7 +130,9 @@ CLI 和子代理的后台 job 不入库，结果里是 `persistent: false`。Web
 右侧面板新增 **Lab** 页签，用于纯仿真的萃取实验。用
 `openai4s lab setup chemgymrl` 安装可选 CPython 3.10 provider，运行
 `openai4s lab status` 检查后，打开会话的 Lab 页签。agent/`host.lab` 的创建和执行
-默认需要批准；手动控件直接表达用户操作。Lab 停止实验与 agent 的 Stop 相互独立。
+默认需要批准；手动控件直接表达用户操作。**结束实验**（`end_action`）与安全**停止**
+（`stopped`）不同，二者也都不是 agent 的 Stop。**结果**区可把 run 导出为精确 Artifact
+版本并只读回放；仿真真值只会作为浏览器下载，从不存入会话。
 daemon 重启会结束失去 provider 的 run，不重放实验。安装、传感器限制与可选上游的
 GPL 许可见 [Lab 中文指南](lab.md#中文用户指南)。
 
