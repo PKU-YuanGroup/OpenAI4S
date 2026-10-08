@@ -55,6 +55,9 @@ def _quiet(method):
     return wrapped
 
 
+_BUILD_ONLY = frozenset({"setuptools", "wheel"})
+
+
 def _verified_runtime():
     """A profile result is evidence only for the actually measured runtime."""
     try:
@@ -66,6 +69,9 @@ def _verified_runtime():
             .splitlines()
             if line and not line.startswith("#")
         ]
+        # Build tooling (pinned so the upstream build is hash-locked) is not
+        # imported by the simulation; the measured runtime is the rest.
+        names = [name for name in names if name not in _BUILD_ONLY]
         runtime = {
             "platform": platform.platform(),
             "python": platform.python_version(),
