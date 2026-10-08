@@ -1693,6 +1693,12 @@ def _drive_lab_surface(
         reg.device_id == "fake.extractor.01" for reg in manager._registry.list()
     ):
         manager._registry.register(fake_registration())
+    # A session of its own. The seeded one may still be running the background
+    # turn an earlier `approve` started, and an export refuses with 409
+    # trusted_capture_busy while a turn owns the workspace -- which would leave
+    # the export route described by its refusal instead of its result.
+    project_id = (runner.store.get_frame(frame_id) or {}).get("project_id")
+    frame_id = runner.create_session(project_id or "default")
     base = f"/frames/{frame_id}/lab"
     route_base = r"/frames/([^/]+)/lab"
 
