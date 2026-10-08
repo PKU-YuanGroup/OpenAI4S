@@ -452,6 +452,48 @@ try {
   assert.equal((await api(runPath(exportFid, exportRun.run_id))).run.end_reason, "end_action");
   passed("End experiment executes end_experiment and records end_action, unlike Stop");
 
+  if (!real) {
+    // The completion gate in both directions, through a real turn. Only the
+    // toy profile declares a goal (a CI goal, not chemistry): a 200 mL
+    // transfer and end_experiment meet it, so a completed claim declaring
+    // that run is accepted; the same claim about a stopped run is refused
+    // back to the model, which then reports honestly.
+    const goalFid = await newFrame(); await open(goalFid);
+    let goalRun;
+    await begin("In the simulation lab, run the toy extraction to its goal, end it, and report completion with the run declared.", [
+      () => tool("lab_create", { device_id: deviceId, profile, seed: 7 }),
+      (r) => { goalRun = r.run; return tool("lab_execute", { run_id: goalRun.run_id, ...command(goalRun) }); },
+      (r) => { assert.equal(r.command.state, "succeeded"); return tool("lab_execute", { run_id: goalRun.run_id, operation: "end_experiment", expected_revision: r.run.revision }); },
+      (r) => { assert.equal(r.run.end_reason, "end_action"); return tool("finalize_response", {
+        summary: `Toy goal report: run ${goalRun.run_id} ended with end_action; the host verified its declared toy CI goal.`,
+        completion_bullets: ["Declared the ended toy run"],
+        lab_runs: [{ run_id: goalRun.run_id, status: "completed" }] }); },
+    ]);
+    await approve(true); await approve(true); await approve(true);
+    await finished("Toy goal report:");
+    passed("a completed claim declaring an ended toy run passes the Lab completion gate");
+
+    const stopFid = await newFrame(); await open(stopFid);
+    let stopRun, refusal = "";
+    await begin("In the simulation lab, run the toy extraction, stop it, and report.", [
+      () => tool("lab_create", { device_id: deviceId, profile, seed: 7 }),
+      (r) => { stopRun = r.run; return tool("lab_execute", { run_id: stopRun.run_id, ...command(stopRun) }); },
+      (r) => { assert.equal(r.command.state, "succeeded"); return tool("lab_stop", { run_id: stopRun.run_id }); },
+      (r) => { assert.equal(r.run.end_reason, "stopped"); return tool("finalize_response", {
+        summary: `Toy stop claim: run ${stopRun.run_id} reached its goal.`,
+        completion_bullets: ["Declared the stopped toy run"],
+        lab_runs: [{ run_id: stopRun.run_id, status: "completed" }] }); },
+      (r) => { refusal = String(r?.error || ""); return report(`Honest stop report: run ${stopRun.run_id} was stopped after one confirmed transfer and did not end normally, so no goal is claimed.`); },
+    ]);
+    await approve(true); await approve(true);
+    await finished("Honest stop report:");
+    assert.match(refusal, /not ended normally/);
+    assert.doesNotMatch(refusal, /reward|ground_truth|moles|purity|\d+\.\d/);
+    assert.equal(await page.locator("#messages").getByText("Toy stop claim:", { exact: false }).count(), 0);
+    passed("the same claim after Stop is refused value-free and the honest report is accepted");
+    await screenshot("completion-gate");
+  }
+
   // Full goal -> inspection -> refusal -> adjustment -> end -> report loop.
   const loopFid = await newFrame(); await open(loopFid);
   let loopRun;
