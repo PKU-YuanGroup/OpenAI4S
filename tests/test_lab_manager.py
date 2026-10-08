@@ -823,3 +823,305 @@ def test_deletion_keeps_closing_provider_in_live_limit(rig, monkeypatch):
         pending.result()
     assert not manager._live
     assert create(rig)["run"]["status"] == "ready" and len(devices) == 2
+
+
+# --- W2 merge: review findings closed by the integrator -----------------------
+
+
+def unknown_command(rig):
+    """A received command whose receipt the manager could not obtain."""
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    devices[0].lose_response_next()
+    devices[0].fail_query_next()
+    exc = error("outcome_unknown", lambda: manager.execute(caller, command(run_id)))
+    assert ledger.get_run(run_id)["status"] == "quarantined"
+    return run_id, exc.details["command_id"]
+
+
+@pytest.mark.parametrize("ending", ["idle_status", "stop", "close_all"])
+def test_ending_a_run_settles_unknown_outcomes_first(rig, ending):
+    # Closing the session destroys the only witness. Every way of ending a run
+    # with a live session asks once before closing; nothing is resent.
+    manager, caller, ledger, devices, now = rig[:5]
+    run_id, command_id = unknown_command(rig)
+    if ending == "idle_status":
+        now[0] += ledger.get_run(run_id)["budgets"]["idle_timeout_ms"]
+        manager.status(caller, run_id, command_id)
+        reason = "idle_timeout"
+    elif ending == "stop":
+        manager.stop(caller, run_id)
+        reason = "stopped"
+    else:
+        manager.close_all("shutdown")
+        reason = "provider_lost"
+    assert ledger.get_command(command_id)["state"] == "succeeded"
+    run = ledger.get_run(run_id)
+    assert (run["status"], run["end_reason"], run["revision"]) == ("ended", reason, 1)
+    assert devices[0].executions == 1 and devices[0].queries == 2
+    assert devices[0].closed
+
+
+def test_status_on_a_dead_provider_ends_the_run_and_keeps_unknown(rig):
+    manager, caller, ledger, devices = rig[:4]
+    run_id, command_id = unknown_command(rig)
+    devices[0].crash()
+    result = manager.status(caller, run_id, command_id)
+    assert result["command"]["state"] == "outcome_unknown"
+    assert (result["run"]["status"], result["run"]["end_reason"]) == (
+        "ended",
+        "provider_lost",
+    )
+    assert devices[0].executions == 1
+
+
+def test_a_port_raising_outside_the_vocabulary_is_a_lost_provider(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    execute = devices[0].execute
+
+    def broken(session_id, dispatch):
+        execute(session_id, dispatch)
+        raise RuntimeError("adapter bug")
+
+    monkeypatch.setattr(devices[0], "execute", broken)
+    exc = error("outcome_unknown", lambda: manager.execute(caller, command(run_id)))
+    assert ledger.get_command(exc.details["command_id"])["state"] == "outcome_unknown"
+    run = ledger.get_run(run_id)
+    assert (run["status"], run["end_reason"]) == ("ended", "provider_lost")
+    assert devices[0].closed
+
+
+def test_a_live_session_answers_for_any_port_error(rig, monkeypatch):
+    # An encode failure raised before a byte was sent (W2-B keeps the session)
+    # must not end the run: the live session says it never received it.
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    execute = devices[0].execute
+    calls = []
+
+    def unsendable(session_id, dispatch):
+        calls.append(dispatch.provider_command_id)
+        if len(calls) == 1:
+            raise LabError(ErrorCode.INVALID_PARAMETERS, "cannot be encoded")
+        return execute(session_id, dispatch)
+
+    monkeypatch.setattr(devices[0], "execute", unsendable)
+    first = manager.execute(caller, command(run_id))
+    assert first["command"]["state"] == "not_dispatched"
+    assert first["run"]["status"] == "ready" and devices[0].queries == 1
+    second = manager.execute(caller, command(run_id, "second"))
+    assert second["command"]["state"] == "succeeded"
+
+
+def test_a_query_that_kills_the_provider_ends_the_run(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    devices[0].lose_response_next()
+
+    def dying(*args):
+        devices[0].crash()
+        raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, "gone")
+
+    monkeypatch.setattr(devices[0], "query", dying)
+    exc = error("outcome_unknown", lambda: manager.execute(caller, command(run_id)))
+    assert ledger.get_command(exc.details["command_id"])["state"] == "outcome_unknown"
+    assert ledger.get_run(run_id)["end_reason"] == "provider_lost"
+
+
+def test_a_failed_unknown_write_says_the_device_may_have_executed(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    devices[0].lose_response_next()
+    devices[0].fail_query_next()
+
+    def unavailable(*args, **kwargs):
+        raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "injected write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "mark_outcome_unknown", unavailable)
+        exc = error(
+            "persistence_unavailable", lambda: manager.execute(caller, command(run_id))
+        )
+    assert "may have executed" in exc.message and exc.details["command_id"]
+
+
+def test_stop_between_admission_and_dispatch_never_reaches_the_device(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    get_command = ledger.get_command
+
+    def stopping_meanwhile(command_id):
+        row = get_command(command_id)
+        if row is not None and row["state"] == "admitted":
+            # What a concurrent stop does before it ends the run.
+            manager._live[run_id].stopping = True
+        return row
+
+    monkeypatch.setattr(ledger, "get_command", stopping_meanwhile)
+    result = manager.execute(caller, command(run_id))
+    assert result["command"]["state"] == "not_dispatched"
+    assert devices[0].executions == 0
+
+
+def test_ending_a_run_resolves_admitted_intents(rig):
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    # An admitted intent the stop overtook before begin_dispatch.
+    ledger.insert_command(
+        {
+            "command_id": "labcmd-admitted01",
+            "run_id": run_id,
+            "idempotency_key": "admitted",
+            "request_hash": "h",
+            "operation": "mix_model",
+            "request": {},
+            "origin": "manual_ui",
+            "state": "admitted",
+        }
+    )
+    manager.stop(caller, run_id)
+    row = ledger.get_command("labcmd-admitted01")
+    assert (row["state"], row["error_code"]) == ("not_dispatched", "run_ended")
+
+
+def test_idle_cleanup_never_reaps_a_run_with_a_command_in_flight(rig, monkeypatch):
+    manager, caller, ledger, devices, now = rig[:5]
+    run_id = create(rig)["run"]["run_id"]
+    entered, release = Event(), Event()
+    execute = devices[0].execute
+
+    def slow(session_id, dispatch):
+        entered.set()
+        release.wait(10)
+        return execute(session_id, dispatch)
+
+    monkeypatch.setattr(devices[0], "execute", slow)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(manager.execute, caller, command(run_id))
+        assert entered.wait(10)
+        now[0] += ledger.get_run(run_id)["budgets"]["idle_timeout_ms"] * 2
+        manager.list_devices(caller)
+        assert ledger.get_run(run_id)["status"] == "busy"
+        release.set()
+        assert pending.result(10)["command"]["state"] == "succeeded"
+    assert ledger.get_run(run_id)["status"] == "ready" and not devices[0].closed
+
+
+def test_events_and_runs_page_over_what_the_caller_may_see(rig):
+    manager, caller, ledger = rig[:3]
+    bob = replace(caller, owner_user_id="bob")
+    alice = replace(caller, owner_user_id="alice")
+    alice_run = create((manager, alice) + rig[2:])["run"]["run_id"]
+    create((manager, bob) + rig[2:])
+    first = manager.events(bob, after_seq=0, limit=2)
+    assert first["events"] and all(e["run_id"] != alice_run for e in first["events"])
+    assert first["next_after_seq"] >= first["events"][-1]["event_seq"]
+    seen = list(first["events"])
+    page = first
+    while page["events"]:
+        page = manager.events(bob, after_seq=page["next_after_seq"], limit=2)
+        seen += page["events"]
+    assert seen and {e["run_id"] for e in seen} != {alice_run}
+    assert [r["run_id"] for r in manager.list_runs(alice, limit=1)] == [alice_run]
+    for bad in ({"after_seq": -1}, {"limit": 0}, {"limit": True}):
+        error("invalid_parameters", lambda: manager.events(bob, **bad))
+
+
+def test_refusals_say_how_to_correct_the_request(rig):
+    manager, caller, ledger = rig[:3]
+    created = create(rig)
+    run_id = created["run"]["run_id"]
+    capability = next(
+        c
+        for c in created["descriptor"]["capabilities"]
+        if c["operation"] == "mix_model"
+    )
+    allowed = capability["parameters"]["duration"]["allowed"]
+    refused = manager.execute(
+        caller,
+        command(
+            run_id,
+            parameters={"duration": {"value": max(allowed) + 7, "unit": "model_time"}},
+        ),
+    )
+    assert refused["command"]["error_code"] == "unsupported_action"
+    assert str(allowed).replace(" ", "") in refused["command"]["error"].replace(" ", "")
+    run_id = create(rig, budgets={"max_commands": 1}, idempotency_key="tiny")["run"][
+        "run_id"
+    ]
+    manager.execute(caller, command(run_id))
+    exhausted = manager.execute(caller, command(run_id, "more", 1))
+    assert "max_commands" in exhausted["command"]["error"]
+
+
+def test_an_unnormalizable_replay_ignores_key_and_revision(rig):
+    manager, caller = rig[:2]
+    run_id = create(rig)["run"]["run_id"]
+    first = manager.execute(caller, command(run_id, "bad", 0, operation="nope"))
+    again = manager.execute(caller, command(run_id, "bad", 3, operation="nope"))
+    assert again["command"]["command_id"] == first["command"]["command_id"]
+
+
+def test_budgets_can_only_be_tightened(rig):
+    loose = create(
+        rig,
+        budgets={
+            "max_steps": 10**6,
+            "max_commands": 10**6,
+            "max_wall_ms": 10**12,
+            "max_consecutive_failures": 10**6,
+            "idle_timeout_ms": 10**12,
+        },
+    )["run"]["budgets"]
+    assert loose == {
+        "max_steps": 50,
+        "max_commands": 200,
+        "max_wall_ms": 30 * 60 * 1000,
+        "max_consecutive_failures": 3,
+        "idle_timeout_ms": 60 * 60 * 1000,
+    }
+    tight = create(rig, budgets={"max_commands": 5}, idempotency_key="tight")
+    assert tight["run"]["budgets"]["max_commands"] == 5
+    assert tight["run"]["budgets"]["max_steps"] == 50
+
+
+def test_read_views_are_scoped_projected_and_ledger_only(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    created = create(rig)
+    run_id = created["run"]["run_id"]
+    manager.execute(caller, command(run_id))
+    manager.execute(caller, command(run_id, "second", 1))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("read views never touch the device")
+
+    recovery = replace(caller, execution_owner="recovery")
+    with monkeypatch.context() as patch:
+        for name in ("execute", "query", "stop", "close", "alive"):
+            patch.setattr(devices[0], name, forbidden)
+        for who in (caller, recovery):
+            assert manager.describe_run(who, run_id) == created["descriptor"]
+            page = manager.commands(who, run_id, after_seq=0, limit=1)
+            assert [c["seq"] for c in page["commands"]] == [1]
+            assert page["next_after_seq"] == 1
+            rest = manager.commands(who, run_id, after_seq=1)
+            assert [c["seq"] for c in rest["commands"]] == [2]
+            assert "fencing_token" not in rest["commands"][0]
+            observed = manager.observations(who, run_id, after_sequence=0, full=True)
+            assert [o["sequence"] for o in observed["observations"]] == [1, 2]
+            assert observed["next_after_sequence"] == 2
+    other = replace(caller, root_frame_id="other-root")
+    for call in (
+        lambda: manager.describe_run(other, run_id),
+        lambda: manager.commands(other, run_id),
+        lambda: manager.observations(other, run_id),
+    ):
+        error("run_not_found", call)
+    for call in (
+        lambda: manager.commands(caller, run_id, after_seq=-1),
+        lambda: manager.commands(caller, run_id, limit=0),
+        lambda: manager.observations(caller, run_id, after_sequence=-2),
+        lambda: manager.observations(caller, run_id, full="yes"),
+    ):
+        error("invalid_parameters", call)

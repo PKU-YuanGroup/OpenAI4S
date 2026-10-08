@@ -198,3 +198,19 @@ class LabManagerPort(Protocol):
     def events(
         self, caller: LabCaller, *, after_seq: int = 0, limit: int = 200
     ) -> dict[str, Any]: ...
+
+    # Read-only views for the workbench and evaluation (W2 merge). They read
+    # the ledger only: no provider call, no idle cleanup, allowed in recovery.
+    def describe_run(self, caller: LabCaller, run_id: str) -> dict[str, Any]: ...
+    def commands(
+        self, caller: LabCaller, run_id: str, *, after_seq: int = 0, limit: int = 50
+    ) -> dict[str, Any]: ...
+    def observations(
+        self,
+        caller: LabCaller,
+        run_id: str,
+        *,
+        after_sequence: int = -1,
+        limit: int = 20,
+        full: bool = False,
+    ) -> dict[str, Any]: ...
