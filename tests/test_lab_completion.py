@@ -197,14 +197,25 @@ def test_pending_submission_rechecks_lab_after_the_cell():
 
 @pytest.mark.parametrize("door", ["web", "cli", "submit"])
 @pytest.mark.parametrize("task_status", ["partial", "blocked", "failed"])
-@pytest.mark.parametrize("wording", ["Completed the experiment", "实验已完成"])
-def test_incomplete_status_cannot_hide_completion_prose(door, task_status, wording):
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "Completed the experiment",
+        "实验已完成",
+        "Reported that the simulation experiment is complete.",
+    ],
+)
+@pytest.mark.parametrize("location", ["summary", "completion_bullets"])
+def test_incomplete_status_cannot_hide_completion_prose(
+    door, task_status, wording, location
+):
     ledger = SnapshotLedger()
     ledger.run.update(status="ready", end_reason=None)
     service = CompletionService(
         lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
     )
-    payload = claim(task_status=task_status, completion_bullets=[wording])
+    payload = claim(task_status=task_status)
+    payload[location] = [wording] if location == "completion_bullets" else wording
     del payload["lab_runs"]
     completed, error = finish(door, service, payload)
     assert completed is None and "explicit lab_runs" in error
@@ -214,6 +225,8 @@ def test_incomplete_status_cannot_hide_completion_prose(door, task_status, wordi
         task_status="partial",
         summary=RUNNING_NOTICE,
     )
+    if location == "summary":
+        payload["summary"] += " " + wording
     completed, error = finish(door, service, payload)
     assert completed is None and "completion wording" in error
     # An honest failure report remains possible after Stop.
@@ -226,6 +239,43 @@ def test_incomplete_status_cannot_hide_completion_prose(door, task_status, wordi
     )
     completed, _ = finish(door, service, payload)
     assert completed is not None
+
+
+def test_running_notice_survives_public_summary_projection():
+    from openai4s.server.completions import completion_message
+
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ready", end_reason=None)
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    payload = claim(
+        "running",
+        task_status="partial",
+        summary="Observed sensor records. " * 200 + RUNNING_NOTICE,
+    )
+    completed, error = finish("submit", service, payload)
+    assert completed is None and "summary" in error
+    payload["summary"] = RUNNING_NOTICE + " " + "Observed sensor records. " * 200
+    completed, _ = finish("submit", service, payload)
+    assert RUNNING_NOTICE in completion_message(completed)
+
+
+def test_structured_success_key_cannot_hide_in_partial_output():
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ready", end_reason=None)
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    result = service.submit(
+        {
+            "output": {"experiment_completed": True},
+            "completion_bullets": ["Recorded the experiment result"],
+            "task_status": "partial",
+        }
+    )
+    assert "explicit lab_runs" in result["error"]
+    assert service.last_output is None
 
 
 def test_evidence_failure_and_concurrent_changes_fail_closed(caplog):

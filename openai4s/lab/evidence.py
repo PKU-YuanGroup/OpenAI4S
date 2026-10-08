@@ -20,8 +20,9 @@ _ALL_ROWS = 2**63 - 1
 _UNVERIFIABLE = "Lab completion evidence could not be verified."
 RUNNING_NOTICE = "Simulation experiment is still running."
 _SUCCESS_WORDS = re.compile(
-    r"\b(?:completed|finished|succeeded|successful(?:ly)?|done|goal\s+(?:met|achieved))\b"
-    r"|完成|成功|达成",
+    r"\b(?:complete(?:d)?|finished|succeeded|successful(?:ly)?|done|achieved|attained|accomplished|"
+    r"(?:goal|target)\s+(?:met|attainment))\b"
+    r"|完成|成功|达成|完毕",
     re.IGNORECASE,
 )
 
@@ -33,10 +34,10 @@ def _success_prose(claim):
     # licence to contradict the public summary. Machine status fields are
     # deliberately excluded from this text check.
     if isinstance(claim, str):
-        return bool(_SUCCESS_WORDS.search(claim))
+        return bool(_SUCCESS_WORDS.search(claim.replace("_", " ")))
     if isinstance(claim, Mapping):
         return any(
-            _success_prose(value)
+            _success_prose(str(key)) or _success_prose(value)
             for key, value in claim.items()
             if key not in {"lab_runs", "task_status"}
         )
@@ -99,10 +100,15 @@ def _check(ledger, root, claim):
             if run.get("status") not in {"creating", "ready", "busy", "quarantined"}:
                 return "The declared Lab run is no longer running."
             summary = payload.get("summary", "")
+            # Web projection exposes only the first 4000 stripped characters.
+            visible_summary = summary.strip()[:4000] if isinstance(summary, str) else ""
             if (
                 status != "partial"
                 or not isinstance(summary, str)
-                or not (RUNNING_NOTICE in summary or "仿真实验仍在运行" in summary)
+                or not (
+                    RUNNING_NOTICE in visible_summary
+                    or "仿真实验仍在运行" in visible_summary
+                )
             ):
                 return (
                     "A running Lab run requires task_status partial and summary: "
