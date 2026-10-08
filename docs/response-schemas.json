@@ -3478,6 +3478,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/lab/runs/([^/]+)/export [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
       "schema": {
         "properties": {
@@ -16687,7 +16720,10 @@
           "observation": {
             "properties": {
               "artifact_version_id": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "channels": {
                 "items": {
@@ -16988,7 +17024,10 @@
                       "type": "boolean"
                     },
                     "end_reason": {
-                      "type": "null"
+                      "type": [
+                        "null",
+                        "string"
+                      ]
                     },
                     "error": {
                       "type": "null"
@@ -17059,21 +17098,40 @@
                             "value"
                           ],
                           "type": "object"
+                        },
+                        "volume": {
+                          "properties": {
+                            "unit": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "unit",
+                            "value"
+                          ],
+                          "type": "object"
                         }
                       },
-                      "required": [
-                        "duration"
-                      ],
+                      "required": [],
                       "type": "object"
                     },
                     "run_id": {
                       "type": "string"
                     },
                     "source": {
-                      "type": "string"
+                      "type": [
+                        "null",
+                        "string"
+                      ]
                     },
                     "target": {
-                      "type": "null"
+                      "type": [
+                        "null",
+                        "string"
+                      ]
                     }
                   },
                   "required": [
@@ -17170,6 +17228,39 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/export [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
       "schema": {
         "properties": {
@@ -17205,7 +17296,10 @@
             "items": {
               "properties": {
                 "artifact_version_id": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "channels": {
                   "items": {
@@ -17236,7 +17330,10 @@
                           "items": {
                             "type": "number"
                           },
-                          "type": "array"
+                          "type": [
+                            "array",
+                            "integer"
+                          ]
                         },
                         "type": [
                           "array",
@@ -27319,6 +27416,39 @@
       }
     },
     "PATCH /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs/([^/]+)/export [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -39301,7 +39431,10 @@
           "observation": {
             "properties": {
               "artifact_version_id": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "channels": {
                 "items": {
@@ -39527,6 +39660,106 @@
           "command",
           "observation",
           "run"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/export [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/export [ok]": {
+      "schema": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "checksum": {
+                  "type": "string"
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "checksum",
+                "filename",
+                "kind",
+                "version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "command_count": {
+            "type": "integer"
+          },
+          "ground_truth": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "filename",
+              "label"
+            ],
+            "type": "object"
+          },
+          "include_evaluation": {
+            "type": "boolean"
+          },
+          "observation_count": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifacts",
+          "command_count",
+          "include_evaluation",
+          "observation_count",
+          "run_id"
         ],
         "type": "object"
       }
@@ -50035,6 +50268,39 @@
       }
     },
     "PUT /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs/([^/]+)/export [error]": {
       "schema": {
         "properties": {
           "code": {
