@@ -950,6 +950,12 @@ def _remote(cfg: Any) -> Check:
     return Check("remote", OK, "; ".join(parts), facts=facts)
 
 
+def _lab(cfg: Any) -> Check:
+    from openai4s.lab.builtin import doctor_check
+
+    return doctor_check(cfg)
+
+
 #: Order matters: it is the order the report prints in, and it runs from the
 #: most fundamental ("can we reach a model") outward.
 _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
@@ -960,6 +966,7 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
     ("disk", _disk),
     ("connectors", _connectors),
     ("remote", _remote),
+    ("lab", _lab),
     ("judgment", _judgment),
 )
 
@@ -970,7 +977,7 @@ _CHECKS: tuple[tuple[str, Callable[[Any], Check]], ...] = (
 #: and runs the kernel self-test (a subprocess). `remote` runs the BYOC
 #: confinement self-test (another subprocess). `runtime` walks environment
 #: roots. The web Diagnostics GET uses `passive_status()` instead of this set.
-SIDE_EFFECT_CHECKS = frozenset({"data", "isolation", "remote", "runtime"})
+SIDE_EFFECT_CHECKS = frozenset({"data", "isolation", "remote", "runtime", "lab"})
 
 
 def run_checks(cfg: Any) -> list[Check]:

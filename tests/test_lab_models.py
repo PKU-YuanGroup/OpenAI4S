@@ -390,7 +390,16 @@ def test_core_imports_are_stdlib():
                 assert not node.level, f"Use explicit openai4s imports: {path}"
                 names = [node.module or ""]
             for name in names:
-                assert name.split(".")[0] in sys.stdlib_module_names | {"openai4s"}, (
+                # The process adapter uses the first-party stdlib client and
+                # metadata/toy modules. Scientific backend modules stay forbidden.
+                assert name.split(".")[0] in sys.stdlib_module_names | {
+                    "openai4s"
+                } or name in {
+                    "openai4s_lab_provider",
+                    "openai4s_lab_provider.client",
+                    "openai4s_lab_provider.chemgymrl",
+                    "openai4s_lab_provider.toy",
+                }, (
                     path,
                     name,
                 )

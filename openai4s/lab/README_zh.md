@@ -17,6 +17,9 @@
 | `ports.py` | 设备、账本与管理器协议。 |
 | `manifest.py` | 描述校验、单位匹配与公开投影。 |
 | `devices.py` | 线程安全的显式设备登记。 |
+| `provider_env.py` | 原子校验的 ChemGymRL provider 代际与解释器解析。 |
+| `provider_process.py` | 实现 DevicePort 的逐会话沙箱 provider 进程。 |
+| `builtin.py` | 显式内建设备登记、可用性与 Lab CLI 辅助。 |
 | `fake.py` | 确定性的进程内玩具设备与故障注入。 |
 | `manager.py` | 进程级准入、派发、对账与生命周期。 |
 | `policy.py` | 准入与预算的纯函数。 |

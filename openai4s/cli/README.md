@@ -30,3 +30,6 @@ One argparse tree covers three kinds of command, and the difference decides what
 - Exit codes are the verdict, not decoration. `doctor` answers 0 ok / 1 degraded / 2 failed and needs no daemon, because the situation that motivates running it is usually one where the daemon will not start; it also falls back to a plain `Config` rather than raising when the data directory is the thing that is broken. `benchmark` fails on zero workflows instead of reporting a clean run over nothing.
 - The optional Jupyter imports happen only inside the Jupyter command handlers.
 - CLI output and exit codes are an operator interface. Change them and you change the tests and the documentation with them.
+
+`openai4s lab setup chemgymrl [--python PATH] [--dry-run] [--rollback]`,
+`lab status`, `lab smoke [--profile PROFILE]`: manage isolated simulation provider generations without a database.

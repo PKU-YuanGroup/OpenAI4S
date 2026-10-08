@@ -239,6 +239,10 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_lab_models.py`](test_lab_models.py) | Lab 值对象：封闭 schema 的严格解码、run/命令状态机、规范哈希与 ID，以及 `openai4s/lab/` 只依赖标准库的导入边界。 |
 | [`test_lab_manifest.py`](test_lab_manifest.py) | Lab 能力清单：L↔mL 精确换算且从不就近取档，单位与参数拒绝，描述校验，设备登记，以及不可能携带仿真真值的传感投影。 |
 | [`test_lab_fake_device.py`](test_lab_fake_device.py) | 所有 Lab 测试驱动的进程内假设备：端口生命周期、按 provider 命令 ID 的幂等重放、逐资源 fencing、不推进模型的前置条件、CONTRACT §9 的四个故障钩子、种子确定性与真值隔离。 |
+| [`test_lab_provider_env.py`](test_lab_provider_env.py) | 离线 provider 代际安装失败、激活与回滚。 |
+| [`test_lab_provider_process.py`](test_lab_provider_process.py) | 真实沙箱 provider 生命周期与完整 DevicePort 错误翻译。 |
+| [`test_lab_builtin.py`](test_lab_builtin.py) | 内建清单、可用性与显式启用 toy 登记。 |
+| [`test_lab_cli.py`](test_lab_cli.py) | Lab 状态、setup 预览与无数据库 smoke CLI。 |
 | [`test_lab_provider_protocol.py`](test_lab_provider_protocol.py) | Lab provider 线协议：帧上限、非法与溢出输入、未知操作、异常脱敏，以及客户端超时时杀掉整个进程组。 |
 | [`test_lab_provider_toy.py`](test_lab_provider_toy.py) | 在标准库 toy 后端上运行的真实隔离 provider 子进程：完整生命周期、幂等执行、fencing、让第三方输出不污染协议的 fd 交换、超时/崩溃/超限处理，以及在导入任何后端之前清洗环境变量。 |
 | [`test_lab_chemgymrl_mapping.py`](test_lab_chemgymrl_mapping.py) | 基于裁剪后的动作表夹具离线测试 ChemGymRL 映射：能力清单不含 Gym 下标、升到 mL 的精确档位、按容器排列的观测解码、真值分离，以及只在实测运行时下才成立的可复现声明。 |

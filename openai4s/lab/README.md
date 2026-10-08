@@ -18,6 +18,9 @@ No device is registered and no process is started at import time.
 | `ports.py` | Device, ledger and manager protocols. |
 | `manifest.py` | Descriptor validation, unit matching and public projections. |
 | `devices.py` | Thread-safe explicit device registration. |
+| `provider_env.py` | Atomic, verified ChemGymRL provider generations and interpreter resolution. |
+| `provider_process.py` | Sandboxed per-session provider process implementing DevicePort. |
+| `builtin.py` | Explicit builtin registration, availability, and Lab CLI helpers. |
 | `fake.py` | Deterministic in-process toy device and fault injection. |
 | `manager.py` | Process-owned admission, dispatch, reconciliation and lifecycle. |
 | `policy.py` | Pure admission and budget decisions. |

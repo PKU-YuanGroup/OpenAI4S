@@ -402,3 +402,30 @@ launcher that installs it into WSL2 and opens the Windows browser at the
 forwarded port; it is not a native Windows build and does not pretend to be
 one. The full matrix, and what actually ships per platform, is
 [`platforms.md`](platforms.md).
+
+### Lab simulation providers
+
+`openai4s lab setup chemgymrl [--python PATH] [--dry-run]` builds a separate
+CPython 3.10 generation, installs the hash-locked runtime and pinned upstream
+commit, verifies both portable manifests byte for byte, then atomically replaces
+`<data_dir>/lab/providers/chemgymrl/current`. `--rollback` selects the previous
+verified generation. Failed generations and `setup.log` remain for diagnosis.
+An interrupted installer can leave `.setup-lock`; inspect its PID and ensure no
+setup process is still running before removing that lock.
+
+- `OPENAI4S_LAB_CHEMGYMRL_PYTHON`: explicit provider interpreter override. An invalid
+  override fails closed; without one, only the verified current generation is
+  used. There is no fallback to the daemon interpreter for ChemGymRL.
+- `OPENAI4S_LAB_ENABLE_TOY=1`: explicitly register `toy.extractor.01` for offline
+  simulation and E2E. The stdlib toy uses the daemon interpreter; it is off by default.
+- `OPENAI4S_KERNEL_SANDBOX=auto|enforce|off` also controls Lab providers. Raw
+  networking is never enabled by Lab. `auto` degradation is reported in runtime
+  descriptor assumptions, `lab smoke` and doctor. `lab status` reports configured
+  posture as `not_probed`, without starting a process.
+
+`openai4s lab status` lists devices, profiles and environment generations.
+`openai4s lab smoke [--profile WaterOilExtract-v0]` opens with seed 42, executes
+one step and closes, without opening the database or printing evaluation truth.
+Per-session caches have names under `<data_dir>/lab/cache/` resolving inside the
+private run directory; both are removed on close. Ordinary provider package and
+environment directories remain readable under the shared OS sandbox policy.

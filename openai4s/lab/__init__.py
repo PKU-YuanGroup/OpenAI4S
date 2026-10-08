@@ -1,5 +1,6 @@
 """Public, side-effect-free Lab contract vocabulary."""
 
+from openai4s.lab.builtin import register_builtin_devices
 from openai4s.lab.devices import DeviceRegistration, DeviceRegistry
 from openai4s.lab.evaluation import Goal, compare, default_goal, evaluate_run
 from openai4s.lab.fake import FakeExtractorDevice, fake_registration
@@ -75,6 +76,7 @@ from openai4s.lab.policies import (
     run_episode,
 )
 from openai4s.lab.ports import DevicePort, LabLedgerPort, LabManagerPort
+from openai4s.lab.provider_process import ProviderProcessDevice
 from openai4s.lab.wrappers import (
     BusyWrapper,
     FaultInjectionWrapper,
@@ -83,6 +85,8 @@ from openai4s.lab.wrappers import (
 )
 
 __all__ = [
+    "ProviderProcessDevice",
+    "register_builtin_devices",
     "Goal",
     "compare",
     "default_goal",

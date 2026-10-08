@@ -2545,6 +2545,12 @@ def cmd_user(args) -> int:
     return 0
 
 
+def cmd_lab(args: argparse.Namespace) -> int:
+    from openai4s.lab.builtin import run_cli
+
+    return run_cli(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
     p.add_argument(
@@ -2783,6 +2789,24 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("names", nargs="*")
     ev.add_argument("--json", action="store_true")
     ev.set_defaults(fn=cmd_env_recover)
+
+    pl = sub.add_parser(
+        "lab", help="install, inspect and smoke-test simulation providers"
+    )
+    lsub = pl.add_subparsers(dest="lab_action", required=True)
+    ls = lsub.add_parser("setup", help="install a verified ChemGymRL generation")
+    ls.add_argument("provider", choices=("chemgymrl",))
+    ls.add_argument("--python", metavar="PATH")
+    ls.add_argument("--dry-run", action="store_true")
+    ls.add_argument("--rollback", action="store_true")
+    ls.set_defaults(fn=cmd_lab)
+    lt = lsub.add_parser("status", help="show devices, environment and sandbox posture")
+    lt.set_defaults(fn=cmd_lab)
+    lm = lsub.add_parser(
+        "smoke", help="open, perform one seeded step and close; no database"
+    )
+    lm.add_argument("--profile", default="WaterOilExtract-v0")
+    lm.set_defaults(fn=cmd_lab)
 
     pj = sub.add_parser(
         "jupyter",
