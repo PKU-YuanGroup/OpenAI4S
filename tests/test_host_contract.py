@@ -156,7 +156,10 @@ def test_wire_codec_passes_non_dict_args_through():
 
 def test_every_sdk_host_call_has_a_dispatch_route():
     """Every SDK wire method must resolve through a legacy or native route."""
-    src = (_REPO / "openai4s" / "sdk" / "host.py").read_text(encoding="utf-8")
+    src = "\n".join(
+        (_REPO / "openai4s" / "sdk" / filename).read_text(encoding="utf-8")
+        for filename in ("host.py", "lab.py")
+    )
     names = sorted(set(re.findall(r'self\._call\(\s*"([A-Za-z0-9_]+)"', src)))
     assert len(names) >= 60  # the SDK surface as of PR 10
     missing = [

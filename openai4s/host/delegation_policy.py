@@ -234,6 +234,9 @@ class ChildExecutionPolicy:
 
     def allows(self, method: str, tool: Any | None = None) -> bool:
         method = _name(method)
+        # First-release Lab is daemon-root only, even for unrestricted children.
+        if method.startswith("lab_"):
+            return False
         if method in _ALWAYS or not self.restricted:
             return True
         candidates = self._candidates(method, tool)

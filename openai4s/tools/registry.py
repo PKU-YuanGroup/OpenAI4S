@@ -61,6 +61,17 @@ from openai4s.tools.env_create import EnvCreateTool
 from openai4s.tools.env_list import EnvListTool
 from openai4s.tools.env_use import EnvUseTool
 from openai4s.tools.glob_files import GlobFilesTool
+from openai4s.tools.lab import (
+    LabCommandsTool,
+    LabCreateTool,
+    LabDescribeTool,
+    LabExecuteTool,
+    LabListTool,
+    LabObservationsTool,
+    LabObserveTool,
+    LabStatusTool,
+    LabStopTool,
+)
 from openai4s.tools.list_directory import ListDirectoryTool
 from openai4s.tools.mcp import (
     CallMCPTool,
@@ -191,6 +202,15 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     GetRemoteComputeJobResultTool,
     CancelRemoteComputeJobTool,
     CloseRemoteComputeTool,
+    LabListTool,
+    LabDescribeTool,
+    LabCreateTool,
+    LabObserveTool,
+    LabExecuteTool,
+    LabStatusTool,
+    LabStopTool,
+    LabCommandsTool,
+    LabObservationsTool,
     DefineDynamicTool,
     ListDynamicTools,
     PromoteDynamicTool,
@@ -700,7 +720,13 @@ def execute_tool_call(
             return f"[Tool: {tool.name}] {err}", False
 
         result = tool.invoke(dispatcher, spec)
-        ok = not (isinstance(result, dict) and set(result.keys()) == {"error"})
+        ok = not (
+            isinstance(result, dict)
+            and (
+                set(result.keys()) == {"error"}
+                or (tool.name.startswith("lab_") and "error" in result)
+            )
+        )
         return format_tool_result(tool, result), ok
     except Exception as e:  # noqa: BLE001 — a tool error must not crash the loop
         try:

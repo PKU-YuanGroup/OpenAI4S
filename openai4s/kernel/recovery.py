@@ -32,6 +32,10 @@ REPLAY_POLICIES = frozenset({REPLAY_SAFE, REPLAY_CONDITIONAL, REPLAY_NEVER})
 
 _UNSAFE_HOST_METHODS = frozenset(
     {
+        "lab_create",
+        "lab_execute",
+        "lab_stop",
+        "lab_status",
         "submit_output",
         "bash",
         "credentials_set",
@@ -60,6 +64,13 @@ _UNSAFE_HOST_METHODS = frozenset(
 )
 _SAFE_HOST_METHODS = frozenset(
     {
+        "lab_list",
+        "lab_describe",
+        "lab_observe",
+        "lab_commands",
+        "lab_observations",
+        "lab_observe_full",
+        "lab_observations_full",
         "capabilities",
         "current_model",
         "list_models",

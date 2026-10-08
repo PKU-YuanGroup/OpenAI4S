@@ -14,6 +14,7 @@ service 可以返回单键的 `{"error": message}` 表示软失败。Python work
 
 | 文件 | 职责 |
 | --- | --- |
+| [`lab.py`](lab.py) | 仅守护进程可用的仿真 Lab 服务；共享管理器、调用身份及安全错误。 |
 | [`datasets.py`](datasets.py) | 精确 Zenodo 记录/文件选择与来源声明刷新；仅读取元数据。 |
 | [`download.py`](download.py) | 共享有界下载与固定工作区目录发布，支持来源完整性检查和执行取消。 |
 | [`__init__.py`](__init__.py) | 重新导出组合代码要用的大部分 service class。`BashAuthorizationService` 和 `ScienceConnectorService` 不在 `__all__` 里，调用方需要各自从它们所在的模块导入。 |

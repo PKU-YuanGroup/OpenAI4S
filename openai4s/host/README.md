@@ -14,6 +14,7 @@ A service can fail softly by returning the single-key shape `{"error": message}`
 
 | File | Responsibility |
 | --- | --- |
+| [`lab.py`](lab.py) | Daemon-only simulation Lab service; shared manager, caller attribution and safe errors. |
 | [`datasets.py`](datasets.py) | Exact Zenodo record/file selection and refreshed source declarations; metadata only. |
 | [`download.py`](download.py) | Shared bounded transfer and pinned workspace publication, with optional source integrity checks and execution cancellation. |
 | [`__init__.py`](__init__.py) | Re-exports most of the service classes used by composition code. `BashAuthorizationService` and `ScienceConnectorService` are not in `__all__`; callers import those from their own modules. |

@@ -40,6 +40,8 @@ from openai4s.host.endpoints import free_port as _free_port
 from openai4s.host.endpoints import probe_ready as _probe_ready
 from openai4s.host.files import WorkspaceFileService
 from openai4s.host.files import is_secret_path as _is_secret_path
+from openai4s.host.lab import LabService, activity_view
+from openai4s.host.lab import unavailable as lab_unavailable
 from openai4s.host.llm import LLMService
 from openai4s.host.mcp import MCPService
 from openai4s.host.progress import PLAN_STEP_STATUSES, ProgressService
@@ -52,6 +54,8 @@ from openai4s.host.remote_capabilities import (
 from openai4s.host.remote_science import RemoteScienceService
 from openai4s.host.session import SessionControlService
 from openai4s.host.skills import SkillService
+from openai4s.lab.models import CommandOrigin, LabCaller
+from openai4s.lab.ports import LabManagerPort
 from openai4s.llm import chat
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
@@ -165,6 +169,8 @@ def _configured_bash_allowed_roots() -> list[str]:
 def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     """(kind, title, input) for a visible tool call, else None."""
     a = args[0] if args and isinstance(args[0], dict) else {}
+    if method in {"lab_create", "lab_execute", "lab_stop"}:
+        return activity_view(method, a)
     if method == "web_search":
         return ("search", "Searching the web", {"query": a.get("query", "")})
     if method == "web_fetch":
@@ -936,6 +942,25 @@ def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
 
 def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
+    if kind == "lab":
+        payload = result if isinstance(result, dict) else {}
+        command = payload.get("command") or {}
+        run = payload.get("run") or {}
+        state = (
+            payload.get("error_kind")
+            or command.get("state")
+            or run.get("status")
+            or "unavailable"
+        )
+        return (
+            {
+                "mode": "simulation",
+                "state": state,
+                "run_id": run.get("run_id"),
+                "command_id": command.get("command_id"),
+            },
+            f"仿真 · {state}",
+        )
     if kind == "delegate":
         # Before the generic declared-failure read: a max_turns envelope
         # carries a top-level ``error`` beside its structured fields, and the
@@ -1233,6 +1258,11 @@ class HostDispatcher:
         # parallel read-only native tools: each approval must point back to its
         # own provider tool call rather than merely to the surrounding turn.
         self._action_context_local = threading.local()
+        self._lab_call_local = threading.local()
+        self._lab_manager_provider: Callable[[], LabManagerPort | None] = lambda: None
+        self._lab_service = LabService(
+            lambda: self._lab_manager_provider(), self._lab_caller
+        )
         # A Web native writer binds its Artifact committer only for the exact
         # dispatcher thread executing that action. A foreground Kernel Cell
         # binds a separate thread-local receipt scope around its one protocol
@@ -1402,6 +1432,42 @@ class HostDispatcher:
             if official_stage11_enabled(self.cfg):
                 self._compute.reconcile()
         return self._compute
+
+    def set_lab_manager(self, provider: Callable[[], LabManagerPort | None]) -> None:
+        """Bind the daemon's one process-level manager; never construct one here."""
+        self._lab_manager_provider = provider
+
+    def invoke_lab_tool(self, method: str, arguments: dict[str, Any]) -> Any:
+        """Attribute the trusted native Tool entry without wire-spoofable fields."""
+        previous = getattr(self._lab_call_local, "origin", None)
+        self._lab_call_local.origin = CommandOrigin.AGENT_TOOL
+        try:
+            return self(method, [dict(arguments)])
+        finally:
+            self._lab_call_local.origin = previous
+
+    def _lab_caller(self) -> LabCaller:
+        store = get_store(self.cfg.db_path)
+        scope = store.resolve_frame_scope(self.frame_id)
+        root = str(scope.get("root_frame_id") or self.frame_id or "")
+        owner_record = store.team.session_owner(root)
+        owner = owner_record.get("user_id") if owner_record else None
+        context = self._current_action_context()
+        origin = getattr(self._lab_call_local, "origin", None) or (
+            CommandOrigin.AGENT_TOOL
+            if context.get("tool_call_id")
+            else CommandOrigin.HOST_SDK
+        )
+        # Existing action/kernel bindings do not carry an ExecutionOwner.
+        # Recovery's fail-closed Host-method lists therefore fence replay.
+        return LabCaller(
+            root,
+            str(self.frame_id or ""),
+            owner,
+            origin,
+            getattr(self._lab_call_local, "approval_ref", None),
+            None,
+        )
 
     @property
     def last_output(self) -> dict | None:
@@ -1966,7 +2032,13 @@ class HostDispatcher:
             audit_resources = (
                 list(control_tool.resource_keys(args[0] if args else {}))
                 if control_tool is not None
-                else [f"host:{method}"]
+                else (
+                    [f"lab:{args[0].get('run_id', '*')}"]
+                    if method in {"lab_observe_full", "lab_observations_full"}
+                    and args
+                    and isinstance(args[0], dict)
+                    else [f"host:{method}"]
+                )
             )
         except Exception:  # noqa: BLE001 - audit metadata stays total
             audit_resources = [f"host:{method}"]
@@ -1978,7 +2050,11 @@ class HostDispatcher:
                 or control_tool.side_effect_class
             )
             if control_tool is not None
-            else "runtime_mutation"
+            else (
+                "read_only"
+                if method in {"lab_observe_full", "lab_observations_full"}
+                else "runtime_mutation"
+            )
         )
         # ``dangerous`` was declared on ten control tools and asserted by the
         # policy tests, and then read by nothing: it reached no gate, no audit
@@ -1997,7 +2073,18 @@ class HostDispatcher:
         step_id = None
         if self.on_step is not None:
             try:
-                view = _step_begin(method, args)
+                view_args = args
+                if (
+                    method in {"lab_execute", "lab_stop"}
+                    and args
+                    and isinstance(args[0], dict)
+                ):
+                    observation = self._lab_service.call(
+                        "observe", {"run_id": args[0].get("run_id")}
+                    )
+                    run = observation.get("run") or {}
+                    view_args = [{**args[0], "device_id": run.get("device_id")}]
+                view = _step_begin(method, view_args)
             except Exception:  # noqa: BLE001 — step projection must never break a call
                 view = None
             if view is not None:
@@ -2082,6 +2169,15 @@ class HostDispatcher:
                 }
                 ok = False
                 return result
+            if method.startswith("lab_"):
+                try:
+                    lab_manager = self._lab_manager_provider()
+                except Exception:
+                    lab_manager = None
+                if lab_manager is None:
+                    result = lab_unavailable()
+                    ok = False
+                    return result
             # opencode-style permission gate: block on user approval for
             # risk-bearing tools. Covers this dispatcher (foreground + background
             # cells) and, via the process-wide broker keyed by root_frame_id,
@@ -2169,7 +2265,12 @@ class HostDispatcher:
                     result = {"error": f"Permission denied: {msg}"}
                     ok = False
                     return result
-            result = handler(*args)
+            previous_lab_approval = getattr(self._lab_call_local, "approval_ref", None)
+            self._lab_call_local.approval_ref = permission_decision_id
+            try:
+                result = handler(*args)
+            finally:
+                self._lab_call_local.approval_ref = previous_lab_approval
             if method in NATIVE_ARTIFACT_RECEIPT_METHODS:
                 result = self._commit_or_queue_artifact_receipt(result)
             if (
@@ -2187,7 +2288,10 @@ class HostDispatcher:
                     )
                     failure.output_committed = True  # type: ignore[attr-defined]
                     raise failure
-            if isinstance(result, dict) and set(result.keys()) == {"error"}:
+            if isinstance(result, dict) and (
+                set(result.keys()) == {"error"}
+                or (method.startswith("lab_") and "error" in result)
+            ):
                 ok = False  # soft-fail contract
             else:
                 if method == "authorize_bash" and isinstance(result, dict):
@@ -2243,6 +2347,13 @@ class HostDispatcher:
                         # (``ok: False``) must not render as a green "done"
                         # card either.
                         step_ok = ok and _declared_failure_reason(step_result) is None
+                        if view[0] == "lab" and isinstance(step_result, dict):
+                            lab_command: Any = step_result.get("command") or {}
+                            step_ok = step_ok and lab_command.get("state") not in {
+                                "failed",
+                                "rejected",
+                                "outcome_unknown",
+                            }
                         step_status = "done" if step_ok else "error"
                     self.on_step(
                         {
@@ -3046,6 +3157,44 @@ class HostDispatcher:
             result = dict(result)
             result["_openai4s_artifact_captures"] = receipts
         return result
+
+    # --- simulation Lab: one service for native tools and SDK RPC --------
+    def _m_lab_list(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("list", spec if spec is not None else {})
+
+    def _m_lab_describe(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("describe", spec if spec is not None else {})
+
+    def _m_lab_create(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("create", spec if spec is not None else {})
+
+    def _m_lab_observe(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("observe", spec if spec is not None else {})
+
+    def _m_lab_execute(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("execute", spec if spec is not None else {})
+
+    def _m_lab_status(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("status", spec if spec is not None else {})
+
+    def _m_lab_stop(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("stop", spec if spec is not None else {})
+
+    def _m_lab_commands(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("commands", spec if spec is not None else {})
+
+    def _m_lab_observations(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("observations", spec if spec is not None else {})
+
+    def _m_lab_observe_full(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("observe_full", spec if spec is not None else {})
+
+    def _m_lab_observations_full(
+        self, spec: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._lab_service.call(
+            "observations_full", spec if spec is not None else {}
+        )
 
     def _m_compute_cancel(self, kw: dict) -> Any:
         return self._compute_guard(lambda: self.compute.cancel(kw))

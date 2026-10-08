@@ -1718,6 +1718,262 @@
     }
   },
   {
+    "description": "List simulation-only Lab devices and this session's runs.",
+    "name": "lab_list",
+    "parameters": {
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "description": "Describe a simulation-only Lab device's capabilities, exact parameter levels and units.",
+    "name": "lab_describe",
+    "parameters": {
+      "properties": {
+        "device_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id"
+      ]
+    }
+  },
+  {
+    "description": "Create an approved simulation-only Lab run. Budgets only tighten backend limits; reuse the returned idempotency_key for retries.",
+    "name": "lab_create",
+    "parameters": {
+      "properties": {
+        "budgets": {
+          "additionalProperties": false,
+          "properties": {
+            "idle_timeout_ms": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_commands": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_consecutive_failures": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_steps": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_wall_ms": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "device_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "seed": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device_id",
+        "profile"
+      ]
+    }
+  },
+  {
+    "description": "Read the latest simulated sensor observation without advancing the experiment. Arrays over 256 elements are summarized; full arrays are available only in Python via host.lab.observe(full=True).",
+    "name": "lab_observe",
+    "parameters": {
+      "properties": {
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    }
+  },
+  {
+    "description": "Execute an approved simulation-only operation using expected_revision from the latest observation/status. Rejection is a normal result: inspect command.state and command.error (including available parameter levels). For outcome_unknown, query lab_status(run_id, command_id) for the SAME command; never resend with a new key.",
+    "name": "lab_execute",
+    "parameters": {
+      "properties": {
+        "expected_revision": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "unit": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "operation",
+        "expected_revision"
+      ]
+    }
+  },
+  {
+    "description": "Query simulation status and reconcile the SAME unknown command using command_id; never resend with a new idempotency key. This may record reconciliation, but never dispatches a new command.",
+    "name": "lab_status",
+    "parameters": {
+      "properties": {
+        "command_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    }
+  },
+  {
+    "description": "Stop this session's simulation run safely without waiting for approval. Runs belonging to other sessions return run_not_found.",
+    "name": "lab_stop",
+    "parameters": {
+      "properties": {
+        "reason": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    }
+  },
+  {
+    "description": "Read this simulation run's projected command ledger, including rejected commands and their errors.",
+    "name": "lab_commands",
+    "parameters": {
+      "properties": {
+        "after_seq": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    }
+  },
+  {
+    "description": "Read this simulation run's sensor history without advancing it. Arrays over 256 elements are summarized; Python host.lab.observations(full=True) can read full arrays.",
+    "name": "lab_observations",
+    "parameters": {
+      "properties": {
+        "after_sequence": {
+          "minimum": -1,
+          "type": "integer"
+        },
+        "limit": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    }
+  },
+  {
     "description": "Define and smoke-test a sandboxed tool for this session.",
     "name": "define_dynamic_tool",
     "parameters": {

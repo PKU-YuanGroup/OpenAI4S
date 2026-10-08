@@ -13,6 +13,20 @@ from openai4s.tools.registry import all_tools
 
 _GROUPS: tuple[dict[str, Any], ...] = (
     {
+        "id": "lab",
+        "always": False,
+        "description": "Simulation-only Lab devices, approved operations and sensor observations.",
+        "keywords": (
+            "lab",
+            "chemgym",
+            "simulation",
+            "experiment",
+            "仿真",
+            "实验台",
+            "萃取",
+        ),
+    },
+    {
         "id": "capabilities",
         "always": True,
         "description": "Active discovery for progressively disclosed tools.",
@@ -265,6 +279,20 @@ _GROUPS: tuple[dict[str, Any], ...] = (
 )
 _GROUP_BY_ID = {group["id"]: group for group in _GROUPS}
 _TOOL_GROUP = {
+    **{
+        name: "lab"
+        for name in (
+            "lab_list",
+            "lab_describe",
+            "lab_create",
+            "lab_observe",
+            "lab_execute",
+            "lab_status",
+            "lab_stop",
+            "lab_commands",
+            "lab_observations",
+        )
+    },
     "search_capabilities": "capabilities",
     **{
         name: "core"

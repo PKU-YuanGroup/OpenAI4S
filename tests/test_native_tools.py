@@ -48,6 +48,8 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
         "read_mcp_resource",
         "accelerator_status",
         "remote_gpu_status",
+        "lab_list",
+        "lab_observe",
         "compute_status",
         "compute_result",
         "compute_cancel",
