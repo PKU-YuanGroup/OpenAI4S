@@ -1,6 +1,7 @@
 """Public, side-effect-free Lab contract vocabulary."""
 
 from openai4s.lab.devices import DeviceRegistration, DeviceRegistry
+from openai4s.lab.evaluation import Goal, compare, default_goal, evaluate_run
 from openai4s.lab.fake import FakeExtractorDevice, fake_registration
 from openai4s.lab.manifest import (
     load_descriptor,
@@ -66,9 +67,35 @@ from openai4s.lab.models import (
     run_sources_for,
     sha256_hex,
 )
+from openai4s.lab.policies import (
+    FixedRulePolicy,
+    ManagerPolicyEnv,
+    PolicyEnv,
+    RandomValidPolicy,
+    run_episode,
+)
 from openai4s.lab.ports import DevicePort, LabLedgerPort, LabManagerPort
+from openai4s.lab.wrappers import (
+    BusyWrapper,
+    FaultInjectionWrapper,
+    LatencyWrapper,
+    ObservationNoiseWrapper,
+)
 
 __all__ = [
+    "Goal",
+    "compare",
+    "default_goal",
+    "evaluate_run",
+    "PolicyEnv",
+    "ManagerPolicyEnv",
+    "FixedRulePolicy",
+    "RandomValidPolicy",
+    "run_episode",
+    "LatencyWrapper",
+    "ObservationNoiseWrapper",
+    "FaultInjectionWrapper",
+    "BusyWrapper",
     "FakeExtractorDevice",
     "fake_registration",
     "DeviceRegistration",

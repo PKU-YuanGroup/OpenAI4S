@@ -239,3 +239,89 @@ callers cannot create, execute or stop; read paths also skip cleanup and query
 side effects. Public run, command, descriptor and observation values use the
 contract projection functions. Device registration summaries and the ledger's
 metadata-only event rows are the two catalog/cursor envelopes.
+
+## Evaluation and baseline policies
+
+`lab.evaluation` is a private, simulator-ground-truth evaluation surface. It
+accepts fully paginated, decoded ledger rows, not public projections. Its
+`Goal` explicitly names the profile, target, collection vessel, minimum mole
+amount and minimum purity. Reward, Gym termination, successful tool delivery,
+and `goal_met` are independent. Missing final/initial evidence, unbound
+revisions or an unresolved command yield `goal_met: "unknown"`. Absent species
+in a complete `moles` map count as zero; absent vessels/maps do not.
+
+The defaults below target `beaker_1`, require at least **0.5 mol** and **0.9
+purity**, and are **benchmark choices, not upstream success thresholds**.
+Evidence is pinned to ChemGymRL SHA
+`ab8227b6b33f13617b7e551bdf6b894df7eec68d`:
+
+- `WaterOilExtract-v0`: salt equivalents `q = NaCl + min(Na, Cl)` in the
+  collection vessel. Purity is `q / (sum(moles except H2O) - min(Na, Cl))`.
+  Oil remains contamination. Upstream instead sums salt-minus-oil across both
+  work vessels; it supplies no Boolean success criterion. See upstream
+  `chemistrylab/benches/extract_bench.py:115-124,202-231` and
+  `chemistrylab/util/reward.py:16-39,74-95`. The initial salt inventory is
+  1 mol, so the quantity threshold requires at least half of it.
+- `GenWurtzExtract-v2`: the target is randomly selected at reset; pass the
+  initial public `targets` channel value to `default_goal(profile, target=...)`.
+  The factory refuses an omitted target. Purity excludes `C6H14` and
+  `diethyl ether`; for NaCl only, it folds paired Na/Cl into equivalents in
+  both numerator and denominator. For a hydrocarbon target it leaves impurity
+  ions separate, matching upstream's target-specific denominator. Upstream
+  sums `q * purity` across three work vessels. See
+  `chemistrylab/benches/extract_bench.py:69-86,158-165`,
+  `chemistrylab/benches/general_bench.py:235-240`, and
+  `chemistrylab/util/reward.py:74-95`. Solvent identities are valid for these
+  pinned profiles, not an arbitrary chemistry model.
+
+Initial evaluation sequence 0 is the reset **baseline**, reported separately
+from the sum of step rewards (sequences >0). Upstream subtracts the baseline
+at episode end; see `chemistrylab/benches/general_bench.py:211-233`. Material
+consumption is positive **net depletion of feed vessels** (transfer sources
+that are never targets), in L and mol; it is neither total transferred material
+nor chemical destruction. Missing stock evidence yields null. Budget use
+reports steps, command attempts, terminal wall duration and consecutive
+failures. Evidence completeness binds each successful command to its own
+observation id, command id and applied revision; no successes gives null,
+not a fictitious 100%.
+
+A final command snapshot cannot attest the number of actual dispatch calls or
+recover `outcome_unknown` states overwritten by reconciliation. Those historic
+metrics are null with reasons; current unresolved commands are counted.
+A future event-history input is required to prove zero duplicate dispatches
+and report subsequent reconciliation outcomes. `compare` refuses numeric
+comparisons unless complete paired configuration, backend/adapter versions,
+wrapper assumptions, explicit goal and initial-state fingerprints match.
+Identical seeds alone do not establish comparable initial states.
+
+`ManagerPolicyEnv` adapts an already-created run to `LabManagerPort`. The
+production fixed and seeded random policies therefore pass through the same
+manager admission, budgets, leases and reconciliation boundary as other
+callers. They receive projected sensors and capabilities only. Random sampling
+is uniform over capabilities and then over each advertised parameter level;
+physical preconditions can still fail. The fixed 13-action sequence is a
+readable WaterOil simulation baseline (with toy and GenWurtz compatibility),
+not a physical experiment recipe or a guarantee of goal attainment.
+`run_episode` stops on unknown outcomes and counts refused commands against
+its attempt bound. It never automatically retries an uncertain command.
+
+`LatencyWrapper`, `ObservationNoiseWrapper`, `FaultInjectionWrapper` and
+`BusyWrapper` declare their parameters in descriptor `assumptions` on both
+`describe` and `open`. Latency uses injected `sleep(seconds)` and affects
+open/execute/query observation delivery without converting model time to real
+time. Noise currently supports `{kind: "gaussian", sigma: ...}` on a declared
+numeric scalar/array channel, is additive and unclipped, and leaves evaluation
+untouched. Its seed/profile/session-seed/provider-step key gives retries the
+same sensor sample. Fault schedules and inclusive busy windows use one-based
+**new-command attempt ordinals** per session, not successful model steps;
+replays do not consume ordinals. A dropped request remains queryable as absent;
+a dropped response leaves the underlying receipt queryable. Refusal receipts
+retain tombstones after eviction so a seen id never executes twice.
+
+`scripts/lab_evaluate.py` is a development-only device-contract probe and emits
+private evaluation JSON. Its local adapter is deliberately labelled
+`device_contract_probe` in the configuration; it does not claim the manager's
+approval/lease/durability guarantees and cannot establish LLM comparison
+fairness. Use `ManagerPolicyEnv` with the integrated manager for that comparison.
+The probe runs fake, subprocess toy, or an explicitly provided ChemGymRL
+interpreter; all provider scratch files belong under its isolated work-dir.
