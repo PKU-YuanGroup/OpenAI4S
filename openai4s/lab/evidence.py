@@ -9,6 +9,7 @@ can omit declarations with partial/blocked/failed task_status.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -18,6 +19,30 @@ from openai4s.lab.ports import LabLedgerPort
 _ALL_ROWS = 2**63 - 1
 _UNVERIFIABLE = "Lab completion evidence could not be verified."
 RUNNING_NOTICE = "Simulation experiment is still running."
+_SUCCESS_WORDS = re.compile(
+    r"\b(?:completed|finished|succeeded|successful(?:ly)?|done|goal\s+(?:met|achieved))\b"
+    r"|完成|成功|达成",
+    re.IGNORECASE,
+)
+
+
+def _success_prose(claim):
+    # Conservative in Lab sessions: an incomplete report should state the
+    # observed state (stopped/unresolved), not use completion wording. Do not
+    # infer negation across arbitrary model prose or treat task_status as a
+    # licence to contradict the public summary. Machine status fields are
+    # deliberately excluded from this text check.
+    if isinstance(claim, str):
+        return bool(_SUCCESS_WORDS.search(claim))
+    if isinstance(claim, Mapping):
+        return any(
+            _success_prose(value)
+            for key, value in claim.items()
+            if key not in {"lab_runs", "task_status"}
+        )
+    if isinstance(claim, (list, tuple)):
+        return any(_success_prose(value) for value in claim)
+    return False
 
 
 def lab_completion_check(
@@ -45,7 +70,7 @@ def _check(ledger, root, claim):
     if declarations is None:
         if not ledger.list_runs(root, limit=1):
             return None
-        if status in {"partial", "blocked", "failed"}:
+        if status in {"partial", "blocked", "failed"} and not _success_prose(claim):
             return None
         return "Lab completion requires explicit lab_runs with run_id and status."
     if not isinstance(declarations, list) or not 1 <= len(declarations) <= 100:
@@ -69,6 +94,8 @@ def _check(ledger, root, claim):
         if run is None or run.get("root_frame_id") != root:
             return "The declared Lab run is not available in this session."
         if item["status"] == "running":
+            if _success_prose(claim):
+                return "A running Lab declaration cannot support completion wording."
             if run.get("status") not in {"creating", "ready", "busy", "quarantined"}:
                 return "The declared Lab run is no longer running."
             summary = payload.get("summary", "")

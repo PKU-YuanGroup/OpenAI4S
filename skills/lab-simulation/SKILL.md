@@ -248,3 +248,6 @@ For an ended, stopped, failed, or unresolved run that cannot meet the goal,
 report the recorded state with `task_status` partial, failed, or blocked as
 appropriate, and explain missing evidence. Never label it `running` to bypass
 the completion check or call it a completed experiment.
+State `stopped` or `unresolved` directly: in a Lab session the Host conservatively
+requires verified completed-run evidence for completion/success wording in
+public prose, even when the machine-readable task status is partial.

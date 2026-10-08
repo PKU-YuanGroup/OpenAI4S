@@ -195,6 +195,39 @@ def test_pending_submission_rechecks_lab_after_the_cell():
     assert service.last_output is None
 
 
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+@pytest.mark.parametrize("task_status", ["partial", "blocked", "failed"])
+@pytest.mark.parametrize("wording", ["Completed the experiment", "实验已完成"])
+def test_incomplete_status_cannot_hide_completion_prose(door, task_status, wording):
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ready", end_reason=None)
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    payload = claim(task_status=task_status, completion_bullets=[wording])
+    del payload["lab_runs"]
+    completed, error = finish(door, service, payload)
+    assert completed is None and "explicit lab_runs" in error
+    # A running label and the required progress notice also cannot hide it.
+    payload.update(
+        lab_runs=[{"run_id": "run", "status": "running"}],
+        task_status="partial",
+        summary=RUNNING_NOTICE,
+    )
+    completed, error = finish(door, service, payload)
+    assert completed is None and "completion wording" in error
+    # An honest failure report remains possible after Stop.
+    ledger.run.update(status="ended", end_reason="stopped")
+    del payload["lab_runs"]
+    payload.update(
+        summary="The experiment was stopped.",
+        completion_bullets=["Reported the stopped experiment"],
+        task_status=task_status,
+    )
+    completed, _ = finish(door, service, payload)
+    assert completed is not None
+
+
 def test_evidence_failure_and_concurrent_changes_fail_closed(caplog):
     ledger = SnapshotLedger()
 
