@@ -277,8 +277,14 @@ it("rejects an exact lineage response naming another version", async () => {
   finally { setExecutionFetch(null); }
 });
 
-it("no recorded producing cell is a completed empty state, not reproduction generation", () => {
+it("no recorded producing cell is a completed empty state, not reproduction generation", async () => {
   resetStoreFields();
+  // The empty-state copy is dictionary text: pin the language rather than
+  // inheriting the dev box's OS locale (zh systems render 此记录未包含生产代码).
+  // Pinned before the document stub below exists: setLang's static repaint
+  // walks the real document, and the stub only carries createElement.
+  const runtime = await import("../../i18n/runtime");
+  await runtime.setLang("en");
   vi.stubGlobal("document", { createElement: () => new ProvenanceNode() });
   const art = { id: "a", version_id: "v1", is_user_upload: true };
   dockArtifact.value = art; provMode.value = true; provSub.value = "code";
@@ -291,7 +297,7 @@ it("no recorded producing cell is a completed empty state, not reproduction gene
     const walk = (node: ProvenanceNode): string => [node.textContent, ...node.children.map(walk)].join(" ");
     expect(walk(view)).not.toContain("Generating reproduction code");
     expect(walk(view)).toMatch(/No .*record|未记录|没有.*记录/i);
-  } finally { vi.unstubAllGlobals(); resetStoreFields(); }
+  } finally { vi.unstubAllGlobals(); await runtime.setLang("system"); resetStoreFields(); }
 });
 
 /**

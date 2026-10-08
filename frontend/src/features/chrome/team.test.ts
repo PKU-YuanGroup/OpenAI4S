@@ -338,6 +338,10 @@ describe("F-20 team surface", () => {
 
   it("loadAdmin renders the five governance sections and .team-admin-table", async () => {
     team.bootTeam();
+    // These strings come from the active dictionary: on a non-English dev
+    // box the OS default paints them in zh and the assertions below miss.
+    const runtime = await import("../../i18n/runtime");
+    await runtime.setLang("en");
     const json = (body: unknown) => ({
       status: 200,
       ok: true,
@@ -372,6 +376,7 @@ describe("F-20 team surface", () => {
     expect(text).toContain("erika");
     expect(text).toContain("mallory");
     expect(body?.querySelectorAll(".team-admin-table").length).toBeGreaterThan(0);
+    await runtime.setLang("system");
   });
 
   it("a directory read that answers last cannot repaint over the one opened after it", async () => {
