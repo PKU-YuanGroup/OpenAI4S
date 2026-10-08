@@ -2738,6 +2738,9 @@ class SessionRunner:
         self._lab_manager_lock = threading.Lock()
         self._lab_manager: LabManager | None = None
         self._lab_creations = lab_routes.LabCreationGate()
+        # What every session dispatcher gets: the one manager, with tool/SDK
+        # creates behind the same deletion admission as the REST route.
+        self._session_lab = lab_routes.SessionLabManager(self)
         self._lab_updates = lab_routes.LabUpdateEmitter(
             emit=lambda root, event: self.hub.broadcast(root, event),
             latest_seq=lambda root: get_store(self.cfg.db_path).lab.latest_event_seq(
@@ -6104,6 +6107,11 @@ class SessionRunner:
             bind_session_domain = getattr(disp, "set_session_domain", None)
             if callable(bind_session_domain):
                 bind_session_domain(self.session_domain)
+            # Native lab_* tools and host.lab reach the daemon's one manager
+            # (never a second one: startup reconciliation would end live runs).
+            bind_lab = getattr(disp, "set_lab_manager", None)
+            if callable(bind_lab):
+                bind_lab(lambda: self._session_lab)
             # Project every visible host.* call into persisted UI activity.
             disp.on_step = self._make_step_sink(st)
             disp.on_plan = self._make_plan_sink(st)

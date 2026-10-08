@@ -164,18 +164,9 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
             # opening that already won finishes before the deletion hook;
             # a later one is refused without spawning a provider.
             with runner._lab_creations.session(fid):
-                with runner._lock:
-                    current = store.get_frame(fid)
-                    if current is None:
-                        raise GatewayError(404, "session not found")
-                    if (
-                        runner._closed
-                        or fid in runner._deleting_sessions
-                        or current.get("project_id") in runner._deleting_projects
-                    ):
-                        raise GatewayError(
-                            409, "session deletion or shutdown is in progress"
-                        )
+                refusal = creation_refusal(runner, fid)
+                if refusal is not None:
+                    raise GatewayError(*refusal)
                 result = manager.create_run(caller, body)
         elif name == "lab.run":
             run_id = match.group(2)
@@ -253,6 +244,51 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
             error["details"] = exc.details
         self._json(error, _ERROR_STATUS.get(exc.code, 503))
     return True
+
+
+def creation_refusal(runner: Any, root_frame_id: str) -> tuple[int, str] | None:
+    """Why a run may not be created for this root now, or None.
+
+    Shared by every entry point (REST and the session's tools/SDK), always
+    under that root's LabCreationGate, so session deletion cannot race an
+    opening provider from any of them.
+    """
+    store = get_store(runner.cfg.db_path)
+    with runner._lock:
+        current = store.get_frame(root_frame_id)
+        if current is None:
+            return 404, "session not found"
+        if (
+            runner._closed
+            or root_frame_id in runner._deleting_sessions
+            or current.get("project_id") in runner._deleting_projects
+        ):
+            return 409, "session deletion or shutdown is in progress"
+    return None
+
+
+class SessionLabManager:
+    """The daemon's one manager as a session's tools and host.lab see it.
+
+    Creating a run takes the same per-root gate and admission check as the
+    REST route; everything else is the manager's own. Without this a tool or
+    SDK create could open a provider after the deletion hook ran and before
+    the ledger rows were deleted, leaving a live provider with no run row.
+    """
+
+    def __init__(self, runner: Any) -> None:
+        self._runner = runner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runner.lab_manager, name)
+
+    def create_run(self, caller: LabCaller, request: dict[str, Any]) -> dict[str, Any]:
+        root = caller.root_frame_id
+        with self._runner._lab_creations.session(root):
+            refusal = creation_refusal(self._runner, root)
+            if refusal is not None:
+                raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, refusal[1])
+            return self._runner.lab_manager.create_run(caller, request)
 
 
 class LabCreationGate:
