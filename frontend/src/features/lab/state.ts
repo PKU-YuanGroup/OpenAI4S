@@ -26,8 +26,9 @@ function older(candidate: Run, previous: Run | undefined): boolean {
 }
 
 function newestObservation(current: Observation | null | undefined, incoming: Observation | null): Observation | null {
-  if (!incoming) return current || null;
-  if (current?.run_id === incoming.run_id && current.sequence > incoming.sequence) return current;
+  if (!incoming || incoming.channels.some((c) => c.value && typeof c.value === "object" &&
+      !Array.isArray(c.value) && "truncated" in c.value)) return current || null;
+  if (current?.run_id === incoming.run_id && current.sequence >= incoming.sequence) return current;
   return incoming;
 }
 
@@ -176,7 +177,7 @@ export class LabController {
         if (!older(result.run, known)) {
           const runs = [result.run, ...this.state.value.runs.filter((r) => r.run_id !== result.run.run_id)];
           if (sent.kind === "create" && "descriptor" in result) {
-            this.patch({ runs, selectedRunId: result.run.run_id, detail: { ...result, commands: [] } });
+            this.patch({ runs, selectedRunId: result.run.run_id, detail: { ...result, observation: newestObservation(null, result.observation), commands: [] } });
           } else if ("command" in result && this.state.value.detail?.run.run_id === result.run.run_id) {
             const detail = this.state.value.detail;
             const commands = result.command ? [...detail.commands.filter((c) => c.command_id !== result.command!.command_id), result.command]
@@ -185,7 +186,7 @@ export class LabController {
           }
         }
       }
-      await this.refresh();
+      void this.refresh();
     } catch (error) {
       saved.sending = false; saved.error = message(error);
       // A structured 4xx is a confirmed refusal before dispatch, unlike network/5xx errors.
@@ -217,7 +218,7 @@ export class LabController {
         this.patch({ detail: { ...current, run: result.run, commands, observation: newestObservation(current.observation, result.observation) },
           runs: this.state.value.runs.map((r) => r.run_id === run ? result.run : r) });
       }
-      await this.refresh();
+      void this.refresh();
     } catch (error) { if (this.matches(root, epoch)) this.patch({ error: message(error) }); }
     finally { if (this.matches(root, epoch)) this.patch({ querying: null }); }
   }
@@ -235,7 +236,7 @@ export class LabController {
       if (current && result.run.run_id === run && !older(result.run, current.run)) {
         this.patch({ detail: { ...current, run: result.run }, runs: this.state.value.runs.map((r) => r.run_id === run ? result.run : r) });
       }
-      await this.refresh();
+      void this.refresh();
     } catch (error) { if (this.matches(root, epoch)) this.patch({ error: message(error) }); }
     finally { if (this.matches(root, epoch)) this.patch({ stopping: false }); }
   }

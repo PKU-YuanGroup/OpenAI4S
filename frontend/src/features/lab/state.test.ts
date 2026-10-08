@@ -145,6 +145,43 @@ describe("confirmed Lab state", () => {
     }
   });
 
+  it("preserves full sensor data when a command returns an equal or newer array summary", async () => {
+    for (const sequence of [3, 4]) {
+      controller.scope("root", 1, true);
+      snapshot = detail({ run: run({ revision: 3 }), observation: observation({ sequence: 3 }) });
+      await ready();
+      const summarized = observation({ sequence });
+      summarized.channels[0]!.value = { shape: [2, 4], summary: { min: .1, max: .8, mean: .4 }, truncated: true };
+      send = async () => {
+        setLabFetch(async () => json({ error: "read unavailable" }, 503));
+        return json({ run: run({ revision: sequence }), command: command({ state: "succeeded" }), observation: summarized });
+      };
+      await execute();
+      expect(controller.state.value.detail?.observation?.sequence).toBe(3);
+      expect(Array.isArray(controller.state.value.detail?.observation?.channels[0]?.value)).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      setLabFetch(async (url, init) => init?.method === "POST" ? send(url, {}) : json(url.endsWith("/lab") ? { devices: [device], runs: [snapshot.run] } : snapshot));
+    }
+  });
+
+  it("releases stop and query controls after the POST settles while REST remains pending", async () => {
+    for (const action of ["stop", "reconcile"] as const) {
+      controller.scope("root", 1, true); snapshot = detail({ commands: [command()] }); await ready();
+      const held = deferred<void>();
+      send = async () => {
+        setLabFetch(async (url) => { await held.promise; return json(url.endsWith("/lab") ? { devices: [device], runs: [snapshot.run] } : snapshot); });
+        return json({ run: snapshot.run, command: command(), observation: snapshot.observation, stopped: true, semantics: "end_session" });
+      };
+      const pending = action === "stop" ? controller.stop() : controller.reconcile("labcmd-one");
+      await vi.advanceTimersByTimeAsync(0);
+      try {
+        expect(controller.state.value.stopping).toBe(false);
+        expect(controller.state.value.querying).toBeNull();
+      } finally { held.resolve(); await pending; await controller.refresh(); }
+      setLabFetch(async (url, init) => init?.method === "POST" ? send(url, {}) : json(url.endsWith("/lab") ? { devices: [device], runs: [snapshot.run] } : snapshot));
+    }
+  });
+
   it("retains rejected commands and their reason instead of declaring execution success", async () => {
     await ready();
     snapshot = detail({ run: run({ command_count: 1 }), commands: [command({ state: "rejected", error_code: "unsupported_action", error: "Allowed volume: 200, 400 mL" })] });
