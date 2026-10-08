@@ -8,10 +8,20 @@ turn scope and the Lab ledger turns a test red.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from pathlib import Path
+
 import pytest
 
+from openai4s.benchmark import lab as benchmark_lab
+from openai4s.benchmark import load_workflows, run_case
 from openai4s.host.delegation_policy import ChildExecutionPolicy
 from openai4s.host_dispatch import build_dispatcher
+from openai4s.lab.models import CommandOrigin, LabCaller, LabError
+from openai4s.tools.registry import get_tool
+from tests.test_lab_completion import finish
 from tests.test_lab_integration_w3 import PROFILE, TOY, _Daemon, transfer
 
 
@@ -123,3 +133,186 @@ def test_the_lab_seed_probe_retries_after_a_transient_failure(daemon, monkeypatc
     runner._seed_messages(third)
     assert intro in str(second.messages) and intro in str(third.messages)
     assert len(calls) == 2
+
+
+def _allow_export(daemon, fid):
+    daemon.store.set_permission_rule(
+        scope="conversation",
+        scope_id=fid,
+        tool="lab_export",
+        pattern="*",
+        decision="allow",
+    )
+
+
+def _files(daemon, result):
+    files = {}
+    for item in result["artifacts"]:
+        version = daemon.store.version_meta(item["version_id"])
+        raw = Path(version["snapshot_path"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == item["checksum"]
+        files[item["kind"]] = raw.decode("utf-8")
+    return files
+
+
+def _value_free(refusal, *run_ids):
+    # Fixed refusal sentences name runs, never an evaluated number or field.
+    text = refusal
+    for run_id in run_ids:
+        text = text.replace(run_id, "")
+    assert not re.search(r"\d", text), refusal
+    for word in ("reward", "ground_truth", "moles", "purity", "volume_L"):
+        assert word not in refusal
+
+
+def test_end_export_and_completion_close_the_loop_over_one_ledger(daemon):
+    fid, dispatcher, host = daemon.session()
+    _allow_export(daemon, fid)
+    st = daemon.runner._state(fid, daemon.project_id)
+    dispatcher.set_task_evidence_scope(turn_id="turn-1")
+    done = _ended_run(host, key="done")
+
+    call = {"id": "w4-export", "name": "lab_export", "arguments": {"run_id": done}}
+    native = daemon.runner._invoke_control_with_artifacts(
+        st,
+        call,
+        lambda event: None,
+        lambda: get_tool("lab_export").invoke(dispatcher, call["arguments"]),
+    )
+    assert "error" not in native, native
+    kinds = {a["kind"]: a for a in native["artifacts"]}
+    assert set(kinds) == {"actions", "observations_json", "observations_csv", "report"}
+    assert "ground_truth" not in native
+    first_version = kinds["observations_json"]["version_id"]
+    rows = daemon.store.lab.list_observations(done, limit=1000)
+    assert rows and all(r["artifact_version_id"] == first_version for r in rows)
+
+    with st.trusted_capture.capture(), dispatcher.bind_artifact_receipt_scope():
+        sdk = host.lab.export(done)
+    status, rest = daemon.request("POST", f"/frames/{fid}/lab/runs/{done}/export", {})
+    assert status == 200, rest
+    assert native.keys() == sdk.keys() == rest.keys()
+    for kind in ("actions", "observations_json", "observations_csv"):
+        assert _files(daemon, native)[kind] == _files(daemon, sdk)[kind]
+        assert _files(daemon, sdk)[kind] == _files(daemon, rest)[kind]
+    # Later exports are new versions; the observations keep the first one.
+    assert all(
+        r["artifact_version_id"] == first_version
+        for r in daemon.store.lab.list_observations(done, limit=1000)
+    )
+
+    # Replay reads exactly what the workbench pages through, and writes nothing.
+    cursor = daemon.store.lab.latest_event_seq(fid)
+    status, commands = daemon.request(
+        "GET", f"/frames/{fid}/lab/runs/{done}/commands?after_seq=0&limit=200"
+    )
+    assert status == 200 and [c["seq"] for c in commands["commands"]] == [1, 2]
+    status, observations = daemon.request(
+        "GET",
+        f"/frames/{fid}/lab/runs/{done}/observations?after_sequence=-1&limit=200&full=true",
+    )
+    assert status == 200 and [o["sequence"] for o in observations["observations"]] == [
+        0,
+        1,
+        2,
+    ]
+    assert daemon.store.lab.latest_event_seq(fid) == cursor
+    assert done not in daemon.runner.lab_manager._live
+
+    # Only a person's workbench export carries ground truth, inline, once.
+    status, truth = daemon.request(
+        "POST", f"/frames/{fid}/lab/runs/{done}/export", {"include_evaluation": True}
+    )
+    assert status == 200 and truth["ground_truth"]["filename"].endswith(
+        "-simulation-ground-truth.json"
+    )
+    assert json.loads(truth["ground_truth"]["content"])["evaluations"]
+    # A raw Host call that bypasses the SDK still meets the closed tool schema.
+    refused = dispatcher("lab_export", [{"run_id": done, "include_evaluation": True}])
+    assert refused["error_kind"] == "invalid_parameters"
+    assert "ground_truth" not in refused
+    status, listed = daemon.request("GET", f"/frames/{fid}/artifacts")
+    assert status == 200 and len(listed) == 4
+    assert "ground" not in json.dumps(listed)
+    assert not [p for p in st.workspace.rglob("*") if "ground" in p.name]
+
+    # The same turn's completion is accepted on both doors.
+    payload = completed([done])
+    accepted, error = finish("web", dispatcher._completion_service, payload)
+    assert (
+        accepted is not None and accepted["output"]["lab_runs"] == payload["lab_runs"]
+    )
+    output = {k: v for k, v in payload.items() if k != "completion_bullets"}
+    assert host.submit_output(
+        output, completion_bullets=payload["completion_bullets"]
+    ) == {"status": "ok"}
+
+
+@pytest.mark.parametrize("ending", ["stop", "unknown"])
+def test_a_stopped_or_unresolved_run_cannot_be_reported_complete(daemon, ending):
+    fid, dispatcher, host = daemon.session()
+    dispatcher.set_task_evidence_scope(turn_id="turn-1")
+    if ending == "stop":
+        run_id = _ended_run(host, stop=True, key="halt")
+    else:
+        # A provider that dies mid-step leaves the command's outcome unknown.
+        manager = daemon.runner.lab_manager
+        caller = LabCaller(fid, fid, None, CommandOrigin.HOST_SDK, None, None)
+        run_id = manager.create_run(
+            caller,
+            {
+                "device_id": TOY,
+                "profile": PROFILE,
+                "seed": 7,
+                "options": {"crash_on_execute": True},
+                "idempotency_key": "crash",
+            },
+        )["run"]["run_id"]
+        try:
+            manager.execute(caller, {"run_id": run_id, **transfer("lost")})
+        except LabError:
+            pass
+        commands = daemon.store.lab.list_commands(run_id, limit=10)
+        assert [c["state"] for c in commands] == ["outcome_unknown"]
+        assert run_id not in manager._live
+    payload = completed([run_id])
+    for door in ("web", "submit"):
+        done, refusal = finish(door, dispatcher._completion_service, payload)
+        assert done is None and "not ended normally" in refusal
+        _value_free(refusal, run_id)
+    leaving = {
+        "summary": "Simulation experiment is still running.",
+        "completion_bullets": ["Left the run open"],
+        "task_status": "partial",
+        "lab_runs": [{"run_id": run_id, "status": "running"}],
+    }
+    done, refusal = finish("web", dispatcher._completion_service, leaving)
+    assert done is None and "no longer running" in refusal
+    _value_free(refusal, run_id)
+    honest = {
+        "summary": f"The run {ending} before the goal could be evaluated.",
+        "completion_bullets": ["Reported the recorded run state"],
+        "task_status": "partial",
+    }
+    done, refusal = finish("web", dispatcher._completion_service, honest)
+    assert done is not None, refusal
+
+
+LAB_WORKFLOW = next(w for w in load_workflows() if w.id == "lab-simulation")
+
+
+@pytest.mark.parametrize("case", LAB_WORKFLOW.cases, ids=lambda c: c.id)
+def test_every_lab_benchmark_case_passes_and_releases_its_providers(
+    case, tmp_path, monkeypatch
+):
+    managers = []
+    build = benchmark_lab.build_lab_manager
+
+    def tracked(**kwargs):
+        managers.append(build(**kwargs))
+        return managers[-1]
+
+    monkeypatch.setattr(benchmark_lab, "build_lab_manager", tracked)
+    result = run_case(LAB_WORKFLOW, case, root=tmp_path)
+    assert result.passed, result.detail
+    assert managers and all(not manager._live for manager in managers)
