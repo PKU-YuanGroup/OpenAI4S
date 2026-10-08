@@ -416,6 +416,8 @@ def test_full_arrays_only_on_sdk_routes_and_safe_projection(rig, monkeypatch):
 
 
 def test_unknown_outcome_is_failed_envelope_then_same_command_status(rig):
+    events = []
+    rig.dispatcher.on_step = events.append
     run_id = create(rig)["run"]["run_id"]
     rig.devices[0].lose_response_next()
     rig.devices[0].fail_query_next()
@@ -427,6 +429,7 @@ def test_unknown_outcome_is_failed_envelope_then_same_command_status(rig):
     commands = rig.host.lab.commands(run_id)["commands"]
     assert len(commands) == 1
     command_id = commands[0]["command_id"]
+    assert events[-1]["output"]["command_id"] == command_id
     result = rig.host.lab.status(run_id, command_id)
     assert result["command"]["state"] == "succeeded"
     assert result["command"]["command_id"] == command_id
@@ -523,3 +526,54 @@ def test_permission_v5_upgrade_preserves_operator_choices(rig):
         )
         == "deny"
     )
+
+
+def test_native_optional_null_matches_sdk_without_relaxing_required_keys(rig):
+    tool = get_tool("lab_create")
+    request = {**CREATE, "seed": None, "budgets": None, "idempotency_key": "nullable"}
+    assert tool.validation_error(request) is None
+    native = tool.invoke(rig.dispatcher, request)
+    assert native == create(rig, idempotency_key="nullable")
+    run_id = native["run"]["run_id"]
+    execute = get_tool("lab_execute")
+    request = {
+        "run_id": run_id,
+        "operation": "end_experiment",
+        "source": None,
+        "target": None,
+        "parameters": None,
+        "expected_revision": 0,
+        "idempotency_key": "finish",
+    }
+    assert execute.validation_error(request) is None
+    output, ok = execute_tool_call(
+        rig.dispatcher, {"name": "lab_execute", "arguments": request}
+    )
+    assert ok and "succeeded" in output
+    result = rig.host.lab.execute(**request)
+    assert result["command"]["state"] == "succeeded"
+    assert rig.devices[0].executions == 1
+    for invalid in (
+        {**request, "expected_revision": None},
+        {**request, "options": None},
+    ):
+        assert execute.validation_error(invalid) is not None
+        assert (
+            execute.invoke(rig.dispatcher, invalid)["error_kind"]
+            == "invalid_parameters"
+        )
+
+
+def test_full_sdk_routes_validate_like_the_read_tools(rig):
+    for method in FULL:
+        for spec in (
+            {},
+            {"run_id": None},
+            {"run_id": []},
+            {"run_id": "missing", "full": True},
+        ):
+            result = rig.dispatcher(method, [spec])
+            assert result["error_kind"] == "invalid_parameters"
+    with pytest.raises(RuntimeError) as caught:
+        rig.host.lab.observations("missing", full=True, limit=0)
+    assert caught.value.error_kind == "invalid_parameters"

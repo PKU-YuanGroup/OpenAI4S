@@ -946,6 +946,7 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
         payload = result if isinstance(result, dict) else {}
         command = payload.get("command") or {}
         run = payload.get("run") or {}
+        details = payload.get("details") or {}
         state = (
             payload.get("error_kind")
             or command.get("state")
@@ -957,7 +958,7 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 "mode": "simulation",
                 "state": state,
                 "run_id": run.get("run_id"),
-                "command_id": command.get("command_id"),
+                "command_id": command.get("command_id") or details.get("command_id"),
             },
             f"仿真 · {state}",
         )

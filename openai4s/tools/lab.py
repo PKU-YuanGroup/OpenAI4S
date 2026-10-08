@@ -33,7 +33,25 @@ class _LabTool(Tool):
             return json.dumps(result, ensure_ascii=False)
         return None
 
+    def _arguments(self, arguments: Any) -> Any:
+        # The SDK codec omits optional None values. Native callers may spell
+        # the same absence explicitly (notably source/target in CONTRACT §3.5).
+        # Keep unknown and required nulls so validation still refuses them.
+        if not isinstance(arguments, dict):
+            return arguments
+        properties = self.parameters["properties"]
+        required = self.parameters["required"]
+        return {
+            key: value
+            for key, value in arguments.items()
+            if not (value is None and key in properties and key not in required)
+        }
+
+    def validation_error(self, arguments: Any) -> str | None:
+        return super().validation_error(self._arguments(arguments))
+
     def execute(self, context: ControlToolContext, arguments: dict) -> dict:
+        arguments = self._arguments(arguments)
         # SDK calls do not go through registry.execute_tool_call's validator.
         if self.validation_error(arguments):
             return {

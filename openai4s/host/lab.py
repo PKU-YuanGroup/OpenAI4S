@@ -31,6 +31,16 @@ class LabService:
             manager = self._manager_provider()
             if manager is None:
                 return unavailable()
+            if operation in {"observe_full", "observations_full"}:
+                # Reuse the corresponding read Tool's schema, without exposing
+                # a full-array native tool or allowing a caller-supplied full.
+                from openai4s.tools.registry import get_tool
+
+                read_tool = get_tool("lab_" + operation.removesuffix("_full"))
+                if read_tool is None or read_tool.validation_error(spec):
+                    raise LabError(
+                        ErrorCode.INVALID_PARAMETERS, "Invalid Lab arguments"
+                    )
             caller = self._caller_factory()
             # Defense in depth: even internal adapters cannot forward provider
             # options or spoof identity/approval/origin through a request.
