@@ -162,15 +162,50 @@ async function createManual(fid) {
   return index.runs[0];
 }
 async function approve(allow) {
-  const card = page.locator(".perm-card:not(.resolved)").last();
+  const card = page.locator(".perm-card:not(.resolved)").filter({ hasText: /Simulation/ }).last();
   await card.waitFor();
-  assert.match(await card.innerText(), /Simulation/);
   const resolved = page.locator(allow ? ".perm-card.resolved.allowed" : ".perm-card.resolved.denied");
   const previous = await resolved.count();
   await card.locator(".perm-scope .perm-seg").first().click(); // once, not remembered for the run
+  const decision = page.waitForResponse((r) => r.request().method() === "POST" &&
+    new URL(r.url()).pathname.endsWith("/decision"));
   await card.locator(allow ? ".perm-allow" : ".perm-deny").click();
+  const response = await decision;
+  assert.equal(response.request().postDataJSON().allow, allow);
+  assert.equal(response.request().postDataJSON().scope, "once");
+  assert.ok(response.ok(), `decision HTTP ${response.status()}`);
+  const result = await response.json();
+  assert.ok(result.ok === true || result.code === "decision_resolving");
   // Do not let the next approval bind this card during its resolving interval.
   await resolved.nth(previous).waitFor();
+}
+async function agentOwner(fid) {
+  const owner = (await api(`/frames/${fid}/execution-queue`)).owner;
+  assert.equal(owner?.owner.kind, "agent");
+  assert.equal(owner.status, "running");
+  return owner;
+}
+async function stopAgent(fid) {
+  const owner = await agentOwner(fid);
+  const cancelled = page.waitForResponse((r) => r.request().method() === "POST" &&
+    r.url().endsWith(`/frames/${fid}/cancel`));
+  await page.locator("#cancel-btn").click();
+  const response = await cancelled;
+  assert.ok(response.ok());
+  const request = response.request().postDataJSON();
+  assert.equal(request.execution_id, owner.execution_id);
+  assert.deepEqual(request.owner, owner.owner);
+  const result = await response.json();
+  assert.equal(result.ok, true);
+  assert.equal(result.execution_id, owner.execution_id);
+  assert.equal(result.root_frame_id, fid);
+  // Close the fixture only after the daemon has accepted the exact cancel.
+  for (const res of heldReplies) res.destroy();
+  await waitUntil("cancelled agent releases its execution", async () => {
+    const queue = await api(`/frames/${fid}/execution-queue`);
+    return ![queue.owner, ...(queue.queue || [])].some((entry) => entry?.execution_id === owner.execution_id);
+  });
+  await page.locator("#cancel-btn").waitFor({ state: "hidden" });
 }
 async function begin(goal, steps) {
   assert.equal(mockErrors.length, 0, mockErrors.join("; "));
@@ -262,7 +297,7 @@ try {
 
   const fidB = await newFrame();
   const runB = await createManual(fidB);
-  const held = deferred(), read = deferred();
+  const held = deferred(), read = deferred(), delivered = deferred();
   let captured = false;
   const indexUrl = `**/api/v1/frames/${fid}/lab`;
   await page.route(indexUrl, async (route) => {
@@ -270,13 +305,15 @@ try {
     captured = true;
     const response = await route.fetch(); read.resolve(); await held.promise;
     await route.fulfill({ response });
+    delivered.resolve();
   });
   try {
     await page.evaluate((id) => { void window.openConversation(id); }, fid);
     await bounded(read.promise, "late session A read");
     await open(fidB); await revision(0);
   } finally { held.resolve(); }
-  await page.unroute(indexUrl, { behavior: "wait" });
+  await bounded(delivered.promise, "late session A response delivered");
+  await page.unroute(indexUrl);
   await page.waitForLoadState("networkidle");
   assert.equal(await pane.getByLabel(/^Run/).inputValue(), runB.run_id);
   assert.equal(await pane.locator(".lab-command").count(), 0);
@@ -307,23 +344,18 @@ try {
   const holdSteps = [() => tool("lab_observe", { run_id: rid }), () => ({ hold: true })];
   await begin("In the simulation lab, keep planning until I stop the agent.", holdSteps);
   await bounded(scenario.waiting.promise, "agent reaches held model response");
-  const cancelled = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith(`/frames/${fid}/cancel`));
-  await page.locator("#cancel-btn").click();
-  const cancelRequest = await cancelled;
-  assert.equal(cancelRequest.postDataJSON().owner.kind, "agent");
-  for (const res of heldReplies) res.destroy();
-  await page.locator("#cancel-btn").waitFor({ state: "hidden" });
+  await stopAgent(fid);
   assert.equal((await api(runPath(fid, rid))).run.status, "ready");
   passed("agent Stop targets owner=agent and leaves the Lab experiment ready");
 
   await begin("In the simulation lab, keep planning while I stop the experiment separately.", holdSteps);
   await bounded(scenario.waiting.promise, "second agent reaches held model response");
+  const planning = await agentOwner(fid);
   await pane.locator(".lab-stop").click();
   await pane.getByText("End reason: stopped", { exact: true }).waitFor();
   assert.equal(await page.locator("#cancel-btn").isVisible(), true);
-  await page.locator("#cancel-btn").click();
-  for (const res of heldReplies) res.destroy();
-  await page.locator("#cancel-btn").waitFor({ state: "hidden" });
+  assert.equal((await agentOwner(fid)).execution_id, planning.execution_id);
+  await stopAgent(fid);
   assert.equal((await api(runPath(fid, rid))).run.end_reason, "stopped");
   passed("Lab Stop ends its provider without stopping the agent turn");
   await screenshot("independent-stops");

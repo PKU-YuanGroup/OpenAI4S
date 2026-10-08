@@ -555,6 +555,7 @@ jobs:
           OPENAI4S_SECRET_STORE: plaintext
           OPENAI4S_NOTEBOOK_REPL: "1"
           OPENAI4S_LAB_ENABLE_TOY: "1"
+          OPENAI4S_BROWSER_URL: http://127.0.0.1:8760/
           OPENAI4S_HOST: 127.0.0.1
           OPENAI4S_PORT: "8760"
         run: |

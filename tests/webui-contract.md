@@ -202,7 +202,7 @@ Sorted.
 | --- | --- | --- |
 | `#b` | browser_team_mode.mjs | 1 |
 | `#back-home` | browser_navigation.mjs | 1 |
-| `#cancel-btn` | browser_lab.mjs, browser_p1_controls.mjs | 8 |
+| `#cancel-btn` | browser_lab.mjs, browser_p1_controls.mjs | 6 |
 | `#composer` | browser_admission_fault.mjs, browser_lab.mjs, browser_matrix.mjs, browser_p1_controls.mjs | 11 |
 | `#composer-ac` | browser_p1_controls.mjs | 1 |
 | `#composer-ac .ac-list .ac-item` | browser_p1_controls.mjs | 1 |
