@@ -273,6 +273,68 @@ def test_lab_shutdown_continues_after_ledger_failure(tmp_path, monkeypatch):
     assert runner._lab_updates._closed
 
 
+@pytest.mark.parametrize("action", ["delete_session", "delete_project"])
+@pytest.mark.parametrize("phase", ["before_commit", "after_commit"])
+def test_lab_failed_deletion_resumes_only_existing_sessions(
+    tmp_path, monkeypatch, action, phase
+):
+    from openai4s.lab.fake import fake_registration
+
+    runner = _runner(tmp_path)
+    timers = []
+
+    def timer(*args, **kwargs):
+        value = _LabTimer(*args, **kwargs)
+        timers.append(value)
+        return value
+
+    runner._lab_updates._timer_factory = timer
+    project = runner.store.create_project(
+        name="Lab deletion", description="", context=""
+    )
+    root = runner.create_session(project["project_id"])
+    manager = runner.lab_manager
+    manager._registry.register(fake_registration())
+    run_id = _lab_run(manager, root)["run"]["run_id"]
+    live = manager._live[run_id]
+    store_method = "delete_frame" if action == "delete_session" else "delete_project"
+    original = getattr(runner.store, store_method)
+
+    def fail(*args, **kwargs):
+        if phase == "after_commit":
+            original(*args, **kwargs)
+        raise RuntimeError("injected deletion failure")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(runner.store, store_method, fail)
+            with pytest.raises(RuntimeError, match="injected deletion failure"):
+                getattr(runner, action)(
+                    root if action == "delete_session" else project["project_id"]
+                )
+        assert not live.port.alive(live.session_id)
+        assert timers[0].cancelled
+        assert not runner.hub.events
+        if phase == "after_commit":
+            assert runner.store.get_frame(root) is None
+            runner._lab_updates.changed(root, run_id)
+            assert len(timers) == 1
+        else:
+            assert runner.store.get_frame(root) is not None
+            _lab_run(manager, root, key="after-rollback")
+            assert len(timers) == 2
+            # A cancelled old callback must not drain the replacement batch.
+            timers[0].fire()
+            assert not runner.hub.events
+            timers[1].fire()
+            assert runner.hub.events[-1]["root_frame_id"] == root
+            assert runner.hub.events[-1][
+                "latest_event_seq"
+            ] == runner.store.lab.latest_event_seq(root)
+    finally:
+        runner.close()
+
+
 def test_status_and_execution_attempt_share_persistent_generation_uuid(tmp_path):
     runner = _runner(tmp_path)
     frame_id = runner.store.new_frame(project_id="default", kind="turn")

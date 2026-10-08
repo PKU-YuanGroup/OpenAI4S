@@ -283,20 +283,37 @@ class LabUpdateEmitter:
     """Trailing 250 ms batches; never publish provider data or read via manager."""
 
     def __init__(
-        self, *, emit: Callable, latest_seq: Callable, timer_factory=threading.Timer
+        self,
+        *,
+        emit: Callable,
+        latest_seq: Callable,
+        session_exists: Callable,
+        timer_factory=threading.Timer,
     ):
         self._emit = emit
         self._latest_seq = latest_seq
+        self._session_exists = session_exists
         self._timer_factory = timer_factory
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[str | None, Any]] = {}
         self._deleted: set[str] = set()
+        self._failed_deletions: set[str] = set()
         self._closed = False
 
     def changed(self, root_frame_id: str, run_id: str) -> None:
         with self._lock:
-            if self._closed or root_frame_id in self._deleted:
+            if self._closed:
                 return
+            if root_frame_id in self._deleted:
+                if root_frame_id not in self._failed_deletions:
+                    return
+                # Deletion may fail before commit or during file cleanup.
+                # Only an existing root can resume. A broken Store read is
+                # retried on the next change, never interpreted as existence.
+                if not self._session_exists(root_frame_id):
+                    return
+                self._deleted.discard(root_frame_id)
+                self._failed_deletions.discard(root_frame_id)
             pending = self._pending.get(root_frame_id)
             if pending is not None:
                 previous, timer = pending
@@ -305,18 +322,19 @@ class LabUpdateEmitter:
                     timer,
                 )
                 return
-            timer = self._timer_factory(0.25, self._flush, args=(root_frame_id,))
+            timer = self._timer_factory(0.25, lambda: self._flush(root_frame_id, timer))
             timer.daemon = True
             self._pending[root_frame_id] = (run_id, timer)
             timer.start()
 
-    def _flush(self, root_frame_id: str) -> None:
+    def _flush(self, root_frame_id: str, timer: Any) -> None:
         # Serialize publication with shutdown and new batches. A new timer
         # starts only after this send, so sends stay at least 250 ms apart.
         with self._lock:
-            pending = self._pending.pop(root_frame_id, None)
-            if self._closed or pending is None:
+            pending = self._pending.get(root_frame_id)
+            if self._closed or pending is None or pending[1] is not timer:
                 return
+            self._pending.pop(root_frame_id)
             run_id, _timer = pending
             try:
                 self._emit(
@@ -339,9 +357,15 @@ class LabUpdateEmitter:
             # after this hook. Root IDs are not reused: never resurrect its
             # WebSocket resume window with that late completion hint.
             self._deleted.add(root_frame_id)
+            self._failed_deletions.discard(root_frame_id)
             pending = self._pending.pop(root_frame_id, None)
             if pending is not None:
                 pending[1].cancel()
+
+    def deletion_failed(self, root_frame_id: str) -> None:
+        with self._lock:
+            if root_frame_id in self._deleted:
+                self._failed_deletions.add(root_frame_id)
 
     def close(self) -> None:
         with self._lock:

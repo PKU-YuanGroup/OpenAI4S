@@ -2743,6 +2743,8 @@ class SessionRunner:
             latest_seq=lambda root: get_store(self.cfg.db_path).lab.latest_event_seq(
                 root
             ),
+            session_exists=lambda root: get_store(self.cfg.db_path).get_frame(root)
+            is not None,
         )
         # Reconciler/lease callbacks run on the orchestration control threads.
         # A terminal session cleanup has to enter the session FIFO and may sit
@@ -3934,6 +3936,9 @@ class SessionRunner:
             self._deleting_sessions.add(root_frame_id)
         try:
             return self.deletions.delete_session(root_frame_id)
+        except BaseException:
+            self._lab_updates.deletion_failed(root_frame_id)
+            raise
         finally:
             with self._lock:
                 self._deleting_sessions.discard(root_frame_id)
@@ -4071,6 +4076,10 @@ class SessionRunner:
                 while self._frameless_artifact_mutations:
                     self._project_mutation_condition.wait()
             return self.deletions.delete_project(project_id)
+        except BaseException:
+            for root_frame_id in roots:
+                self._lab_updates.deletion_failed(root_frame_id)
+            raise
         finally:
             with self._lock:
                 self._deleting_sessions.difference_update(roots)
