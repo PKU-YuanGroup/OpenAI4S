@@ -376,9 +376,26 @@ class ProviderProcessDevice:
             self._request(session_id, "stop", {"reason": reason}),
         )
 
-    @_boundary
     def close(self, session_id: str) -> None:
-        self._discard(session_id)
+        # Every request holds the device lock for its whole exchange (execute
+        # may wait 60 s). Close must not inherit that wait: the manager's stop
+        # and daemon shutdown rely on it. Kill the group first; the request
+        # that owns the process sees EOF, reaps it and fails as lost.
+        if not self._lock.acquire(blocking=False):
+            session = self._sessions.get(session_id)
+            if session is not None:
+                session.client.abort()
+            self._lock.acquire()
+        try:
+            self._discard(session_id)
+        except LabError:
+            raise
+        except Exception:
+            raise LabError(
+                ErrorCode.PROVIDER_UNAVAILABLE, "Provider operation unavailable"
+            ) from None
+        finally:
+            self._lock.release()
 
     def alive(self, session_id: str) -> bool:
         with self._lock:

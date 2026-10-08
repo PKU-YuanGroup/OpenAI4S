@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -211,6 +213,48 @@ def test_invalid_open_closes_process(tmp_path, mutation):
         else ErrorCode.PROVIDER_PROTOCOL_ERROR
     )
     assert not port._sessions
+    assert not list(port.runs_root.iterdir())
+
+
+def wait_until_in_flight(port):
+    # Every request holds the device lock for its whole exchange.
+    deadline = time.monotonic() + 10
+    while port._lock.acquire(blocking=False):
+        port._lock.release()
+        assert time.monotonic() < deadline, "request never started"
+        time.sleep(0.005)
+    time.sleep(0.2)  # let the frame reach the provider
+
+
+def test_close_preempts_an_in_flight_execute(tmp_path):
+    # The manager's stop and daemon shutdown close sessions whose execute may
+    # be blocked for its whole timeout. Close kills the provider at once and
+    # the blocked call fails as a lost provider (CONTRACT §9).
+    port = device(tmp_path, execute=8, close=5)
+    ident = port.open(open_request(sleep_on_execute_s=60)).session_id
+    process = port._sessions[ident].client.process
+    outcome = {}
+
+    def blocked():
+        try:
+            outcome["receipt"] = port.execute(ident, dispatch())
+        except LabError as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=blocked)
+    worker.start()
+    wait_until_in_flight(port)
+    started = time.monotonic()
+    port.close(ident)
+    elapsed = time.monotonic() - started
+    worker.join(10)
+    assert not worker.is_alive()
+    assert elapsed < 3, elapsed
+    assert "receipt" not in outcome
+    assert outcome["error"].code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert not port.alive(ident)
+    # Reaped by the request that owned it, after the group was signalled.
+    assert process.returncode is not None
     assert not list(port.runs_root.iterdir())
 
 

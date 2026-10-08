@@ -67,6 +67,11 @@ class ProviderClient:
             raise ValueError("invalid buffer size")
         self.process = None
         self._lock = threading.Lock()
+        # Orders every group signal against every reap of the leader, so a
+        # signal from abort() (which never takes _lock) cannot reach a PGID
+        # whose leader was already released. Reentrant: _signal_group may
+        # observe the leader through _wait_unreaped.
+        self._reap_lock = threading.RLock()
         self._stderr_lock = threading.Lock()
         self._stderr = bytearray()
         self._buffer = bytearray()
@@ -152,7 +157,8 @@ class ProviderClient:
             except ChildProcessError:
                 # Someone else reaped it. poll records that fact before any
                 # further group signal (Popen handles ECHILD itself).
-                self.process.poll()
+                with self._reap_lock:
+                    self.process.poll()
                 return True
             if exited is not None:
                 return True
@@ -166,13 +172,15 @@ class ProviderClient:
         if self.process is None:
             return
         if graceful:
-            self._signal_group(signal.SIGTERM)
+            with self._reap_lock:
+                self._signal_group(signal.SIGTERM)
             self._wait_unreaped(0.25)
         # Reap only AFTER the last group signal. wait()/poll() here could free
         # the leader PID while a TERM-resistant descendant still holds pipes.
-        self._signal_group(signal.SIGKILL)
-        self.process.wait()
-        self._disposed = True
+        with self._reap_lock:
+            self._signal_group(signal.SIGKILL)
+            self.process.wait()
+            self._disposed = True
         if self._stderr_thread:
             self._stderr_thread.join(timeout=1)
 
@@ -246,6 +254,16 @@ class ProviderClient:
         with self._lock:
             return self._request_locked(op, args, timeout=timeout)
 
+    def abort(self):
+        """Kill the provider group now, even while a request holds the lock.
+
+        A blocked request would otherwise keep close() waiting for its whole
+        timeout. This only signals: the request (or close) that owns the
+        process sees EOF and reaps it, so the provider is reported lost.
+        """
+        with self._reap_lock:
+            self._signal_group(signal.SIGKILL)
+
     def _request_locked(self, op, args, *, timeout):
         if (
             isinstance(timeout, bool)
@@ -293,9 +311,10 @@ class ProviderClient:
                     except (ProviderError, subprocess.TimeoutExpired):
                         self._terminate(graceful=True)
                 # Never signal a group whose leader has already been reaped.
-                self._signal_group(signal.SIGKILL)
-                self.process.wait()
-                self._disposed = True
+                with self._reap_lock:
+                    self._signal_group(signal.SIGKILL)
+                    self.process.wait()
+                    self._disposed = True
                 if self._stderr_thread:
                     self._stderr_thread.join(timeout=1)
             finally:

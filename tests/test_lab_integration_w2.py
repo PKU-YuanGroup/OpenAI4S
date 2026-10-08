@@ -9,6 +9,7 @@ that only the other package would notice still turns a test red.
 import os
 import signal
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -340,6 +341,95 @@ def test_killed_toy_provider_is_outcome_unknown_and_provider_lost(lab):
     assert refused["command"]["state"] == "rejected"
     assert refused["command"]["error_code"] == "run_ended"
     assert port.executed == [command_id]
+
+
+def test_stop_preempts_a_hung_provider_execute(lab):
+    # The manager waits stop_wait_seconds for the in-flight receipt, then
+    # closes. Close must not wait for the 60 s execute timeout: the provider
+    # is killed, the command stays unknown and is never resent.
+    m, caller, ledger = lab.manager, lab.caller, lab.store.lab
+    run_id = m.create_run(
+        caller,
+        {
+            "device_id": TOY,
+            "profile": PROFILE,
+            "seed": 5,
+            "options": {"sleep_on_execute_s": 120},
+        },
+    )["run"]["run_id"]
+    (port,) = lab.ports
+    process = _provider_process(port)
+    outcome = {}
+
+    def blocked():
+        try:
+            outcome["result"] = m.execute(
+                caller, transfer(run_id, revision=0, key="hung")
+            )
+        except LabError as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=blocked)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not port.executed:
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    time.sleep(0.2)
+    started = time.monotonic()
+    stopped = m.stop(caller, run_id)
+    elapsed = time.monotonic() - started
+    worker.join(10)
+    assert not worker.is_alive()
+    assert elapsed < 5, elapsed
+    assert (stopped["run"]["status"], stopped["run"]["end_reason"]) == (
+        "ended",
+        "stopped",
+    )
+    assert outcome["error"].code is ErrorCode.OUTCOME_UNKNOWN
+    command_id = outcome["error"].details["command_id"]
+    assert ledger.get_command(command_id)["state"] == "outcome_unknown"
+    assert port.executed == [command_id]
+    assert process.returncode is not None
+
+
+@pytest.mark.parametrize("kind", ["noise", "fault", "all"])
+def test_wrapped_close_preempts_an_in_flight_execute(tmp_path, kind):
+    inner = toy_device(tmp_path)
+    port = wrapped(inner, kind)
+    descriptor = port.describe(PROFILE)
+    opened = port.open(
+        SessionOpenRequest(
+            PROFILE, 42, {"sleep_on_execute_s": 120}, descriptor.capability_revision
+        )
+    )
+    outcome = {}
+
+    def blocked():
+        try:
+            outcome["receipt"] = port.execute(
+                opened.session_id, toy_dispatch(opened, "hung", token=1)
+            )
+        except LabError as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=blocked)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while inner._lock.acquire(blocking=False):
+        inner._lock.release()
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    time.sleep(0.2)
+    started = time.monotonic()
+    port.close(opened.session_id)
+    elapsed = time.monotonic() - started
+    worker.join(10)
+    assert not worker.is_alive() and elapsed < 3, elapsed
+    assert "receipt" not in outcome
+    assert outcome["error"].code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert not port.alive(opened.session_id)
+    assert not list((tmp_path / "lab" / "runs").iterdir())
 
 
 def _fake_run(lab, seed):

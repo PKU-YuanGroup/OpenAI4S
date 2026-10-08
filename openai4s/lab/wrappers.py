@@ -278,9 +278,11 @@ class ObservationNoiseWrapper(_Wrapper):
             return session_id not in self._dead and super().alive(session_id)
 
     def close(self, session_id: str) -> None:
+        self._check_session(session_id)
+        # Outside the lock: an execute holding it may be blocked in the inner
+        # port, and close must be able to preempt it (CONTRACT §9).
+        super().close(session_id)
         with self._lock:
-            self._check_session(session_id)
-            super().close(session_id)
             self._sessions.pop(session_id, None)
 
 
@@ -482,9 +484,11 @@ class FaultInjectionWrapper(_Wrapper):
             return stopped
 
     def close(self, session_id: str) -> None:
+        self._check()
+        # Outside the lock: an execute holding it may be blocked in the inner
+        # port, and close must be able to preempt it (CONTRACT §9).
+        super().close(session_id)
         with self._lock:
-            self._check()
-            super().close(session_id)
             self._sessions.pop(session_id, None)
 
     def alive(self, session_id: str) -> bool:
