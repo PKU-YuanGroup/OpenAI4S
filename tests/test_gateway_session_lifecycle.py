@@ -175,6 +175,37 @@ def test_lab_daemon_start_reconciles_and_server_close_releases(tmp_path, monkeyp
         previous.close_all("test")
 
 
+def test_a_lab_that_cannot_be_built_does_not_block_daemon_start(
+    tmp_path, monkeypatch, capsys
+):
+    # Lab is optional: a broken manifest or a busy ledger at boot must not keep
+    # the daemon from serving; the manager is retried on first use.
+    from openai4s.server import gateway
+
+    cfg = Config(
+        data_dir=tmp_path,
+        port=0,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    monkeypatch.setenv("OPENAI4S_SEED_DEMO", "0")
+    attempts = []
+
+    def broken(registry, cfg):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("injected Lab build failure")
+
+    monkeypatch.setattr(gateway, "register_builtin_devices", broken)
+    server = None
+    try:
+        server = gateway.build_app_server(cfg)
+        assert "Lab is unavailable at startup" in capsys.readouterr().err
+        assert server.runner.lab_manager is not None and len(attempts) == 2
+    finally:
+        if server is not None:
+            server.server_close()
+
+
 def test_lab_manager_composition_is_singleton_and_tracks_store_generations(tmp_path):
     from openai4s.lab.fake import fake_registration
 
@@ -321,6 +352,10 @@ def test_lab_failed_deletion_resumes_only_existing_sessions(
             assert len(timers) == 1
         else:
             assert runner.store.get_frame(root) is not None
+            # Its provider is gone, so the old run is honestly ended, not a
+            # `ready` run that refuses every command forever.
+            old = runner.store.lab.get_run(run_id)
+            assert (old["status"], old["end_reason"]) == ("ended", "deleted")
             _lab_run(manager, root, key="after-rollback")
             assert len(timers) == 2
             # A cancelled old callback must not drain the replacement batch.

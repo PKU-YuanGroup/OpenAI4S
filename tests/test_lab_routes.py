@@ -615,7 +615,8 @@ def test_command_routes_give_the_workbench_full_sensor_arrays(client, monkeypatc
     caller = LabCaller(
         client.frame_id, client.frame_id, None, CommandOrigin.MANUAL_UI, None, None
     )
-    run_id = client.create()["run"]["run_id"]
+    created = client.create()
+    run_id = created["run"]["run_id"]
     status, executed = client.execute(run_id)
     assert status == 200 and executed["command"]["state"] == "succeeded"
     client.devices[0].lose_response_next()
@@ -633,7 +634,7 @@ def test_command_routes_give_the_workbench_full_sensor_arrays(client, monkeypatc
         "POST", f"{client.base}/runs/{run_id}/commands/{command_id}/reconcile", {}
     )
     assert status == 200 and reconciled["command"]["state"] == "succeeded"
-    for envelope in (executed, reconciled):
+    for envelope in (created, executed, reconciled):
         layers = next(
             c for c in envelope["observation"]["channels"] if c["name"] == "layers"
         )

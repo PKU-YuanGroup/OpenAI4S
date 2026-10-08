@@ -812,17 +812,20 @@ def test_deletion_keeps_closing_provider_in_live_limit(rig, monkeypatch):
         original(session_id)
 
     monkeypatch.setattr(devices[0], "close", blocked)
+    # Another session: the deleted one is tombstoned (it may never create again).
+    elsewhere = (manager, replace(caller, root_frame_id="another-session")) + rig[2:]
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(manager.on_session_deleted, caller.root_frame_id)
         try:
             assert entered.wait(10)
-            error("provider_unavailable", lambda: create(rig))
+            refused = error("provider_unavailable", lambda: create(elsewhere))
+            assert "limit" in refused.message
             assert len(devices) == 1
         finally:
             release.set()
         pending.result()
     assert not manager._live
-    assert create(rig)["run"]["status"] == "ready" and len(devices) == 2
+    assert create(elsewhere)["run"]["status"] == "ready" and len(devices) == 2
 
 
 # --- W2 merge: review findings closed by the integrator -----------------------
@@ -1524,3 +1527,42 @@ def test_no_callback_keeps_original_ledger_accesses(rig, monkeypatch):
         )
     assert reconciled.startup_summary["runs_ended"] == 1
     assert reads == []
+
+
+def test_a_deleted_session_can_never_open_another_run(rig):
+    # The tombstone covers every entry point (REST, tools, host.lab, an
+    # approval answered mid-deletion); a rolled-back deletion lifts it.
+    manager, caller, ledger, devices = rig[:4]
+    run_id = create(rig)["run"]["run_id"]
+    manager.on_session_deleted(caller.root_frame_id)
+    run = ledger.get_run(run_id)
+    assert (run["status"], run["end_reason"]) == ("ended", "deleted")
+    assert devices[0].closed and not manager._live
+    error("provider_unavailable", lambda: create(rig, idempotency_key="again"))
+    assert len(devices) == 1
+    manager.on_session_restored(caller.root_frame_id)
+    assert create(rig, idempotency_key="again")["run"]["status"] == "ready"
+
+
+def test_releasing_a_session_never_depends_on_reading_the_ledger(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    create(rig)
+
+    def unavailable(*args, **kwargs):
+        raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "injected read failure")
+
+    with monkeypatch.context() as patch:
+        for name in ("get_run", "end_run", "list_commands", "inflight_commands"):
+            patch.setattr(ledger, name, unavailable)
+        manager.on_session_deleted(caller.root_frame_id)
+    assert devices[0].closed and not manager._live
+
+
+def test_idle_cleanup_releases_a_provider_whose_run_row_is_gone(rig):
+    manager, caller, ledger, devices, now, registry, store = rig
+    run_id = create(rig)["run"]["run_id"]
+    # A session whose rows were deleted while its release failed.
+    store._conn.execute("DELETE FROM lab_runs WHERE run_id=?", (run_id,))
+    store._conn.commit()
+    manager.list_devices(caller)
+    assert devices[0].closed and not manager._live

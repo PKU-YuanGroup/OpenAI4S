@@ -160,14 +160,21 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
                 {"device_id", "profile", "seed", "budgets", "idempotency_key"},
                 {"device_id", "profile", "idempotency_key"},
             )
-            # Deletion marks admission closed before taking this gate. An
-            # opening that already won finishes before the deletion hook;
-            # a later one is refused without spawning a provider.
+            # Deletion marks admission closed before taking this gate, and the
+            # manager tombstones the root in its deletion hook: an opening that
+            # already won is discarded when it finishes, a later one is refused
+            # without spawning a provider. The gate covers admission only, so a
+            # deletion never waits for a provider's (up to 180 s) opening.
             with runner._lab_creations.session(fid):
                 refusal = creation_refusal(runner, fid)
-                if refusal is not None:
-                    raise GatewayError(*refusal)
-                result = manager.create_run(caller, body)
+            if refusal is not None:
+                raise GatewayError(*refusal)
+            result = _ui_observation(
+                manager,
+                caller,
+                None,
+                manager.create_run(caller, body),
+            )
         elif name == "lab.run":
             run_id = match.group(2)
             result = manager.observe(caller, run_id, full=True)
@@ -252,7 +259,9 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
     return True
 
 
-def _ui_observation(manager: Any, caller: LabCaller, run_id: str, result: dict) -> dict:
+def _ui_observation(
+    manager: Any, caller: LabCaller, run_id: str | None, result: dict
+) -> dict:
     """A command envelope as the workbench needs it (CONTRACT §10 UI view).
 
     The manager's command results are the agent view, where an array over 256
@@ -264,7 +273,7 @@ def _ui_observation(manager: Any, caller: LabCaller, run_id: str, result: dict) 
         return result
     page = manager.observations(
         caller,
-        run_id,
+        run_id or result["run"]["run_id"],
         after_sequence=observation["sequence"] - 1,
         limit=1,
         full=True,
@@ -312,9 +321,9 @@ class SessionLabManager:
         root = caller.root_frame_id
         with self._runner._lab_creations.session(root):
             refusal = creation_refusal(self._runner, root)
-            if refusal is not None:
-                raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, refusal[1])
-            return self._runner.lab_manager.create_run(caller, request)
+        if refusal is not None:
+            raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, refusal[1])
+        return self._runner.lab_manager.create_run(caller, request)
 
 
 class LabCreationGate:

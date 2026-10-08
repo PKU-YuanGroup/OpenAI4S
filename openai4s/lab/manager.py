@@ -131,6 +131,9 @@ class _LiveRun:
     active_command: str | None = None
     stopping: bool = False
     needs_restart: bool = False
+    # The session that owns it, kept in memory so releasing a deleted
+    # session's providers never depends on reading the ledger.
+    root_frame_id: str = ""
 
 
 class LabManager:
@@ -155,12 +158,15 @@ class LabManager:
         self._live: dict[str, _LiveRun] = {}
         self._opening: dict[str, str] = {}
         self._discarded: set[str] = set()
+        # Sessions whose deletion started: no entry point may open a run for
+        # them (REST, tools, host.lab, an approval answered mid-deletion).
+        self._deleted_roots: set[str] = set()
         self._closed = False
         self.startup_summary: dict[str, int] = {}
 
     def _changed(self, run_id: str, root_frame_id: str | None = None) -> None:
-        if self._on_change is not None:
-            pending = self._changes.pending
+        pending = getattr(self._changes, "pending", None)
+        if self._on_change is not None and pending is not None:
             pending[run_id] = root_frame_id or pending.get(run_id)
 
     @property
@@ -344,11 +350,12 @@ class LabManager:
                 if live.active_command or live.stopping or live.needs_restart:
                     continue
                 run = self._ledger.get_run(run_id)
-                if (
-                    run is not None
-                    and self._clock_ms() - live.last_activity_ms
+                if run is None or (
+                    self._clock_ms() - live.last_activity_ms
                     >= run["budgets"]["idle_timeout_ms"]
                 ):
+                    # A live provider whose row is gone (its session was
+                    # deleted while a release failed) only holds a slot.
                     live.stopping = True
                     expired.append(run_id)
         for run_id in expired:
@@ -460,6 +467,11 @@ class LabManager:
             }
         )
         with self._lock:
+            if caller.root_frame_id in self._deleted_roots:
+                raise LabError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Session deletion or shutdown is in progress",
+                )
             seed = opening.seed
             if seed is None:
                 # The ledger port has no create-key lookup. This also handles
@@ -550,7 +562,13 @@ class LabManager:
         try:
             port = self._registry.get(descriptor.device_id).port_factory()
             opened = port.open(opening)
-            live = _LiveRun(port, opened.session_id, descriptor, self._clock_ms())
+            live = _LiveRun(
+                port,
+                opened.session_id,
+                descriptor,
+                self._clock_ms(),
+                root_frame_id=caller.root_frame_id,
+            )
             actual = load_descriptor(opened.descriptor.to_dict())
             if (
                 actual.device_id,
@@ -574,6 +592,7 @@ class LabManager:
                 if (
                     self._closed
                     or run_id in self._discarded
+                    or caller.root_frame_id in self._deleted_roots
                     or current is None
                     or current["status"] != "creating"
                 ):
@@ -1105,19 +1124,39 @@ class LabManager:
         if first_error is not None:
             raise first_error
 
+    @_notify_changes
     def on_session_deleted(self, root_frame_id: str) -> None:
+        """Release a session's providers before its ledger rows are deleted.
+
+        The root is tombstoned first, so no entry point can open a new run for
+        it, and openings in flight are discarded when they finish. Its live
+        runs are found by their in-memory root (a ledger failure cannot leak a
+        provider) and ended as `deleted`: if the deletion then rolls back they
+        are honestly ended, not `ready` with no provider behind them.
+        """
         with self._lock:
+            self._deleted_roots.add(root_frame_id)
             self._discarded.update(
                 r for r, root in self._opening.items() if root == root_frame_id
             )
-            removed = []
-            for run_id, live in list(self._live.items()):
-                run = self._ledger.get_run(run_id)
-                if run is None or run["root_frame_id"] == root_frame_id:
-                    live.stopping = True
-                    removed.append((run_id, live))
-        for run_id, live in removed:
-            self._close(live)
-            with self._lock:
-                if self._live.get(run_id) is live:
-                    self._live.pop(run_id)
+            owned = [
+                run_id
+                for run_id, live in self._live.items()
+                if live.root_frame_id == root_frame_id
+            ]
+        for run_id in owned:
+            try:
+                self._finish(run_id, "deleted")
+            except LabError:
+                # _finish has released the provider already. Its entry stays
+                # only to let a retry record the end, but these rows are about
+                # to go with the session: drop it so it holds no slot.
+                with self._lock:
+                    live = self._live.get(run_id)
+                    if live is not None and live.root_frame_id == root_frame_id:
+                        self._live.pop(run_id)
+
+    def on_session_restored(self, root_frame_id: str) -> None:
+        """Lift the tombstone after a deletion that did not happen."""
+        with self._lock:
+            self._deleted_roots.discard(root_frame_id)

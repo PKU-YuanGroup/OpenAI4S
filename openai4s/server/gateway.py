@@ -3871,9 +3871,28 @@ class SessionRunner:
                 )
             return self._lab_manager
 
+    def _restore_session_lab(self, root_frame_id: str) -> None:
+        """A deletion that did not happen: hints resume, creation reopens.
+
+        Only for a session that still exists; the manager's tombstone otherwise
+        stays (creation also requires the frame, so it is harmless either way).
+        """
+        self._lab_updates.deletion_failed(root_frame_id)
+        with self._lab_manager_lock:
+            manager = self._lab_manager
+        try:
+            exists = get_store(self.cfg.db_path).get_frame(root_frame_id) is not None
+        except (
+            Exception
+        ):  # noqa: BLE001 - a broken read must not mask the deletion error
+            exists = False
+        if manager is not None and exists:
+            manager.on_session_restored(root_frame_id)
+
     def _release_session_lab(self, root_frame_id: str) -> None:
         # No property access: deleting an untouched session must not reconcile
-        # the whole daemon's Lab ledger. Wait only for same-root REST opens.
+        # the whole daemon's Lab ledger. Wait only for same-root admissions;
+        # an opening provider is discarded by the manager's tombstone.
         with self._lab_creations.session(root_frame_id):
             with self._lab_manager_lock:
                 manager = self._lab_manager
@@ -3940,7 +3959,7 @@ class SessionRunner:
         try:
             return self.deletions.delete_session(root_frame_id)
         except BaseException:
-            self._lab_updates.deletion_failed(root_frame_id)
+            self._restore_session_lab(root_frame_id)
             raise
         finally:
             with self._lock:
@@ -4081,7 +4100,7 @@ class SessionRunner:
             return self.deletions.delete_project(project_id)
         except BaseException:
             for root_frame_id in roots:
-                self._lab_updates.deletion_failed(root_frame_id)
+                self._restore_session_lab(root_frame_id)
             raise
         finally:
             with self._lock:
@@ -4506,8 +4525,9 @@ class SessionRunner:
         try:
             if lab_manager is not None:
                 lab_manager.close_all("daemon_shutdown")
-        except LabError:
-            # close_all already releases providers even when ledger writes fail.
+        except Exception:  # noqa: BLE001 - the remaining shutdown must still run
+            # close_all already releases providers even when ledger writes
+            # fail; any other failure must not skip the per-session drops.
             pass
         finally:
             self._lab_updates.close()
@@ -21258,7 +21278,16 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         _seed_datapro_connector(cfg)
         # SessionRunner itself stays lazy for non-daemon compositions/tests.
         # Startup reconciliation must finish before accepting HTTP requests.
-        runner.lab_manager
+        # A Lab that cannot be built (a broken manifest, a busy ledger) must
+        # not keep the daemon from starting: the property retries on use.
+        try:
+            runner.lab_manager
+        except Exception as exc:  # noqa: BLE001 - Lab is optional at boot
+            print(
+                f"OpenAI4S Lab is unavailable at startup ({type(exc).__name__}); "
+                "it will be retried on first use",
+                file=sys.stderr,
+            )
         handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     except BaseException:

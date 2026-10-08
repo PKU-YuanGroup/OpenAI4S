@@ -9,12 +9,16 @@ so a seam between the entry points turns a test red.
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
 from openai4s.config import Config, LLMConfig
 from openai4s.host_dispatch import build_dispatcher
+from openai4s.lab.fake import FakeExtractorDevice, fake_registration
 from openai4s.sdk.host import build_host
 from openai4s.server import gateway, local_auth
 from openai4s.tools.registry import get_tool
@@ -245,3 +249,49 @@ def test_session_deletion_and_shutdown_reap_toy_processes(daemon):
 
     daemon.runner.close()
     assert process_b.returncode is not None
+
+
+def test_deleting_a_session_never_waits_for_an_opening_provider(daemon):
+    # A ChemGymRL open may take 180 s (cold JIT). Deletion only waits for the
+    # admission check; the manager's tombstone discards the late opening.
+    entered, release = threading.Event(), threading.Event()
+    devices = []
+
+    class SlowOpen(FakeExtractorDevice):
+        closed: tuple = ()
+
+        def open(self, request):
+            entered.set()
+            release.wait(10)
+            return super().open(request)
+
+        def close(self, session_id):
+            self.closed = (*self.closed, session_id)
+            return super().close(session_id)
+
+    def factory():
+        devices.append(SlowOpen())
+        return devices[-1]
+
+    daemon.runner.lab_manager._registry.register(
+        replace(fake_registration(), port_factory=factory)
+    )
+    fid, _, _ = daemon.session()
+    body = {
+        "device_id": "fake.extractor.01",
+        "profile": PROFILE,
+        "idempotency_key": "s",
+    }
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(daemon.request, "POST", f"/frames/{fid}/lab/runs", body)
+        assert entered.wait(10)
+        started = time.monotonic()
+        daemon.runner.delete_session(fid)
+        elapsed = time.monotonic() - started
+        release.set()
+        status, created = pending.result(15)
+    assert elapsed < 2, elapsed
+    assert status in (409, 503), created
+    assert not daemon.runner.lab_manager._live
+    # The late opening was closed, not registered for a deleted session.
+    assert len(devices) == 1 and devices[0].closed
