@@ -27,7 +27,13 @@ from openai4s.permissions import broker
 from openai4s.sdk.host import build_host
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
 from openai4s.store import get_store
-from openai4s.tools.registry import REGISTRY, execute_tool_call, get_tool
+from openai4s.tools.catalog import SessionToolCatalog
+from openai4s.tools.registry import (
+    REGISTRY,
+    execute_tool_call,
+    format_tool_result,
+    get_tool,
+)
 
 NAMES = {
     "lab_" + name
@@ -173,6 +179,7 @@ def test_lab_metadata_and_progressive_group(rig):
 
 
 def test_sdk_native_parity_idempotency_identity_and_audit(rig):
+    rig.dispatcher.cfg = replace(rig.cfg, team_mode=True)
     rig.store.team.set_session_owner(rig.root, "session-owner")
     created = create(rig, idempotency_key="create-once", budgets={"max_steps": 500})
     assert (
@@ -301,6 +308,12 @@ def test_session_owner_and_stop_boundary(rig):
     ):
         assert other(method, [{"run_id": run_id}])["error_kind"] == "run_not_found"
     rig.store.team.set_session_owner(rig.root, "different-owner")
+    # Outside team mode an owner row left by an earlier team-mode run is not
+    # an identity: the REST routes ignore it, so the tools must too.
+    assert rig.dispatcher("lab_observe", [{"run_id": run_id}])["run"]["run_id"] == (
+        run_id
+    )
+    rig.dispatcher.cfg = replace(rig.cfg, team_mode=True)
     assert (
         rig.dispatcher("lab_observe", [{"run_id": run_id}])["error_kind"]
         == "run_not_found"
@@ -493,8 +506,12 @@ def test_no_options_and_activity_cards_keep_only_safe_fields(rig):
     assert events[-1]["status"] == "error"
     assert "provider" not in json.dumps(events)
     begin = next(e for e in events if e.get("input", {}).get("operation"))
-    assert "仿真" in begin["title"] and "→" in begin["title"]
+    assert begin["title"].startswith("Simulation · Execute") and "→" in begin["title"]
     assert begin["input"]["device_id"] == CREATE["device_id"]
+    assert begin["input"]["expected_revision"] == 0
+    created = next(e for e in events if e.get("input", {}).get("profile"))
+    assert created["title"] == "Simulation · Create run"
+    assert events[-1]["summary"] == "Simulation · rejected"
     assert begin["input"]["parameters"]["duration"]["unit"] == "model_time"
     for event in events:
         assert_public(event)
@@ -509,10 +526,12 @@ def test_permission_v5_upgrade_preserves_operator_choices(rig):
     rules = {
         r["tool"]: r["decision"] for r in store.get_permission_rules(scope="global")
     }
-    for method in NAMES | FULL:
-        assert rules[method] == (
-            "ask" if method in {"lab_create", "lab_execute"} else "allow"
-        )
+    # Only the approval-gated tools read rules; a seeded row for any other
+    # Lab method would be a switch the dispatcher never consults.
+    assert {m: rules[m] for m in NAMES | FULL if m in rules} == {
+        "lab_create": "ask",
+        "lab_execute": "ask",
+    }
     store.set_permission_rule(
         scope="global", tool="lab_execute", pattern="*", decision="deny"
     )
@@ -577,3 +596,124 @@ def test_full_sdk_routes_validate_like_the_read_tools(rig):
     with pytest.raises(RuntimeError) as caught:
         rig.host.lab.observations("missing", full=True, limit=0)
     assert caught.value.error_kind == "invalid_parameters"
+
+
+def _wide_layers(monkeypatch, rig, width):
+    descriptor = fake._descriptor
+    observation = fake.FakeExtractorDevice._observation
+
+    def wide_descriptor(profile):
+        original = descriptor(profile)
+        return replace(
+            original,
+            observation_channels=tuple(
+                (
+                    replace(channel, shape=(width,))
+                    if channel.name == "layers"
+                    else channel
+                )
+                for channel in original.observation_channels
+            ),
+        )
+
+    def wide_observation(session):
+        original = observation(session)
+        original["channels"][0].update(
+            shape=[width], value=[index / 7 for index in range(width)]
+        )
+        return original
+
+    monkeypatch.setattr(fake, "_descriptor", wide_descriptor)
+    monkeypatch.setattr(
+        fake.FakeExtractorDevice, "_observation", staticmethod(wide_observation)
+    )
+    rig.registry._devices.clear()
+    rig.registry.register(
+        replace(fake.fake_registration(), port_factory=lambda: CountingDevice())
+    )
+
+
+@pytest.mark.parametrize(
+    ("items_key", "cursor"), [("commands", "seq"), ("observations", "sequence")]
+)
+def test_history_pages_fit_the_tool_limit_and_keep_their_cursor(items_key, cursor):
+    tool = get_tool("lab_" + items_key)
+    items = [
+        {cursor: index, "values": [index + 0.123456789] * 200} for index in range(1, 60)
+    ]
+    text = format_tool_result(
+        tool, {items_key: items, "next_after_" + cursor: items[-1][cursor]}
+    )
+    assert len(text) <= tool.output_limit and "[truncated]" not in text
+    page = json.loads(text.split("\n", 1)[1])
+    kept = page[items_key]
+    assert page["page_truncated"] is True
+    assert 1 <= len(kept) < len(items) and kept == items[: len(kept)]
+    assert page["next_after_" + cursor] == kept[-1][cursor]
+    # A page that fits keeps every field; one item too long for any page still
+    # leads with its cursor, ahead of the generic truncation marker.
+    small = {items_key: items[:2], "next_after_" + cursor: 2}
+    assert json.loads(format_tool_result(tool, small).split("\n", 1)[1]) == small
+    huge = [{cursor: 1, "values": [0.5] * 9000}, {cursor: 2}]
+    text = format_tool_result(tool, {items_key: huge, "next_after_" + cursor: 2})
+    assert text.endswith("[truncated]") and len(text) <= tool.output_limit
+    assert f'"next_after_{cursor}":1' in text.split(f'"{items_key}":')[0]
+
+
+def test_observation_history_resumes_from_a_truncated_page(rig, monkeypatch):
+    _wide_layers(monkeypatch, rig, 256)
+    run_id = create(rig)["run"]["run_id"]
+    for revision in range(8):
+        executed = rig.host.lab.execute(**command(run_id, expected_revision=revision))
+        assert executed["command"]["state"] == "succeeded"
+    seen, after, pages = [], -1, 0
+    while True:
+        output, ok = execute_tool_call(
+            rig.dispatcher,
+            {
+                "name": "lab_observations",
+                "arguments": {"run_id": run_id, "after_sequence": after, "limit": 1000},
+            },
+        )
+        assert ok and len(output) <= get_tool("lab_observations").output_limit
+        page = json.loads(output.split("\n", 1)[1])
+        if not page["observations"]:
+            break
+        pages += 1
+        seen += [observation["sequence"] for observation in page["observations"]]
+        assert page["observations"][0]["channels"][0]["value"][255] == 255 / 7
+        after = page["next_after_sequence"]
+    # Every observation exactly once, in order, across several pages.
+    assert pages > 1 and seen == list(range(9))
+
+
+def test_lab_tools_are_offered_on_whole_words_only():
+    def offered(text):
+        specs = SessionToolCatalog().specs_for([{"role": "user", "content": text}])
+        return bool({spec.name for spec in specs} & NAMES)
+
+    for text in (
+        "Label the columns in the available table",
+        "Run a molecular dynamics simulation of this protein",
+        "Design an experiment to test the dose response",
+        "Collaborate on the elaboration",
+    ):
+        assert not offered(text), text
+    for text in (
+        "Open the LAB bench",
+        "call lab_create with the toy device",
+        "Run the ChemGymRL wateroil extraction",
+        "在实验台上做一次萃取",
+    ):
+        assert offered(text), text
+
+
+def test_native_invoke_falls_back_to_the_ordinary_dispatch():
+    calls = []
+
+    def dispatcher(method, args):
+        calls.append((method, args))
+        return {"devices": [], "runs": []}
+
+    assert get_tool("lab_list").invoke(dispatcher, {}) == {"devices": [], "runs": []}
+    assert calls == [("lab_list", [{}])]

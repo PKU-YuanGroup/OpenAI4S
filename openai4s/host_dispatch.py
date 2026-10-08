@@ -960,7 +960,7 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 "run_id": run.get("run_id"),
                 "command_id": command.get("command_id") or details.get("command_id"),
             },
-            f"仿真 · {state}",
+            f"Simulation · {state}",
         )
     if kind == "delegate":
         # Before the generic declared-failure read: a max_turns envelope
@@ -1451,7 +1451,9 @@ class HostDispatcher:
         store = get_store(self.cfg.db_path)
         scope = store.resolve_frame_scope(self.frame_id)
         root = str(scope.get("root_frame_id") or self.frame_id or "")
-        owner_record = store.team.session_owner(root)
+        # The same identity the REST routes derive: outside team mode no
+        # caller is an owner, whatever an earlier team-mode run recorded.
+        owner_record = store.team.session_owner(root) if self.cfg.team_mode else None
         owner = owner_record.get("user_id") if owner_record else None
         context = self._current_action_context()
         origin = getattr(self._lab_call_local, "origin", None) or (

@@ -15,6 +15,24 @@ _KEY = {"type": "string", "minLength": 1, "maxLength": 128}
 _RUN = {"run_id": _ID}
 
 
+def _compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _page(result: dict, items_key: str, cursor: str, kept: int) -> dict:
+    # The cursor leads, so a single item too long for the limit still leaves
+    # it intact ahead of the generic truncation marker.
+    items = result[items_key][:kept]
+    page = {
+        "page_truncated": True,
+        "next_after_"
+        + cursor: (items[-1].get(cursor) if isinstance(items[-1], dict) else None),
+    }
+    page.update((key, value) for key, value in result.items() if key not in page)
+    page[items_key] = items
+    return page
+
+
 class _LabTool(Tool):
     requires_approval = False
     resource_key_prefix = "lab"
@@ -24,14 +42,39 @@ class _LabTool(Tool):
     def invoke(self, dispatcher: Any, arguments: dict) -> Any:
         # Trusted native entry, separate from SDK wire arguments. The same
         # dispatcher and Tool.execute still enforce all permission policies.
-        return dispatcher.invoke_lab_tool(self.host_method, arguments)
+        # A dispatcher without the Lab seam (a test double, an embedding)
+        # still gets the ordinary call and therefore the ordinary policy.
+        invoke_lab_tool = getattr(dispatcher, "invoke_lab_tool", None)
+        if callable(invoke_lab_tool):
+            return invoke_lab_tool(self.host_method, arguments)
+        return dispatcher(self.host_method, [dict(arguments)])
 
     def render_observation(self, result: Any) -> str | None:
-        # The generic formatter shows only error text, losing the command_id
-        # required to reconcile an unknown outcome without resending.
-        if isinstance(result, dict) and "error" in result:
-            return json.dumps(result, ensure_ascii=False)
-        return None
+        # Compact JSON for every result: the generic formatter keeps only an
+        # error's text (losing the command_id an unknown outcome needs) and
+        # indents arrays one element per line, so an observation overflows the
+        # output limit and is cut mid-JSON. A history page that is still too
+        # long drops trailing items and moves its cursor to the last item kept,
+        # so paging from the cursor resumes exactly where the page stopped.
+        if not isinstance(result, dict):
+            return None
+        text = _compact(result)
+        budget = self.output_limit - len(f"[Tool: {self.name}]\n")
+        if len(text) <= budget or "error" in result:
+            return text
+        for items_key, cursor in (("commands", "seq"), ("observations", "sequence")):
+            items = result.get(items_key)
+            if not isinstance(items, list) or len(items) < 2:
+                continue
+            kept, low, high = 1, 1, len(items) - 1
+            while low <= high:
+                middle = (low + high) // 2
+                if len(_compact(_page(result, items_key, cursor, middle))) <= budget:
+                    kept, low = middle, middle + 1
+                else:
+                    high = middle - 1
+            return _compact(_page(result, items_key, cursor, kept))
+        return text
 
     def _arguments(self, arguments: Any) -> Any:
         # The SDK codec omits optional None values. Native callers may spell

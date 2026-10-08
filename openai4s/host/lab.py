@@ -135,6 +135,9 @@ def activity_view(method: str, spec: dict[str, Any]) -> tuple[str, str, dict[str
         value = spec.get(key)
         if isinstance(value, str):
             fields[key] = value[:128]
+    for key in ("expected_revision", "seed"):
+        if type(spec.get(key)) is int:
+            fields[key] = spec[key]
     parameters = spec.get("parameters")
     if isinstance(parameters, dict):
         fields["parameters"] = {
@@ -145,11 +148,11 @@ def activity_view(method: str, spec: dict[str, Any]) -> tuple[str, str, dict[str
             and isinstance(quantity.get("unit"), str)
         }
     labels = {
-        "lab_create": "创建实验",
-        "lab_execute": "执行操作",
-        "lab_stop": "停止实验",
+        "lab_create": "Create run",
+        "lab_execute": "Execute",
+        "lab_stop": "Stop run",
     }
-    title = "仿真 · " + labels[method]
+    title = "Simulation · " + labels[method]
     if "operation" in fields:
         title += " · " + fields["operation"]
     if fields.get("source") or fields.get("target"):

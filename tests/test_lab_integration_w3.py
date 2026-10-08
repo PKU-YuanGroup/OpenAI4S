@@ -295,3 +295,21 @@ def test_deleting_a_session_never_waits_for_an_opening_provider(daemon):
     assert not daemon.runner.lab_manager._live
     # The late opening was closed, not registered for a deleted session.
     assert len(devices) == 1 and devices[0].closed
+
+
+def test_tool_and_rest_callers_agree_outside_team_mode(daemon):
+    # An owner row left by an earlier team-mode run is not an identity in a
+    # single-user daemon: a run the agent creates stays the workbench's run.
+    fid, dispatcher, _ = daemon.session()
+    daemon.store.team.set_session_owner(fid, "former-team-owner")
+    created = get_tool("lab_create").invoke(
+        dispatcher, {"device_id": TOY, "profile": PROFILE}
+    )
+    run_id = created["run"]["run_id"]
+    assert daemon.store.lab.get_run(run_id)["owner_user_id"] is None
+    status, overview = daemon.request("GET", f"/frames/{fid}/lab")
+    assert status == 200 and [r["run_id"] for r in overview["runs"]] == [run_id]
+    status, stopped = daemon.request(
+        "POST", f"/frames/{fid}/lab/runs/{run_id}/stop", {}
+    )
+    assert status == 200 and stopped["run"]["status"] == "ended"
