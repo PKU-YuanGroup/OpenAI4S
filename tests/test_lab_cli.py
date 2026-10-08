@@ -91,6 +91,35 @@ def test_doctor_installed_probe_is_side_effect_only(tmp_path, monkeypatch):
     assert check.facts["sandbox"]["enforced"] is False
 
 
+def test_doctor_remedy_matches_a_sandbox_failure(tmp_path, monkeypatch):
+    # A required sandbox that is missing is not fixed by reinstalling.
+    import openai4s.lab.builtin as builtin
+    from openai4s import doctor
+    from openai4s.lab.models import ErrorCode, LabError
+
+    monkeypatch.setattr(
+        builtin, "provider_environment_status", lambda data: {"available": True}
+    )
+
+    class Port:
+        sandbox_status = {"enforced": False, "state": "unavailable"}
+
+        def describe(self, profile):
+            raise LabError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "Required provider sandbox unavailable",
+                {"reason": "sandbox"},
+            )
+
+    monkeypatch.setattr(
+        builtin, "ProviderProcessDevice", lambda *args, **kwargs: Port()
+    )
+    check = doctor._lab(SimpleNamespace(data_dir=tmp_path))
+    assert check.status == doctor.WARN
+    assert "OPENAI4S_KERNEL_SANDBOX" in check.remedy
+    assert "lab setup" not in check.remedy
+
+
 import pytest
 
 

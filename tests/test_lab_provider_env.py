@@ -128,6 +128,8 @@ def test_setup_verifies_all_profiles_before_atomic_activation_and_rollback(
     assert "--no-deps" in records[2]["args"]
     assert "--require-hashes" in records[2]["args"]
     assert "--use-pep517" in records[3]["args"]
+    # Upstream's build tooling comes from the hash-locked environment.
+    assert "--no-build-isolation" in records[3]["args"]
     assert records[3]["args"][-1].endswith("@" + SOURCE_SHA)
     for row in records:
         env = row["env"]
@@ -303,3 +305,48 @@ def test_wrong_python_and_unverified_rollback_are_refused(tmp_path, fake_python)
     with pytest.raises(LabError, match="No verified previous"):
         provider_env.setup_provider(tmp_path, rollback=True)
     assert pointer.read_bytes() == before
+
+
+def test_a_generation_built_from_another_lock_is_not_verified(
+    tmp_path, fake_python, monkeypatch
+):
+    # After an upgrade changes requirements.lock, the old generation must not
+    # keep being reported (and used) as this release's verified environment.
+    executable, _, _ = fake_python
+    installed = provider_env.setup_provider(tmp_path, python=executable)
+    assert provider_env.resolve_provider_python(tmp_path) == installed["python"]
+    monkeypatch.setattr(provider_env, "_lock_sha256", lambda: "0" * 64)
+    status = provider_env.provider_environment_status(tmp_path)
+    assert status["available"] is False and status["python"] is None
+    assert "another provider lock" in status["detail"]
+    assert provider_env.resolve_provider_python(tmp_path) is None
+
+
+def test_an_unexpandable_override_is_reported_not_raised(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "OPENAI4S_LAB_CHEMGYMRL_PYTHON", "~no-such-user-for-openai4s/bin/python"
+    )
+    status = provider_env.provider_environment_status(tmp_path)
+    assert status["available"] is False and status["source"] == "override"
+    assert provider_env.resolve_provider_python(tmp_path) is None
+
+
+def test_setup_recovers_from_an_invalid_pointer_and_names_a_stale_lock(
+    tmp_path, fake_python
+):
+    executable, _, config = fake_python
+    pointer = Path(config["pointer"])
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text("not json")
+    # The advertised remedy for an invalid pointer must actually work.
+    with pytest.raises(LabError) as caught:
+        provider_env.setup_provider(tmp_path, rollback=True)
+    assert "pointer is invalid" in caught.value.message
+    installed = provider_env.setup_provider(tmp_path, python=executable)
+    assert json.loads(pointer.read_text())["generation"] == installed["generation"]
+    lock = pointer.parent / ".setup-lock"
+    lock.write_text("424242")
+    with pytest.raises(LabError) as caught:
+        provider_env.setup_provider(tmp_path, python=executable)
+    assert str(lock) in caught.value.message and "424242" in caught.value.message
+    assert json.loads(pointer.read_text())["generation"] == installed["generation"]

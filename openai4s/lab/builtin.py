@@ -227,11 +227,18 @@ def doctor_check(cfg):
             facts={"provider_environment": environment, "sandbox": port.sandbox_status},
         )
     except LabError as exc:
+        sandbox = (exc.details or {}).get("reason") == "sandbox"
         return Check(
             "lab",
             WARN,
             str(exc),
-            "Run openai4s lab setup chemgymrl",
+            (
+                # Reinstalling cannot fix the OS sandbox the provider requires.
+                "Make the OS sandbox available, or set OPENAI4S_KERNEL_SANDBOX=auto "
+                "(see docs/security.md)"
+                if sandbox
+                else "Run openai4s lab setup chemgymrl"
+            ),
             {"provider_environment": environment},
         )
 

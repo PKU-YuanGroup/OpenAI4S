@@ -25,7 +25,7 @@ export MPLBACKEND=Agg MPLCONFIGDIR="$CG_DATA/mpl" NUMBA_CACHE_DIR="$CG_DATA/numb
 python3.10 -m venv "$CG_DATA/provider-env"
 "$CG_DATA/provider-env/bin/python" -m pip install --require-hashes --no-deps \
   -r openai4s_lab_provider/chemgymrl/requirements.lock
-"$CG_DATA/provider-env/bin/python" -m pip install --use-pep517 --no-deps \
+"$CG_DATA/provider-env/bin/python" -m pip install --use-pep517 --no-build-isolation --no-deps \
   'git+https://github.com/chemgymrl/chemgymrl@ab8227b6b33f13617b7e551bdf6b894df7eec68d'
 "$CG_DATA/provider-env/bin/python" -c 'import importlib.metadata as m,json; d=m.distribution("chemistrygym"); assert d.version=="2.0.0"; assert json.loads(d.read_text("direct_url.json"))["vcs_info"]["commit_id"]=="ab8227b6b33f13617b7e551bdf6b894df7eec68d"'
 ```
@@ -42,8 +42,9 @@ uv pip compile openai4s_lab_provider/chemgymrl/requirements.in \
 The universal runtime lock includes distribution hashes for multiple platforms,
 not only this machine's wheels. It excludes chemistrygym itself. It also pins
 upstream's pandas, Pillow, cmocean and PyYAML dependencies and their transitive
-dependencies. Build isolation for the upstream legacy setup.py may download
-build tooling; that tooling is outside the runtime lock. On the validation
+dependencies. The lock also pins upstream's build tooling (setuptools and
+wheel), and the upstream legacy setup.py is built with `--no-build-isolation`,
+so no unpinned build tooling is downloaded either. On the validation
 machine pip 23.0.1's legacy `setup.py install` omitted `direct_url.json`.
 `--use-pep517` is therefore required; the adapter refuses a missing or mismatched
 commit receipt. An existing legacy installation must be reinstalled with

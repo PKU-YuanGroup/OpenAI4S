@@ -73,6 +73,12 @@ def _read_pointer(root: Path) -> dict[str, Any]:
     return value
 
 
+def _lock_sha256() -> str:
+    return hashlib.sha256(
+        (_package() / "chemgymrl" / "requirements.lock").read_bytes()
+    ).hexdigest()
+
+
 def _verified_python(root: Path, name: str | None) -> str | None:
     if not name or not _GENERATION.fullmatch(name):
         return None
@@ -86,6 +92,9 @@ def _verified_python(root: Path, name: str | None) -> str | None:
             or metadata.get("source_sha") != SOURCE_SHA
             or metadata.get("profiles") != list(PROFILES)
             or metadata.get("generation") != name
+            # A generation built from another lock is not this release's
+            # verified environment, however healthy it looks.
+            or metadata.get("requirements_sha256") != _lock_sha256()
         ):
             return None
         executable = _python_path(generation)
@@ -107,7 +116,10 @@ def provider_environment_status(data_dir: str | Path) -> dict[str, Any]:
     }
     override = os.environ.get(_OVERRIDE)
     if override is not None:
-        candidate = Path(override).expanduser().absolute() if override else None
+        try:
+            candidate = Path(override).expanduser().absolute() if override else None
+        except RuntimeError:  # "~nosuchuser/...": no home directory to expand
+            candidate = None
         ready = candidate is not None and _executable(candidate)
         status.update(
             available=ready,
@@ -133,7 +145,8 @@ def provider_environment_status(data_dir: str | Path) -> dict[str, Any]:
             )
         elif pointer["generation"]:
             status["detail"] = (
-                "Provider generation is unavailable or unverified. " + _REMEDY
+                "Provider generation is unavailable, unverified or built from "
+                "another provider lock. " + _REMEDY
             )
     except (OSError, ValueError):
         status["detail"] = (
@@ -311,6 +324,9 @@ def _commands(python: str, generation: Path) -> list[list[str]]:
             "pip",
             "install",
             "--use-pep517",
+            # Build with the hash-locked setuptools/wheel just installed, not
+            # with unpinned tooling an isolated build would download.
+            "--no-build-isolation",
             "--no-deps",
             f"git+{_SOURCE_URL}@{SOURCE_SHA}",
         ],
@@ -390,13 +406,29 @@ def setup_provider(
         try:
             descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
+            try:
+                holder = lock_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                holder = "unknown"
             raise RuntimeError(
-                "Provider setup is already locked; inspect .setup-lock before retrying"
+                f"Provider setup is already running or was interrupted (lock "
+                f"{lock_path}, PID {holder or 'unknown'}). If no setup is "
+                "running, delete the lock and retry"
             ) from None
         locked = True
         with os.fdopen(descriptor, "w") as lock:
             lock.write(str(os.getpid()))
-        previous = _read_pointer(root)
+        try:
+            previous = _read_pointer(root)
+        except ValueError:
+            if rollback:
+                raise RuntimeError(
+                    "The provider generation pointer is invalid; run setup to "
+                    "build a fresh generation"
+                ) from None
+            # An unreadable pointer names nothing to keep: a fresh generation
+            # replaces it (atomically, only once verified).
+            previous = {"generation": None, "previous_generation": None}
         if rollback:
             target = previous["previous_generation"]
             executable = _verified_python(root, target)
@@ -456,9 +488,7 @@ def setup_provider(
                 "generation": name,
                 "source_sha": SOURCE_SHA,
                 "profiles": list(PROFILES),
-                "requirements_sha256": hashlib.sha256(
-                    (_package() / "chemgymrl" / "requirements.lock").read_bytes()
-                ).hexdigest(),
+                "requirements_sha256": _lock_sha256(),
             }
             (generation / "verified.json").write_text(
                 json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"

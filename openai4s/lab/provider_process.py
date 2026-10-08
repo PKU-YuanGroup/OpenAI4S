@@ -151,6 +151,7 @@ class ProviderProcessDevice:
                 raise LabError(
                     ErrorCode.PROVIDER_UNAVAILABLE,
                     "Required provider sandbox unavailable",
+                    {"reason": "sandbox"},
                 )
             argv = sandbox.wrap_command(
                 [
