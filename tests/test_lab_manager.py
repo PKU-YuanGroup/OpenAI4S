@@ -1009,10 +1009,11 @@ def test_idle_cleanup_never_reaps_a_run_with_a_command_in_flight(rig, monkeypatc
 
 
 def test_events_and_runs_page_over_what_the_caller_may_see(rig):
-    manager, caller, ledger = rig[:3]
+    manager, caller, ledger, devices, now = rig[:5]
     bob = replace(caller, owner_user_id="bob")
     alice = replace(caller, owner_user_id="alice")
     alice_run = create((manager, alice) + rig[2:])["run"]["run_id"]
+    now[0] += 1  # bob's run is strictly the newest: it heads an unfiltered page
     create((manager, bob) + rig[2:])
     first = manager.events(bob, after_seq=0, limit=2)
     assert first["events"] and all(e["run_id"] != alice_run for e in first["events"])
