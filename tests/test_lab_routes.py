@@ -598,3 +598,47 @@ def test_terminal_command_accepts_omitted_optional_slots(client):
     )
     assert status == 200 and body["command"]["state"] == "succeeded"
     assert body["run"]["end_reason"] == "end_action"
+
+
+def test_command_routes_give_the_workbench_full_sensor_arrays(client, monkeypatch):
+    # CONTRACT §10: the UI view does not summarize arrays. The manager's command
+    # results are the agent view (GenWurtz `layers` 3x100 arrives summarized),
+    # so the execute and reconcile routes re-read that observation in full.
+    import openai4s.lab.manager as manager_module
+
+    summarize = manager_module.project_observation
+    monkeypatch.setattr(
+        manager_module,
+        "project_observation",
+        lambda obs, **kw: summarize(obs, **{**kw, "max_elements": 4}),
+    )
+    caller = LabCaller(
+        client.frame_id, client.frame_id, None, CommandOrigin.MANUAL_UI, None, None
+    )
+    run_id = client.create()["run"]["run_id"]
+    status, executed = client.execute(run_id)
+    assert status == 200 and executed["command"]["state"] == "succeeded"
+    client.devices[0].lose_response_next()
+    client.devices[0].fail_query_next()
+    with pytest.raises(LabError) as caught:
+        client.runner.lab_manager.execute(
+            caller,
+            {
+                "run_id": run_id,
+                **_command(idempotency_key="second", expected_revision=1),
+            },
+        )
+    command_id = caught.value.details["command_id"]
+    status, reconciled = client.request(
+        "POST", f"{client.base}/runs/{run_id}/commands/{command_id}/reconcile", {}
+    )
+    assert status == 200 and reconciled["command"]["state"] == "succeeded"
+    for envelope in (executed, reconciled):
+        layers = next(
+            c for c in envelope["observation"]["channels"] if c["name"] == "layers"
+        )
+        assert isinstance(layers["value"], list), layers["value"]
+    # The agent view itself is still summarized: only the UI routes widen it.
+    agent = client.runner.lab_manager.observe(caller, run_id, full=False)["observation"]
+    layers = next(c for c in agent["channels"] if c["name"] == "layers")
+    assert layers["value"]["truncated"] is True

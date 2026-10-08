@@ -478,3 +478,21 @@ def test_client_observes_exit_without_os_waitid(provider, monkeypatch):
         _request(client, "hello", {})
     client.close()
     assert client.process.returncode is not None
+
+
+def test_toy_layers_rows_are_labelled_with_their_vessels():
+    # The workbench maps each row of `layers` to a vessel through the declared
+    # axes; a label in the wrong order would draw one vessel's level as another's.
+    from openai4s.lab.manifest import load_descriptor
+    from openai4s_lab_provider.toy import Backend
+
+    backend = Backend()
+    descriptor = backend.describe(PROFILE)
+    (spec,) = load_descriptor(descriptor).observation_channels
+    labels = list(spec.axes[0].labels)
+    assert sorted(labels) == sorted([SOURCE, TARGET])
+    opened = backend.open(PROFILE, 1, {}, descriptor["capability_revision"])
+    (channel,) = opened["observation"]["channels"]
+    # The toy starts with a full source beaker and an empty extraction vessel.
+    assert channel["value"][labels.index(SOURCE)] == [1] * 5
+    assert channel["value"][labels.index(TARGET)] == [0] * 5

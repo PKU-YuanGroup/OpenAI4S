@@ -107,6 +107,12 @@ class Backend:
                     "source": "simulated_sensor",
                     "available": True,
                     "description": "Five occupied-layer bins per toy vessel",
+                    # Row order is the observation's vessel order; the
+                    # workbench draws each row against its labelled vessel.
+                    "axes": [
+                        {"name": "resource", "labels": [SOURCE, TARGET]},
+                        {"name": "layer_bin"},
+                    ],
                 }
             ],
             "limits": {"max_steps": 50},

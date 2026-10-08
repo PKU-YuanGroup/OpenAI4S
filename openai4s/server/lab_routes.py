@@ -222,9 +222,15 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
                 if exc.code is not ErrorCode.OUTCOME_UNKNOWN:
                     raise
                 result = manager.status(caller, run_id, exc.details["command_id"])
+            result = _ui_observation(manager, caller, run_id, result)
         elif name == "lab.reconcile":
             _body(self, set())
-            result = manager.status(caller, match.group(2), match.group(3))
+            result = _ui_observation(
+                manager,
+                caller,
+                match.group(2),
+                manager.status(caller, match.group(2), match.group(3)),
+            )
         elif name == "lab.stop":
             body = _body(self, {"reason"})
             reason = body.get("reason")
@@ -244,6 +250,26 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
             error["details"] = exc.details
         self._json(error, _ERROR_STATUS.get(exc.code, 503))
     return True
+
+
+def _ui_observation(manager: Any, caller: LabCaller, run_id: str, result: dict) -> dict:
+    """A command envelope as the workbench needs it (CONTRACT §10 UI view).
+
+    The manager's command results are the agent view, where an array over 256
+    elements (GenWurtz `layers` is 3x100) arrives as a summary. The UI draws
+    the vessels from it, so it gets that same observation in full.
+    """
+    observation = result.get("observation")
+    if observation is None:
+        return result
+    page = manager.observations(
+        caller,
+        run_id,
+        after_sequence=observation["sequence"] - 1,
+        limit=1,
+        full=True,
+    )["observations"]
+    return {**result, "observation": page[0] if page else observation}
 
 
 def creation_refusal(runner: Any, root_frame_id: str) -> tuple[int, str] | None:
