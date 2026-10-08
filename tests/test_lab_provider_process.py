@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -140,8 +141,23 @@ def peer(tmp_path, replies):
     return device(tmp_path, package_dir=package)
 
 
+SOFT = {
+    ErrorCode.INVALID_PARAMETERS,
+    ErrorCode.OUTCOME_UNKNOWN,
+    ErrorCode.DEVICE_NOT_FOUND,
+}
+FATAL = {
+    ErrorCode.PROVIDER_UNAVAILABLE: ErrorCode.PROVIDER_UNAVAILABLE,
+    ErrorCode.ADAPTER_MISMATCH: ErrorCode.ADAPTER_MISMATCH,
+    ErrorCode.RUN_NOT_FOUND: ErrorCode.PROVIDER_UNAVAILABLE,
+}
+
+
 @pytest.mark.parametrize("code", list(ErrorCode))
-def test_declared_error_codes_preserve_session(tmp_path, code):
+def test_provider_error_codes_follow_the_failure_table(tmp_path, code):
+    # CONTRACT §9: only the provider's own soft codes keep the session; the
+    # fatal ones end it (alive False); a code only the host may raise, such as
+    # persistence_unavailable or stale_revision, is a protocol violation.
     port = peer(
         tmp_path,
         {"query": {"peer_error": {"code": code.value, "message": "private values"}}},
@@ -150,9 +166,11 @@ def test_declared_error_codes_preserve_session(tmp_path, code):
     try:
         with pytest.raises(LabError) as caught:
             port.query(ident, "id")
-        assert caught.value.code == code
-        # The standalone client treats provider_protocol_error as fatal itself.
-        assert port.alive(ident) == (code != ErrorCode.PROVIDER_PROTOCOL_ERROR)
+        expected = (
+            code if code in SOFT else FATAL.get(code, ErrorCode.PROVIDER_PROTOCOL_ERROR)
+        )
+        assert caught.value.code == expected
+        assert port.alive(ident) == (code in SOFT)
         assert "private values" not in str(caught.value)
     finally:
         port.close(ident)
@@ -258,6 +276,33 @@ def test_close_preempts_an_in_flight_execute(tmp_path):
     assert not list(port.runs_root.iterdir())
 
 
+def test_provider_never_writes_bytecode_into_its_package(tmp_path):
+    # With the sandbox off (or an auto sandbox degraded), a provider could
+    # otherwise drop __pycache__ into the host's own package directory.
+    package = tmp_path / "package"
+    shutil.copytree(PACKAGE, package, ignore=shutil.ignore_patterns("__pycache__"))
+    port = device(tmp_path, package_dir=package, sandbox_mode="off", execute=30)
+    ident = port.open(open_request()).session_id
+    try:
+        assert port.execute(ident, dispatch()).applied
+    finally:
+        port.close(ident)
+    assert not list(package.rglob("__pycache__"))
+
+
+def test_device_lifecycle_without_os_waitid(tmp_path, monkeypatch):
+    monkeypatch.delattr(os, "waitid", raising=False)
+    port = device(tmp_path, execute=30)
+    ident = port.open(open_request()).session_id
+    try:
+        assert port.alive(ident)
+        assert port.execute(ident, dispatch()).applied
+    finally:
+        port.close(ident)
+    assert not port.alive(ident)
+    assert not list(port.runs_root.iterdir())
+
+
 def test_unencodable_host_request_keeps_session(tmp_path):
     port = device(tmp_path)
     ident = port.open(open_request()).session_id
@@ -315,7 +360,7 @@ def test_spawn_passes_sandbox_fds_and_filters_environment(tmp_path, monkeypatch)
     from openai4s.security.sandbox import KernelSandbox, SandboxStatus
 
     read_fd, write_fd = os.pipe()
-    original = module._SandboxClient.start
+    original = module.ProviderClient.start
     seen = []
 
     class Sandbox(KernelSandbox):
@@ -338,7 +383,8 @@ def test_spawn_passes_sandbox_fds_and_filters_environment(tmp_path, monkeypatch)
         )
 
     def start(client):
-        assert client._pass_fds == (write_fd,)
+        assert client.pass_fds == (write_fd,)
+        assert client.argv[1:3] == ["-I", "-B"]
         assert "OPENAI_API_KEY" not in client.env
         assert "VIRTUAL_ENV" not in client.env and "PYTHONPATH" not in client.env
         assert client.env["PYTHONNOUSERSITE"] == "1"
@@ -364,7 +410,7 @@ def test_spawn_passes_sandbox_fds_and_filters_environment(tmp_path, monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "not-a-real-credential")
     monkeypatch.setenv("VIRTUAL_ENV", "daemon-env")
     monkeypatch.setattr(module, "create_kernel_sandbox", sandbox)
-    monkeypatch.setattr(module._SandboxClient, "start", start)
+    monkeypatch.setattr(module.ProviderClient, "start", start)
     port = device(tmp_path)
     try:
         opened = port.open(open_request())

@@ -2,6 +2,7 @@
 
 import math
 import os
+import select
 import selectors
 import signal
 import subprocess
@@ -39,6 +40,69 @@ class ProviderProtocolError(ProviderError):
         super().__init__("provider_protocol_error", message)
 
 
+class ProviderRequestError(ValueError):
+    """The host's own request was unusable; nothing was written."""
+
+
+class _ExitWatch:
+    """Observe the leader's exit without reaping it.
+
+    Until the leader is reaped its PID, and so the process group, stay
+    reserved: the group can still be signalled safely. os.waitid(WNOWAIT)
+    exists on Linux and on macOS from CPython 3.13. CPython 3.10-3.12 on
+    macOS have no os.waitid; a kqueue NOTE_EXIT filter registered at spawn
+    does the same job (a process that is already a zombie cannot be
+    registered: ESRCH means it has exited). Without either, poll() reaps,
+    and _signal_group then stops signalling a released group.
+    """
+
+    def __init__(self, process, reap_lock):
+        self._process = process
+        self._reap_lock = reap_lock
+        self._lock = threading.Lock()
+        self._exited = False
+        self._kq = None
+        if not hasattr(os, "waitid") and hasattr(select, "kqueue"):
+            self._kq = select.kqueue()
+            try:
+                self._kq.control(
+                    [
+                        select.kevent(
+                            process.pid,
+                            select.KQ_FILTER_PROC,
+                            select.KQ_EV_ADD,
+                            select.KQ_NOTE_EXIT,
+                        )
+                    ],
+                    0,
+                    0,
+                )
+            except ProcessLookupError:
+                self._exited = True
+
+    def exited(self):
+        """Raises ChildProcessError when someone else reaped the leader."""
+        if self._kq is not None:
+            # One consumer sees the event; the flag tells everyone else.
+            with self._lock:
+                if not self._exited and self._kq.control(None, 1, 0):
+                    self._exited = True
+                return self._exited
+        if hasattr(os, "waitid"):
+            return (
+                os.waitid(
+                    os.P_PID, self._process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG
+                )
+                is not None
+            )
+        with self._reap_lock:
+            return self._process.poll() is not None
+
+    def close(self):
+        if self._kq is not None:
+            self._kq.close()
+
+
 class ProviderGone(ProviderError):
     def __init__(self, returncode, stderr_tail):
         super().__init__(
@@ -57,10 +121,13 @@ class ProviderClient:
         cwd,
         max_frame_bytes=MAX_FRAME_BYTES,
         stderr_tail_bytes=64 * 1024,
+        pass_fds=(),
     ):
         self.argv = list(argv)
         self.env = dict(env)
         self.cwd = cwd
+        # Descriptors an OS sandbox wrapper must inherit (its own profile).
+        self.pass_fds = tuple(pass_fds)
         self.max_frame_bytes = max_frame_bytes
         self.stderr_tail_bytes = stderr_tail_bytes
         if max_frame_bytes < 1 or stderr_tail_bytes < 0:
@@ -76,6 +143,7 @@ class ProviderClient:
         self._stderr = bytearray()
         self._buffer = bytearray()
         self._stderr_thread = None
+        self._exit_watch = None
         self._disposed = False
 
     def start(self):
@@ -90,9 +158,11 @@ class ProviderClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 close_fds=True,
+                pass_fds=self.pass_fds,
                 start_new_session=True,
                 bufsize=0,
             )
+            self._exit_watch = _ExitWatch(self.process, self._reap_lock)
             os.set_blocking(self.process.stdin.fileno(), False)
             os.set_blocking(self.process.stdout.fileno(), False)
             self._stderr_thread = threading.Thread(
@@ -151,16 +221,14 @@ class ProviderClient:
         deadline = time.monotonic() + timeout
         while self.process.returncode is None:
             try:
-                exited = os.waitid(
-                    os.P_PID, self.process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG
-                )
+                exited = self._exit_watch.exited()
             except ChildProcessError:
                 # Someone else reaped it. poll records that fact before any
                 # further group signal (Popen handles ECHILD itself).
                 with self._reap_lock:
                     self.process.poll()
                 return True
-            if exited is not None:
+            if exited:
                 return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -181,6 +249,7 @@ class ProviderClient:
             self._signal_group(signal.SIGKILL)
             self.process.wait()
             self._disposed = True
+        self._exit_watch.close()
         if self._stderr_thread:
             self._stderr_thread.join(timeout=1)
 
@@ -271,7 +340,7 @@ class ProviderClient:
             or not math.isfinite(timeout)
             or timeout <= 0
         ):
-            raise ValueError("timeout must be finite and positive")
+            raise ProviderRequestError("timeout must be finite and positive")
         request_id = uuid.uuid4().hex
         try:
             data = encode_frame(
@@ -281,7 +350,7 @@ class ProviderClient:
         except ProtocolError as exc:
             # Nothing was written: a host-side argument error must not kill a
             # healthy provider (and be recorded as a lost one).
-            raise ValueError(f"request cannot be encoded: {exc}") from None
+            raise ProviderRequestError(f"request cannot be encoded: {exc}") from None
         if not self._alive_locked():
             raise self._gone()
         try:
@@ -315,6 +384,7 @@ class ProviderClient:
                     self._signal_group(signal.SIGKILL)
                     self.process.wait()
                     self._disposed = True
+                self._exit_watch.close()
                 if self._stderr_thread:
                     self._stderr_thread.join(timeout=1)
             finally:

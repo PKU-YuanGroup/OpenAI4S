@@ -3,7 +3,10 @@
 import hashlib
 import json
 import os
+import select
+import signal
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -453,3 +456,25 @@ def test_client_never_signals_a_reaped_group(provider, monkeypatch):
     client._signal_group(signal.SIGKILL)
     client.close()
     assert sent == []
+
+
+def test_client_observes_exit_without_os_waitid(provider, monkeypatch):
+    # CPython 3.10-3.12 on macOS has no os.waitid: every request used to fail
+    # with AttributeError and close() left the provider unreaped. kqueue
+    # NOTE_EXIT observes the exit without reaping; elsewhere poll() reaps.
+    monkeypatch.delattr(os, "waitid", raising=False)
+    client = provider()
+    assert _request(client, "hello", {})["backend"] == "toy"
+    assert client.alive()
+    os.killpg(client.process.pid, signal.SIGKILL)
+    deadline = time.monotonic() + 10
+    while client.alive():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    if hasattr(select, "kqueue"):
+        # Observed, not reaped: the PID (and group) stay reserved until close.
+        assert client.process.returncode is None
+    with pytest.raises(ProviderGone):
+        _request(client, "hello", {})
+    client.close()
+    assert client.process.returncode is not None

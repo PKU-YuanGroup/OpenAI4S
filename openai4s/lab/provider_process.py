@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import functools
-import os
 import re
 import secrets
 import shutil
-import subprocess
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,44 +29,28 @@ from openai4s_lab_provider.client import (
     ProviderError,
     ProviderGone,
     ProviderProtocolError,
+    ProviderRequestError,
     ProviderTimeout,
 )
 
-
-class _SandboxClient(ProviderClient):
-    """Local spawn adapter until the standalone client accepts pass_fds.
-
-    Wire exchange, bounds, timeout, process-group lifetime and draining remain
-    ProviderClient's responsibility. No process-global Popen monkeypatch.
-    """
-
-    def __init__(self, *args, pass_fds=(), **kwargs):
-        super().__init__(*args, **kwargs)
-        self._pass_fds = pass_fds
-
-    def start(self):
-        with self._lock:
-            if self.process is not None:
-                raise RuntimeError("client already started")
-            self.process = subprocess.Popen(
-                self.argv,
-                env=self.env,
-                cwd=self.cwd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                close_fds=True,
-                pass_fds=self._pass_fds,
-                start_new_session=True,
-                bufsize=0,
-            )
-            os.set_blocking(self.process.stdin.fileno(), False)
-            os.set_blocking(self.process.stdout.fileno(), False)
-            self._stderr_thread = threading.Thread(
-                target=self._drain_stderr, daemon=True
-            )
-            self._stderr_thread.start()
-        return self
+# What a provider may report in an error frame (CONTRACT §8.3/§9). These keep
+# the session; the fatal ones end it, so alive() is False as the table says.
+# Any other code - one only the host may raise (persistence_unavailable,
+# stale_revision, approval_denied...) or an unknown one - is not the provider's
+# to claim: a protocol violation, and the process is killed.
+_PROVIDER_SOFT = frozenset(
+    {
+        ErrorCode.INVALID_PARAMETERS,
+        ErrorCode.OUTCOME_UNKNOWN,
+        ErrorCode.DEVICE_NOT_FOUND,
+    }
+)
+_PROVIDER_FATAL = {
+    ErrorCode.PROVIDER_UNAVAILABLE: ErrorCode.PROVIDER_UNAVAILABLE,
+    ErrorCode.ADAPTER_MISMATCH: ErrorCode.ADAPTER_MISMATCH,
+    # "No open session" from the provider is a missing session (§9 row 4).
+    ErrorCode.RUN_NOT_FOUND: ErrorCode.PROVIDER_UNAVAILABLE,
+}
 
 
 def _boundary(method):
@@ -174,6 +156,9 @@ class ProviderProcessDevice:
                 [
                     self.python,
                     "-I",
+                    # Never write bytecode into the (host) package directory,
+                    # including when an auto sandbox degraded.
+                    "-B",
                     str(self.package_dir / "__main__.py"),
                     "--backend",
                     self.backend,
@@ -191,7 +176,7 @@ class ProviderProcessDevice:
                 MPLCONFIGDIR=str(cache_link / "matplotlib"),
                 PYTHONNOUSERSITE="1",
             )
-            client = _SandboxClient(
+            client = ProviderClient(
                 argv, env=env, cwd=run_dir, pass_fds=sandbox.popen_pass_fds()
             )
             self._sessions[ident] = _Session(client, sandbox, run_dir, cache_link)
@@ -252,6 +237,9 @@ class ProviderProcessDevice:
                 code = ErrorCode(exc.code)
             except ValueError:
                 code, fatal = ErrorCode.PROVIDER_PROTOCOL_ERROR, True
+            if not fatal and code not in _PROVIDER_SOFT:
+                code = _PROVIDER_FATAL.get(code, ErrorCode.PROVIDER_PROTOCOL_ERROR)
+                fatal = True
             detail = _safe_stderr(client)
             if fatal:
                 self._discard(ident)
@@ -260,7 +248,7 @@ class ProviderProcessDevice:
                 f"Provider {op} failed ({code.value})"
                 + (f": {detail}" if detail else ""),
             ) from None
-        except (ValueError, TypeError):
+        except ProviderRequestError:
             # Encoding failed before a byte was sent. Keep the healthy session.
             raise LabError(
                 ErrorCode.INVALID_PARAMETERS, "Provider request cannot be encoded"
