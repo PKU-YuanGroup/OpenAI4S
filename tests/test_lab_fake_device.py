@@ -742,3 +742,18 @@ def test_closing_a_session_twice_is_not_an_error():
     device.close(opened.session_id)
     device.close(opened.session_id)
     assert not device.alive(opened.session_id)
+
+
+@pytest.mark.parametrize("seed", [3, 4, 13, 22, 47])
+def test_emptying_a_vessel_moves_all_of_its_solute(seed):
+    # x * a / a misses x by one ulp for these seeds; the remainder used to be
+    # -1.1e-16 mol, which the evaluator rejects as missing final-state evidence.
+    device = FakeExtractorDevice()
+    opened = _open(device, seed=seed)
+    session = device._sessions[opened.session_id]
+    before = session.vessels["extraction_vessel"].solute
+    receipt = device.execute(opened.session_id, _dispatch(opened, value=400))
+    assert receipt.applied
+    assert session.vessels["extraction_vessel"].solute == 0.0
+    assert session.vessels["extraction_vessel"].volume == 0.0
+    assert session.vessels["beaker_2"].solute == before

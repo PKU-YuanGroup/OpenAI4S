@@ -160,6 +160,11 @@ def _trajectory(case: str, data_dir: Path) -> tuple[LabEvent, ...]:
             "error_code": code or (command or {}).get("error_code"),
             "executions": device.executions,
             "queries": device.queries,
+            # Release is observed at every step, not only after the final
+            # stop: a run that ends itself (budget, provider loss) must give
+            # its provider slot back at that moment (CONTRACT §4.1, §7).
+            "live_providers": len(manager._live),
+            "alive_sessions": sum(device.alive(s) for s in device.sessions),
             **extra,
         }
         events.append(
@@ -210,7 +215,7 @@ def _trajectory(case: str, data_dir: Path) -> tuple[LabEvent, ...]:
                 try:
                     result = dispatcher.invoke_lab_tool("lab_execute", _command(run_id))
                     for resolution in resolutions:
-                        resolution.result()
+                        resolution.result(timeout=5)
                 finally:
                     permission_broker.unregister_channel(root)
             decisions = [store.get_permission_request(key) for key in requests]

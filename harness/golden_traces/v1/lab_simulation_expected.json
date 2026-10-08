@@ -5,11 +5,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -20,6 +22,7 @@
         {
           "kind": "approval_result",
           "payload": {
+            "alive_sessions": 1,
             "approval_requests": 1,
             "command_count": 0,
             "command_state": null,
@@ -27,6 +30,7 @@
             "end_reason": null,
             "error_code": "approval_denied",
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -37,11 +41,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 0,
             "command_state": null,
             "end_reason": "stopped",
             "error_code": null,
             "executions": 0,
+            "live_providers": 0,
             "queries": 0,
             "revision": 0,
             "run_state": "ended",
@@ -65,11 +71,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -80,11 +88,13 @@
         {
           "kind": "execute_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 1,
             "command_state": "succeeded",
             "end_reason": null,
             "error_code": null,
             "executions": 1,
+            "live_providers": 1,
             "queries": 0,
             "revision": 1,
             "run_state": "ready",
@@ -95,11 +105,13 @@
         {
           "kind": "second_result",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 2,
             "command_state": "rejected",
             "end_reason": "budget_exhausted",
             "error_code": "budget_exhausted",
             "executions": 1,
+            "live_providers": 0,
             "queries": 0,
             "revision": 1,
             "run_state": "ended",
@@ -110,11 +122,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 2,
             "command_state": null,
             "end_reason": "budget_exhausted",
             "error_code": null,
             "executions": 1,
+            "live_providers": 0,
             "queries": 0,
             "revision": 1,
             "run_state": "ended",
@@ -138,11 +152,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -153,11 +169,13 @@
         {
           "kind": "execute_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 1,
             "command_state": "succeeded",
             "end_reason": null,
             "error_code": null,
             "executions": 1,
+            "live_providers": 1,
             "queries": 0,
             "revision": 1,
             "run_state": "ready",
@@ -168,11 +186,13 @@
         {
           "kind": "second_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 1,
             "command_state": "succeeded",
             "end_reason": null,
             "error_code": null,
             "executions": 1,
+            "live_providers": 1,
             "queries": 0,
             "revision": 1,
             "run_state": "ready",
@@ -183,11 +203,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 1,
             "command_state": null,
             "end_reason": "stopped",
             "error_code": null,
             "executions": 1,
+            "live_providers": 0,
             "queries": 0,
             "revision": 1,
             "run_state": "ended",
@@ -211,11 +233,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -226,11 +250,13 @@
         {
           "kind": "execute_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 1,
             "command_state": "outcome_unknown",
             "end_reason": null,
             "error_code": "outcome_unknown",
             "executions": 1,
+            "live_providers": 1,
             "queries": 1,
             "revision": 0,
             "run_state": "quarantined",
@@ -241,11 +267,13 @@
         {
           "kind": "status_reconciled",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 1,
             "command_state": "succeeded",
             "end_reason": null,
             "error_code": null,
             "executions": 1,
+            "live_providers": 1,
             "queries": 2,
             "revision": 1,
             "run_state": "ready",
@@ -256,11 +284,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 1,
             "command_state": null,
             "end_reason": "stopped",
             "error_code": null,
             "executions": 1,
+            "live_providers": 0,
             "queries": 2,
             "revision": 1,
             "run_state": "ended",
@@ -284,11 +314,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -299,11 +331,13 @@
         {
           "kind": "execute_result",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 1,
             "command_state": "outcome_unknown",
             "end_reason": "provider_lost",
             "error_code": "outcome_unknown",
             "executions": 1,
+            "live_providers": 0,
             "queries": 0,
             "revision": 0,
             "run_state": "ended",
@@ -314,11 +348,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 1,
             "command_state": null,
             "end_reason": "provider_lost",
             "error_code": null,
             "executions": 1,
+            "live_providers": 0,
             "queries": 0,
             "revision": 0,
             "run_state": "ended",
@@ -342,11 +378,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -357,11 +395,13 @@
         {
           "kind": "recovery_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": "replay_forbidden",
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -372,11 +412,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 0,
             "command_state": null,
             "end_reason": "stopped",
             "error_code": null,
             "executions": 0,
+            "live_providers": 0,
             "queries": 0,
             "revision": 0,
             "run_state": "ended",
@@ -400,11 +442,13 @@
         {
           "kind": "run_created",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 0,
             "command_state": null,
             "end_reason": null,
             "error_code": null,
             "executions": 0,
+            "live_providers": 1,
             "queries": 0,
             "revision": 0,
             "run_state": "ready",
@@ -415,11 +459,13 @@
         {
           "kind": "execute_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 1,
             "command_state": "succeeded",
             "end_reason": null,
             "error_code": null,
             "executions": 1,
+            "live_providers": 1,
             "queries": 0,
             "revision": 1,
             "run_state": "ready",
@@ -430,11 +476,13 @@
         {
           "kind": "second_result",
           "payload": {
+            "alive_sessions": 1,
             "command_count": 2,
             "command_state": "rejected",
             "end_reason": null,
             "error_code": "stale_revision",
             "executions": 1,
+            "live_providers": 1,
             "queries": 0,
             "revision": 1,
             "run_state": "ready",
@@ -445,11 +493,13 @@
         {
           "kind": "run_stopped",
           "payload": {
+            "alive_sessions": 0,
             "command_count": 2,
             "command_state": null,
             "end_reason": "stopped",
             "error_code": null,
             "executions": 1,
+            "live_providers": 0,
             "queries": 0,
             "revision": 1,
             "run_state": "ended",

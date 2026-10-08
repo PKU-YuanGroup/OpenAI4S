@@ -106,8 +106,11 @@ def _rig(ctx, backend="fake"):
         try:
             manager.close_all("benchmark teardown")
         finally:
-            assert not manager._live, "Lab benchmark leaked a live provider"
-            assert all(not port._sessions for port in ports), "Device session leaked"
+            # Explicit checks, not asserts: python -O must not drop leak guards.
+            if manager._live:
+                raise AssertionError("Lab benchmark leaked a live provider")
+            if any(port._sessions for port in ports):
+                raise AssertionError("Device session leaked")
 
 
 def _create(manager, caller, registration, seed=3):
@@ -176,15 +179,21 @@ def _deny_approval(ctx, manager, caller, request):
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(get_tool("lab_execute").invoke, dispatcher, request)
             try:
-                assert pending.wait(5), "Lab approval gate was not reached"
-                assert not ctx.store.lab.list_commands(request["run_id"])
-                assert permission_broker.resolve(events[-1]["decision_id"], allow=False)
+                if not pending.wait(5):
+                    raise AssertionError("Lab approval gate was not reached")
+                if ctx.store.lab.list_commands(request["run_id"]):
+                    raise AssertionError("A command was recorded before approval")
+                if not permission_broker.resolve(
+                    events[-1]["decision_id"], allow=False
+                ):
+                    raise AssertionError("The approval could not be denied")
                 result = future.result(timeout=5)
             finally:
                 cancelled.set()
     finally:
         permission_broker.unregister_channel(caller.root_frame_id)
-    assert not ctx.store.lab.list_commands(request["run_id"])
+    if ctx.store.lab.list_commands(request["run_id"]):
+        raise AssertionError("A denied command was recorded")
     if str(result.get("error", "")).startswith("Permission denied:"):
         raise LabBenchmarkRefusal("approval_denied")
     return {"command_state": result.get("command", {}).get("state")}
@@ -216,6 +225,13 @@ def lab_simulation(ctx, inputs):
                 unknown = True
                 result = manager.status(caller, run_id, exc.details["command_id"])
             command = result["command"]
+            if (
+                command["state"] == "rejected"
+                and reg.backend == "fake"
+                and ports[-1].executions
+            ):
+                # A host-side refusal is decided before dispatch (review P3-2).
+                raise AssertionError("A refused action was dispatched")
             if command["state"] in {"rejected", "failed", "not_dispatched"}:
                 raise LabBenchmarkRefusal(command["error_code"])
             output = {
@@ -338,9 +354,15 @@ def lab_compare_policies(ctx, inputs):
                         ),
                         max_steps=16,
                     )
+                    # A run that ended itself (end_experiment, a budget) gives
+                    # its provider back then, not at the harness's stop below.
+                    if ctx.store.lab.get_run(run_id)["status"] in {"ended", "failed"}:
+                        if run_id in manager._live:
+                            raise AssertionError("An ended run kept its provider")
                 finally:
                     manager.stop(caller, run_id, "policy episode complete")
-                assert not manager._live, "Policy episode leaked a provider"
+                if manager._live:
+                    raise AssertionError("Policy episode leaked a provider")
                 commands, observations, evaluations = _snapshot(ctx.store.lab, run_id)
                 result = evaluate_run(
                     ctx.store.lab.get_run(run_id),

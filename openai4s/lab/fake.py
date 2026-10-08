@@ -383,9 +383,15 @@ class FakeExtractorDevice:
                 return self._failure_receipt(
                     session, dispatch, ErrorCode.PRECONDITION_FAILED
                 )
-            solute = source.solute * amount / source.volume
-            source.volume -= amount
-            source.solute -= solute
+            # Emptying the source moves all of its solute: x * a / a can miss
+            # x by one ulp and leave a negative remainder, which evaluation
+            # rightly rejects as an impossible final state.
+            emptied = amount >= source.volume
+            solute = (
+                source.solute if emptied else source.solute * amount / source.volume
+            )
+            source.volume = 0.0 if emptied else source.volume - amount
+            source.solute = 0.0 if emptied else source.solute - solute
             target.volume += amount
             target.solute += solute
         duration = (

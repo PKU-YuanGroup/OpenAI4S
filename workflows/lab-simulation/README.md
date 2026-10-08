@@ -28,13 +28,14 @@ Raw evaluation rows stay private. `evaluate_run` consumes complete snapshots,
 then only `compare` aggregates and public action/evidence counts leave the step.
 Wall times and identities are omitted from the comparison output.
 
-Reproduce the comparison with a private directory:
+Reproduce the comparison in a fresh temporary data directory:
 
 ```python
 import json
+import tempfile
 from pathlib import Path
 from openai4s.benchmark.steps import make_context, STEPS
-ctx = make_context(Path('../_data/W4-C/policy-comparison'))
+ctx = make_context(Path(tempfile.mkdtemp(prefix='lab-policies-')))
 try:
     step = STEPS['lab_compare_policies']
     print(json.dumps(step(ctx, {}), sort_keys=True))
@@ -51,8 +52,13 @@ Measured locally with seeds 3, 17, 41 (three episodes per policy):
 | Scripted LLM | 1/3 | 2 | 6 | 6/6 |
 
 All three cohorts had zero illegal-action rejections and zero unresolved outcomes.
-Fixed-rule commands included 9 provider failures; random commands included 12
-provider failures and 1 host rejection. One random episode reached the 16-attempt
-runner cap and was explicitly stopped. The fake LLM was called 6 times in total.
+Fixed-rule commands included 9 device refusals (`precondition_failed`, the fake
+device declining an action such as transferring from an empty vessel); random
+commands included 12 such device refusals and 1 host rejection. That rejection is
+`budget_exhausted`: the random seed-3 run reached `max_consecutive_failures` and
+ended after 7 attempts. Another random episode reached the 16-attempt runner cap
+and was explicitly stopped. The fake LLM was called 6 times in total.
 These results characterize these scripts on the fake device; they do not rank
-live LLMs or establish performance on ChemGymRL or physical experiments.
+live LLMs or establish performance on ChemGymRL or physical experiments. Three
+seeds per policy carry large sampling variance: other seed sets give different
+counts, so compare policies only on the same seeds.
