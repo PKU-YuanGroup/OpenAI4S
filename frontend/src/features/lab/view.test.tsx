@@ -1,11 +1,14 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-vi.mock("preact/hooks", () => ({ useState: (value: unknown) => [value, () => undefined] }));
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+const hooks = vi.hoisted(() => ({ values: [] as unknown[] }));
+vi.mock("preact/hooks", () => ({ useState: (value: unknown) => [hooks.values.length ? hooks.values.shift() : value, () => undefined] }));
+vi.mock("../artifacts/ui", () => ({ openViewer: vi.fn() }));
 import { i18nReady, setLang } from "../../i18n/runtime";
+import { openViewer } from "../artifacts/ui";
 import { permActionLine } from "../send/permission";
 import { labT } from "./copy";
 import { lab } from "./state";
-import { ActionForm, CommandHistory, DeviceSetup, LabPane, ObservationView, VesselView } from "./view";
-import { command, descriptor, detail, device, observation, run } from "./fixtures";
+import { ActionForm, CommandHistory, DeviceSetup, LabPane, ObservationView, ResultsView, TerminalControls, VesselView } from "./view";
+import { command, descriptor, detail, device, exported, observation, run } from "./fixtures";
 
 type Node = { type: unknown; props: Record<string, unknown> };
 function nodes(raw: unknown): Node[] {
@@ -24,7 +27,8 @@ function text(raw: unknown): string {
 }
 const elements = (tree: unknown, type: string) => nodes(tree).filter((n) => n.type === type);
 beforeAll(async () => { await i18nReady(); });
-afterEach(() => { vi.restoreAllMocks(); });
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(() => { hooks.values = []; vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("Lab bench public view", () => {
   it("generates only manifest levels with explicit units and disables unavailable creation", () => {
@@ -118,7 +122,8 @@ describe("Lab bench public view", () => {
       lab.state.value = { ...lab.state.value, loaded: true, detail: detail({ run: run({ status }) }) };
       const buttons = elements(LabPane(), "button");
       expect(buttons.find((b) => text(b) === labT("execute"))!.props.disabled).toBe(true);
-      expect(buttons.find((b) => text(b) === labT("end"))!.props.disabled).toBe(status === "ended");
+      expect(buttons.find((b) => text(b) === labT("end"))!.props.disabled).toBe(true);
+      expect(buttons.find((b) => text(b) === labT("stop"))!.props.disabled).toBe(status === "ended");
     }
   });
   it("repaints feature copy in both languages without changing confirmed data", async () => {
@@ -127,5 +132,87 @@ describe("Lab bench public view", () => {
     await setLang("zh"); expect(text(LabPane())).toContain("模型时间，非秒");
     await setLang("en"); expect(text(LabPane())).toContain("Model time, not seconds");
     expect(lab.state.value.detail).toBe(confirmed);
+  });
+});
+
+describe("Lab results and safe playback", () => {
+  const ready = () => {
+    lab.scope("root", 1, true);
+    lab.state.value = { ...lab.state.value, selectedRunId: "labrun-one", detail: detail(), loaded: true };
+    return lab.state.value;
+  };
+  const click = (node: Node) => (node.props.onClick as () => void)();
+
+  it("requires explicit ground-truth opt-in and displays the export pending state", () => {
+    const state = ready(), exporting = vi.spyOn(lab, "exportRun").mockResolvedValue();
+    let tree = ResultsView({ state });
+    expect(elements(tree, "input")[0]?.props).toMatchObject({ type: "checkbox", checked: false, disabled: false });
+    expect(text(tree)).toContain(labT("evaluationWarning"));
+    click(elements(tree, "button")[0]!); expect(exporting).toHaveBeenLastCalledWith(false);
+    hooks.values = [true]; tree = ResultsView({ state });
+    click(elements(tree, "button")[0]!); expect(exporting).toHaveBeenLastCalledWith(true);
+    tree = ResultsView({ state: { ...state, exported: { runId: "labrun-one", loading: true, error: "", result: null } } });
+    expect(elements(tree, "button")[0]?.props.disabled).toBe(true);
+    expect(elements(tree, "input")[0]?.props.disabled).toBe(true);
+    expect(text(tree)).toContain(labT("exporting"));
+  });
+
+  it("pins every exported version in links and viewer calls and labels opted-in truth", () => {
+    const state = ready();
+    const result = exported({ include_evaluation: true });
+    result.artifacts.push({ kind: "simulation_ground_truth", artifact_id: "truth-artifact", version_id: "truth-version", filename: "simulation-ground-truth.json", checksum: "truth-checksum" });
+    const tree = ResultsView({ state: { ...state, exported: { runId: "labrun-one", loading: false, error: "", result } } });
+    expect(text(tree)).toContain(labT("exportedCounts", 2, 2)); expect(text(tree)).toContain(labT("groundTruth"));
+    const links = elements(tree, "a"); expect(links).toHaveLength(2);
+    for (const [index, link] of links.entries()) {
+      const artifact = result.artifacts[index]!;
+      expect(link.props.href).toBe(`?artifact=${artifact.artifact_id}&version_id=${artifact.version_id}`);
+      const preventDefault = vi.fn();
+      (link.props.onClick as (event: unknown) => void)({ button: 0, preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(openViewer).toHaveBeenLastCalledWith({ id: artifact.artifact_id, version_id: artifact.version_id, filename: artifact.filename, root_frame_id: "root" });
+    }
+    expect(elements(ResultsView({ state: { ...state, selectedRunId: "other-run", exported: { runId: "labrun-one", loading: false, error: "", result } } }), "a")).toHaveLength(0);
+  });
+
+  it("renders recorded unknown commands without query controls and wires the slider to read-only selection", () => {
+    const state = ready(), select = vi.spyOn(lab, "selectReplay").mockImplementation(() => {});
+    const execute = vi.spyOn(lab, "execute").mockResolvedValue(), reconcile = vi.spyOn(lab, "reconcile").mockResolvedValue();
+    const replay = { runId: "labrun-one", loading: false, error: "", entries: [{ command: null, observation: observation() }, { command: command(), observation: null }], index: 1 };
+    const tree = ResultsView({ state: { ...state, replay } });
+    expect(text(tree)).toContain(labT("replayReadOnly")); expect(text(tree)).toContain(labT("noObservation"));
+    expect(elements(tree, "button").some((button) => text(button) === labT("reconcile"))).toBe(false);
+    const slider = elements(tree, "input").find((input) => input.props.type === "range")!;
+    expect(slider.props).toMatchObject({ min: "0", max: 1, value: 1, step: "1" });
+    (slider.props.onInput as (event: unknown) => void)({ currentTarget: { value: "0" } });
+    expect(select).toHaveBeenCalledExactlyOnceWith(0);
+    expect(execute).not.toHaveBeenCalled(); expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it("requires different confirmations for terminal completion and safety stop, including cancellation", () => {
+    const state = ready(), end = vi.spyOn(lab, "end").mockResolvedValue(), stop = vi.spyOn(lab, "stop").mockResolvedValue();
+    const confirm = vi.fn().mockReturnValue(false); vi.stubGlobal("confirm", confirm);
+    const buttons = elements(TerminalControls({ state }), "button");
+    click(buttons[0]!); click(buttons[1]!);
+    expect(confirm.mock.calls).toEqual([[labT("endConfirm")], [labT("stopConfirm")]]);
+    expect(end).not.toHaveBeenCalled(); expect(stop).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    click(buttons[0]!); expect(end).toHaveBeenCalledOnce(); expect(stop).not.toHaveBeenCalled();
+    click(buttons[1]!); expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("disables end during uncertainty or a pending request and disables both after termination or during stop", () => {
+    const state = ready();
+    const pending = { intent: { kind: "execute" as const, runId: "labrun-one", body: command().request }, sending: true, error: "" };
+    for (const [patch, disabled] of [
+      [{ pending }, [true, false]], [{ querying: "labcmd-one" }, [true, false]],
+      [{ detail: detail({ commands: [command()] }) }, [true, false]],
+      [{ stopping: true }, [true, true]],
+      [{ detail: detail({ run: run({ status: "ended" }) }) }, [true, true]],
+      [{ detail: detail({ run: run({ status: "failed" }) }) }, [true, true]],
+      [{}, [false, false]],
+    ] as const) {
+      expect(elements(TerminalControls({ state: { ...state, ...patch } }), "button").map((button) => button.props.disabled)).toEqual(disabled);
+    }
   });
 });

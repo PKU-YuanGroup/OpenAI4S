@@ -1756,6 +1756,7 @@ def _drive_lab_surface(
         f"{base}/devices/fake.extractor.01",
         query={"profile": ["toy-extract-v0"]},
     )
+    drive("POST", run_route + "/export", f"{run_path}/export", {})
     drive("GET", run_route, run_path)
     drive("GET", run_route + "/commands", f"{run_path}/commands")
     drive(

@@ -1974,6 +1974,25 @@
     }
   },
   {
+    "description": "Export recorded simulation actions, sensor JSON/CSV and a report as exact Artifact versions. Each export creates new versions; existing observation references remain immutable. Evaluation is excluded unless include_evaluation is explicitly true, creating a labelled simulation-ground-truth file. Never executes or replays commands.",
+    "name": "lab_export",
+    "parameters": {
+      "properties": {
+        "include_evaluation": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    }
+  },
+  {
     "description": "Define and smoke-test a sandboxed tool for this session.",
     "name": "define_dynamic_tool",
     "parameters": {

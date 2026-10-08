@@ -168,6 +168,12 @@ class LabLedgerPort(Protocol):
         """Evaluation-only boundary; never a default agent/UI projection."""
         ...
 
+    def attach_observation_artifacts(
+        self, run_id: str, versions: Mapping[str, str]
+    ) -> None:
+        """Atomic NULL-to-version bindings; same value is idempotent, replacement refuses."""
+        ...
+
     def events_since(
         self, root_frame_id: str, *, after_seq: int = 0, limit: int = 200
     ) -> list[dict[str, Any]]: ...

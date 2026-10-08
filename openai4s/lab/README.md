@@ -10,6 +10,7 @@ No device is registered and no process is started at import time.
 
 | File | Purpose |
 | --- | --- |
+| `export.py` | Project recorded evidence, commit exact Artifact versions and attach observation references. |
 | `wrappers.py` | Declared latency, noise, fault and busy device assumptions. |
 | `evaluation.py` | Ground-truth-only goals, ledger metrics and comparability checks. |
 | `evidence.py` | Host-only completion checks over exact run identities; returns value-free refusals. |

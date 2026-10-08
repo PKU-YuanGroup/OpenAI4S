@@ -944,6 +944,7 @@ startup reconciliation before accepting requests.
 | `POST /frames/{fid}/lab/runs/{run_id}/commands` | Body `{operation, source?, target?, parameters?, expected_revision, idempotency_key}` → `{run, command, observation}`. |
 | `POST /frames/{fid}/lab/runs/{run_id}/commands/{command_id}/reconcile` | Empty body → `{run, command, observation}`; may query the existing provider once, never resends. |
 | `POST /frames/{fid}/lab/runs/{run_id}/stop` | Body `{reason?}` → `{run, stopped, semantics}`. |
+| `POST /frames/{fid}/lab/runs/{run_id}/export` | Body `{include_evaluation?: boolean}` → `{run_id, include_evaluation, command_count, observation_count, artifacts}`; each Artifact has `{kind, artifact_id, version_id, filename, checksum}`. |
 | `GET /frames/{fid}/lab/events?after_seq=&limit=` | `{events, next_after_seq, latest_event_seq}`; defaults 0 and 200. |
 
 Unknown body keys (including provider `options`) and missing idempotency keys
@@ -957,6 +958,23 @@ Lab errors use `{error, code, status, request_id, details?}`: invalid parameters
 or mode → 422; missing run/device → 404; replay forbidden → 403; provider,
 adapter or persistence unavailable → 503. No default route exposes evaluation,
 simulation truth, provider actions, credentials, ownership or interpreter paths.
+Exports read recorded ledger evidence without executing or reconciling commands.
+They produce actions JSONL, observations JSON/CSV and a report. Every export
+creates a new version of each named Artifact; observation rows keep the first
+committed observations JSON version. Full arrays stay in files; callers get only
+counts and exact version references. Evaluation is excluded by default. Only
+`include_evaluation: true` adds the explicitly labelled **Simulation ground truth
+(仿真真值)** file; evaluation values are never in the response or report prose.
+Tool `lab_export` and SDK `host.lab.export(run_id, include_evaluation=False)` use
+the same service; tool/SDK export requires approval (default ask, seed v5 unchanged)
+and a foreground capture scope. Recovery replay refuses exports. The client
+export deadline is 120 seconds; exporting never calls a provider.
+
+Recorded playback reads commands and observations only. Finishing an experiment
+executes the advertised terminal `end_experiment` capability (normal outcome
+`end_action`); the separate safety stop ends it with `stopped`. Neither playback
+nor exporting repeats a recorded command.
+
 The list and event routes may close idle simulations; run details, commands
 and observations are ledger-only. Deletion closes providers before deleting
 their ledger rows; daemon shutdown also releases every live provider.

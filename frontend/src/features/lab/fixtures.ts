@@ -1,5 +1,5 @@
 /** Public sensor-only test data. No evaluation or material composition. */
-import type { Command, Descriptor, DetailResult, Device, Observation, Run } from "./types";
+import type { Command, Descriptor, DetailResult, Device, ExportResult, Observation, Run } from "./types";
 export const device: Device = { device_id: "chemgym.extractor.01", backend: "chemgymrl", mode: "simulation", title: "ChemGymRL extractor", profiles: ["WaterOilExtract-v0", "GenWurtzExtract-v2"], available: true, availability_detail: null };
 export const descriptor: Descriptor = {
   contract: "openai4s.lab/v1-draft", device_id: device.device_id, mode: "simulation", backend: "chemgymrl", profile: device.profiles[0]!,
@@ -33,4 +33,9 @@ export function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+export function exported(patch: Partial<ExportResult> = {}): ExportResult {
+  return { run_id: "labrun-one", include_evaluation: false, command_count: 2, observation_count: 2,
+    artifacts: [{ kind: "observations_json", artifact_id: "artifact-one", version_id: "version-exact", filename: "observations.json", checksum: "recorded-checksum" }], ...patch };
 }

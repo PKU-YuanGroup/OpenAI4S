@@ -218,6 +218,20 @@ class LabStopTool(_LabTool):
     side_effect_class = "runtime_mutation"
 
 
+class LabExportTool(_LabTool):
+    name = host_method = "lab_export"
+    description = "Export recorded simulation actions, sensor JSON/CSV and a report as exact Artifact versions. Each export creates new versions; existing observation references remain immutable. Evaluation is excluded unless include_evaluation is explicitly true, creating a labelled simulation-ground-truth file. Never executes or replays commands."
+    parameters = {
+        "properties": {**_RUN, "include_evaluation": {"type": "boolean"}},
+        "required": ["run_id"],
+    }
+    read_only = False
+    requires_approval = True
+    writes_files = True
+    derived_write_path = True
+    side_effect_class = "workspace_write"
+
+
 class LabCommandsTool(_LabTool):
     name = host_method = "lab_commands"
     description = "Read this simulation run's projected command ledger, including rejected commands and their errors."

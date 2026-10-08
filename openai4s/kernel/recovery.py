@@ -35,6 +35,7 @@ _UNSAFE_HOST_METHODS = frozenset(
         "lab_create",
         "lab_execute",
         "lab_stop",
+        "lab_export",
         "lab_status",
         "submit_output",
         "bash",

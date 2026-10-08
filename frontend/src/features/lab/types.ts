@@ -233,3 +233,25 @@ export interface EventPage {
   next_after_seq: number;
   latest_event_seq: number;
 }
+
+/** Files are immutable Artifact versions; evaluation is present only after opt-in. */
+export interface ExportArtifact {
+  kind: "actions" | "observations_json" | "observations_csv" | "report" | "simulation_ground_truth";
+  artifact_id: string;
+  version_id: string;
+  filename: string;
+  checksum: string;
+}
+
+export interface ExportResult {
+  run_id: string;
+  include_evaluation: boolean;
+  command_count: number;
+  observation_count: number;
+  artifacts: ExportArtifact[];
+}
+
+export interface ReplayEntry {
+  command: Command | null;
+  observation: Observation | null;
+}

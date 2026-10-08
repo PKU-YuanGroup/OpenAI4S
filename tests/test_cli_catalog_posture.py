@@ -199,6 +199,7 @@ _HIDDEN_FROM_FIRST_TURN = _ASK_BY_DEFAULT | {"web_download", "rollback_skill_ver
 _HIDDEN_ONCE_ACTIVE = {
     "lab_create",
     "lab_execute",
+    "lab_export",
     "restore_artifact_version",
     "exec_background",
     "read_mcp_resource",

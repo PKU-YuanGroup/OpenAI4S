@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
 
+from openai4s.host.lab import LabService
+from openai4s.lab.export import export_run
 from openai4s.lab.models import CommandOrigin, ErrorCode, LabCaller, LabError
 from openai4s.store import get_store
 
@@ -51,6 +55,12 @@ ROUTES = contract.validate_routes(
         ),
         contract.RouteSpec(
             "lab.stop", "POST", r"/frames/([^/]+)/lab/runs/([^/]+)/stop", mutates=True
+        ),
+        contract.RouteSpec(
+            "lab.export",
+            "POST",
+            r"/frames/([^/]+)/lab/runs/([^/]+)/export",
+            mutates=True,
         ),
         contract.RouteSpec(
             "lab.events", "GET", r"/frames/([^/]+)/lab/events", mutates=False
@@ -244,6 +254,15 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
             if reason is not None and not isinstance(reason, str):
                 raise _invalid("Invalid stop reason")
             result = manager.stop(caller, match.group(2), reason)
+        elif name == "lab.export":
+            body = _body(self, {"include_evaluation"})
+            service = LabService(lambda: manager, lambda: caller)
+            service.exporter = lambda actor, run_id, include: export_for_session(
+                runner, actor, run_id, include
+            )
+            result = service.call("export", {"run_id": match.group(2), **body})
+            if "error" in result:
+                raise LabError(ErrorCode(result["error_kind"]), result["error"])
         else:
             result = manager.events(
                 caller,
@@ -257,6 +276,107 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
             error["details"] = exc.details
         self._json(error, _ERROR_STATUS.get(exc.code, 503))
     return True
+
+
+def export_for_session(
+    runner: Any,
+    caller: LabCaller,
+    run_id: str,
+    include_evaluation: bool,
+    execution_bound: bool | None = None,
+    *,
+    session: Any = None,
+) -> dict[str, Any]:
+    """Shared REST/native/SDK synchronous capture and post-commit association.
+
+    Exact fingerprint claims already fence nested child captures. Reuse that
+    mechanism for these nested Host-owned captures so the enclosing native or
+    Python Cell sweep cannot register unchanged export bytes a second time.
+    A subsequent actual file write invalidates the claim and is captured normally.
+    """
+    from .artifacts import _PinnedUploadDirectory, _PinnedUploadFile
+
+    store = runner.store
+    scope = store.resolve_frame_scope(caller.root_frame_id)
+    st = session or runner._state(caller.root_frame_id, scope["project_id"])
+    runner.require_session_writable(caller.root_frame_id, "exporting Lab evidence")
+    lease = (
+        st.trusted_capture.external_mutation()
+        if execution_bound is None
+        else st.trusted_capture.foreground_mutation(execution_bound=execution_bound)
+    )
+    events: list[dict[str, Any]] = []
+    try:
+        # Lock ordering matches Artifact writes: writer first, then Store. No
+        # enclosing SQL transaction: each Artifact/ledger write commits itself.
+        with lease, runner.artifacts.writer_transaction(), store._lock:
+            st.workspace.mkdir(parents=True, exist_ok=True)
+            with _PinnedUploadDirectory.open_under(
+                st.workspace, (), create=False
+            ) as directory:
+
+                def commit(
+                    kind: str, suffix: str, content: str, source: dict[str, Any]
+                ) -> dict[str, Any]:
+                    filename = (
+                        "lab-"
+                        + hashlib.sha256(run_id.encode()).hexdigest()[:24]
+                        + "-"
+                        + suffix
+                    )
+                    path = st.workspace / filename
+                    temporary = st.workspace / (".lab-export-" + secrets.token_hex(12))
+                    data = content.encode("utf-8")
+                    checksum = hashlib.sha256(data).hexdigest()
+                    try:
+                        with _PinnedUploadFile.create(directory, temporary) as staged:
+                            staged.write(data)
+                            directory.assert_current()
+                            directory.replace(temporary, path)
+                            directory.fsync()
+                            staged.verified_bytes(named_as=path, checksum=checksum)
+                            frozen = runner.artifacts.freeze_capture_snapshot(
+                                filename, path
+                            )
+                            record = runner.artifacts.register_file(
+                                st,
+                                path,
+                                None,
+                                events.append,
+                                producer_frame_id=caller.frame_id,
+                                source=source,
+                                expected_checksum=checksum,
+                                frozen_snapshot=frozen,
+                            )
+                            if not record:
+                                raise LabError(
+                                    ErrorCode.PERSISTENCE_UNAVAILABLE,
+                                    "Lab export capture failed",
+                                )
+                            if execution_bound is not None:
+                                runner.artifacts.claim_delegated_artifacts(
+                                    [record], workspace=st.workspace
+                                )
+                            staged.verified_bytes(named_as=path, checksum=checksum)
+                            directory.assert_current()
+                            return record
+                    finally:
+                        directory.unlink(temporary, missing_ok=True)
+
+                result = export_run(
+                    store.lab, caller, run_id, include_evaluation, commit
+                )
+        for event in events:
+            runner.hub.broadcast(caller.root_frame_id, event)
+        return result
+    except LabError:
+        raise
+    except Exception:
+        # No provider values, filesystem paths or raw database errors escape.
+        raise LabError(
+            ErrorCode.PERSISTENCE_UNAVAILABLE,
+            "Lab export could not commit all evidence",
+        ) from None
 
 
 def _ui_observation(

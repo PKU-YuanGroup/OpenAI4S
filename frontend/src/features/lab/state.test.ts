@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { effect } from "@preact/signals";
 import { setLabFetch as setFetch } from "./api";
-import { LabController } from "./state";
-import { command, deferred, descriptor, detail, device, json, observation, run } from "./fixtures";
+import { canEnd, canStop, LabController } from "./state";
+import { command, deferred, descriptor, detail, device, exported, json, observation, run } from "./fixtures";
 
 const setLabFetch: typeof setFetch = (fn) => setFetch(fn && ((url, init) => url.includes("/observations?") ? Promise.resolve(json({ observations: [], next_after_sequence: -1 })) : fn(url, init)));
 
@@ -228,5 +228,145 @@ describe("confirmed Lab state", () => {
     expect(posts).toHaveLength(0);
     controller.state.value = { ...controller.state.value, detail: detail({ run: run({ revision: 7 }) }) };
     await execute(); expect(posts[0]!.body.expected_revision).toBe(7);
+  });
+});
+
+describe("Lab evidence and terminal controls", () => {
+  it("exports once while pending, defaults to sensor evidence, and keeps exact versions", async () => {
+    await ready();
+    const held = deferred<Response>(); send = () => held.promise;
+    const pending = controller.exportRun();
+    expect(controller.state.value.exported?.loading).toBe(true);
+    await controller.exportRun(true);
+    expect(posts).toEqual([{ url: "/api/v1/frames/root/lab/runs/labrun-one/export", body: { include_evaluation: false } }]);
+    held.resolve(json(exported())); await pending;
+    expect(controller.state.value.exported).toMatchObject({ loading: false, error: "", result: exported() });
+    send = async () => json(exported({ include_evaluation: true }));
+    await controller.exportRun(true);
+    expect(posts[1]?.body).toEqual({ include_evaluation: true });
+    expect(controller.state.value.exported?.result?.include_evaluation).toBe(true);
+  });
+
+  it("keeps export errors honest and rejects responses for another run or opt-in", async () => {
+    await ready();
+    for (const result of [
+      json({ error: "capture unavailable" }, 503), json(exported({ run_id: "other-run" })), json(exported({ include_evaluation: true })),
+      json(exported({ artifacts: [{ ...exported().artifacts[0]!, version_id: "" }] })),
+      json(exported({ artifacts: [{ ...exported().artifacts[0]!, kind: "simulation_ground_truth" }] })),
+    ]) {
+      send = async () => result;
+      await controller.exportRun();
+      expect(controller.state.value.exported?.loading).toBe(false);
+      expect(controller.state.value.exported?.error).not.toBe("");
+      expect(controller.state.value.exported?.result).toBeNull();
+    }
+  });
+
+  it("loads every history page and moves only between recorded data without POST or live-state changes", async () => {
+    await ready(); const live = controller.state.value.detail;
+    const reads: string[] = [];
+    const initial = observation({ observation_id: "initial" });
+    const next = observation({ observation_id: "next", command_id: "c1", sequence: 1, sim_time: 2 });
+    const first = command({ command_id: "c1", state: "succeeded", observation_id: "next" });
+    const refused = command({ command_id: "c2", seq: 2, state: "rejected", observation_id: null });
+    const unknown = command({ command_id: "c3", seq: 3 });
+    setFetch(async (url, init) => {
+      expect(init?.method).toBe("GET"); reads.push(url);
+      const query = new URL(url, "http://local").searchParams;
+      if (url.includes("/commands?")) {
+        const cursor = Number(query.get("after_seq"));
+        return json(cursor === 0 ? { commands: [first, refused], next_after_seq: 2 } : cursor === 2 ?
+          { commands: [unknown], next_after_seq: 3 } : { commands: [], next_after_seq: 3 });
+      }
+      expect(query.get("full")).toBe("true");
+      const cursor = Number(query.get("after_sequence"));
+      return json(cursor === -1 ? { observations: [initial], next_after_sequence: 0 } : cursor === 0 ?
+        { observations: [next], next_after_sequence: 1 } : { observations: [], next_after_sequence: 1 });
+    });
+    await controller.loadReplay();
+    expect(reads).toHaveLength(6);
+    expect(controller.state.value.replay?.entries).toEqual([
+      { command: null, observation: initial }, { command: first, observation: next },
+      { command: refused, observation: null }, { command: unknown, observation: null },
+    ]);
+    for (const index of [3, 1, 0, 2]) { controller.selectReplay(index); expect(controller.state.value.replay?.index).toBe(index); }
+    controller.selectReplay(99); expect(controller.state.value.replay?.index).toBe(2);
+    expect(reads).toHaveLength(6); expect(posts).toHaveLength(0);
+    expect(controller.state.value.detail).toBe(live);
+  });
+
+  it("fails a non-advancing history cursor without publishing partial replay", async () => {
+    await ready();
+    setFetch(async (url) => json(url.includes("/commands?") ? { commands: [command()], next_after_seq: 0 } : { observations: [], next_after_sequence: -1 }));
+    await controller.loadReplay();
+    expect(controller.state.value.replay).toMatchObject({ loading: false, entries: [] });
+    expect(controller.state.value.replay?.error).not.toBe("");
+  });
+
+  it("discards delayed history and export after root, generation, and away-and-back selection changes", async () => {
+    for (const change of [
+      async () => controller.scope("other", 1),
+      async () => controller.scope("root", 2),
+      async () => { await controller.select("labrun-two"); await controller.select("labrun-one"); },
+    ]) {
+      controller.scope("root", 1, true);
+      controller.state.value = { ...controller.state.value, selectedRunId: "labrun-one", runs: [run(), run({ run_id: "labrun-two" })], detail: detail() };
+      const history = deferred<Response>(), output = deferred<Response>();
+      setFetch(async (url, init) => {
+        if (init?.method === "POST") return output.promise;
+        if (url.includes("/commands?")) return history.promise;
+        if (url.includes("/observations?")) return json({ observations: [], next_after_sequence: -1 });
+        if (url.endsWith("/lab")) return json({ devices: [device], runs: [run(), run({ run_id: "labrun-two" })] });
+        return json(detail({ run: run({ run_id: url.split("/").at(-1) }) }));
+      });
+      const playback = controller.loadReplay(), exporting = controller.exportRun();
+      await change();
+      history.resolve(json({ commands: [], next_after_seq: 0 })); output.resolve(json(exported()));
+      await Promise.all([playback, exporting]);
+      expect(controller.state.value.replay).toBeNull(); expect(controller.state.value.exported).toBeNull();
+    }
+  });
+
+  it("ends through the pinned terminal capability and records end_action, while stop records stopped", async () => {
+    await ready();
+    send = async (url, body) => {
+      const ending = url.endsWith("/commands");
+      snapshot = detail({ run: run({ status: "ended", end_reason: ending ? "end_action" : "stopped", revision: ending ? 1 : 0 }) });
+      return json(ending ? { run: snapshot.run, command: command({ operation: String(body.operation), state: "succeeded" }), observation: null } :
+        { run: snapshot.run, stopped: true, semantics: "end_session" });
+    };
+    await controller.end();
+    expect(posts[0]).toMatchObject({ url: "/api/v1/frames/root/lab/runs/labrun-one/commands", body: {
+      operation: "end_experiment", source: null, target: null, parameters: {}, expected_revision: 0, idempotency_key: "same-key",
+    } });
+    expect(controller.state.value.detail?.run.end_reason).toBe("end_action");
+    await controller.end(); await controller.stop(); expect(posts).toHaveLength(1);
+    controller.scope("root", 1, true); snapshot = detail(); await ready();
+    await controller.stop();
+    expect(posts[1]?.url).toMatch(/\/stop$/);
+    expect(controller.state.value.detail?.run.end_reason).toBe("stopped");
+  });
+
+  it("blocks ending when pending, querying, unknown or terminal, but retains safety stop", async () => {
+    await ready(); const base = controller.state.value;
+    const pending = { intent: { kind: "execute" as const, runId: "labrun-one", body: command().request }, sending: true, error: "" };
+    for (const patch of [
+      { pending }, { querying: "labcmd-one" }, { detail: detail({ commands: [command()] }) },
+      ...(["busy", "quarantined"] as const).map((status) => ({ detail: detail({ run: run({ status }) }) })),
+    ]) {
+      controller.state.value = { ...base, ...patch };
+      expect(canEnd(controller.state.value)).toBe(false); expect(canStop(controller.state.value)).toBe(true);
+      await controller.end();
+    }
+    expect(posts).toHaveLength(0);
+    for (const status of ["ended", "failed"] as const) {
+      controller.state.value = { ...base, detail: detail({ run: run({ status }) }) };
+      expect(canEnd(controller.state.value)).toBe(false); expect(canStop(controller.state.value)).toBe(false);
+      await controller.end(); await controller.stop();
+    }
+    controller.state.value = { ...base, detail: detail({ descriptor: { ...descriptor, capabilities: [] } }) };
+    await controller.end(); expect(posts).toHaveLength(0);
+    controller.state.value = { ...base, pending, detail: detail({ run: run({ status: "quarantined" }) }) };
+    await controller.stop(); expect(posts[0]?.url).toMatch(/\/stop$/);
   });
 });

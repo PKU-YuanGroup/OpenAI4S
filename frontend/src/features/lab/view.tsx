@@ -1,7 +1,9 @@
 import { useState } from "preact/hooks";
 import { LANG } from "../../i18n/runtime";
+import { artifactDeepLinkHref } from "../artifacts/deeplink";
+import { openViewer } from "../artifacts/ui";
 import { labT } from "./copy";
-import { lab, labConnected, type LabState } from "./state";
+import { canEnd, canStop, lab, labConnected, type LabState } from "./state";
 import { permissionSummary, requestSummary } from "./summary";
 import type { Capability, ChannelSpec, Command, Descriptor, Device, Observation } from "./types";
 
@@ -115,7 +117,7 @@ export function ActionForm({ descriptor, disabled, onSelect }: { descriptor: Des
   </section>;
 }
 
-export function CommandHistory({ commands, observation, querying, sequences = {} }: { commands: Command[]; observation: Observation | null; querying: string | null; sequences?: Record<string, number> }) {
+export function CommandHistory({ commands, observation, querying, sequences = {}, readOnly = false }: { commands: Command[]; observation: Observation | null; querying: string | null; sequences?: Record<string, number>; readOnly?: boolean }) {
   return <section class="lab-card"><h3>{labT("actions")}</h3><p class="lab-muted">{labT("recentActions", commands.length)}</p>
     {commands.map((command) => <article key={command.command_id} class={command.state === "outcome_unknown" ? "lab-command lab-uncertain" : "lab-command"}>
       <strong>#{command.seq} · {command.state}</strong>
@@ -127,8 +129,63 @@ export function CommandHistory({ commands, observation, querying, sequences = {}
         {command.observation_id && observation?.observation_id === command.observation_id ? ` · ${labT("observationSequence", observation.sequence)}` :
           command.observation_id && sequences[command.observation_id] != null ? ` · ${labT("observationSequence", sequences[command.observation_id])}` : ""}</p>
       {command.state === "outcome_unknown" && <div role="status"><p>{labT("unknownOutcome")}</p>
-        <button type="button" disabled={querying !== null} onClick={() => void lab.reconcile(command.command_id)}>{labT("reconcile")}</button></div>}
+        {!readOnly && <button type="button" disabled={querying !== null} onClick={() => void lab.reconcile(command.command_id)}>{labT("reconcile")}</button>}</div>}
     </article>)}
+  </section>;
+}
+
+export function TerminalControls({ state }: { state: LabState }) {
+  return <div class="lab-terminal-controls">
+    <button type="button" disabled={!canEnd(state)} onClick={() => {
+      if (typeof globalThis.confirm === "function" && globalThis.confirm(labT("endConfirm"))) void lab.end();
+    }}>{labT("end")}</button>
+    <button class="lab-stop" type="button" disabled={!canStop(state)} onClick={() => {
+      if (typeof globalThis.confirm === "function" && globalThis.confirm(labT("stopConfirm"))) void lab.stop();
+    }}>{labT("stop")}</button>
+  </div>;
+}
+
+export function ResultsView({ state }: { state: LabState }) {
+  const [includeEvaluation, setIncludeEvaluation] = useState(false);
+  const exported = state.exported?.runId === state.selectedRunId ? state.exported : null;
+  const replay = state.replay?.runId === state.selectedRunId ? state.replay : null;
+  const entry = replay?.entries[replay.index];
+  return <section class="lab-card lab-results"><h3>{labT("results")}</h3>
+    <label class="lab-opt-in"><input type="checkbox" checked={includeEvaluation} disabled={!!exported?.loading}
+      onChange={(e) => setIncludeEvaluation(e.currentTarget.checked)} />{labT("includeEvaluation")}</label>
+    <p class="lab-notice">{labT("evaluationWarning")}</p>
+    <button type="button" disabled={!!exported?.loading} onClick={() => void lab.exportRun(includeEvaluation)}>
+      {labT(exported?.loading ? "exporting" : "export")}
+    </button>
+    {exported?.loading && <p role="status">{labT("exporting")}</p>}
+    {exported?.error && <p role="alert">{labT("exportError", exported.error)}</p>}
+    {exported?.result && <>
+      <p>{labT("exportedCounts", exported.result.command_count, exported.result.observation_count)}</p>
+      <ul class="lab-export-links">{exported.result.artifacts.map((artifact) => <li key={artifact.kind + artifact.version_id}>
+        <a href={artifactDeepLinkHref(artifact.artifact_id, artifact.version_id)} onClick={(event) => {
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          void openViewer({ id: artifact.artifact_id, version_id: artifact.version_id, filename: artifact.filename, root_frame_id: state.rootId });
+        }}>{artifact.filename} · {artifact.version_id}</a>
+        {artifact.kind === "simulation_ground_truth" && <strong class="lab-notice"> · {labT("groundTruth")}</strong>}
+      </li>)}</ul>
+    </>}
+    <h3>{labT("replay")}</h3><p class="lab-muted">{labT("replayReadOnly")}</p>
+    <button type="button" disabled={!!replay?.loading} onClick={() => void lab.loadReplay()}>{labT(replay?.loading ? "replayLoading" : replay ? "replayReload" : "replay")}</button>
+    {replay?.loading && <p role="status">{labT("replayLoading")}</p>}
+    {replay?.error && <p role="alert">{labT("replayError", replay.error)}</p>}
+    {replay && !replay.loading && !replay.error && !replay.entries.length && <p>{labT("replayEmpty")}</p>}
+    {entry && state.detail && <div class="lab-replay">
+      <label>{labT("replayPosition", replay!.index + 1, replay!.entries.length)}
+        <input type="range" min="0" max={replay!.entries.length - 1} step="1" value={replay!.index}
+          aria-label={labT("replay")} onInput={(e) => lab.selectReplay(Number(e.currentTarget.value))} />
+      </label>
+      {entry.command ? <CommandHistory commands={[entry.command]} observation={entry.observation} querying={null} readOnly /> : <p>{labT("replayInitial")}</p>}
+      {entry.observation ? <>
+        <VesselView descriptor={state.detail.descriptor} observation={entry.observation} />
+        <ObservationView descriptor={state.detail.descriptor} observation={entry.observation} />
+      </> : <p>{labT("noObservation")}</p>}
+    </div>}
   </section>;
 }
 
@@ -166,9 +223,9 @@ export function LabPane() {
         <VesselView descriptor={detail.descriptor} observation={detail.observation} action={selectedAction} />
         <ObservationView descriptor={detail.descriptor} observation={detail.observation} />
         <ActionForm key={detail.run.run_id} descriptor={detail.descriptor} disabled={detail.run.status !== "ready" || !!pending || state.stopping || !!state.querying} onSelect={(capability) => setAction(capability ? { runId: detail.run.run_id, capability } : undefined)} />
-        <button class="lab-stop" type="button" disabled={state.stopping || ["ended", "failed"].includes(detail.run.status)} onClick={() => void lab.stop()}>{labT("end")}</button>
+        <TerminalControls state={state} />
         <CommandHistory commands={detail.commands} observation={detail.observation} querying={state.querying} sequences={state.sequences} />
-        <section class="lab-card"><h3>{labT("results")}</h3><p class="lab-muted">{labT("exportLater")}</p></section>
+        <ResultsView key={`${state.rootId}:${state.generation}:${detail.run.run_id}`} state={state} />
       </>}
     </>}
   </div>;

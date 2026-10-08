@@ -301,6 +301,7 @@ _TOOL_GROUP = {
             "lab_execute",
             "lab_status",
             "lab_stop",
+            "lab_export",
             "lab_commands",
             "lab_observations",
         )

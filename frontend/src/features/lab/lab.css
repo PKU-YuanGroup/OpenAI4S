@@ -26,3 +26,11 @@
 .lab-pane code { display: block; overflow-wrap: anywhere; font-size: 11px; margin: 8px 0; }
 .lab-vessel strong { overflow-wrap: anywhere; }
 .lab-new summary { cursor: pointer; margin: 8px 0; }
+
+.lab-terminal-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.lab-pane .lab-terminal-controls .lab-stop { width: auto; }
+.lab-pane .lab-opt-in { display: flex; align-items: center; gap: 8px; }
+.lab-pane .lab-opt-in input { width: auto; margin: 0; }
+.lab-export-links { padding-left: 20px; overflow-wrap: anywhere; }
+.lab-export-links li { margin: 8px 0; }
+.lab-replay { border-top: 1px solid var(--border, #d6e0e9); margin-top: 12px; }

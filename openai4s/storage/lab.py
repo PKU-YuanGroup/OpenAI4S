@@ -1106,6 +1106,49 @@ class LabLedger:
             (run_id, max(0, limit)),
         )
 
+    def attach_observation_artifacts(self, run_id, versions) -> None:
+        """Atomically bind first exports; never replace an observation's evidence."""
+        if not isinstance(versions, Mapping):
+            raise _ledger_error("invalid_parameters", "Invalid observation bindings")
+        with self._transaction():
+            run = self._run(run_id)
+            for observation_id, version_id in versions.items():
+                if (
+                    not isinstance(observation_id, str)
+                    or not isinstance(version_id, str)
+                    or not version_id
+                ):
+                    raise _ledger_error(
+                        "invalid_parameters", "Invalid observation binding"
+                    )
+                observation = self._one(
+                    "lab_observations", "observation_id", observation_id
+                )
+                version = self._conn.execute(
+                    "SELECT a.root_frame_id FROM artifact_versions v JOIN artifacts a ON a.artifact_id=v.artifact_id JOIN frames f ON f.frame_id=a.root_frame_id AND f.project_id=a.project_id WHERE v.version_id=?",
+                    (version_id,),
+                ).fetchone()
+                if (
+                    observation is None
+                    or observation["run_id"] != run_id
+                    or version is None
+                    or version["root_frame_id"] != run["root_frame_id"]
+                ):
+                    raise _ledger_error(
+                        "invalid_parameters",
+                        "Observation Artifact is outside the run's session",
+                    )
+                if observation["artifact_version_id"] not in (None, version_id):
+                    raise _ledger_error(
+                        "idempotency_conflict",
+                        "Observation Artifact is already attached",
+                    )
+            for observation_id, version_id in versions.items():
+                self._conn.execute(
+                    "UPDATE lab_observations SET artifact_version_id=? WHERE run_id=? AND observation_id=? AND artifact_version_id IS NULL",
+                    (version_id, run_id, observation_id),
+                )
+
     def events_since(self, root_frame_id, *, after_seq=0, limit=200) -> list[dict]:
         return self._read(
             "SELECT * FROM lab_events WHERE root_frame_id=? AND event_seq>? ORDER BY event_seq LIMIT ?",

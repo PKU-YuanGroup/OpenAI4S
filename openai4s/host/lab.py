@@ -24,6 +24,7 @@ class LabService:
     ) -> None:
         self._manager_provider = manager_provider
         self._caller_factory = caller_factory
+        self.exporter: Callable[[LabCaller, str, bool], dict[str, Any]] | None = None
 
     def call(self, operation: str, spec: dict[str, Any]) -> dict[str, Any]:
         """Call only the public manager projections; never interpret a receipt."""
@@ -67,6 +68,7 @@ class LabService:
                 "observe_full": {"run_id"},
                 "status": {"run_id", "command_id"},
                 "stop": {"run_id", "reason"},
+                "export": {"run_id", "include_evaluation"},
                 "commands": {"run_id", "after_seq", "limit"},
                 "observations": {"run_id", "after_sequence", "limit"},
                 "observations_full": {"run_id", "after_sequence", "limit"},
@@ -100,6 +102,20 @@ class LabService:
                 return manager.status(caller, spec["run_id"], spec.get("command_id"))
             if operation == "stop":
                 return manager.stop(caller, spec["run_id"], spec.get("reason"))
+            if operation == "export":
+                if (
+                    not isinstance(spec.get("run_id"), str)
+                    or not spec["run_id"]
+                    or type(spec.get("include_evaluation", False)) is not bool
+                ):
+                    raise LabError(
+                        ErrorCode.INVALID_PARAMETERS, "Invalid Lab export arguments"
+                    )
+                if self.exporter is None:
+                    return unavailable()
+                return self.exporter(
+                    caller, spec["run_id"], spec.get("include_evaluation", False)
+                )
             if operation == "commands":
                 return manager.commands(
                     caller,

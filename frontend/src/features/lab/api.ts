@@ -2,7 +2,7 @@ import { API, ApiError } from "../sessions/api";
 import { labT } from "./copy";
 import type {
   CommandPage, CommandRequest, CommandResult, CreateRequest, CreateResult,
-  Descriptor, DetailResult, EventPage, LabIndex, ObservationPage, StopResult,
+  Descriptor, DetailResult, EventPage, ExportResult, LabIndex, ObservationPage, StopResult,
 } from "./types";
 
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
@@ -13,6 +13,8 @@ export const LAB_REQUEST_TIMEOUT_MS = 30_000;
 export const LAB_CREATE_TIMEOUT_MS = 240_000;
 export const LAB_EXECUTE_TIMEOUT_MS = 90_000;
 export const LAB_STOP_TIMEOUT_MS = 60_000;
+// Export reads the ledger and captures files; it never calls the provider.
+export const LAB_EXPORT_TIMEOUT_MS = 120_000;
 let fetchImpl: FetchFn | null = null;
 
 export function setLabFetch(fn: FetchFn | null): void {
@@ -113,4 +115,8 @@ export function stopRun(fid: string, runId: string, reason?: string): Promise<St
 export function listEvents(fid: string, afterSeq = 0, limit = 200): Promise<EventPage> {
   const query = new URLSearchParams({ after_seq: String(afterSeq), limit: String(limit) });
   return request(`${base(fid)}/events?${query}`);
+}
+
+export function exportRun(fid: string, runId: string, includeEvaluation = false): Promise<ExportResult> {
+  return request(`${runPath(fid, runId)}/export`, { include_evaluation: includeEvaluation }, LAB_EXPORT_TIMEOUT_MS);
 }

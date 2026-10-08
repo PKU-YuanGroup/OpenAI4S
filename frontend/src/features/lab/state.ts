@@ -1,20 +1,22 @@
 import { signal } from "@preact/signals";
 import * as api from "./api";
 import { labT } from "./copy";
-import type { Capability, CommandRequest, CreateRequest, DetailResult, Device, Observation, Run } from "./types";
+import type { Capability, Command, CommandRequest, CreateRequest, DetailResult, Device, ExportResult, Observation, ReplayEntry, Run } from "./types";
 
 type Intent = { kind: "create"; body: CreateRequest } | { kind: "execute"; runId: string; body: CommandRequest };
 export type Pending = { intent: Intent; sending: boolean; error: string; confirmed?: boolean };
+export type ReplayState = { runId: string; loading: boolean; error: string; entries: ReplayEntry[]; index: number };
+export type ExportState = { runId: string; loading: boolean; error: string; result: ExportResult | null };
 export type LabState = {
   rootId: string | null; generation: number; devices: Device[]; runs: Run[];
   selectedRunId: string | null; detail: DetailResult | null;
   sequences: Record<string, number>; loading: boolean; error: string; pending: Pending | null; stopping: boolean; querying: string | null;
   /** False until this scope's first index read lands, so an unread scope never shows "no devices". */
-  loaded: boolean;
+  loaded: boolean; replay: ReplayState | null; exported: ExportState | null;
 };
 const empty = (rootId: string | null, generation: number): LabState => ({
   rootId, generation, devices: [], runs: [], selectedRunId: null, detail: null,
-  sequences: {}, loading: false, error: "", pending: null, stopping: false, querying: null, loaded: false,
+  sequences: {}, loading: false, error: "", pending: null, stopping: false, querying: null, loaded: false, replay: null, exported: null,
 });
 const message = (error: unknown): string => error instanceof Error ? error.message : labT("unknown");
 const newKey = (): string => "ui-" + crypto.randomUUID();
@@ -43,10 +45,40 @@ function newestObservation(current: Observation | null | undefined, incoming: Ob
   return incoming;
 }
 
+export function endCapability(state: LabState): Capability | undefined {
+  return state.detail?.descriptor.capabilities.find((cap) => cap.terminal && cap.operation === "end_experiment" && Object.keys(cap.parameters).length === 0);
+}
+export function canEnd(state: LabState): boolean {
+  return !!state.rootId && !!endCapability(state) && state.detail?.run.status === "ready" && !state.pending && !state.stopping && !state.querying && !state.detail.commands.some((c) => c.state === "outcome_unknown");
+}
+export function canStop(state: LabState): boolean {
+  return !!state.rootId && !!state.detail && !state.stopping && !["ended", "failed"].includes(state.detail.run.status);
+}
+
+/** Associate only recorded identities, retaining refusals that have no observation. */
+function replayEntries(commands: Command[], observations: Observation[]): ReplayEntry[] {
+  const used = new Set<string>();
+  const entries: ReplayEntry[] = observations.filter((o) => !o.command_id).map((observation) => {
+    used.add(observation.observation_id);
+    return { command: null, observation };
+  });
+  for (const command of commands) {
+    const observation = observations.find((o) => !used.has(o.observation_id) &&
+      (command.observation_id ? o.observation_id === command.observation_id : o.command_id === command.command_id)) || null;
+    if (observation) used.add(observation.observation_id);
+    entries.push({ command, observation });
+  }
+  for (const observation of observations) {
+    if (!used.has(observation.observation_id)) entries.push({ command: null, observation });
+  }
+  return entries;
+}
+
 export class LabController {
   readonly state = signal<LabState>(empty(null, 0));
   private epoch = 0;
   private read = 0;
+  private selection = 0;
   private activeRead: { epoch: number; dirty: boolean; promise: Promise<void> } | null = null;
   // Uncertain requests survive leaving/reopening a session within this page. They are
   // never shown under another root, and only an explicit same-request retry sends them.
@@ -97,6 +129,10 @@ export class LabController {
       });
       const selected = previous.selectedRunId && runs.some((r) => r.run_id === previous.selectedRunId)
         ? previous.selectedRunId : runs[0]?.run_id || null;
+      if (selected !== previous.selectedRunId) {
+        this.selection++;
+        this.patch({ replay: null, exported: null });
+      }
       this.patch({ devices: index.devices, runs, selectedRunId: selected, error: "", loaded: true,
         detail: selected === previous.selectedRunId ? previous.detail : null });
       if (!selected) { this.patch({ detail: null }); return; }
@@ -127,7 +163,8 @@ export class LabController {
   async select(runId: string): Promise<void> {
     if (!this.state.value.runs.some((r) => r.run_id === runId)) return;
     this.read++;
-    this.patch({ selectedRunId: runId, detail: null });
+    this.selection++;
+    this.patch({ selectedRunId: runId, detail: null, replay: null, exported: null });
     await this.refresh();
   }
 
@@ -159,6 +196,79 @@ export class LabController {
     } });
   }
 
+  async end(): Promise<void> {
+    const state = this.state.value;
+    if (!canEnd(state)) return;
+    const cap = endCapability(state)!;
+    await this.submit({ kind: "execute", runId: state.detail!.run.run_id, body: {
+      operation: cap.operation, source: cap.source, target: cap.target, parameters: {},
+      expected_revision: state.detail!.run.revision, idempotency_key: this.key(),
+    } });
+  }
+
+  async exportRun(includeEvaluation = false): Promise<void> {
+    const { rootId: root, selectedRunId: run, detail, exported } = this.state.value;
+    if (!root || !run || detail?.run.run_id !== run || exported?.loading) return;
+    const epoch = this.epoch, selection = this.selection;
+    const valid = () => this.matches(root, epoch) && this.selection === selection && this.state.value.selectedRunId === run;
+    this.patch({ exported: { runId: run, loading: true, error: "", result: exported?.result || null } });
+    try {
+      const result = await api.exportRun(root, run, includeEvaluation);
+      if (!valid()) return;
+      if (result.run_id !== run || result.include_evaluation !== includeEvaluation || result.artifacts.some((artifact) =>
+        !artifact.artifact_id || !artifact.version_id || !includeEvaluation && artifact.kind === "simulation_ground_truth")) throw new Error(labT("invalidResult"));
+      this.patch({ exported: { runId: run, loading: false, error: "", result } });
+    } catch (error) {
+      if (valid()) this.patch({ exported: { runId: run, loading: false, error: message(error), result: exported?.result || null } });
+    }
+  }
+
+  async loadReplay(): Promise<void> {
+    const { rootId: root, selectedRunId: run, detail, replay } = this.state.value;
+    if (!root || !run || detail?.run.run_id !== run || replay?.loading) return;
+    const epoch = this.epoch, selection = this.selection;
+    const valid = () => this.matches(root, epoch) && this.selection === selection && this.state.value.selectedRunId === run;
+    this.patch({ replay: { runId: run, loading: true, error: "", entries: [], index: 0 } });
+    try {
+      const readCommands = async (): Promise<Command[]> => {
+        const rows: Command[] = [];
+        let after = 0;
+        while (valid()) {
+          const page = await api.listCommands(root, run, after, 200);
+          if (!valid()) return [];
+          if (!page.commands.length) return rows;
+          if (!Number.isInteger(page.next_after_seq) || page.next_after_seq <= after || page.commands.some((c) => c.run_id !== run || c.seq <= after)) throw new Error(labT("invalidReplay"));
+          rows.push(...page.commands); after = page.next_after_seq;
+        }
+        return [];
+      };
+      const readObservations = async (): Promise<Observation[]> => {
+        const rows: Observation[] = [];
+        let after = -1;
+        while (valid()) {
+          const page = await api.listObservations(root, run, after, 200, true);
+          if (!valid()) return [];
+          if (!page.observations.length) return rows;
+          if (!Number.isInteger(page.next_after_sequence) || page.next_after_sequence <= after || page.observations.some((o) => o.run_id !== run || o.sequence <= after)) throw new Error(labT("invalidReplay"));
+          rows.push(...page.observations); after = page.next_after_sequence;
+        }
+        return [];
+      };
+      const [commands, observations] = await Promise.all([readCommands(), readObservations()]);
+      if (!valid()) return;
+      const entries = replayEntries(commands.sort((a, b) => a.seq - b.seq), observations.sort((a, b) => a.sequence - b.sequence));
+      this.patch({ replay: { runId: run, loading: false, error: "", entries, index: 0 } });
+    } catch (error) {
+      if (valid()) this.patch({ replay: { runId: run, loading: false, error: message(error), entries: [], index: 0 } });
+    }
+  }
+
+  selectReplay(index: number): void {
+    const replay = this.state.value.replay;
+    if (!replay || replay.loading || replay.runId !== this.state.value.selectedRunId || !Number.isInteger(index) || index < 0 || index >= replay.entries.length) return;
+    this.patch({ replay: { ...replay, index } });
+  }
+
   async retry(): Promise<void> {
     const pending = this.state.value.pending;
     if (pending && !pending.sending) await this.submit(pending.intent);
@@ -188,6 +298,8 @@ export class LabController {
         if (!older(result.run, known)) {
           const runs = [result.run, ...this.state.value.runs.filter((r) => r.run_id !== result.run.run_id)];
           if (sent.kind === "create" && "descriptor" in result) {
+            this.selection++;
+            this.patch({ replay: null, exported: null });
             this.patch({ runs, selectedRunId: result.run.run_id, detail: { ...result, observation: newestObservation(null, result.observation), commands: [] } });
           } else if ("command" in result && this.state.value.detail?.run.run_id === result.run.run_id) {
             const detail = this.state.value.detail;
@@ -235,7 +347,7 @@ export class LabController {
 
   async stop(): Promise<void> {
     const { rootId: root, selectedRunId: run, detail, stopping } = this.state.value;
-    if (!root || !run || !detail || stopping || ["ended", "failed"].includes(detail.run.status)) return;
+    if (!root || !run || !detail || stopping || !canStop(this.state.value)) return;
     const epoch = this.epoch;
     this.read++; this.patch({ stopping: true, loading: false, error: "" });
     try {

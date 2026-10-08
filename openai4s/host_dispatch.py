@@ -1464,6 +1464,17 @@ class HostDispatcher:
         finally:
             self._lab_call_local.origin = previous
 
+    def set_lab_exporter(
+        self, exporter: Callable[[LabCaller, str, bool, bool], dict[str, Any]]
+    ) -> None:
+        """Bind the Web-owned synchronous Artifact commit boundary for Lab evidence."""
+        self._lab_service.exporter = lambda caller, run_id, include: exporter(
+            caller,
+            run_id,
+            include,
+            bool(self._current_action_context()) or self._artifact_capture_bound(),
+        )
+
     def _lab_caller(self) -> LabCaller:
         store = get_store(self.cfg.db_path)
         scope = store.resolve_frame_scope(self.frame_id)
@@ -3209,6 +3220,9 @@ class HostDispatcher:
 
     def _m_lab_stop(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._lab_service.call("stop", spec if spec is not None else {})
+
+    def _m_lab_export(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._lab_service.call("export", spec if spec is not None else {})
 
     def _m_lab_commands(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._lab_service.call("commands", spec if spec is not None else {})

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../sessions/api";
 import {
-  createRun, describeDevice, executeCommand, getRun, LAB_CREATE_TIMEOUT_MS, LAB_EXECUTE_TIMEOUT_MS,
+  createRun, describeDevice, executeCommand, exportRun, getRun, LAB_CREATE_TIMEOUT_MS, LAB_EXECUTE_TIMEOUT_MS, LAB_EXPORT_TIMEOUT_MS,
   LAB_REQUEST_TIMEOUT_MS, LAB_STOP_TIMEOUT_MS, listCommands, listEvents, listLab, listObservations,
   reconcileCommand, setLabFetch, stopRun, type FetchFn,
 } from "./api";
@@ -80,6 +80,8 @@ describe("Lab REST client", () => {
       [() => reconcileCommand(fid, runId, commandId), `${runUrl}/commands/command%20%2F%3F%23%E4%B8%AD/reconcile`, {}],
       [() => stopRun(fid, runId, "manual stop"), `${runUrl}/stop`, { reason: "manual stop" }],
       [() => stopRun(fid, runId), `${runUrl}/stop`, {}],
+      [() => exportRun(fid, runId), `${runUrl}/export`, { include_evaluation: false }],
+      [() => exportRun(fid, runId, true), `${runUrl}/export`, { include_evaluation: true }],
     ];
     for (const [call, url, body] of cases) {
       const result = { run: { run_id: runId } };
@@ -179,11 +181,13 @@ describe("Lab REST client", () => {
     expect(LAB_CREATE_TIMEOUT_MS).toBeGreaterThan((30 + 180) * 1000);
     expect(LAB_EXECUTE_TIMEOUT_MS).toBeGreaterThan(60 * 1000);
     expect(LAB_STOP_TIMEOUT_MS).toBeGreaterThan((30 + 10) * 1000);
+    expect(LAB_EXPORT_TIMEOUT_MS).toBe(120_000);
     setLabFetch(() => new Promise<Response>(() => {}));
     for (const [call, deadline] of [
       [() => createRun(fid, create), LAB_CREATE_TIMEOUT_MS],
       [() => executeCommand(fid, runId, command), LAB_EXECUTE_TIMEOUT_MS],
       [() => stopRun(fid, runId), LAB_STOP_TIMEOUT_MS],
+      [() => exportRun(fid, runId), LAB_EXPORT_TIMEOUT_MS],
       [() => listLab(fid), LAB_REQUEST_TIMEOUT_MS],
     ] as const) {
       let settled = false;

@@ -45,12 +45,13 @@ NAMES = {
         "execute",
         "status",
         "stop",
+        "export",
         "commands",
         "observations",
     )
 }
 FULL = {"lab_observe_full", "lab_observations_full"}
-UNSAFE = {"lab_create", "lab_execute", "lab_stop", "lab_status"}
+UNSAFE = {"lab_create", "lab_execute", "lab_stop", "lab_status", "lab_export"}
 FORBIDDEN = {
     "evaluation",
     "reward",
@@ -166,8 +167,12 @@ def test_lab_metadata_and_progressive_group(rig):
     group = next(g for g in catalog.group_metadata() if g["id"] == "lab")
     assert set(group["tools"]) == NAMES and group["always"] is False
     for name, tool in tools.items():
-        assert tool.read_only == (name not in {"lab_create", "lab_execute", "lab_stop"})
-        assert tool.requires_approval == (name in {"lab_create", "lab_execute"})
+        assert tool.read_only == (
+            name not in {"lab_create", "lab_execute", "lab_stop", "lab_export"}
+        )
+        assert tool.requires_approval == (
+            name in {"lab_create", "lab_execute", "lab_export"}
+        )
         assert "full" not in tool.parameters["properties"]
         assert "options" not in tool.parameters["properties"]
         if name in {"lab_create", "lab_execute", "lab_stop"}:

@@ -6,8 +6,12 @@ fault hooks; no route response or Lab service is fabricated for the recorder.
 
 from __future__ import annotations
 
+import csv
+import hashlib
+import io
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -482,7 +486,7 @@ def test_lifecycle_releases_provider_before_deleting_ledger(
     assert not client.devices[0]._sessions
 
 
-def test_lab_capture_drives_all_ten_real_routes(client):
+def test_lab_capture_drives_all_eleven_real_routes(client):
     recorder = response_capture.Recorder()
     response_capture._drive_lab_surface(
         recorder,
@@ -524,6 +528,7 @@ def test_run_from_a_different_session_is_not_disclosed(client):
         ("GET", "/observations", None),
         ("POST", "/commands", _command()),
         ("POST", "/stop", {}),
+        ("POST", "/export", {}),
     ]:
         status, error = client.request(
             method, f"/frames/{other}/lab/runs/{run_id}{suffix}", body
@@ -643,3 +648,306 @@ def test_command_routes_give_the_workbench_full_sensor_arrays(client, monkeypatc
     agent = client.runner.lab_manager.observe(caller, run_id, full=False)["observation"]
     layers = next(c for c in agent["channels"] if c["name"] == "layers")
     assert layers["value"]["truncated"] is True
+
+
+def _wide_lab_sensor(client, run_id):
+    descriptor = client.store.lab.get_run(run_id)["descriptor"]
+    descriptor["observation_channels"][0]["shape"] = [300]
+    descriptor["observation_channels"][0].pop("axes", None)
+    client.store._conn.execute(
+        "UPDATE lab_runs SET descriptor_json=? WHERE run_id=?",
+        (json.dumps(descriptor), run_id),
+    )
+    for row in client.store.lab.list_observations(run_id):
+        channels = row["channels"]
+        channels[0].update(shape=[300], value=list(range(300)))
+        client.store._conn.execute(
+            "UPDATE lab_observations SET channels_json=? WHERE observation_id=?",
+            (json.dumps(channels), row["observation_id"]),
+        )
+    client.store._conn.commit()
+
+
+def _export_files(client, result):
+    files = {}
+    for item in result["artifacts"]:
+        version = client.store.version_meta(item["version_id"])
+        assert version["artifact_id"] == item["artifact_id"]
+        raw = Path(version["snapshot_path"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == item["checksum"]
+        files[item["kind"]] = raw.decode("utf-8")
+    return files
+
+
+def test_lab_export_rest_exact_evidence_and_explicit_truth(client):
+    run_id = client.create()["run"]["run_id"]
+    assert client.execute(run_id)[0] == 200
+    _wide_lab_sensor(client, run_id)
+    client.store._conn.execute(
+        "UPDATE lab_evaluations SET reward=?,ground_truth_json=? WHERE run_id=?",
+        (987654.321987, json.dumps({"private_composition": 876543.219876}), run_id),
+    )
+    client.store._conn.commit()
+    path = f"{client.base}/runs/{run_id}/export"
+    status, result = client.request("POST", path)
+    assert status == 200, result
+    assert result["command_count"] == 1 and result["observation_count"] == 2
+    assert result["include_evaluation"] is False
+    assert "channels" not in json.dumps(result)
+    files = _export_files(client, result)
+    assert set(files) == {"actions", "observations_json", "observations_csv", "report"}
+    for content in files.values():
+        for secret in (
+            '"reward"',
+            '"ground_truth"',
+            '"evaluation"',
+            '"provider_action"',
+            "private_composition",
+            "987654.321987",
+            "876543.219876",
+        ):
+            assert secret not in content
+    commands = client.request("GET", f"{client.base}/runs/{run_id}/commands")[1][
+        "commands"
+    ]
+    assert [json.loads(row) for row in files["actions"].splitlines()] == commands
+    observations = client.request("GET", f"{client.base}/runs/{run_id}/observations")[
+        1
+    ]["observations"]
+    observation_version = next(
+        a["version_id"] for a in result["artifacts"] if a["kind"] == "observations_json"
+    )
+    assert all(o["artifact_version_id"] == observation_version for o in observations)
+    assert json.loads(files["observations_json"])["observations"] == [
+        {k: v for k, v in o.items() if k != "artifact_version_id"} for o in observations
+    ]
+    csv_rows = list(csv.DictReader(io.StringIO(files["observations_csv"])))
+    expected_channels = [(o, c) for o in observations for c in o["channels"]]
+    assert len(csv_rows) == len(expected_channels)
+    for actual, (obs, channel) in zip(csv_rows, expected_channels):
+        assert actual["observation_id"] == obs["observation_id"]
+        assert actual["command_id"] == (obs["command_id"] or "")
+        assert json.loads(actual["value_json"]) == channel["value"]
+    assert observation_version in files["report"]
+    for item in result["artifacts"]:
+        assert len(client.store.list_versions(item["artifact_id"])) == 1
+    status, repeated = client.request("POST", path)
+    assert status == 200
+    for first, second in zip(result["artifacts"], repeated["artifacts"]):
+        assert first["artifact_id"] == second["artifact_id"]
+        assert first["version_id"] != second["version_id"]
+        assert len(client.store.list_versions(first["artifact_id"])) == 2
+    assert all(
+        row["artifact_version_id"] == observation_version
+        for row in client.store.lab.list_observations(run_id)
+    )
+    status, explicit = client.request("POST", path, {"include_evaluation": True})
+    assert status == 200
+    truth = _export_files(client, explicit)["simulation_ground_truth"]
+    assert "Simulation ground truth (仿真真值)" in truth
+    assert "987654.321987" in truth and "876543.219876" in truth
+    assert "987654.321987" not in json.dumps(explicit)
+    assert "simulation-ground-truth" in next(
+        a["filename"]
+        for a in explicit["artifacts"]
+        if a["kind"] == "simulation_ground_truth"
+    )
+    assert client.devices[0].executions == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"include_evaluation": "false"},
+        {"include_evaluation": 1},
+        {"include_evaluation": None},
+        {"unexpected": True},
+    ],
+)
+def test_lab_export_real_handler_refuses_invalid_flags(client, body):
+    run_id = client.create()["run"]["run_id"]
+    status, result = client.request("POST", f"{client.base}/runs/{run_id}/export", body)
+    assert status == 422 and result["code"] == "invalid_parameters"
+    assert result["status"] == 422
+    assert client.request("POST", f"{client.base}/runs/missing/export")[0] == 404
+
+
+def test_lab_export_tool_sdk_rest_capture_once(client):
+    from openai4s.sdk.host import build_host
+    from openai4s.tools.registry import get_tool
+
+    run_id = client.create()["run"]["run_id"]
+    _wide_lab_sensor(client, run_id)
+    st = client.runner._state(client.frame_id, client.project_id)
+    client.runner._ensure_runtime(st)
+    dispatcher = st.dispatcher
+    client.store.set_permission_rule(
+        scope="conversation",
+        scope_id=client.frame_id,
+        tool="lab_export",
+        pattern="*",
+        decision="allow",
+    )
+    call = {
+        "id": "lab-export-native",
+        "name": "lab_export",
+        "arguments": {"run_id": run_id},
+    }
+    native = client.runner._invoke_control_with_artifacts(
+        st,
+        call,
+        lambda e: None,
+        lambda: get_tool("lab_export").invoke(dispatcher, call["arguments"]),
+    )
+    assert "error" not in native, native
+    _export_files(client, native)
+    assert all(
+        len(client.store.list_versions(a["artifact_id"])) == 1
+        for a in native["artifacts"]
+    )
+    before = client.runner.artifacts.snapshot(st.workspace)
+    with st.trusted_capture.capture(), dispatcher.bind_artifact_receipt_scope():
+        sdk = build_host(dispatcher, mode="repl").lab.export(run_id)
+        # Available synchronously, before the enclosing Cell capture.
+        _export_files(client, sdk)
+        captured = client.runner.artifacts.capture(
+            st, 0, None, before, lambda e: None, language="native"
+        )
+    assert captured.artifacts == []
+    observed = build_host(dispatcher, mode="repl").lab.observe(run_id)["observation"]
+    assert observed["channels"][0]["value"] == {
+        "shape": [300],
+        "summary": {"min": 0, "max": 299, "mean": 149.5},
+        "truncated": True,
+    }
+    assert observed["artifact_version_id"] == next(
+        a["version_id"] for a in native["artifacts"] if a["kind"] == "observations_json"
+    )
+    assert all(
+        len(client.store.list_versions(a["artifact_id"])) == 2 for a in sdk["artifacts"]
+    )
+    status, rest = client.request("POST", f"{client.base}/runs/{run_id}/export")
+    assert status == 200
+    assert native.keys() == sdk.keys() == rest.keys()
+    for kind in ("actions", "observations_json", "observations_csv"):
+        assert (
+            _export_files(client, native)[kind]
+            == _export_files(client, sdk)[kind]
+            == _export_files(client, rest)[kind]
+        )
+    assert client.devices[0].executions == 0
+
+
+def test_lab_observation_artifact_bindings_are_atomic_and_immutable(client):
+    run_id = client.create()["run"]["run_id"]
+    first = client.request("POST", f"{client.base}/runs/{run_id}/export")[1]
+    version = first["artifacts"][0]["version_id"]
+    other_run = client.create(idempotency_key="second-run")["run"]["run_id"]
+    obs = client.store.lab.latest_observation(other_run)
+    with pytest.raises(LabError):
+        client.store.lab.attach_observation_artifacts(
+            other_run, {obs["observation_id"]: version, "missing": version}
+        )
+    assert client.store.lab.latest_observation(other_run)["artifact_version_id"] is None
+    with pytest.raises(LabError):
+        client.store.lab.attach_observation_artifacts(
+            run_id, {obs["observation_id"]: version}
+        )
+    with pytest.raises(LabError):
+        client.store.lab.attach_observation_artifacts(
+            other_run, {obs["observation_id"]: "missing-version"}
+        )
+    client.store.lab.attach_observation_artifacts(
+        other_run, {obs["observation_id"]: version}
+    )
+    client.store.lab.attach_observation_artifacts(
+        other_run, {obs["observation_id"]: version}
+    )
+    with pytest.raises(LabError, match="already attached"):
+        client.store.lab.attach_observation_artifacts(
+            other_run, {obs["observation_id"]: first["artifacts"][1]["version_id"]}
+        )
+    assert (
+        client.store.lab.latest_observation(other_run)["artifact_version_id"] == version
+    )
+
+
+def test_lab_terminal_action_and_safety_stop_have_distinct_outcomes(client):
+    run_id = client.create()["run"]["run_id"]
+    status, ended = client.execute(
+        run_id, operation="end_experiment", source=None, parameters={}
+    )
+    assert status == 200 and ended["run"]["end_reason"] == "end_action"
+    assert ended["command"]["state"] == "succeeded"
+    other = client.create(idempotency_key="stop-run")["run"]["run_id"]
+    status, stopped = client.request("POST", f"{client.base}/runs/{other}/stop")
+    assert status == 200 and stopped["run"]["end_reason"] == "stopped"
+    count = sum(d.executions for d in client.devices)
+    assert client.request("GET", f"{client.base}/runs/{run_id}/commands")[0] == 200
+    assert client.request("GET", f"{client.base}/runs/{run_id}/observations")[0] == 200
+    assert sum(d.executions for d in client.devices) == count == 1
+
+
+def test_lab_export_permission_and_foreground_scope_are_required(client):
+    from openai4s.sdk.host import build_host
+
+    run_id = client.create()["run"]["run_id"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    client.runner._ensure_runtime(st)
+    host = build_host(st.dispatcher, mode="repl")
+    client.store.set_permission_rule(
+        scope="conversation",
+        scope_id=client.frame_id,
+        tool="lab_export",
+        pattern="*",
+        decision="deny",
+    )
+    with pytest.raises(RuntimeError, match="Permission"):
+        host.lab.export(run_id)
+    assert client.store.lab.latest_observation(run_id)["artifact_version_id"] is None
+    client.store.set_permission_rule(
+        scope="conversation",
+        scope_id=client.frame_id,
+        tool="lab_export",
+        pattern="*",
+        decision="allow",
+    )
+    with pytest.raises(RuntimeError, match="could not commit"):
+        host.lab.export(run_id)
+    assert not list(st.workspace.glob("lab-*-observations.json"))
+
+
+@pytest.mark.stubbed_backend
+def test_lab_export_capture_failure_never_attaches_uncommitted_evidence(
+    client, monkeypatch
+):
+    run_id = client.create()["run"]["run_id"]
+    register = client.runner.artifacts.register_file
+
+    def fail_observations(session, path, *args, **kwargs):
+        if path.name.endswith("observations.json"):
+            raise OSError("private payload must not escape")
+        return register(session, path, *args, **kwargs)
+
+    monkeypatch.setattr(client.runner.artifacts, "register_file", fail_observations)
+    status, result = client.request("POST", f"{client.base}/runs/{run_id}/export")
+    assert status == 503 and result["code"] == "persistence_unavailable"
+    assert "private payload" not in json.dumps(result)
+    assert client.store.lab.latest_observation(run_id)["artifact_version_id"] is None
+
+
+def test_lab_export_does_not_follow_existing_workspace_links(client, tmp_path):
+    run_id = client.create()["run"]["run_id"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    st.workspace.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("untouched", encoding="utf-8")
+    filename = (
+        "lab-" + hashlib.sha256(run_id.encode()).hexdigest()[:24] + "-observations.json"
+    )
+    (st.workspace / filename).symlink_to(outside)
+    status, result = client.request("POST", f"{client.base}/runs/{run_id}/export")
+    assert status == 200, result
+    assert outside.read_text("utf-8") == "untouched"
+    assert not (st.workspace / filename).is_symlink()
+    _export_files(client, result)

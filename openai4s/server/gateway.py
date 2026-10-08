@@ -6162,6 +6162,13 @@ class SessionRunner:
             bind_lab = getattr(disp, "set_lab_manager", None)
             if callable(bind_lab):
                 bind_lab(lambda: self._session_lab)
+            bind_lab_exporter = getattr(disp, "set_lab_exporter", None)
+            if callable(bind_lab_exporter):
+                bind_lab_exporter(
+                    lambda caller, run_id, include, bound: lab_routes.export_for_session(
+                        self, caller, run_id, include, bound, session=st
+                    )
+                )
             # Project every visible host.* call into persisted UI activity.
             disp.on_step = self._make_step_sink(st)
             disp.on_plan = self._make_plan_sink(st)

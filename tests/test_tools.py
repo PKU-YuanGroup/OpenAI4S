@@ -126,6 +126,7 @@ def test_control_tool_classes_own_their_security_policy():
     assert approval_methods == {
         "lab_create",
         "lab_execute",
+        "lab_export",
         "list_dir",
         "read_file",
         "write_file",
