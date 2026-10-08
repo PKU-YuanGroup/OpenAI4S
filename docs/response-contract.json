@@ -1398,6 +1398,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/lab/runs/([^/]+)/export": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/lab/runs/([^/]+)/observations": {
       "content_types": [
         "application/json"
