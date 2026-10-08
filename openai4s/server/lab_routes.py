@@ -328,11 +328,13 @@ def export_for_session(
                     temporary = st.workspace / (".lab-export-" + secrets.token_hex(12))
                     data = content.encode("utf-8")
                     checksum = hashlib.sha256(data).hexdigest()
+                    published = False
                     try:
                         with _PinnedUploadFile.create(directory, temporary) as staged:
                             staged.write(data)
                             directory.assert_current()
                             directory.replace(temporary, path)
+                            published = True
                             directory.fsync()
                             staged.verified_bytes(named_as=path, checksum=checksum)
                             frozen = runner.artifacts.freeze_capture_snapshot(
@@ -360,6 +362,20 @@ def export_for_session(
                             staged.verified_bytes(named_as=path, checksum=checksum)
                             directory.assert_current()
                             return record
+                    except BaseException:
+                        if published and execution_bound is not None:
+                            # A concurrent write can occur between registration
+                            # and claiming. If final verification refuses it,
+                            # never leave a successful claim for uncaptured bytes.
+                            try:
+                                runner.artifacts._put_delegated_claim(
+                                    path, workspace=st.workspace, failed=True
+                                )
+                            except Exception:
+                                # Preserve the primary error. Claim-capacity
+                                # failures already fence the entire workspace.
+                                pass
+                        raise
                     finally:
                         directory.unlink(temporary, missing_ok=True)
 

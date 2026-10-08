@@ -14,14 +14,14 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from .manifest import (
+from openai4s.lab.manifest import (
     observation_from_row,
     project_command,
     project_observation,
     project_run,
 )
-from .models import DeviceDescriptor, ErrorCode, LabCaller, LabError
-from .ports import LabLedgerPort
+from openai4s.lab.models import DeviceDescriptor, ErrorCode, LabCaller, LabError
+from openai4s.lab.ports import LabLedgerPort
 
 
 def _json(value: Any) -> str:

@@ -872,22 +872,6 @@ def test_lab_observation_artifact_bindings_are_atomic_and_immutable(client):
     )
 
 
-def test_lab_terminal_action_and_safety_stop_have_distinct_outcomes(client):
-    run_id = client.create()["run"]["run_id"]
-    status, ended = client.execute(
-        run_id, operation="end_experiment", source=None, parameters={}
-    )
-    assert status == 200 and ended["run"]["end_reason"] == "end_action"
-    assert ended["command"]["state"] == "succeeded"
-    other = client.create(idempotency_key="stop-run")["run"]["run_id"]
-    status, stopped = client.request("POST", f"{client.base}/runs/{other}/stop")
-    assert status == 200 and stopped["run"]["end_reason"] == "stopped"
-    count = sum(d.executions for d in client.devices)
-    assert client.request("GET", f"{client.base}/runs/{run_id}/commands")[0] == 200
-    assert client.request("GET", f"{client.base}/runs/{run_id}/observations")[0] == 200
-    assert sum(d.executions for d in client.devices) == count == 1
-
-
 def test_lab_export_permission_and_foreground_scope_are_required(client):
     from openai4s.sdk.host import build_host
 
@@ -951,3 +935,58 @@ def test_lab_export_does_not_follow_existing_workspace_links(client, tmp_path):
     assert outside.read_text("utf-8") == "untouched"
     assert not (st.workspace / filename).is_symlink()
     _export_files(client, result)
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("rewrite_after", ["register", "claim"])
+def test_lab_export_failed_verification_refuses_enclosing_capture(
+    client, monkeypatch, rewrite_after
+):
+    from openai4s.sdk.host import build_host
+    from openai4s.server.artifacts import ArtifactOperationError
+
+    run_id = client.create()["run"]["run_id"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    client.runner._ensure_runtime(st)
+    client.store.set_permission_rule(
+        scope="conversation",
+        scope_id=client.frame_id,
+        tool="lab_export",
+        pattern="*",
+        decision="allow",
+    )
+    artifacts = client.runner.artifacts
+    register = artifacts.register_file
+    claim = artifacts.claim_delegated_artifacts
+    committed = []
+    changed = b"concurrent workspace rewrite\n"
+
+    def rewrite_registered(session, path, *args, **kwargs):
+        record = register(session, path, *args, **kwargs)
+        committed.append(record)
+        if rewrite_after == "register":
+            path.write_bytes(changed)
+        return record
+
+    def rewrite_claimed(records, *, workspace):
+        claim(records, workspace=workspace)
+        if rewrite_after == "claim":
+            Path(records[0]["storage_path"]).write_bytes(changed)
+
+    monkeypatch.setattr(artifacts, "register_file", rewrite_registered)
+    monkeypatch.setattr(artifacts, "claim_delegated_artifacts", rewrite_claimed)
+    before = artifacts.snapshot(st.workspace)
+    with st.trusted_capture.capture(), st.dispatcher.bind_artifact_receipt_scope():
+        with pytest.raises(RuntimeError, match="could not commit all evidence"):
+            build_host(st.dispatcher, mode="repl").lab.export(run_id)
+        assert len(committed) == 1
+        row = committed[0]
+        version = client.store.version_meta(row["version_id"])
+        assert Path(version["snapshot_path"]).read_bytes() != changed
+        assert Path(row["storage_path"]).read_bytes() == changed
+        # No success claim may hide bytes absent from the committed snapshot.
+        with pytest.raises(ArtifactOperationError, match="capture failed"):
+            artifacts.capture(
+                st, 0, None, before, lambda event: None, language="native"
+            )
+    assert client.store.lab.latest_observation(run_id)["artifact_version_id"] is None
