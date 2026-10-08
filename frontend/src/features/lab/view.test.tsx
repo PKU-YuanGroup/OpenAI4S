@@ -64,6 +64,12 @@ describe("Lab bench public view", () => {
     expect(text(button)).toBe(labT("reconcile"));
     (button.props.onClick as () => void)(); expect(query).toHaveBeenCalledWith("labcmd-one");
   });
+  it("uses confirmed observation sequences rather than receipt step counts", () => {
+    const row = command({ state: "succeeded", observation_id: "older-observation", receipt: { applied: true, status: "succeeded", error: null, raw: { terminated: false, truncated: false }, end_reason: null, sim_time: 4, step_index: 9 } });
+    const tree = CommandHistory({ commands: [row], observation: null, querying: null, sequences: { "older-observation": 4 } });
+    expect(text(tree)).toContain(labT("observationSequence", 4));
+    expect(text(tree)).not.toContain(labT("observationSequence", 9));
+  });
   it("renders all three permission summaries without raw actions or truth fields", () => {
     const input = { ...command().request, seed: 0, device_id: device.device_id, profile: device.profiles[0], provider_action: "PRIVATE_ACTION", evaluation: "PRIVATE_EVALUATION", parameters: { volume: { value: 200, unit: "mL" }, reward: { value: 91827, unit: "dimensionless" } } };
     const execute = permActionLine({ tool: "lab_execute", input }).text;

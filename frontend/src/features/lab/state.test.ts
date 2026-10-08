@@ -11,7 +11,8 @@ let posts: Array<{ url: string; body: Record<string, unknown> }>;
 let send: (url: string, body: Record<string, unknown>) => Promise<Response>;
 beforeEach(() => {
   vi.useFakeTimers(); posts = []; snapshot = detail();
-  controller = new LabController(() => "same-key"); controller.scope("root", 1);
+  let keys = 0;
+  controller = new LabController(() => ++keys === 1 ? "same-key" : `new-key-${keys}`); controller.scope("root", 1);
   send = async () => json({ run: snapshot.run, command: command(), observation: snapshot.observation });
   setLabFetch(async (url, init) => {
     if (init?.method === "POST") {
