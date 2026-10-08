@@ -157,12 +157,14 @@ describe("Lab results and safe playback", () => {
     expect(text(tree)).toContain(labT("exporting"));
   });
 
-  it("pins every exported version in links and viewer calls and labels opted-in truth", () => {
+  it("pins every exported version in links and viewer calls and notes a truth download", () => {
     const state = ready();
     const result = exported({ include_evaluation: true });
-    result.artifacts.push({ kind: "simulation_ground_truth", artifact_id: "truth-artifact", version_id: "truth-version", filename: "simulation-ground-truth.json", checksum: "truth-checksum" });
-    const tree = ResultsView({ state: { ...state, exported: { runId: "labrun-one", loading: false, error: "", result } } });
-    expect(text(tree)).toContain(labT("exportedCounts", 2, 2)); expect(text(tree)).toContain(labT("groundTruth"));
+    result.artifacts.push({ kind: "report", artifact_id: "report-artifact", version_id: "report-version", filename: "report.md", checksum: "report-checksum" });
+    const tree = ResultsView({ state: { ...state, exported: { runId: "labrun-one", loading: false, error: "", result, truthDownloaded: true } } });
+    expect(text(tree)).toContain(labT("exportedCounts", 2, 2)); expect(text(tree)).toContain(labT("groundTruthDownloaded"));
+    const plain = ResultsView({ state: { ...state, exported: { runId: "labrun-one", loading: false, error: "", result: exported() } } });
+    expect(text(plain)).not.toContain(labT("groundTruthDownloaded"));
     const links = elements(tree, "a"); expect(links).toHaveLength(2);
     for (const [index, link] of links.entries()) {
       const artifact = result.artifacts[index]!;

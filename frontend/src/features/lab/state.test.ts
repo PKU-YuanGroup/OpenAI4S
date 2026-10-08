@@ -10,10 +10,11 @@ let controller: LabController;
 let snapshot = detail();
 let posts: Array<{ url: string; body: Record<string, unknown> }>;
 let send: (url: string, body: Record<string, unknown>) => Promise<Response>;
+let downloads: Array<[string, string]>;
 beforeEach(() => {
-  vi.useFakeTimers(); posts = []; snapshot = detail();
+  vi.useFakeTimers(); posts = []; snapshot = detail(); downloads = [];
   let keys = 0;
-  controller = new LabController(() => ++keys === 1 ? "same-key" : `new-key-${keys}`); controller.scope("root", 1);
+  controller = new LabController(() => ++keys === 1 ? "same-key" : `new-key-${keys}`, (name, content) => { downloads.push([name, content]); }); controller.scope("root", 1);
   send = async () => json({ run: snapshot.run, command: command(), observation: snapshot.observation });
   setLabFetch(async (url, init) => {
     if (init?.method === "POST") {
@@ -231,6 +232,8 @@ describe("confirmed Lab state", () => {
   });
 });
 
+const truth = { filename: "labrun-one-simulation-ground-truth.json", label: "Simulation ground truth (仿真真值)", content: '{"reward":987654.321987}\n' };
+
 describe("Lab evidence and terminal controls", () => {
   it("exports once while pending, defaults to sensor evidence, and keeps exact versions", async () => {
     await ready();
@@ -241,10 +244,23 @@ describe("Lab evidence and terminal controls", () => {
     expect(posts).toEqual([{ url: "/api/v1/frames/root/lab/runs/labrun-one/export", body: { include_evaluation: false } }]);
     held.resolve(json(exported())); await pending;
     expect(controller.state.value.exported).toMatchObject({ loading: false, error: "", result: exported() });
-    send = async () => json(exported({ include_evaluation: true }));
+    send = async () => json(exported({ include_evaluation: true, ground_truth: truth }));
     await controller.exportRun(true);
     expect(posts[1]?.body).toEqual({ include_evaluation: true });
     expect(controller.state.value.exported?.result?.include_evaluation).toBe(true);
+  });
+
+  it("downloads opted-in truth to this computer and never keeps it in state", async () => {
+    await ready();
+    send = async () => json(exported({ include_evaluation: true, ground_truth: truth }));
+    await controller.exportRun(true);
+    expect(downloads).toEqual([[truth.filename, truth.content]]);
+    expect(controller.state.value.exported).toMatchObject({ loading: false, error: "", truthDownloaded: true });
+    expect(JSON.stringify(controller.state.value)).not.toContain("987654.321987");
+    send = async () => json(exported());
+    await controller.exportRun();
+    expect(downloads).toHaveLength(1);
+    expect(controller.state.value.exported?.truthDownloaded).toBe(false);
   });
 
   it("keeps export errors honest and rejects responses for another run or opt-in", async () => {
@@ -252,7 +268,8 @@ describe("Lab evidence and terminal controls", () => {
     for (const result of [
       json({ error: "capture unavailable" }, 503), json(exported({ run_id: "other-run" })), json(exported({ include_evaluation: true })),
       json(exported({ artifacts: [{ ...exported().artifacts[0]!, version_id: "" }] })),
-      json(exported({ artifacts: [{ ...exported().artifacts[0]!, kind: "simulation_ground_truth" }] })),
+      // Truth that was not requested is refused, never downloaded.
+      json(exported({ ground_truth: truth })),
     ]) {
       send = async () => result;
       await controller.exportRun();

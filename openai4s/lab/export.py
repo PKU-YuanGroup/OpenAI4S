@@ -3,7 +3,12 @@
 The adapter holds the Store lock while taking this snapshot and committing it.
 ``commit`` owns file publication and returns a verified, exact Artifact version.
 Every export deliberately creates new versions; observations retain their first
-export reference. No arrays or evaluation values enter the returned envelope.
+export reference. No arrays enter the returned envelope.
+
+Simulation ground truth is never committed: an Artifact lives in the session
+workspace, where the agent can read it (CONTRACT §3.9). Only a person's
+workbench request (``include_evaluation``) receives it, inline in that one
+response, for the browser to download.
 """
 
 from __future__ import annotations
@@ -152,9 +157,11 @@ def export_run(
                 ]
             )
     save("observations_csv", "observations.csv", buffer.getvalue())
+    ground_truth = None
     if include_evaluation:
         evaluations = ledger.list_evaluations(run_id, limit=2**63 - 1)
-        # This is the sole opt-in boundary. Never inline it in the reply/report.
+        # The sole opt-in boundary: returned to the requesting person only,
+        # never committed and never written into the report.
         summary = [
             {
                 key: row.get(key)
@@ -170,10 +177,10 @@ def export_run(
             }
             for row in evaluations
         ]
-        save(
-            "simulation_ground_truth",
-            "simulation-ground-truth.json",
-            _json(
+        ground_truth = {
+            "filename": f"{run_id}-simulation-ground-truth.json",
+            "label": "Simulation ground truth (仿真真值)",
+            "content": _json(
                 {
                     "label": "Simulation ground truth (仿真真值)",
                     "mode": "simulation",
@@ -182,7 +189,7 @@ def export_run(
                 }
             )
             + "\n",
-        )
+        }
     ledger.attach_observation_artifacts(
         run_id,
         {
@@ -215,14 +222,16 @@ def export_run(
         "",
     ]
     for item in artifacts:
-        label = (
-            "Simulation ground truth (仿真真值)"
-            if item["kind"] == "simulation_ground_truth"
-            else item["kind"]
-        )
         report.append(
-            f'- {label}: [{item["filename"]}](/api/v1/artifacts/versions/{item["version_id"]}) · SHA-256 `{item["checksum"]}`'
+            f'- {item["kind"]}: [{item["filename"]}](/api/v1/artifacts/versions/{item["version_id"]}) · SHA-256 `{item["checksum"]}`'
         )
+    if ground_truth is not None:
+        report += [
+            "",
+            "Simulation ground truth (仿真真值) was delivered to the person who "
+            "requested this export as a separate download. It is not stored in "
+            "this session.",
+        ]
     report += [
         "",
         "## Recorded observation associations",
@@ -235,10 +244,13 @@ def export_run(
         "",
     ]
     save("report", "report.md", "\n".join(report))
-    return {
+    result = {
         "run_id": run_id,
         "include_evaluation": include_evaluation,
         "command_count": len(commands),
         "observation_count": len(observations),
         "artifacts": artifacts,
     }
+    if ground_truth is not None:
+        result["ground_truth"] = ground_truth
+    return result

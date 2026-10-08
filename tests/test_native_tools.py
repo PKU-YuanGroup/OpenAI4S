@@ -50,6 +50,7 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
         "remote_gpu_status",
         "lab_list",
         "lab_observe",
+        "lab_export",
         "compute_status",
         "compute_result",
         "compute_cancel",

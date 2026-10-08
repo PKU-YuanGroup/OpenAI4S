@@ -220,11 +220,8 @@ class LabStopTool(_LabTool):
 
 class LabExportTool(_LabTool):
     name = host_method = "lab_export"
-    description = "Export recorded simulation actions, sensor JSON/CSV and a report as exact Artifact versions. Each export creates new versions; existing observation references remain immutable. Evaluation is excluded unless include_evaluation is explicitly true, creating a labelled simulation-ground-truth file. Never executes or replays commands."
-    parameters = {
-        "properties": {**_RUN, "include_evaluation": {"type": "boolean"}},
-        "required": ["run_id"],
-    }
+    description = "Export recorded simulation actions, sensor JSON/CSV and a report as exact Artifact versions. Each export creates new versions; existing observation references remain immutable. Simulation ground truth is never exported to the agent. Never executes or replays commands."
+    parameters = {"properties": {**_RUN}, "required": ["run_id"]}
     read_only = False
     requires_approval = True
     writes_files = True

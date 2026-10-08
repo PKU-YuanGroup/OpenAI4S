@@ -120,11 +120,9 @@ class _Lab:
         """Stop this session's simulation run without waiting for approval."""
         return self._call("lab_stop", [{"run_id": run_id, "reason": reason}])
 
-    def export(self, run_id: str, include_evaluation: bool = False) -> dict[str, Any]:
-        """Export recorded evidence as exact versions; truth is strictly opt-in."""
-        return self._call(
-            "lab_export", [{"run_id": run_id, "include_evaluation": include_evaluation}]
-        )
+    def export(self, run_id: str) -> dict[str, Any]:
+        """Export recorded evidence as exact versions; never simulation truth."""
+        return self._call("lab_export", [{"run_id": run_id}])
 
     def commands(
         self, run_id: str, *, after_seq: int = 0, limit: int = 50

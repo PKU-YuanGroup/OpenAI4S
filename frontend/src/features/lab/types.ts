@@ -236,11 +236,18 @@ export interface EventPage {
 
 /** Files are immutable Artifact versions; evaluation is present only after opt-in. */
 export interface ExportArtifact {
-  kind: "actions" | "observations_json" | "observations_csv" | "report" | "simulation_ground_truth";
+  kind: "actions" | "observations_json" | "observations_csv" | "report";
   artifact_id: string;
   version_id: string;
   filename: string;
   checksum: string;
+}
+
+/** Simulation truth for the requesting person only; never stored in the session. */
+export interface GroundTruthDownload {
+  filename: string;
+  label: string;
+  content: string;
 }
 
 export interface ExportResult {
@@ -249,6 +256,7 @@ export interface ExportResult {
   command_count: number;
   observation_count: number;
   artifacts: ExportArtifact[];
+  ground_truth?: GroundTruthDownload;
 }
 
 export interface ReplayEntry {

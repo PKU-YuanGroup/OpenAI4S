@@ -1974,13 +1974,10 @@
     }
   },
   {
-    "description": "Export recorded simulation actions, sensor JSON/CSV and a report as exact Artifact versions. Each export creates new versions; existing observation references remain immutable. Evaluation is excluded unless include_evaluation is explicitly true, creating a labelled simulation-ground-truth file. Never executes or replays commands.",
+    "description": "Export recorded simulation actions, sensor JSON/CSV and a report as exact Artifact versions. Each export creates new versions; existing observation references remain immutable. Simulation ground truth is never exported to the agent. Never executes or replays commands.",
     "name": "lab_export",
     "parameters": {
       "properties": {
-        "include_evaluation": {
-          "type": "boolean"
-        },
         "run_id": {
           "maxLength": 256,
           "minLength": 1,

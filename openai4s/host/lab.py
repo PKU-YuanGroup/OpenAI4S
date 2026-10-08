@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Callable
 
-from openai4s.lab.models import ErrorCode, LabCaller, LabError
+from openai4s.lab.models import CommandOrigin, ErrorCode, LabCaller, LabError
 from openai4s.lab.ports import LabManagerPort
 
 
@@ -110,6 +110,16 @@ class LabService:
                 ):
                     raise LabError(
                         ErrorCode.INVALID_PARAMETERS, "Invalid Lab export arguments"
+                    )
+                if spec.get("include_evaluation") and (
+                    caller.origin is not CommandOrigin.MANUAL_UI
+                ):
+                    # Simulation truth never enters an agent's reach
+                    # (CONTRACT §3.9): only a person, from the workbench, may
+                    # download it, and it is never stored in the session.
+                    raise LabError(
+                        ErrorCode.INVALID_PARAMETERS,
+                        "Simulation ground truth is available only from the workbench",
                     )
                 if self.exporter is None:
                     return unavailable()

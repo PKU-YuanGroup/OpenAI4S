@@ -167,8 +167,8 @@ export function ResultsView({ state }: { state: LabState }) {
           event.preventDefault();
           void openViewer({ id: artifact.artifact_id, version_id: artifact.version_id, filename: artifact.filename, root_frame_id: state.rootId });
         }}>{artifact.filename} · {artifact.version_id}</a>
-        {artifact.kind === "simulation_ground_truth" && <strong class="lab-notice"> · {labT("groundTruth")}</strong>}
       </li>)}</ul>
+      {exported.truthDownloaded && <p class="lab-notice" role="status">{labT("groundTruthDownloaded")}</p>}
     </>}
     <h3>{labT("replay")}</h3><p class="lab-muted">{labT("replayReadOnly")}</p>
     <button type="button" disabled={!!replay?.loading} onClick={() => void lab.loadReplay()}>{labT(replay?.loading ? "replayLoading" : replay ? "replayReload" : "replay")}</button>

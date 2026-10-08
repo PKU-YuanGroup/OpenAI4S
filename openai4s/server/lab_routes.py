@@ -257,10 +257,22 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
         elif name == "lab.export":
             body = _body(self, {"include_evaluation"})
             service = LabService(lambda: manager, lambda: caller)
-            service.exporter = lambda actor, run_id, include: export_for_session(
-                runner, actor, run_id, include
-            )
+            refusals: list[GatewayError] = []
+
+            def exporter(actor: LabCaller, run_id: str, include: bool) -> dict:
+                # LabService reduces foreign exceptions to a generic soft
+                # failure. Keep a workspace refusal's own status (409 busy,
+                # 423 rollback, 404 session) for the HTTP reply.
+                try:
+                    return export_for_session(runner, actor, run_id, include)
+                except GatewayError as exc:
+                    refusals.append(exc)
+                    raise
+
+            service.exporter = exporter
             result = service.call("export", {"run_id": match.group(2), **body})
+            if refusals:
+                raise refusals[0]
             if "error" in result:
                 raise LabError(ErrorCode(result["error_kind"]), result["error"])
         else:
@@ -297,16 +309,20 @@ def export_for_session(
     from .artifacts import _PinnedUploadDirectory, _PinnedUploadFile
 
     store = runner.store
-    scope = store.resolve_frame_scope(caller.root_frame_id)
-    st = session or runner._state(caller.root_frame_id, scope["project_id"])
-    runner.require_session_writable(caller.root_frame_id, "exporting Lab evidence")
-    lease = (
-        st.trusted_capture.external_mutation()
-        if execution_bound is None
-        else st.trusted_capture.foreground_mutation(execution_bound=execution_bound)
-    )
     events: list[dict[str, Any]] = []
     try:
+        scope = store.resolve_frame_scope(caller.root_frame_id)
+        st = session or runner._state(caller.root_frame_id, scope["project_id"])
+        runner.require_session_writable(caller.root_frame_id, "exporting Lab evidence")
+        # A person's export is an external Artifact mutation like an upload or
+        # an edit: it refuses (409) while a turn or execution owns the
+        # workspace instead of landing in that turn's Artifact delta, and it
+        # claims the live session state atomically against deletion.
+        lease = (
+            runner._external_artifact_mutation(frame_id=caller.root_frame_id)
+            if execution_bound is None
+            else st.trusted_capture.foreground_mutation(execution_bound=execution_bound)
+        )
         # Lock ordering matches Artifact writes: writer first, then Store. No
         # enclosing SQL transaction: each Artifact/ledger write commits itself.
         with lease, runner.artifacts.writer_transaction(), store._lock:
@@ -382,17 +398,26 @@ def export_for_session(
                 result = export_run(
                     store.lab, caller, run_id, include_evaluation, commit
                 )
-        for event in events:
-            runner.hub.broadcast(caller.root_frame_id, event)
         return result
     except LabError:
         raise
+    except GatewayError as exc:
+        # Busy (409), rollback (423) and missing-session (404) refusals keep
+        # their meaning: nothing was committed, so they are not a 503.
+        if execution_bound is None:
+            raise
+        raise LabError(ErrorCode.RESOURCE_BUSY, exc.message) from None
     except Exception:
         # No provider values, filesystem paths or raw database errors escape.
         raise LabError(
             ErrorCode.PERSISTENCE_UNAVAILABLE,
             "Lab export could not commit all evidence",
         ) from None
+    finally:
+        # Announce every version that was committed, even when a later file
+        # failed, so the workbench never misses an Artifact that exists.
+        for event in events:
+            runner.hub.broadcast(caller.root_frame_id, event)
 
 
 def _ui_observation(

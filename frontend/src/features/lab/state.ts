@@ -3,10 +3,22 @@ import * as api from "./api";
 import { labT } from "./copy";
 import type { Capability, Command, CommandRequest, CreateRequest, DetailResult, Device, ExportResult, Observation, ReplayEntry, Run } from "./types";
 
+export type DownloadFn = (filename: string, content: string) => void;
+/** Save text to this computer; simulation truth never becomes a session Artifact. */
+function browserDownload(filename: string, content: string): void {
+  const doc = (globalThis as { document?: Document }).document;
+  if (!doc || typeof URL.createObjectURL !== "function") throw new Error(labT("downloadUnavailable"));
+  const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+  const link = doc.createElement("a");
+  link.href = url; link.download = filename; link.rel = "noopener";
+  doc.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 type Intent = { kind: "create"; body: CreateRequest } | { kind: "execute"; runId: string; body: CommandRequest };
 export type Pending = { intent: Intent; sending: boolean; error: string; confirmed?: boolean };
 export type ReplayState = { runId: string; loading: boolean; error: string; entries: ReplayEntry[]; index: number };
-export type ExportState = { runId: string; loading: boolean; error: string; result: ExportResult | null };
+export type ExportState = { runId: string; loading: boolean; error: string; result: ExportResult | null; truthDownloaded?: boolean };
 export type LabState = {
   rootId: string | null; generation: number; devices: Device[]; runs: Run[];
   selectedRunId: string | null; detail: DetailResult | null;
@@ -83,7 +95,7 @@ export class LabController {
   // Uncertain requests survive leaving/reopening a session within this page. They are
   // never shown under another root, and only an explicit same-request retry sends them.
   private retained = new Map<string, Pending>();
-  constructor(private key: () => string = newKey) {}
+  constructor(private key: () => string = newKey, private download: DownloadFn = browserDownload) {}
 
   scope(rootId: string | null, generation: number, force = false): void {
     const s = this.state.value;
@@ -215,9 +227,16 @@ export class LabController {
     try {
       const result = await api.exportRun(root, run, includeEvaluation);
       if (!valid()) return;
-      if (result.run_id !== run || result.include_evaluation !== includeEvaluation || result.artifacts.some((artifact) =>
-        !artifact.artifact_id || !artifact.version_id || !includeEvaluation && artifact.kind === "simulation_ground_truth")) throw new Error(labT("invalidResult"));
-      this.patch({ exported: { runId: run, loading: false, error: "", result } });
+      const truth = result.ground_truth;
+      if (result.run_id !== run || result.include_evaluation !== includeEvaluation ||
+          result.artifacts.some((artifact) => !artifact.artifact_id || !artifact.version_id) ||
+          includeEvaluation !== !!truth ||
+          truth && (typeof truth.filename !== "string" || !truth.filename || typeof truth.content !== "string")) throw new Error(labT("invalidResult"));
+      // The truth is handed to the person and dropped: it is never kept in
+      // state, rendered, or stored where the agent could read it.
+      if (truth) this.download(truth.filename, truth.content);
+      const { ground_truth: _dropped, ...kept } = result;
+      this.patch({ exported: { runId: run, loading: false, error: "", result: kept, truthDownloaded: !!truth } });
     } catch (error) {
       if (valid()) this.patch({ exported: { runId: run, loading: false, error: message(error), result: exported?.result || null } });
     }

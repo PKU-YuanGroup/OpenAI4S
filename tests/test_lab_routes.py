@@ -743,15 +743,26 @@ def test_lab_export_rest_exact_evidence_and_explicit_truth(client):
     )
     status, explicit = client.request("POST", path, {"include_evaluation": True})
     assert status == 200
-    truth = _export_files(client, explicit)["simulation_ground_truth"]
-    assert "Simulation ground truth (仿真真值)" in truth
-    assert "987654.321987" in truth and "876543.219876" in truth
-    assert "987654.321987" not in json.dumps(explicit)
-    assert "simulation-ground-truth" in next(
-        a["filename"]
-        for a in explicit["artifacts"]
-        if a["kind"] == "simulation_ground_truth"
-    )
+    # Truth goes to the requesting person only, inline for the browser to
+    # download. It is never an Artifact in the session workspace, where the
+    # agent could read it (CONTRACT §3.9).
+    explicit_files = _export_files(client, explicit)
+    assert set(explicit_files) == {
+        "actions",
+        "observations_json",
+        "observations_csv",
+        "report",
+    }
+    truth = explicit["ground_truth"]
+    assert truth["filename"] == f"{run_id}-simulation-ground-truth.json"
+    assert "Simulation ground truth (仿真真值)" in truth["content"]
+    assert "987654.321987" in truth["content"] and "876543.219876" in truth["content"]
+    assert "separate download" in explicit_files["report"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    for written in st.workspace.rglob("*"):
+        if written.is_file():
+            content = written.read_bytes()
+            assert b"987654.321987" not in content and b"876543" not in content
     assert client.devices[0].executions == 1
 
 
@@ -896,8 +907,11 @@ def test_lab_export_permission_and_foreground_scope_are_required(client):
         pattern="*",
         decision="allow",
     )
-    with pytest.raises(RuntimeError, match="could not commit"):
+    # A refusal before anything was written is reported as such, not as a
+    # failed commit (review: every refusal used to read "could not commit").
+    with pytest.raises(RuntimeError, match="foreground execution scope") as caught:
         host.lab.export(run_id)
+    assert caught.value.error_kind == "resource_busy"
     assert not list(st.workspace.glob("lab-*-observations.json"))
 
 
@@ -990,3 +1004,140 @@ def test_lab_export_failed_verification_refuses_enclosing_capture(
                 st, 0, None, before, lambda event: None, language="native"
             )
     assert client.store.lab.latest_observation(run_id)["artifact_version_id"] is None
+
+
+def test_lab_export_refuses_while_a_turn_owns_the_workspace(client):
+    # Like upload/edit/restore, a person's export is refused while a turn or
+    # execution owns the workspace, instead of being registered twice and
+    # attributed to that turn's Artifact delta.
+    run_id = client.create()["run"]["run_id"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    path = f"{client.base}/runs/{run_id}/export"
+    assert st.turn_lock.acquire(blocking=False)
+    try:
+        status, body = client.request("POST", path)
+    finally:
+        st.turn_lock.release()
+    assert status == 409 and body["code"] == "trusted_capture_busy", body
+    assert not list(st.workspace.glob("lab-*"))
+    assert client.store.lab.latest_observation(run_id)["artifact_version_id"] is None
+    status, body = client.request("POST", path)
+    assert status == 200, body
+
+
+def test_the_agent_can_never_obtain_simulation_truth(client):
+    from openai4s.sdk.host import build_host
+    from openai4s.tools.registry import get_tool
+
+    run_id = client.create()["run"]["run_id"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    client.runner._ensure_runtime(st)
+    client.store.set_permission_rule(
+        scope="conversation",
+        scope_id=client.frame_id,
+        tool="lab_export",
+        pattern="*",
+        decision="allow",
+    )
+    tool = get_tool("lab_export")
+    assert "include_evaluation" not in tool.parameters["properties"]
+    assert tool.validation_error({"run_id": run_id, "include_evaluation": True})
+    # A raw host call bypassing the SDK still meets the tool's closed schema.
+    refused = st.dispatcher(
+        "lab_export", [{"run_id": run_id, "include_evaluation": True}]
+    )
+    assert refused["error_kind"] == "invalid_parameters"
+    host = build_host(st.dispatcher, mode="repl")
+    with pytest.raises(TypeError):
+        host.lab.export(run_id, include_evaluation=True)
+    assert not list(st.workspace.glob("lab-*"))
+
+
+def test_lab_export_waits_for_approval_before_writing_anything(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from openai4s.permissions import broker
+    from openai4s.tools.registry import get_tool
+
+    run_id = client.create()["run"]["run_id"]
+    st = client.runner._state(client.frame_id, client.project_id)
+    client.runner._ensure_runtime(st)
+    client.store.set_permission_rule(
+        scope="conversation",
+        scope_id=client.frame_id,
+        tool="lab_export",
+        pattern="*",
+        decision="ask",
+    )
+    pending, cancelled, events = Event(), Event(), []
+
+    def emit(event):
+        if event.get("type") == "await_permission":
+            events.append(event)
+            pending.set()
+
+    permission_broker = broker()
+    permission_broker.register_channel(
+        client.frame_id, emit, cancel_event=cancelled, store=client.store
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                get_tool("lab_export").invoke, st.dispatcher, {"run_id": run_id}
+            )
+            assert pending.wait(10)
+            assert not list(st.workspace.glob("lab-*"))
+            latest = client.store.lab.latest_observation(run_id)
+            assert latest["artifact_version_id"] is None
+            assert permission_broker.resolve(events[-1]["decision_id"], allow=False)
+            result = future.result(timeout=10)
+    finally:
+        cancelled.set()
+        permission_broker.unregister_channel(client.frame_id)
+    assert "Permission denied" in result["error"]
+    assert not list(st.workspace.glob("lab-*"))
+
+
+@pytest.mark.stubbed_backend
+def test_a_partial_export_still_announces_the_versions_it_committed(
+    client, monkeypatch
+):
+    run_id = client.create()["run"]["run_id"]
+    register = client.runner.artifacts.register_file
+
+    def fail_csv(session, path, *args, **kwargs):
+        if path.name.endswith("observations.csv"):
+            raise OSError("disk full")
+        return register(session, path, *args, **kwargs)
+
+    monkeypatch.setattr(client.runner.artifacts, "register_file", fail_csv)
+    client.hub.events.clear()
+    status, body = client.request("POST", f"{client.base}/runs/{run_id}/export")
+    assert status == 503 and body["code"] == "persistence_unavailable"
+    created = [
+        event
+        for _root, event in client.hub.events
+        if event.get("type") == "artifact_created"
+    ]
+    assert len(created) == 2, client.hub.events
+
+
+@pytest.mark.parametrize("origin", ["agent_tool", "host_sdk", "system"])
+def test_only_the_workbench_origin_may_request_truth(origin):
+    from openai4s.host.lab import LabService
+    from openai4s.lab.models import CommandOrigin, LabCaller
+
+    calls = []
+    caller = LabCaller("root", "root", None, CommandOrigin(origin), None, None)
+    service = LabService(lambda: object(), lambda: caller)
+    service.exporter = lambda *args: calls.append(args) or {"ok": True}
+    refused = service.call("export", {"run_id": "r", "include_evaluation": True})
+    assert refused["error_kind"] == "invalid_parameters"
+    assert "workbench" in refused["error"] and not calls
+    assert service.call("export", {"run_id": "r"}) == {"ok": True}
+    workbench = LabCaller("root", "root", None, CommandOrigin.MANUAL_UI, None, None)
+    service = LabService(lambda: object(), lambda: workbench)
+    service.exporter = lambda *args: calls.append(args) or {"ok": True}
+    assert service.call("export", {"run_id": "r", "include_evaluation": True})
+    assert calls[-1][2] is True
