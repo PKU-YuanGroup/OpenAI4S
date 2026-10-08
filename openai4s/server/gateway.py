@@ -3882,9 +3882,7 @@ class SessionRunner:
             manager = self._lab_manager
         try:
             exists = get_store(self.cfg.db_path).get_frame(root_frame_id) is not None
-        except (
-            Exception
-        ):  # noqa: BLE001 - a broken read must not mask the deletion error
+        except Exception:  # noqa: BLE001 - must not mask the deletion error
             exists = False
         if manager is not None and exists:
             manager.on_session_restored(root_frame_id)

@@ -285,8 +285,9 @@ def creation_refusal(runner: Any, root_frame_id: str) -> tuple[int, str] | None:
     """Why a run may not be created for this root now, or None.
 
     Shared by every entry point (REST and the session's tools/SDK), always
-    under that root's LabCreationGate, so session deletion cannot race an
-    opening provider from any of them.
+    under that root's LabCreationGate, so a deletion that has begun refuses
+    every later admission. An opening already admitted is not waited for:
+    the manager's tombstone for the deleted root discards it.
     """
     store = get_store(runner.cfg.db_path)
     with runner._lock:
