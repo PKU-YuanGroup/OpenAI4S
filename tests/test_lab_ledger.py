@@ -954,6 +954,40 @@ def test_a_success_resets_consecutive_failures(ledger):
     assert ok["run"]["consecutive_failures"] == 0
 
 
+def test_host_rejections_count_as_consecutive_failures(ledger):
+    # CONTRACT §7 counts failed AND rejected commands. The manager admits on
+    # this column, so a rejection recorded either way must move it.
+    ready(ledger)
+    ledger.insert_command(
+        command_input(
+            "c0", state="rejected", error_code="unsupported_action", error="no"
+        )
+    )
+    assert ledger.get_run("r1")["consecutive_failures"] == 1
+    ledger.insert_command(command_input("c-busy"))
+    assert ledger.transition_command(
+        "c-busy", to_state="rejected", error_code="resource_busy", error="busy"
+    )
+    assert ledger.get_run("r1")["consecutive_failures"] == 2
+    # Neither an admitted intent nor an unsuccessful CAS is a failure.
+    ledger.insert_command(command_input("c-admitted", request_hash="other"))
+    assert not ledger.transition_command(
+        "c-busy", to_state="rejected", error_code="resource_busy", error="busy"
+    )
+    assert ledger.get_run("r1")["consecutive_failures"] == 2
+    dispatched(ledger)
+    ok = ledger.record_receipt(
+        "c1", receipt=receipt(), observation=observation(), evaluation=None
+    )
+    assert ok["run"]["consecutive_failures"] == 0
+    # An ended run's counters are final.
+    ledger.end_run("r1", end_reason="stopped")
+    ledger.insert_command(
+        command_input("c-late", state="rejected", error_code="run_ended", error="x")
+    )
+    assert ledger.get_run("r1")["consecutive_failures"] == 0
+
+
 def test_only_simulation_runs_and_complete_rows_are_created(ledger, store):
     before = snapshot(store)
     assert_code("mode_mismatch", lambda: ledger.create_run(run_input(mode="physical")))

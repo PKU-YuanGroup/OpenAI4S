@@ -260,7 +260,9 @@ def test_budget_enforcement(rig, budget):
     if budget == "max_wall_ms":
         now[0] += 1
     elif budget == "max_consecutive_failures":
-        manager.execute(caller, command(run_id, operation="not_supported"))
+        rejected = manager.execute(caller, command(run_id, operation="not_supported"))
+        # The published counter is the one admission enforces (CONTRACT §7).
+        assert rejected["run"]["consecutive_failures"] == 1
     else:
         manager.execute(caller, command(run_id))
     refused = manager.execute(
@@ -270,8 +272,10 @@ def test_budget_enforcement(rig, budget):
     assert devices[0].executions == (
         1 if budget in {"max_steps", "max_commands"} else 0
     )
-    if budget == "max_steps":
-        assert refused["run"]["end_reason"] == "budget_exhausted" and devices[0].closed
+    # Every budget is monotone, so exhausting any of them ends the run and
+    # releases its provider instead of refusing commands forever.
+    assert refused["run"]["status"] == "ended"
+    assert refused["run"]["end_reason"] == "budget_exhausted" and devices[0].closed
 
 
 def test_scope_recovery_and_observe_never_touch_device(rig, monkeypatch):

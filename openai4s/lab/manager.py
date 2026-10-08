@@ -472,25 +472,6 @@ class LabManager:
             "observation": self._observation(run, full=full),
         }
 
-    def _policy_run(self, run: dict[str, Any]) -> dict[str, Any]:
-        # W1 counts receipt failures but not host rejections. Derive the full
-        # trailing failure count from durable command history for admission.
-        failures = 0
-        after = 0
-        while True:
-            commands = self._ledger.list_commands(
-                run["run_id"], after_seq=after, limit=200
-            )
-            if not commands:
-                break
-            for command in commands:
-                if command["state"] in {"failed", "rejected"}:
-                    failures += 1
-                elif command["state"] == "succeeded":
-                    failures = 0
-            after = commands[-1]["seq"]
-        return {**run, "consecutive_failures": failures}
-
     def execute(self, caller: LabCaller, request: dict[str, Any]) -> dict[str, Any]:
         self._writable(caller)
         req = CommandRequest.from_dict(request)
@@ -509,10 +490,11 @@ class LabManager:
                 if normalized is not None
                 else sha256_hex(canonical_json(req.to_dict()))
             )
+            # The ledger's consecutive_failures counts host rejections and
+            # failed receipts alike (CONTRACT §7), so admission and the
+            # published run counter read the same number.
             error = error or admission_error(
-                self._policy_run(run),
-                Budgets.from_dict(run["budgets"]),
-                self._clock_ms(),
+                run, Budgets.from_dict(run["budgets"]), self._clock_ms()
             )
             live = self._live.get(req.run_id)
             if live is not None and live.needs_restart:
@@ -548,9 +530,10 @@ class LabManager:
             if not inserted:
                 return self._result(req.run_id, command_id)
             if error is not None:
-                if error.code is ErrorCode.BUDGET_EXHAUSTED and error.details == {
-                    "budget": "max_steps"
-                }:
+                if error.code is ErrorCode.BUDGET_EXHAUSTED:
+                    # Every budget is monotone: none can recover without a
+                    # command being admitted. End the run and release its
+                    # provider slot instead of refusing commands forever.
                     self._ledger.end_run(req.run_id, end_reason="budget_exhausted")
                     # Close outside the metadata lock below.
                 else:

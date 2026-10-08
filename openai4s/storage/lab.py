@@ -580,9 +580,14 @@ class LabLedger:
                 completed_at=now if state in _COMMAND_TERMINAL else None,
             )
             self._insert("lab_commands", values)
+            # CONTRACT §7: a host-side rejection counts toward the
+            # consecutive-failure budget exactly like a failed receipt, so the
+            # published counter is the one admission enforces.
+            failed = int(state == "rejected" and run["status"] not in _RUN_TERMINAL)
             self._conn.execute(
-                "UPDATE lab_runs SET command_count=command_count+1,updated_at=? WHERE run_id=?",
-                (now, run["run_id"]),
+                "UPDATE lab_runs SET command_count=command_count+1,"
+                "consecutive_failures=consecutive_failures+?,updated_at=? WHERE run_id=?",
+                (failed, now, run["run_id"]),
             )
             self._event(run, "command", command["command_id"], state, now)
             return self._command(command["command_id"]), True
@@ -626,6 +631,12 @@ class LabLedger:
             ):
                 return False
             command = self._command(command_id)
+            if to_state == "rejected":
+                self._conn.execute(
+                    "UPDATE lab_runs SET consecutive_failures=consecutive_failures+1,"
+                    "updated_at=? WHERE run_id=? AND status NOT IN ('ended','failed')",
+                    (now, command["run_id"]),
+                )
             self._event(command, "command", command_id, to_state, now)
             return True
 
