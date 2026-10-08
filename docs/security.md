@@ -831,6 +831,70 @@ a real kernel and the real Host RPC with only `openai4s.llm._post_json`
 replaced, and assert on the URL and headers that seam was handed; each refusal
 has a control that still dispatches.
 
+### Lab simulation provider boundary / Lab 仿真 provider 边界
+
+Lab supports only `simulation` and does not discover or control physical
+hardware. ChemGymRL runs in a separate process for each run, with a separate
+provider interpreter, isolated Python flags (`-I -B`), a child-environment
+allowlist and a private run directory. Third-party science packages are loaded
+inside that provider, not the stdlib Host. Protocol input uses a private,
+non-inheritable descriptor; third-party output cannot become protocol frames.
+
+`OPENAI4S_KERNEL_SANDBOX=auto|enforce|off` also applies to Lab. The provider
+requests raw-network denial and private writable run/cache paths through the
+shared OS sandbox. `enforce` refuses an unavailable boundary; `auto` can
+continue degraded, and `off` supplies no OS confinement. The actual posture is
+recorded in descriptor `assumptions` and shown by `lab smoke` and doctor.
+`lab status` is read-only and reports `not_probed`; it is not sandbox proof.
+Provider packages and environment directories remain readable under the shared
+sandbox policy. See [configuration](configuration.md#lab-simulation-providers).
+
+Reward and exact material composition are evaluation truth, not observations.
+They stay in the separate evaluation ledger and are removed from public Lab
+projections; all six `lab_*` tables are denied to agent `host.query` SQL.
+Agent/UI observations contain only declared sensor channels. Provider errors
+publish bounded, value-redacted diagnostics rather than third-party exception
+values or raw output. These are application boundaries; they do not encrypt
+SQLite against the machine's owner.
+
+Agent and `host.lab` creation/execution use the normal approval envelope,
+with default `ask` rules. Manual Web controls express the user's own action;
+team-mode writes require the session owner. Stop requires no extra approval
+and remains scoped to the caller's session. Lab stop and agent cancellation
+are independent. Unknown outcomes are queried by command identity and are
+never automatically resent.
+
+The optional installer downloads the pinned ChemGymRL source into a separate
+environment. OpenAI4S ships its own adapter and metadata, not upstream source.
+ChemGymRL is GPL-3.0-or-later; process separation does not change that license.
+See the [source and license record](../openai4s_lab_provider/chemgymrl/SOURCE.md)
+and [Lab user guide](lab.md).
+
+Lab 只支持 `simulation`，不发现、不控制真实设备。每个 run 启动独立 ChemGymRL
+进程，使用独立 provider 解释器、`-I -B`、子进程环境白名单和私有 run 目录。第三方科学
+库在 provider 内加载，不进入标准库 Host。协议输入走不可继承的私有描述符，第三方输出
+不能变成协议帧。
+
+Lab 同样受 `OPENAI4S_KERNEL_SANDBOX=auto|enforce|off` 控制。provider 通过共用的
+OS 沙箱请求禁止原始网络，并把可写范围约束到私有 run/cache 路径。`enforce` 在边界
+不可用时拒绝；`auto` 可降级继续；`off` 不提供 OS 隔离。实际状态写入描述的
+`assumptions`，也由 `lab smoke` 和 doctor 报告。`lab status` 只读并标为 `not_probed`，
+不能证明沙箱有效。provider 包与环境目录按共用沙箱策略保持可读，详见
+[配置](configuration.md#lab-simulation-providers)。
+
+奖励与材料精确组成属于评价真值，不是观测。它们保存在独立评价账本中，并从公开 Lab
+投影中移除；全部六张 `lab_*` 表都禁止 agent 经 `host.query` SQL 读取。
+agent/UI 只得到清单声明的传感器通道。provider 错误只发布有界、值已脱敏的诊断，
+不输出第三方异常值或原始输出。这些是应用边界，不是针对本机所有者的 SQLite 加密。
+
+agent 和 `host.lab` 的创建/执行经过正常批准流程，默认规则为 `ask`；手动 Web 控件
+表达用户本人的操作，团队模式写入要求会话所有者。停止不另需批准，但仅能作用于调用方
+会话；停止 Lab 与取消 agent 相互独立。未知结果按命令身份查询，绝不自动重发。
+
+可选安装器把固定提交的 ChemGymRL 下载到独立环境。OpenAI4S 分发自身适配器和
+元数据，不附带上游源码。ChemGymRL 为 GPL-3.0-or-later，进程隔离不改变许可，详见
+[来源与许可记录](../openai4s_lab_provider/chemgymrl/SOURCE.md)及 [Lab 中文指南](lab.md#中文用户指南)。
+
 ### BYOC provider import-time secret scrubbing
 
 The remote-compute worker (`openai4s_compute_provider`) loads an untrusted-ish provider shim (`skills/remote-compute-<id>/provider.py`) by file path. To keep a provider's **top-level module code** from reading credential-shaped or known-prefix environment variables, scrubbing is two-staged. This is a **name-based heuristic** — a secret stored in a variable whose name matches neither rule below is **not** scrubbed:

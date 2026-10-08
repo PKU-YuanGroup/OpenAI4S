@@ -554,6 +554,7 @@ jobs:
           # rather than weakening the default for everyone.
           OPENAI4S_SECRET_STORE: plaintext
           OPENAI4S_NOTEBOOK_REPL: "1"
+          OPENAI4S_LAB_ENABLE_TOY: "1"
           OPENAI4S_HOST: 127.0.0.1
           OPENAI4S_PORT: "8760"
         run: |
@@ -581,6 +582,9 @@ jobs:
           # breadth pass — session, artifact, consent, cancel, recovery — and
           # it runs in every engine.
           if [ "${{ matrix.engine }}" = "chromium" ]; then
+            # The Lab loop uses real provider processes and approvals with a
+            # local scripted LLM. Keep it inside this daemon's trap lifetime.
+            node tests/browser_lab.mjs
             node tests/browser_smoke.mjs
             # The admission fault case: the POST reaches the daemon and
             # succeeds, the response is destroyed on the way back, and the page

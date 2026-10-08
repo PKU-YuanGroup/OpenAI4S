@@ -34,6 +34,7 @@ cp -a ~/.openai4s ~/.openai4s-before-next
 | --- | --- |
 | 33 | `redact_judge_host_call_args`：改写 `host_call_log` 里已经落盘的 `judge` 行 |
 | 34 | `background_exec_receipts`：新增表；已有行保持原样 |
+| 35 | `lab_ledger`：新增六张按会话归属的 Lab 表及索引 |
 
 schema 35（`lab_ledger`）只新增六张 `lab_*` 表及其索引，不改动已有行。六张表全部列入 `QUERY_DENYLIST`，agent SQL 无法读取；其中的行随会话一起删除。
 
@@ -125,6 +126,13 @@ CLI 和子代理的后台 job 不入库，结果里是 `persistent: false`。Web
 `docs/response-schemas.json` 已按真实响应重新采集。
 
 ### 工作台
+
+右侧面板新增 **Lab** 页签，用于纯仿真的萃取实验。用
+`openai4s lab setup chemgymrl` 安装可选 CPython 3.10 provider，运行
+`openai4s lab status` 检查后，打开会话的 Lab 页签。agent/`host.lab` 的创建和执行
+默认需要批准；手动控件直接表达用户操作。Lab 停止实验与 agent 的 Stop 相互独立。
+daemon 重启会结束失去 provider 的 run，不重放实验。安装、传感器限制与可选上游的
+GPL 许可见 [Lab 中文指南](lab.md#中文用户指南)。
 
 从用户消息创建分支的按钮，只在会话能力 `fork_from_message` 为真时显示。工作台把 `documentElement.dataset.forkFromMessage` 设为 `on` 或 `off`，`.msg-fork` 规则按这个标志显示按钮。请求是 `POST /frames/{fid}/branches/fork`，正文恰好是 `{from_message_id}`。没有检查点的消息返回 409。按钮保持不可用，并显示服务器原句；消息为空时显示「无法从此问题创建分支。」新分支有自己的工作区，在你激活之前保持不激活。
 

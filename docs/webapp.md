@@ -18,6 +18,9 @@ scripts.
 - **Live turns** — prose, semantic steps, permission pauses, plans, Cell output,
   and artifacts stream over WebSocket. Reopening an in-flight session replays
   the bounded current-turn buffer; completed history reloads over REST.
+- **Simulation Lab** — a session-scoped extraction bench with optional ChemGymRL
+  profiles, manual steps, agent/`host.lab` approval, sensor observations and
+  durable command records. See [the Lab walkthrough](lab.md).
 - **Versioned artifacts** — file writes become immutable versions with
   provenance, environment snapshots, lineage, annotations, priority, edit,
   rename, restore, and artifact/project ZIP download. The current viewers cover
@@ -166,6 +169,37 @@ Completed Notebook outputs use confirmed immutable Artifact versions for figures
 JSON tables use the union of object fields in first-seen order, including keys after the 5000-row display limit; at most 100 columns are shown. Mixed arrays retain their complete original JSON instead of dropping rows. Raw text over 300000 characters starts with a marked preview; expanding uses the already fetched text and the download retains the full version.
 
 Customize Diagnostics opens with a passive status read. Explicit checks show each item's status, detail and remedy, with known model/network/compute settings links. Facts are collapsed and limited to 20 keys and 500 characters per item. Results retain their receipt time across settings tabs; a successful configuration save marks them for rechecking. A failed check keeps prior results visibly marked as previous. Suggestions are never executed automatically.
+
+## Lab simulation bench / Lab 仿真实验台
+
+Install the optional provider with `openai4s lab setup chemgymrl`, then open a
+session and the **Lab** tab in the right dock. Choose a device, profile and
+optional seed, then **Create experiment**. An unavailable device shows an
+installation hint. Select an advertised operation and parameter setting and
+use **Run one step**; the pane shows the current revision, model time, sensor
+quality, and each command's request, receipt and observation. Colors represent
+layer sensor intensity, not material identities; composition is unknown.
+
+Manual controls do not open an approval card. Agent and Python `host.lab`
+create/execute calls use the configured approval policy (default `ask`). For
+an uncertain command, **Query result** reconciles that same command; **Retry
+same request** preserves the request's idempotency key after a transport
+failure. Neither means a new experimental step. Reconnection and page reload
+read confirmed server records; daemon restart ends lost provider sessions
+rather than reconstructing their simulation state. The Lab experiment control
+stops the simulation session; the agent's **Stop** is a separate operation.
+See [Lab](lab.md) for the SDK, limits, outcome rules and installation details.
+
+先用 `openai4s lab setup chemgymrl` 安装可选 provider，再打开会话与右侧 **Lab**
+页签。选择设备、profile 和可选 seed，点**创建实验**；设备不可用时会给出安装提示。
+选择已公布的操作与参数档位后点**执行单步**。面板显示 revision、模型时间、传感器质量，
+以及每条命令的请求、回执和观测。颜色表示液层传感器强度，不代表材料种类，组成仍是未知。
+
+手动操作不再弹批准卡；agent 和 Python `host.lab` 的创建/执行按已配置的批准策略处理
+（默认 `ask`）。未知命令用**查询结果**核实原命令；传输失败后的**重试原请求**保留原有
+幂等键，两者都不表示新的一步。重连和重载读取服务器确认记录；daemon 重启会结束丢失
+provider 的会话，不重建仿真状态。Lab 的实验控制停止仿真会话，agent 的 **Stop** 是
+独立操作。SDK、限额、结果规则和安装细节见 [Lab 中文指南](lab.md#中文用户指南)。
 
 ## Notebook lifecycle and truthfulness
 

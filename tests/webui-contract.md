@@ -15,8 +15,14 @@ rewrite must keep green:
 Source files (sorted):
 - `tests/browser_admission_fault.mjs`
 - `tests/browser_auth.mjs`
+- `tests/browser_editor.mjs`
+- `tests/browser_files.mjs`
+- `tests/browser_judgment.mjs`
+- `tests/browser_lab.mjs`
 - `tests/browser_matrix.mjs`
+- `tests/browser_navigation.mjs`
 - `tests/browser_p1_controls.mjs`
+- `tests/browser_provenance.mjs`
 - `tests/browser_sandbox_preview.mjs`
 - `tests/browser_smoke.mjs`
 - `tests/browser_stage0_acceptance.mjs`
@@ -37,7 +43,7 @@ Sorted by name.
 | `ACTION_TIMELINE_OVERVIEW_WIDTH` | browser_smoke.mjs | 2 |
 | `ACTION_TIMELINE_PAGE_SIZE` | browser_smoke.mjs | 4 |
 | `ACTION_TIMELINE_ROW_HEIGHT` | browser_smoke.mjs | 4 |
-| `S` | browser_admission_fault.mjs, browser_p1_controls.mjs, browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | 209 |
+| `S` | browser_admission_fault.mjs, browser_files.mjs, browser_navigation.mjs, browser_p1_controls.mjs, browser_provenance.mjs, browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | 232 |
 | `actionTimelineEntryKey` | browser_smoke.mjs | 1 |
 | `actionTimelineOverviewVisualExtent` | browser_smoke.mjs | 1 |
 | `actionTimelineSelectionOverlaps` | browser_smoke.mjs | 1 |
@@ -55,22 +61,25 @@ Sorted by name.
 | `fetchRecentMessages` | browser_p1_controls.mjs | 1 |
 | `forgetAdmission` | browser_admission_fault.mjs | 3 |
 | `highlightTraceback` | browser_smoke.mjs | 1 |
+| `hint` | browser_provenance.mjs | 1 |
 | `loadAnnotations` | browser_admission_fault.mjs | 1 |
+| `loadArtifacts` | browser_smoke.mjs | 1 |
 | `loadEarlierActionTimeline` | browser_smoke.mjs | 1 |
+| `loadWorkbenchState` | browser_p1_controls.mjs | 2 |
 | `mergeDelegationChildEvent` | browser_p1_controls.mjs | 2 |
 | `notebookExportLink` | browser_p1_controls.mjs | 1 |
 | `onEvent` | browser_p1_controls.mjs, browser_smoke.mjs | 17 |
 | `openAnnotations` | browser_admission_fault.mjs | 3 |
-| `openConversation` | browser_admission_fault.mjs, browser_matrix.mjs, browser_smoke.mjs | 11 |
-| `openCust` | browser_p1_controls.mjs, browser_smoke.mjs | 4 |
+| `openConversation` | browser_admission_fault.mjs, browser_editor.mjs, browser_files.mjs, browser_lab.mjs, browser_matrix.mjs, browser_navigation.mjs, browser_p1_controls.mjs, browser_provenance.mjs, browser_smoke.mjs | 29 |
+| `openCust` | browser_judgment.mjs, browser_p1_controls.mjs, browser_smoke.mjs | 5 |
 | `openKetcher` | browser_sandbox_preview.mjs | 1 |
 | `openPinPop` | browser_admission_fault.mjs | 1 |
-| `openViewer` | browser_smoke.mjs | 3 |
+| `openViewer` | browser_editor.mjs, browser_provenance.mjs, browser_smoke.mjs | 7 |
 | `outstandingAdmissions` | browser_admission_fault.mjs | 16 |
 | `parseTable` | browser_smoke.mjs | 1 |
 | `reconcileLastAdmission` | browser_admission_fault.mjs | 2 |
 | `rememberAdmission` | browser_admission_fault.mjs | 1 |
-| `renderActionTimeline` | browser_smoke.mjs | 8 |
+| `renderActionTimeline` | browser_p1_controls.mjs, browser_smoke.mjs | 11 |
 | `renderAttachmentProblems` | browser_p1_controls.mjs | 1 |
 | `renderComposerRefChips` | browser_p1_controls.mjs | 2 |
 | `renderDelegationPanel` | browser_p1_controls.mjs | 2 |
@@ -79,19 +88,21 @@ Sorted by name.
 | `renderPins` | browser_admission_fault.mjs | 1 |
 | `renderRefProblems` | browser_p1_controls.mjs | 1 |
 | `renderSheet` | browser_smoke.mjs | 1 |
+| `renderViewer` | browser_editor.mjs, browser_provenance.mjs | 4 |
 | `sanitizeActionTimeline` | browser_smoke.mjs | 3 |
 | `searchResultHttpUrl` | browser_smoke.mjs | 5 |
 | `selectExecFrame` | browser_p1_controls.mjs | 2 |
 | `send` | browser_admission_fault.mjs | 4 |
-| `setActiveTab` | browser_smoke.mjs, browser_stage0_acceptance.mjs | 6 |
+| `setActiveTab` | browser_p1_controls.mjs, browser_smoke.mjs, browser_stage0_acceptance.mjs | 9 |
+| `showDashboard` | browser_navigation.mjs, browser_provenance.mjs | 2 |
 | `steerDelegationChild` | browser_p1_controls.mjs | 1 |
-| `t` | browser_p1_controls.mjs, browser_smoke.mjs | 9 |
+| `t` | browser_editor.mjs, browser_p1_controls.mjs, browser_provenance.mjs, browser_smoke.mjs | 12 |
 | `telemetryRow` | browser_matrix.mjs | 2 |
 | `timelineOverviewTimeToX` | browser_smoke.mjs | 2 |
 | `toggleActionTimelineTurn` | browser_smoke.mjs | 1 |
 | `updateActionTimelineLedger` | browser_smoke.mjs | 1 |
 
-Total names: 57
+Total names: 62
 
 ## 1a. Context-specific and optional globals
 
@@ -155,12 +166,15 @@ listed under write paths so F-05 can keep object identity.
 | `actionTimelineSelectedGroupId` | 7 | 5 | 0 | browser_smoke.mjs | `actionTimelineSelectedGroupId` |
 | `activeTab` | 2 | 0 | 0 | browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | — |
 | `annotations` | 1 | 1 | 0 | browser_admission_fault.mjs | `annotations` |
-| `artifacts` | 3 | 1 | 0 | browser_admission_fault.mjs, browser_p1_controls.mjs | `artifacts` |
-| `branchState` | 1 | 0 | 0 | browser_smoke.mjs | — |
-| `currentId` | 18 | 0 | 0 | browser_p1_controls.mjs, browser_smoke.mjs | — |
+| `artifacts` | 5 | 1 | 0 | browser_admission_fault.mjs, browser_files.mjs, browser_p1_controls.mjs | `artifacts` |
+| `branchState` | 4 | 0 | 0 | browser_p1_controls.mjs, browser_smoke.mjs | — |
+| `currentId` | 26 | 0 | 0 | browser_files.mjs, browser_navigation.mjs, browser_p1_controls.mjs, browser_provenance.mjs, browser_smoke.mjs | — |
 | `delegationState` | 5 | 6 | 0 | browser_p1_controls.mjs | `delegationState` |
-| `dockArtifact` | 1 | 0 | 0 | browser_smoke.mjs | — |
+| `dockArtifact` | 4 | 0 | 0 | browser_provenance.mjs, browser_smoke.mjs | — |
+| `filesScope` | 1 | 0 | 0 | browser_files.mjs | — |
+| `project` | 4 | 0 | 0 | browser_files.mjs, browser_navigation.mjs, browser_provenance.mjs | — |
 | `provMode` | 1 | 0 | 0 | browser_stage1_trusted_delivery.mjs | — |
+| `provSub` | 1 | 1 | 0 | browser_provenance.mjs | `provSub` |
 | `running` | 0 | 2 | 0 | browser_p1_controls.mjs | `running` |
 | `workbenchErrors` | 2 | 2 | 0 | browser_smoke.mjs | `workbenchErrors` |
 
@@ -187,8 +201,13 @@ Sorted.
 | Selector | Files | Occurrences |
 | --- | --- | --- |
 | `#b` | browser_team_mode.mjs | 1 |
-| `#cancel-btn` | browser_p1_controls.mjs | 2 |
-| `#composer` | browser_admission_fault.mjs, browser_matrix.mjs, browser_p1_controls.mjs | 9 |
+| `#back-home` | browser_navigation.mjs | 1 |
+| `#cancel-btn` | browser_lab.mjs, browser_p1_controls.mjs | 8 |
+| `#composer` | browser_admission_fault.mjs, browser_lab.mjs, browser_matrix.mjs, browser_p1_controls.mjs | 11 |
+| `#composer-ac` | browser_p1_controls.mjs | 1 |
+| `#composer-ac .ac-list .ac-item` | browser_p1_controls.mjs | 1 |
+| `#composer-ac > .ac-hint` | browser_p1_controls.mjs | 1 |
+| `#composer-hint` | browser_navigation.mjs, browser_provenance.mjs | 2 |
 | `#composer-refs` | browser_p1_controls.mjs | 1 |
 | `#conv-title` | browser_smoke.mjs | 4 |
 | `#cross-frame` | browser_sandbox_preview.mjs | 2 |
@@ -200,31 +219,36 @@ Sorted.
 | `#cust-content` | browser_p1_controls.mjs | 2 |
 | `#cust-content .cust-h` | browser_p1_controls.mjs | 2 |
 | `#cust-content .prof-row` | browser_p1_controls.mjs | 2 |
-| `#cust-content[aria-busy="false"]` | browser_p1_controls.mjs | 1 |
-| `#cust:not(.hidden)` | browser_p1_controls.mjs | 2 |
+| `#cust-content[aria-busy="false"]` | browser_judgment.mjs, browser_p1_controls.mjs | 2 |
+| `#cust:not(.hidden)` | browser_p1_controls.mjs, browser_smoke.mjs | 3 |
 | `#customize-btn` | browser_p1_controls.mjs, browser_smoke.mjs | 2 |
 | `#dash-import-session` | browser_smoke.mjs | 1 |
 | `#dash-new-project` | browser_smoke.mjs | 3 |
 | `#dash-new-project svg > *` | browser_smoke.mjs | 1 |
 | `#dash-project-search` | browser_smoke.mjs | 1 |
 | `#dash-projects` | browser_smoke.mjs | 1 |
+| `#dash-projects .d-row` | browser_navigation.mjs, browser_provenance.mjs | 4 |
 | `#dash-projects .d-row:not(.skeleton-row)` | browser_smoke.mjs | 1 |
 | `#dash-sessions` | browser_smoke.mjs | 1 |
 | `#dash-sessions .d-row:not(.skeleton-row), #dash-sessions .dash-empty` | browser_smoke.mjs | 1 |
-| `#dashboard` | browser_smoke.mjs | 1 |
+| `#dashboard` | browser_navigation.mjs, browser_smoke.mjs | 3 |
 | `#dashboard .lang-btn[data-lang="*"]` | browser_smoke.mjs | 2 |
 | `#dashboard [data-i18n="dash.col.projects"]` | browser_smoke.mjs | 1 |
 | `#dock-files` | browser_stage1_trusted_delivery.mjs | 1 |
 | `#dock-files:not(.hidden)` | browser_stage1_trusted_delivery.mjs | 1 |
+| `#dock-lab` | browser_lab.mjs, browser_matrix.mjs | 2 |
 | `#dock-notebook` | browser_smoke.mjs | 1 |
 | `#dock-notebook .nb-repl` | browser_stage0_acceptance.mjs | 1 |
 | `#dock-notebook .nb-repl-input` | browser_stage0_acceptance.mjs | 1 |
 | `#dock-notebook .nb-status` | browser_stage0_acceptance.mjs | 3 |
+| `#dock-notebook .notebook-cell` | browser_smoke.mjs | 1 |
 | `#dock-notebook:not(.hidden)` | browser_smoke.mjs, browser_stage0_acceptance.mjs | 2 |
-| `#dock-tabs .dock-tab` | browser_smoke.mjs | 5 |
+| `#dock-tabs .dock-tab` | browser_editor.mjs, browser_lab.mjs, browser_matrix.mjs, browser_smoke.mjs | 12 |
 | `#dock-timeline` | browser_smoke.mjs | 1 |
+| `#dock-timeline .branch-row:not(.current)` | browser_p1_controls.mjs | 2 |
+| `#dock-timeline .delegation-panel` | browser_p1_controls.mjs | 1 |
 | `#dock-toggle` | browser_smoke.mjs | 1 |
-| `#dock-viewer` | browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | 5 |
+| `#dock-viewer` | browser_editor.mjs, browser_provenance.mjs, browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | 7 |
 | `#dock-viewer .renderer-noscript` | browser_sandbox_preview.mjs | 1 |
 | `#dock-viewer .renderer-source` | browser_smoke.mjs | 4 |
 | `#dock-viewer a[download]` | browser_smoke.mjs | 1 |
@@ -237,29 +261,42 @@ Sorted.
 | `#dock-viewer tr` | browser_smoke.mjs | 1 |
 | `#err` | browser_team_mode.mjs | 1 |
 | `#figure` | browser_sandbox_preview.mjs | 1 |
-| `#files-btn` | browser_stage1_trusted_delivery.mjs | 2 |
+| `#files-btn` | browser_editor.mjs, browser_files.mjs, browser_navigation.mjs, browser_provenance.mjs, browser_stage1_trusted_delivery.mjs | 11 |
 | `#heading` | browser_sandbox_preview.mjs | 4 |
 | `#ketcher-save` | browser_sandbox_preview.mjs | 1 |
 | `#ketcher-status` | browser_sandbox_preview.mjs | 2 |
-| `#messages` | browser_p1_controls.mjs, browser_smoke.mjs | 7 |
+| `#messages` | browser_lab.mjs, browser_p1_controls.mjs, browser_smoke.mjs | 9 |
 | `#messages .empty-session` | browser_smoke.mjs | 1 |
 | `#messages .msg.assistant .md a[href^="/api/v1/artifacts/"]` | browser_stage1_trusted_delivery.mjs | 1 |
 | `#meta` | browser_team_mode.mjs | 1 |
 | `#mobile-scrim:not(.hidden)` | browser_smoke.mjs | 2 |
 | `#modal-body > iframe` | browser_sandbox_preview.mjs | 1 |
 | `#navigate-app` | browser_sandbox_preview.mjs | 2 |
+| `#new-session` | browser_navigation.mjs, browser_smoke.mjs | 3 |
 | `#onboarding` | browser_auth.mjs | 1 |
 | `#p` | browser_team_mode.mjs | 1 |
+| `#proj-btn` | browser_navigation.mjs, browser_provenance.mjs | 2 |
+| `#proj-menu .proj-item` | browser_navigation.mjs, browser_provenance.mjs | 2 |
+| `#results-count` | browser_files.mjs | 2 |
 | `#results-list .a-name` | browser_stage1_trusted_delivery.mjs | 2 |
+| `#results-list .art` | browser_files.mjs | 2 |
+| `#results-list .art[data-artifact-id="*"]` | browser_provenance.mjs | 1 |
+| `#results-list .files-empty` | browser_files.mjs | 2 |
 | `#revision` | browser_sandbox_preview.mjs | 1 |
-| `#rightdock.collapsed` | browser_smoke.mjs | 3 |
+| `#rightdock.collapsed` | browser_lab.mjs, browser_matrix.mjs, browser_smoke.mjs | 5 |
 | `#rightdock:not(.collapsed)` | browser_smoke.mjs | 1 |
-| `#session-list .session` | browser_smoke.mjs | 1 |
+| `#send-btn` | browser_lab.mjs | 1 |
+| `#session-list .folder-name` | browser_navigation.mjs | 1 |
+| `#session-list .session` | browser_navigation.mjs, browser_smoke.mjs | 2 |
+| `#session-menu-btn` | browser_provenance.mjs | 1 |
+| `#session-more` | browser_navigation.mjs | 3 |
 | `#settings-gear` | browser_smoke.mjs | 1 |
+| `#sidebar` | browser_smoke.mjs | 1 |
 | `#sidebar-collapse` | browser_smoke.mjs | 1 |
 | `#sidebar-collapse svg > *` | browser_smoke.mjs | 1 |
 | `#sidebar-reopen` | browser_smoke.mjs | 3 |
 | `#stage0-completion-link-probe a` | browser_stage0_acceptance.mjs | 2 |
+| `#tab-new` | browser_navigation.mjs | 1 |
 | `#tabbar` | browser_smoke.mjs | 1 |
 | `#team-admin` | browser_team_mode.mjs | 2 |
 | `#team-admin-body` | browser_team_mode.mjs | 1 |
@@ -282,6 +319,7 @@ Sorted.
 | `.annot-pin[data-annotation-status]` | browser_admission_fault.mjs | 1 |
 | `.annot-pop .annot-btn.danger` | browser_admission_fault.mjs | 1 |
 | `.annot-pop-status[data-annotation-status]` | browser_admission_fault.mjs | 1 |
+| `.art[data-artifact-id="*"]` | browser_navigation.mjs | 7 |
 | `.branch-name` | browser_smoke.mjs | 3 |
 | `.branch-panel` | browser_smoke.mjs | 1 |
 | `.bubble` | browser_p1_controls.mjs | 2 |
@@ -295,12 +333,38 @@ Sorted.
 | `.cust-tab[data-tab="skills"]` | browser_p1_controls.mjs | 1 |
 | `.delegation-child` | browser_p1_controls.mjs | 3 |
 | `.delegation-child-controls button` | browser_p1_controls.mjs | 1 |
+| `.delegation-evidence` | browser_p1_controls.mjs | 1 |
+| `.delegation-evidence-row .dlg-chip.completed` | browser_p1_controls.mjs | 1 |
+| `.delegation-evidence-row .dlg-chip.warning` | browser_p1_controls.mjs | 1 |
+| `.delegation-evidence-scope` | browser_p1_controls.mjs | 1 |
 | `.dlg-chip` | browser_p1_controls.mjs | 2 |
 | `.dlg-frame-ref` | browser_p1_controls.mjs | 1 |
+| `.edit-acts .solid-btn` | browser_editor.mjs | 1 |
+| `.edit-recovery button` | browser_editor.mjs | 6 |
+| `.edit-status` | browser_editor.mjs | 2 |
+| `.editor-draft` | browser_editor.mjs | 6 |
+| `.editor-draft button` | browser_editor.mjs | 2 |
+| `.editor-drafts` | browser_editor.mjs | 1 |
+| `.files-empty` | browser_files.mjs | 3 |
+| `.files-filter-type` | browser_files.mjs, browser_navigation.mjs, browser_provenance.mjs | 7 |
+| `.files-index-note` | browser_files.mjs | 1 |
+| `.files-load-more` | browser_files.mjs | 8 |
+| `.files-origin [data-origin="*"]` | browser_files.mjs | 1 |
+| `.files-origin [data-origin="all"]` | browser_navigation.mjs, browser_provenance.mjs | 2 |
+| `.files-scope [data-scope="frame"]` | browser_files.mjs, browser_navigation.mjs, browser_provenance.mjs | 5 |
+| `.files-scope [data-scope="project"]` | browser_files.mjs | 2 |
+| `.files-search` | browser_files.mjs, browser_navigation.mjs, browser_provenance.mjs, browser_stage1_trusted_delivery.mjs | 7 |
 | `.history-load-status` | browser_smoke.mjs | 4 |
 | `.history-load-status button` | browser_smoke.mjs | 2 |
 | `.history-load-status[data-history-state="partial"]` | browser_smoke.mjs | 2 |
 | `.history-load-status[data-history-state="partial"], .history-load-status[data-history-state="error"]` | browser_smoke.mjs | 1 |
+| `.lab-command` | browser_lab.mjs | 1 |
+| `.lab-connection` | browser_lab.mjs | 3 |
+| `.lab-metrics` | browser_lab.mjs | 1 |
+| `.lab-metrics span` | browser_lab.mjs | 1 |
+| `.lab-setup select` | browser_matrix.mjs | 1 |
+| `.lab-stop` | browser_lab.mjs | 1 |
+| `.msg-fork-btn[data-fork-message-id="*"]` | browser_p1_controls.mjs | 1 |
 | `.msg-ref-chip` | browser_p1_controls.mjs | 2 |
 | `.msg-ref-chip.unresolved` | browser_p1_controls.mjs | 1 |
 | `.msg.user` | browser_p1_controls.mjs | 2 |
@@ -308,22 +372,26 @@ Sorted.
 | `.nb-exec-frame` | browser_p1_controls.mjs | 1 |
 | `.nb-exec-note` | browser_p1_controls.mjs | 1 |
 | `.nb-exec-title` | browser_p1_controls.mjs | 1 |
-| `.nb-tray` | browser_smoke.mjs | 2 |
+| `.nb-tray` | browser_lab.mjs, browser_matrix.mjs, browser_smoke.mjs | 4 |
 | `.nb-variables-empty` | browser_smoke.mjs | 1 |
-| `.nbc-artifact-error` | browser_smoke.mjs | 1 |
+| `.nbc-artifact-error` | browser_smoke.mjs | 2 |
 | `.nbc-artifact-error button` | browser_smoke.mjs | 1 |
+| `.nbc-artifact-error:not([data-before-retry])` | browser_smoke.mjs | 1 |
 | `.nbc-error` | browser_p1_controls.mjs | 1 |
 | `.notebook-cell` | browser_p1_controls.mjs | 1 |
+| `.notebook-cell.flash` | browser_provenance.mjs | 2 |
 | `.notebook-cell[data-producing-cell="*"]` | browser_smoke.mjs | 2 |
 | `.perm-allow` | browser_smoke.mjs | 1 |
 | `.perm-card.resolved` | browser_smoke.mjs | 1 |
-| `.perm-card:not(.resolved)` | browser_smoke.mjs | 1 |
-| `.prov-body` | browser_stage1_trusted_delivery.mjs | 1 |
-| `.prov-body .prov-card` | browser_stage1_trusted_delivery.mjs | 1 |
-| `.prov-card` | browser_stage1_trusted_delivery.mjs | 1 |
+| `.perm-card:not(.resolved)` | browser_lab.mjs, browser_smoke.mjs | 2 |
+| `.perm-scope .perm-seg` | browser_lab.mjs | 1 |
+| `.prov-body` | browser_provenance.mjs, browser_stage1_trusted_delivery.mjs | 8 |
+| `.prov-body .prov-card` | browser_provenance.mjs, browser_stage1_trusted_delivery.mjs | 2 |
+| `.prov-body .prov-retry` | browser_provenance.mjs | 5 |
+| `.prov-card` | browser_provenance.mjs, browser_stage1_trusted_delivery.mjs | 2 |
 | `.prov-dlitem` | browser_p1_controls.mjs | 1 |
-| `.prov-link` | browser_stage1_trusted_delivery.mjs | 1 |
-| `.prov-subtab` | browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | 3 |
+| `.prov-link` | browser_provenance.mjs, browser_stage1_trusted_delivery.mjs | 4 |
+| `.prov-subtab` | browser_provenance.mjs, browser_smoke.mjs, browser_stage1_trusted_delivery.mjs | 6 |
 | `.recovery-action-list` | browser_smoke.mjs | 1 |
 | `.recovery-action-list button` | browser_smoke.mjs | 1 |
 | `.ref-problems` | browser_p1_controls.mjs | 1 |
@@ -332,6 +400,7 @@ Sorted.
 | `.s-json` | browser_p1_controls.mjs | 2 |
 | `.s-meta` | browser_p1_controls.mjs | 1 |
 | `.s-out-tgl` | browser_p1_controls.mjs | 1 |
+| `.session[data-frame-id="*"] .s-name` | browser_navigation.mjs | 2 |
 | `.team-admin-table` | browser_team_mode.mjs | 1 |
 | `.timeline-inspector` | browser_smoke.mjs | 3 |
 | `.timeline-inspector[data-group-id="ledger-a"]` | browser_smoke.mjs | 1 |
@@ -391,20 +460,41 @@ Sorted.
 | `[data-diagnostics-results] time` | browser_smoke.mjs | 3 |
 | `[data-diagnostics-run]` | browser_smoke.mjs | 7 |
 | `[data-diagnostics-stale]` | browser_smoke.mjs | 1 |
-| `[data-f16-provenance="1"]` | browser_smoke.mjs | 1 |
+| `[data-f16-provenance="1"]` | browser_provenance.mjs, browser_smoke.mjs | 2 |
 | `[data-f16-provenance="back"]` | browser_smoke.mjs | 1 |
+| `[data-focus-key="branch-activate:*"]` | browser_lab.mjs | 2 |
 | `[data-i18n="conv.jumpLastLabel"]` | browser_smoke.mjs | 1 |
+| `[data-judgment-ack-cap]` | browser_judgment.mjs | 1 |
+| `[data-judgment-ack]` | browser_judgment.mjs | 1 |
+| `[data-judgment-cap="skill_suggest"]` | browser_judgment.mjs | 2 |
+| `[data-judgment-cap="skill_suggest"] .toggle` | browser_judgment.mjs | 1 |
+| `[data-judgment-cap="skill_suggest"][data-judgment-cap-on="on"]` | browser_judgment.mjs | 1 |
+| `[data-judgment-clear-key]` | browser_judgment.mjs | 1 |
+| `[data-judgment-disclosure]` | browser_judgment.mjs | 3 |
+| `[data-judgment-key-state]` | browser_judgment.mjs | 2 |
+| `[data-judgment-key]` | browser_judgment.mjs | 1 |
+| `[data-judgment-master]` | browser_judgment.mjs | 1 |
+| `[data-judgment-master] .toggle` | browser_judgment.mjs | 1 |
+| `[data-judgment-save-key]` | browser_judgment.mjs | 1 |
+| `[data-judgment-test-result]` | browser_judgment.mjs | 3 |
+| `[data-judgment-test]` | browser_judgment.mjs | 2 |
+| `[data-judgment]` | browser_judgment.mjs | 1 |
+| `[data-read-error="sessions"]` | browser_navigation.mjs | 3 |
+| `[data-read-error="sessions"] button` | browser_navigation.mjs | 1 |
 | `[data-variable-inspector="python"]` | browser_smoke.mjs | 1 |
 | `[title], [placeholder], [aria-label], input, textarea` | browser_smoke.mjs | 1 |
 | `a[download="*"]` | browser_smoke.mjs | 1 |
 | `body.sidebar-collapsed` | browser_smoke.mjs | 3 |
 | `button.outline-btn` | browser_auth.mjs | 1 |
 | `button.toggle` | browser_matrix.mjs | 2 |
+| `details.delegation-evidence-list[data-details-key="delegation-evidence:c-checked"]` | browser_p1_controls.mjs | 2 |
 | `img.nbc-fig` | browser_smoke.mjs | 3 |
+| `navigation-evidence.txt` | browser_navigation.mjs | 2 |
 | `script[src*="/static/dist/"]` | browser_smoke.mjs | 1 |
 | `table.nbc-table` | browser_smoke.mjs | 1 |
+| `textarea.edit-area` | browser_editor.mjs | 1 |
 
-Total selectors: 217
+Total selectors: 293
 
 ```json
 {
@@ -431,8 +521,11 @@ Total selectors: 217
     "fetchRecentMessages",
     "forgetAdmission",
     "highlightTraceback",
+    "hint",
     "loadAnnotations",
+    "loadArtifacts",
     "loadEarlierActionTimeline",
+    "loadWorkbenchState",
     "mergeDelegationChildEvent",
     "notebookExportLink",
     "onEvent",
@@ -455,11 +548,13 @@ Total selectors: 217
     "renderPins",
     "renderRefProblems",
     "renderSheet",
+    "renderViewer",
     "sanitizeActionTimeline",
     "searchResultHttpUrl",
     "selectExecFrame",
     "send",
     "setActiveTab",
+    "showDashboard",
     "steerDelegationChild",
     "t",
     "telemetryRow",
@@ -488,15 +583,23 @@ Total selectors: 217
     "currentId",
     "delegationState",
     "dockArtifact",
+    "filesScope",
+    "project",
     "provMode",
+    "provSub",
     "running",
     "workbenchErrors"
   ],
   "s_star_occurrences": 127,
   "selectors": [
     "#b",
+    "#back-home",
     "#cancel-btn",
     "#composer",
+    "#composer-ac",
+    "#composer-ac .ac-list .ac-item",
+    "#composer-ac > .ac-hint",
+    "#composer-hint",
     "#composer-refs",
     "#conv-title",
     "#cross-frame",
@@ -516,6 +619,7 @@ Total selectors: 217
     "#dash-new-project svg > *",
     "#dash-project-search",
     "#dash-projects",
+    "#dash-projects .d-row",
     "#dash-projects .d-row:not(.skeleton-row)",
     "#dash-sessions",
     "#dash-sessions .d-row:not(.skeleton-row), #dash-sessions .dash-empty",
@@ -524,13 +628,17 @@ Total selectors: 217
     "#dashboard [data-i18n=\"dash.col.projects\"]",
     "#dock-files",
     "#dock-files:not(.hidden)",
+    "#dock-lab",
     "#dock-notebook",
     "#dock-notebook .nb-repl",
     "#dock-notebook .nb-repl-input",
     "#dock-notebook .nb-status",
+    "#dock-notebook .notebook-cell",
     "#dock-notebook:not(.hidden)",
     "#dock-tabs .dock-tab",
     "#dock-timeline",
+    "#dock-timeline .branch-row:not(.current)",
+    "#dock-timeline .delegation-panel",
     "#dock-toggle",
     "#dock-viewer",
     "#dock-viewer .renderer-noscript",
@@ -556,18 +664,31 @@ Total selectors: 217
     "#mobile-scrim:not(.hidden)",
     "#modal-body > iframe",
     "#navigate-app",
+    "#new-session",
     "#onboarding",
     "#p",
+    "#proj-btn",
+    "#proj-menu .proj-item",
+    "#results-count",
     "#results-list .a-name",
+    "#results-list .art",
+    "#results-list .art[data-artifact-id=\"*\"]",
+    "#results-list .files-empty",
     "#revision",
     "#rightdock.collapsed",
     "#rightdock:not(.collapsed)",
+    "#send-btn",
+    "#session-list .folder-name",
     "#session-list .session",
+    "#session-menu-btn",
+    "#session-more",
     "#settings-gear",
+    "#sidebar",
     "#sidebar-collapse",
     "#sidebar-collapse svg > *",
     "#sidebar-reopen",
     "#stage0-completion-link-probe a",
+    "#tab-new",
     "#tabbar",
     "#team-admin",
     "#team-admin-body",
@@ -590,6 +711,7 @@ Total selectors: 217
     ".annot-pin[data-annotation-status]",
     ".annot-pop .annot-btn.danger",
     ".annot-pop-status[data-annotation-status]",
+    ".art[data-artifact-id=\"*\"]",
     ".branch-name",
     ".branch-panel",
     ".bubble",
@@ -603,12 +725,38 @@ Total selectors: 217
     ".cust-tab[data-tab=\"skills\"]",
     ".delegation-child",
     ".delegation-child-controls button",
+    ".delegation-evidence",
+    ".delegation-evidence-row .dlg-chip.completed",
+    ".delegation-evidence-row .dlg-chip.warning",
+    ".delegation-evidence-scope",
     ".dlg-chip",
     ".dlg-frame-ref",
+    ".edit-acts .solid-btn",
+    ".edit-recovery button",
+    ".edit-status",
+    ".editor-draft",
+    ".editor-draft button",
+    ".editor-drafts",
+    ".files-empty",
+    ".files-filter-type",
+    ".files-index-note",
+    ".files-load-more",
+    ".files-origin [data-origin=\"*\"]",
+    ".files-origin [data-origin=\"all\"]",
+    ".files-scope [data-scope=\"frame\"]",
+    ".files-scope [data-scope=\"project\"]",
+    ".files-search",
     ".history-load-status",
     ".history-load-status button",
     ".history-load-status[data-history-state=\"partial\"]",
     ".history-load-status[data-history-state=\"partial\"], .history-load-status[data-history-state=\"error\"]",
+    ".lab-command",
+    ".lab-connection",
+    ".lab-metrics",
+    ".lab-metrics span",
+    ".lab-setup select",
+    ".lab-stop",
+    ".msg-fork-btn[data-fork-message-id=\"*\"]",
     ".msg-ref-chip",
     ".msg-ref-chip.unresolved",
     ".msg.user",
@@ -620,14 +768,18 @@ Total selectors: 217
     ".nb-variables-empty",
     ".nbc-artifact-error",
     ".nbc-artifact-error button",
+    ".nbc-artifact-error:not([data-before-retry])",
     ".nbc-error",
     ".notebook-cell",
+    ".notebook-cell.flash",
     ".notebook-cell[data-producing-cell=\"*\"]",
     ".perm-allow",
     ".perm-card.resolved",
     ".perm-card:not(.resolved)",
+    ".perm-scope .perm-seg",
     ".prov-body",
     ".prov-body .prov-card",
+    ".prov-body .prov-retry",
     ".prov-card",
     ".prov-dlitem",
     ".prov-link",
@@ -640,6 +792,7 @@ Total selectors: 217
     ".s-json",
     ".s-meta",
     ".s-out-tgl",
+    ".session[data-frame-id=\"*\"] .s-name",
     ".team-admin-table",
     ".timeline-inspector",
     ".timeline-inspector[data-group-id=\"ledger-a\"]",
@@ -701,16 +854,37 @@ Total selectors: 217
     "[data-diagnostics-stale]",
     "[data-f16-provenance=\"1\"]",
     "[data-f16-provenance=\"back\"]",
+    "[data-focus-key=\"branch-activate:*\"]",
     "[data-i18n=\"conv.jumpLastLabel\"]",
+    "[data-judgment-ack-cap]",
+    "[data-judgment-ack]",
+    "[data-judgment-cap=\"skill_suggest\"]",
+    "[data-judgment-cap=\"skill_suggest\"] .toggle",
+    "[data-judgment-cap=\"skill_suggest\"][data-judgment-cap-on=\"on\"]",
+    "[data-judgment-clear-key]",
+    "[data-judgment-disclosure]",
+    "[data-judgment-key-state]",
+    "[data-judgment-key]",
+    "[data-judgment-master]",
+    "[data-judgment-master] .toggle",
+    "[data-judgment-save-key]",
+    "[data-judgment-test-result]",
+    "[data-judgment-test]",
+    "[data-judgment]",
+    "[data-read-error=\"sessions\"]",
+    "[data-read-error=\"sessions\"] button",
     "[data-variable-inspector=\"python\"]",
     "[title], [placeholder], [aria-label], input, textarea",
     "a[download=\"*\"]",
     "body.sidebar-collapsed",
     "button.outline-btn",
     "button.toggle",
+    "details.delegation-evidence-list[data-details-key=\"delegation-evidence:c-checked\"]",
     "img.nbc-fig",
+    "navigation-evidence.txt",
     "script[src*=\"/static/dist/\"]",
-    "table.nbc-table"
+    "table.nbc-table",
+    "textarea.edit-area"
   ]
 }
 ```

@@ -429,3 +429,61 @@ one step and closes, without opening the database or printing evaluation truth.
 Per-session caches have names under `<data_dir>/lab/cache/` resolving inside the
 private run directory; both are removed on close. Ordinary provider package and
 environment directories remain readable under the shared OS sandbox policy.
+
+Open the authenticated Web workbench, select a session, then choose **Lab** in
+the right dock. Lab session operations are daemon-only; `openai4s run` cannot
+own simulation runs. Set provider variables in the daemon's environment;
+`OPENAI4S_LAB_ENABLE_TOY` must be exactly `1` to add the toy device. No Lab
+feature flag or LLM key is needed for manual steps. Agent-driven steps require
+the session's normal model configuration and approval policy.
+
+The server enforces these defaults/ceilings; they are not environment variables:
+
+| Limit / 限额 | Default and ceiling / 默认与上限 |
+| --- | --- |
+| Live providers per daemon / 每个 daemon 的活 provider | 4, including opening/closing sessions / 含正在打开或关闭的会话 |
+| `max_steps` | Profile limit; both ChemGymRL profiles and toy use 50 / 按 profile，两种 ChemGymRL 与 toy 均为 50 |
+| `max_commands` | 200 attempts, including refusals / 200 次尝试，含拒绝 |
+| `max_wall_ms` | 1,800,000 ms (30 minutes) from run creation / 自创建起 30 分钟 |
+| `max_consecutive_failures` | 3 failed/rejected commands / 连续 3 条失败或拒绝 |
+| `idle_timeout_ms` | 3,600,000 ms (60 minutes) without a command / 60 分钟无命令 |
+
+The `budgets` object on create accepts only tighter values; omitted fields use
+their ceilings. Step, command, wall-time and failure budgets are checked on the
+next command's admission. Exhaustion rejects that command, ends the run with
+`budget_exhausted` and closes the provider. Idle expiry is checked on relevant
+manager calls, not by a precise timer; observation/history-only reads do not
+perform cleanup. Stop waits up to five seconds for an in-flight receipt before
+closing; an unresolved command remains `outcome_unknown`, never assumed
+successful. See [Lab](lab.md) for the usage and outcome rules.
+
+#### 中文：安装、入口与限额
+
+`openai4s lab setup chemgymrl [--python PATH] [--dry-run]` 新建独立 CPython 3.10
+代际，安装带哈希锁定的运行时与固定提交的上游源码，逐字节核对两份 portable 清单后，
+才原子替换 `<data_dir>/lab/providers/chemgymrl/current`。`--rollback` 选择上一个已验证
+代际。失败代际与 `setup.log` 保留；安装被打断后若留下 `.setup-lock`，应检查其中 PID，
+确认没有安装进程仍在运行后再移除。
+
+- `OPENAI4S_LAB_CHEMGYMRL_PYTHON` 显式覆盖 provider 解释器；无效覆盖会拒绝运行，
+  不回退。未指定时只使用已验证的 current 代际，ChemGymRL 永不借用 daemon 解释器。
+- `OPENAI4S_LAB_ENABLE_TOY=1` 才注册纯标准库的 `toy.extractor.01`，供离线仿真和
+  E2E 使用，默认关闭；toy 使用 daemon 解释器。
+- `OPENAI4S_KERNEL_SANDBOX=auto|enforce|off` 同样控制 Lab。Lab 不启用原始网络放行；
+  `auto` 降级会在运行描述的 assumptions、smoke 和 doctor 中报告，`off` 无 OS 隔离。
+  `lab status` 不启动进程，只报告配置与 `not_probed`。
+
+`lab status` 列出设备、profile 和环境代际；`lab smoke [--profile WaterOilExtract-v0]`
+以 seed 42 打开、执行一步并关闭，不打开数据库，也不打印评价真值。每个 run 的缓存名
+位于 `<data_dir>/lab/cache/`，解析到私有 run 目录内部，两者在关闭时一并清除。共用 OS
+沙箱策略仍允许读取普通 provider 包与环境目录。
+
+在 daemon 环境中设置变量，打开带认证的工作台 URL，选择会话与右侧 **Lab**。
+会话实验只在 daemon 可用，`openai4s run` 不能拥有仿真 run。手动单步无需额外 Lab
+开关或 LLM key；agent 操作使用会话的正常模型配置和批准策略。
+
+上表是后端默认值与上限，不是环境变量。创建的 `budgets` 只能收紧，省略的项取上限。
+步数、命令数、总时间与连续失败预算在下一条命令准入时检查；耗尽时拒绝该命令，以
+`budget_exhausted` 结束 run 并关闭 provider。空闲超时在相关管理器调用时检查，不是
+精确计时器；只读观测/历史不会触发清理。停止最多等在途回执五秒再关闭，仍无法确认的
+命令保留 `outcome_unknown`，不能推断成功。用法与结果规则见 [Lab 中文指南](lab.md#中文用户指南)。

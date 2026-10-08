@@ -67,6 +67,7 @@ old data.
 | --- | --- |
 | 33 | `redact_judge_host_call_args`: rewrite stored `judge` rows in `host_call_log` |
 | 34 | `background_exec_receipts`: add the table; existing rows stay as they are |
+| 35 | `lab_ledger`: add six session-scoped Lab tables and indexes |
 
 Schema 35 (`lab_ledger`) only adds six `lab_*` tables and their indexes;
 existing rows stay unchanged. All six tables are in `QUERY_DENYLIST`, so
@@ -287,6 +288,14 @@ Steps stored before the upgrade are not rewritten.
 `docs/response-schemas.json` was captured again from real responses.
 
 ### Workbench
+
+The right dock adds a **Lab** tab for simulation-only extraction runs. Install
+its optional CPython 3.10 provider with `openai4s lab setup chemgymrl`, inspect
+`openai4s lab status`, then open a session's Lab tab. Agent/`host.lab` create and
+execute calls default to approval; manual controls are direct user actions.
+Lab's experiment stop and the agent's Stop remain separate. Restarting the
+daemon ends lost provider runs instead of replaying them. See [Lab](lab.md)
+for installation, sensor limits and the optional upstream GPL license.
 
 The control that branches from a user message is shown only when the session
 capability `fork_from_message` is true. The workbench sets
