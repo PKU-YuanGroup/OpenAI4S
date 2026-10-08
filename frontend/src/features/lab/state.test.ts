@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { effect } from "@preact/signals";
 import { setLabFetch as setFetch } from "./api";
 import { LabController } from "./state";
 import { command, deferred, descriptor, detail, device, json, observation, run } from "./fixtures";
@@ -50,7 +51,10 @@ describe("confirmed Lab state", () => {
     });
     const pending = controller.refresh(); await vi.advanceTimersByTimeAsync(0);
     const stop = controller.stop(); await vi.advanceTimersByTimeAsync(0);
-    held.resolve(json(detail())); await Promise.all([stop, pending]);
+    const statuses: string[] = [];
+    const dispose = effect(() => { statuses.push(controller.state.value.detail?.run.status || "none"); });
+    held.resolve(json(detail())); await Promise.all([stop, pending]); dispose();
+    expect(statuses).not.toContain("ready");
     expect(controller.state.value.detail?.run.status).toBe("ended");
   });
 
