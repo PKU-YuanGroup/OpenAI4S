@@ -298,3 +298,92 @@ def test_comparison_refuses_unmatched_evidence_without_numbers(difference):
     matched = compare({"fixed": [first], "random": [deepcopy(first)]})
     assert matched["comparable"] is True
     assert matched["policies"]["fixed"]["goal_met_rate"] == 1
+
+
+def test_development_probe_runs_seeded_cohorts_and_counts_actual_dispatches(tmp_path):
+    from scripts.lab_evaluate import run_probe
+
+    def probe():
+        return run_probe(work_dir=tmp_path, episodes=2, seed=7, max_steps=20)
+
+    first, second = probe(), probe()
+    assert first["execution_boundary"] == "device_contract_probe"
+    assert first["comparison"]["comparable"] is True
+    for policy, results in first["results_by_policy"].items():
+        for index, result in enumerate(results):
+            again = second["results_by_policy"][policy][index]
+            assert result["goal_met"] == again["goal_met"]
+            assert result["action_count"] == again["action_count"]
+            assert result["comparability"] == again["comparability"]
+            assert result["rejected_illegal_action_count"] == 0
+            assert result["duplicate_dispatch_count"] == 0
+            assert result["outcome_unknown"]["historical_count"] == 0
+            assert result["evidence_completeness"]["fraction"] == 1
+            assert not result["evidence_issues"]
+
+
+@pytest.mark.external
+@pytest.mark.parametrize("profile", ["WaterOilExtract-v0", "GenWurtzExtract-v2"])
+def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(profile):
+    import json
+    import os
+    from pathlib import Path
+    from uuid import uuid4
+
+    from openai4s.lab.policies import FixedRulePolicy, run_episode
+    from scripts.lab_evaluate import _ProbeEnv, _ProviderDevice
+
+    python = os.environ.get("OPENAI4S_LAB_CHEMGYMRL_PYTHON")
+    if not python:
+        pytest.skip("Set OPENAI4S_LAB_CHEMGYMRL_PYTHON to the pinned isolated provider")
+    directory = (
+        Path(__file__).resolve().parents[2] / "_data/W2-C/external" / uuid4().hex
+    )
+    port = _ProviderDevice("chemgymrl", python, directory)
+    env = None
+    try:
+        env = _ProbeEnv(port, profile, 42, 50)
+        target = next(
+            c["value"] for c in env.observe()["channels"] if c["name"] == "targets"
+        )
+        goal = default_goal(profile, target=target)
+        episode = run_episode(FixedRulePolicy(), env, max_steps=50)
+        env.finish()
+        result = env.evaluate(goal)
+        assert episode["stop_reason"] == "ended"
+        assert episode["steps"] == 13
+        assert result["rejected_illegal_action_count"] == 0
+        assert not result["evidence_issues"]
+        # Independent reconstruction of the pinned upstream reward accounting:
+        # reward.py:16-39,74-95, scoped to the explicitly chosen collection vessel.
+        vessels = env._evaluations[-1]["ground_truth"]["vessels"]
+        moles = next(v["moles"] for v in vessels if v["resource_id"] == "beaker_1")
+        paired = min(moles.get("Na", 0), moles.get("Cl", 0)) if target == "NaCl" else 0
+        q = moles.get(target, 0) + paired
+        excluded = (
+            {"H2O"} if profile == "WaterOilExtract-v0" else {"C6H14", "diethyl ether"}
+        )
+        total = sum(v for k, v in moles.items() if k not in excluded) - paired
+        expected_purity = q / total if total > 0 else None
+        expected_met = (
+            q >= 0.5 and expected_purity is not None and expected_purity >= 0.9
+        )
+        assert result["goal_met"] is expected_met
+        assert result["target_amount_mol"] == pytest.approx(q)
+        assert (
+            result["purity"] == pytest.approx(expected_purity)
+            if expected_purity is not None
+            else result["purity"] is None
+        )
+        assert result["rewards"]["initial_baseline"] == env._evaluations[0]["reward"]
+        assert result["rewards"]["step_sum"] == pytest.approx(
+            sum(e["reward"] for e in env._evaluations[1:])
+        )
+        (directory / "evaluation.json").write_text(
+            json.dumps(result, indent=2, allow_nan=False) + "\n"
+        )
+    finally:
+        if env is not None:
+            env.close()
+        else:
+            port.close()
