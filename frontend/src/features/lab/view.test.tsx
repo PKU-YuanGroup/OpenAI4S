@@ -85,7 +85,7 @@ describe("Lab bench public view", () => {
       { run_id: "labrun-one", operation: "mix_model", source: "extraction_vessel", expected_revision: 3 }]) {
       const line = permActionLine({ tool: "lab_execute", input: request }).text;
       expect(line).not.toContain(labT("unknown"));
-      expect(line).toContain("→ —");
+      expect(line).toContain(request.source ? "extraction_vessel → —" : "— → —");
     }
   });
   it("shows rejection reasons and gives outcome_unknown an explicit command query button", () => {
