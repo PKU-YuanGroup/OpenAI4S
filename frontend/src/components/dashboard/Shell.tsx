@@ -393,6 +393,7 @@ export function Shell() {
           <div class="dock-body">
             <div id="dock-viewer" class="dock-pane" />
             <div id="dock-notebook" class="dock-pane hidden" />
+            <div id="dock-lab" class="dock-pane hidden" />
             <div id="dock-timeline" class="dock-pane hidden" aria-live="polite" />
             <div id="dock-files" class="dock-pane hidden">
               <div class="files-head">

@@ -15,6 +15,7 @@ import { api, apiErrorText } from "../sessions/api";
 import { hint } from "../sessions/chrome";
 import { callLane } from "./host";
 import { iconEl } from "./icon";
+import { permissionSummary } from "../lab/summary";
 
 const PERM_SCOPE_KEYS: Record<string, string> = {
   once: "perm.scope.once",
@@ -59,6 +60,9 @@ function rec(value: unknown): Record<string, unknown> {
 export function permActionLine(m: PermEvent): { mono: boolean; text: string } {
   const inp = rec(m.input);
   const tool = m.tool;
+  if (tool === "lab_create" || tool === "lab_execute" || tool === "lab_stop") {
+    return { mono: true, text: permissionSummary(tool, inp) };
+  }
   if (tool === "bash") return { mono: true, text: String(inp.command || m.target || "") };
   if (
     tool === "write_file" ||

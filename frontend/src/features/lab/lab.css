@@ -1,0 +1,26 @@
+#dock-lab { overflow: auto; }
+.lab-pane { padding: 16px; color: var(--text, #263648); font-size: 13px; line-height: 1.5; }
+.lab-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lab-pane h2 { margin: 0; font-size: 18px; }
+.lab-pane h3 { margin: 0 0 10px; font-size: 14px; }
+.lab-pane p { margin: 7px 0; overflow-wrap: anywhere; }
+.lab-pane small { display: block; overflow-wrap: anywhere; }
+.lab-pane label { display: block; margin: 10px 0; font-weight: 500; }
+.lab-pane select, .lab-pane input { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 7px; border: 1px solid var(--border, #c7d2df); border-radius: 6px; background: var(--bg, #fff); color: inherit; }
+.lab-pane button { border: 1px solid var(--border, #c7d2df); border-radius: 6px; padding: 7px 12px; background: var(--bg, #fff); color: inherit; cursor: pointer; }
+.lab-pane button:disabled { cursor: default; opacity: .45; }
+.lab-card { border: 1px solid var(--border, #d6e0e9); border-radius: 10px; padding: 14px; margin: 12px 0; background: var(--panel, #f6f9fc); }
+.lab-badge { display: inline-block; border-radius: 20px; padding: 3px 9px; color: var(--accent, #2871a4); background: rgba(71, 143, 193, .12); font-weight: 650; margin-bottom: 8px; }
+.lab-muted, .lab-connection, .lab-pane small { color: var(--muted, #6c7c8e); }
+.lab-metrics { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.lab-vessels { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.lab-vessel { margin: 0; padding: 8px; width: 110px; border: 2px solid transparent; border-radius: 8px; text-align: center; }
+.lab-vessel svg { width: 88px; height: 132px; }
+.lab-highlight { border-color: var(--accent, #398fc2); }
+.lab-empty-vessel { min-height: 132px; display: grid; place-items: center; border: 1px dashed var(--border, #c7d2df); border-radius: 0 0 18px 18px; }
+.lab-channel, .lab-command { padding: 10px 0; border-top: 1px solid var(--border, #d6e0e9); }
+.lab-channel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.lab-uncertain { border: 2px solid #b98423; padding: 12px; border-radius: 8px; background: rgba(210, 155, 41, .09); }
+.lab-notice { color: var(--danger, #b35625); }
+.lab-pane .lab-stop { width: 100%; border-color: var(--danger, #b35625); }
+.lab-pane code { display: block; overflow-wrap: anywhere; font-size: 11px; margin: 8px 0; }
