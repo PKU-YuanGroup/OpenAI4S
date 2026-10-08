@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -393,6 +393,24 @@ describe("F-09 theme", () => {
       expect(css).toContain(
         'html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(--accent-fill)}',
       );
+    });
+
+    it("resolves every custom property a workbench stylesheet reads", () => {
+      // scripts/check_css_tokens.py gates style.css only. A feature sheet that
+      // reads an undeclared token silently takes its light-theme fallback, which
+      // is unreadable in dark mode (lab.css read --text this way).
+      const declared = (src: string) => new Set([...src.matchAll(/(?:^|[^A-Za-z0-9_-])(--[A-Za-z0-9-]+)\s*:/g)].map((m) => m[1]));
+      const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "");
+      const shared = declared(strip(readFileSync(join(repoRoot, "openai4s/server/webui/style.css"), "utf8")));
+      const sheets = (readdirSync(join(frontendRoot, "src"), { recursive: true }) as string[]).filter((f) => f.endsWith(".css"));
+      expect(sheets).toContain(join("features", "lab", "lab.css"));
+      const missing = sheets.flatMap((sheet) => {
+        const src = strip(readFileSync(join(frontendRoot, "src", sheet), "utf8"));
+        const own = declared(src);
+        return [...src.matchAll(/var\(\s*(--[A-Za-z0-9-]+)/g)].map((m) => m[1]!)
+          .filter((name) => !shared.has(name) && !own.has(name)).map((name) => `${sheet}: ${name}`);
+      });
+      expect(missing).toEqual([]);
     });
 
     it("theme.ts source never mentions body.theme-dark", () => {
