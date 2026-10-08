@@ -115,7 +115,13 @@ class ProviderClient:
             return bytes(self._stderr).decode("utf-8", errors="replace")
 
     def alive(self):
-        return self.process is not None and self.process.poll() is None
+        with self._lock:
+            return self._alive_locked()
+
+    def _alive_locked(self):
+        # Observe exit without reaping: even a status read must not release the
+        # PID reservation before we have disposed the provider's descendants.
+        return self.process is not None and not self._wait_unreaped(0)
 
     def _signal_group(self, sig):
         if (
@@ -129,16 +135,41 @@ class ProviderClient:
             os.killpg(self.process.pid, sig)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS can report EPERM for a group containing only its zombie
+            # leader. Observe without reaping so no reused PGID is signalled.
+            if not self._wait_unreaped(0):
+                raise
+
+    def _wait_unreaped(self, timeout):
+        """Give the leader time to exit while retaining its PID reservation."""
+        deadline = time.monotonic() + timeout
+        while self.process.returncode is None:
+            try:
+                exited = os.waitid(
+                    os.P_PID, self.process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG
+                )
+            except ChildProcessError:
+                # Someone else reaped it. poll records that fact before any
+                # further group signal (Popen handles ECHILD itself).
+                self.process.poll()
+                return True
+            if exited is not None:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.01, remaining))
+        return True
 
     def _terminate(self, *, graceful=False):
         if self.process is None:
             return
         if graceful:
             self._signal_group(signal.SIGTERM)
-            try:
-                self.process.wait(timeout=0.25)
-            except subprocess.TimeoutExpired:
-                pass
+            self._wait_unreaped(0.25)
+        # Reap only AFTER the last group signal. wait()/poll() here could free
+        # the leader PID while a TERM-resistant descendant still holds pipes.
         self._signal_group(signal.SIGKILL)
         self.process.wait()
         self._disposed = True
@@ -148,10 +179,7 @@ class ProviderClient:
     def _gone(self):
         # EOF while the leader is alive is still a broken provider. Reap it and descendants.
         if self.process is not None:
-            try:
-                self.process.wait(timeout=0.1)
-            except subprocess.TimeoutExpired:
-                pass
+            self._wait_unreaped(0.1)
             self._terminate()
         return ProviderGone(
             self.process.returncode if self.process else None, self.stderr_tail()
@@ -236,7 +264,7 @@ class ProviderClient:
             # Nothing was written: a host-side argument error must not kill a
             # healthy provider (and be recorded as a lost one).
             raise ValueError(f"request cannot be encoded: {exc}") from None
-        if not self.alive():
+        if not self._alive_locked():
             raise self._gone()
         try:
             return self._exchange(request_id, data, timeout)
@@ -254,15 +282,19 @@ class ProviderClient:
             if self.process is None:
                 return
             try:
-                if self.alive():
+                if self._alive_locked():
                     deadline = time.monotonic() + timeout
                     try:
                         self._request_locked("close", {}, timeout=timeout)
-                        self.process.wait(timeout=max(0, deadline - time.monotonic()))
+                        self._wait_unreaped(max(0, deadline - time.monotonic()))
+                        # The backend has acknowledged close; dispose its group
+                        # before reaping the leader, including lingering children.
+                        self._terminate()
                     except (ProviderError, subprocess.TimeoutExpired):
                         self._terminate(graceful=True)
                 # Never signal a group whose leader has already been reaped.
                 self._signal_group(signal.SIGKILL)
+                self.process.wait()
                 self._disposed = True
                 if self._stderr_thread:
                     self._stderr_thread.join(timeout=1)

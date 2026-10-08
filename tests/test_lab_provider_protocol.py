@@ -363,3 +363,74 @@ def test_an_unreadable_request_is_a_protocol_error_not_a_lost_provider(tmp_path)
             client.request("hello", {}, timeout=5)
     finally:
         client.close()
+
+
+@pytest.mark.parametrize(
+    "ending", ["timeout_close", "eof", "orderly_close", "observed_exit"]
+)
+def test_dispose_descendants_before_reaping_leader(tmp_path, ending):
+    import os
+    import signal
+    import sys
+    import time
+
+    from openai4s_lab_provider.client import ProviderClient, ProviderGone
+
+    peer = """import json,os,signal,sys,time
+r,w=os.pipe()
+child=os.fork()
+if child == 0:
+    os.close(r)
+    signal.signal(signal.SIGTERM,signal.SIG_IGN)
+    os.close(0)
+    os.close(1)
+    os.write(w,b'1'); os.close(w)
+    time.sleep(30)
+    os._exit(0)
+os.close(w); os.read(r,1); os.close(r)
+f=json.loads(sys.stdin.readline())
+print(json.dumps({'v':1,'id':f['id'],'ok':True,'result':{'child':child}}),flush=True)
+f=json.loads(sys.stdin.readline())
+ending=sys.argv[1]
+if ending=='timeout_close':
+    time.sleep(30)
+elif ending=='orderly_close':
+    print(json.dumps({'v':1,'id':f['id'],'ok':True,'result':{'closed':True}}),flush=True)
+os._exit(0)
+"""
+    client = ProviderClient(
+        [sys.executable, "-I", "-c", peer, ending],
+        env={"HOME": str(tmp_path)},
+        cwd=tmp_path,
+    ).start()
+    child = None
+    try:
+        child = client.request("hello", {}, timeout=5)["child"]
+        if ending == "observed_exit":
+            os.write(client.process.stdin.fileno(), b'{"op":"execute"}\n')
+            assert client._wait_unreaped(5)
+            assert not client.alive()
+            assert client.process.returncode is None
+            client.close()
+        elif ending == "eof":
+            with pytest.raises(ProviderGone):
+                client.request("execute", {}, timeout=5)
+        else:
+            client.close(timeout=0.2)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() > deadline:
+                pytest.fail("TERM-resistant descendant survived provider disposal")
+            time.sleep(0.01)
+        assert not client.alive()
+    finally:
+        if child is not None:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        client.close()
