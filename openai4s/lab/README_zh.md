@@ -15,5 +15,9 @@
 | `manifest.py` | 描述校验、单位匹配与公开投影。 |
 | `devices.py` | 线程安全的显式设备登记。 |
 | `fake.py` | 确定性的进程内玩具设备与故障注入。 |
+| `manager.py` | 进程级准入、派发、对账与生命周期。 |
+| `policy.py` | 准入与预算的纯函数。 |
+| `reconcile.py` | 启动对账，不重放设备操作。 |
+| `runtime.py` | 管理器装配与启动对账。 |
 | `README.md` | 英文目录说明。 |
 | `README_zh.md` | 中文目录说明。 |

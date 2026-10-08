@@ -16,5 +16,9 @@ No device is registered and no process is started at import time.
 | `manifest.py` | Descriptor validation, unit matching and public projections. |
 | `devices.py` | Thread-safe explicit device registration. |
 | `fake.py` | Deterministic in-process toy device and fault injection. |
+| `manager.py` | Process-owned admission, dispatch, reconciliation and lifecycle. |
+| `policy.py` | Pure admission and budget decisions. |
+| `reconcile.py` | Startup reconciliation without provider replay. |
+| `runtime.py` | Manager composition and startup reconciliation. |
 | `README.md` | English directory guide. |
 | `README_zh.md` | Chinese directory guide. |

@@ -137,3 +137,8 @@ __all__ = [
     "request_hash",
     "sha256_hex",
 ]
+
+from openai4s.lab.manager import LabLimits, LabManager
+from openai4s.lab.runtime import build_lab_manager
+
+__all__ += ["LabLimits", "LabManager", "build_lab_manager"]
