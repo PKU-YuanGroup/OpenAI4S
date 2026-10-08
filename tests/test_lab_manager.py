@@ -534,9 +534,20 @@ def test_evicted_receipt_stays_unknown_even_after_status(rig, monkeypatch):
 
 
 @pytest.mark.parametrize("code", ["precondition_failed", "unsupported_action"])
-def test_explicit_refusal_is_a_failed_command_not_unknown(rig, code):
+@pytest.mark.parametrize("rejected", [False, True])
+def test_explicit_refusal_is_a_failed_command_not_unknown(
+    rig, monkeypatch, code, rejected
+):
     manager, caller, ledger, devices = rig[:4]
     run_id = create(rig)["run"]["run_id"]
+    original = devices[0]._failure_receipt
+    monkeypatch.setattr(
+        devices[0],
+        "_failure_receipt",
+        lambda session, dispatch, code, **kwargs: original(
+            session, dispatch, code, rejected=rejected
+        ),
+    )
     devices[0].fail_next(code)
     devices[0].lose_response_next()
     result = manager.execute(caller, command(run_id))
@@ -591,6 +602,9 @@ def test_store_generation_is_resolved_for_every_operation(rig):
         assert manager.observe(caller, run_id)["run"]["revision"] == 1
         manager.close_all("test complete")
     finally:
+        for live in list(manager._live.values()):
+            live.port.close(live.session_id)
+        manager._live.clear()
         current[0].close()
 
 
@@ -632,7 +646,7 @@ def test_stop_waits_for_receipt_or_authoritative_nonreceipt(rig, monkeypatch, re
     run_id = create(rig)["run"]["run_id"]
     entered, release = Event(), Event()
     original = devices[0].execute
-    transition = ledger.transition_command
+    completion = manager._live[run_id].done
     if not received:
         devices[0].lose_request_next()
 
@@ -641,15 +655,21 @@ def test_stop_waits_for_receipt_or_authoritative_nonreceipt(rig, monkeypatch, re
         assert release.wait(10)
         return original(*args)
 
-    def notify_stop(command_id, **kwargs):
-        result = transition(command_id, **kwargs)
-        if kwargs["to_state"] == "stop_requested":
-            assert result
+    class ReceiptWait:
+        def clear(self):
+            completion.clear()
+
+        def set(self):
+            completion.set()
+
+        def wait(self, timeout):
+            assert ledger.list_commands(run_id)[0]["state"] == "stop_requested"
+            # Release the provider only once stop actually waits for evidence.
             release.set()
-        return result
+            return completion.wait(timeout)
 
     monkeypatch.setattr(devices[0], "execute", blocked)
-    monkeypatch.setattr(ledger, "transition_command", notify_stop)
+    monkeypatch.setattr(manager._live[run_id], "done", ReceiptWait())
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(manager.execute, caller, command(run_id))
         try:
@@ -661,6 +681,7 @@ def test_stop_waits_for_receipt_or_authoritative_nonreceipt(rig, monkeypatch, re
             "succeeded" if received else "not_dispatched"
         )
     assert result["run"]["end_reason"] == "stopped"
+    assert result["run"]["revision"] == int(received)
     assert ledger.list_commands(run_id)[0]["state"] == (
         "succeeded" if received else "not_dispatched"
     )

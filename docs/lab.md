@@ -208,7 +208,9 @@ are hashed before ledger admission. Duplicate keys return the original command
 in every state and never call the device again. Semantic refusals are also
 recorded. The manager enforces step, command, wall-time and consecutive-failure
 budgets; W1's receipt-only failure counter is supplemented by command-history
-reads for admission so host rejections count too. A nonblocking per-run lock
+reads for admission so host rejections count too. The public run counter still
+reflects W1 receipt failures; aligning that counter requires a ledger change.
+A nonblocking per-run lock
 and the ledger's atomic resource leases prevent concurrent dispatch. The
 provider is called only after `begin_dispatch` commits the intent and fencing
 token. The manager never opens a transaction around a ledger method.
