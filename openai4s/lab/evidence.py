@@ -31,19 +31,29 @@ def _success_prose(claim):
     # Conservative in Lab sessions: an incomplete report should state the
     # observed state (stopped/unresolved), not use completion wording. Do not
     # infer negation across arbitrary model prose or treat task_status as a
-    # licence to contradict the public summary. Machine status fields are
-    # deliberately excluded from this text check.
+    # licence to contradict the public summary. Only the two known envelope
+    # levels exclude verified machine fields, before entering this recursion.
     if isinstance(claim, str):
         return bool(_SUCCESS_WORDS.search(claim.replace("_", " ")))
     if isinstance(claim, Mapping):
         return any(
             _success_prose(str(key)) or _success_prose(value)
             for key, value in claim.items()
-            if key not in {"lab_runs", "task_status"}
         )
     if isinstance(claim, (list, tuple)):
         return any(_success_prose(value) for value in claim)
     return False
+
+
+def _claim_success_prose(claim):
+    public = {k: v for k, v in claim.items() if k not in {"lab_runs", "task_status"}}
+    if isinstance(public.get("output"), Mapping):
+        public["output"] = {
+            k: v
+            for k, v in public["output"].items()
+            if k not in {"lab_runs", "task_status"}
+        }
+    return _success_prose(public)
 
 
 def lab_completion_check(
@@ -67,11 +77,20 @@ def _check(ledger, root, claim):
     declarations = payload.get("lab_runs")
     if "lab_runs" in claim and payload is not claim:
         return "Put lab_runs inside the submit_output output dictionary."
+    if declarations is None and not ledger.list_runs(root, limit=1):
+        return None
+    if (
+        payload is not claim
+        and claim.get("task_status") is not None
+        and payload.get("task_status") is not None
+        and claim["task_status"] != payload["task_status"]
+    ):
+        return "Lab task_status declarations conflict."
     status = claim.get("task_status") or payload.get("task_status") or "completed"
     if declarations is None:
-        if not ledger.list_runs(root, limit=1):
-            return None
-        if status in {"partial", "blocked", "failed"} and not _success_prose(claim):
+        if status in {"partial", "blocked", "failed"} and not _claim_success_prose(
+            claim
+        ):
             return None
         return "Lab completion requires explicit lab_runs with run_id and status."
     if not isinstance(declarations, list) or not 1 <= len(declarations) <= 100:
@@ -95,7 +114,7 @@ def _check(ledger, root, claim):
         if run is None or run.get("root_frame_id") != root:
             return "The declared Lab run is not available in this session."
         if item["status"] == "running":
-            if _success_prose(claim):
+            if _claim_success_prose(claim):
                 return "A running Lab declaration cannot support completion wording."
             if run.get("status") not in {"creating", "ready", "busy", "quarantined"}:
                 return "The declared Lab run is no longer running."

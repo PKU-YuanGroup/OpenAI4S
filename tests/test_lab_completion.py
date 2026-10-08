@@ -278,6 +278,31 @@ def test_structured_success_key_cannot_hide_in_partial_output():
     assert service.last_output is None
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        {"findings": [{"run_id": "run", "task_status": "completed"}]},
+        {"experiment": {"lab_runs": [{"run_id": "run", "status": "completed"}]}},
+        {"summary": "Observed the run.", "task_status": "completed"},
+    ],
+)
+def test_nested_machine_fields_do_not_hide_success(output):
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ready", end_reason=None)
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    result = service.submit(
+        {
+            "output": output,
+            "completion_bullets": ["Recorded the experiment result"],
+            "task_status": "partial",
+        }
+    )
+    assert "error" in result
+    assert service.last_output is None
+
+
 def test_evidence_failure_and_concurrent_changes_fail_closed(caplog):
     ledger = SnapshotLedger()
 
