@@ -231,9 +231,11 @@ def test_end_export_and_completion_close_the_loop_over_one_ledger(daemon):
     refused = dispatcher("lab_export", [{"run_id": done, "include_evaluation": True}])
     assert refused["error_kind"] == "invalid_parameters"
     assert "ground_truth" not in refused
-    status, listed = daemon.request("GET", f"/frames/{fid}/artifacts")
-    assert status == 200 and len(listed) == 4
-    assert "ground" not in json.dumps(listed)
+    # The rows GET /frames/{fid}/artifacts serves, read from the Store so this
+    # Lab test adds no observation to that non-Lab route's frozen shape.
+    listed = daemon.store.list_artifacts({"root_frame_id": fid})
+    assert len(listed) == 4
+    assert "ground" not in json.dumps(listed, default=str)
     assert not [p for p in st.workspace.rglob("*") if "ground" in p.name]
 
     # The same turn's completion is accepted on both doors.
