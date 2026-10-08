@@ -15,7 +15,8 @@ const baseUrl = process.env.OPENAI4S_BROWSER_URL;
 const dataDir = process.env.OPENAI4S_DATA_DIR;
 assert.ok(baseUrl && dataDir, "explicit disposable daemon URL and data directory required");
 assert.ok(["127.0.0.1", "localhost"].includes(new URL(baseUrl).hostname));
-assert.notEqual(fs.realpathSync(dataDir), path.join(os.homedir(), ".openai4s"));
+const canonical = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+assert.notEqual(canonical(dataDir), canonical(path.join(os.homedir(), ".openai4s")));
 const real = process.argv.includes("--real");
 const evidenceDir = process.env.OPENAI4S_LAB_EVIDENCE_DIR;
 if (evidenceDir) fs.mkdirSync(evidenceDir, { recursive: true });
@@ -46,9 +47,11 @@ assert.ok(addresses.length && addresses.every((a) => ["127.0.0.1", "::1"].includ
 let scenario;
 const heldReplies = new Set();
 const mockErrors = [];
+// One id sequence for the whole session, so tool-call ids never repeat.
+let callSerial = 0;
 function reply(res, body, action) {
   const choice = action.tool ? { role: "assistant", content: null, tool_calls: [{
-    id: `lab-call-${scenario.serial++}`, type: "function",
+    id: `lab-call-${callSerial++}`, type: "function",
     function: { name: action.tool, arguments: JSON.stringify(action.args) },
   }] } : { role: "assistant", content: action.text || "Lab browser fixture" };
   const finish = action.tool ? "tool_calls" : "stop";
@@ -73,7 +76,13 @@ const mock = http.createServer(async (req, res) => {
       reply(res, body, { text: "Lab browser fixture" }); return;
     }
     const last = body.messages.filter((m) => m.role === "tool").at(-1);
-    const result = last ? JSON.parse(last.content.replace(/^\[Tool: [^\]]+\]\s*/, "")) : null;
+    // A refused tool or finalize returns "[Tool error …]" text, not JSON.
+    // Keep it readable so the step script's own assertion names the failure.
+    let result = null;
+    if (last) {
+      const text = String(last.content).replace(/^\[Tool: [^\]]+\]\s*/, "");
+      try { result = JSON.parse(text); } catch { result = { error: text }; }
+    }
     const step = scenario.steps.shift();
     assert.ok(step, "agent called LLM after script completion (completion refused?)");
     const action = step(result);
@@ -92,9 +101,12 @@ const mock = http.createServer(async (req, res) => {
 });
 await new Promise((resolve) => mock.listen(0, "127.0.0.1", resolve));
 const mockPort = mock.address().port;
-const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
-page.setDefaultTimeout(30000);
+const browser = await chromium.launch({
+  headless: true, executablePath: process.env.OPENAI4S_BROWSER_EXECUTABLE || undefined,
+});
+const page = await browser.newPage({ viewport: { width: 1440, height: 1050 }, acceptDownloads: true });
+// A cold ChemGymRL open may take up to 180 s (provider deadline); toy is fast.
+page.setDefaultTimeout(real ? 240000 : 30000);
 // W4-B adds a confirmation to the existing .lab-stop control.
 page.on("dialog", (dialog) => dialog.type() === "confirm" ? dialog.accept() : dialog.dismiss());
 await page.addInitScript(() => localStorage.setItem("os-lang", "en"));
@@ -311,14 +323,31 @@ try {
     await page.evaluate((id) => { void window.openConversation(id); }, fid);
     await bounded(read.promise, "late session A read");
     await open(fidB); await revision(0);
+    // Record every run the B pane shows from here on, including transient
+    // states a later refresh would repair (an assertion alone races them).
+    await page.evaluate(() => {
+      const root = document.querySelector("#dock-lab");
+      const seen = (window.__labSeen = []);
+      const record = () => {
+        for (const option of root.querySelectorAll("option")) seen.push(option.value);
+        seen.push(root.querySelector(".lab-overview")?.textContent || "");
+      };
+      record();
+      new MutationObserver(record).observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
+    });
   } finally { held.resolve(); }
   await bounded(delivered.promise, "late session A response delivered");
   await page.unroute(indexUrl);
-  await page.waitForLoadState("networkidle");
+  // A stale write follows the delivered read with its own detail fetches;
+  // give it far longer than those take before judging what B ever showed.
+  await page.waitForTimeout(2000);
+  const seen = await page.evaluate(() => window.__labSeen);
+  assert.ok(seen.length > 0);
+  assert.ok(!seen.some((value) => value.includes(rid)), `session B showed session A's run ${rid}`);
   assert.equal(await pane.getByLabel(/^Run/).inputValue(), runB.run_id);
   assert.equal(await pane.locator(".lab-command").count(), 0);
   await open(fid); await revision(4);
-  passed("late Lab response from session A cannot overwrite session B");
+  passed("late Lab response from session A never appears in session B");
 
   const checkpoint = await api(`/frames/${fid}/branches/checkpoints`, { reason: "lab-browser" });
   const branchState = await api(`/frames/${fid}/branches`);
@@ -336,10 +365,13 @@ try {
   }
   await open(fid); await revision(4);
   assert.equal((await api(runPath(fid, rid))).run.command_count, 4);
-  passed("rapid branch activation preserves session Lab history without replaying commands");
+  passed("branch activations preserve session Lab history without replaying commands");
   await page.reload({ waitUntil: "networkidle" }); await labTab(); await revision(4);
   assert.equal(await pane.getByLabel(/^Run/).inputValue(), rid);
-  passed("page reload restores the persisted run, receipts and observation");
+  await pane.locator(".lab-command").nth(3).waitFor();
+  assert.equal(await pane.locator(".lab-command").count(), 4);
+  await pane.getByText("Observation sequence 4", { exact: false }).first().waitFor();
+  passed("page reload restores the persisted run, its four receipts and the latest observation");
 
   const holdSteps = [() => tool("lab_observe", { run_id: rid }), () => ({ hold: true })];
   await begin("In the simulation lab, keep planning until I stop the agent.", holdSteps);
@@ -360,6 +392,65 @@ try {
   passed("Lab Stop ends its provider without stopping the agent turn");
   await screenshot("independent-stops");
   await api(`${runPath(fidB, runB.run_id)}/stop`, {});
+
+  const exportFid = await newFrame();
+  const exportRun = await createManual(exportFid);
+  await pane.getByLabel(/^Operation/).selectOption(actionId);
+  await pane.getByLabel(real ? /^duration \(model_time\)/ : /^volume \(mL\)/).selectOption(String(actionValue));
+  await pane.getByRole("button", { name: "Run one step", exact: true }).click();
+  await revision(1);
+  const results = pane.locator(".lab-results");
+  const exportedResponse = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/export"));
+  await results.getByRole("button", { name: "Export recorded evidence", exact: true }).click();
+  const exported = await (await exportedResponse).json();
+  assert.deepEqual(exported.artifacts.map((a) => a.kind).sort(), ["actions", "observations_csv", "observations_json", "report"]);
+  assert.equal(exported.ground_truth, undefined);
+  await pane.locator(".lab-export-links a").nth(3).waitFor();
+  const bound = await api(`${runPath(exportFid, exportRun.run_id)}/observations`);
+  const observationVersion = exported.artifacts.find((a) => a.kind === "observations_json").version_id;
+  assert.ok(bound.observations.every((o) => o.artifact_version_id === observationVersion));
+  passed("export records four exact Artifact versions and binds the observations");
+
+  await results.getByLabel(/ground truth/i).check();
+  const truthResponse = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/export"));
+  const download = page.waitForEvent("download");
+  await results.getByRole("button", { name: "Export recorded evidence", exact: true }).click();
+  const truthExport = await (await truthResponse).json();
+  const truthFile = await download;
+  assert.match(truthFile.suggestedFilename(), /-simulation-ground-truth\.json$/);
+  const truthText = fs.readFileSync(await truthFile.path(), "utf8");
+  assert.match(truthText, /Simulation ground truth/);
+  assert.ok(!truthExport.artifacts.some((a) => /ground-truth/.test(a.filename)));
+  // The second export adds new versions of the same four Artifacts, and
+  // nothing else: the session holds no ground-truth Artifact at all.
+  const byKind = (result) => Object.fromEntries(result.artifacts.map((a) => [a.kind, a]));
+  const [first, second] = [byKind(exported), byKind(truthExport)];
+  for (const kind of Object.keys(first)) {
+    assert.equal(second[kind].artifact_id, first[kind].artifact_id);
+    assert.notEqual(second[kind].version_id, first[kind].version_id);
+  }
+  const stored = await api(`/frames/${exportFid}/artifacts`);
+  assert.deepEqual(stored.map((a) => a.id ?? a.artifact_id).sort(), Object.values(first).map((a) => a.artifact_id).sort());
+  assert.ok(!stored.some((a) => /ground.truth/.test(JSON.stringify(a))));
+  await results.getByRole("status").filter({ hasText: "Simulation ground truth was downloaded to this computer" }).waitFor();
+  passed("opted-in ground truth downloads to this computer and never becomes a session Artifact");
+
+  const writes = [];
+  const trackWrites = (request) => { if (request.method() !== "GET") writes.push(request.url()); };
+  page.on("request", trackWrites);
+  await results.getByRole("button", { name: "Replay recorded history", exact: true }).click();
+  const slider = pane.locator(".lab-replay input[type=range]");
+  await slider.waitFor();
+  await slider.fill("1"); await slider.fill("0");
+  page.off("request", trackWrites);
+  assert.deepEqual(writes, []);
+  assert.equal((await api(runPath(exportFid, exportRun.run_id))).run.revision, 1);
+  passed("replay moves through recorded history without any request but reads");
+
+  await pane.getByRole("button", { name: "End experiment", exact: true }).click();
+  await pane.getByText("End reason: end_action", { exact: true }).waitFor();
+  assert.equal((await api(runPath(exportFid, exportRun.run_id))).run.end_reason, "end_action");
+  passed("End experiment executes end_experiment and records end_action, unlike Stop");
 
   // Full goal -> inspection -> refusal -> adjustment -> end -> report loop.
   const loopFid = await newFrame(); await open(loopFid);
