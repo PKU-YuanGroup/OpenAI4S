@@ -114,6 +114,94 @@ def transfer(key, *, revision=0, litres=0.2):
     }
 
 
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+@pytest.mark.parametrize("stop", [False, True])
+def test_real_toy_completion_and_stop_refusal(daemon, monkeypatch, door, stop):
+    from openai4s.lab import evidence
+    from openai4s.lab.evaluation import Goal
+    from tests.test_lab_completion import claim, finish
+
+    # The real toy has no production chemistry goal. Only its goal definition
+    # is injected; commands, receipts, observations, evaluation and doors are real.
+    original = evidence.default_goal
+    monkeypatch.setattr(
+        evidence,
+        "default_goal",
+        lambda profile, **kw: (
+            Goal(PROFILE, "toy_component", "extraction_vessel", 0.2, 0.9)
+            if profile == PROFILE
+            else original(profile, **kw)
+        ),
+    )
+    fid, dispatcher, host = daemon.session()
+    created = host.lab.create(TOY, PROFILE, seed=7, idempotency_key="completion")
+    run_id = created["run"]["run_id"]
+    executed = host.lab.execute(run_id, **transfer("move"))
+    assert executed["command"]["state"] == "succeeded"
+    if stop:
+        host.lab.stop(run_id)
+    else:
+        ended = host.lab.execute(
+            run_id, "end_experiment", expected_revision=1, idempotency_key="end"
+        )
+        assert ended["run"]["end_reason"] == "end_action"
+    payload = claim(lab_runs=[{"run_id": run_id, "status": "completed"}])
+    if door == "submit":
+        output = {k: v for k, v in payload.items() if k != "completion_bullets"}
+        if stop:
+            refused = host.submit_output(
+                output, completion_bullets=payload["completion_bullets"]
+            )
+            assert "not ended normally" in refused["error"]
+            assert dispatcher.last_output is None
+        else:
+            assert host.submit_output(
+                output, completion_bullets=payload["completion_bullets"]
+            ) == {"status": "ok"}
+            assert dispatcher.revalidate_pending_completion() is None
+    else:
+        completed, error = finish(door, dispatcher._completion_service, payload)
+        if stop:
+            assert completed is None and "not ended normally" in error
+        else:
+            assert completed["output"]["lab_runs"] == payload["lab_runs"]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("available", [True, False, None])
+def test_lab_seed_intro_is_available_only_and_cached(daemon, monkeypatch, available):
+    runner = daemon.runner
+    calls = []
+
+    def devices(caller):
+        calls.append(caller.root_frame_id)
+        return [{"available": available}]
+
+    monkeypatch.setattr(runner.lab_manager, "list_devices", devices)
+    fid = runner.create_session(daemon.project_id)
+    state = runner._state(fid, daemon.project_id)
+    # Existing skills/memory have independent content; compare with exactly
+    # the same seed path while only the Lab fragment is disabled.
+    runner._lab_prompt_available = False
+    runner._seed_messages(state)
+    legacy = json.dumps(state.messages, ensure_ascii=False)
+    state.messages = []
+    del runner._lab_prompt_available
+    runner._seed_messages(state)
+    first = json.dumps(state.messages, ensure_ascii=False)
+    fragment = '\\n\\nLab is simulation only; use the lab_* tools. First load_skill(\\"lab-simulation\\") for the recipe and evidence rules.'
+    if available is True:
+        assert fragment in first
+        assert first.replace(fragment, "") == legacy
+    else:
+        assert first == legacy
+    state.messages = []
+    runner._seed_messages(state)
+    assert json.dumps(state.messages, ensure_ascii=False) == first
+    assert calls == [fid]
+
+
 def _process(manager, run_id):
     live = manager._live[run_id]
     (session,) = live.port._sessions.values()

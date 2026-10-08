@@ -248,6 +248,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_lab_integration_w1.py`](test_lab_integration_w1.py) | 三个并行开发的 Lab 包之间的接缝：账本对照 `LabLedgerPort` 的每个签名，提交的 ChemGymRL 清单经过共享校验器，真实 toy provider 进程经过共享模型，以及假设备与 toy provider 以同样方式拒绝过期的 fencing 令牌。 |
 | [`test_lab_wrappers.py`](test_lab_wrappers.py) | 设备包装器的假设（延迟、噪声、故障、忙碌窗口）及其 CONTRACT §9 失败语义，单独与组合使用时都成立。 |
 | [`test_lab_evaluation.py`](test_lab_evaluation.py) | 显式目标、账本指标与可比较评估；缺证据、被 harness 中断的回合记为未知，绝不打分。 |
+| [`test_lab_completion.py`](test_lab_completion.py) | Web/CLI finalize 与 cell 提交的精确 run 完成门、运行中提示、私有评价及失败即拒绝的再核验。 |
 | [`test_lab_policies.py`](test_lab_policies.py) | 合法、可复现的基线策略与管理器投影边界，包括 agent 视图被摘要时仍读取完整传感量。 |
 | [`test_lab_integration_w2.py`](test_lab_integration_w2.py) | 第二波的组合：真实管理器驱动真实 toy provider 进程（创建、重放、陈旧 revision、停止、provider 被杀），stop 抢占卡住的 execute，策略经真实管理器运行，wrapper 假设绑定到 run，以及每个 wrapper 包住真实 provider 后仍守端口合同。 |
 | [`test_lab_host.py`](test_lab_host.py) | Lab SDK/原生工具平价、批准、恢复、子代理与会话边界、安全投影及未知结果。 |

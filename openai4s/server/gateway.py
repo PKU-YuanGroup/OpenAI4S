@@ -5938,6 +5938,32 @@ class SessionRunner:
         remote_ctx = _remote_gpu_runtime_context()
         if remote_ctx:
             ctx += "\n\n" + remote_ctx
+        # Probe at most once per daemon, never on the per-turn prompt path.
+        # Availability can inspect an installation and list_devices can sweep.
+        with self.__dict__.setdefault("_lab_prompt_lock", threading.Lock()):
+            if not hasattr(self, "_lab_prompt_available"):
+                try:
+                    from openai4s.lab.models import CommandOrigin, LabCaller
+
+                    caller = LabCaller(
+                        st.root_frame_id,
+                        st.root_frame_id,
+                        None,
+                        CommandOrigin.SYSTEM,
+                        None,
+                        None,
+                    )
+                    self._lab_prompt_available = any(
+                        row.get("available") is True
+                        for row in self.lab_manager.list_devices(caller)
+                    )
+                except Exception:
+                    self._lab_prompt_available = False
+        if self._lab_prompt_available:
+            ctx += (
+                "\n\nLab is simulation only; use the lab_* tools. "
+                'First load_skill("lab-simulation") for the recipe and evidence rules.'
+            )
         # Connectors (MCP tools) the agent can call
         try:
             conns = [c for c in self.store.list_connectors() if c.get("enabled")]

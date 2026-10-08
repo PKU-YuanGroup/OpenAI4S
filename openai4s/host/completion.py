@@ -768,16 +768,27 @@ class CompletionService:
         *,
         task_mode: Callable[[], str | None] | None = None,
         code_evidence: Callable[[], CodeEvidenceContext] | None = None,
+        lab_evidence: Callable[[dict], str | None] | None = None,
     ) -> None:
         self.last_output: dict | None = None
         self._evidence = evidence
         self._task_mode = task_mode
         self._code_evidence = code_evidence
+        self._lab_evidence = lab_evidence
         self._last_output_file_seal: dict[str, str] | None = None
 
     def _verify_code_claims_with_seal(
         self, payload: dict
     ) -> tuple[str | None, Mapping[str, str]]:
+        # Shared by finalize, submit, and post-cell revalidation. This check
+        # precedes the task-mode gate: simulation evidence is mode-independent.
+        if self._lab_evidence is not None:
+            try:
+                error = self._lab_evidence(payload)
+            except Exception:
+                error = "Lab completion evidence could not be verified."
+            if error:
+                return error, {}
         mode = self._task_mode() if self._task_mode is not None else None
         if not requires_code_evidence(mode):
             return None, {}

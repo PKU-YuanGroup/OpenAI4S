@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本目录树共暴露 606 个内置 Skill：45 份由 OpenAI4S 筛选维护的配方，加上固定版本的
+本目录树共暴露 607 个内置 Skill：46 份由 OpenAI4S 筛选维护的配方，加上固定版本的
 GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，加上把它跑起来所需的
 运维知识——而不是 provider 的 JSON Tool。披露是渐进的：精选 Skill 各占一行摘要，大型
 第三方集合合计只占一行，再通过搜索或精确名称展开。只有被选中的 `SKILL.md` 和可选
@@ -52,6 +52,7 @@ curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/mai
 | [`figure-composer/`](figure-composer/) | 三个配图 Skill 中的中间层：把一张多 panel 图做好。它把一句话的主张变成 12 列栅格上的 panel 方案，每个 panel 派出一个 sub-agent，拼版并打上字母编号，然后做至多三轮的对抗式整图评审。 |
 | [`figure-style/`](figure-style/) | 最内层：单张图的规则。它刻意是一份检查清单而不是一套视觉风格，涵盖数据忠实性、标注取舍、按数据形状选图型，以及先渲染再核对的验证步骤。正确性相关的章节在任何情况下都必须遵守；美学相关的章节只是默认值，有明确理由时可以推翻。每个 panel sub-agent 都会加载它。 |
 | [`indication-dossier/`](indication-dossier/) | 五个可续做的阶段，围绕单个适应症构建 dossier，并且把它当作一个患者人群而不是一种疾病来写：这些人是谁、流行病学、疾病生物学、标准治疗、监管先例、里程碑临床试验。它期望有 clinical-trials 和 pubmed 这两个 MCP server；没有接上时，就退回到对公开数据源的网页检索。 |
+| [`lab-simulation/`](lab-simulation/) | 发现仿真设备，从当前能力清单选择一个受限动作，只查询未知结果而不重发，在 Python 中分析公开观测，并按实验、命令、观测的精确标识报告证据。Lab 实验需要 Web daemon；本配方不授予权限，也不提供真实设备操作指导。 |
 | [`ligandmpnn/`](ligandmpnn/) | 当设计面不只有蛋白时用它做反向折叠：小分子、核酸和金属对网络是可见的原子，而 `proteinmpnn` 会直接忽略它们。它的 runner 也是唯一会把设计序列穿回结构并写出 PDB 的那个。 |
 | [`literature-review/`](literature-review/) | 从「X 的奠基论文是哪篇」一直到完整的多源综述。它的内容其实就是纪律：先检索再动笔，每一个 DOI 都要解析核实而不是凭记忆写出，用 CrossRef 查撤稿，写出的段落要以你自己的综合判断开头，而不是以某位作者的名字开头。 |
 | [`mineral_spectra_analysis/`](mineral_spectra_analysis/) | 对未知混合矿物的 Raman 光谱做解混。预处理只做一次，然后进入循环：检测残余峰、匹配参考谱库、对所有已选组分做 NNLS 重拟合、扣除。盲分析循环内不得读取 `truth.json`；对照真值的评估是单独一步，只在答案定稿之后才跑。 |

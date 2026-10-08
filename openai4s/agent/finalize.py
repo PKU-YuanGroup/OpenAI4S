@@ -278,6 +278,25 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
                 "dressing an incomplete task as done."
             ),
         },
+        "lab_runs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "status": {"type": "string", "enum": ["completed", "running"]},
+                },
+                "required": ["run_id", "status"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "Exact simulation runs supporting this completion, verified by the Host. "
+                "A running declaration requires task_status partial and summary "
+                "'Simulation experiment is still running.'"
+            ),
+        },
     },
     "required": ["summary", "completion_bullets"],
     "additionalProperties": False,

@@ -12,6 +12,7 @@ No device is registered and no process is started at import time.
 | --- | --- |
 | `wrappers.py` | Declared latency, noise, fault and busy device assumptions. |
 | `evaluation.py` | Ground-truth-only goals, ledger metrics and comparability checks. |
+| `evidence.py` | Host-only completion checks over exact run identities; returns value-free refusals. |
 | `policies.py` | Manager-bound fixed and seeded random simulation baselines. |
 | `__init__.py` | Public contract exports. |
 | `models.py` | Frozen values, strict JSON decoding, state machines and hashes. |

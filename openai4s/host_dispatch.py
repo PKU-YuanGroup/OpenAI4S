@@ -1227,6 +1227,8 @@ class HostDispatcher:
         # prior turn's passing Cell be replayed as current evidence.
         self._task_turn_id: str | None = None
         self._task_branch_id: str | None = None
+        from openai4s.lab.evidence import lab_completion_check
+
         self._completion_service = CompletionService(
             evidence=lambda: gather_submission_evidence(
                 get_store(self.cfg.db_path),
@@ -1241,6 +1243,11 @@ class HostDispatcher:
                 file_service=self._files,
                 turn_id=self._task_turn_id,
                 branch_id=self._task_branch_id,
+            ),
+            lab_evidence=lambda claim: lab_completion_check(
+                get_store(self.cfg.db_path).lab,
+                self._lab_caller().root_frame_id,
+                claim,
             ),
         )
         # Lifecycle owners may stamp the supervisor's persistent generation
