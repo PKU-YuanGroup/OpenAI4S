@@ -426,6 +426,9 @@ def _unit(value: str, path: str) -> None:
         _invalid(path, "unsupported unit")
 
 
+_INT64_MAX = 2**63 - 1
+
+
 def _nonnegative(value: float, path: str) -> None:
     if value < 0:
         _invalid(path, "must be nonnegative")
@@ -645,6 +648,9 @@ class CommandRequest(_Value):
 
     def _validate(self) -> None:
         _nonnegative(self.expected_revision, "CommandRequest.expected_revision")
+        if self.expected_revision > _INT64_MAX:
+            # The ledger stores revisions as SQLite integers.
+            _invalid("CommandRequest.expected_revision", "out of range")
         if not 1 <= len(self.idempotency_key) <= 128 or any(
             not 32 <= ord(c) <= 126 for c in self.idempotency_key
         ):
@@ -824,6 +830,11 @@ class SessionOpenRequest(_Value):
     seed: int | None
     options: Mapping[str, Any]
     expected_capability_revision: str
+
+    def _validate(self) -> None:
+        # Providers seed NumPy/Python RNGs, which take a uint32 (CONTRACT §8.4).
+        if self.seed is not None and not 0 <= self.seed < 2**32:
+            _invalid("SessionOpenRequest.seed", "must be a uint32 or null")
 
 
 @dataclass(frozen=True)

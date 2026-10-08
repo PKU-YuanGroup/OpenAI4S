@@ -1126,3 +1126,18 @@ def test_read_views_are_scoped_projected_and_ledger_only(rig, monkeypatch):
         lambda: manager.observations(caller, run_id, full="yes"),
     ):
         error("invalid_parameters", call)
+
+
+def test_out_of_range_integers_are_refused_before_the_ledger(rig):
+    # A seed is a provider uint32 and a revision a SQLite int64; neither may
+    # escape as a bare OverflowError or reach a ledger row.
+    manager, caller, ledger = rig[:3]
+    for seed in (2**32, 2**63, -1):
+        error("invalid_parameters", lambda: create(rig, seed=seed, idempotency_key="s"))
+    assert ledger.list_runs("root", limit=10) == []
+    run_id = create(rig)["run"]["run_id"]
+    error(
+        "invalid_parameters",
+        lambda: manager.execute(caller, command(run_id, "big", 2**63)),
+    )
+    assert ledger.list_commands(run_id) == []
