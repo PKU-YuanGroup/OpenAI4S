@@ -115,10 +115,12 @@ function scanHtmlForInlineScripts(dir: string): void {
   }
 }
 
-function cspBuildGuard(): Plugin {
+export function cspBuildGuard(outputDir = outDir): Plugin {
+  let isBuild = false;
   return {
     name: "openai4s-csp-no-inline-scripts",
     configResolved(config) {
+      isBuild = config.command === "build";
       for (const plugin of config.plugins) {
         const name = plugin.name;
         if (name === "vite:legacy" || name.startsWith("vite:legacy-")) {
@@ -134,22 +136,24 @@ function cspBuildGuard(): Plugin {
         );
       }
     },
+    transformIndexHtml: {
+      order: "pre",
+      handler(html, context) {
+        if (context.server) return html;
+        // Normalize the input before Vite removes module-script lines: a
+        // CRLF script line can otherwise leave CRCRLF in the emitted shell.
+        return html.replace(/\r\n/g, "\n");
+      },
+    },
     closeBundle() {
-      if (!existsSync(outDir)) {
-        throw new Error(`build output missing: ${outDir}`);
+      // Output checks and docs belong to a build, including isolated tests.
+      if (!isBuild) return;
+      if (!existsSync(outputDir)) {
+        throw new Error(`build output missing: ${outputDir}`);
       }
-      // Vite preserves the source index.html's line endings, so a CRLF
-      // checkout (Git for Windows' default core.autocrlf) emits a CRLF
-      // dist/index.html and the committed-dist drift gate fails on a clean
-      // build. The emitted shell is canonical LF on every checkout.
-      const emittedHtml = join(outDir, "index.html");
-      writeFileSync(
-        emittedHtml,
-        readFileSync(emittedHtml, "utf8").replace(/\r\n/g, "\n"),
-      );
-      scanHtmlForInlineScripts(outDir);
-      writeDistReadmes(outDir, "Workbench build output", "Workbench 构建产物");
-      const assetsDir = join(outDir, "assets");
+      scanHtmlForInlineScripts(outputDir);
+      writeDistReadmes(outputDir, "Workbench build output", "Workbench 构建产物");
+      const assetsDir = join(outputDir, "assets");
       if (existsSync(assetsDir)) {
         writeDistReadmes(assetsDir, "Workbench hashed assets", "Workbench 哈希资源");
       }
