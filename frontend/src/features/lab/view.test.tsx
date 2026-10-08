@@ -46,6 +46,15 @@ describe("Lab bench public view", () => {
     expect(text(vessels)).toContain(labT("unknown"));
     expect(text(vessels)).toContain(labT("composition"));
   });
+  it("displays declared category strings and integers without relabeling them unknown", () => {
+    for (const value of ["Target A", 2]) {
+      const obs = observation(); obs.channels[2]!.value = value;
+      const tree = ObservationView({ descriptor, observation: obs });
+      const target = nodes(tree).find((n) => n.props.class === "lab-channel" && text(n).startsWith("targets"));
+      expect(text(target)).toContain(String(value));
+      expect(text(target)).not.toContain(labT("unknown"));
+    }
+  });
   it("uses resource axes, highlights the selected endpoints, and ignores undeclared channels", () => {
     const obs = observation();
     const tree = VesselView({ descriptor, observation: obs, action: descriptor.capabilities[0] });

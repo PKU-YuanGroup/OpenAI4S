@@ -10,7 +10,7 @@ export const descriptor: Descriptor = {
   capability_revision: "caps", observation_channels: [
     { name: "layers", kind: "array", shape: [2, 4], unit: "dimensionless", source: "simulated_sensor", available: true, description: "Sensor bands", axes: [{ name: "resource", labels: ["extraction_vessel", "beaker_1"] }, { name: "layer_px" }] },
     { name: "pressure", kind: "scalar", shape: [], unit: "dimensionless", source: "simulated_sensor", available: false, description: "Not modeled", reason: "not_modeled" },
-    { name: "targets", kind: "array", shape: [2], unit: "dimensionless", source: "simulated_sensor", available: true, description: "Targets" },
+    { name: "targets", kind: "category", shape: [], unit: "dimensionless", source: "simulated_sensor", available: true, description: "Targets" },
   ], limits: { max_steps: 50 }, stop: { supported: true, semantics: "end_session" }, time: { unit: "model_time", wall_clock_equivalent: null }, reproducibility: { status: "unverified", evidence: null }, assumptions: [],
 };
 export function run(patch: Partial<Run> = {}): Run {
@@ -21,7 +21,7 @@ export function observation(patch: Partial<Observation> = {}): Observation {
     channels: [
       { name: "layers", kind: "array", shape: [2, 4], unit: "dimensionless", source: "simulated_sensor", quality: "ok", value: [[.1, .1, .8, .8], [.2, .2, .6, .6]] },
       { name: "pressure", kind: "scalar", shape: [], unit: "dimensionless", source: "simulated_sensor", quality: "unavailable", value: null },
-      { name: "targets", kind: "array", shape: [2], unit: "dimensionless", source: "simulated_sensor", quality: "ok", value: [0, 1] },
+      { name: "targets", kind: "category", shape: [], unit: "dimensionless", source: "simulated_sensor", quality: "ok", value: "Target A" },
     ], artifact_version_id: null, ...patch };
 }
 export function command(patch: Partial<Command> = {}): Command {

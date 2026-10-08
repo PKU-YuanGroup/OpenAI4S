@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLabFetch as setFetch } from "./api";
 import { LabController } from "./state";
-import { command, deferred, descriptor, detail, device, json, run } from "./fixtures";
+import { command, deferred, descriptor, detail, device, json, observation, run } from "./fixtures";
 
 const setLabFetch: typeof setFetch = (fn) => setFetch(fn && ((url, init) => url.includes("/observations?") ? Promise.resolve(json({ observations: [], next_after_sequence: -1 })) : fn(url, init)));
 
@@ -49,7 +49,8 @@ describe("confirmed Lab state", () => {
       return json(snapshot);
     });
     const pending = controller.refresh(); await vi.advanceTimersByTimeAsync(0);
-    await controller.stop(); held.resolve(json(detail())); await pending;
+    const stop = controller.stop(); await vi.advanceTimersByTimeAsync(0);
+    held.resolve(json(detail())); await Promise.all([stop, pending]);
     expect(controller.state.value.detail?.run.status).toBe("ended");
   });
 
@@ -106,6 +107,38 @@ describe("confirmed Lab state", () => {
     snapshot = detail({ run: run({ status: "quarantined", command_count: 1 }), commands: [command()] });
     await ready(); expect(controller.state.value.pending).toBeNull();
     await controller.retry(); expect(posts).toHaveLength(1);
+  });
+
+  it("remembers command confirmation received before the original POST fails", async () => {
+    await ready();
+    const held = deferred<Response>(); send = () => held.promise;
+    const pending = execute(); await vi.advanceTimersByTimeAsync(0);
+    snapshot = detail({ run: run({ status: "quarantined", command_count: 1 }), commands: [command()] });
+    await ready();
+    held.resolve(json({ error: "Receipt transport lost", code: "persistence_unavailable" }, 503));
+    await pending;
+    expect(controller.state.value.pending).toBeNull();
+    await controller.retry(); expect(posts).toHaveLength(1);
+    expect(controller.state.value.detail?.commands[0]?.state).toBe("outcome_unknown");
+  });
+
+  it("keeps the latest observation after null or old command receipts when the refresh fails", async () => {
+    for (const incoming of [null, observation({ sequence: 1 })]) {
+      controller.scope("root", 1, true);
+      snapshot = detail({ run: run({ revision: 3 }), observation: observation({ sequence: 3 }) });
+      await ready();
+      send = async () => {
+        setLabFetch(async () => json({ error: "read unavailable" }, 503));
+        return json({ run: snapshot.run, command: command({ state: "rejected" }), observation: incoming });
+      };
+      await execute();
+      expect(controller.state.value.detail?.observation?.sequence).toBe(3);
+      setLabFetch(async (url, init) => init?.method === "POST" ? send(url, {}) : json(url.endsWith("/lab") ? { devices: [device], runs: [snapshot.run] } : snapshot));
+      snapshot.commands = [command()]; await ready();
+      await controller.reconcile("labcmd-one");
+      expect(controller.state.value.detail?.observation?.sequence).toBe(3);
+      setLabFetch(async (url, init) => init?.method === "POST" ? send(url, {}) : json(url.endsWith("/lab") ? { devices: [device], runs: [snapshot.run] } : snapshot));
+    }
   });
 
   it("retains rejected commands and their reason instead of declaring execution success", async () => {

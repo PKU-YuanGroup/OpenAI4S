@@ -1,10 +1,10 @@
 import { signal } from "@preact/signals";
 import * as api from "./api";
 import { labT } from "./copy";
-import type { Capability, CommandRequest, CreateRequest, DetailResult, Device, Run } from "./types";
+import type { Capability, CommandRequest, CreateRequest, DetailResult, Device, Observation, Run } from "./types";
 
 type Intent = { kind: "create"; body: CreateRequest } | { kind: "execute"; runId: string; body: CommandRequest };
-export type Pending = { intent: Intent; sending: boolean; error: string };
+export type Pending = { intent: Intent; sending: boolean; error: string; confirmed?: boolean };
 export type LabState = {
   rootId: string | null; generation: number; devices: Device[]; runs: Run[];
   selectedRunId: string | null; detail: DetailResult | null;
@@ -25,10 +25,17 @@ function older(candidate: Run, previous: Run | undefined): boolean {
     (["ended", "failed"].includes(previous.status) && candidate.status !== previous.status);
 }
 
+function newestObservation(current: Observation | null | undefined, incoming: Observation | null): Observation | null {
+  if (!incoming) return current || null;
+  if (current?.run_id === incoming.run_id && current.sequence > incoming.sequence) return current;
+  return incoming;
+}
+
 export class LabController {
   readonly state = signal<LabState>(empty(null, 0));
   private epoch = 0;
   private read = 0;
+  private activeRead: { epoch: number; dirty: boolean; promise: Promise<void> } | null = null;
   // Uncertain requests survive leaving/reopening a session within this page. They are
   // never shown under another root, and only an explicit same-request retry sends them.
   private retained = new Map<string, Pending>();
@@ -45,7 +52,24 @@ export class LabController {
     return this.epoch === epoch && this.state.value.rootId === root;
   }
 
-  async refresh(): Promise<void> {
+  refresh(): Promise<void> {
+    if (!this.state.value.rootId) return Promise.resolve();
+    if (this.activeRead?.epoch === this.epoch) {
+      this.activeRead.dirty = true;
+      return this.activeRead.promise;
+    }
+    const flight = { epoch: this.epoch, dirty: false, promise: Promise.resolve() };
+    this.activeRead = flight;
+    flight.promise = (async () => {
+      do {
+        flight.dirty = false;
+        await this.readSnapshot();
+      } while (flight.dirty && flight.epoch === this.epoch);
+    })().finally(() => { if (this.activeRead === flight) this.activeRead = null; });
+    return flight.promise;
+  }
+
+  private async readSnapshot(): Promise<void> {
     const root = this.state.value.rootId;
     if (!root) return;
     const epoch = this.epoch, read = ++this.read;
@@ -69,13 +93,17 @@ export class LabController {
       const known = this.state.value.detail?.run || this.state.value.runs.find((r) => r.run_id === selected);
       if (older(detail.run, known)) return;
       const retained = this.retained.get(root);
-      if (retained && !retained.sending && retained.intent.kind === "execute" &&
+      if (retained && retained.intent.kind === "execute" && retained.intent.runId === selected &&
           detail.commands.some((c) => c.idempotency_key === retained.intent.body.idempotency_key)) {
         // A confirmed command record supersedes transport uncertainty. Unknown outcomes
         // now offer reconcile, never an execute retry, even with the old key.
-        this.retained.delete(root);
-        this.patch({ pending: null });
+        retained.confirmed = true;
+        if (!retained.sending) {
+          this.retained.delete(root);
+          this.patch({ pending: null });
+        }
       }
+      detail.observation = newestObservation(this.state.value.detail?.observation, detail.observation);
       this.patch({ detail, sequences: Object.fromEntries(observations.observations.filter((o) => o.run_id === selected).map((o) => [o.observation_id, o.sequence])), runs: this.state.value.runs.map((r) => r.run_id === selected ? detail.run : r) });
     } catch (error) {
       if (valid()) this.patch({ error: message(error) });
@@ -130,7 +158,7 @@ export class LabController {
     const existing = this.retained.get(root);
     if (existing?.sending || (existing && existing.intent !== intent)) return;
     // Freeze the submitted body; neither refreshed revision nor edited controls can alter retries.
-    const saved = existing || { intent: structuredClone(intent), sending: false, error: "" };
+    const saved: Pending = existing || { intent: structuredClone(intent), sending: false, error: "" };
     saved.sending = true; saved.error = "";
     this.retained.set(root, saved);
     const epoch = this.epoch, selected = this.state.value.selectedRunId;
@@ -153,7 +181,7 @@ export class LabController {
             const detail = this.state.value.detail;
             const commands = result.command ? [...detail.commands.filter((c) => c.command_id !== result.command!.command_id), result.command]
               .sort((a, b) => a.seq - b.seq) : detail.commands;
-            this.patch({ runs, detail: { ...detail, run: result.run, observation: result.observation, commands } });
+            this.patch({ runs, detail: { ...detail, run: result.run, observation: newestObservation(detail.observation, result.observation), commands } });
           }
         }
       }
@@ -162,7 +190,7 @@ export class LabController {
       saved.sending = false; saved.error = message(error);
       // A structured 4xx is a confirmed refusal before dispatch, unlike network/5xx errors.
       const status = (error as { status?: number })?.status;
-      if (status && status >= 400 && status < 500) this.retained.delete(root);
+      if (saved.confirmed || status && status >= 400 && status < 500) this.retained.delete(root);
       if (this.matches(root, epoch)) this.patch({ pending: this.retained.has(root) ? { ...saved } : null, error: saved.error });
     } finally {
       saved.sending = false;
@@ -186,7 +214,7 @@ export class LabController {
       const current = this.state.value.detail;
       if (current && result.run.run_id === run && !older(result.run, current.run)) {
         const commands = result.command ? current.commands.map((c) => c.command_id === commandId ? result.command! : c) : current.commands;
-        this.patch({ detail: { ...current, run: result.run, commands, observation: result.observation },
+        this.patch({ detail: { ...current, run: result.run, commands, observation: newestObservation(current.observation, result.observation) },
           runs: this.state.value.runs.map((r) => r.run_id === run ? result.run : r) });
       }
       await this.refresh();

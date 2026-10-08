@@ -24,3 +24,5 @@
 .lab-notice { color: var(--danger, #b35625); }
 .lab-pane .lab-stop { width: 100%; border-color: var(--danger, #b35625); }
 .lab-pane code { display: block; overflow-wrap: anywhere; font-size: 11px; margin: 8px 0; }
+.lab-vessel strong { overflow-wrap: anywhere; }
+.lab-new summary { cursor: pointer; margin: 8px 0; }

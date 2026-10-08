@@ -14,7 +14,7 @@ export function publicChannels(descriptor: Descriptor, observation: Observation 
   return descriptor.observation_channels.filter((s) => ["simulated_sensor", "physical_sensor"].includes(s.source)).map((spec) => {
     const row = observation?.channels.find((c) => c.name === spec.name && c.kind === spec.kind &&
       c.unit === spec.unit && c.source === spec.source && JSON.stringify(c.shape) === JSON.stringify(spec.shape));
-    const valid = spec.kind === "category" ? typeof row?.value === "string" : matchesShape(row?.value, spec.shape);
+    const valid = spec.kind === "category" ? (typeof row?.value === "string" || Number.isInteger(row?.value)) : matchesShape(row?.value, spec.shape);
     const quality = !spec.available || row?.quality === "unavailable" ? "unavailable" : row?.quality === "ok" && valid ? "ok" : "unknown";
     return { spec, quality, value: quality === "ok" ? row!.value : null };
   });
@@ -146,7 +146,8 @@ export function LabPane() {
         <code>{pending.intent.body.idempotency_key}</code>
         {!pending.sending && <button type="button" onClick={() => void lab.retry()}>{labT("retry")}</button>}
       </section>}
-      <DeviceSetup devices={state.devices} disabled={!!pending || state.stopping} />
+      {detail ? <details class="lab-new"><summary>{labT("create")}</summary><DeviceSetup devices={state.devices} disabled={!!pending || state.stopping} /></details>
+        : <DeviceSetup devices={state.devices} disabled={!!pending || state.stopping} />}
       {state.runs.length ? <label>{labT("run")}<select value={state.selectedRunId || ""} disabled={!!pending?.sending || state.stopping || !!state.querying} onChange={(e) => void lab.select(e.currentTarget.value)}>
         {state.runs.map((r) => <option key={r.run_id} value={r.run_id}>{r.profile} · {r.run_id} · {r.status}</option>)}
       </select></label> : <p>{labT("noRuns")}</p>}

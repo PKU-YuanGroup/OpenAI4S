@@ -65,8 +65,30 @@ describe("Lab lifecycle refresh", () => {
     });
     onEvent({ type: "lab_update", root_frame_id: "one" }); await tick();
     onEvent({ type: "lab_update", root_frame_id: "one" }); await tick();
-    expect(indexReads).toBe(2); expect(lab.state.value.detail?.run.revision).toBe(2);
+    expect(indexReads).toBe(1);
     held.resolve(json({ devices: [device], runs: [run()], latest_event_seq: 0 })); await tick();
+    expect(indexReads).toBe(2);
     expect(lab.state.value.detail?.run.revision).toBe(2);
   });
+  it("makes progress while hints continue more frequently than REST responses", async () => {
+    currentId.value = "one"; await tick();
+    const pending: Array<ReturnType<typeof deferred<Response>>> = [];
+    let revision = 0;
+    setLabFetch(async (url) => {
+      if (url.endsWith("/lab")) { const held = deferred<Response>(); pending.push(held); return held.promise; }
+      return json(detail({ run: run({ revision }) }));
+    });
+    onEvent({ type: "lab_update", root_frame_id: "one" }); await tick();
+    for (let i = 0; i < 3; i++) {
+      onEvent({ type: "lab_update", root_frame_id: "one" }); await tick();
+      revision = i + 1;
+      pending[i]!.resolve(json({ devices: [device], runs: [run({ revision })], latest_event_seq: revision }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lab.state.value.detail?.run.revision).toBe(revision);
+      expect(pending).toHaveLength(i + 2);
+    }
+    pending[3]!.resolve(json({ devices: [device], runs: [run({ revision })], latest_event_seq: revision }));
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
 });
