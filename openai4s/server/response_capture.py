@@ -1260,6 +1260,7 @@ def _drive_session_surface(
     """
     artifact_id = artifact["artifact_id"]
     store = runner.store
+    _drive_lab_surface(recorder, handler_class, runner, frame_id, headers)
 
     # A text artifact, because `edit` refuses anything it cannot treat as text
     # and the octet-stream fixture above is deliberately opaque.
@@ -1671,6 +1672,108 @@ def _drive_session_surface(
         recorder.drive_failures[
             "POST /frames/([^/]+)/revert/undo (session surface)"
         ] = "revert/apply named no revert checkpoint"
+
+
+def _drive_lab_surface(
+    recorder: "Recorder",
+    handler_class,
+    runner,
+    frame_id: str,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """Capture every Lab success via the real adapter, manager and ledger.
+
+    The explicit offline device implements the same DevicePort as providers;
+    neither the manager nor a route response is replaced with a stub.
+    """
+    from openai4s.lab.fake import fake_registration
+
+    manager = runner.lab_manager
+    if not any(
+        reg.device_id == "fake.extractor.01" for reg in manager._registry.list()
+    ):
+        manager._registry.register(fake_registration())
+    base = f"/frames/{frame_id}/lab"
+    route_base = r"/frames/([^/]+)/lab"
+
+    def drive(method, suffix, path, body=None, query=None):
+        route = route_base + suffix
+        handler = _probe_handler(
+            recorder, handler_class, method, path, route, headers, query, body
+        )
+        result = {}
+        observing = handler._json
+
+        def capture(payload, code=200):
+            result.update(status=code, payload=payload)
+            return observing(payload, code)
+
+        handler._json = capture
+        try:
+            handler._api(method, path)
+            if result.get("status") != 200:
+                raise RuntimeError(f"Lab capture expected 200, got {result!r}")
+            return result["payload"]
+        except Exception as error:  # noqa: BLE001
+            recorder.drive_failures[f"{method} {route} (Lab surface)"] = (
+                f"{type(error).__name__}: {error}"
+            )
+            return None
+
+    created = drive(
+        "POST",
+        "/runs",
+        f"{base}/runs",
+        {
+            "device_id": "fake.extractor.01",
+            "profile": "toy-extract-v0",
+            "seed": 7,
+            "idempotency_key": "capture-lab-create",
+        },
+    )
+    if not created:
+        return
+    run_id = created["run"]["run_id"]
+    run_path = f"{base}/runs/{run_id}"
+    run_route = r"/runs/([^/]+)"
+    executed = drive(
+        "POST",
+        run_route + "/commands",
+        f"{run_path}/commands",
+        {
+            "operation": "mix_model",
+            "source": "extraction_vessel",
+            "target": None,
+            "parameters": {"duration": {"value": 1, "unit": "model_time"}},
+            "expected_revision": 0,
+            "idempotency_key": "capture-lab-command",
+        },
+    )
+    drive("GET", "", base)
+    drive(
+        "GET",
+        r"/devices/([^/]+)",
+        f"{base}/devices/fake.extractor.01",
+        query={"profile": ["toy-extract-v0"]},
+    )
+    drive("GET", run_route, run_path)
+    drive("GET", run_route + "/commands", f"{run_path}/commands")
+    drive(
+        "GET",
+        run_route + "/observations",
+        f"{run_path}/observations",
+        query={"full": ["true"]},
+    )
+    if executed:
+        command_id = executed["command"]["command_id"]
+        drive(
+            "POST",
+            run_route + r"/commands/([^/]+)/reconcile",
+            f"{run_path}/commands/{command_id}/reconcile",
+            {},
+        )
+    drive("POST", run_route + "/stop", f"{run_path}/stop", {"reason": "capture"})
+    drive("GET", "/events", f"{base}/events")
 
 
 def _capture_json(

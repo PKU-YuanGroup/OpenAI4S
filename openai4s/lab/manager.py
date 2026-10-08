@@ -11,7 +11,8 @@ import math
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields, replace
-from threading import Event, Lock, RLock
+from functools import wraps
+from threading import Event, Lock, RLock, local
 from typing import Any
 
 from openai4s.lab.devices import DeviceRegistry
@@ -47,6 +48,36 @@ _TERMINAL = {"ended", "failed"}
 _SENT = {"dispatching", "running", "stop_requested"}
 _COMMAND_DONE = {"succeeded", "failed", "rejected", "not_dispatched", "stopped"}
 _PAGE_MAX = 1000
+
+
+def _notify_changes(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Flush committed changes only after the public operation releases locks."""
+
+    @wraps(method)
+    def wrapped(self: LabManager, *args: Any, **kwargs: Any) -> Any:
+        if self._on_change is None or hasattr(self._changes, "pending"):
+            return method(self, *args, **kwargs)
+        self._changes.pending = {}
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            pending = self._changes.pending
+            # Detach before calling user code, which may reenter the manager.
+            del self._changes.pending
+            for run_id, root_frame_id in pending.items():
+                try:
+                    if root_frame_id is None:
+                        run = self._ledger.get_run(run_id)
+                        if run is None:
+                            continue
+                        root_frame_id = run["root_frame_id"]
+                    self._on_change(root_frame_id, run_id)
+                except Exception:
+                    # Notifications are hints; neither callback nor readback
+                    # failures may replace the operation's result or error.
+                    pass
+
+    return wrapped
 
 
 def _refusal_text(error: LabError) -> str:
@@ -111,18 +142,26 @@ class LabManager:
         instance_id: str,
         clock_ms: Callable[[], int],
         limits: LabLimits = LabLimits(),
+        on_change: Callable[[str, str], None] | None = None,
     ) -> None:
         self._ledger_provider = ledger_provider
         self._registry = registry
         self._instance_id = instance_id
         self._clock_ms = clock_ms
         self._limits = limits
+        self._on_change = on_change
+        self._changes = local()
         self._lock = RLock()
         self._live: dict[str, _LiveRun] = {}
         self._opening: dict[str, str] = {}
         self._discarded: set[str] = set()
         self._closed = False
         self.startup_summary: dict[str, int] = {}
+
+    def _changed(self, run_id: str, root_frame_id: str | None = None) -> None:
+        if self._on_change is not None:
+            pending = self._changes.pending
+            pending[run_id] = root_frame_id or pending.get(run_id)
 
     @property
     def _ledger(self) -> LabLedgerPort:
@@ -195,7 +234,7 @@ class LabManager:
             current = self._ledger.get_command(command_id)
             if current is None or current["state"] in _COMMAND_DONE:
                 return None
-            return self._ledger.record_receipt(
+            result = self._ledger.record_receipt(
                 command_id,
                 receipt=receipt.to_dict(),
                 observation=(
@@ -208,6 +247,8 @@ class LabManager:
                 ),
                 evaluation=receipt.evaluation,
             )
+            self._changed(result["run"]["run_id"], result["run"]["root_frame_id"])
+            return result
 
     def _settle_unknown(self, run_id: str, live: _LiveRun) -> None:
         """Ask once about every unknown command while the session can answer.
@@ -238,11 +279,12 @@ class LabManager:
             try:
                 if receipt is None:
                     with self._lock:
-                        self._ledger.mark_not_dispatched(
+                        if self._ledger.mark_not_dispatched(
                             command_id,
                             error_code="provider_timeout",
                             error="Provider confirms command was never received",
-                        )
+                        ):
+                            self._changed(run_id)
                 elif receipt.provider_command_id == command_id:
                     self._persist_receipt(command_id, live, receipt)
             except LabError:
@@ -266,17 +308,20 @@ class LabManager:
             with self._lock:
                 for command in self._ledger.inflight_commands(run_id):
                     if command["state"] == "admitted":
-                        self._ledger.mark_not_dispatched(
+                        if self._ledger.mark_not_dispatched(
                             command["command_id"],
                             error_code="run_ended",
                             error="Lab run ended before dispatch",
-                        )
+                        ):
+                            self._changed(run_id)
                     elif command["state"] in _SENT:
-                        self._ledger.mark_outcome_unknown(
+                        if self._ledger.mark_outcome_unknown(
                             command["command_id"],
                             error="Provider receipt is unavailable",
-                        )
-                self._ledger.end_run(run_id, end_reason=reason)
+                        ):
+                            self._changed(run_id)
+                if self._ledger.end_run(run_id, end_reason=reason):
+                    self._changed(run_id)
             recorded = True
         finally:
             # The provider process is always released. After a ledger failure
@@ -331,6 +376,7 @@ class LabManager:
             detail if isinstance(detail, str) else None,
         )
 
+    @_notify_changes
     def list_devices(self, caller: LabCaller) -> list[dict[str, Any]]:
         self._sweep(caller)
         result = []
@@ -349,6 +395,7 @@ class LabManager:
             )
         return result
 
+    @_notify_changes
     def describe(
         self, caller: LabCaller, device_id: str, profile: str | None = None
     ) -> dict[str, Any]:
@@ -359,6 +406,7 @@ class LabManager:
             load_descriptor(self._registry.describe(device_id, profile).to_dict())
         )
 
+    @_notify_changes
     def create_run(self, caller: LabCaller, request: dict[str, Any]) -> dict[str, Any]:
         self._writable(caller)
         self._sweep(caller)
@@ -468,6 +516,8 @@ class LabManager:
                 }
             )
             run_id = run["run_id"]
+            if created:
+                self._changed(run_id, caller.root_frame_id)
             self._run(caller, run_id)
             if not created:
                 return {
@@ -595,6 +645,7 @@ class LabManager:
             "observation": self._observation(run, full=full),
         }
 
+    @_notify_changes
     def execute(self, caller: LabCaller, request: dict[str, Any]) -> dict[str, Any]:
         self._writable(caller)
         req = CommandRequest.from_dict(request)
@@ -660,6 +711,8 @@ class LabManager:
                 }
             )
             command_id = command["command_id"]
+            if inserted:
+                self._changed(req.run_id, caller.root_frame_id)
             if not inserted:
                 return self._result(req.run_id, command_id)
             if error is not None:
@@ -801,9 +854,10 @@ class LabManager:
     ) -> None:
         try:
             with self._lock:
-                self._ledger.mark_outcome_unknown(
+                if self._ledger.mark_outcome_unknown(
                     command_id, error="Provider receipt is unavailable"
-                )
+                ):
+                    self._changed(run_id)
         except LabError:
             with self._lock:
                 live.needs_restart = True
@@ -839,15 +893,17 @@ class LabManager:
             with self._lock:
                 current = self._ledger.get_command(command_id)
                 if current is not None and current["state"] == "stop_requested":
-                    self._ledger.mark_outcome_unknown(
+                    if self._ledger.mark_outcome_unknown(
                         command_id,
                         error="Resolving stop with provider non-receipt evidence",
-                    )
-                self._ledger.mark_not_dispatched(
+                    ):
+                        self._changed(run_id)
+                if self._ledger.mark_not_dispatched(
                     command_id,
                     error_code="provider_timeout",
                     error="Provider confirms command was never received",
-                )
+                ):
+                    self._changed(run_id)
         except LabError:
             with self._lock:
                 live.needs_restart = True
@@ -858,6 +914,7 @@ class LabManager:
                 {"command_id": command_id},
             ) from None
 
+    @_notify_changes
     def status(
         self, caller: LabCaller, run_id: str, command_id: str | None = None
     ) -> dict[str, Any]:
@@ -898,6 +955,7 @@ class LabManager:
                     live.lock.release()
         return self._result(run_id, command_id)
 
+    @_notify_changes
     def stop(
         self, caller: LabCaller, run_id: str, reason: str | None = None
     ) -> dict[str, Any]:
@@ -909,11 +967,12 @@ class LabManager:
             if live is not None:
                 live.stopping = True
                 if live.active_command:
-                    self._ledger.transition_command(
+                    if self._ledger.transition_command(
                         live.active_command,
                         to_state="stop_requested",
                         from_states=["dispatching", "running"],
-                    )
+                    ):
+                        self._changed(run_id, caller.root_frame_id)
             semantics = project_descriptor(load_descriptor(run["descriptor"]))["stop"][
                 "semantics"
             ]
@@ -932,6 +991,7 @@ class LabManager:
             "semantics": semantics,
         }
 
+    @_notify_changes
     def list_runs(self, caller: LabCaller, *, limit: int = 20) -> list[dict[str, Any]]:
         limit = _limit(limit)
         self._sweep(caller)
@@ -942,6 +1002,7 @@ class LabManager:
             project_run(r) for r in rows if r["owner_user_id"] == caller.owner_user_id
         ][:limit]
 
+    @_notify_changes
     def events(
         self, caller: LabCaller, *, after_seq: int = 0, limit: int = 200
     ) -> dict[str, Any]:
@@ -1022,6 +1083,7 @@ class LabManager:
             "next_after_sequence": rows[-1]["sequence"] if rows else after_sequence,
         }
 
+    @_notify_changes
     def close_all(self, reason: str) -> None:
         with self._lock:
             self._closed = True

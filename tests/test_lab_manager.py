@@ -1141,3 +1141,386 @@ def test_out_of_range_integers_are_refused_before_the_ledger(rig):
         lambda: manager.execute(caller, command(run_id, "big", 2**63)),
     )
     assert ledger.list_commands(run_id) == []
+
+
+@pytest.fixture
+def notified_rig(rig):
+    """Observe committed state and test lock ownership from another thread."""
+    _, caller, ledger, devices, now, registry, store = rig
+    changes = []
+    run_locks = {}
+
+    def notify(root_frame_id, run_id):
+        live = manager._live.get(run_id)
+        if live is not None:
+            run_locks[run_id] = live.lock
+
+        def available(lock):
+            if lock is None:
+                return True
+            acquired = lock.acquire(blocking=False)
+            if acquired:
+                lock.release()
+            return acquired
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            locks_free = pool.submit(
+                lambda: available(manager._lock) and available(run_locks.get(run_id))
+            ).result(10)
+        run = ledger.get_run(run_id)
+        changes.append(
+            {
+                "root": root_frame_id,
+                "run_id": run_id,
+                "status": run["status"],
+                "end_reason": run["end_reason"],
+                "commands": [row["state"] for row in ledger.list_commands(run_id)],
+                "locks_free": locks_free,
+            }
+        )
+
+    manager = LabManager(
+        lambda: ledger,
+        registry,
+        instance_id="daemon-a",
+        clock_ms=lambda: now[0],
+        limits=LabLimits(stop_wait_seconds=0),
+        on_change=notify,
+    )
+    yield (manager, caller, ledger, devices, now, registry, store), changes
+    manager.close_all("test teardown")
+
+
+def test_change_callbacks_follow_committed_operations_and_skip_replays(notified_rig):
+    rig, changes = notified_rig
+    manager, caller, ledger = rig[:3]
+    run_id = create(rig, idempotency_key="creation")["run"]["run_id"]
+    assert len(changes) == 1 and changes[0]["status"] == "ready"
+    assert changes[0]["commands"] == []
+    create(rig, idempotency_key="creation")
+    error("invalid_parameters", lambda: create(rig, options=[]))
+    assert len(changes) == 1
+
+    first = manager.execute(caller, command(run_id))
+    assert len(changes) == 2 and changes[-1]["commands"] == ["succeeded"]
+    manager.execute(caller, command(run_id))
+    rejected = manager.execute(caller, command(run_id, "unsupported", operation="nope"))
+    assert rejected["command"]["state"] == "rejected"
+    assert len(changes) == 3
+    assert changes[-1]["commands"] == ["succeeded", "rejected"]
+    manager.status(caller, run_id, first["command"]["command_id"])
+    manager.observe(caller, run_id)
+    manager.describe_run(caller, run_id)
+    manager.commands(caller, run_id)
+    manager.observations(caller, run_id)
+    manager.events(caller)
+    manager.list_runs(caller)
+    assert len(changes) == 3
+    assert all(row["root"] == caller.root_frame_id for row in changes)
+    assert all(row["locks_free"] for row in changes)
+    assert ledger.get_run(run_id)["revision"] == 1
+
+
+@pytest.mark.parametrize("result", ["receipt", "not_received", "dead", "still_unknown"])
+def test_change_callbacks_cover_unknown_and_status_reconciliation(
+    notified_rig, monkeypatch, result
+):
+    rig, changes = notified_rig
+    manager, caller, ledger, devices = rig[:4]
+    run_id, command_id = unknown_command(rig)
+    assert len(changes) == 2
+    assert changes[-1]["status"] == "quarantined"
+    assert changes[-1]["commands"] == ["outcome_unknown"]
+    assert changes[-1]["locks_free"]
+    if result == "not_received":
+        monkeypatch.setattr(devices[0], "query", lambda *args: None)
+    elif result == "dead":
+        devices[0].crash()
+    elif result == "still_unknown":
+        devices[0].fail_query_next()
+    reconciled = manager.status(caller, run_id, command_id)
+    if result == "still_unknown":
+        assert reconciled["command"]["state"] == "outcome_unknown"
+        assert len(changes) == 2  # A failed query committed no new state.
+    else:
+        assert len(changes) == 3 and changes[-1]["locks_free"]
+        assert changes[-1]["commands"] == [
+            {
+                "receipt": "succeeded",
+                "not_received": "not_dispatched",
+                "dead": "outcome_unknown",
+            }[result]
+        ]
+        assert changes[-1]["status"] == ("ended" if result == "dead" else "ready")
+    assert devices[0].executions == 1
+
+
+@pytest.mark.parametrize("failure", ["limit", "open", "readback"])
+def test_change_callbacks_report_create_failures_after_writes(
+    notified_rig, monkeypatch, failure
+):
+    rig, changes = notified_rig
+    manager, caller, ledger, devices = rig[:4]
+    if failure == "limit":
+        manager._limits = LabLimits(max_live_providers=1)
+        create(rig)
+        changes.clear()
+    elif failure == "open":
+
+        def failed_open(self, request):
+            raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, "injected open failure")
+
+        monkeypatch.setattr(CountingDevice, "open", failed_open)
+    else:
+
+        def failed_readback(run_id):
+            raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "injected read failure")
+
+        monkeypatch.setattr(ledger, "latest_observation", failed_readback)
+    error(
+        "persistence_unavailable" if failure == "readback" else "provider_unavailable",
+        lambda: create(rig),
+    )
+    assert len(changes) == 1 and changes[0]["locks_free"]
+    assert changes[0]["status"] == ("ready" if failure == "readback" else "failed")
+    assert changes[0]["end_reason"] == (
+        None if failure == "readback" else "create_failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "list_devices",
+        "describe",
+        "create_run",
+        "execute",
+        "status",
+        "stop",
+        "list_runs",
+        "events",
+        "close_all",
+    ],
+)
+def test_change_callbacks_cover_idle_sweeps_and_lifecycle(notified_rig, entry):
+    rig, changes = notified_rig
+    manager, caller, ledger, devices, now = rig[:5]
+    run_id = create(rig, budgets={"idle_timeout_ms": 1})["run"]["run_id"]
+    changes.clear()
+    if entry not in {"stop", "close_all"}:
+        now[0] += 1
+    calls = {
+        "list_devices": lambda: manager.list_devices(caller),
+        "describe": lambda: manager.describe(caller, "fake.extractor.01"),
+        "create_run": lambda: create(rig),
+        "execute": lambda: manager.execute(caller, command(run_id)),
+        "status": lambda: manager.status(caller, run_id),
+        "stop": lambda: manager.stop(caller, run_id),
+        "list_runs": lambda: manager.list_runs(caller),
+        "events": lambda: manager.events(caller),
+        "close_all": lambda: manager.close_all("shutdown"),
+    }
+    calls[entry]()
+    ended = [row for row in changes if row["run_id"] == run_id]
+    assert len(ended) == 1 and ended[0]["locks_free"]
+    assert ended[0]["status"] == "ended"
+    assert ended[0]["end_reason"] == {
+        "stop": "stopped",
+        "close_all": "provider_lost",
+    }.get(entry, "idle_timeout")
+    assert devices[0].closed
+
+
+def test_change_callbacks_survive_partial_close_failure(notified_rig, monkeypatch):
+    rig, changes = notified_rig
+    manager, caller, ledger, devices = rig[:4]
+    first = create(rig)["run"]["run_id"]
+    second = create(rig)["run"]["run_id"]
+    ledger.insert_command(
+        {
+            "command_id": "labcmd-callback01",
+            "run_id": first,
+            "idempotency_key": "admitted",
+            "request_hash": "h",
+            "operation": "mix_model",
+            "request": {},
+            "origin": "manual_ui",
+            "state": "admitted",
+        }
+    )
+    end_run = ledger.end_run
+
+    def unavailable(run_id, **kwargs):
+        if run_id == first:
+            raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "injected end failure")
+        return end_run(run_id, **kwargs)
+
+    changes.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "end_run", unavailable)
+        error("persistence_unavailable", lambda: manager.close_all("shutdown"))
+    assert {row["run_id"] for row in changes} == {first, second}
+    assert all(row["locks_free"] for row in changes)
+    assert changes[0]["status"] == "ready"
+    assert changes[0]["commands"] == ["not_dispatched"]
+    assert changes[1]["status"] == "ended" and all(device.closed for device in devices)
+
+
+def test_change_callback_exceptions_preserve_success_and_failure(rig):
+    _, caller, ledger, devices, now, registry = rig[:6]
+    calls = []
+
+    def broken(root, run_id):
+        calls.append((root, run_id))
+        raise RuntimeError("notification unavailable")
+
+    manager = LabManager(
+        lambda: ledger,
+        registry,
+        instance_id="daemon-a",
+        clock_ms=lambda: now[0],
+        limits=LabLimits(max_live_providers=1),
+        on_change=broken,
+    )
+    notifying = (manager, *rig[1:])
+    try:
+        run_id = create(notifying)["run"]["run_id"]
+        assert (
+            manager.execute(caller, command(run_id))["command"]["state"] == "succeeded"
+        )
+        error("provider_unavailable", lambda: create(notifying))
+        assert len(calls) == 3 and calls[0] == (caller.root_frame_id, run_id)
+    finally:
+        manager.close_all("test teardown")
+
+
+def test_change_callbacks_are_isolated_between_concurrent_operations(
+    notified_rig, monkeypatch
+):
+    rig, changes = notified_rig
+    manager, caller, ledger, devices = rig[:4]
+    first = create(rig)["run"]["run_id"]
+    entered, release = Event(), Event()
+    execute = devices[0].execute
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(10)
+        return execute(*args)
+
+    monkeypatch.setattr(devices[0], "execute", blocked)
+    changes.clear()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(manager.execute, caller, command(first))
+        try:
+            assert entered.wait(10)
+            second = create(rig)["run"]["run_id"]
+            assert [row["run_id"] for row in changes] == [second]
+            assert changes[0]["status"] == "ready" and changes[0]["locks_free"]
+        finally:
+            release.set()
+        assert pending.result(10)["command"]["state"] == "succeeded"
+    assert [row["run_id"] for row in changes] == [second, first]
+    assert changes[-1]["commands"] == ["succeeded"] and changes[-1]["locks_free"]
+
+
+def test_startup_change_callback_reports_only_committed_reconciliation(rig):
+    manager, caller, ledger, devices, now, registry = rig[:6]
+    first = create(rig)["run"]["run_id"]
+    second = create(rig)["run"]["run_id"]
+    changes = []
+
+    def changed(root, run_id):
+        changes.append((root, run_id, ledger.get_run(run_id)["status"]))
+        raise RuntimeError("notification unavailable")
+
+    new = build_lab_manager(
+        ledger_provider=lambda: ledger,
+        registry=registry,
+        instance_id="daemon-b",
+        clock_ms=lambda: now[0],
+        on_change=changed,
+    )
+    assert new.startup_summary["runs_ended"] == 2
+    assert set(changes) == {
+        (caller.root_frame_id, first, "ended"),
+        (caller.root_frame_id, second, "ended"),
+    }
+    assert not new._live
+    changes.clear()
+    build_lab_manager(
+        ledger_provider=lambda: ledger,
+        registry=registry,
+        instance_id="daemon-c",
+        clock_ms=lambda: now[0],
+        on_change=changed,
+    )
+    assert changes == []
+
+
+def test_startup_change_callback_reports_partial_failure(rig, monkeypatch):
+    manager, caller, ledger, devices, now, registry = rig[:6]
+    run_id = create(rig)["run"]["run_id"]
+    ledger.insert_command(
+        {
+            "command_id": "labcmd-startup01",
+            "run_id": run_id,
+            "idempotency_key": "admitted",
+            "request_hash": "h",
+            "operation": "mix_model",
+            "request": {},
+            "origin": "manual_ui",
+            "state": "admitted",
+        }
+    )
+    changes = []
+
+    def unavailable(*args, **kwargs):
+        raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "injected end failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "end_run", unavailable)
+        error(
+            "persistence_unavailable",
+            lambda: build_lab_manager(
+                ledger_provider=lambda: ledger,
+                registry=registry,
+                instance_id="daemon-b",
+                clock_ms=lambda: now[0],
+                on_change=lambda root, run: changes.append((root, run)),
+            ),
+        )
+    assert changes == [(caller.root_frame_id, run_id)]
+    assert ledger.get_command("labcmd-startup01")["state"] == "not_dispatched"
+    assert ledger.get_run(run_id)["status"] == "ready"
+
+
+def test_no_callback_keeps_original_ledger_accesses(rig, monkeypatch):
+    manager, caller, ledger, devices, now, registry = rig[:6]
+    run_id = create(rig)["run"]["run_id"]
+
+    reads = []
+
+    def track(name):
+        original = getattr(ledger, name)
+
+        def read(*args, **kwargs):
+            reads.append(name)
+            return original(*args, **kwargs)
+
+        return read
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "events_since", track("events_since"))
+        patch.setattr(ledger, "latest_event_seq", track("latest_event_seq"))
+        assert (
+            manager.execute(caller, command(run_id))["command"]["state"] == "succeeded"
+        )
+        reconciled = build_lab_manager(
+            ledger_provider=lambda: ledger,
+            registry=registry,
+            instance_id="daemon-b",
+            clock_ms=lambda: now[0],
+        )
+    assert reconciled.startup_summary["runs_ended"] == 1
+    assert reads == []

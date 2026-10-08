@@ -41,6 +41,7 @@ class SessionDeletionService:
         drop_resume_window: Callable[[str], Any],
         revoke_shares: Callable[[str], Any] | None = None,
         release_compute: Callable[[str], Any] | None = None,
+        release_lab: Callable[[str], Any] | None = None,
         cleanup_frameless_uploads: bool = False,
     ) -> None:
         self.store = store
@@ -62,6 +63,7 @@ class SessionDeletionService:
         # `drop_runtime`, because folding it in there is this repo's
         # recurring "one guard, one of several call sites" defect.
         self._release_compute = release_compute or (lambda _root_frame_id: None)
+        self._release_lab = release_lab or (lambda _root_frame_id: None)
         # The Gateway enables this only together with its always-on global
         # frameless-mutation/deletion barrier. Direct compositions that cannot
         # prove that admission boundary retain the safe "leave for sweeper"
@@ -78,6 +80,7 @@ class SessionDeletionService:
                 raise ValueError("session deletion requires a root frame id")
             self._drop_runtime(root_frame_id, reason)
         self._release_compute_safe(root_frame_id)
+        self._release_lab_safe(root_frame_id)
         self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_frame(root_frame_id)
         cleanup = self._cleanup(result)
@@ -91,6 +94,7 @@ class SessionDeletionService:
         for root_frame_id in roots:
             self._drop_runtime(root_frame_id, reason)
             self._release_compute_safe(root_frame_id)
+            self._release_lab_safe(root_frame_id)
             self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_project(project_id)
         deleted_roots = tuple(
@@ -105,6 +109,7 @@ class SessionDeletionService:
             if root_frame_id not in roots:
                 self._drop_runtime(root_frame_id, reason)
                 self._release_compute_safe(root_frame_id)
+                self._release_lab_safe(root_frame_id)
                 self._revoke_shares_safe(root_frame_id)
         cleanup = self._cleanup(
             result,
@@ -119,6 +124,14 @@ class SessionDeletionService:
             "freed_dynamic_events": dynamic["events"],
             "freed_dynamic_manifests": dynamic["manifests"],
         }
+
+    def _release_lab_safe(self, root_frame_id: str) -> None:
+        """Release simulation sessions before their ledger rows disappear."""
+        try:
+            self._release_lab(root_frame_id)
+        except Exception:
+            # Provider failure must not prevent deleting a session.
+            pass
 
     def _release_compute_safe(self, root_frame_id: str) -> None:
         """Ask for the cluster resource back. Never fails the deletion.

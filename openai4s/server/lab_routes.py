@@ -1,0 +1,346 @@
+"""Session Lab REST adapters and bounded, metadata-only WebSocket hints."""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Callable
+from contextlib import contextmanager
+from typing import Any
+
+from openai4s.lab.models import CommandOrigin, ErrorCode, LabCaller, LabError
+from openai4s.store import get_store
+
+from . import contract
+from .errors import GatewayError
+
+ROUTES = contract.validate_routes(
+    (
+        contract.RouteSpec("lab.list", "GET", r"/frames/([^/]+)/lab", mutates=False),
+        contract.RouteSpec(
+            "lab.describe", "GET", r"/frames/([^/]+)/lab/devices/([^/]+)", mutates=False
+        ),
+        contract.RouteSpec(
+            "lab.create", "POST", r"/frames/([^/]+)/lab/runs", mutates=True
+        ),
+        contract.RouteSpec(
+            "lab.run", "GET", r"/frames/([^/]+)/lab/runs/([^/]+)", mutates=False
+        ),
+        contract.RouteSpec(
+            "lab.commands",
+            "GET",
+            r"/frames/([^/]+)/lab/runs/([^/]+)/commands",
+            mutates=False,
+        ),
+        contract.RouteSpec(
+            "lab.observations",
+            "GET",
+            r"/frames/([^/]+)/lab/runs/([^/]+)/observations",
+            mutates=False,
+        ),
+        contract.RouteSpec(
+            "lab.execute",
+            "POST",
+            r"/frames/([^/]+)/lab/runs/([^/]+)/commands",
+            mutates=True,
+        ),
+        contract.RouteSpec(
+            "lab.reconcile",
+            "POST",
+            r"/frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile",
+            mutates=True,
+        ),
+        contract.RouteSpec(
+            "lab.stop", "POST", r"/frames/([^/]+)/lab/runs/([^/]+)/stop", mutates=True
+        ),
+        contract.RouteSpec(
+            "lab.events", "GET", r"/frames/([^/]+)/lab/events", mutates=False
+        ),
+    )
+)
+
+_ERROR_STATUS = {
+    ErrorCode.INVALID_PARAMETERS: 422,
+    ErrorCode.MODE_MISMATCH: 422,
+    ErrorCode.RUN_NOT_FOUND: 404,
+    ErrorCode.DEVICE_NOT_FOUND: 404,
+    ErrorCode.IDEMPOTENCY_CONFLICT: 409,
+    ErrorCode.REPLAY_FORBIDDEN: 403,
+    ErrorCode.PROVIDER_UNAVAILABLE: 503,
+    ErrorCode.ADAPTER_MISMATCH: 503,
+    ErrorCode.PERSISTENCE_UNAVAILABLE: 503,
+}
+
+
+def _invalid(message: str) -> LabError:
+    return LabError(ErrorCode.INVALID_PARAMETERS, message)
+
+
+def _body(handler: Any, allowed: set[str], required: set[str] | None = None) -> dict:
+    try:
+        body = handler._body()
+    except GatewayError as exc:
+        if exc.code == 400:
+            raise _invalid("Invalid Lab request body") from None
+        raise
+    if (
+        not isinstance(body, dict)
+        or set(body) - allowed
+        or not (required or set()) <= set(body)
+    ):
+        raise _invalid("Invalid Lab request fields")
+    return body
+
+
+def _query(q: dict, name: str, default: Any = None) -> Any:
+    values = q.get(name)
+    if values is None:
+        return default
+    if len(values) != 1:
+        raise _invalid("Repeated Lab query parameter")
+    return values[0]
+
+
+def _integer(q: dict, name: str, default: int) -> int:
+    value = _query(q, name, str(default))
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        raise _invalid("Invalid Lab pagination") from None
+
+
+def _full(q: dict) -> bool:
+    value = _query(q, "full", "true")
+    if value not in ("true", "false", "1", "0"):
+        raise _invalid("Invalid full")
+    return value in ("true", "1")
+
+
+def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
+    """Reply to one declared route, otherwise leave dispatch to the gateway."""
+    for route in ROUTES:
+        match = route.match(method, sub)
+        if match:
+            break
+    else:
+        return False
+    fid = match.group(1)
+    store = get_store(runner.cfg.db_path)
+    frame = store.get_frame(fid)
+    if frame is None or (frame.get("root_frame_id") or fid) != fid:
+        raise GatewayError(404, "session not found")
+    owner = store.team.session_owner(fid) if runner.cfg.team_mode else None
+    caller = LabCaller(
+        fid,
+        fid,
+        owner["user_id"] if owner else None,
+        CommandOrigin.MANUAL_UI,
+        None,
+        None,
+    )
+    try:
+        manager = runner.lab_manager
+        name = route.name
+        if name == "lab.list":
+            result = {
+                "devices": manager.list_devices(caller),
+                "runs": manager.list_runs(caller, limit=50),
+                "latest_event_seq": manager.events(caller, after_seq=0, limit=1)[
+                    "latest_event_seq"
+                ],
+            }
+        elif name == "lab.describe":
+            result = {
+                "descriptor": manager.describe(
+                    caller, match.group(2), _query(q, "profile")
+                )
+            }
+        elif name == "lab.create":
+            body = _body(
+                self,
+                {"device_id", "profile", "seed", "budgets", "idempotency_key"},
+                {"device_id", "profile", "idempotency_key"},
+            )
+            # Deletion marks admission closed before taking this gate. An
+            # opening that already won finishes before the deletion hook;
+            # a later one is refused without spawning a provider.
+            with runner._lab_creations.session(fid):
+                with runner._lock:
+                    current = store.get_frame(fid)
+                    if current is None:
+                        raise GatewayError(404, "session not found")
+                    if (
+                        runner._closed
+                        or fid in runner._deleting_sessions
+                        or current.get("project_id") in runner._deleting_projects
+                    ):
+                        raise GatewayError(
+                            409, "session deletion or shutdown is in progress"
+                        )
+                result = manager.create_run(caller, body)
+        elif name == "lab.run":
+            run_id = match.group(2)
+            result = manager.observe(caller, run_id, full=True)
+            result["descriptor"] = manager.describe_run(caller, run_id)
+            result["commands"] = manager.commands(
+                caller,
+                run_id,
+                after_seq=max(0, result["run"]["command_count"] - 50),
+                limit=50,
+            )["commands"]
+        elif name == "lab.commands":
+            result = manager.commands(
+                caller,
+                match.group(2),
+                after_seq=_integer(q, "after_seq", 0),
+                limit=_integer(q, "limit", 50),
+            )
+        elif name == "lab.observations":
+            result = manager.observations(
+                caller,
+                match.group(2),
+                after_sequence=_integer(q, "after_sequence", -1),
+                limit=_integer(q, "limit", 20),
+                full=_full(q),
+            )
+        elif name == "lab.execute":
+            body = _body(
+                self,
+                {
+                    "operation",
+                    "source",
+                    "target",
+                    "parameters",
+                    "expected_revision",
+                    "idempotency_key",
+                },
+                {"operation", "expected_revision", "idempotency_key"},
+            )
+            run_id = match.group(2)
+            try:
+                result = manager.execute(
+                    caller,
+                    {
+                        "source": None,
+                        "target": None,
+                        "parameters": {},
+                        **body,
+                        "run_id": run_id,
+                    },
+                )
+            except LabError as exc:
+                if exc.code is not ErrorCode.OUTCOME_UNKNOWN:
+                    raise
+                result = manager.status(caller, run_id, exc.details["command_id"])
+        elif name == "lab.reconcile":
+            _body(self, set())
+            result = manager.status(caller, match.group(2), match.group(3))
+        elif name == "lab.stop":
+            body = _body(self, {"reason"})
+            reason = body.get("reason")
+            if reason is not None and not isinstance(reason, str):
+                raise _invalid("Invalid stop reason")
+            result = manager.stop(caller, match.group(2), reason)
+        else:
+            result = manager.events(
+                caller,
+                after_seq=_integer(q, "after_seq", 0),
+                limit=_integer(q, "limit", 200),
+            )
+        self._json(result)
+    except LabError as exc:
+        error = {"error": exc.message, "code": exc.code.value}
+        if exc.details is not None:
+            error["details"] = exc.details
+        self._json(error, _ERROR_STATUS.get(exc.code, 503))
+    return True
+
+
+class LabCreationGate:
+    """Serialize each root's provider opening with its deletion hook only."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._roots: dict[str, tuple[Any, int]] = {}
+
+    @contextmanager
+    def session(self, root_frame_id: str):
+        with self._lock:
+            lock, users = self._roots.get(root_frame_id, (threading.Lock(), 0))
+            self._roots[root_frame_id] = (lock, users + 1)
+        try:
+            with lock:
+                yield
+        finally:
+            with self._lock:
+                _, users = self._roots[root_frame_id]
+                if users == 1:
+                    del self._roots[root_frame_id]
+                else:
+                    self._roots[root_frame_id] = (lock, users - 1)
+
+
+class LabUpdateEmitter:
+    """Trailing 250 ms batches; never publish provider data or read via manager."""
+
+    def __init__(
+        self, *, emit: Callable, latest_seq: Callable, timer_factory=threading.Timer
+    ):
+        self._emit = emit
+        self._latest_seq = latest_seq
+        self._timer_factory = timer_factory
+        self._lock = threading.Lock()
+        self._pending: dict[str, tuple[str | None, Any]] = {}
+        self._closed = False
+
+    def changed(self, root_frame_id: str, run_id: str) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            pending = self._pending.get(root_frame_id)
+            if pending is not None:
+                previous, timer = pending
+                self._pending[root_frame_id] = (
+                    previous if previous == run_id else None,
+                    timer,
+                )
+                return
+            timer = self._timer_factory(0.25, self._flush, args=(root_frame_id,))
+            timer.daemon = True
+            self._pending[root_frame_id] = (run_id, timer)
+            timer.start()
+
+    def _flush(self, root_frame_id: str) -> None:
+        # Serialize publication with shutdown and new batches. A new timer
+        # starts only after this send, so sends stay at least 250 ms apart.
+        with self._lock:
+            pending = self._pending.pop(root_frame_id, None)
+            if self._closed or pending is None:
+                return
+            run_id, _timer = pending
+            try:
+                self._emit(
+                    root_frame_id,
+                    {
+                        "type": "lab_update",
+                        "root_frame_id": root_frame_id,
+                        "frame_id": root_frame_id,
+                        "run_id": run_id,
+                        "latest_event_seq": self._latest_seq(root_frame_id),
+                    },
+                )
+            except Exception:
+                # This is a hint. Durable REST state remains authoritative.
+                pass
+
+    def drop_session(self, root_frame_id: str) -> None:
+        with self._lock:
+            pending = self._pending.pop(root_frame_id, None)
+            if pending is not None:
+                pending[1].cancel()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            for _run_id, timer in self._pending.values():
+                timer.cancel()
+            self._pending.clear()

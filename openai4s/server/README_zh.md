@@ -66,6 +66,7 @@ gateway.py
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |
 | [`auto_mode_routes.py`](auto_mode_routes.py) | 精确承接 `GET/PATCH /frames/{id}/auto-mode` 与只读 `/auto-audits`。经校验的 `RouteSpec` 表进入契约清单；这里刻意没有公开的 run/review/repair/Guardian 状态变更路由。 |
+| [`lab_routes.py`](lab_routes.py) | 会话作用域的仿真 REST 适配与合并后的 `lab_update` 提示；状态和安全投影由 LabManager 负责。 |
 | [`auto_repair.py`](auto_repair.py) | Stage 5 有界 Repair Agent 与再审核循环。Reviewer 保持只读；Repair 不能自我认证；相同 checksum 复用上一版本。 |
 | [`guardian_shadow.py`](guardian_shadow.py) | Stage 6 精确动作 Guardian shadow。只记录建议、不执行，并拒绝 standing allow。 |
 | [`guardian_enforce.py`](guardian_enforce.py) | Stage 7 无人值守执行。只有非危险精确动作可以 ``allow_once``；Guardian 仍然不能创建 standing allow。 |

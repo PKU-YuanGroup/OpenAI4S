@@ -77,6 +77,11 @@ from openai4s.execution import (
 from openai4s.host.data import kernel_artifact_input_dir
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
+from openai4s.lab.builtin import register_builtin_devices
+from openai4s.lab.devices import DeviceRegistry
+from openai4s.lab.manager import LabManager
+from openai4s.lab.models import ErrorCode, LabError
+from openai4s.lab.runtime import build_lab_manager
 from openai4s.llm import (
     PROVIDERS,
     chat,
@@ -108,6 +113,7 @@ from openai4s.server import (
     file_routes,
     governance_routes,
     kernel_routes,
+    lab_routes,
     local_auth,
     onboarding_routes,
     orchestration_routes,
@@ -2729,6 +2735,15 @@ class SessionRunner:
         self._lock = threading.Lock()
         self._project_mutation_condition = threading.Condition(self._lock)
         self._closed = False
+        self._lab_manager_lock = threading.Lock()
+        self._lab_manager: LabManager | None = None
+        self._lab_creations = lab_routes.LabCreationGate()
+        self._lab_updates = lab_routes.LabUpdateEmitter(
+            emit=lambda root, event: self.hub.broadcast(root, event),
+            latest_seq=lambda root: get_store(self.cfg.db_path).lab.latest_event_seq(
+                root
+            ),
+        )
         # Reconciler/lease callbacks run on the orchestration control threads.
         # A terminal session cleanup has to enter the session FIFO and may sit
         # behind a long Cell, so doing it in the callback stalls reconciliation
@@ -2932,6 +2947,7 @@ class SessionRunner:
             ),
             revoke_shares=self.shares.revoke_for_session,
             release_compute=self._release_session_compute,
+            release_lab=self._release_session_lab,
             cleanup_frameless_uploads=True,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
@@ -3834,6 +3850,34 @@ class SessionRunner:
             except (ExecutionCancelled, TimeoutError):
                 return False
 
+    @property
+    def lab_manager(self) -> LabManager:
+        """One daemon manager, resolving the current Store on every operation."""
+        with self._lab_manager_lock:
+            if self._closed:
+                raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, "Lab manager is closed")
+            if self._lab_manager is None:
+                registry = DeviceRegistry()
+                register_builtin_devices(registry, self.cfg)
+                self._lab_manager = build_lab_manager(
+                    ledger_provider=lambda: get_store(self.cfg.db_path).lab,
+                    registry=registry,
+                    on_change=self._lab_updates.changed,
+                )
+            return self._lab_manager
+
+    def _release_session_lab(self, root_frame_id: str) -> None:
+        # No property access: deleting an untouched session must not reconcile
+        # the whole daemon's Lab ledger. Wait only for same-root REST opens.
+        with self._lab_creations.session(root_frame_id):
+            with self._lab_manager_lock:
+                manager = self._lab_manager
+            try:
+                if manager is not None:
+                    manager.on_session_deleted(root_frame_id)
+            finally:
+                self._lab_updates.drop_session(root_frame_id)
+
     def drop_session(
         self, root_frame_id: str, *, reason: str = "session_closed"
     ) -> bool:
@@ -4445,6 +4489,16 @@ class SessionRunner:
         if tunnel is not None:
             tunnel.close()
         self.executions.close(reason="daemon_shutdown")
+        with self._lab_manager_lock:
+            lab_manager = self._lab_manager
+        try:
+            if lab_manager is not None:
+                lab_manager.close_all("daemon_shutdown")
+        except LabError:
+            # close_all already releases providers even when ledger writes fail.
+            pass
+        finally:
+            self._lab_updates.close()
         for st in self._session_snapshot():
             self.drop_session(st.root_frame_id, reason="daemon_shutdown")
         with self._lock:
@@ -16368,6 +16422,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
             if auto_mode_routes.handle(self, method, sub, q, runner):
                 return
+            if lab_routes.handle(self, method, sub, q, runner):
+                return
             if artifact_workbench_routes.handle(self, method, sub, q, runner):
                 return
             if onboarding_routes.handle(
@@ -21183,6 +21239,9 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         _seed_example_connector(cfg)
         _migrate_builtin_connector_commands(cfg)
         _seed_datapro_connector(cfg)
+        # SessionRunner itself stays lazy for non-daemon compositions/tests.
+        # Startup reconciliation must finish before accepting HTTP requests.
+        runner.lab_manager
         handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     except BaseException:
