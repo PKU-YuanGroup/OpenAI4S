@@ -108,6 +108,18 @@ def default_goal(profile: str, *, target: str | None = None) -> Goal:
             ),
             UPSTREAM_SHA,
         )
+    if profile == "toy-extract-v0" and target in (None, "toy_component"):
+        # The toy device exists only with OPENAI4S_LAB_ENABLE_TOY=1 (CI and
+        # browser end-to-end runs). Its goal is declared so the completion gate
+        # can be exercised in both directions; it is not chemistry.
+        return Goal(
+            profile,
+            "toy_component",
+            "extraction_vessel",
+            0.2,
+            0.9,
+            definition="Toy CI goal: at least 0.2 toy units in extraction_vessel at 0.9 purity. Not a chemical claim.",
+        )
     raise ValueError("Unsupported profile or missing/invalid explicit target")
 
 

@@ -5940,8 +5940,14 @@ class SessionRunner:
             ctx += "\n\n" + remote_ctx
         # Probe at most once per daemon, never on the per-turn prompt path.
         # Availability can inspect an installation and list_devices can sweep.
+        # Only a definite answer is remembered: a transient failure (a busy
+        # ledger, a manager being rebuilt) is retried at the next seeding,
+        # matching the startup promise that Lab is retried on first use.
+        lab_available = False
         with self.__dict__.setdefault("_lab_prompt_lock", threading.Lock()):
-            if not hasattr(self, "_lab_prompt_available"):
+            if hasattr(self, "_lab_prompt_available"):
+                lab_available = self._lab_prompt_available
+            else:
                 try:
                     from openai4s.lab.models import CommandOrigin, LabCaller
 
@@ -5953,13 +5959,13 @@ class SessionRunner:
                         None,
                         None,
                     )
-                    self._lab_prompt_available = any(
+                    lab_available = self._lab_prompt_available = any(
                         row.get("available") is True
                         for row in self.lab_manager.list_devices(caller)
                     )
-                except Exception:
-                    self._lab_prompt_available = False
-        if self._lab_prompt_available:
+                except Exception:  # noqa: BLE001 - seeding never fails on Lab
+                    lab_available = False
+        if lab_available:
             ctx += (
                 "\n\nLab is simulation only; use the lab_* tools. "
                 'First load_skill("lab-simulation") for the recipe and evidence rules.'

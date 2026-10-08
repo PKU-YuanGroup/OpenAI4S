@@ -10,7 +10,11 @@ from openai4s.agent.actions import FinalizeAction
 from openai4s.agent.finalize import validate_finalize_arguments
 from openai4s.agent.models import ModelReply, RunState
 from openai4s.host.completion import CompletionService
-from openai4s.lab.evidence import RUNNING_NOTICE, lab_completion_check
+from openai4s.lab.evidence import (
+    INCOMPLETE_WORDING,
+    RUNNING_NOTICE,
+    lab_completion_check,
+)
 from tests.test_lab_evaluation import rows
 from tests.test_structured_finalize import _call, _local_executor, _web_executor
 
@@ -22,12 +26,28 @@ class SnapshotLedger:
         self.run, self.commands, self.observations, self.evaluations = rows()
         self.run.update(root_frame_id="root", end_reason="end_action")
         self.cursor = 1
+        self.extra_runs = []
+        self.events = []
 
     def list_runs(self, root, *, limit):
-        return [self.run] if self.run and root == "root" else []
+        runs = ([self.run] if self.run else []) + self.extra_runs
+        return runs[:limit] if root == "root" else []
 
     def get_run(self, run_id):
-        return self.run if self.run and self.run["run_id"] == run_id else None
+        return next(
+            (r for r in [self.run, *self.extra_runs] if r and r["run_id"] == run_id),
+            None,
+        )
+
+    def events_since(self, root, *, after_seq=0, limit=200):
+        rows = [e for e in self.events if e["event_seq"] > after_seq]
+        return rows[:limit] if root == "root" else []
+
+    def use(self, run_id, kind="command", state="succeeded"):
+        self.cursor += 1
+        self.events.append(
+            {"event_seq": self.cursor, "run_id": run_id, "kind": kind, "state": state}
+        )
 
     def latest_event_seq(self, root):
         return self.cursor
@@ -218,7 +238,7 @@ def test_incomplete_status_cannot_hide_completion_prose(
     payload[location] = [wording] if location == "completion_bullets" else wording
     del payload["lab_runs"]
     completed, error = finish(door, service, payload)
-    assert completed is None and "explicit lab_runs" in error
+    assert completed is None and INCOMPLETE_WORDING[:40] in error
     # A running label and the required progress notice also cannot hide it.
     payload.update(
         lab_runs=[{"run_id": "run", "status": "running"}],
@@ -274,7 +294,7 @@ def test_structured_success_key_cannot_hide_in_partial_output():
             "task_status": "partial",
         }
     )
-    assert "explicit lab_runs" in result["error"]
+    assert INCOMPLETE_WORDING[:40] in result["error"]
     assert service.last_output is None
 
 
@@ -364,3 +384,165 @@ def test_wurtz_goal_comes_from_initial_public_target():
     assert lab_completion_check(ledger, "root", claim()) is None
     initial["channels"][0]["value"] = "dodecane"
     assert "goal evaluation" in lab_completion_check(ledger, "root", claim())
+
+
+def _two_runs():
+    """Run "run" ended and met its goal; run "stopped" did not."""
+    ledger = SnapshotLedger()
+    stopped = deepcopy(ledger.run)
+    stopped.update(run_id="stopped", status="ended", end_reason="stopped")
+    ledger.extra_runs.append(stopped)
+    return ledger
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+@pytest.mark.parametrize("scope", ["turn", "session"])
+def test_a_verified_run_cannot_vouch_for_one_this_turn_used(door, scope):
+    ledger = _two_runs()
+    turn = ledger.cursor
+    ledger.use("stopped")
+    cursor = turn if scope == "turn" else None
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(
+            ledger, "root", p, turn_cursor=cursor
+        )
+    )
+    payload = claim(summary="The stopped experiment met its goal.")
+    completed, error = finish(door, service, payload)
+    assert completed is None and "Declare every Lab run used" in error
+    assert "stopped" in error
+    payload["lab_runs"].append({"run_id": "stopped", "status": "completed"})
+    completed, error = finish(door, service, payload)
+    assert completed is None and "not ended normally" in error
+    # The honest report about the stopped run is still possible.
+    honest = claim(
+        task_status="partial",
+        summary="The experiment was stopped before the goal was achieved.",
+        completion_bullets=["Completed two transfers before the stop"],
+    )
+    del honest["lab_runs"]
+    completed, error = finish(door, service, honest)
+    assert completed is not None, error
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+def test_a_turn_without_lab_work_needs_no_declaration(door):
+    ledger = _two_runs()
+    ledger.use("stopped")
+    later_turn = ledger.cursor
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(
+            ledger, "root", p, turn_cursor=later_turn
+        )
+    )
+    payload = claim(summary="Paris is the capital of France.")
+    del payload["lab_runs"]
+    completed, error = finish(door, service, payload)
+    assert completed is not None, error
+    # Lab work later in the same turn makes the run part of this turn again.
+    ledger.use("stopped")
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(
+            ledger, "root", p, turn_cursor=later_turn
+        )
+    )
+    completed, error = finish(door, service, payload)
+    assert completed is None and "explicit lab_runs" in error
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+def test_sweeps_and_stops_of_untouched_runs_are_not_this_turns_work(door):
+    ledger = _two_runs()
+    turn = ledger.cursor
+    ledger.use("stopped", kind="run", state="ended")
+    ledger.use("run", kind="observation", state=None)
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p, turn_cursor=turn)
+    )
+    payload = claim(summary="Summarized the earlier result.")
+    del payload["lab_runs"]
+    completed, error = finish(door, service, payload)
+    assert completed is not None, error
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+def test_lab_runs_is_plain_output_in_a_session_without_lab(door):
+    ledger = SnapshotLedger()
+    ledger.run = None
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    for value in ([{"run_id": "R1", "yield": 0.8}], []):
+        payload = claim(lab_runs=value, summary="Tabulated the wet-lab yields.")
+        if door != "submit":
+            # The native schema stays closed; only submit_output's free-form
+            # output can carry an arbitrary key of that name.
+            assert validate_finalize_arguments(payload)
+            continue
+        completed, error = finish(door, service, payload)
+        assert completed is not None, error
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "实验未完成，已停止。",
+        "The experiment did not complete.",
+        "The run was stopped before the goal was achieved.",
+    ],
+)
+def test_honest_incomplete_reports_pass(door, wording):
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ended", end_reason="stopped")
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    payload = claim(
+        task_status="partial",
+        summary=wording,
+        completion_bullets=["Completed two transfers before the stop"],
+    )
+    del payload["lab_runs"]
+    completed, error = finish(door, service, payload)
+    assert completed is not None, error
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "ｃｏｍｐｌｅｔｅｄ the experiment",
+        "comp\u200bleted the experiment",
+        "目标已实现",
+    ],
+)
+def test_normalized_success_wording_still_needs_evidence(door, wording):
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ended", end_reason="stopped")
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    payload = claim(task_status="partial", summary=wording)
+    del payload["lab_runs"]
+    completed, error = finish(door, service, payload)
+    assert completed is None and INCOMPLETE_WORDING[:40] in error
+
+
+@pytest.mark.parametrize("door", ["web", "cli", "submit"])
+def test_running_runs_can_be_reported_blocked(door):
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ready", end_reason=None)
+    service = CompletionService(
+        lab_evidence=lambda p: lab_completion_check(ledger, "root", p)
+    )
+    payload = claim("running", task_status="blocked", summary=RUNNING_NOTICE)
+    completed, error = finish(door, service, payload)
+    assert completed is not None, error
+
+
+def test_a_profile_without_a_goal_is_told_to_report_partial():
+    ledger = SnapshotLedger()
+    ledger.run["profile"] = "unmodelled-profile"
+    error = lab_completion_check(ledger, "root", claim())
+    assert "defines no completion goal" in error and "partial" in error

@@ -2,14 +2,21 @@
 
 Explicit run declarations avoid guessing experiment identity from prose. The
 native finalize payload carries ``lab_runs`` directly; submit_output carries
-it in its output dictionary, preserving the existing SDK signature. A session
-with Lab history must name runs to claim a completed task. Incomplete reports
-can omit declarations with partial/blocked/failed task_status.
+it in its output dictionary, preserving the existing SDK signature.
+
+Scope is the current user turn: the dispatcher records the session's Lab event
+cursor when a turn starts, and only runs this turn created or commanded are
+"used". A completed task must declare every one of them, so an older verified
+run cannot vouch for an experiment that this turn stopped or left running. A
+turn that did no Lab work, and a delegated child (which has no Lab), needs no
+declaration. Incomplete reports can omit declarations with
+partial/blocked/failed task_status.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -17,31 +24,65 @@ from openai4s.lab.evaluation import default_goal, evaluate_run
 from openai4s.lab.ports import LabLedgerPort
 
 _ALL_ROWS = 2**63 - 1
+_EVENT_PAGE = 1000
 _UNVERIFIABLE = "Lab completion evidence could not be verified."
 RUNNING_NOTICE = "Simulation experiment is still running."
-_SUCCESS_WORDS = re.compile(
-    r"\b(?:complete(?:d)?|finished|succeeded|successful(?:ly)?|done|achieved|attained|accomplished|"
-    r"(?:goal|target)\s+(?:met|attainment))\b"
-    r"|完成|成功|达成|完毕",
+INCOMPLETE_WORDING = (
+    "An incomplete Lab report cannot say the experiment or its goal succeeded. "
+    "Describe what was observed (for example stopped or unresolved), "
+    "or declare completed runs in lab_runs."
+)
+_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
+_VERB = (
+    r"(?:complete(?:d)?|finished|succeeded|successful(?:ly)?|achieved|met|"
+    r"reached|attained|accomplished|done)"
+)
+_OBJECT = r"(?:experiments?|simulations?|runs?|goals?|targets?|objectives?|tasks?)"
+# A negated or not-yet clause is an honest report, never a success claim.
+_NEGATED = re.compile(
+    r"\b(?:not|never|no longer|cannot|can't|couldn't|didn't|wasn't|isn't|"
+    r"hasn't|haven't|unable to|failed to|without|before)\b"
+    rf"(?:\s+\w+){{0,4}}?\s+(?:be\s+|been\s+)?{_VERB}\b"
+    r"|(?:未能|未|没有|没|尚未|无法|不能)(?:完成|成功|达成|实现|结束)",
+    re.IGNORECASE,
+)
+# Success is a claim about the experiment, run, goal or task. A bullet like
+# "Completed two transfers before the stop" reports progress and passes.
+_SUCCESS = re.compile(
+    rf"\b{_OBJECT}\b(?:\s+\w+){{0,4}}?\s+{_VERB}\b"
+    rf"|\b{_VERB}\s+(?:the\s+|this\s+|our\s+|its\s+|all\s+)?(?:\w+\s+)?{_OBJECT}\b"
+    r"|(?:实验|仿真|目标|任务)[^。！？；，,.!?;\n]{0,8}(?:完成|成功|达成|实现|完毕)"
+    r"|(?:完成|达成|实现)(?:了)?[^。！？；，,.!?;\n]{0,4}(?:实验|仿真|目标|任务)",
     re.IGNORECASE,
 )
 
 
-def _success_prose(claim):
-    # Conservative in Lab sessions: an incomplete report should state the
-    # observed state (stopped/unresolved), not use completion wording. Do not
-    # infer negation across arbitrary model prose or treat task_status as a
-    # licence to contradict the public summary. Only the two known envelope
-    # levels exclude verified machine fields, before entering this recursion.
+def _success_text(text):
+    text = unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH)
+    text = _NEGATED.sub(" ", text.replace("_", " "))
+    return bool(_SUCCESS.search(text))
+
+
+def _success_prose(claim, parent=""):
+    # Only the two known envelope levels exclude verified machine fields,
+    # before entering this recursion; nested keys are prose like any other.
+    # A structured claim reads as "<parent> <key> <value>", so a nested
+    # {"task_status": "completed"} or {"experiment_completed": true} counts.
     if isinstance(claim, str):
-        return bool(_SUCCESS_WORDS.search(claim.replace("_", " ")))
+        return _success_text(claim)
     if isinstance(claim, Mapping):
-        return any(
-            _success_prose(str(key)) or _success_prose(value)
-            for key, value in claim.items()
-        )
+        for key, value in claim.items():
+            if _success_text(f"{parent} {key}"):
+                return True
+            if isinstance(value, (str, bool, int, float)) and _success_text(
+                f"{parent} {key} {value}"
+            ):
+                return True
+            if _success_prose(value, str(key)):
+                return True
+        return False
     if isinstance(claim, (list, tuple)):
-        return any(_success_prose(value) for value in claim)
+        return any(_success_prose(value, parent) for value in claim)
     return False
 
 
@@ -56,28 +97,56 @@ def _claim_success_prose(claim):
     return _success_prose(public)
 
 
+def _turn_runs(ledger, root, turn_cursor):
+    """Runs this turn created or commanded; without a turn, every run."""
+    if turn_cursor is None:
+        return {row["run_id"] for row in ledger.list_runs(root, limit=_ALL_ROWS)}
+    used, after = set(), turn_cursor
+    while True:
+        page = ledger.events_since(root, after_seq=after, limit=_EVENT_PAGE)
+        for event in page:
+            # Sweeps and stops of untouched runs emit run events only.
+            if event.get("run_id") and (
+                event.get("kind") == "command"
+                or (event.get("kind") == "run" and event.get("state") == "creating")
+            ):
+                used.add(event["run_id"])
+        if len(page) < _EVENT_PAGE:
+            return used
+        after = page[-1]["event_seq"]
+
+
 def lab_completion_check(
-    ledger: LabLedgerPort, root_frame_id: str, claim: Mapping[str, Any]
+    ledger: LabLedgerPort,
+    root_frame_id: str,
+    claim: Mapping[str, Any],
+    *,
+    turn_cursor: int | None = None,
 ) -> str | None:
     """Return a fixed, value-free refusal or accept the exact declared runs.
 
-    Reads exhaust repository limits, and the event cursor fences a concurrent
-    write across the snapshot. Any unavailable evidence fails closed; neither
-    exceptions nor evaluation diagnostics are reflected to the caller or log.
+    ``turn_cursor`` is the session's Lab event cursor when the current turn
+    began; None treats every run in the session as this turn's. Reads exhaust
+    repository limits, and the event cursor fences a concurrent write across
+    the snapshot. Any unavailable evidence fails closed; neither exceptions
+    nor evaluation diagnostics are reflected to the caller or log.
     """
     try:
-        return _check(ledger, root_frame_id, claim)
+        return _check(ledger, root_frame_id, claim, turn_cursor)
     except Exception:
         return _UNVERIFIABLE
 
 
-def _check(ledger, root, claim):
+def _check(ledger, root, claim, turn_cursor):
     output = claim.get("output")
     payload = output if isinstance(output, Mapping) else claim
     declarations = payload.get("lab_runs")
     if "lab_runs" in claim and payload is not claim:
         return "Put lab_runs inside the submit_output output dictionary."
-    if declarations is None and not ledger.list_runs(root, limit=1):
+    used = _turn_runs(ledger, root, turn_cursor)
+    if not used and (declarations is None or not ledger.list_runs(root, limit=1)):
+        # No Lab work this turn. In a session that never used Lab, a key
+        # named lab_runs is ordinary output data, not a declaration.
         return None
     if (
         payload is not claim
@@ -87,12 +156,14 @@ def _check(ledger, root, claim):
     ):
         return "Lab task_status declarations conflict."
     status = claim.get("task_status") or payload.get("task_status") or "completed"
+    incomplete = status in {"partial", "blocked", "failed"}
     if declarations is None:
-        if status in {"partial", "blocked", "failed"} and not _claim_success_prose(
-            claim
-        ):
-            return None
-        return "Lab completion requires explicit lab_runs with run_id and status."
+        if incomplete:
+            return INCOMPLETE_WORDING if _claim_success_prose(claim) else None
+        return (
+            "Lab completion requires explicit lab_runs declaring every run used "
+            "in this turn: " + ", ".join(sorted(used)[:20]) + "."
+        )
     if not isinstance(declarations, list) or not 1 <= len(declarations) <= 100:
         return "lab_runs must be a nonempty list of run declarations."
     seen = set()
@@ -122,7 +193,7 @@ def _check(ledger, root, claim):
             # Web projection exposes only the first 4000 stripped characters.
             visible_summary = summary.strip()[:4000] if isinstance(summary, str) else ""
             if (
-                status != "partial"
+                status not in {"partial", "blocked"}
                 or not isinstance(summary, str)
                 or not (
                     RUNNING_NOTICE in visible_summary
@@ -130,8 +201,8 @@ def _check(ledger, root, claim):
                 )
             ):
                 return (
-                    "A running Lab run requires task_status partial and summary: "
-                    + RUNNING_NOTICE
+                    "A running Lab run requires task_status partial or blocked "
+                    "and summary: " + RUNNING_NOTICE
                 )
             continue
         if run.get("status") != "ended" or run.get("end_reason") not in {
@@ -159,13 +230,28 @@ def _check(ledger, root, claim):
             if len(targets) != 1 or not isinstance(targets[0], str):
                 return "The Lab goal definition could not be verified."
             target = targets[0]
-        goal = default_goal(run["profile"], target=target)
+        try:
+            goal = default_goal(run["profile"], target=target)
+        except ValueError:
+            return (
+                "This simulation profile defines no completion goal; "
+                "report the run as partial instead of completed."
+            )
         result = evaluate_run(run, commands, observations, evaluations, goal=goal)
         coverage = result["evidence_completeness"]
         if coverage["successful_commands"] != coverage["with_observation"]:
             return "A successful Lab command is missing its matching observation."
         if result["goal_met"] is not True:
             return "The Lab goal evaluation is not met or could not be verified."
+    if not incomplete:
+        undeclared = sorted(used - seen)
+        if undeclared:
+            # Otherwise a verified run could vouch for one this turn stopped.
+            return (
+                "Declare every Lab run used in this turn in lab_runs: "
+                + ", ".join(undeclared[:20])
+                + "."
+            )
     if ledger.latest_event_seq(root) != cursor:
         return "Lab evidence changed during verification; query the run and try again."
     return None

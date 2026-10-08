@@ -1227,6 +1227,9 @@ class HostDispatcher:
         # prior turn's passing Cell be replayed as current evidence.
         self._task_turn_id: str | None = None
         self._task_branch_id: str | None = None
+        # The session's Lab event cursor when the current user turn began, so
+        # completion evidence covers exactly the runs this turn used.
+        self._lab_turn_cursor: int | None = None
         from openai4s.lab.evidence import lab_completion_check
 
         self._completion_service = CompletionService(
@@ -1244,10 +1247,17 @@ class HostDispatcher:
                 turn_id=self._task_turn_id,
                 branch_id=self._task_branch_id,
             ),
-            lab_evidence=lambda claim: lab_completion_check(
-                get_store(self.cfg.db_path).lab,
-                self._lab_caller().root_frame_id,
-                claim,
+            # A delegated child has no Lab (CONTRACT §11.1); its completion is
+            # its parent's input, and the parent's own completion is checked.
+            lab_evidence=lambda claim: (
+                None
+                if self._child_execution_policy is not None
+                else lab_completion_check(
+                    get_store(self.cfg.db_path).lab,
+                    self._lab_caller().root_frame_id,
+                    claim,
+                    turn_cursor=self._lab_turn_cursor,
+                )
             ),
         )
         # Lifecycle owners may stamp the supervisor's persistent generation
@@ -1776,6 +1786,16 @@ class HostDispatcher:
         self._task_branch_id = (
             str(branch_id or self.frame_id or "") if turn_id else None
         )
+        self._lab_turn_cursor = self._lab_event_cursor() if turn_id else None
+
+    def _lab_event_cursor(self) -> int | None:
+        """The session's latest Lab event, or None to check every run."""
+
+        try:
+            root = self._lab_caller().root_frame_id
+            return int(get_store(self.cfg.db_path).lab.latest_event_seq(root))
+        except Exception:  # noqa: BLE001 - None is the stricter session scope
+            return None
 
     def _audit_bash_result(self, **fields: Any) -> None:
         """Persist a shell receipt under the Cell's canonical action group."""
