@@ -265,7 +265,7 @@ Sorted.
 | `#heading` | browser_sandbox_preview.mjs | 4 |
 | `#ketcher-save` | browser_sandbox_preview.mjs | 1 |
 | `#ketcher-status` | browser_sandbox_preview.mjs | 2 |
-| `#messages` | browser_lab.mjs, browser_p1_controls.mjs, browser_smoke.mjs | 9 |
+| `#messages` | browser_lab.mjs, browser_p1_controls.mjs, browser_smoke.mjs | 10 |
 | `#messages .empty-session` | browser_smoke.mjs | 1 |
 | `#messages .msg.assistant .md a[href^="/api/v1/artifacts/"]` | browser_stage1_trusted_delivery.mjs | 1 |
 | `#meta` | browser_team_mode.mjs | 1 |
