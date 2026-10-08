@@ -115,6 +115,12 @@ class _ProviderDevice:
                 code = ErrorCode(exc.code)
             except ValueError:
                 code = ErrorCode.PROVIDER_PROTOCOL_ERROR
+            if code in {
+                ErrorCode.PROVIDER_PROTOCOL_ERROR,
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                ErrorCode.PROVIDER_TIMEOUT,
+            }:
+                self._client.close()
             raise LabError(code, "Development provider operation failed") from None
 
     def _decode(self, decoder, payload):

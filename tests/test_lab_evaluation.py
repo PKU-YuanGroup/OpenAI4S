@@ -394,7 +394,8 @@ def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(profile
 
 @pytest.mark.stubbed_backend
 @pytest.mark.parametrize(
-    "entry", ["describe", "open", "execute", "query", "stop", "query_identity"]
+    "entry",
+    ["describe", "open", "execute", "query", "stop", "query_identity", "error_code"],
 )
 def test_probe_invalid_response_kills_provider_instead_of_claiming_live(
     entry, monkeypatch, tmp_path
@@ -460,6 +461,8 @@ def test_probe_invalid_response_kills_provider_instead_of_claiming_live(
             return self
 
         def request(self, op, args, *, timeout):
+            if entry == "error_code" and op == "execute":
+                raise probe.ProviderError("future_invalid_code", "Invalid error frame")
             return deepcopy(responses[op])
 
         def close(self):
