@@ -745,3 +745,56 @@ def test_recovery_status_does_not_query_unknown_or_reap_idle(rig):
         and result["run"]["status"] == "quarantined"
     )
     assert devices[0].queries == 1 and not devices[0].closed
+
+
+def test_create_readback_failure_preserves_committed_live_session(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    original = ledger.latest_observation
+    attempts = 0
+
+    def fail_once(run_id):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "injected read failure")
+        return original(run_id)
+
+    monkeypatch.setattr(ledger, "latest_observation", fail_once)
+    error("persistence_unavailable", lambda: create(rig, idempotency_key="readback"))
+    assert len(devices) == 1 and not devices[0].closed
+    repeated = create(rig, idempotency_key="readback")
+    assert (
+        repeated["run"]["status"] == "ready"
+        and repeated["observation"]["sequence"] == 0
+    )
+    assert len(devices) == 1
+    assert (
+        manager.execute(caller, command(repeated["run"]["run_id"]))["command"]["state"]
+        == "succeeded"
+    )
+
+
+def test_deletion_keeps_closing_provider_in_live_limit(rig, monkeypatch):
+    manager, caller, ledger, devices = rig[:4]
+    manager._limits = LabLimits(max_live_providers=1, stop_wait_seconds=0)
+    create(rig)
+    entered, release = Event(), Event()
+    original = devices[0].close
+
+    def blocked(session_id):
+        entered.set()
+        assert release.wait(10)
+        original(session_id)
+
+    monkeypatch.setattr(devices[0], "close", blocked)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(manager.on_session_deleted, caller.root_frame_id)
+        try:
+            assert entered.wait(10)
+            error("provider_unavailable", lambda: create(rig))
+            assert len(devices) == 1
+        finally:
+            release.set()
+        pending.result()
+    assert not manager._live
+    assert create(rig)["run"]["status"] == "ready" and len(devices) == 2

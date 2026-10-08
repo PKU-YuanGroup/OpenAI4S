@@ -400,11 +400,6 @@ class LabManager:
                 live.done.set()
                 self._opening.pop(run_id, None)
                 self._live[run_id] = live
-                return {
-                    "run": project_run(run),
-                    "descriptor": project_descriptor(actual),
-                    "observation": self._observation(run),
-                }
         except Exception as exc:
             if live is not None:
                 self._close(live)
@@ -423,6 +418,13 @@ class LabManager:
             with self._lock:
                 self._opening.pop(run_id, None)
                 self._discarded.discard(run_id)
+        # The initial observation is committed and ownership is registered.
+        # A read/projection failure here must not tear down a ready session.
+        return {
+            "run": project_run(run),
+            "descriptor": project_descriptor(actual),
+            "observation": self._observation(run),
+        }
 
     def observe(
         self, caller: LabCaller, run_id: str, *, full: bool = False
@@ -833,6 +835,9 @@ class LabManager:
                 run = self._ledger.get_run(run_id)
                 if run is None or run["root_frame_id"] == root_frame_id:
                     live.stopping = True
-                    removed.append(self._live.pop(run_id))
-        for live in removed:
+                    removed.append((run_id, live))
+        for run_id, live in removed:
             self._close(live)
+            with self._lock:
+                if self._live.get(run_id) is live:
+                    self._live.pop(run_id)
