@@ -66,7 +66,7 @@ class ProviderClient:
         if max_frame_bytes < 1 or stderr_tail_bytes < 0:
             raise ValueError("invalid buffer size")
         self.process = None
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._stderr_lock = threading.Lock()
         self._stderr = bytearray()
         self._buffer = bytearray()
@@ -118,10 +118,14 @@ class ProviderClient:
         return self.process is not None and self.process.poll() is None
 
     def _signal_group(self, sig):
-        if self.process is None or self._disposed:
+        if (
+            self.process is None
+            or self._disposed
+            or self.process.returncode is not None
+        ):
             return
         try:
-            # Signal the group even if its leader has exited; descendants may hold pipes.
+            # An unreaped leader still pins the PID; a reaped one no longer does.
             os.killpg(self.process.pid, sig)
         except ProcessLookupError:
             pass
@@ -211,6 +215,10 @@ class ProviderClient:
             self._buffer.extend(chunk)
 
     def request(self, op, args, *, timeout):
+        with self._lock:
+            return self._request_locked(op, args, timeout=timeout)
+
+    def _request_locked(self, op, args, *, timeout):
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
@@ -228,19 +236,18 @@ class ProviderClient:
             # Nothing was written: a host-side argument error must not kill a
             # healthy provider (and be recorded as a lost one).
             raise ValueError(f"request cannot be encoded: {exc}") from None
-        with self._lock:
-            if not self.alive():
-                raise self._gone()
-            try:
-                return self._exchange(request_id, data, timeout)
-            except ProviderTimeout:
-                self._terminate(graceful=op == "close")
-                raise
-            except ProtocolError as exc:
-                self._terminate()
-                raise ProviderProtocolError(str(exc)) from None
-            except (BrokenPipeError, OSError):
-                raise self._gone() from None
+        if not self.alive():
+            raise self._gone()
+        try:
+            return self._exchange(request_id, data, timeout)
+        except ProviderTimeout:
+            self._terminate(graceful=op == "close")
+            raise
+        except ProtocolError as exc:
+            self._terminate()
+            raise ProviderProtocolError(str(exc)) from None
+        except (BrokenPipeError, OSError):
+            raise self._gone() from None
 
     def close(self, timeout=10):
         with self._lock:
@@ -250,11 +257,11 @@ class ProviderClient:
                 if self.alive():
                     deadline = time.monotonic() + timeout
                     try:
-                        self.request("close", {}, timeout=timeout)
+                        self._request_locked("close", {}, timeout=timeout)
                         self.process.wait(timeout=max(0, deadline - time.monotonic()))
                     except (ProviderError, subprocess.TimeoutExpired):
                         self._terminate(graceful=True)
-                # Also dispose descendants after an orderly leader exit.
+                # Never signal a group whose leader has already been reaped.
                 self._signal_group(signal.SIGKILL)
                 self._disposed = True
                 if self._stderr_thread:

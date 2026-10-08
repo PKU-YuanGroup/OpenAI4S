@@ -60,6 +60,11 @@ def scrub_secret_env():
 
 
 def main():
+    if not sys.flags.isolated:
+        raise RuntimeError("provider requires python -I")
+    protocol_input_fd = os.dup(0)
+    with open(os.devnull, "rb") as null_input:
+        os.dup2(null_input.fileno(), 0)
     protocol_fd = os.dup(1)
     os.dup2(2, 1)
     scrub_secret_env()
@@ -85,7 +90,10 @@ def main():
     else:
         from openai4s_lab_provider.chemgymrl.adapter import Backend
     backend = Backend()
-    with os.fdopen(protocol_fd, "wb", buffering=0) as sink:
+    with (
+        os.fdopen(protocol_input_fd, "rb", buffering=0) as source,
+        os.fdopen(protocol_fd, "wb", buffering=0) as sink,
+    ):
         if args.describe:
             descriptor = backend.describe(args.describe)
             if args.portable:
@@ -105,7 +113,7 @@ def main():
             )
             backend.close()
         else:
-            Server(backend).serve(sys.stdin.buffer, sink)
+            Server(backend).serve(source, sink)
     return 0
 
 

@@ -380,3 +380,76 @@ def test_failed_receipts_preserve_current_simulation_position(provider):
         assert not receipt["applied"]
         assert receipt["sim_time"] == 1.0
         assert receipt["step_index"] == 1
+
+
+def test_entrypoint_requires_isolated_python(tmp_path):
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, str(ENTRYPOINT), "--backend", "toy", "--describe", PROFILE],
+        env={"HOME": str(tmp_path)},
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert result.stdout == b""
+
+
+def test_backend_and_children_cannot_read_protocol_stdin(tmp_path):
+    import subprocess
+
+    # Interpose only the stdlib toy constructor, before main moves the fds.
+    peer = """import os,runpy,sys,subprocess
+namespace=runpy.run_path(sys.argv[1],run_name='bootstrap_only')
+namespace['_load_own_package']()
+from openai4s_lab_provider import toy
+original=toy.Backend
+class Probe(original):
+    def __init__(self):
+        assert os.read(0, 1) == b'', 'backend could read protocol input'
+        child=subprocess.run([sys.executable,'-I','-c','import os; assert os.read(0,1)==b""'],timeout=3)
+        assert child.returncode == 0
+        super().__init__()
+toy.Backend=Probe
+sys.argv.pop(1)
+namespace['main']()
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", peer, str(ENTRYPOINT), "--backend", "toy"],
+        input=b'{"v":1,"id":"bye","op":"close","args":{}}\n',
+        env={"HOME": str(tmp_path)},
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["result"] == {"closed": True}
+
+
+def test_request_lock_is_nonreentrant_and_close_still_completes(provider):
+    client = provider()
+    assert client._lock.acquire(blocking=False)
+    try:
+        acquired_twice = client._lock.acquire(blocking=False)
+        if acquired_twice:
+            client._lock.release()
+        assert not acquired_twice
+    finally:
+        client._lock.release()
+    # A subprocess deadline in the other lifecycle tests bounds close regressions.
+    client.close()
+    assert not client.alive()
+
+
+def test_client_never_signals_a_reaped_group(provider, monkeypatch):
+    import signal
+
+    client = provider()
+    _request(client, "close", {})
+    client.process.wait(timeout=5)
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    client._signal_group(signal.SIGKILL)
+    client.close()
+    assert sent == []
