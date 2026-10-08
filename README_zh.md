@@ -89,7 +89,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 - **🐍 纯标准库核心** —— 引擎**和** Web 服务器都是纯标准库(`http.server` + 手写 WebSocket，无框架、无依赖)。LLM 客户端仅用 `urllib` 直接对接 OpenAI / Anthropic / Gemini。
 - **🔌 一行切换多供应商** —— `ark`(doubao · glm · kimi · deepseek · minimax)加官方 `chatgpt · claude · gemini`,都由一个 `host.llm` 统一封装;在 UI 里即可切换。
 - **🖥️ 科研工作台** —— 实时流式事件、版本化 Artifact、溯源、Action Timeline，以及**默认只读的 Notebook**。只有显式开启开发标志后，才能对共享 Python/R 内核输入多行代码。
-- **⚗️ 仿真 Lab** —— Web 工作台中的可选 ChemGymRL 萃取实验台，支持需批准的 agent 动作、手动单步、传感器观测和持久命令记录。→ [Lab 指南](docs/lab.md#中文用户指南)
+- **⚗️ 仿真 Lab** —— Web 工作台中的可选 ChemGymRL 萃取实验台，支持需批准的 agent 动作、手动单步、传感器观测、持久命令记录、精确版本的证据导出与只读回放。→ [Lab 指南](docs/lab.md#中文用户指南)
 - **🔐 分层本地执行防护** —— 严格子进程环境 allowlist、持久审批、与 generation 绑定的一次性 `host.bash` capability，以及 macOS Seatbelt/Linux bubblewrap 沙箱适配器；降级与 fail-closed 状态会显式呈现。
 - **🔬 607 个内置 Skill** —— 46 份由 OpenAI4S 筛选维护的 GPU/模型科学、科研工作流与平台操作配方，加上固定版本、MIT 许可的 GPTomics/bioSkills 全部 561 份配方。Skill 是**代码配方**,不是 JSON schema；大型第三方集合按需搜索，在常驻 prompt 中只占一行。用户自撰的 Skill 只落在数据目录里，无法顶替内置 Skill 的信任等级。
 - **☁️ BYOC 远程计算** —— 在 provider 已配置且可达时，可通过 `ssh:<alias>` 或内置 **NVIDIA NIM** 集成投送 GPU 作业。通用远程计算仍属 Prototype；`host.fold` 遵守严格的不伪造策略。
@@ -254,7 +254,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
 | [**科学连接器**](docs/science-connectors.md) | 七个公共数据库、各自的过滤条件与检索溯源 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、Action Timeline、只读 Notebook、Artifact 与实现状态 |
-| [**仿真 Lab**](docs/lab.md#中文用户指南) | provider 安装、实验台走查、工具/SDK、结果规则与许可 |
+| [**仿真 Lab**](docs/lab.md#中文用户指南) | provider 安装、实验台走查、导出与回放、工具/SDK、结果规则与许可 |
 | [**Web 共享**](docs/webshare.md) | 只读会话共享、信任模型，以及如何运行自己的 relay |
 | [**Jupyter 适配器**](docs/jupyter.md) | 可选的独立 Python/R KernelSpec、安装命令与兼容边界 |
 | [**配置**](docs/configuration.md) | 模型供应商、环境变量、conda 环境、CLI |

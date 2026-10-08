@@ -12,7 +12,7 @@ and the internal plans in this directory are not published by that site.
 
 | File | Purpose and status |
 | --- | --- |
-| `lab.md` | Internal simulation Lab contracts, ports, validation and honest projections. |
+| `lab.md` | Simulation Lab user guide (install, bench, export and replay, tools, completion rules; English and Chinese) and the internal Lab contract: ports, validation and honest projections. |
 | `windows-wsl-parity-audit.md` | WSL2/macOS parity investigation at bca1183f: reproduced gaps, shell/process inventory, workflow acceptance and implementation order; not a release certification. |
 | `windows-wsl-parity-audit_zh.md` | Chinese counterpart of the WSL2/macOS parity investigation. |
 | `windows-wsl-parity-evidence.json` | Synthetic-data observations from the real WSL parity probe, including the Windows interoperability boundary and unavailable secure store. |
