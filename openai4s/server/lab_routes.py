@@ -290,11 +290,12 @@ class LabUpdateEmitter:
         self._timer_factory = timer_factory
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[str | None, Any]] = {}
+        self._deleted: set[str] = set()
         self._closed = False
 
     def changed(self, root_frame_id: str, run_id: str) -> None:
         with self._lock:
-            if self._closed:
+            if self._closed or root_frame_id in self._deleted:
                 return
             pending = self._pending.get(root_frame_id)
             if pending is not None:
@@ -334,6 +335,10 @@ class LabUpdateEmitter:
 
     def drop_session(self, root_frame_id: str) -> None:
         with self._lock:
+            # A provider call interrupted by deletion can unwind and notify
+            # after this hook. Root IDs are not reused: never resurrect its
+            # WebSocket resume window with that late completion hint.
+            self._deleted.add(root_frame_id)
             pending = self._pending.pop(root_frame_id, None)
             if pending is not None:
                 pending[1].cancel()

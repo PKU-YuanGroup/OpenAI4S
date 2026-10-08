@@ -237,6 +237,13 @@ def test_lab_updates_coalesce_manager_writes_and_cancel_on_deletion(tmp_path):
         before = list(runner.hub.events)
         timers[-1].fire()
         assert runner.hub.events == before
+        timer_count = len(timers)
+        runner._lab_updates.changed("root", "late-provider-completion")
+        assert len(timers) == timer_count
+        runner._lab_updates.changed("other", "run")
+        timers[-1].fire()
+        assert runner.hub.events[-1]["root_frame_id"] == "other"
+        before = list(runner.hub.events)
         runner._lab_updates.changed("other", "run")
         runner.close()
         assert timers[-1].cancelled
