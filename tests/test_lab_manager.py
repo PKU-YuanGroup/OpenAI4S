@@ -204,6 +204,7 @@ def test_post_dispatch_write_failure_blocks_and_reconciles(rig, monkeypatch):
         assert "may have executed" in str(exc)
     refused = manager.execute(caller, command(run_id, "blocked", 1))
     assert refused["command"]["state"] == "rejected"
+    assert refused["command"]["error_code"] == "resource_quarantined"
     assert devices[0].executions == 1
     row = ledger.list_commands(run_id)[0]
     assert row["state"] == "dispatching"
