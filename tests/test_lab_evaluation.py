@@ -325,6 +325,41 @@ def test_development_probe_runs_seeded_cohorts_and_counts_actual_dispatches(tmp_
             assert not result["evidence_issues"]
 
 
+def test_an_episode_the_harness_aborted_is_not_comparable_evidence():
+    data = rows()
+    clean = evaluate_run(*data, goal=default_goal("WaterOilExtract-v0"))
+    assert clean["comparability"]["complete"] is True
+    aborted = evaluate_run(
+        *data,
+        goal=default_goal("WaterOilExtract-v0"),
+        episode={"stop_reason": "error", "error_code": "invalid_parameters"},
+    )
+    assert aborted["comparability"]["complete"] is False
+    assert any("harness" in issue for issue in aborted["evidence_issues"])
+    assert compare({"a": [clean], "b": [aborted]})["comparable"] is False
+
+
+def test_development_probe_defaults_to_a_fresh_temporary_work_dir(
+    tmp_path, monkeypatch
+):
+    import tempfile
+
+    from scripts.lab_evaluate import run_probe
+
+    made = []
+
+    def mkdtemp(prefix=""):
+        path = tmp_path / f"{prefix}{len(made)}"
+        path.mkdir()
+        made.append(path)
+        return str(path)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    result = run_probe(episodes=1, seed=7, max_steps=3, policies=["fixed"])
+    assert made and made[0].name.startswith("openai4s-lab-probe-")
+    assert result["execution_boundary"] == "device_contract_probe"
+
+
 @pytest.mark.external
 @pytest.mark.parametrize("profile", ["WaterOilExtract-v0", "GenWurtzExtract-v2"])
 def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(profile):

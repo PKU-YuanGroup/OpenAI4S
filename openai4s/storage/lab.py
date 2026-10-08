@@ -1036,16 +1036,53 @@ class LabLedger:
             self._event(run, "command", command_id, "not_dispatched", now)
             return True
 
-    def append_initial_observation(self, run_id, *, observation, evaluation) -> dict:
+    def append_initial_observation(
+        self, run_id, *, observation, evaluation, descriptor=None
+    ) -> dict:
         with self._transaction():
             run = self._run(run_id)
             if run["status"] != "creating":
                 raise ValueError("Initial observation requires a creating run")
             now = self._clock_ms()
+            fields: dict = {"status": "ready", "updated_at": now}
+            if descriptor is not None:
+                # The opened session's own declarations: the assumptions it
+                # runs under (wrappers, sandbox posture) and its runtime
+                # reproducibility claim. Capabilities and channels stay the
+                # registered allowlist the run was created with.
+                pinned = run["descriptor"]
+                if not isinstance(descriptor, dict) or any(
+                    descriptor.get(key) != pinned.get(key)
+                    for key in (
+                        "device_id",
+                        "backend",
+                        "mode",
+                        "profile",
+                        "capability_revision",
+                    )
+                ):
+                    raise _ledger_error(
+                        "adapter_mismatch", "Opened descriptor differs from the run"
+                    )
+                assumptions = descriptor.get("assumptions")
+                reproducibility = descriptor.get("reproducibility")
+                if (
+                    not isinstance(assumptions, list)
+                    or not all(isinstance(a, str) for a in assumptions)
+                    or not isinstance(reproducibility, dict)
+                ):
+                    raise _ledger_error(
+                        "invalid_parameters", "Invalid opened descriptor"
+                    )
+                fields["descriptor_json"] = _json(
+                    {
+                        **pinned,
+                        "assumptions": list(assumptions),
+                        "reproducibility": reproducibility,
+                    }
+                )
             obs = self._append_observation(run, None, 0, observation, evaluation, now)
-            self._update(
-                "lab_runs", "run_id", run_id, {"status": "ready", "updated_at": now}
-            )
+            self._update("lab_runs", "run_id", run_id, fields)
             self._event(run, "observation", obs["observation_id"], None, now)
             self._event(run, "run", run_id, "ready", now)
             return self._run(run_id)

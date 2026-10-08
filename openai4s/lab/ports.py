@@ -148,8 +148,13 @@ class LabLedgerPort(Protocol):
         *,
         observation: Mapping[str, Any],
         evaluation: Mapping[str, Any],
+        descriptor: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Write sequence 0 and move creating -> ready."""
+        """Write sequence 0 and move creating -> ready.
+
+        ``descriptor`` is the opened session's descriptor: its assumptions
+        and reproducibility claim replace the pinned ones; identity must match.
+        """
         ...
 
     def latest_observation(self, run_id: str) -> dict[str, Any] | None: ...

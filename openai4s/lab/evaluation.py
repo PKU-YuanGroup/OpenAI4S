@@ -164,12 +164,16 @@ def _goal_metrics(vessels, goal):
     }
 
 
-def evaluate_run(run, commands, observations, evaluations, *, goal: Goal) -> dict:
+def evaluate_run(
+    run, commands, observations, evaluations, *, goal: Goal, episode=None
+) -> dict:
     """Evaluate one full run snapshot (decoded LabLedger rows).
 
     Callers must exhaust ledger pagination. Snapshot rows cannot recover prior
     unknown states after reconciliation, or count actual dispatch attempts:
     those metrics intentionally remain unavailable, not a fabricated zero.
+    ``episode`` is the policies.run_episode trace for this run: an episode the
+    harness aborted is not evidence about the policy, so it is incomplete.
     """
     if not isinstance(goal, Goal):
         raise ValueError("An explicit Goal is required")
@@ -180,6 +184,10 @@ def evaluate_run(run, commands, observations, evaluations, *, goal: Goal) -> dic
     )
     run_id = run.get("run_id")
     problems = []
+    if episode is not None and (
+        not isinstance(episode, Mapping) or episode.get("stop_reason") == "error"
+    ):
+        problems.append("the policy episode was aborted by a harness error")
     if not run_id or any(
         row.get("run_id") != run_id for row in commands + observations + evaluations
     ):

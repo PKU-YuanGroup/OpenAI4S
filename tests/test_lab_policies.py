@@ -277,6 +277,24 @@ def test_unknown_outcome_stops_without_another_dispatch(stage):
 
 
 @pytest.mark.stubbed_backend
+@pytest.mark.parametrize("named", [True, False])
+def test_a_write_failure_after_dispatch_is_an_unknown_outcome(named):
+    # The manager names the command when the device may have executed.
+    class FailedWriteEnv(DeviceEnv):
+        def execute(self, request):
+            super().execute(request)
+            raise LabError(
+                ErrorCode.PERSISTENCE_UNAVAILABLE,
+                "Device may have executed",
+                {"command_id": "labcmd-000000000001"} if named else None,
+            )
+
+    env = FailedWriteEnv()
+    result = run_episode(EmptyTransfer(), env, max_steps=7)
+    assert result["stop_reason"] == ("outcome_unknown" if named else "error")
+    assert len(env.requests) == 1
+
+
 def test_manager_adapter_calls_only_manager_and_projects_all_public_results():
     raw = DeviceEnv()
     calls = []
@@ -294,6 +312,18 @@ def test_manager_adapter_calls_only_manager_and_projects_all_public_results():
         def execute(self, received_caller, request):
             calls.append(("execute", received_caller, request))
             return raw.execute(request)
+
+        def observations(
+            self, received_caller, run_id, *, after_sequence=-1, limit=20, full=False
+        ):
+            calls.append(("observations", received_caller, run_id, full))
+            latest = raw.observe()
+            return {
+                "observations": (
+                    [latest] if latest["sequence"] > after_sequence else []
+                )[:limit],
+                "next_after_sequence": latest["sequence"],
+            }
 
     env = ManagerPolicyEnv(
         Manager(), caller, raw.run["run_id"], descriptor=raw.descriptor
@@ -320,9 +350,17 @@ def test_manager_adapter_calls_only_manager_and_projects_all_public_results():
         "config",
     ):
         assert private not in public
-    assert {item[0] for item in calls} == {"status", "observe", "execute"}
+    assert {item[0] for item in calls} == {
+        "status",
+        "observe",
+        "execute",
+        "observations",
+    }
     assert all(item[1] == caller for item in calls)
-    assert all(item[3] is True for item in calls if item[0] == "observe")
+    # Policies read full sensors: the agent view may summarize large arrays.
+    assert all(
+        item[3] is True for item in calls if item[0] in {"observe", "observations"}
+    )
     before = len(calls)
     with pytest.raises(LabError) as caught:
         env.execute({**request, "run_id": "different-run"})

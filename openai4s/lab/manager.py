@@ -535,6 +535,10 @@ class LabManager:
                         "sim_time_unit": descriptor.time["unit"],
                     },
                     evaluation=opened.evaluation,
+                    # Bind what this session runs under (wrapper and sandbox
+                    # assumptions, runtime reproducibility) to the run, so
+                    # evaluation can tell differently configured cohorts apart.
+                    descriptor=actual.to_dict(),
                 )
                 live.done.set()
                 self._opening.pop(run_id, None)

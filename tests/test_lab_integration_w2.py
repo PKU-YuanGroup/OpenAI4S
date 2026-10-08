@@ -21,8 +21,9 @@ import pytest
 
 from openai4s.lab.builtin import register_builtin_devices
 from openai4s.lab.devices import DeviceRegistry
-from openai4s.lab.fake import fake_registration
-from openai4s.lab.manager import LabLimits
+from openai4s.lab.evaluation import Goal, compare, evaluate_run
+from openai4s.lab.fake import FakeExtractorDevice, fake_registration
+from openai4s.lab.manager import LabLimits, LabManager
 from openai4s.lab.manifest import load_descriptor, match_command
 from openai4s.lab.models import (
     CommandOrigin,
@@ -41,7 +42,7 @@ from openai4s.lab.policies import (
     run_episode,
 )
 from openai4s.lab.provider_process import ProviderProcessDevice
-from openai4s.lab.runtime import build_lab_manager
+from openai4s.lab.runtime import build_lab_manager, wall_clock_ms
 from openai4s.lab.wrappers import (
     BusyWrapper,
     FaultInjectionWrapper,
@@ -467,6 +468,117 @@ def test_policies_cross_the_real_manager_without_illegal_actions(lab):
     if randomized["stop_reason"] == "ended":
         assert randomized["run"]["end_reason"] in {"end_action", "budget_exhausted"}
     assert private_keys(randomized) == []
+
+
+def test_policies_read_full_sensors_when_the_agent_view_is_summarized(lab, monkeypatch):
+    # GenWurtz `layers` is 3x100: past the 256-element agent view, a command
+    # result carries a summary. A policy must still read the full array (the
+    # first such command used to abort every GenWurtz episode after applying).
+    import openai4s.lab.manager as manager_module
+
+    summarize = manager_module.project_observation
+    monkeypatch.setattr(
+        manager_module,
+        "project_observation",
+        lambda obs, **kw: summarize(obs, **{**kw, "max_elements": 4}),
+    )
+    run_id, env = _fake_run(lab, 9)
+    direct = lab.manager.execute(
+        lab.caller, {**_fake_mix(run_id), "idempotency_key": "x"}
+    )
+    layers = next(c for c in direct["observation"]["channels"] if c["name"] == "layers")
+    assert layers["value"]["truncated"] is True
+    episode = run_episode(FixedRulePolicy(), env, max_steps=40)
+    assert episode["error_code"] is None and episode["stop_reason"] == "ended"
+    assert all(
+        isinstance(c["value"], list)
+        for o in episode["observations"]
+        for c in o["channels"]
+        if c["name"] == "layers"
+    )
+
+
+def _fake_mix(run_id):
+    return {
+        "run_id": run_id,
+        "operation": "mix_model",
+        "source": "extraction_vessel",
+        "target": None,
+        "parameters": {"duration": {"value": 1, "unit": "model_time"}},
+        "expected_revision": 0,
+    }
+
+
+def _evaluate(ledger, run_id, goal):
+    return evaluate_run(
+        ledger.get_run(run_id),
+        ledger.list_commands(run_id, limit=10_000),
+        ledger.list_observations(run_id, limit=10_000),
+        ledger.list_evaluations(run_id),
+        goal=goal,
+    )
+
+
+def test_wrapper_assumptions_are_bound_to_the_run_and_split_cohorts(lab):
+    goal = Goal(
+        profile=PROFILE,
+        target="toy_solute",
+        resource_id="beaker_2",
+        min_amount_mol=0.1,
+        min_purity=0.5,
+    )
+    noisy_registry = DeviceRegistry()
+    noisy_registry.register(
+        replace(
+            fake_registration(),
+            port_factory=lambda: ObservationNoiseWrapper(
+                FakeExtractorDevice(),
+                channel="layers",
+                model={"kind": "gaussian", "sigma": 0.5},
+                seed=424242,
+            ),
+        )
+    )
+    noisy_manager = LabManager(
+        lambda: lab.store.lab,
+        noisy_registry,
+        instance_id="daemon-w2",
+        clock_ms=wall_clock_ms,
+    )
+    results = {}
+    try:
+        for name, manager in (
+            ("clean", lab.manager),
+            ("clean_again", lab.manager),
+            ("noisy", noisy_manager),
+        ):
+            created = manager.create_run(
+                lab.caller,
+                {
+                    "device_id": "fake.extractor.01",
+                    "profile": PROFILE,
+                    "seed": 7,
+                    "idempotency_key": name,
+                },
+            )
+            run_id = created["run"]["run_id"]
+            descriptor = load_descriptor(lab.store.lab.get_run(run_id)["descriptor"])
+            env = ManagerPolicyEnv(manager, lab.caller, run_id, descriptor=descriptor)
+            episode = run_episode(FixedRulePolicy(), env, max_steps=40)
+            assert episode["stop_reason"] == "ended", (name, episode["stop_reason"])
+            results[name] = _evaluate(lab.store.lab, run_id, goal)
+            assumptions = descriptor.assumptions
+            assert any(a.startswith("observation_noise") for a in assumptions) == (
+                name == "noisy"
+            )
+            assert "424242" not in " ".join(assumptions)
+    finally:
+        noisy_manager.close_all("test teardown")
+    assert compare({"a": [results["clean"]], "b": [results["clean_again"]]})[
+        "comparable"
+    ]
+    refused = compare({"clean": [results["clean"]], "noisy": [results["noisy"]]})
+    assert refused["comparable"] is False
 
 
 def toy_device(tmp_path):

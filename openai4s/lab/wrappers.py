@@ -157,7 +157,10 @@ class ObservationNoiseWrapper(_Wrapper):
         self._lock = RLock()
         super().__init__(
             port,
-            f"observation_noise: gaussian sigma={self._sigma:g} on {channel}; additive, unclipped; seed={seed}; per provider step",
+            # The wrapper seed stays private: with the run seed, profile and
+            # step all public, publishing it would let a policy subtract the
+            # noise exactly. Comparability rests on the declared model.
+            f"observation_noise: gaussian sigma={self._sigma:g} on {channel}; additive, unclipped; privately seeded per provider step",
         )
 
     def _descriptor(self, descriptor: DeviceDescriptor) -> DeviceDescriptor:
@@ -278,7 +281,8 @@ class ObservationNoiseWrapper(_Wrapper):
             return session_id not in self._dead and super().alive(session_id)
 
     def close(self, session_id: str) -> None:
-        self._check_session(session_id)
+        if session_id in self._dead:
+            return  # Already closed when its sensor frame was rejected.
         # Outside the lock: an execute holding it may be blocked in the inner
         # port, and close must be able to preempt it (CONTRACT §9).
         super().close(session_id)

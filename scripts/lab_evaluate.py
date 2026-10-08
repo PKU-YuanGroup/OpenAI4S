@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -562,7 +563,11 @@ def run_probe(
     profile = profile or (
         "WaterOilExtract-v0" if backend == "chemgymrl" else "toy-extract-v0"
     )
-    work_dir = Path(work_dir or ROOT.parent / "_data/W2-C/probe").expanduser().resolve()
+    work_dir = (
+        Path(work_dir).expanduser().resolve()
+        if work_dir
+        else Path(tempfile.mkdtemp(prefix="openai4s-lab-probe-")).resolve()
+    )
     real_data = (Path.home() / ".openai4s").resolve()
     if work_dir == real_data or real_data in work_dir.parents:
         raise ValueError("Development probes require an isolated work directory")
@@ -643,7 +648,10 @@ def main(argv=None):
         default=["fixed", "random"],
     )
     parser.add_argument(
-        "--work-dir", type=Path, default=ROOT.parent / "_data/W2-C/probe"
+        "--work-dir",
+        type=Path,
+        default=None,
+        help="Provider scratch directory; defaults to a fresh temporary directory",
     )
     parser.add_argument(
         "--output", type=Path, help="Metric JSON artifact; defaults to stdout"

@@ -389,6 +389,9 @@ def test_noise_protocol_failure_closes_the_session(entry):
     with pytest.raises(LabError) as again:
         port.query(base.latest, "command")
     assert again.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    # The failure already closed the session; closing it again is a no-op.
+    port.close(base.latest)
+    port.close(base.latest)
 
 
 def test_nested_timeout_reconciles_state_before_synthetic_refusal():

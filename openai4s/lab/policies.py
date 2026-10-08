@@ -109,15 +109,30 @@ class ManagerPolicyEnv:
 
     def observe(self) -> dict[str, Any]:
         result = self._manager.observe(self._caller, self._run_id, full=True)
-        return _observation_view(result.get("observation", result), self._descriptor)
+        observation = result.get("observation")
+        if observation is None:
+            raise LabError(ErrorCode.RUN_ENDED, "Policy run has no observation")
+        return _observation_view(observation, self._descriptor)
 
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         command = CommandRequest.from_dict(request)
         if command.run_id != self._run_id:
             raise LabError(ErrorCode.RUN_NOT_FOUND, "Policy run does not match")
-        return _result_view(
-            self._manager.execute(self._caller, command.to_dict()), self._descriptor
-        )
+        result = dict(self._manager.execute(self._caller, command.to_dict()))
+        observation = result.get("observation")
+        if observation is not None:
+            # A command result is the agent view, where arrays over 256
+            # elements arrive summarized (CONTRACT §10). A policy reads the
+            # sensors in full, as host.lab.observe(full=True) does.
+            page = self._manager.observations(
+                self._caller,
+                self._run_id,
+                after_sequence=observation["sequence"] - 1,
+                limit=1,
+                full=True,
+            )["observations"]
+            result["observation"] = page[0] if page else None
+        return _result_view(result, self._descriptor)
 
     def status(self) -> dict[str, Any]:
         result = self._manager.status(self._caller, self._run_id)
@@ -344,9 +359,15 @@ def run_episode(policy: Policy, env: PolicyEnv, *, max_steps: int) -> dict[str, 
     except LabError as exc:
         # Never forward transport/provider messages or arbitrary error details.
         error_code = exc.code.value
+        # A failed write after dispatch is the manager saying the device may
+        # have executed (it names the command): that is an unknown outcome.
+        may_have_executed = exc.code is ErrorCode.PERSISTENCE_UNAVAILABLE and bool(
+            (exc.details or {}).get("command_id")
+        )
         stop_reason = (
             "outcome_unknown"
             if exc.code in {ErrorCode.PROVIDER_TIMEOUT, ErrorCode.OUTCOME_UNKNOWN}
+            or may_have_executed
             else "error"
         )
     return {

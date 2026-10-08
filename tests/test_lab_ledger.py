@@ -954,6 +954,51 @@ def test_a_success_resets_consecutive_failures(ledger):
     assert ok["run"]["consecutive_failures"] == 0
 
 
+def test_the_opened_session_binds_its_assumptions_to_the_run(ledger, store):
+    # Wrapper and sandbox assumptions and the runtime reproducibility claim are
+    # what the session actually runs under; capabilities stay the allowlist.
+    pinned = {
+        "device_id": "fake.extractor",
+        "backend": "fake",
+        "mode": "simulation",
+        "profile": "toy",
+        "capability_revision": "rev",
+        "capabilities": [{"capability_id": "registered"}],
+        "assumptions": ["registered assumption"],
+        "reproducibility": {"status": "unverified", "evidence": None},
+    }
+    opened = {
+        **pinned,
+        "capabilities": [{"capability_id": "smuggled"}],
+        "assumptions": ["registered assumption", "observation_noise: gaussian"],
+        "reproducibility": {"status": "verified_for_profile", "evidence": "e"},
+    }
+    for run_id, change in (
+        ("r-dev", {"device_id": "other"}),
+        ("r-rev", {"capability_revision": "other"}),
+    ):
+        ledger.create_run(run_input(run_id, descriptor=pinned))
+        before = snapshot(store)
+        assert_code(
+            "adapter_mismatch",
+            lambda: ledger.append_initial_observation(
+                run_id,
+                observation=observation(),
+                evaluation=None,
+                descriptor={**opened, **change},
+            ),
+        )
+        assert snapshot(store) == before
+    ledger.create_run(run_input("r-ok", descriptor=pinned))
+    run = ledger.append_initial_observation(
+        "r-ok", observation=observation(), evaluation=None, descriptor=opened
+    )
+    assert run["status"] == "ready"
+    assert run["descriptor"]["assumptions"] == opened["assumptions"]
+    assert run["descriptor"]["reproducibility"] == opened["reproducibility"]
+    assert run["descriptor"]["capabilities"] == pinned["capabilities"]
+
+
 def test_host_rejections_count_as_consecutive_failures(ledger):
     # CONTRACT §7 counts failed AND rejected commands. The manager admits on
     # this column, so a rejection recorded either way must move it.
