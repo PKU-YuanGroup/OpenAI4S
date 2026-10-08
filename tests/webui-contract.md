@@ -236,7 +236,7 @@ Sorted.
 | `#dashboard [data-i18n="dash.col.projects"]` | browser_smoke.mjs | 1 |
 | `#dock-files` | browser_stage1_trusted_delivery.mjs | 1 |
 | `#dock-files:not(.hidden)` | browser_stage1_trusted_delivery.mjs | 1 |
-| `#dock-lab` | browser_lab.mjs, browser_matrix.mjs | 2 |
+| `#dock-lab` | browser_lab.mjs, browser_matrix.mjs | 3 |
 | `#dock-notebook` | browser_smoke.mjs | 1 |
 | `#dock-notebook .nb-repl` | browser_stage0_acceptance.mjs | 1 |
 | `#dock-notebook .nb-repl-input` | browser_stage0_acceptance.mjs | 1 |
@@ -358,10 +358,14 @@ Sorted.
 | `.history-load-status button` | browser_smoke.mjs | 2 |
 | `.history-load-status[data-history-state="partial"]` | browser_smoke.mjs | 2 |
 | `.history-load-status[data-history-state="partial"], .history-load-status[data-history-state="error"]` | browser_smoke.mjs | 1 |
-| `.lab-command` | browser_lab.mjs | 1 |
+| `.lab-command` | browser_lab.mjs | 3 |
 | `.lab-connection` | browser_lab.mjs | 3 |
+| `.lab-export-links a` | browser_lab.mjs | 1 |
 | `.lab-metrics` | browser_lab.mjs | 1 |
 | `.lab-metrics span` | browser_lab.mjs | 1 |
+| `.lab-overview` | browser_lab.mjs | 1 |
+| `.lab-replay input[type=range]` | browser_lab.mjs | 1 |
+| `.lab-results` | browser_lab.mjs | 1 |
 | `.lab-setup select` | browser_matrix.mjs | 1 |
 | `.lab-stop` | browser_lab.mjs | 1 |
 | `.msg-fork-btn[data-fork-message-id="*"]` | browser_p1_controls.mjs | 1 |
@@ -494,7 +498,7 @@ Sorted.
 | `table.nbc-table` | browser_smoke.mjs | 1 |
 | `textarea.edit-area` | browser_editor.mjs | 1 |
 
-Total selectors: 293
+Total selectors: 297
 
 ```json
 {
@@ -752,8 +756,12 @@ Total selectors: 293
     ".history-load-status[data-history-state=\"partial\"], .history-load-status[data-history-state=\"error\"]",
     ".lab-command",
     ".lab-connection",
+    ".lab-export-links a",
     ".lab-metrics",
     ".lab-metrics span",
+    ".lab-overview",
+    ".lab-replay input[type=range]",
+    ".lab-results",
     ".lab-setup select",
     ".lab-stop",
     ".msg-fork-btn[data-fork-message-id=\"*\"]",
