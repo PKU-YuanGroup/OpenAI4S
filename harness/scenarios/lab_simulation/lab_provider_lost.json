@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "lab_provider_lost",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "lab-sim"
+  ],
+  "surface": "lab_simulation",
+  "task": "A provider dying after execute leaves the command unknown and ends the run as provider_lost.",
+  "fixtures": {
+    "lab_simulation": {
+      "case": "provider_lost"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "lab_simulation"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "outcome_unknown",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_created",
+      "execute_result",
+      "run_stopped",
+      "cleanup"
+    ],
+    "invariants": []
+  }
+}

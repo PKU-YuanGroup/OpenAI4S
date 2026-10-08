@@ -120,7 +120,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 | **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
-| **Ops, safety & release** | `/api/v1` and a startup credential · Seatbelt/bubblewrap sandbox adapters with visible degraded and fail-closed modes · durable approvals that deny by default when unattended · redacted diagnostics · revocable telemetry · environments as a transaction · a 13-workflow/46-case benchmark against the real Store, kernels, and dispatcher · a staged release pipeline that verifies artifacts before anything becomes public |
+| **Ops, safety & release** | `/api/v1` and a startup credential · Seatbelt/bubblewrap sandbox adapters with visible degraded and fail-closed modes · durable approvals that deny by default when unattended · redacted diagnostics · revocable telemetry · environments as a transaction · a 14-workflow/51-case benchmark against the real Store, kernels, and dispatcher · a staged release pipeline that verifies artifacts before anything becomes public |
 
 ### Experimental features
 
@@ -292,11 +292,11 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 - [x] Read-only session sharing over an outbound relay you operate, with the
   daemon never binding a public port and residual secrets failing the publish
   closed.
-- [x] An **executable** benchmark of end-to-end scientific workflows — 13
-  workflows / 46 cases run against the real Store, kernel managers, host
+- [x] An **executable** benchmark of end-to-end scientific workflows — 14
+  workflows / 51 cases run against the real Store, kernel managers, host
   dispatcher, and compute manager, where a declared `failure` /
-  `permission_denied` / `recovered` / `provenance` outcome fails when the run
-  *succeeds*. Publishing comparable public results is still ahead.
+  `permission_denied` outcome fails when the run *succeeds*. `recovered`,
+  `provenance` and `cancelled` require their declared evidence on a normal run. Publishing comparable public results is still ahead.
 - [x] Environments as a transaction (`openai4s env plan|apply|rollback`): a
   generation is built fresh, verified, and only then pointed at atomically, so
   an artifact's provenance can name an immutable one.

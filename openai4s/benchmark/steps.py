@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from openai4s.benchmark.lab import lab_compare_policies, lab_simulation
 from openai4s.config import Config, LLMConfig
 
 
@@ -1540,6 +1541,8 @@ class SkipCase(Exception):
 #: Name -> implementation. A manifest may only name a step that exists here,
 #: which is what stops a workflow from describing work nothing performs.
 STEPS: dict[str, Callable[[Context, dict], dict]] = {
+    "lab_simulation": lab_simulation,
+    "lab_compare_policies": lab_compare_policies,
     "open_session": open_session,
     # Two artifact saves in one workflow need distinct step names, because the
     # runner keys a step's inputs by its name — reusing the name would silently

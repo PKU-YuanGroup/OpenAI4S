@@ -1,21 +1,21 @@
 # `workflows/`
 
-The versioned science-workflow benchmark's manifests: thirteen workflows and 46
+The versioned science-workflow benchmark's manifests: fourteen workflows and 51
 cases, each workflow JSON declaring what a run is supposed to do and what
 counts as having done it. The root-level `next-round-acceptance.json` is a
-separate Stage 0 field/safety pack, not a fourteenth science workflow.
+separate Stage 0 field/safety pack, not part of the science-workflow count.
 
 They live in the repository rather than in a fixture directory for one reason:
 a case change has to be a reviewable diff. The runner that executes them is
 [`openai4s/benchmark/`](../openai4s/benchmark/README.md), and every step it
 takes drives production code — the real Store, the real kernel manager, the
 real host dispatcher, the real compute manager. What gets injected is only what
-cannot run offline: the model, the network, and a package manager.
+cannot run offline: the model, the network, a package manager and a simulated Lab device.
 
-A declared outcome is part of the contract, not a status column. `failure`,
-`permission_denied`, `recovered` and `provenance` cases fail when the run
-*succeeds*, because a benchmark that scores "no exception" measures nothing
-about the half of the system whose job is to refuse.
+A declared outcome is part of the contract, not a status column. `failure` and
+`permission_denied` cases fail when the run *succeeds*, because a benchmark that scores "no exception" measures nothing
+about the half of the system whose job is to refuse. `recovered`, `provenance`
+and `cancelled` require a normal run satisfying their declared evidence.
 
 | Workflow | What it covers |
 | --- | --- |
@@ -26,6 +26,7 @@ about the half of the system whose job is to refuse.
 | [`environment-provenance/`](environment-provenance/README.md) | An artifact's environment provenance |
 | [`environment-transaction/`](environment-transaction/README.md) | plan -> apply -> rollback as a transaction |
 | [`evidence-package/`](evidence-package/README.md) | Exporting and verifying an evidence package |
+| [`lab-simulation/`](lab-simulation/README.md) | Offline simulation, refusal, reconciliation and paired policies |
 | [`permission-boundary/`](permission-boundary/README.md) | The workspace boundary refuses a write outside it |
 | [`python-analysis/`](python-analysis/README.md) | Python analysis producing a traceable artifact |
 | [`r-analysis/`](r-analysis/README.md) | R is its own channel, not a wrapper |

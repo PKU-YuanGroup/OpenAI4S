@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from harness.characterize import characterization_bytes
 
 _GOLDEN = (
@@ -146,3 +148,53 @@ def test_r5_prechange_cases_state_current_behavior_and_expected_direction(tmp_pa
     assert disabled_mcp["connector_enabled"] is False
     assert disabled_mcp["manager_list_tools_calls"] == 0
     assert "disabled" in disabled_mcp["result"]["error"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lost_response",
+        "duplicate_submission",
+        "stale_revision",
+        "provider_lost",
+        "budget_exhausted",
+        "approval_denied",
+        "recovery_forbidden",
+    ],
+)
+def test_lab_production_trajectory_matches_reviewed_golden(case):
+    from harness.lab import GOLDEN_PATH, run_lab_scenario
+    from harness.schema import load_scenario
+
+    scenario_id = f"lab_{case}"
+    scenario = load_scenario(
+        _GOLDEN.parents[2] / "scenarios" / "lab_simulation" / f"{scenario_id}.json"
+    )
+    result = run_lab_scenario(scenario)
+    assert result.passed, result.errors
+    expected = json.loads(GOLDEN_PATH.read_text())["cases"][scenario_id]
+    expected_bytes = (json.dumps(expected, sort_keys=True, indent=2) + "\n").encode()
+    assert result.normalized == expected_bytes
+    assert result.normalized == run_lab_scenario(scenario).normalized
+    # A closed field allowlist is stronger than a denylist: new production
+    # identifiers, observations or evaluation fields cannot silently enter.
+    permitted = {
+        "run_state",
+        "end_reason",
+        "revision",
+        "command_count",
+        "step_count",
+        "command_state",
+        "error_code",
+        "executions",
+        "queries",
+        "approval_requests",
+        "denied_requests",
+        "live_providers",
+        "alive_sessions",
+    }
+    for event in json.loads(result.normalized)["events"]:
+        assert set(event) == {"kind", "status", "payload"}
+        assert set(event["payload"]) <= permitted
+    assert result.events[-1].status == "released"
+    assert result.events[-1].payload == {"live_providers": 0, "alive_sessions": 0}

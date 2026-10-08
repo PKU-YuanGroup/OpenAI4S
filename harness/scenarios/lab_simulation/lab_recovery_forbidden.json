@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "lab_recovery_forbidden",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "lab-sim"
+  ],
+  "surface": "lab_simulation",
+  "task": "Recovery cannot replay a side-effecting Lab command.",
+  "fixtures": {
+    "lab_simulation": {
+      "case": "recovery_forbidden"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "lab_simulation"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "replay_forbidden",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_created",
+      "recovery_result",
+      "run_stopped",
+      "cleanup"
+    ],
+    "invariants": []
+  }
+}

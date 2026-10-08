@@ -19,6 +19,7 @@ from .schema import ScenarioValidationError, load_scenario
 _ORCHESTRATION_SURFACE = "orchestration"
 _AUTO_MODE_CONTRACT_SURFACE = "auto_mode_contract"
 _AUTO_MODE_TERMINAL_CONTRACT_SURFACE = "auto_mode_terminal_contract"
+_LAB_SURFACE = "lab_simulation"
 
 _DEFAULT_SCENARIOS = Path(__file__).resolve().parent / "scenarios"
 _DEFAULT_GOLDEN = (
@@ -105,13 +106,17 @@ def _run(args: argparse.Namespace) -> int:
         if args.offline and not scenario.is_offline:
             excluded_offline.add(scenario.id)
             continue
-        production_backed = scenario.surface == _ORCHESTRATION_SURFACE
+        production_backed = scenario.surface in {_ORCHESTRATION_SURFACE, _LAB_SURFACE}
         attempted_ids.add(scenario.id)
         try:
             if scenario.surface == _ORCHESTRATION_SURFACE:
                 from .orchestration import run_orchestration_scenario
 
                 result = run_orchestration_scenario(scenario, offline=args.offline)
+            elif scenario.surface == _LAB_SURFACE:
+                from .lab import run_lab_scenario
+
+                result = run_lab_scenario(scenario, offline=args.offline)
             elif scenario.surface == _AUTO_MODE_CONTRACT_SURFACE:
                 from .auto_mode_contract import run_auto_mode_contract
 

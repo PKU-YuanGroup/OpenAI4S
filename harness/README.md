@@ -11,15 +11,16 @@ lands differently from a failure on the first.
 
 Everything here is versioned, stdlib-only, and outside the production import
 graph. The generic runner validates the Harness's own schema/event/fault loop
-and deliberately does not import the production runtime. Four files are the
-current exceptions, and they are exceptions in two different ways:
+and deliberately does not import the production runtime. The named adapters are the
+exceptions:
 `characterize.py` drives selected production entry points from behind stdlib
 `unittest.mock` fakes, while the action-routing and retrosynthesis-backend
 evals and the orchestration runner call a production function on recorded
 input — the router in `openai4s/agent/actions.py`, the response normalizer in
 the bundled retrosynthesis Skill, the `Reconciler` decision loop in
 `orchestration.py` — which needs no fake because there is no live boundary to
-stand in for.
+stand in for. The Lab adapter drives a real temporary Store, LabManager and
+HostDispatcher against an explicit fake device and the real permission broker.
 
 `auto_mode_contract.py` is also production-independent. It is the frozen Stage
 0 contract adapter for the Auto Mode user states, not evidence about the
@@ -86,6 +87,7 @@ Rule of thumb:
 | [`characterize.py`](characterize.py) | Imports selected production entry points, drives them behind stdlib `unittest.mock` fakes, and normalizes what they actually did into the reviewed r5 pre-change characterization. Where a snapshot records a known bug it says so; fixing that bug is supposed to change the snapshot. |
 | [`cli.py`](cli.py) | Two subcommands. `run` picks scenarios by tier, validates them, executes them, and labels each result `CONTRACT_* production=false` or `PRODUCTION_* production=true`; its summary reports `contract_only` and `production_backed` separately. `characterize` compares the r5 characterization with its golden, or rewrites it. Exit codes are deterministic. |
 | [`faults.py`](faults.py) | What a run needs in order to repeat: a monotonic clock whose sleeps merely advance it, UUID-shaped ids handed out in call order, and a fault schedule. Each declared fault fires exactly once, on the Nth visit to a named point, and the failure it raises is structured rather than a bare exception. |
+| [`lab.py`](lab.py) | Drives a real temporary Store and LabManager with the explicit fake device, including real HostDispatcher approval denial; seven offline simulation trajectories compare against an independent golden containing only states, codes and counts. |
 | [`normalize.py`](normalize.py) | Swaps volatile UUID, time, path, and port values out of a trace and emits the canonical bytes used for comparison. An identifier gets its placeholder on first appearance, so parent links keep their meaning and reversing two events changes the output. Event lists are never sorted. |
 | [`orchestration.py`](orchestration.py) | The other kind of runner: it drives the **real** `Reconciler` against a scripted backend. That is a deliberate exception to the rule beside it, on the same grounds as the action-routing eval — the reconciler's decision function has no live boundary a fake would stand in for, since its inputs are a workload row and an observation and both are data. Re-implementing its rules here and then checking them would assert a model against a model, staying green through every defect the two share. |
 | [`runner.py`](runner.py) | Runs one scenario's scripted loop and records the canonical event trace, firing scheduled faults along the way and checking the declared invariants before it returns a trace digest. This is the production-independent half of the Harness: it neither imports nor drives Agent/Gateway runtime code. |
@@ -113,7 +115,7 @@ markers registered in `pyproject.toml`.
 No production code lives here either. The runtime implementation stays in
 `openai4s/` and `openai4s_compute_provider/`, and the generic and Auto Mode
 contract runners stay self-contained. Only the named characterization, eval,
-and orchestration adapters may import selected public production entry points,
+orchestration, and Lab adapters may import selected public production entry points,
 and only against deterministic fakes and scripted data. Nor may a Harness
 helper push a hard third-party import into the core packages.
 

@@ -167,7 +167,71 @@ def _run_for_surface(scenario):
         return run_auto_mode_contract(scenario, offline=True)
     if scenario.surface == "auto_mode_terminal_contract":
         return run_auto_mode_terminal_contract(scenario, offline=True)
+    if scenario.surface == "lab_simulation":
+        from harness.lab import run_lab_scenario
+
+        return run_lab_scenario(scenario, offline=True)
     return run_scenario(scenario, offline=True)
+
+
+def test_cli_runs_all_seven_lab_simulations_as_offline_production(capsys):
+    from harness.lab import CASES
+
+    scenarios = [
+        load_scenario(path)
+        for path in sorted((_SCENARIOS / "lab_simulation").glob("*.json"))
+    ]
+    assert {scenario.id for scenario in scenarios} == {f"lab_{case}" for case in CASES}
+    args = ["run", "--tier", "pr", "--offline"]
+    for scenario in scenarios:
+        assert {"offline", "tier:pr", "lab-sim"} <= set(scenario.tags)
+        assert "lab" not in scenario.tags
+        args.extend(["--scenario", scenario.id])
+    assert main(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    for scenario in scenarios:
+        assert any(
+            line.startswith(f"PRODUCTION_PASS production=true {scenario.id} ")
+            for line in lines
+        )
+    summary = json.loads(
+        next(
+            line.removeprefix("SUMMARY ")
+            for line in lines
+            if line.startswith("SUMMARY ")
+        )
+    )
+    assert summary["production_backed"] == {"selected": 7, "passed": 7, "failed": 0}
+    assert summary["contract_only"]["selected"] == 0
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lost_response",
+        "duplicate_submission",
+        "stale_revision",
+        "provider_lost",
+        "budget_exhausted",
+        "approval_denied",
+        "recovery_forbidden",
+    ],
+)
+def test_lab_cli_rejects_changed_golden_state(case, tmp_path, monkeypatch, capsys):
+    from harness import lab
+
+    # Change one golden state without touching the scenario's expected terminal
+    # result. The independent comparison must still reject every trajectory.
+    golden = json.loads(lab.GOLDEN_PATH.read_text())
+    scenario_id = f"lab_{case}"
+    golden["cases"][scenario_id]["events"][1]["payload"]["run_state"] = "failed"
+    altered = tmp_path / "changed-lab-golden.json"
+    altered.write_text(json.dumps(golden))
+    monkeypatch.setattr(lab, "GOLDEN_PATH", altered)
+    assert main(["run", "--tier", "pr", "--offline", "--scenario", scenario_id]) == 1
+    output = capsys.readouterr().out
+    assert f"PRODUCTION_FAIL production=true {scenario_id} " in output
+    assert "trajectory differs from reviewed golden" in output
 
 
 @pytest.mark.parametrize("path", _scenario_paths(), ids=lambda path: path.stem)

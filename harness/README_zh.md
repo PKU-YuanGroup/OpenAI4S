@@ -4,7 +4,7 @@
 
 Harness 用来回放场景。一个场景会脚本化模型本该说出的话，在指定的点上注入故障，把整次运行记成规范化的事件 trace，再拿这条 trace 去核对场景声明的预期结果。它覆盖的正是单元测试不太好写的那些问题：事情发生的先后顺序、一次运行花了几次模型调用，以及故障落在某个点的第三次访问上，和落在第一次访问上，结果是否不同。
 
-这里的东西都带版本、只用标准库，也不在生产代码的 import 图里。通用 runner 只验证 Harness 自身的 schema/event/fault 循环，刻意不导入生产运行时。目前的例外是四个文件，而且它们的例外方式并不相同：`characterize.py` 隔着标准库 `unittest.mock` 的 fake 去驱动选定的生产入口；action-routing 与 retrosynthesis-backend 这两个 eval 和编排 runner 则是拿录制好的输入直接调用一个生产函数——`openai4s/agent/actions.py` 里的 router、内置 retrosynthesis Skill 里的响应规范化函数，以及 `orchestration.py` 驱动的 `Reconciler` 决策循环——这里不需要 fake，因为根本没有活的边界需要顶替。
+这里的东西都带版本、只用标准库，也不在生产代码的 import 图里。通用 runner 只验证 Harness 自身的 schema/event/fault 循环，刻意不导入生产运行时。具名适配器是例外：`characterize.py` 隔着标准库 `unittest.mock` 的 fake 去驱动选定的生产入口；action-routing 与 retrosynthesis-backend 这两个 eval 和编排 runner 则是拿录制好的输入直接调用一个生产函数——`openai4s/agent/actions.py` 里的 router、内置 retrosynthesis Skill 里的响应规范化函数，以及 `orchestration.py` 驱动的 `Reconciler` 决策循环——这里不需要 fake，因为根本没有活的边界需要顶替。Lab 适配器则用真实临时 Store、LabManager、HostDispatcher 和权限 broker 驱动显式假设备。
 
 `auto_mode_contract.py` 同样与生产实现无关。它是冻结 Stage 0 Auto Mode 用户状态的契约适配器，不能单独证明生产实现。它在每条 trace 中都明确写出这一点，并钉住已集成运行时必须满足的事件顺序和失败即拒绝语义。
 规范的 identity、candidate、完整且冻结的 evidence、Artifact 集合、action、仅含请求侧事实的 review policy、audit request 和 completion assessment digest 都从严格规范 JSON 计算，再与单独审阅的 `golden_traces/v1/auto_mode_contract_expected.json` 比较；只改场景自身的预期结果无法让场景自证通过。Material finding 与 termination basis 属于响应侧 assessment 事实，既不会泄漏到临时候选，也不会被 audit request 预先承诺。Hash mismatch 场景会重新散列实际发生变异的 runtime fixture，而不接受调用方声称的 observed digest。完整 evidence snapshot 必须恰好一次引用每个已声明的 Artifact／provenance 版本。Stage 0 的 `allow_once` trace 只接受封闭的内部 `results/` 文件写类别，action 自报的风险标签不能扩大这个集合。
@@ -34,6 +34,7 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 | [`characterize.py`](characterize.py) | 导入选定的生产入口，在标准库 `unittest.mock` 的 fake 后面驱动它们，把它们真正做了什么规范化成经审阅的 r5 pre-change characterization。快照记录了已知缺陷的地方会写清楚；缺陷被修掉时，这些快照本来就该跟着变。 |
 | [`cli.py`](cli.py) | 两个子命令。`run` 按 tier 挑出场景，校验并执行，把每项结果明确标成 `CONTRACT_* production=false` 或 `PRODUCTION_* production=true`，摘要也分开报告 `contract_only` 与 `production_backed`；`characterize` 把 r5 characterization 与 golden 比对，或者重新写出 golden。退出码是确定的。 |
 | [`faults.py`](faults.py) | 一次运行想要可重复所需要的东西：单调时钟（sleep 只是把它往前推）、按调用顺序发出的 UUID 形状标识符，以及一份故障计划。每条声明的故障只触发一次，落在指定点的第 N 次访问上；抛出的失败是结构化的，不是一个裸异常。 |
+| [`lab.py`](lab.py) | 用真实临时 Store、LabManager 与显式假设备驱动七个离线仿真轨迹，批准拒绝经过真实 HostDispatcher；独立黄金比对只包含状态、错误码和计数。 |
 | [`normalize.py`](normalize.py) | 把 trace 里易变的 UUID、时间、路径和端口换掉，输出用于逐字节比较的规范编码。标识符在第一次出现时才拿到占位符，所以 parent 链仍然有意义，交换两个事件也会改变输出。事件列表从不排序。 |
 | [`orchestration.py`](orchestration.py) | 另一类 runner：它驱动**真的** `Reconciler` 去对一个脚本化 backend。这是对旁边那条规则的刻意例外，理由与 action-routing eval 相同——reconciler 的决策函数没有哪条活边界需要替身去顶，它的输入就是一行 workload 和一个 observation，两者都是数据。把它的规则在这里重新实现一遍再去检查，等于拿模型验模型，在两者共有的每个缺陷上都会保持绿色。 |
 | [`runner.py`](runner.py) | 跑一个场景的脚本化循环，记录规范事件 trace，途中按计划注入故障，返回 trace digest 之前先检查声明的 invariant。这是 Harness 中与生产无关的那一半：它不导入、也不驱动任何 Agent/Gateway 运行时代码。 |
@@ -53,7 +54,7 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 
 这里的一切都要能离线跑，也要能在没有任何 secret 的情况下跑通，默认的 PR CI 本来就不提供 secret。`harness/` 里的内容不得需要真实网络、API key、GPU、SSH、Docker、浏览器或实验室硬件。确实绕不开这些资源的入口只能显式启用，并挂上对应的 pytest marker（`external`、`network`、`live_llm`、`gpu`、`ssh`、`docker`、`browser`、`lab`），也就是 `pyproject.toml` 里注册的那几个。
 
-这里同样不放生产代码。运行时实现留在 `openai4s/` 和 `openai4s_compute_provider/`，通用 runner 与 Auto Mode 契约 runner 都保持自包含。只有那几个显式命名的 characterization、eval 与编排 adapter 可以导入选定的生产公共入口，而且只能对着确定性 fake 和脚本化数据来跑。Harness 的 helper 也不能给核心包塞进硬性的第三方 import。
+这里同样不放生产代码。运行时实现留在 `openai4s/` 和 `openai4s_compute_provider/`，通用 runner 与 Auto Mode 契约 runner 都保持自包含。只有那几个显式命名的 characterization、eval、编排与 Lab adapter 可以导入选定的生产公共入口，而且只能对着确定性 fake 和脚本化数据来跑。Harness 的 helper 也不能给核心包塞进硬性的第三方 import。
 
 还有两条规则，护的是记录本身。规范化可以替换易变的值，但不能给事件列表排序：并发场景比较的是明确的因果关系和每条 stream 内部的先后，而不是捏造一个全序。还有，golden trace 是用来比对的数据，不是可执行的历史，场景回放只能调用声明过的 fake，别的一概不行。
 
