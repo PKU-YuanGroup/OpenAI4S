@@ -139,8 +139,8 @@ Source capacity and target overflow are provider preconditions.
 
 Budgets default to 50 steps (override with the chosen profile's limit), 200
 commands, 30 minutes wall time, 3 consecutive failures and 60 minutes idle time.
-The future manager owns enforcement and the four-live-provider daemon limit;
-this core package defines values, not a scheduler.
+The process manager enforces these budgets and the four-live-provider daemon
+limit through durable admission.
 
 ## Ports and registration
 
@@ -185,3 +185,55 @@ ending, sensor-shaped outputs, per-command deduplication and per-resource
 fencing. Fault hooks simulate explicit refusal, response loss with a queryable
 receipt, process death and capability mismatch. It provides no evidence about
 ChemGymRL accuracy or physical hardware behavior.
+
+## Process manager
+
+`build_lab_manager(ledger_provider=..., registry=...)` composes one manager per
+process and reconciles older daemon instances before returning. The provider
+callback resolves the current Store generation on every ledger call. Adapters
+share this manager: W3 connects manual UI, native tools and `host.lab` to it.
+`LabLimits` defaults to four live providers (including openings and closing
+sessions) and five seconds waiting for an in-flight receipt during stop.
+No provider is registered or started by importing the package.
+
+Creation persists the seed, capped step budget and registered descriptor before
+opening a provider. Omitted seeds are generated once; create-key replays reuse
+the durable seed, including after a restart. Opening reservations enforce the
+process limit and a stop/deletion during open cannot register a late session.
+Runtime reproducibility evidence is returned on the initial create response;
+the registered descriptor remains the durable description in this wave.
+
+Commands are scoped to the caller's root session and owner. Normalized requests
+are hashed before ledger admission. Duplicate keys return the original command
+in every state and never call the device again. Semantic refusals are also
+recorded. The manager enforces step, command, wall-time and consecutive-failure
+budgets; W1's receipt-only failure counter is supplemented by command-history
+reads for admission so host rejections count too. A nonblocking per-run lock
+and the ledger's atomic resource leases prevent concurrent dispatch. The
+provider is called only after `begin_dispatch` commits the intent and fencing
+token. The manager never opens a transaction around a ledger method.
+
+Lost responses are queried once. A receipt completes the durable command;
+only authoritative non-receipt permits `not_dispatched`. Unavailable evidence
+leaves `outcome_unknown` and quarantines the run. `status` may query this same
+command later; it never resends it. Provider death ends the run with
+`provider_lost`, retaining unknown commands. A failure to persist an already
+received result blocks further execution until restart reconciliation. Shutdown
+persists unknown intent before ending a run; if that write fails, the run stays
+nonterminal so startup can still find it.
+
+Stop bypasses the command lock, requests stop with CAS, waits the configured
+receipt interval, then closes the session and ends the run. A timely receipt
+remains succeeded/failed; an unresolved dispatch remains unknown. Late receipts
+cannot reopen a stopped run. The receipt wait is bounded; the total close time
+also depends on the DevicePort implementation, which must provide interruptible
+close for a hard process-termination deadline. The manager holds no global lock
+while calling provider methods.
+
+Idle cleanup runs opportunistically on public calls and skips active or blocked
+runs. `observe` is the deliberate exception: it reads and projects the ledger
+only, even after the idle interval, and never invokes a provider. Recovery
+callers cannot create, execute or stop; read paths also skip cleanup and query
+side effects. Public run, command, descriptor and observation values use the
+contract projection functions. Device registration summaries and the ledger's
+metadata-only event rows are the two catalog/cursor envelopes.

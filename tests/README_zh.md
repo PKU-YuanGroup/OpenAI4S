@@ -231,6 +231,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_host_skill_service.py`](test_host_skill_service.py) | Host 的 Skill 服务：路径约束、只读的内置根目录、sidecar 闸门，以及 publish 或 delete 之后会刷新的目录。用户 Skill 抢不走内置 Skill 声明的名字。 |
 | [`test_host_workspace_service.py`](test_host_workspace_service.py) | 限定在工作区内的 Host 文件访问。父目录、绝对路径、密钥目录和符号链接逃逸都会被拒绝；外部硬链接和最终分量替换不能穿过边界；read、glob、grep、list、write、edit 都使用固定描述符，父目录并发替换不能重定向后续 I/O。 |
 | [`test_jupyter_adapter.py`](test_jupyter_adapter.py) | 可选的 Jupyter 路径——正因为它是可选的，这个模块有一半在讲它不存在时会怎样。没装 `ipykernel` 也要能描述并导出 KernelSpec；依赖缺失或装坏了，bridge 要报出来而不是崩掉。bridge 本身是拿真实的加固 Python worker 跑的。 |
+| [`test_lab_reconcile.py`](test_lab_reconcile.py) | Lab 启动对账：准入、在途、未知与创建中运行，不重放设备操作。 |
 | [`test_lab_manager.py`](test_lab_manager.py) | Lab 管理器准入、持久派发、幂等、预算、停止与公开投影。 |
 | [`test_lab_models.py`](test_lab_models.py) | Lab 值对象：封闭 schema 的严格解码、run/命令状态机、规范哈希与 ID，以及 `openai4s/lab/` 只依赖标准库的导入边界。 |
 | [`test_lab_manifest.py`](test_lab_manifest.py) | Lab 能力清单：L↔mL 精确换算且从不就近取档，单位与参数拒绝，描述校验，设备登记，以及不可能携带仿真真值的传感投影。 |

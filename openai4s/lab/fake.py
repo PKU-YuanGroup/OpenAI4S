@@ -7,9 +7,11 @@ fill sensors for the extraction vessel and the two collection beakers. The
 evaluation alone records exact volumes, fictional solute amounts and recovery.
 
 A lock covers each complete port transaction, including the receipt cache.
-Hooks apply to the next new dispatch: replay always returns its original receipt.
+Execute hooks are consumed by the next call, even a refusal, replay or error.
+Transport hooks may hide a cached receipt, but never execute its command again.
 Each session represents an independent provider process for fencing and cache
-purposes. ``crash`` kills every session owned by this device instance.
+purposes. Fatal execute hooks kill only that session; ``crash`` kills every
+session owned by this device instance.
 """
 
 from __future__ import annotations
@@ -213,6 +215,10 @@ class FakeExtractorDevice:
         self._crashed = False
         self._failure: ErrorCode | None = None
         self._lose_response = False
+        self._lose_request = False
+        self._fail_query = False
+        self._timeout_and_die = False
+        self._protocol_error = False
         self._mismatch = False
 
     def _check_device(self) -> None:
@@ -272,32 +278,62 @@ class FakeExtractorDevice:
 
     def execute(self, session_id: str, dispatch: Dispatch) -> Receipt:
         with self._lock:
+            # Take all execute hooks at entry, including when validation or
+            # replay exits early. No hook can leak into a later command.
+            failure, self._failure = self._failure, None
+            lose_response, self._lose_response = self._lose_response, False
+            lose_request, self._lose_request = self._lose_request, False
+            timeout_and_die, self._timeout_and_die = self._timeout_and_die, False
+            protocol_error, self._protocol_error = self._protocol_error, False
             session = self._session(session_id)
-            dispatch = Dispatch.from_dict(dispatch.to_dict())
-            cached = session.receipts.get(dispatch.provider_command_id)
-            if cached is not None:
-                return deepcopy(cached)
-            if dispatch.provider_command_id in session.seen:
+            # Protocol failure takes precedence over request loss. Both occur
+            # before accepting an id, and neither can apply the command.
+            if protocol_error:
+                self._sessions.pop(session_id)
                 raise LabError(
-                    ErrorCode.OUTCOME_UNKNOWN,
-                    "Receipt is no longer retained; the command will not run again",
+                    ErrorCode.PROVIDER_PROTOCOL_ERROR, "Provider response is invalid"
                 )
-            session.seen.add(dispatch.provider_command_id)
-            if session.ended:
-                receipt = self._failure_receipt(session, dispatch, ErrorCode.RUN_ENDED)
-            else:
-                receipt = self._execute_new(session, dispatch)
-            session.receipts[dispatch.provider_command_id] = deepcopy(receipt)
-            if len(session.receipts) > 256:
-                session.receipts.popitem(last=False)
-            if receipt.applied and self._lose_response:
-                self._lose_response = False
+            if lose_request:
+                raise LabError(
+                    ErrorCode.PROVIDER_TIMEOUT, "Provider request was not received"
+                )
+            dispatch = Dispatch.from_dict(dispatch.to_dict())
+            receipt = self._execute_received(session, dispatch, failure)
+            if timeout_and_die:
+                self._sessions.pop(session_id)
+                raise LabError(
+                    ErrorCode.PROVIDER_TIMEOUT, "Provider timed out and exited"
+                )
+            if lose_response:
                 raise LabError(
                     ErrorCode.PROVIDER_TIMEOUT, "Provider response was not received"
                 )
             return receipt
 
-    def _execute_new(self, session: _Session, dispatch: Dispatch) -> Receipt:
+    def _execute_received(
+        self, session: _Session, dispatch: Dispatch, failure: ErrorCode | None
+    ) -> Receipt:
+        cached = session.receipts.get(dispatch.provider_command_id)
+        if cached is not None:
+            return deepcopy(cached)
+        if dispatch.provider_command_id in session.seen:
+            raise LabError(
+                ErrorCode.OUTCOME_UNKNOWN,
+                "Receipt is no longer retained; the command will not run again",
+            )
+        session.seen.add(dispatch.provider_command_id)
+        if session.ended:
+            receipt = self._failure_receipt(session, dispatch, ErrorCode.RUN_ENDED)
+        else:
+            receipt = self._execute_new(session, dispatch, failure)
+        session.receipts[dispatch.provider_command_id] = deepcopy(receipt)
+        if len(session.receipts) > 256:
+            session.receipts.popitem(last=False)
+        return receipt
+
+    def _execute_new(
+        self, session: _Session, dispatch: Dispatch, failure: ErrorCode | None
+    ) -> Receipt:
         descriptor = _descriptor(_PROFILE)
         try:
             data = dispatch.command.to_dict()
@@ -329,9 +365,8 @@ class FakeExtractorDevice:
             )
         if stale:
             return self._failure_receipt(session, dispatch, ErrorCode.RESOURCE_BUSY)
-        if self._failure is not None:
-            code, self._failure = self._failure, None
-            return self._failure_receipt(session, dispatch, code)
+        if failure is not None:
+            return self._failure_receipt(session, dispatch, failure)
         return self._apply(session, dispatch)
 
     def _apply(self, session: _Session, dispatch: Dispatch) -> Receipt:
@@ -460,7 +495,13 @@ class FakeExtractorDevice:
 
     def query(self, session_id: str, provider_command_id: str) -> Receipt | None:
         with self._lock:
+            fail_query, self._fail_query = self._fail_query, False
             session = self._session(session_id)
+            if fail_query:
+                raise LabError(
+                    ErrorCode.PROVIDER_TIMEOUT,
+                    "Provider query response was not received",
+                )
             receipt = session.receipts.get(provider_command_id)
             if receipt is not None:
                 return deepcopy(receipt)
@@ -506,6 +547,26 @@ class FakeExtractorDevice:
         with self._lock:
             self._check_device()
             self._lose_response = True
+
+    def lose_request_next(self) -> None:
+        with self._lock:
+            self._check_device()
+            self._lose_request = True
+
+    def fail_query_next(self) -> None:
+        with self._lock:
+            self._check_device()
+            self._fail_query = True
+
+    def timeout_and_die_next(self) -> None:
+        with self._lock:
+            self._check_device()
+            self._timeout_and_die = True
+
+    def protocol_error_next(self) -> None:
+        with self._lock:
+            self._check_device()
+            self._protocol_error = True
 
     def crash(self) -> None:
         with self._lock:

@@ -219,6 +219,237 @@ def test_lost_response_keeps_live_session_and_queryable_applied_receipt():
     assert after.applied and after.step_index == 2
 
 
+@pytest.mark.parametrize("refusal", ["missing_fence", "forged", "stale", "ended"])
+def test_fail_next_is_consumed_even_when_an_earlier_check_refuses(refusal):
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    dispatch = _mix(opened)
+    expected = "invalid_parameters"
+    if refusal == "missing_fence":
+        dispatch = replace(dispatch, fencing_tokens={})
+    elif refusal == "forged":
+        dispatch = replace(
+            dispatch, command=replace(dispatch.command, capability_id="nonexistent")
+        )
+        expected = "unsupported_action"
+    elif refusal == "stale":
+        device.execute(opened.session_id, _mix(opened, "first", token=9))
+        expected = "resource_busy"
+    else:
+        device.stop(opened.session_id, "test")
+        expected = "run_ended"
+    device.fail_next(ErrorCode.PRECONDITION_FAILED)
+    receipt = device.execute(opened.session_id, dispatch)
+    assert not receipt.applied and receipt.error["code"] == expected
+    # A new session also detects a leaked device-wide hook after RUN_ENDED.
+    other = _open(device)
+    after = device.execute(other.session_id, _mix(other))
+    assert after.applied and after.step_index == 1
+
+
+@pytest.mark.parametrize("refusal", ["fail_next", "missing_fence", "empty", "ended"])
+def test_lost_response_hides_unapplied_receipts_and_does_not_leak(refusal):
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    dispatch = _dispatch(opened)
+    expected = "precondition_failed"
+    if refusal == "fail_next":
+        device.fail_next(ErrorCode.PRECONDITION_FAILED)
+    elif refusal == "missing_fence":
+        dispatch = replace(dispatch, fencing_tokens={})
+        expected = "invalid_parameters"
+    elif refusal == "empty":
+        dispatch = _dispatch(opened, source="beaker_1")
+    else:
+        device.stop(opened.session_id, "test")
+        expected = "run_ended"
+    device.lose_response_next()
+    with pytest.raises(LabError) as caught:
+        device.execute(opened.session_id, dispatch)
+    assert caught.value.code is ErrorCode.PROVIDER_TIMEOUT
+    assert device.alive(opened.session_id)
+    receipt = device.query(opened.session_id, dispatch.provider_command_id)
+    assert not receipt.applied and receipt.error["code"] == expected
+    assert receipt.step_index == 0
+    assert device.execute(opened.session_id, dispatch) == receipt
+    other = _open(device)
+    assert device.execute(other.session_id, _mix(other)).applied
+
+
+@pytest.mark.parametrize(
+    "hook",
+    [
+        "fail_next",
+        "lose_response_next",
+        "lose_request_next",
+        "timeout_and_die_next",
+        "protocol_error_next",
+        "fail_and_lose_response",
+    ],
+)
+def test_hooks_on_cached_replays_never_reapply_or_leak(hook, monkeypatch):
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    applied = []
+    original_apply = device._apply
+
+    def record_apply(session, dispatch):
+        receipt = original_apply(session, dispatch)
+        applied.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(device, "_apply", record_apply)
+    dispatch = _dispatch(opened)
+    original = device.execute(opened.session_id, dispatch)
+    if hook in {"fail_next", "fail_and_lose_response"}:
+        device.fail_next(ErrorCode.PRECONDITION_FAILED)
+    if hook == "fail_and_lose_response":
+        device.lose_response_next()
+    elif hook != "fail_next":
+        getattr(device, hook)()
+    if hook == "fail_next":
+        assert device.execute(opened.session_id, dispatch) == original
+    else:
+        with pytest.raises(LabError) as caught:
+            device.execute(opened.session_id, dispatch)
+        expected = (
+            ErrorCode.PROVIDER_PROTOCOL_ERROR
+            if hook == "protocol_error_next"
+            else ErrorCode.PROVIDER_TIMEOUT
+        )
+        assert caught.value.code is expected
+    assert applied == [original]
+    fatal = hook in {"timeout_and_die_next", "protocol_error_next"}
+    assert device.alive(opened.session_id) is not fatal
+    if not fatal:
+        # Losing a duplicate request must not erase a known prior receipt.
+        assert device.query(opened.session_id, dispatch.provider_command_id) == original
+        assert device.execute(opened.session_id, dispatch) == original
+    other = _open(device)
+    after = device.execute(other.session_id, _mix(other))
+    assert after.applied and after.step_index == 1
+    assert len(applied) == 2
+
+
+def test_lost_request_is_never_received_and_leaves_model_unchanged():
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    dispatch = _dispatch(opened)
+    device.lose_request_next()
+    with pytest.raises(LabError) as caught:
+        device.execute(opened.session_id, dispatch)
+    assert caught.value.code is ErrorCode.PROVIDER_TIMEOUT
+    assert device.alive(opened.session_id)
+    assert device.query(opened.session_id, dispatch.provider_command_id) is None
+    after = device.execute(opened.session_id, _mix(opened))
+    assert after.applied and after.step_index == 1
+    assert after.evaluation == opened.evaluation
+
+
+def test_failed_query_is_one_shot_and_preserves_a_lost_response_receipt():
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    dispatch = _dispatch(opened)
+    device.fail_query_next()
+    device.lose_response_next()
+    with pytest.raises(LabError) as execute_error:
+        device.execute(opened.session_id, dispatch)
+    assert execute_error.value.code is ErrorCode.PROVIDER_TIMEOUT
+    with pytest.raises(LabError) as query_error:
+        device.query(opened.session_id, dispatch.provider_command_id)
+    assert query_error.value.code is ErrorCode.PROVIDER_TIMEOUT
+    assert device.alive(opened.session_id)
+    receipt = device.query(opened.session_id, dispatch.provider_command_id)
+    assert receipt.applied and receipt.step_index == 1
+    assert device.query(opened.session_id, "never-received") is None
+    assert device.execute(opened.session_id, dispatch) == receipt
+
+
+@pytest.mark.parametrize("hook", ["timeout_and_die_next", "protocol_error_next"])
+def test_fatal_execute_hooks_invalidate_only_the_affected_session(hook, monkeypatch):
+    device = FakeExtractorDevice()
+    opened, other = _open(device), _open(device)
+    applied = []
+    original_apply = device._apply
+
+    def record_apply(session, dispatch):
+        receipt = original_apply(session, dispatch)
+        applied.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(device, "_apply", record_apply)
+    dispatch = _dispatch(opened)
+    getattr(device, hook)()
+    with pytest.raises(LabError) as caught:
+        device.execute(opened.session_id, dispatch)
+    timeout = hook == "timeout_and_die_next"
+    expected = (
+        ErrorCode.PROVIDER_TIMEOUT if timeout else ErrorCode.PROVIDER_PROTOCOL_ERROR
+    )
+    assert caught.value.code is expected
+    assert len(applied) == int(timeout)
+    if timeout:
+        assert applied[0].applied and applied[0].step_index == 1
+    assert not device.alive(opened.session_id)
+    for call in (
+        lambda: device.execute(opened.session_id, dispatch),
+        lambda: device.query(opened.session_id, dispatch.provider_command_id),
+        lambda: device.stop(opened.session_id, "test"),
+    ):
+        with pytest.raises(LabError) as dead:
+            call()
+        assert dead.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert device.alive(other.session_id)
+    after = device.execute(other.session_id, _mix(other))
+    assert after.applied and after.step_index == 1
+
+
+@pytest.mark.parametrize("protocol_error", [False, True])
+def test_transport_failure_consumes_all_other_execute_hooks(protocol_error):
+    device = FakeExtractorDevice()
+    opened, other = _open(device), _open(device)
+    device.fail_next(ErrorCode.PRECONDITION_FAILED)
+    device.lose_response_next()
+    device.timeout_and_die_next()
+    device.lose_request_next()
+    if protocol_error:
+        device.protocol_error_next()
+    with pytest.raises(LabError) as caught:
+        device.execute(opened.session_id, _dispatch(opened))
+    expected = (
+        ErrorCode.PROVIDER_PROTOCOL_ERROR
+        if protocol_error
+        else ErrorCode.PROVIDER_TIMEOUT
+    )
+    assert caught.value.code is expected
+    assert device.alive(opened.session_id) is not protocol_error
+    if not protocol_error:
+        assert device.query(opened.session_id, "command-1") is None
+    after = device.execute(other.session_id, _mix(other))
+    assert after.applied and after.step_index == 1
+
+
+def test_missing_session_consumes_execute_and_query_hooks():
+    device = FakeExtractorDevice()
+    opened = _open(device)
+    device.fail_next(ErrorCode.PRECONDITION_FAILED)
+    device.lose_response_next()
+    device.lose_request_next()
+    device.timeout_and_die_next()
+    device.protocol_error_next()
+    device.fail_query_next()
+    dispatch = _dispatch(opened)
+    with pytest.raises(LabError) as execute_error:
+        device.execute("missing", dispatch)
+    assert execute_error.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    with pytest.raises(LabError) as query_error:
+        device.query("missing", dispatch.provider_command_id)
+    assert query_error.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    receipt = device.execute(opened.session_id, dispatch)
+    assert receipt.applied and receipt.step_index == 1
+    assert device.query(opened.session_id, dispatch.provider_command_id) == receipt
+
+
 def test_crash_invalidates_all_sessions_and_all_port_calls():
     device = FakeExtractorDevice()
     opened = _open(device)
@@ -333,6 +564,8 @@ def test_receipt_cache_retains_only_the_latest_256_commands():
     assert device.query(opened.session_id, "command-1").step_index == 0
     assert device.query(opened.session_id, "command-256") == receipt
     # And an evicted id is never executed a second time.
+    device.fail_next(ErrorCode.PRECONDITION_FAILED)
+    device.lose_response_next()
     with pytest.raises(LabError) as again:
         device.execute(opened.session_id, _mix(opened, "command-0"))
     assert again.value.code is ErrorCode.OUTCOME_UNKNOWN

@@ -183,9 +183,11 @@ class LabManager:
                         command["command_id"], error="Provider receipt is unavailable"
                     )
             self._ledger.end_run(run_id, end_reason=reason)
-            live = self._live.pop(run_id, None)
         if live is not None:
             self._close(live)
+            with self._lock:
+                if self._live.get(run_id) is live:
+                    self._live.pop(run_id)
 
     def _sweep(self, caller: LabCaller) -> None:
         if caller.execution_owner == "recovery":
@@ -396,6 +398,7 @@ class LabManager:
                     evaluation=opened.evaluation,
                 )
                 live.done.set()
+                self._opening.pop(run_id, None)
                 self._live[run_id] = live
                 return {
                     "run": project_run(run),
@@ -543,6 +546,13 @@ class LabManager:
                 current = self._ledger.get_command(command_id)
                 if current is None or current["state"] != "admitted":
                     return self._result(req.run_id, command_id)
+                if live.stopping:
+                    self._ledger.mark_not_dispatched(
+                        command_id,
+                        error_code="run_ended",
+                        error="Stop requested before dispatch",
+                    )
+                    return self._result(req.run_id, command_id)
                 try:
                     token = self._ledger.begin_dispatch(
                         command_id,
@@ -627,7 +637,7 @@ class LabManager:
                 )
                 ended = result["run"]["status"] in _TERMINAL
                 if ended:
-                    self._live.pop(run_id, None)
+                    live.stopping = True
         except LabError as exc:
             with self._lock:
                 live.needs_restart = True
@@ -640,7 +650,7 @@ class LabManager:
             self._unknown(run_id, command_id, live, lost=True)
             return
         if ended:
-            self._close(live)
+            self._finish(run_id, result["run"]["end_reason"])
 
     def _unknown(
         self, run_id: str, command_id: str, live: _LiveRun, *, lost: bool
