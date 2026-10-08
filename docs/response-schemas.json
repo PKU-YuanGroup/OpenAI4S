@@ -3247,6 +3247,303 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/lab [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/devices/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/events [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/runs [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/runs/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/runs/([^/]+)/commands [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/lab/runs/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/message [error]": {
       "schema": {
         "properties": {
@@ -15184,6 +15481,1863 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/lab [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab [ok]": {
+      "schema": {
+        "properties": {
+          "devices": {
+            "items": {
+              "properties": {
+                "availability_detail": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "available": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "backend": {
+                  "type": "string"
+                },
+                "device_id": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "profiles": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "availability_detail",
+                "available",
+                "backend",
+                "device_id",
+                "mode",
+                "profiles",
+                "title"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "latest_event_seq": {
+            "type": "integer"
+          },
+          "runs": {
+            "items": {
+              "properties": {
+                "adapter_version": {
+                  "type": "string"
+                },
+                "backend": {
+                  "type": "string"
+                },
+                "budgets": {
+                  "properties": {
+                    "idle_timeout_ms": {
+                      "type": "integer"
+                    },
+                    "max_commands": {
+                      "type": "integer"
+                    },
+                    "max_consecutive_failures": {
+                      "type": "integer"
+                    },
+                    "max_steps": {
+                      "type": "integer"
+                    },
+                    "max_wall_ms": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "idle_timeout_ms",
+                    "max_commands",
+                    "max_consecutive_failures",
+                    "max_steps",
+                    "max_wall_ms"
+                  ],
+                  "type": "object"
+                },
+                "capability_revision": {
+                  "type": "string"
+                },
+                "command_count": {
+                  "type": "integer"
+                },
+                "consecutive_failures": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "device_id": {
+                  "type": "string"
+                },
+                "end_reason": {
+                  "type": "null"
+                },
+                "ended_at": {
+                  "type": "null"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string"
+                },
+                "raw": {
+                  "properties": {
+                    "terminated": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "truncated": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "terminated",
+                    "truncated"
+                  ],
+                  "type": "object"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "seed": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "step_count": {
+                  "type": "integer"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "adapter_version",
+                "backend",
+                "budgets",
+                "capability_revision",
+                "command_count",
+                "consecutive_failures",
+                "created_at",
+                "device_id",
+                "end_reason",
+                "ended_at",
+                "mode",
+                "profile",
+                "raw",
+                "revision",
+                "run_id",
+                "seed",
+                "status",
+                "step_count",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices",
+          "latest_event_seq",
+          "runs"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/devices/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/devices/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "descriptor": {
+            "properties": {
+              "assumptions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "backend_version": {
+                "properties": {
+                  "adapter_version": {
+                    "type": "string"
+                  },
+                  "package": {
+                    "type": "string"
+                  },
+                  "source_sha": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "adapter_version",
+                  "package",
+                  "source_sha",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "capabilities": {
+                "items": {
+                  "properties": {
+                    "capability_id": {
+                      "type": "string"
+                    },
+                    "mapping_version": {
+                      "type": "string"
+                    },
+                    "observes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "properties": {
+                        "duration": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        },
+                        "pixels": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        },
+                        "volume": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "resources": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "side_effect": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "target": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "terminal": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "capability_id",
+                    "mapping_version",
+                    "observes",
+                    "operation",
+                    "parameters",
+                    "resources",
+                    "scope",
+                    "side_effect",
+                    "source",
+                    "target",
+                    "terminal"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "contract": {
+                "type": "string"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "limits": {
+                "properties": {
+                  "max_steps": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "max_steps"
+                ],
+                "type": "object"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "observation_channels": {
+                "items": {
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "description",
+                    "kind",
+                    "name",
+                    "shape",
+                    "source",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "reproducibility": {
+                "properties": {
+                  "evidence": {
+                    "type": "null"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "evidence",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "resources": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "resource_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "label",
+                    "resource_id"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "stop": {
+                "properties": {
+                  "semantics": {
+                    "type": "string"
+                  },
+                  "supported": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "semantics",
+                  "supported"
+                ],
+                "type": "object"
+              },
+              "time": {
+                "properties": {
+                  "unit": {
+                    "type": "string"
+                  },
+                  "wall_clock_equivalent": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "wall_clock_equivalent"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "assumptions",
+              "backend",
+              "backend_version",
+              "capabilities",
+              "capability_revision",
+              "contract",
+              "device_id",
+              "limits",
+              "mode",
+              "observation_channels",
+              "profile",
+              "reproducibility",
+              "resources",
+              "stop",
+              "time"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "descriptor"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/events [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/events [ok]": {
+      "schema": {
+        "properties": {
+          "events": {
+            "items": {
+              "properties": {
+                "created_at": {
+                  "type": "integer"
+                },
+                "event_seq": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "ref_id": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                }
+              },
+              "required": [
+                "created_at",
+                "event_seq",
+                "kind",
+                "ref_id",
+                "root_frame_id",
+                "run_id",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "latest_event_seq": {
+            "type": "integer"
+          },
+          "next_after_seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events",
+          "latest_event_seq",
+          "next_after_seq"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "commands": {
+            "items": {
+              "properties": {
+                "applied_revision": {
+                  "type": "integer"
+                },
+                "capability_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "completed_at": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "dispatched_at": {
+                  "type": "integer"
+                },
+                "error": {
+                  "type": "null"
+                },
+                "error_code": {
+                  "type": "null"
+                },
+                "expected_revision": {
+                  "type": "integer"
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "observation_id": {
+                  "type": "string"
+                },
+                "operation": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "receipt": {
+                  "properties": {
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "end_reason": {
+                      "type": "null"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "raw": {
+                      "properties": {
+                        "terminated": {
+                          "type": "boolean"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "terminated",
+                        "truncated"
+                      ],
+                      "type": "object"
+                    },
+                    "sim_time": {
+                      "type": "number"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "step_index": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "applied",
+                    "end_reason",
+                    "error",
+                    "raw",
+                    "sim_time",
+                    "status",
+                    "step_index"
+                  ],
+                  "type": "object"
+                },
+                "request": {
+                  "properties": {
+                    "capability_id": {
+                      "type": "string"
+                    },
+                    "expected_revision": {
+                      "type": "integer"
+                    },
+                    "idempotency_key": {
+                      "type": "string"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "properties": {
+                        "duration": {
+                          "properties": {
+                            "unit": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "unit",
+                            "value"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "duration"
+                      ],
+                      "type": "object"
+                    },
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "target": {
+                      "type": "null"
+                    }
+                  },
+                  "required": [
+                    "capability_id",
+                    "expected_revision",
+                    "idempotency_key",
+                    "operation",
+                    "parameters",
+                    "run_id",
+                    "source",
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "applied_revision",
+                "capability_id",
+                "command_id",
+                "completed_at",
+                "created_at",
+                "dispatched_at",
+                "error",
+                "error_code",
+                "expected_revision",
+                "idempotency_key",
+                "observation_id",
+                "operation",
+                "origin",
+                "receipt",
+                "request",
+                "run_id",
+                "seq",
+                "state",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "descriptor": {
+            "properties": {
+              "assumptions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "backend_version": {
+                "properties": {
+                  "adapter_version": {
+                    "type": "string"
+                  },
+                  "package": {
+                    "type": "string"
+                  },
+                  "source_sha": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "adapter_version",
+                  "package",
+                  "source_sha",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "capabilities": {
+                "items": {
+                  "properties": {
+                    "capability_id": {
+                      "type": "string"
+                    },
+                    "mapping_version": {
+                      "type": "string"
+                    },
+                    "observes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "properties": {
+                        "duration": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        },
+                        "pixels": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        },
+                        "volume": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "resources": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "side_effect": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "target": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "terminal": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "capability_id",
+                    "mapping_version",
+                    "observes",
+                    "operation",
+                    "parameters",
+                    "resources",
+                    "scope",
+                    "side_effect",
+                    "source",
+                    "target",
+                    "terminal"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "contract": {
+                "type": "string"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "limits": {
+                "properties": {
+                  "max_steps": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "max_steps"
+                ],
+                "type": "object"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "observation_channels": {
+                "items": {
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "description",
+                    "kind",
+                    "name",
+                    "shape",
+                    "source",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "reproducibility": {
+                "properties": {
+                  "evidence": {
+                    "type": "null"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "evidence",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "resources": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "resource_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "label",
+                    "resource_id"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "stop": {
+                "properties": {
+                  "semantics": {
+                    "type": "string"
+                  },
+                  "supported": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "semantics",
+                  "supported"
+                ],
+                "type": "object"
+              },
+              "time": {
+                "properties": {
+                  "unit": {
+                    "type": "string"
+                  },
+                  "wall_clock_equivalent": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "wall_clock_equivalent"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "assumptions",
+              "backend",
+              "backend_version",
+              "capabilities",
+              "capability_revision",
+              "contract",
+              "device_id",
+              "limits",
+              "mode",
+              "observation_channels",
+              "profile",
+              "reproducibility",
+              "resources",
+              "stop",
+              "time"
+            ],
+            "type": "object"
+          },
+          "observation": {
+            "properties": {
+              "artifact_version_id": {
+                "type": "null"
+              },
+              "channels": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "quality": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "items": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "type": "array"
+                      },
+                      "type": [
+                        "array",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "quality",
+                    "shape",
+                    "source",
+                    "unit",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "command_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "observation_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer"
+              },
+              "sim_time": {
+                "type": "number"
+              },
+              "sim_time_unit": {
+                "type": "string"
+              },
+              "wall_time_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_version_id",
+              "channels",
+              "command_id",
+              "observation_id",
+              "run_id",
+              "sequence",
+              "sim_time",
+              "sim_time_unit",
+              "wall_time_ms"
+            ],
+            "type": "object"
+          },
+          "run": {
+            "properties": {
+              "adapter_version": {
+                "type": "string"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "idle_timeout_ms": {
+                    "type": "integer"
+                  },
+                  "max_commands": {
+                    "type": "integer"
+                  },
+                  "max_consecutive_failures": {
+                    "type": "integer"
+                  },
+                  "max_steps": {
+                    "type": "integer"
+                  },
+                  "max_wall_ms": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "idle_timeout_ms",
+                  "max_commands",
+                  "max_consecutive_failures",
+                  "max_steps",
+                  "max_wall_ms"
+                ],
+                "type": "object"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "command_count": {
+                "type": "integer"
+              },
+              "consecutive_failures": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "end_reason": {
+                "type": "null"
+              },
+              "ended_at": {
+                "type": "null"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "raw": {
+                "properties": {
+                  "terminated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "truncated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "terminated",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "step_count": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adapter_version",
+              "backend",
+              "budgets",
+              "capability_revision",
+              "command_count",
+              "consecutive_failures",
+              "created_at",
+              "device_id",
+              "end_reason",
+              "ended_at",
+              "mode",
+              "profile",
+              "raw",
+              "revision",
+              "run_id",
+              "seed",
+              "status",
+              "step_count",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "commands",
+          "descriptor",
+          "observation",
+          "run"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/commands [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/commands [ok]": {
+      "schema": {
+        "properties": {
+          "commands": {
+            "items": {
+              "properties": {
+                "applied_revision": {
+                  "type": "integer"
+                },
+                "capability_id": {
+                  "type": "string"
+                },
+                "command_id": {
+                  "type": "string"
+                },
+                "completed_at": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "dispatched_at": {
+                  "type": "integer"
+                },
+                "error": {
+                  "type": "null"
+                },
+                "error_code": {
+                  "type": "null"
+                },
+                "expected_revision": {
+                  "type": "integer"
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "observation_id": {
+                  "type": "string"
+                },
+                "operation": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "receipt": {
+                  "properties": {
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "end_reason": {
+                      "type": "null"
+                    },
+                    "error": {
+                      "type": "null"
+                    },
+                    "raw": {
+                      "properties": {
+                        "terminated": {
+                          "type": "boolean"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "terminated",
+                        "truncated"
+                      ],
+                      "type": "object"
+                    },
+                    "sim_time": {
+                      "type": "number"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "step_index": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "applied",
+                    "end_reason",
+                    "error",
+                    "raw",
+                    "sim_time",
+                    "status",
+                    "step_index"
+                  ],
+                  "type": "object"
+                },
+                "request": {
+                  "properties": {
+                    "capability_id": {
+                      "type": "string"
+                    },
+                    "expected_revision": {
+                      "type": "integer"
+                    },
+                    "idempotency_key": {
+                      "type": "string"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "properties": {
+                        "duration": {
+                          "properties": {
+                            "unit": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "unit",
+                            "value"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "duration"
+                      ],
+                      "type": "object"
+                    },
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "target": {
+                      "type": "null"
+                    }
+                  },
+                  "required": [
+                    "capability_id",
+                    "expected_revision",
+                    "idempotency_key",
+                    "operation",
+                    "parameters",
+                    "run_id",
+                    "source",
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "applied_revision",
+                "capability_id",
+                "command_id",
+                "completed_at",
+                "created_at",
+                "dispatched_at",
+                "error",
+                "error_code",
+                "expected_revision",
+                "idempotency_key",
+                "observation_id",
+                "operation",
+                "origin",
+                "receipt",
+                "request",
+                "run_id",
+                "seq",
+                "state",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_after_seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "commands",
+          "next_after_seq"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/observations [ok]": {
+      "schema": {
+        "properties": {
+          "next_after_sequence": {
+            "type": "integer"
+          },
+          "observations": {
+            "items": {
+              "properties": {
+                "artifact_version_id": {
+                  "type": "null"
+                },
+                "channels": {
+                  "items": {
+                    "properties": {
+                      "kind": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "quality": {
+                        "type": "string"
+                      },
+                      "shape": {
+                        "items": {
+                          "type": "integer"
+                        },
+                        "type": "array"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "unit": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "items": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        },
+                        "type": [
+                          "array",
+                          "string"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "name",
+                      "quality",
+                      "shape",
+                      "source",
+                      "unit",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "command_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "observation_id": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "sequence": {
+                  "type": "integer"
+                },
+                "sim_time": {
+                  "type": "number"
+                },
+                "sim_time_unit": {
+                  "type": "string"
+                },
+                "wall_time_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "artifact_version_id",
+                "channels",
+                "command_id",
+                "observation_id",
+                "run_id",
+                "sequence",
+                "sim_time",
+                "sim_time_unit",
+                "wall_time_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "next_after_sequence",
+          "observations"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/lab/runs/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/message [error]": {
       "schema": {
         "properties": {
@@ -24960,6 +27114,303 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/devices/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/events [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs/([^/]+)/commands [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/lab/runs/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -35411,6 +37862,1876 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/lab [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/devices/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/events [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs [ok]": {
+      "schema": {
+        "properties": {
+          "descriptor": {
+            "properties": {
+              "assumptions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "backend_version": {
+                "properties": {
+                  "adapter_version": {
+                    "type": "string"
+                  },
+                  "package": {
+                    "type": "string"
+                  },
+                  "source_sha": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "adapter_version",
+                  "package",
+                  "source_sha",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "capabilities": {
+                "items": {
+                  "properties": {
+                    "capability_id": {
+                      "type": "string"
+                    },
+                    "mapping_version": {
+                      "type": "string"
+                    },
+                    "observes": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "properties": {
+                        "duration": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        },
+                        "pixels": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        },
+                        "volume": {
+                          "properties": {
+                            "allowed": {
+                              "items": {
+                                "type": "integer"
+                              },
+                              "type": "array"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "allowed",
+                            "unit"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [],
+                      "type": "object"
+                    },
+                    "resources": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "side_effect": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "target": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "terminal": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "capability_id",
+                    "mapping_version",
+                    "observes",
+                    "operation",
+                    "parameters",
+                    "resources",
+                    "scope",
+                    "side_effect",
+                    "source",
+                    "target",
+                    "terminal"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "contract": {
+                "type": "string"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "limits": {
+                "properties": {
+                  "max_steps": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "max_steps"
+                ],
+                "type": "object"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "observation_channels": {
+                "items": {
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "axes": {
+                      "items": {
+                        "properties": {
+                          "labels": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "description",
+                    "kind",
+                    "name",
+                    "shape",
+                    "source",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "reproducibility": {
+                "properties": {
+                  "evidence": {
+                    "type": "null"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "evidence",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "resources": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "resource_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "label",
+                    "resource_id"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "stop": {
+                "properties": {
+                  "semantics": {
+                    "type": "string"
+                  },
+                  "supported": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "semantics",
+                  "supported"
+                ],
+                "type": "object"
+              },
+              "time": {
+                "properties": {
+                  "unit": {
+                    "type": "string"
+                  },
+                  "wall_clock_equivalent": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "wall_clock_equivalent"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "assumptions",
+              "backend",
+              "backend_version",
+              "capabilities",
+              "capability_revision",
+              "contract",
+              "device_id",
+              "limits",
+              "mode",
+              "observation_channels",
+              "profile",
+              "reproducibility",
+              "resources",
+              "stop",
+              "time"
+            ],
+            "type": "object"
+          },
+          "observation": {
+            "properties": {
+              "artifact_version_id": {
+                "type": "null"
+              },
+              "channels": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "quality": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "items": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "type": "array"
+                      },
+                      "type": [
+                        "array",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "quality",
+                    "shape",
+                    "source",
+                    "unit",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "command_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "observation_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer"
+              },
+              "sim_time": {
+                "type": "number"
+              },
+              "sim_time_unit": {
+                "type": "string"
+              },
+              "wall_time_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_version_id",
+              "channels",
+              "command_id",
+              "observation_id",
+              "run_id",
+              "sequence",
+              "sim_time",
+              "sim_time_unit",
+              "wall_time_ms"
+            ],
+            "type": "object"
+          },
+          "run": {
+            "properties": {
+              "adapter_version": {
+                "type": "string"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "idle_timeout_ms": {
+                    "type": "integer"
+                  },
+                  "max_commands": {
+                    "type": "integer"
+                  },
+                  "max_consecutive_failures": {
+                    "type": "integer"
+                  },
+                  "max_steps": {
+                    "type": "integer"
+                  },
+                  "max_wall_ms": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "idle_timeout_ms",
+                  "max_commands",
+                  "max_consecutive_failures",
+                  "max_steps",
+                  "max_wall_ms"
+                ],
+                "type": "object"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "command_count": {
+                "type": "integer"
+              },
+              "consecutive_failures": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "end_reason": {
+                "type": "null"
+              },
+              "ended_at": {
+                "type": "null"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "raw": {
+                "properties": {
+                  "terminated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "truncated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "terminated",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "step_count": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adapter_version",
+              "backend",
+              "budgets",
+              "capability_revision",
+              "command_count",
+              "consecutive_failures",
+              "created_at",
+              "device_id",
+              "end_reason",
+              "ended_at",
+              "mode",
+              "profile",
+              "raw",
+              "revision",
+              "run_id",
+              "seed",
+              "status",
+              "step_count",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "descriptor",
+          "observation",
+          "run"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/commands [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/commands [ok]": {
+      "schema": {
+        "properties": {
+          "command": {
+            "properties": {
+              "applied_revision": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "capability_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "command_id": {
+                "type": "string"
+              },
+              "completed_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "dispatched_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "error": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "error_code": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "expected_revision": {
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "observation_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "operation": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "receipt": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "end_reason": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "error": {
+                    "type": "null"
+                  },
+                  "raw": {
+                    "properties": {
+                      "terminated": {
+                        "type": "boolean"
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "terminated",
+                      "truncated"
+                    ],
+                    "type": "object"
+                  },
+                  "sim_time": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "step_index": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "end_reason",
+                  "error",
+                  "raw",
+                  "sim_time",
+                  "status",
+                  "step_index"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "request": {
+                "properties": {
+                  "capability_id": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "operation": {
+                    "type": "string"
+                  },
+                  "parameters": {
+                    "properties": {
+                      "duration": {
+                        "properties": {
+                          "unit": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "unit",
+                          "value"
+                        ],
+                        "type": "object"
+                      },
+                      "volume": {
+                        "properties": {
+                          "unit": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "unit",
+                          "value"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [],
+                    "type": "object"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  },
+                  "target": {
+                    "type": [
+                      "null",
+                      "string"
+                    ]
+                  }
+                },
+                "required": [
+                  "expected_revision",
+                  "idempotency_key",
+                  "operation",
+                  "parameters",
+                  "run_id",
+                  "source",
+                  "target"
+                ],
+                "type": "object"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "applied_revision",
+              "capability_id",
+              "command_id",
+              "completed_at",
+              "created_at",
+              "dispatched_at",
+              "error",
+              "error_code",
+              "expected_revision",
+              "idempotency_key",
+              "observation_id",
+              "operation",
+              "origin",
+              "receipt",
+              "request",
+              "run_id",
+              "seq",
+              "state",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "observation": {
+            "properties": {
+              "artifact_version_id": {
+                "type": "null"
+              },
+              "channels": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "quality": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "items": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "type": "array"
+                      },
+                      "type": [
+                        "array",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "quality",
+                    "shape",
+                    "source",
+                    "unit",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "command_id": {
+                "type": "string"
+              },
+              "observation_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer"
+              },
+              "sim_time": {
+                "type": "number"
+              },
+              "sim_time_unit": {
+                "type": "string"
+              },
+              "wall_time_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_version_id",
+              "channels",
+              "command_id",
+              "observation_id",
+              "run_id",
+              "sequence",
+              "sim_time",
+              "sim_time_unit",
+              "wall_time_ms"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "run": {
+            "properties": {
+              "adapter_version": {
+                "type": "string"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "idle_timeout_ms": {
+                    "type": "integer"
+                  },
+                  "max_commands": {
+                    "type": "integer"
+                  },
+                  "max_consecutive_failures": {
+                    "type": "integer"
+                  },
+                  "max_steps": {
+                    "type": "integer"
+                  },
+                  "max_wall_ms": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "idle_timeout_ms",
+                  "max_commands",
+                  "max_consecutive_failures",
+                  "max_steps",
+                  "max_wall_ms"
+                ],
+                "type": "object"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "command_count": {
+                "type": "integer"
+              },
+              "consecutive_failures": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "end_reason": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "ended_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mode": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "raw": {
+                "properties": {
+                  "terminated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "truncated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "terminated",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "step_count": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adapter_version",
+              "backend",
+              "budgets",
+              "capability_revision",
+              "command_count",
+              "consecutive_failures",
+              "created_at",
+              "device_id",
+              "end_reason",
+              "ended_at",
+              "mode",
+              "profile",
+              "raw",
+              "revision",
+              "run_id",
+              "seed",
+              "status",
+              "step_count",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "command",
+          "observation",
+          "run"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [ok]": {
+      "schema": {
+        "properties": {
+          "command": {
+            "properties": {
+              "applied_revision": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "capability_id": {
+                "type": "string"
+              },
+              "command_id": {
+                "type": "string"
+              },
+              "completed_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "dispatched_at": {
+                "type": "integer"
+              },
+              "error": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "error_code": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "expected_revision": {
+                "type": "integer"
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "observation_id": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "operation": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "receipt": {
+                "properties": {
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "end_reason": {
+                    "type": "null"
+                  },
+                  "error": {
+                    "type": "null"
+                  },
+                  "raw": {
+                    "properties": {
+                      "terminated": {
+                        "type": "boolean"
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "terminated",
+                      "truncated"
+                    ],
+                    "type": "object"
+                  },
+                  "sim_time": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "step_index": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "applied",
+                  "end_reason",
+                  "error",
+                  "raw",
+                  "sim_time",
+                  "status",
+                  "step_index"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "request": {
+                "properties": {
+                  "capability_id": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "operation": {
+                    "type": "string"
+                  },
+                  "parameters": {
+                    "properties": {
+                      "duration": {
+                        "properties": {
+                          "unit": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "unit",
+                          "value"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "duration"
+                    ],
+                    "type": "object"
+                  },
+                  "run_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "capability_id",
+                  "expected_revision",
+                  "idempotency_key",
+                  "operation",
+                  "parameters",
+                  "run_id",
+                  "source",
+                  "target"
+                ],
+                "type": "object"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "applied_revision",
+              "capability_id",
+              "command_id",
+              "completed_at",
+              "created_at",
+              "dispatched_at",
+              "error",
+              "error_code",
+              "expected_revision",
+              "idempotency_key",
+              "observation_id",
+              "operation",
+              "origin",
+              "receipt",
+              "request",
+              "run_id",
+              "seq",
+              "state",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "observation": {
+            "properties": {
+              "artifact_version_id": {
+                "type": "null"
+              },
+              "channels": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "quality": {
+                      "type": "string"
+                    },
+                    "shape": {
+                      "items": {
+                        "type": "integer"
+                      },
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "items": {
+                        "items": {
+                          "type": "number"
+                        },
+                        "type": "array"
+                      },
+                      "type": [
+                        "array",
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name",
+                    "quality",
+                    "shape",
+                    "source",
+                    "unit",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "command_id": {
+                "type": "string"
+              },
+              "observation_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer"
+              },
+              "sim_time": {
+                "type": "number"
+              },
+              "sim_time_unit": {
+                "type": "string"
+              },
+              "wall_time_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_version_id",
+              "channels",
+              "command_id",
+              "observation_id",
+              "run_id",
+              "sequence",
+              "sim_time",
+              "sim_time_unit",
+              "wall_time_ms"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "run": {
+            "properties": {
+              "adapter_version": {
+                "type": "string"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "idle_timeout_ms": {
+                    "type": "integer"
+                  },
+                  "max_commands": {
+                    "type": "integer"
+                  },
+                  "max_consecutive_failures": {
+                    "type": "integer"
+                  },
+                  "max_steps": {
+                    "type": "integer"
+                  },
+                  "max_wall_ms": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "idle_timeout_ms",
+                  "max_commands",
+                  "max_consecutive_failures",
+                  "max_steps",
+                  "max_wall_ms"
+                ],
+                "type": "object"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "command_count": {
+                "type": "integer"
+              },
+              "consecutive_failures": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "end_reason": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "ended_at": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mode": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "raw": {
+                "properties": {
+                  "terminated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "truncated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "terminated",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "step_count": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adapter_version",
+              "backend",
+              "budgets",
+              "capability_revision",
+              "command_count",
+              "consecutive_failures",
+              "created_at",
+              "device_id",
+              "end_reason",
+              "ended_at",
+              "mode",
+              "profile",
+              "raw",
+              "revision",
+              "run_id",
+              "seed",
+              "status",
+              "step_count",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "command",
+          "observation",
+          "run"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/lab/runs/([^/]+)/stop [ok]": {
+      "schema": {
+        "properties": {
+          "run": {
+            "properties": {
+              "adapter_version": {
+                "type": "string"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "idle_timeout_ms": {
+                    "type": "integer"
+                  },
+                  "max_commands": {
+                    "type": "integer"
+                  },
+                  "max_consecutive_failures": {
+                    "type": "integer"
+                  },
+                  "max_steps": {
+                    "type": "integer"
+                  },
+                  "max_wall_ms": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "idle_timeout_ms",
+                  "max_commands",
+                  "max_consecutive_failures",
+                  "max_steps",
+                  "max_wall_ms"
+                ],
+                "type": "object"
+              },
+              "capability_revision": {
+                "type": "string"
+              },
+              "command_count": {
+                "type": "integer"
+              },
+              "consecutive_failures": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "end_reason": {
+                "type": "string"
+              },
+              "ended_at": {
+                "type": "integer"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "raw": {
+                "properties": {
+                  "terminated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "truncated": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "terminated",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "step_count": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "adapter_version",
+              "backend",
+              "budgets",
+              "capability_revision",
+              "command_count",
+              "consecutive_failures",
+              "created_at",
+              "device_id",
+              "end_reason",
+              "ended_at",
+              "mode",
+              "profile",
+              "raw",
+              "revision",
+              "run_id",
+              "seed",
+              "status",
+              "step_count",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "semantics": {
+            "type": "string"
+          },
+          "stopped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "semantics",
+          "stopped"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/message [ok]": {
       "schema": {
         "properties": {
@@ -45509,6 +49830,303 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/devices/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/events [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs/([^/]+)/commands [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs/([^/]+)/observations [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/lab/runs/([^/]+)/stop [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
