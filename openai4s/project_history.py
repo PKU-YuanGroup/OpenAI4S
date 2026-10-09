@@ -22,7 +22,13 @@ from typing import Any
 from openai4s.artifact_restore import trusted_snapshot_roots
 from openai4s.host.files import is_secret_path
 from openai4s.project_folders import ProjectFolderError, project_folder_path
-from openai4s.server.session_package import _is_secret_path, _safe_text, _sanitize
+from openai4s.server.session_package import (
+    _REDACTED,
+    _is_secret_path,
+    _sanitize,
+    _secret_text_bytes,
+    known_secret_bytes,
+)
 from openai4s.storage.branch_projection import project_branch_records
 
 MAX_FILE_BYTES = 32 * 1024 * 1024
@@ -36,6 +42,30 @@ MAX_SCAN_ENTRIES = 20_000
 _LOCK = threading.RLock()
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _scrub(value: Any, secrets: tuple[bytes, ...]) -> Any:
+    """Pattern-sanitize, then replace configured secret values verbatim.
+
+    Pattern rules miss a provider key with no recognizable prefix, e.g. one a
+    user pasted into chat. Replacing (not refusing) keeps a key in a message
+    from making the session impossible to save, and therefore to delete.
+    """
+    texts = [text for text in (s.decode("utf-8", "ignore") for s in secrets) if text]
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, str):
+            for text in texts:
+                if text in item:
+                    item = item.replace(text, _REDACTED)
+            return item
+        if isinstance(item, dict):
+            return {key: walk(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        return item
+
+    return walk(_sanitize(value))
 
 
 class ProjectHistoryError(ValueError):
@@ -301,14 +331,15 @@ class ProjectHistoryService:
 
     def _settings(self, pid: str) -> dict:
         project = self.store.get_project(pid) or {}
-        return _sanitize(
+        return _scrub(
             {
                 "schema_version": 1,
                 "project": {
                     key: project.get(key) or ""
                     for key in ("name", "description", "context")
                 },
-            }
+            },
+            known_secret_bytes(self.store),
         )
 
     def _write_settings(self, tree: _Tree, settings: dict) -> None:
@@ -493,13 +524,17 @@ class ProjectHistoryService:
         rootid = str(frame.get("frame_id") or frame.get("id"))
         pid = str(frame.get("project_id") or "default")
         omissions: list[dict] = []
+        # Configured key values, so a key with no recognizable prefix is still
+        # caught; the same residual check Session packages fail closed on.
+        secrets = known_secret_bytes(self.store)
+        title = _scrub(frame.get("name") or "Conversation", secrets)
         messages = self.store.list_branch_message_boundaries(
             rootid, branch_id=branch_id, limit=MAX_RECORDS + 1
         )
         if len(messages) > MAX_RECORDS:
             omissions.append({"path": "messages", "reason": "record_count_limit"})
         messages = [
-            _sanitize(
+            _scrub(
                 {
                     key: item.get(key)
                     for key in (
@@ -510,7 +545,8 @@ class ProjectHistoryService:
                         "content",
                         "created_at",
                     )
-                }
+                },
+                secrets,
             )
             for item in messages[:MAX_RECORDS]
         ]
@@ -534,7 +570,7 @@ class ProjectHistoryService:
                 self.store.cell_detail(str(item.get("producing_cell_id") or "")) or item
             )
             cells.append(
-                _sanitize(
+                _scrub(
                     {
                         key: detail.get(key)
                         for key in (
@@ -549,7 +585,8 @@ class ProjectHistoryService:
                             "error",
                             "created_at",
                         )
-                    }
+                    },
+                    secrets,
                 )
             )
         payloads = {
@@ -557,7 +594,7 @@ class ProjectHistoryService:
             "cells.json": _json(cells),
             "transcript.md": (
                 "# "
-                + _safe_text(frame.get("name") or "Conversation")
+                + title
                 + "\n\n"
                 + "\n\n".join(
                     "## "
@@ -595,11 +632,11 @@ class ProjectHistoryService:
                         }
                     )
                     continue
-                try:
-                    text = data.decode("utf-8")
-                except UnicodeDecodeError:
-                    text = None
-                if text is not None and _safe_text(text) != text:
+                # Lossy decode, so binary files cannot carry a key past the
+                # pattern scan; configured key values are matched as bytes.
+                if _secret_text_bytes(data) or any(
+                    secret in data for secret in secrets
+                ):
                     omissions.append(
                         {"path": record["path"], "reason": "credential_content"}
                     )
@@ -620,8 +657,9 @@ class ProjectHistoryService:
             files.append({**record, "sha256": digest, "size_bytes": len(data)})
         settings = {
             **self._settings(pid),
-            "session": _sanitize(
-                {key: frame.get(key) for key in ("name", "model", "runtime_env")}
+            "session": _scrub(
+                {key: frame.get(key) for key in ("name", "model", "runtime_env")},
+                secrets,
             ),
         }
         manifest = {
@@ -634,7 +672,7 @@ class ProjectHistoryService:
                 "workspace": "active_branch",
                 "artifacts": "all_retained_session_versions",
             },
-            "title": _safe_text(frame.get("name") or "Conversation"),
+            "title": title,
             "updated_at": int(frame.get("updated_at") or 0),
             "settings": settings,
             "message_count": len(messages),
@@ -647,6 +685,11 @@ class ProjectHistoryService:
                 for name, data in payloads.items()
             },
         }
+        for data in (*payloads.values(), _json(manifest)):
+            if any(secret in data for secret in secrets):
+                raise ProjectHistoryError(
+                    "project history snapshot still contains secret material"
+                )
         return manifest, payloads
 
     def _archive_budget(self, tree: _Tree) -> None:

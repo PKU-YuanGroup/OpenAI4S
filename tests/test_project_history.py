@@ -422,3 +422,41 @@ def test_transient_status_read_error_is_not_remembered(tmp_path, monkeypatch):
     recovered = service.status(pid)
     assert recovered["enabled"] is True
     assert recovered["state"] == "saved" and recovered["error"] is None
+
+
+def test_configured_secret_values_never_reach_the_portable_archive(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    configured = "custom-secret-without-provider-prefix-123456"
+    agent_plan = "custom-agent-plan-secret-654321"
+    store.set_setting("llm_api_key", configured)
+    store.set_setting("agent_plan_key", agent_plan)
+    store.update_project(pid, context=f"Use {agent_plan} for the agent plan")
+    store.update_frame(sid, name=f"Run with {configured}")
+    store.add_message(root_frame_id=sid, role="user", content=f"My key is {configured}")
+    store.log_cell(
+        frame_id=sid,
+        root_frame_id=sid,
+        project_id=pid,
+        code="print(key)",
+        result={"id": "cell-secret", "stdout": f"{agent_plan}\n", "stderr": ""},
+    )
+    (workspace / "configured.txt").write_text(f"key={configured}\n")
+    (workspace / "binary.bin").write_bytes(
+        b"\x00\xff" + agent_plan.encode("utf-8") + b"\x00"
+    )
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    omitted = {item["path"]: item["reason"] for item in result["omissions"]}
+    assert omitted["workspace/configured.txt"] == "credential_content"
+    assert omitted["workspace/binary.bin"] == "credential_content"
+    snapshot = service.read_session(pid, sid)
+    assert "[REDACTED]" in snapshot["messages"][-1]["content"]
+    assert "[REDACTED]" in snapshot["title"]
+    archived = [
+        path.read_bytes()
+        for path in (source / ".openai4s").rglob("*")
+        if path.is_file()
+    ]
+    assert archived
+    for secret in (configured, agent_plan):
+        assert not any(secret.encode("utf-8") in data for data in archived), secret
