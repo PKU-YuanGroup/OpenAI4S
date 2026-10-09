@@ -51,11 +51,14 @@ const COPY = {
     bumped: "Off; result review Review only; approvals You. Saved on this conversation.",
     noRun: "No Auto Run.",
     importedRun: "Finished. Unverified · imported history.",
-    budgetRun: "In progress. Paused · Budget exhausted.",
-    measureRun: "In progress. 无法验证 token 预算.",
-    safetyRun: "Finished. Failed · Safety boundary.",
-    branchA: "In progress. Running · not verified.",
-    branchB: "In progress. Candidate · provisional / not verified.",
+    budgetRun: "In progress. Paused · Budget exhausted. This run: result review Auto-fix; approvals Auto review of asks.",
+    measureRun: "In progress. 无法验证 token 预算. This run: result review Auto-fix; approvals Auto review of asks.",
+    safetyRun: "Finished. Failed · Safety boundary. This run: result review Auto-fix; approvals Auto review of asks.",
+    roundsRun:
+      "In progress. Reviewing the candidate · not verified. This run: result review Auto-fix; approvals Auto review of asks. Review round 2 · repair round 1.",
+    issuesRun: "Finished. Completed · unverified · 2 unresolved issues. This run: result review Review only; approvals You.",
+    branchA: "In progress. Running · not verified. This run: result review Auto-fix; approvals Auto review of asks.",
+    branchB: "In progress. Candidate · provisional / not verified. This run: result review Auto-fix; approvals Auto review of asks.",
     noUsage: "Deployment ceilings · No usage recorded",
     nearCells: "25 of 30, 5 remaining · Near ceiling",
     atReview: "2 of 2, 0 remaining · At ceiling",
@@ -83,9 +86,11 @@ const COPY = {
     project: "关闭；结果审核 仅审核；审批 由你。已保存在此项目。",
     noRun: "没有自动运行。",
     importedRun: "已结束。未验证 · 导入的历史。",
-    budgetRun: "进行中。Paused · Budget exhausted。",
-    measureRun: "进行中。无法验证 token 预算。",
-    safetyRun: "已结束。失败 · 安全边界。",
+    budgetRun: "进行中。Paused · Budget exhausted。本次运行：结果审核 自动修复；审批 自动复核询问。",
+    measureRun: "进行中。无法验证 token 预算。本次运行：结果审核 自动修复；审批 自动复核询问。",
+    safetyRun: "已结束。失败 · 安全边界。本次运行：结果审核 自动修复；审批 自动复核询问。",
+    roundsRun: "进行中。正在审核候选 · 未验证。本次运行：结果审核 自动修复；审批 自动复核询问。审核第 2 轮 · 修复第 1 轮。",
+    issuesRun: "已结束。已完成 · 未验证 · 2 个未解决的问题。本次运行：结果审核 仅审核；审批 由你。",
     noUsage: "部署上限 · 尚未记录用量",
     nearCells: "已用 25/30，剩余 5 · 接近上限",
     atReview: "已用 2/2，剩余 0 · 已到上限",
@@ -650,6 +655,8 @@ async function phaseB(browser, owned, tripwire, previous) {
       budget: await createFrame(context, base, projectId),
       measure: await createFrame(context, base, projectId),
       safety: await createFrame(context, base, projectId),
+      rounds: await createFrame(context, base, projectId),
+      issues: await createFrame(context, base, projectId),
       audits: await createFrame(context, base, projectId),
       branch: await createFrame(context, base, projectId),
       bump: await createFrame(context, base, projectId),
@@ -659,6 +666,8 @@ async function phaseB(browser, owned, tripwire, previous) {
     runFixture(owned.dataDir, "budget_meters", id.budget, projectId);
     runFixture(owned.dataDir, "measurement_unavailable", id.measure, projectId);
     runFixture(owned.dataDir, "terminal_safety", id.safety, projectId);
+    runFixture(owned.dataDir, "run_rounds", id.rounds, projectId);
+    runFixture(owned.dataDir, "completed_with_issues", id.issues, projectId);
     runFixture(owned.dataDir, "audits", id.audits, projectId);
     runFixture(owned.dataDir, "branch_runs", id.branch, projectId);
     runFixture(owned.dataDir, "frame_autonomous", id.bump, projectId);
@@ -691,6 +700,8 @@ async function phaseB(browser, owned, tripwire, previous) {
         }),
       },
       { name: "safety_boundary", projectId, frameId: id.safety, expect: (c) => ({ run: c.safetyRun }) },
+      { name: "run_rounds", projectId, frameId: id.rounds, expect: (c) => ({ run: c.roundsRun }) },
+      { name: "completed_with_issues", projectId, frameId: id.issues, expect: (c) => ({ run: c.issuesRun }) },
     ];
     for (const [lang, locale] of [["en", "en-US"], ["zh", "zh-CN"]]) {
       const handle = lang === "en" ? setup : await openContext(browser, base, daemon.token, locale);

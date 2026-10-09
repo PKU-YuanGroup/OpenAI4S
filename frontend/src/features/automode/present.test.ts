@@ -113,11 +113,37 @@ describe("in English", () => {
   });
 
   it("keeps the saved selection off while the run is in review", () => {
+    // The server counts rounds from 0: this is the re-review after the first repair.
     const v = view({ run: runBody({ status: "reviewing", result_review_mode: "auto_fix", approvals_reviewer: "user", review_round: 1, repair_round: 0 }) });
     expect(selectionText(v)).toBe("Off; result review Off; approvals You. Built-in default, no saved override.");
     expect(runText(v)).toBe(
-      "In progress. Reviewing the candidate · not verified. This run: result review Auto-fix; approvals You. Review round 1 · repair round 0.",
+      "In progress. Reviewing the candidate · not verified. This run: result review Auto-fix; approvals You. Review round 2 · repair round 1.",
     );
+  });
+
+  it("counts a first review as round 1 and shows a lone round by itself", () => {
+    expect(runText(view({ run: runBody({ status: "reviewing", review_round: 0 }) }))).toBe(
+      "In progress. Reviewing the candidate · not verified. Review round 1.",
+    );
+    expect(runText(view({ run: runBody({ status: "repairing", repair_round: 0 }) }))).toBe(
+      "In progress. Repairing · not verified. Repair round 1.",
+    );
+    // A finished run states its outcome; its rounds are history.
+    expect(runText(view({ run: runBody({ status: "verified", review_round: 0, repair_round: 0 }) }))).toBe("Finished. Verified.");
+  });
+
+  it.each([
+    [2, "Finished. Completed · unverified · 2 unresolved issues. This run: result review Review only; approvals You."],
+    [1, "Finished. Completed · unverified · 1 unresolved issue. This run: result review Review only; approvals You."],
+    [null, "Finished. Completed · unverified · unresolved issues. This run: result review Review only; approvals You."],
+  ])("names N unresolved issues when the server counted them (%o)", (count, text) => {
+    const run = runBody({ status: "completed_with_issues", result_review_mode: "review_only", approvals_reviewer: "user", unresolved_finding_count: count });
+    expect(runText(view({ run }))).toBe(text);
+  });
+
+  it("lets the server's user truth win over a count", () => {
+    const run = runBody({ status: "completed_with_issues", user_truth: "Completed · repaired answer was not delivered", unresolved_finding_count: 2 });
+    expect(runText(view({ run }))).toBe("Finished. Completed · repaired answer was not delivered.");
   });
 
   it("omits the run clause when the run does not carry its modes", () => {
@@ -237,6 +263,11 @@ describe("in Chinese", () => {
     expect(runText(view({ run: runBody({ status: "paused", user_truth: "Paused · Budget exhausted" }) }))).toBe(
       "已结束。Paused · Budget exhausted。",
     );
+    expect(runText(view({ run: runBody({ status: "reviewing", review_round: 1, repair_round: 0 }) }))).toBe(
+      "进行中。正在审核候选 · 未验证。审核第 2 轮 · 修复第 1 轮。",
+    );
+    const issues = runBody({ status: "completed_with_issues", result_review_mode: "review_only", approvals_reviewer: "user", unresolved_finding_count: 2 });
+    expect(runText(view({ run: issues }))).toBe("已结束。已完成 · 未验证 · 2 个未解决的问题。本次运行：结果审核 仅审核；审批 由你。");
   });
 
   it("reads the budget block in Chinese", () => {

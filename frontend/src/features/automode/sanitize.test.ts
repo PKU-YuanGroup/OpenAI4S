@@ -110,6 +110,34 @@ describe("the status envelope", () => {
     ]);
   });
 
+  it("keeps the run's own modes and rounds only as closed values", () => {
+    const run = (overrides: Record<string, unknown>) => sanitizeAutoModeView(autoModeBody({ run: runBody(overrides) }))!.run!;
+    expect(run({ result_review_mode: "review_only", approvals_reviewer: "user", review_round: 0, repair_round: 1 })).toMatchObject({
+      result_review_mode: "review_only",
+      approvals_reviewer: "user",
+      review_round: 0,
+      repair_round: 1,
+    });
+    expect(run({ result_review_mode: "autonomous", approvals_reviewer: "guardian", review_round: -1, repair_round: 1.5 })).toMatchObject({
+      result_review_mode: null,
+      approvals_reviewer: null,
+      review_round: null,
+      repair_round: null,
+    });
+  });
+
+  it.each([
+    ["completed_with_issues", 2, 2],
+    ["completed_with_issues", 0, null],
+    ["completed_with_issues", "2", null],
+    ["completed_with_issues", 1.5, null],
+    ["verified", 2, null],
+    ["candidate", 2, null],
+  ])("keeps an unresolved count only for a finished run with issues (%s, %o)", (status, count, kept) => {
+    const view = sanitizeAutoModeView(autoModeBody({ run: runBody({ status, unresolved_finding_count: count }) }));
+    expect(view!.run!.unresolved_finding_count).toBe(kept);
+  });
+
   it("keeps only the deployment fields the contract names", () => {
     const view = sanitizeAutoModeView(
       autoModeBody({ deployment: { explicit: true, explicit_fields: ["preset", "OPENAI4S_LLM_API_KEY", "preset"] } }),

@@ -565,8 +565,37 @@ the closed sets in `openai4s/server/auto_mode.py` and
 
 `run` public fields used by the run line are `status`, `user_truth`,
 `terminal_reason`, `result_review_mode`, `approvals_reviewer`,
-`review_round`, and `repair_round`. `run_id`, `turn_id`, and `execution_id`
-stay on a secondary detail row. Digests stay in that detail row.
+`review_round`, `repair_round`, and `unresolved_finding_count`. `run_id`,
+`turn_id`, and `execution_id` stay on a secondary detail row. Digests stay
+in that detail row.
+
+The last five fields are facts about this run. The store derives them when
+the run is read. They never come from `selection`:
+
+- `result_review_mode` and `approvals_reviewer` are the values frozen when
+  the run started. `result_review_mode` is the run's mode. It is sent only
+  when the frozen selection does not name a different mode. The permission
+  gate resolves the conversation's current selection for each `ask`, so a
+  reviewer saved after the run started appears on the saved-selection line,
+  not here.
+- `review_round` is the durable `round_index` of the latest result review in
+  the visible event history. It counts from 0, like the `review_round` of a
+  live `auto_audit_started` event. `repair_round` is the 0-based position of
+  the latest visible repair among the repair rows that this history names.
+  Each field is absent until the first review or repair starts. A
+  checkpoint prefix sees only its own rounds.
+- `unresolved_finding_count` is the N of **Completed · unverified · N
+  unresolved issues**. It is sent only for `completed_with_issues`, and only
+  when N is at least 1. N counts the findings recorded by the latest
+  completed result review of the run's current candidate. No later
+  independent review has cleared them. N counts them the way the completion
+  gate does for the message's user truth: the material ones (`material`,
+  `major`, `high`, `critical`) when there are any, otherwise all of them.
+- None of the five is sent for an imported (`quarantined_import`) run, for
+  any run in a quarantined session, or for a run whose proof no longer
+  validates. That last run is projected as `failed` / `safety_boundary`.
+  Export and share do not carry the five fields either, because they belong
+  to this read projection and not to the run record.
 
 `run.status` is one of `running`, `candidate`, `reviewing`, `repairing`,
 `verified`, `completed_with_issues`, `review_unavailable`,
@@ -599,7 +628,7 @@ show `status`.
 | `source` `built_in_defaults` | Unchanged. | Built-in default. `explicit` is false. | Unchanged. |
 | `source` `import_quarantine` | Read only, as above. | Safe triple, as above. | As the quarantine row above. |
 | `run` null | Unchanged. | Unchanged. | No Auto Run. Ceilings may still be listed. No meter is near its ceiling. |
-| `run` object, `status` in `running`, `candidate`, `reviewing`, `repairing` | Unchanged. | Unchanged. The selection triple is not rewritten to match the run. | In progress, then the status sentence. The line also shows this run's own `result_review_mode` and `approvals_reviewer` when those fields are present, plus `review_round` and `repair_round` when present. |
+| `run` object, `status` in `running`, `candidate`, `reviewing`, `repairing` | Unchanged. | Unchanged. The selection triple is not rewritten to match the run. | In progress, then the status sentence. The line also shows this run's own `result_review_mode` and `approvals_reviewer` when those fields are present, plus `review_round` and `repair_round` when present, each counted from 1. |
 | `run` object, any other `status` | Unchanged. | Unchanged. | Finished, then `user_truth` or the terminal sentence for `status` / `terminal_reason`. A paused budget stop uses **Paused · Budget exhausted**. It does not read as in progress. |
 | A meter is near its ceiling | Unchanged. | Unchanged. | The budget block, not the selection line, carries the warning. Rule below. |
 | HTTP 503 `auto_mode_storage_unavailable` | Status unavailable. | Status unavailable. The client does not invent an off preset. | Status unavailable. |
@@ -669,12 +698,13 @@ Chinese:
 
 Run value shape:
 
-`{In progress | Finished | No Auto Run}. {user_truth or status sentence}. This run: result review {run.result_review_mode}; approvals {run.approvals_reviewer}.`
+`{In progress | Finished | No Auto Run}. {user_truth or status sentence}. This run: result review {run.result_review_mode}; approvals {run.approvals_reviewer}. Review round {run.review_round + 1} · repair round {run.repair_round + 1}.`
 
 The “this run” clause is omitted when the run is null or those fields are
-absent. The status sentence is the frozen user truth from this document, or
-`run.user_truth` when the payload has it. The client does not translate
-`run.user_truth`.
+absent. The rounds clause appears only while the run is in progress, and it
+names only the rounds the run carries. The status sentence is the frozen
+user truth from this document, or `run.user_truth` when the payload has it.
+The client does not translate `run.user_truth`.
 
 The words “On”, “Enabled”, and “已开启” are not values on these three lines.
 The existing composer on/off hint remains the legacy switch only.
@@ -691,7 +721,9 @@ The shipped block needs some copy the table above does not fix. It lives in
 | `running` | Running · not verified | 运行中 · 未验证 | No frozen user truth exists for this status |
 | `reviewing` | Reviewing the candidate · not verified | 正在审核候选 · 未验证 | Same |
 | `repairing` | Repairing · not verified | 正在修复 · 未验证 | Same |
-| `completed_with_issues` | Completed · unverified · unresolved issues | 已完成 · 未验证 · 有未解决的问题 | The run projection carries no count, so N is not shown |
+| `completed_with_issues` | Completed · unverified · {N} unresolved issues (“1 unresolved issue” when N is 1) | 已完成 · 未验证 · {N} 个未解决的问题 | `run.unresolved_finding_count` is N |
+| `completed_with_issues`, no count | Completed · unverified · unresolved issues | 已完成 · 未验证 · 有未解决的问题 | The run carries no `unresolved_finding_count` |
+| Rounds | Review round {r} · repair round {p}. | 审核第 {r} 轮 · 修复第 {p} 轮。 | In progress only. Each round is the field plus 1. With one field only: “Review round {r}.” / “Repair round {p}.” |
 | `unverified_import` | Unverified · imported history | 未验证 · 导入的历史 | |
 | Budget meter | `{used} of {limit}, {remaining} remaining` | `已用 {used}/{limit}，剩余 {remaining}` | Plus “{n} reserved” / “预留 {n}” and the near/at mark |
 | Exhausted list | Exhausted: {meters}. | 已耗尽：{meters}。 | `terminal_reason` or `circuit.reason` is `budget_exhausted` |
