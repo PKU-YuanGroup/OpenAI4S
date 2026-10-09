@@ -2238,3 +2238,19 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     finally:
         rerun.close()
     assert_disk_has_no_sentinel()
+
+
+def test_project_folder_column_survives_another_branchs_version_35(tmp_path):
+    """Version numbers are per branch; the idempotent column is ensured anyway."""
+    path = Config(data_dir=tmp_path).db_path
+    store = get_store(path)
+    store._conn.execute("ALTER TABLE projects DROP COLUMN folder_path")
+    store.close()
+    reopened = get_store(path)
+    try:
+        project = reopened.create_project(name="linked", folder_path=str(tmp_path))
+        assert reopened.get_project(project["project_id"])["folder_path"] == str(
+            tmp_path
+        )
+    finally:
+        reopened.close()

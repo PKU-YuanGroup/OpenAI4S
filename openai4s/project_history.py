@@ -16,6 +16,7 @@ import stat
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -42,6 +43,11 @@ MAX_SCAN_ENTRIES = 20_000
 _LOCK = threading.RLock()
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+#: Error code for a reached archive limit. Retrying cannot clear it, so the
+#: deletion refusal names the way out instead of only "retry".
+LIMIT_CODE = "project_history_limit"
+#: The session's branch, checkpoint or folder moved while it was snapshotted.
+CHANGED_CODE = "project_history_session_changed"
 
 
 def _scrub(value: Any, secrets: tuple[bytes, ...]) -> Any:
@@ -208,7 +214,32 @@ class _Tree:
                 os.close(descriptor)
             os.close(parent)
 
-    def write(self, path: str, data: bytes, *, immutable: bool = False) -> None:
+    def stat(self, path: str) -> os.stat_result:
+        """No-follow metadata through the pinned directory chain."""
+        parts = _parts(path)
+        parent = self.directory(parts[:-1])
+        try:
+            return os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+        finally:
+            os.close(parent)
+
+    def has_object(self, digest: str, size: int) -> bool:
+        try:
+            info = self.stat(".openai4s/objects/" + digest)
+        except FileNotFoundError:
+            return False
+        return (
+            stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size == size
+        )
+
+    def write(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        immutable: bool = False,
+        content_addressed: bool = False,
+    ) -> None:
         parts = _parts(path)
         parent = self.directory(parts[:-1], create=True)
         temporary = ".pending-" + uuid.uuid4().hex
@@ -223,6 +254,15 @@ class _Tree:
                         "archive target is not a private regular file"
                     )
                 if immutable:
+                    # A content-addressed object is named by its SHA-256, which
+                    # every download verifies; re-reading it on each save to
+                    # compare bytes doubled the I/O of every autosave.
+                    if content_addressed:
+                        if existing.st_size != len(data):
+                            raise ProjectHistoryError(
+                                "immutable project history was modified"
+                            )
+                        return
                     if self.read(path, max(MAX_METADATA_BYTES, MAX_FILE_BYTES)) != data:
                         raise ProjectHistoryError(
                             "immutable project history was modified"
@@ -230,7 +270,9 @@ class _Tree:
                     return
             delta = len(data) - (existing.st_size if existing else 0)
             if getattr(self, "used_bytes", 0) + delta > MAX_ARCHIVE_BYTES:
-                raise ProjectHistoryError("project history reached its storage limit")
+                raise ProjectHistoryError(
+                    "project history reached its storage limit", 409, LIMIT_CODE
+                )
             descriptor = os.open(
                 temporary,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -277,7 +319,7 @@ class _Tree:
                 for entry in entries:
                     if len(names) >= limit:
                         raise ProjectHistoryError(
-                            "project history contains too many entries"
+                            "project history contains too many entries", 409, LIMIT_CODE
                         )
                     if entry.is_symlink():
                         raise ProjectHistoryError(
@@ -295,6 +337,9 @@ class ProjectHistoryService:
     def __init__(self, store: Any, cfg: Any):
         self.store, self.cfg = store, cfg
         self._states: dict[str, dict] = {}
+        # (source, metadata, secret set) -> archived digest, so an unchanged
+        # file is not re-read and re-hashed on every autosave.
+        self._digests: dict[tuple, str] = {}
 
     def _root(self, pid: str) -> Path:
         return project_folder_path(self.store, self.cfg, pid)
@@ -609,52 +654,93 @@ class ProjectHistoryService:
             raise ProjectHistoryError("conversation text exceeds the archive limit")
         files = []
         total = 0
-        for record, base, relative in self._file_sources(rootid, workspace, omissions):
-            try:
-                with _Tree(base) as source:
-                    data = source.read(relative.as_posix(), MAX_FILE_BYTES)
-                # Only retained files spend the budget; an omitted large file
-                # must not crowd out smaller ones after it.
-                if total + len(data) > MAX_SESSION_BYTES:
-                    omissions.append(
-                        {"path": record["path"], "reason": "session_size_limit"}
+        # An unchanged file (same inode, size, times and secret set) whose
+        # object is already archived is not re-read on every autosave.
+        secrets_key = _hash(b"\0".join(secrets))
+        if len(self._digests) > 100_000:
+            self._digests.clear()
+        with ExitStack() as opened:
+            sources: dict[Path, _Tree] = {}
+            for record, base, relative in self._file_sources(
+                rootid, workspace, omissions
+            ):
+                name = relative.as_posix()
+                try:
+                    if base not in sources:
+                        sources[base] = opened.enter_context(_Tree(base))
+                    source = sources[base]
+                    info = source.stat(name)
+                    key = (
+                        str(base),
+                        name,
+                        info.st_dev,
+                        info.st_ino,
+                        info.st_size,
+                        info.st_mtime_ns,
+                        info.st_ctime_ns,
+                        secrets_key,
+                        record.get("expected_sha256"),
                     )
-                    continue
-                digest = _hash(data)
-                if (
-                    record.get("expected_sha256")
-                    and record["expected_sha256"] != digest
-                ):
+                    digest = self._digests.get(key)
+                    data = None
+                    if not (
+                        digest
+                        and stat.S_ISREG(info.st_mode)
+                        and info.st_nlink == 1
+                        and tree.has_object(digest, info.st_size)
+                    ):
+                        data = source.read(name, MAX_FILE_BYTES)
+                        digest = _hash(data)
+                    size = info.st_size if data is None else len(data)
+                    # Only retained files spend the budget; an omitted large
+                    # file must not crowd out smaller ones after it.
+                    if total + size > MAX_SESSION_BYTES:
+                        omissions.append(
+                            {"path": record["path"], "reason": "session_size_limit"}
+                        )
+                        continue
+                    if data is not None:
+                        if (
+                            record.get("expected_sha256")
+                            and record["expected_sha256"] != digest
+                        ):
+                            omissions.append(
+                                {
+                                    "path": record["path"],
+                                    "reason": "artifact_checksum_mismatch",
+                                }
+                            )
+                            continue
+                        # Lossy decode, so binary files cannot carry a key past
+                        # the pattern scan; configured values match as bytes.
+                        if _secret_text_bytes(data) or any(
+                            secret in data for secret in secrets
+                        ):
+                            omissions.append(
+                                {"path": record["path"], "reason": "credential_content"}
+                            )
+                            continue
+                except (OSError, ValueError, RuntimeError):
                     omissions.append(
                         {
                             "path": record["path"],
-                            "reason": "artifact_checksum_mismatch",
+                            "reason": "unsafe_missing_or_oversized_file",
                         }
                     )
                     continue
-                # Lossy decode, so binary files cannot carry a key past the
-                # pattern scan; configured key values are matched as bytes.
-                if _secret_text_bytes(data) or any(
-                    secret in data for secret in secrets
-                ):
-                    omissions.append(
-                        {"path": record["path"], "reason": "credential_content"}
+                if data is not None:
+                    # A corrupt history object is not a source-file omission.
+                    # Refuse publication so a failure cannot stamp a success.
+                    tree.write(
+                        ".openai4s/objects/" + digest,
+                        data,
+                        immutable=True,
+                        content_addressed=True,
                     )
-                    continue
-            except (OSError, ValueError, RuntimeError):
-                omissions.append(
-                    {
-                        "path": record["path"],
-                        "reason": "unsafe_missing_or_oversized_file",
-                    }
-                )
-                continue
-            # A corrupt history object is not a source-file omission. Refuse
-            # publication so a failure cannot stamp a successful archive.
-            tree.write(".openai4s/objects/" + digest, data, immutable=True)
-            total += len(data)
-            record.pop("expected_sha256", None)
-            files.append({**record, "sha256": digest, "size_bytes": len(data)})
+                    self._digests[key] = digest
+                total += size
+                record.pop("expected_sha256", None)
+                files.append({**record, "sha256": digest, "size_bytes": size})
         settings = {
             **self._settings(pid),
             "session": _scrub(
@@ -708,7 +794,9 @@ class ProjectHistoryService:
                         scanned += 1
                         if scanned > MAX_SCAN_ENTRIES:
                             raise ProjectHistoryError(
-                                "project history reached its entry limit"
+                                "project history reached its entry limit",
+                                409,
+                                LIMIT_CODE,
                             )
                         info = entry.stat(follow_symlinks=False)
                         if stat.S_ISDIR(info.st_mode):
@@ -721,7 +809,9 @@ class ProjectHistoryService:
                             )
                         if total > MAX_ARCHIVE_BYTES:
                             raise ProjectHistoryError(
-                                "project history reached its storage limit"
+                                "project history reached its storage limit",
+                                409,
+                                LIMIT_CODE,
                             )
             finally:
                 os.close(descriptor)
@@ -751,7 +841,7 @@ class ProjectHistoryService:
                     raise ProjectHistoryError(
                         "session branch changed or is recovering; save again",
                         409,
-                        "project_history_session_changed",
+                        CHANGED_CODE,
                     )
                 if workspace is None and active_branch != rootid:
                     # The Web runner owns active branch/placement workspace
@@ -790,7 +880,9 @@ class ProjectHistoryService:
                     revisions = tree.names(session + "/revisions")
                     if revision not in revisions and len(revisions) >= MAX_REVISIONS:
                         raise ProjectHistoryError(
-                            "session history reached its revision limit"
+                            "session history reached its revision limit",
+                            409,
+                            LIMIT_CODE,
                         )
                     try:
                         previous = json.loads(tree.read(session + "/index.json"))
@@ -812,6 +904,7 @@ class ProjectHistoryService:
                     tree.write(
                         prefix + "manifest.json", _json(manifest), immutable=True
                     )
+                    self._record_revision(tree, session, manifest, revision)
                     self._write_settings(tree, self._settings(pid))
                     index = {
                         key: manifest[key]
@@ -852,7 +945,14 @@ class ProjectHistoryService:
                 self._states[pid] = result
                 return result
             except Exception as error:
-                return {**self._error(pid, error), "session_id": rootid}
+                # A session that moved on mid-snapshot is transient: the call
+                # still reports it (deletion must not proceed), but it is not
+                # remembered as the project's save state.
+                transient = getattr(error, "code", "") == CHANGED_CODE
+                return {
+                    **self._error(pid, error, remember=not transient),
+                    "session_id": rootid,
+                }
 
     def _check_snapshot_guard(
         self, rootid: str, pid: str, root: Path, guard: dict
@@ -867,8 +967,42 @@ class ProjectHistoryService:
             raise ProjectHistoryError(
                 "session branch or project folder changed; save again",
                 409,
-                "project_history_session_changed",
+                CHANGED_CODE,
             )
+
+    @staticmethod
+    def _listed_revisions(tree: _Tree, session: str) -> dict[str, dict]:
+        """Read the non-authoritative revision list; ignore malformed rows."""
+        try:
+            rows = json.loads(tree.read(session + "/revisions.json"))
+        except (FileNotFoundError, ValueError):
+            return {}
+        listed: dict[str, dict] = {}
+        for row in rows if isinstance(rows, list) else ():
+            if (
+                isinstance(row, dict)
+                and isinstance(row.get("revision_id"), str)
+                and _DIGEST.fullmatch(row["revision_id"])
+                and isinstance(row.get("created_at"), int)
+                and isinstance(row.get("branch_id"), str)
+            ):
+                listed[row["revision_id"]] = {
+                    key: row[key] for key in ("revision_id", "created_at", "branch_id")
+                }
+        return listed
+
+    def _record_revision(
+        self, tree: _Tree, session: str, manifest: dict, revision: str
+    ) -> None:
+        listed = self._listed_revisions(tree, session)
+        if revision in listed:
+            return
+        listed[revision] = {
+            "revision_id": revision,
+            "created_at": int(manifest["created_at"]),
+            "branch_id": str(manifest.get("branch_id") or ""),
+        }
+        tree.write(session + "/revisions.json", _json(list(listed.values())))
 
     def _index(self, tree: _Tree, sid: str) -> dict:
         _identity(sid)
@@ -878,16 +1012,23 @@ class ProjectHistoryService:
         _identity(row.get("revision_id"), digest=True)
         return row
 
-    def status(self, pid: str) -> dict:
+    def status(self, pid: str, *, sessions: list[dict] | None = None) -> dict:
+        """Read-only status; ``sessions`` reuses rows a caller already read.
+
+        It does not walk the whole archive: limits and unsafe entries are
+        reported by the save that meets them.
+        """
         with _LOCK:
             try:
                 root = self._root(pid)
-                with _Tree(root) as tree:
-                    self._archive_budget(tree)
-                    rows = [
-                        self._index(tree, sid)
-                        for sid in tree.names(".openai4s/sessions")
-                    ]
+                if sessions is not None:
+                    rows = sessions
+                else:
+                    with _Tree(root) as tree:
+                        rows = [
+                            self._index(tree, sid)
+                            for sid in tree.names(".openai4s/sessions")
+                        ]
                 latest = max(
                     (int(row.get("last_saved_at") or 0) for row in rows), default=0
                 )
@@ -973,17 +1114,22 @@ class ProjectHistoryService:
                                 "project history integrity check failed"
                             )
                         payloads[name] = data
+                    # The picker needs ids and times, not every manifest hashed;
+                    # the selected revision above is still fully verified.
+                    listed = self._listed_revisions(tree, f".openai4s/sessions/{sid}")
                     revisions = []
                     for value in tree.names(f".openai4s/sessions/{sid}/revisions"):
-                        if _DIGEST.fullmatch(value):
+                        if not _DIGEST.fullmatch(value):
+                            continue
+                        row = listed.get(value)
+                        if row is None:
                             _, archived = self._read_revision(tree, sid, value)
-                            revisions.append(
-                                {
-                                    "revision_id": value,
-                                    "created_at": archived.get("created_at"),
-                                    "branch_id": archived.get("branch_id"),
-                                }
-                            )
+                            row = {
+                                "revision_id": value,
+                                "created_at": archived.get("created_at"),
+                                "branch_id": archived.get("branch_id"),
+                            }
+                        revisions.append(row)
                     revisions.sort(
                         key=lambda item: int(item.get("created_at") or 0), reverse=True
                     )

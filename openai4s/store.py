@@ -1680,6 +1680,10 @@ class Store:
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+            # Versions are numbered per branch: a database that applied another
+            # branch's version 35 skips this step, so make sure the (idempotent)
+            # column exists either way. One table_info read of a small table.
+            self._apply_project_source_folder(self._conn)
 
     def _apply_project_source_folder(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}

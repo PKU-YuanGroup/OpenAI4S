@@ -11,7 +11,7 @@ import { api } from "./api";
 import { binds } from "./binds";
 import { invalidateFolders, loadFolders, loadMoreSessions, loadSessions } from "./load";
 import { beginNavigation } from "./navigation";
-import { openProject, selectProject } from "./projects";
+import { openProject } from "./projects";
 
 function deferred() {
   let resolve!: (value: unknown) => void;
@@ -38,16 +38,11 @@ beforeEach(() => {
 });
 
 describe("session navigation owns every response", () => {
-  it("a sidebar-only project switch keeps the open conversation's reads, and beginNavigation releases the latch", () => {
-    // The menu filters the sidebar; it must not retire the view. A paging
-    // request superseded by a real navigation does skip its own finally, so
-    // beginNavigation is what clears the latch it can no longer clear itself.
+  it("beginNavigation releases the load-earlier latch", () => {
+    // A paging request superseded by a real navigation skips its own finally,
+    // so beginNavigation is what clears the latch it can no longer clear itself.
     currentId.value = "open-frame";
     _msgEarlierLoading.value = true;
-    const before = _openGen.value;
-    selectProject("p2");
-    expect(_openGen.value).toBe(before);
-    expect(_msgEarlierLoading.value).toBe(true);
     beginNavigation();
     expect(_msgEarlierLoading.value).toBe(false);
   });
@@ -184,8 +179,8 @@ describe("session navigation owns every response", () => {
     const old = deferred();
     vi.mocked(api).mockReturnValueOnce(old.promise);
     const a = loadSessions();
-    selectProject("B"); await settle();
-    selectProject("A"); await settle();
+    project.value = "B"; void loadSessions(); await settle();
+    project.value = "A"; void loadSessions(); await settle();
     vi.mocked(api).mockResolvedValueOnce(page("A", "latest"));
     await loadSessions();
     old.resolve(page("A", "obsolete")); await a;

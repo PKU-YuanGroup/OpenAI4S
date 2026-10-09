@@ -460,3 +460,59 @@ def test_configured_secret_values_never_reach_the_portable_archive(tmp_path):
     assert archived
     for secret in (configured, agent_plan):
         assert not any(secret.encode("utf-8") in data for data in archived), secret
+
+
+def test_snapshot_race_with_a_turn_is_not_remembered_as_the_save_state(
+    tmp_path, monkeypatch
+):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    assert service.sync_session(sid)["state"] == "saved"
+
+    def moved_on(*_args):
+        raise history.ProjectHistoryError(
+            "session branch or project folder changed; save again",
+            409,
+            history.CHANGED_CODE,
+        )
+
+    monkeypatch.setattr(service, "_check_snapshot_guard", moved_on)
+    store.add_message(root_frame_id=sid, role="user", content="mid-turn")
+    assert service.sync_session(sid)["code"] == history.CHANGED_CODE
+    assert service.status(pid)["state"] == "saved"
+
+
+def test_unchanged_files_and_archived_objects_are_not_read_again(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    assert service.sync_session(sid)["state"] == "saved"
+    original = history._Tree.read
+    reads = []
+
+    def counting(self, path, limit=history.MAX_METADATA_BYTES):
+        reads.append(path)
+        return original(self, path, limit)
+
+    monkeypatch.setattr(history._Tree, "read", counting)
+    assert service.sync_session(sid)["state"] in {"saved", "unchanged"}
+    assert "result.csv" not in reads
+    assert not any(path.startswith(".openai4s/objects/") for path in reads)
+    (workspace / "result.csv").write_text("value\n7\n")
+    assert service.sync_session(sid)["state"] == "saved"
+    assert "result.csv" in reads
+
+
+def test_revision_picker_does_not_reread_every_manifest(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    for content in ("first", "second", "third"):
+        store.add_message(root_frame_id=sid, role="user", content=content)
+        assert service.sync_session(sid)["state"] == "saved"
+    calls = []
+    original = service._read_revision
+    monkeypatch.setattr(
+        service,
+        "_read_revision",
+        lambda tree, session, revision: calls.append(revision)
+        or original(tree, session, revision),
+    )
+    snapshot = service.read_session(pid, sid)
+    assert len(snapshot["revisions"]) == 3
+    assert len(calls) == 1

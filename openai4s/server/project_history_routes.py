@@ -57,12 +57,14 @@ def _summary(store: Any, project_id: str, row: dict) -> dict:
 def history_listing(
     service: Any, store: Any, project_id: str, *, autosave: Any = None
 ) -> dict:
-    status = (
-        autosave.status(project_id)
-        if autosave is not None
-        else service.status(project_id)
-    )
+    # One read of the session indexes serves both the list and the status.
     listing = service.list_sessions(project_id)
+    rows = None if listing.get("error") else listing["sessions"]
+    status = (
+        autosave.status(project_id, sessions=rows)
+        if autosave is not None
+        else service.status(project_id, sessions=rows)
+    )
     state = str(status.get("state") or "pending")
     error = listing.get("error") or status.get("error")
     if error:

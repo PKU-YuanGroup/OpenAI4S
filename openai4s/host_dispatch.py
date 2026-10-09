@@ -59,6 +59,12 @@ from openai4s.store import SECRET_ARG_HOST_CALLS, get_store
 from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.contexts import ControlToolContext
 from openai4s.tools.dynamic import DynamicToolRegistry
+from openai4s.tools.project_files import (
+    PROJECT_PERMISSION_ALIASES,
+    import_destination,
+    project_permission_checks,
+    resolve_project_permissions,
+)
 from openai4s.tools.registry import (
     BUILTIN_CONTROL_HOST_METHODS,
     format_tool_result,
@@ -496,13 +502,7 @@ NATIVE_ARTIFACT_RECEIPT_METHODS = frozenset(
     }
 )
 
-_PROJECT_FILE_METHODS = {
-    "project_list_dir": "list_dir",
-    "project_read_file": "read_file",
-    "project_glob": "glob",
-    "project_grep": "grep",
-    "project_import_file": "read_file",
-}
+_PROJECT_FILE_METHODS = PROJECT_PERMISSION_ALIASES
 
 # Non-control host methods that pass through the permission gate. Concrete
 # control tools declare ``requires_approval`` on their class instead.
@@ -2124,55 +2124,26 @@ class HostDispatcher:
                 # Folder binding itself is human-owned and resolved per call.
                 project_files = self._project_files()
                 spec = args[0] if args and isinstance(args[0], dict) else {}
-                base_method = _PROJECT_FILE_METHODS[method]
-                source_path = str(
-                    spec.get(
-                        "source_path" if method == "project_import_file" else "path"
-                    )
-                    or "."
-                )
-                checks = [
-                    (
-                        base_method,
-                        _gate_target(base_method, [{**spec, "path": source_path}]),
-                    )
-                ]
-                if base_method != "read_file":
-                    checks.append(("read_file", source_path))
-                if method == "project_import_file":
-                    from openai4s.tools.project_files import import_destination
-
-                    checks.append(("write_file", import_destination(spec)))
                 scope = self.store.resolve_frame_scope(self.frame_id)
-                for base_permission, base_target in checks:
-                    if (
-                        self._child_execution_policy is not None
-                        and self._child_execution_policy.decision(base_permission)
-                        == "deny"
-                    ):
-                        result = {
-                            "error": f"Permission denied by delegated child policy: {base_permission}"
-                        }
-                        ok = False
-                        return result
-                    base_decision = self.store.resolve_permission(
+                policy = self._child_execution_policy
+                refusal, project_permission_asks = resolve_project_permissions(
+                    project_permission_checks(method, spec, _gate_target),
+                    resolve=lambda tool, target: self.store.resolve_permission(
                         root_frame_id=scope.get("root_frame_id"),
                         project_id=scope.get("project_id") or "default",
-                        tool=base_permission,
-                        pattern_input=base_target,
-                    )
-                    if base_decision == "deny":
-                        result = {
-                            "error": f"Permission denied: {base_permission} for {base_target} is denied"
-                        }
-                        ok = False
-                        return result
-                    if base_decision == "ask" or (
-                        self._child_execution_policy is not None
-                        and self._child_execution_policy.decision(base_permission)
-                        == "ask"
-                    ):
-                        project_permission_asks.append((base_permission, base_target))
+                        tool=tool,
+                        pattern_input=target,
+                    ),
+                    child_decision=(
+                        (lambda tool: policy.decision(tool))
+                        if policy is not None
+                        else None
+                    ),
+                )
+                if refusal is not None:
+                    result = {"error": refusal}
+                    ok = False
+                    return result
             if method == "science_import_dataset":
                 # Renaming the download capability must not bypass a standing deny.
                 # Resolve that hard refusal before native-capture admission so an

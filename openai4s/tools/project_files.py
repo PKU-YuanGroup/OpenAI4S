@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Any
+from typing import Any, Callable
 
 from openai4s.tools.base import Tool
 from openai4s.tools.content_search import ContentSearchTool
@@ -20,6 +20,55 @@ def import_destination(arguments: dict) -> str:
         arguments.get("path")
         or "project-inputs/" + str(arguments.get("source_path") or "")
     )
+
+
+#: The workspace permission each project tool mirrors, so a new spelling cannot
+#: bypass a standing file-read/write rule.
+PROJECT_PERMISSION_ALIASES = {
+    "project_list_dir": "list_dir",
+    "project_read_file": "read_file",
+    "project_glob": "glob",
+    "project_grep": "grep",
+    "project_import_file": "read_file",
+}
+
+
+def project_permission_checks(
+    method: str,
+    spec: dict,
+    gate_target: Callable[[str, list[Any]], str],
+) -> list[tuple[str, str]]:
+    """The (permission, target) pairs a project call must also satisfy."""
+    base_method = PROJECT_PERMISSION_ALIASES[method]
+    source_path = str(
+        spec.get("source_path" if method == "project_import_file" else "path") or "."
+    )
+    checks = [(base_method, gate_target(base_method, [{**spec, "path": source_path}]))]
+    if base_method != "read_file":
+        checks.append(("read_file", source_path))
+    if method == "project_import_file":
+        checks.append(("write_file", import_destination(spec)))
+    return checks
+
+
+def resolve_project_permissions(
+    checks: list[tuple[str, str]],
+    *,
+    resolve: Callable[[str, str], str],
+    child_decision: Callable[[str], str | None] | None,
+) -> tuple[str | None, list[tuple[str, str]]]:
+    """Return ``(refusal, asks)``: a hard refusal, or the prompts still owed."""
+    asks: list[tuple[str, str]] = []
+    for permission, target in checks:
+        child = child_decision(permission) if child_decision is not None else None
+        if child == "deny":
+            return f"Permission denied by delegated child policy: {permission}", asks
+        decision = resolve(permission, target)
+        if decision == "deny":
+            return f"Permission denied: {permission} for {target} is denied", asks
+        if child == "ask" or decision == "ask":
+            asks.append((permission, target))
+    return None, asks
 
 
 class ProjectListDirectoryTool(ListDirectoryTool):

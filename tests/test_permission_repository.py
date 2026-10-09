@@ -220,7 +220,7 @@ def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path
     assert [(rule["pattern"], rule["decision"]) for rule in mcp_rules] == [
         ("volcengine-datapro/dataPro_search", "allow")
     ]
-    assert store.get_setting("perm_seed_version") == "5"
+    assert store.get_setting("perm_seed_version") == "6"
 
 
 def test_seed_security_upgrade_revokes_markerless_legacy_skill_edit_allow(tmp_path):
@@ -239,7 +239,7 @@ def test_seed_security_upgrade_revokes_markerless_legacy_skill_edit_allow(tmp_pa
 
     assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
     assert store.get_setting("perm_seeded") == "1"
-    assert store.get_setting("perm_seed_version") == "5"
+    assert store.get_setting("perm_seed_version") == "6"
 
 
 @pytest.mark.parametrize("decision", ["ask", "deny", None])
@@ -267,7 +267,7 @@ def test_seed_security_upgrade_preserves_stricter_skill_edit_rules(tmp_path, dec
     assert [rule["decision"] for rule in rules] == (
         [] if decision is None else [decision]
     )
-    assert store.get_setting("perm_seed_version") == "5"
+    assert store.get_setting("perm_seed_version") == "6"
 
 
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):

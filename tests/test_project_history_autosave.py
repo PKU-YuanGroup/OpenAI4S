@@ -69,7 +69,7 @@ class RecordingService:
             raise OSError("private path must not leak")
         return {"state": "saved"}
 
-    def status(self, _pid):
+    def status(self, _pid, **_kwargs):
         return {"enabled": True, "state": "saved", "last_saved_at": 0}
 
 
@@ -145,7 +145,7 @@ def test_failed_session_stays_failed_after_other_session_settings_and_restart():
         assert autosave.flush_session("two")["state"] == "saved"
         assert autosave.flush_project_settings("project")["state"] == "saved"
         # A newer disk timestamp belongs to the successful component only.
-        service.status = lambda pid: {
+        service.status = lambda pid, **_kwargs: {
             "enabled": True,
             "state": "saved",
             "last_saved_at": 10**20,
@@ -329,3 +329,55 @@ def test_shutdown_saves_existing_conversation_and_restart_catches_unsaved_rows(
         wait_for_message(reopened, pid, root, "recovered after restart")
     finally:
         reopened.close()
+
+
+def test_unsaveable_folder_refuses_delete_before_dropping_the_runtime(
+    tmp_path, monkeypatch
+):
+    runner, _hub, folder, _pid, root = runner_with_project(tmp_path)
+    dropped = []
+    original = runner.drop_session
+    monkeypatch.setattr(
+        runner,
+        "drop_session",
+        lambda root_frame_id, **kwargs: dropped.append(root_frame_id)
+        or original(root_frame_id, **kwargs),
+    )
+    moved = tmp_path / "disconnected"
+    folder.rename(moved)
+    try:
+        with pytest.raises(GatewayError, match="runtime were retained"):
+            runner.delete_session(root)
+        assert dropped == []
+        assert runner.store.get_frame(root) is not None
+    finally:
+        moved.rename(folder)
+        runner.close()
+
+
+def test_archive_limit_refusal_names_the_way_out(tmp_path, monkeypatch):
+    from openai4s import project_history
+
+    runner, _hub, _folder, _pid, root = runner_with_project(tmp_path)
+    monkeypatch.setattr(project_history, "MAX_SCAN_ENTRIES", 1)
+    try:
+        with pytest.raises(GatewayError, match="unlink the project folder"):
+            runner.delete_session(root)
+        assert runner.store.get_frame(root) is not None
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_transient_session_change_is_reported_but_not_remembered():
+    autosave, service, _store = fake_autosave()
+    service.sync_session = lambda root, **_kwargs: {
+        "state": "error",
+        "error": "session branch or project folder changed; save again",
+        "code": "project_history_session_changed",
+    }
+    try:
+        assert autosave.flush_session("one")["state"] == "error"
+        assert autosave.status("project")["state"] == "saved"
+    finally:
+        autosave.close()

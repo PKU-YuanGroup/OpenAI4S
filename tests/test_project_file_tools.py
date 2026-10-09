@@ -287,3 +287,35 @@ def test_unattended_fence_checks_project_source_and_import_destination(
     assert receipts == []
     assert not (dispatcher._workspace() / "config.json").exists()
     assert not (dispatcher._workspace() / "ordinary.json").exists()
+
+
+def test_project_history_does_not_spend_the_search_scan_budget(tmp_path, monkeypatch):
+    from openai4s.project_folders import ReadOnlyProjectFiles
+    from openai4s.tools.glob_files import GlobFilesTool
+
+    source = tmp_path / "project"
+    (source / ".openai4s" / "objects").mkdir(parents=True)
+    for index in range(30):
+        (source / ".openai4s" / "objects" / f"{index:064x}").write_bytes(b"x")
+    (source / "data").mkdir()
+    (source / "data" / "values.csv").write_text("a\n1\n")
+    opened = []
+    original = ReadOnlyProjectFiles.verified_read_opener
+
+    def recording(self):
+        opener = original(self)
+
+        def open_file(relative):
+            opened.append(str(relative))
+            return opener(relative)
+
+        return open_file
+
+    monkeypatch.setattr(ReadOnlyProjectFiles, "verified_read_opener", recording)
+    result = GlobFilesTool().execute(
+        ReadOnlyProjectFiles(source.resolve()), {"pattern": "**/*"}
+    )
+    assert result["matches"] == ["data/values.csv"]
+    # History entries are skipped before they count against the walk, not
+    # opened and refused one by one.
+    assert opened and not any(".openai4s" in path for path in opened)

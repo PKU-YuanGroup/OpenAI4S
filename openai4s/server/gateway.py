@@ -3100,19 +3100,25 @@ class SessionRunner:
             project_id, project.get("folder_path")
         )
         workspace, branch_id = self._project_history_placement(root_frame_id)
+        # Probe while the runtime still exists, so a folder that cannot be
+        # saved refuses deletion without tearing the live session down. A
+        # snapshot that only raced a still-running turn is retried after it.
+        probe = self.project_history_autosave.flush_session(
+            root_frame_id, workspace=workspace, branch_id=branch_id
+        )
+        if (
+            probe.get("state") == "error"
+            and probe.get("code") != "project_history_session_changed"
+        ):
+            raise _history_save_refusal(
+                probe, "the session and its runtime were retained"
+            )
         self.drop_session(root_frame_id, reason=reason)
         result = self.project_history_autosave.flush_session(
             root_frame_id, workspace=workspace, branch_id=branch_id
         )
         if result.get("state") == "error":
-            raise GatewayError(
-                409,
-                "Project history could not be saved; the session was retained. "
-                + str(
-                    result.get("error") or "Retry when the project folder is available."
-                ),
-                "project_history_save_failed",
-            )
+            raise _history_save_refusal(result, "the session's records were retained")
 
     def _recover_stranded_admissions(self) -> int:
         """Release pins held by a request that did not survive the process.
@@ -4102,15 +4108,7 @@ class SessionRunner:
             )
             archived = self.project_history_autosave.flush_project_settings(project_id)
             if archived.get("state") == "error":
-                raise GatewayError(
-                    409,
-                    "Project history could not be saved; the project was retained. "
-                    + str(
-                        archived.get("error")
-                        or "Retry when the project folder is available."
-                    ),
-                    "project_history_save_failed",
-                )
+                raise _history_save_refusal(archived, "the project was retained")
             return self.deletions.delete_project(project_id)
         finally:
             with self._lock:
@@ -20700,6 +20698,24 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
     return out
+
+
+def _history_save_refusal(result: dict, retained: str) -> GatewayError:
+    """409 for a failed pre-deletion archive, naming a way out when retry can't."""
+    from openai4s.project_history import LIMIT_CODE
+
+    detail = str(result.get("error") or "Retry when the project folder is available.")
+    if result.get("code") == LIMIT_CODE:
+        detail += (
+            ". Retrying cannot clear an archive limit; unlink the project folder "
+            "in Project settings to delete without archiving (the existing "
+            "history stays in the folder)."
+        )
+    return GatewayError(
+        409,
+        f"Project history could not be saved; {retained}. {detail}",
+        "project_history_save_failed",
+    )
 
 
 def _project_json(p: dict) -> dict:

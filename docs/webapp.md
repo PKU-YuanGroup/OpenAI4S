@@ -210,9 +210,11 @@ Linux 的 `/media`、`/mnt`、`/run/media`）之下，或位于 `OPENAI4S_PROJEC
 “继续对话”仅对当前安装中仍存在的同项目会话显示，并打开其当前状态。
 旧版本和另一安装的记录是只读回溯资料，不会自动执行代码、恢复内核变量或授权。
 `.openai4s/` 默认带有忽略自身内容的 `.gitignore`，也不会混入智能体的项目输入搜索。
-当前保存上限为单文件 32 MiB、每个快照的文件合计 128 MiB、整个历史目录 512 MiB，
-每个快照至多 1,000 个文件、5,000 条消息和 5,000 个代码单元，每个会话至多
-1,000 个版本。达到上限会显示失败或遗漏，不会删除旧版本腾空间。
+当前保存上限为单文件 32 MiB、每个快照的文件合计 128 MiB、整个历史目录 512 MiB
+（至多 20,000 个条目），每个快照至多 1,000 个文件、5,000 条消息和 5,000 个代码单元，
+每个会话至多 1,000 个版本。达到上限会显示失败或遗漏，不会删除旧版本腾空间。
+达到历史目录上限后，删除前的最后保存无法成功，删除会被拒绝；此时可在项目设置中
+解除本地文件夹绑定后再删除，已有历史仍保留在文件夹中。
 历史记录是持久化数据库的自动副本，强制终止进程时可能落后于最后一次写入；
 再次启动会从仍存在的数据库补存。手动“立即保存”会等待保存结果。
 删除前最后保存失败时，会保留原会话并提示重试，避免丢失未归档内容。
@@ -231,9 +233,12 @@ Relinking it in another installation allows read-only inspection; it does not
 restore a live kernel or import execution permissions. Continue opens only a
 session still present in the current project, at its current state.
 Retention is bounded: 32 MiB per file, 128 MiB of files per snapshot, 512 MiB
-per project archive, 1,000 files and 5,000 messages/cells per snapshot, and
-1,000 revisions per session. Limits produce a visible failure or omission;
-they never silently prune earlier revisions. Autosave is a secondary copy of
+and 20,000 entries per project archive, 1,000 files and 5,000 messages/cells
+per snapshot, and 1,000 revisions per session. Limits produce a visible
+failure or omission; they never silently prune earlier revisions. Once an
+archive limit is reached the final save before a deletion cannot succeed, so
+the deletion is refused; unlink the project folder in Project settings to
+delete without archiving (the existing history stays in the folder). Autosave is a secondary copy of
 the live database and may lag an abrupt process exit; startup retries from
 the retained database. A failed final save blocks deletion while keeping the
 original session available for retry.

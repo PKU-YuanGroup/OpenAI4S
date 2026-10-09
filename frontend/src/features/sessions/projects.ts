@@ -322,35 +322,9 @@ export function renderProjMenu(): void {
   m.setAttribute("role", "menu");
 }
 
-// The menu filters the sidebar without replacing the open conversation. It
-// cancels pending project opens, but must not retire that conversation's reads.
-let projectFilterVersion = 0;
+// The conversation whose project a pending chain of project opens started from;
+// a failed open restores it instead of an intermediate choice.
 let pendingProjectOrigin: { frameId: string | null; projectId: string | null } | null = null;
-
-export function selectProject(id: string): void {
-  projectFilterVersion += 1;
-  project.value = id;
-  // The switcher changes the sidebar scope while keeping the open frame open.
-  // Its Files snapshot is project-scoped, so it has to be read again.
-  if (currentId.value) callLane("loadArtifacts", currentId.value);
-  $("#proj-menu")?.classList.add("hidden");
-  renderProjMenu();
-  void loadSessions();
-}
-
-// openProject retires the open conversation's reads the moment it starts (the
-// bump below). Running to completion always handed the view to a conversation;
-// standing down for a menu filter handed it to nobody -- "load earlier" stayed
-// on Loading…, a history still loading never painted and offered no Retry, the
-// resume watchdog stopped. If the filter is why we stood down and nobody else
-// has taken the view since, give it an owner again: reload the conversation
-// that is showing, or, once the workspace was revealed with none, open the
-// project the menu chose.
-async function reclaimView(gen: number, filterVersion: number, workspaceShown: boolean): Promise<void> {
-  if (_openGen.value !== gen || projectFilterVersion === filterVersion) return;
-  if (currentId.value) await binds.openConversation(currentId.value, project.value);
-  else if (workspaceShown && project.value) await openProject(project.value);
-}
 
 /** `replaceUrl`: routing resolves a project address, see `routeInitialView`. */
 export async function openProject(id: string, options?: { replaceUrl?: boolean }): Promise<void> {
@@ -365,9 +339,8 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
     ? pendingProjectOrigin.projectId : project.value;
   const gen = beginNavigation();
   pendingProjectOrigin = { frameId: currentId.value, projectId: previousProject };
-  const filterVersion = projectFilterVersion;
   await loadProjects();
-  if (_openGen.value !== gen || projectFilterVersion !== filterVersion) return reclaimView(gen, filterVersion, false);
+  if (_openGen.value !== gen) return;
   project.value = id;
   showWorkspace();
   // Follow a newer read for this same project rather than racing it, and treat
@@ -375,7 +348,7 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
   // creating a conversation on a read that never landed is how an existing
   // project got a stray empty session.
   const result = await loadSessionsForScope(sessionListScope());
-  if (_openGen.value !== gen || projectFilterVersion !== filterVersion || project.value !== id) return reclaimView(gen, filterVersion, true);
+  if (_openGen.value !== gen || project.value !== id) return;
   if (result.status !== "loaded") {
     // This navigation already retired the visible frame's history and
     // watchdog reads. A failed directory cannot leave that frame ownerless,

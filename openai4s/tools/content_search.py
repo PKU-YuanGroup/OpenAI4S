@@ -87,10 +87,15 @@ class ContentSearchTool(Tool):
         paths = base.rglob(include) if include else base.rglob("*")
         candidates = BoundedSelection(_MAX_FILES)
         open_candidate = workspace.verified_read_opener()
+        # A context may exclude whole subtrees (project history) before they
+        # count against the scan budget.
+        excluded = getattr(workspace, "excluded_from_walk", None)
         scanned = 0
         scan_truncated = False
         deadline = time.monotonic() + MAX_SCAN_SECONDS
         for path in paths:
+            if excluded is not None and excluded(path):
+                continue
             scanned += 1
             # Two budgets, one flag. The entry cap bounds syscalls; this bounds
             # the seconds they take, which the entry cap cannot -- how long

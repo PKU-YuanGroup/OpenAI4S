@@ -201,11 +201,15 @@ DEFAULT_PERMISSION_RULES = (
 # marker.  New releases advance this separate version and list only the rules
 # introduced by that version, so upgrades add new defaults without restoring a
 # default that an operator deliberately deleted or changed.
-_DEFAULT_PERMISSION_RULE_VERSION = 5
+#
+# Version 5 is skipped on purpose: a parallel branch claims it, and a database
+# already seeded to 5 by that branch would otherwise never add these rules.
+# Gaps are harmless; seeding reads ``ADDITIONS.get(version, ())``.
+_DEFAULT_PERMISSION_RULE_VERSION = 6
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
-    5: (
+    6: (
         ("project_list_dir", "*", "allow"),
         ("project_read_file", "*", "allow"),
         ("project_glob", "*", "allow"),

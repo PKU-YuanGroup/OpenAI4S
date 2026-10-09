@@ -179,6 +179,14 @@ class ReadOnlyProjectFiles(WorkspaceFileService):
             for part in str(path).replace("\\", "/").split("/")
         )
 
+    def excluded_from_walk(self, path: Path) -> bool:
+        """Skip history before it spends a recursive search's scan budget."""
+        try:
+            parts = Path(path).relative_to(self._project_root).parts
+        except ValueError:
+            return False
+        return any(part.casefold() == ".openai4s" for part in parts)
+
     def _candidate_parts(self, relative: str | Path) -> tuple[str, ...]:
         parts = super()._candidate_parts(relative)
         if any(part.casefold() == ".openai4s" for part in parts):

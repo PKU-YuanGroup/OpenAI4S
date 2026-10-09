@@ -147,6 +147,10 @@ class ProjectHistoryAutosave:
         complete: bool = False,
     ) -> None:
         """Only a successful retry of the failed component clears its error."""
+        if result.get("code") == "project_history_session_changed":
+            # Transient: the session moved on mid-snapshot (e.g. a running
+            # turn's next checkpoint) and that event already queued a resave.
+            return
         with self._condition:
             previous = self._errors.get(project_id)
             if previous is None:
@@ -194,8 +198,10 @@ class ProjectHistoryAutosave:
             project_id, {"state": "saved"}, component="project", complete=True
         )
 
-    def status(self, project_id: str) -> dict[str, Any]:
-        base = dict(self.service.status(project_id))
+    def status(
+        self, project_id: str, *, sessions: list[dict] | None = None
+    ) -> dict[str, Any]:
+        base = dict(self.service.status(project_id, sessions=sessions))
         if not base.get("enabled"):
             return base
         with self._condition:
