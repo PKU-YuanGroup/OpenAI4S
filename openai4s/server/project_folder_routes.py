@@ -13,6 +13,7 @@ from openai4s.host.files import MAX_SCAN_ENTRIES, MAX_SCAN_SECONDS, is_secret_pa
 from openai4s.project_folders import (
     ProjectFolderError,
     ReadOnlyProjectFiles,
+    allowed_project_roots,
     project_folder_path,
     require_local_project_folders,
     validate_folder_path,
@@ -73,7 +74,12 @@ def local_folders(raw: str) -> dict:
     entries.sort(key=lambda entry: entry["name"].casefold())
     return {
         "path": str(current),
-        "parent_path": str(current.parent) if current.parent != current else None,
+        # A grant root is as far up as the picker may browse.
+        "parent_path": (
+            str(current.parent)
+            if current.parent != current and str(current) not in allowed_project_roots()
+            else None
+        ),
         "entries": entries,
         "truncated": truncated,
     }

@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import tempfile
 from urllib.parse import quote
 
 import pytest
 
 from openai4s.config import Config
 from openai4s.project_folders import (
+    PROJECT_ROOTS_ENV,
     ProjectFolderError,
     ReadOnlyProjectFiles,
+    allowed_project_roots,
     project_folder_path,
     require_local_project_folders,
     validate_folder_path,
 )
-from openai4s.server.project_folder_routes import MAX_PREVIEW_BYTES, project_file
+from openai4s.server.project_folder_routes import (
+    MAX_PREVIEW_BYTES,
+    local_folders,
+    project_file,
+)
 from openai4s.store import get_store
 from tests.test_project_patch_unknown_id import _call
 from tests.test_team_auth_routes import _TeamDaemon
@@ -152,6 +159,57 @@ def test_project_source_cannot_overlap_daemon_state_or_output_workspace(tmp_path
     for folder in (tmp_path, data_dir, workspace):
         with pytest.raises(ProjectFolderError, match="overlap"):
             validate_folder_path(str(folder), cfg)
+
+
+def _confine_default_roots(tmp_path, monkeypatch):
+    home, scratch = tmp_path / "home", tmp_path / "tmp"
+    home.mkdir()
+    scratch.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(scratch))
+    monkeypatch.delenv(PROJECT_ROOTS_ENV, raising=False)
+    return home, scratch
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX system directories")
+def test_system_directories_are_outside_project_roots():
+    for folder in ("/", "/etc", "/usr"):
+        with pytest.raises(ProjectFolderError) as refused:
+            validate_folder_path(folder)
+        assert refused.value.code == "project_folder_outside_roots"
+        assert refused.value.status == 403
+
+
+def test_operator_roots_extend_the_defaults_without_prefix_aliasing(
+    tmp_path, monkeypatch
+):
+    home, _scratch = _confine_default_roots(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    (data / "set").mkdir(parents=True)
+    (tmp_path / "database").mkdir()
+    (home / "notes").mkdir()
+    assert validate_folder_path(str(home / "notes")) == str((home / "notes").resolve())
+    with pytest.raises(ProjectFolderError, match=PROJECT_ROOTS_ENV):
+        validate_folder_path(str(data / "set"))
+    monkeypatch.setenv(PROJECT_ROOTS_ENV, os.pathsep.join(["relative", str(data)]))
+    assert str(data.resolve()) in allowed_project_roots()
+    assert validate_folder_path(str(data / "set")) == str((data / "set").resolve())
+    with pytest.raises(ProjectFolderError) as refused:
+        validate_folder_path(str(tmp_path / "database"))
+    assert refused.value.code == "project_folder_outside_roots"
+
+
+def test_picker_stops_at_a_project_root(tmp_path, monkeypatch):
+    home, _scratch = _confine_default_roots(tmp_path, monkeypatch)
+    (home / "research").mkdir()
+    at_root = local_folders("")
+    assert at_root["path"] == str(home.resolve())
+    assert at_root["parent_path"] is None
+    assert [entry["name"] for entry in at_root["entries"]] == ["research"]
+    inside = local_folders(str(home / "research"))
+    assert inside["parent_path"] == str(home.resolve())
+    with pytest.raises(ProjectFolderError):
+        local_folders(str(tmp_path))
 
 
 def test_history_directories_cannot_become_project_folders(tmp_path):

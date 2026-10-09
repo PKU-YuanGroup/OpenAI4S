@@ -180,6 +180,8 @@ for exactly one minor release (decision D1), so the daemon now requires its
 token on every bind whatever this variable says; see [Security](security.md)
 for what the gate stands in front of.
 
+`OPENAI4S_PROJECT_ROOTS` (unset) — extra directories a project's local source folder may live under, separated by the platform path separator (`:` on macOS/Linux, `;` on Windows), e.g. `/data:/scratch`. Without it, a folder must be inside the home directory, the system temporary directory, or a mounted-volume directory (`/Volumes` on macOS; `/media`, `/mnt`, `/run/media` on Linux). Anything else, such as `/` or `/etc`, is refused with `project_folder_outside_roots`.
+
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 
 `OPENAI4S_EGRESS` (`off`) — `allowlist` applies the host domain allowlist to `web_fetch`, `web_search`, and authorized `host.bash`. In that mode a new Python or R Cell is also admitted only when the kernel sandbox is enforced, its self-test passed, and `network_policy` is `blocked`. Anything else, including a remote kernel, is refused before the Cell runs with `egress_boundary_unavailable`. `off` leaves Cell execution unchanged. See [Security](security.md).

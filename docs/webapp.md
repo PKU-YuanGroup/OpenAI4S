@@ -24,6 +24,9 @@ scripts.
   deletion remain confined to the managed session workspace. This feature is
   available on a local, single-user daemon; the picker shows the daemon's
   filesystem. Binding a folder does not upload or preload its whole contents.
+  Folders must be inside the home directory, the temporary directory, a
+  mounted volume, or a directory listed in `OPENAI4S_PROJECT_ROOTS`
+  (see [Configuration](configuration.md)).
 - **Live turns** — prose, semantic steps, permission pauses, plans, Cell output,
   and artifacts stream over WebSocket. Reopening an in-flight session replays
   the bounded current-turn buffer; completed history reloads over REST.
@@ -189,6 +192,9 @@ Customize Diagnostics opens with a passive status read. Explicit checks show eac
 目录遍历和读取有资源上限；符号链接、凭据文件及不安全别名会被拒绝或过滤。
 目录和文件是按需读取的，不表示全部文件已被模型读取。
 文件夹选择器展示运行 OpenAI4S 的电脑上的目录；该入口只适用于本机单用户服务。
+项目文件夹须位于主目录、系统临时目录、外接卷目录（macOS 的 `/Volumes`，
+Linux 的 `/media`、`/mnt`、`/run/media`）之下，或位于 `OPENAI4S_PROJECT_ROOTS`
+列出的目录（用 `:` 分隔，Windows 用 `;`）之下；`/`、`/etc` 等系统目录会被拒绝。
 
 绑定文件夹后，OpenAI4S 会在该文件夹下创建 `.openai4s/`，自动保留对话、
 执行代码与输出、会话文件版本以及项目名称、说明和上下文。这个专用目录是
