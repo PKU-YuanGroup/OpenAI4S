@@ -703,6 +703,13 @@ The thirteen ceiling labels (for example “Additional Cells” / “额外 Cell
 in the same file. Client-rendered status and terminal sentences are
 localized; a `run.user_truth` the server sent is shown exactly as sent.
 
+In the menu the Audit entry sits directly under the run line, and the
+thirteen ceilings sit behind one closed disclosure whose summary counts the
+meters at and near their ceilings. What needs attention -- each near or at
+ceiling meter, the exhausted list and a tripped circuit -- is repeated below
+that disclosure and is always visible, so the menu stays shorter than the
+window without hiding a warning.
+
 Later editor copy, unused until a version that implements section 4:
 
 | Slot | English | Chinese |
