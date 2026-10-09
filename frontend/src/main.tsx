@@ -11,6 +11,7 @@ import { installTheme } from "./features/theme/theme";
 import { bootExecution } from "./features/execution";
 import { installNotebook } from "./features/notebook";
 import { bootWs } from "./features/ws";
+import { installAutoMode } from "./features/automode";
 import "./features/sessions";
 import "./i18n";
 import "./features/md";
@@ -22,6 +23,7 @@ import "./features/table";
 
 installTheme();
 bootWs();
+installAutoMode();
 installNotebook();
 bootArtifacts();
 bootExecution();
