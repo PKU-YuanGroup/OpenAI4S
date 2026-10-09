@@ -17,11 +17,7 @@ import { ws as wsSignal } from "../../stores/stream";
 import { mine } from "../ws/guards";
 import { registerWsHandler } from "../ws/registry";
 import type { WsMessage } from "../ws/types";
-import {
-  autoModeAuditsContextChanged,
-  autoModeAuditsOpen,
-  scheduleAutoModeAuditsRefresh,
-} from "./audits";
+import { autoModeAuditsContextChanged, scheduleAutoModeAuditsRefresh } from "./audits";
 import { autoModeStatusVisible, repaintAutoModeBlock } from "./menu";
 import { refreshAutoModeStatus, syncAutoModeContext } from "./status";
 import { CANONICAL_AUTO_EVENTS } from "./types";
@@ -60,7 +56,8 @@ export function autoModeHint(m: WsMessage | null | undefined): void {
   try {
     if (!m || typeof m.type !== "string" || !CANONICAL_AUTO_EVENTS.has(m.type)) return;
     if (!mine(m.root_frame_id)) return;
-    if (autoModeStatusVisible()) scheduleAutoModeStatusRefresh();
+    // Whether the block is still on screen is decided when the timer fires.
+    scheduleAutoModeStatusRefresh();
     if (m.type === "auto_audit_started" || m.type === "auto_audit_completed") {
       scheduleAutoModeAuditsRefresh(m.subject_kind);
     } else if (m.type === "auto_run_terminal") {
@@ -80,8 +77,8 @@ export function registerAutoModeHandlers(): void {
 
 function onSocketOpen(): void {
   // Hints sent while the socket was down are gone; the GET is the recovery.
-  if (autoModeStatusVisible()) scheduleAutoModeStatusRefresh();
-  if (autoModeAuditsOpen()) scheduleAutoModeAuditsRefresh();
+  scheduleAutoModeStatusRefresh();
+  scheduleAutoModeAuditsRefresh();
 }
 
 /**
