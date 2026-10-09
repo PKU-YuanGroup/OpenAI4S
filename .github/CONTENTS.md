@@ -26,7 +26,7 @@ surfaces.
 | --- | --- |
 | `ISSUE_TEMPLATE/` | The structured issue forms, plus the policy for what belongs in a public issue. |
 | `contributors/` | Contributor avatars, cropped to circles and committed here for the root READMEs to embed. |
-| `workflows/` | The five GitHub Actions workflows: the offline CI gate, bounded protocol fuzzing, container publication, the draft-first release pipeline, and OpenSSF Scorecard. Credential scanning is a job inside CI rather than a workflow of its own. |
+| `workflows/` | The six GitHub Actions workflows: the offline CI gate, bounded protocol fuzzing, container publication, the draft-first release pipeline, OpenSSF Scorecard, and a weekly run of the real ChemGymRL Lab provider that no required check names. Credential scanning is a job inside CI rather than a workflow of its own. |
 
 ## Where this fits
 

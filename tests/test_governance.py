@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -188,6 +190,32 @@ def test_every_workflow_pins_every_action_to_a_commit():
     assert moving == {}
 
 
+def test_every_workflow_job_has_a_timeout():
+    """The timeout sweep `test_ci_gate_independence.py` cannot perform.
+
+    That module reads ci.yml only. A job anywhere else with no
+    `timeout-minutes` falls back to GitHub's 360-minute default, so a weekly
+    provider build waiting on a stalled mirror holds a runner for six hours
+    and reports nothing. Discovery is a glob for the reason the pin sweep above
+    gives: a workflow added later is covered the day it lands.
+    """
+    yaml = pytest.importorskip("yaml")
+    missing = {}
+    for path in sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]):
+        jobs = yaml.safe_load(path.read_text(encoding="utf-8")).get("jobs") or {}
+        unbounded = sorted(
+            job_id
+            for job_id, job in jobs.items()
+            # A reusable-workflow call cannot set one; its jobs, in the file
+            # it calls, are what this sweep checks.
+            if "uses" not in job and not job.get("timeout-minutes")
+        )
+        if unbounded:
+            missing[path.name] = unbounded
+
+    assert missing == {}
+
+
 @pytest.mark.parametrize("name", sorted(PRIVILEGED_WORKFLOW_ACTION_MAJORS))
 def test_privileged_workflows_pin_their_actions_major_version(name):
     """A major in an OIDC/security-events workflow cannot ride a version table.
@@ -368,6 +396,193 @@ def test_release_setup_uv_never_persists_a_cross_run_cache():
     assert all(
         (step.get("with") or {}).get("enable-cache") is False for step in setup_steps
     )
+
+
+LAB_WEEKLY = WORKFLOWS / "lab-chemgymrl.yml"
+
+#: What the weekly Lab job fetches from a network or builds. Each such step
+#: carries its own bound below the job's, for the reason ci.yml's browser
+#: installs do: a stalled mirror otherwise holds the step until the job dies,
+#: with no verdict on which step hung.
+LAB_WEEKLY_NETWORK_COMMANDS = (
+    "apt-get",
+    "uv sync",
+    "uv python install",
+    "openai4s lab setup",
+    "pytest",
+)
+
+LAB_WEEKLY_TESTS = "pytest -m external tests/test_lab_*.py"
+
+
+def _lab_weekly():
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load(LAB_WEEKLY.read_text(encoding="utf-8"))
+
+
+def _lab_weekly_step(needle):
+    (job,) = _lab_weekly()["jobs"].values()
+    found = [step for step in job["steps"] if needle in str(step.get("run") or "")]
+    assert len(found) == 1, (needle, len(found))
+    return found[0]
+
+
+def _inline_python(step):
+    """The one Python body a step pipes in through a `<<'PY'` heredoc."""
+    (body,) = re.findall(r"<<'PY'\n(.*?)\nPY(?:\n|$)", step["run"], flags=re.DOTALL)
+    return body
+
+
+def test_real_chemgymrl_is_a_weekly_job_and_never_a_pull_request_gate():
+    """The real provider stays out of the required gates (decided 2026-10-08).
+
+    A pull request cannot fix a red answer from it: the subject is an upstream
+    simulator built from PyPI and GitHub. So the workflow has no `pull_request`
+    or `push` trigger to make it a check on anyone's branch, holds no secret,
+    and its job name collides with neither a ci.yml job nor a release gate. A
+    collision would matter in both places: required checks and
+    `release_gates.attest_check_runs` match by name, and the latter keeps only
+    the latest run per name at the release commit.
+    """
+    workflow = _lab_weekly()
+    triggers = workflow[True]  # PyYAML reads the bare `on` key as True.
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    (schedule,) = triggers["schedule"]
+    minute, hour, day_of_month, month, day_of_week = schedule["cron"].split()
+    assert minute.isdigit() and hour.isdigit()
+    assert (day_of_month, month) == ("*", "*")
+    assert day_of_week.isdigit(), "one fixed day a week"
+    assert workflow["permissions"] == {"contents": "read"}
+    assert "secrets." not in LAB_WEEKLY.read_text(encoding="utf-8")
+
+    from scripts.release_gates import CHECK_SUITE_GATES
+
+    yaml = pytest.importorskip("yaml")
+    ci = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    taken = {gate.check_name for gate in CHECK_SUITE_GATES}
+    taken |= {str(job.get("name")) for job in ci["jobs"].values()}
+    names = {job["name"] for job in workflow["jobs"].values()}
+    assert names and not names & taken
+
+
+def test_real_chemgymrl_job_is_bounded_isolated_and_enforces_the_sandbox():
+    """Every way this job could pass while proving less than it claims.
+
+    An unbounded download hangs for the job's whole budget; a `uv run` without
+    OPENAI4S_DATA_DIR opens the runner's own `~/.openai4s`; `auto` lets a
+    broken bubblewrap boundary degrade to no boundary and still pass; and an
+    empty provider path makes every external test skip, which pytest reports
+    as success.
+    """
+    workflow = _lab_weekly()
+    (job,) = workflow["jobs"].values()
+    limit = job["timeout-minutes"]
+    steps = job["steps"]
+    runs = [str(step.get("run") or "") for step in steps]
+
+    for step, run in zip(steps, runs):
+        name = step.get("name")
+        env = step.get("env") or {}
+        if any(command in run for command in LAB_WEEKLY_NETWORK_COMMANDS):
+            bound = step.get("timeout-minutes")
+            assert type(bound) is int and 0 < bound < limit, (name, bound, limit)
+        # Every `uv run` here starts OpenAI4S code, which otherwise defaults
+        # to the runner's real ~/.openai4s.
+        if re.search(r"\buv run\b", run):
+            assert str(env.get("OPENAI4S_DATA_DIR")).startswith(
+                "${{ runner.temp }}/"
+            ), name
+        # A weaker posture would let a broken boundary degrade and still pass.
+        assert env.get("OPENAI4S_KERNEL_SANDBOX", "enforce") == "enforce", name
+        assert "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK" not in env, name
+
+    def index(needle):
+        (found,) = [i for i, run in enumerate(runs) if needle in run]
+        return found
+
+    profile = index("apparmor_parser --replace")
+    assert runs[profile].split()[-1].endswith("/bwrap-userns-restrict")
+    for needle in ("openai4s lab smoke", LAB_WEEKLY_TESTS):
+        assert profile < index(needle)
+        assert steps[index(needle)]["env"]["OPENAI4S_KERNEL_SANDBOX"] == "enforce"
+
+    tests = steps[index(LAB_WEEKLY_TESTS)]
+    assert tests["env"]["OPENAI4S_LAB_SETUP_TEST_DIR"].startswith("${{ runner.temp }}/")
+    # The interpreter is the one an earlier step built, verified and reported.
+    # A renamed step id would leave it empty, and every test would skip.
+    producer = re.fullmatch(
+        r"\$\{\{ steps\.([\w-]+)\.outputs\.python \}\}",
+        tests["env"]["OPENAI4S_LAB_CHEMGYMRL_PYTHON"],
+    )
+    assert producer
+    (built,) = [i for i, s in enumerate(steps) if s.get("id") == producer.group(1)]
+    assert "openai4s lab setup chemgymrl" in runs[built]
+    assert built < index(LAB_WEEKLY_TESTS)
+
+    guard = steps[-1]
+    assert guard["if"] == "${{ !cancelled() }}"
+    assert '[ -e "${HOME}/.openai4s" ]' in guard["run"]
+
+
+_SANDBOX_OK = {
+    "backend": "bubblewrap",
+    "enforced": True,
+    "self_test_passed": True,
+    "network_policy": "blocked",
+}
+
+
+@pytest.mark.parametrize(
+    ("receipt", "sandbox", "accepted"),
+    [
+        ({"applied": True}, _SANDBOX_OK, True),
+        ({"applied": False}, _SANDBOX_OK, False),
+        ({"applied": True}, {**_SANDBOX_OK, "backend": "seatbelt"}, False),
+        ({"applied": True}, {**_SANDBOX_OK, "enforced": False}, False),
+        ({"applied": True}, {**_SANDBOX_OK, "network_policy": "raw_allowed"}, False),
+    ],
+    ids=["enforced", "not-applied", "not-bubblewrap", "degraded", "raw-network"],
+)
+def test_real_chemgymrl_smoke_refuses_a_step_outside_enforced_bubblewrap(
+    tmp_path, receipt, sandbox, accepted
+):
+    smoke = tmp_path / "lab-smoke.json"
+    smoke.write_text(json.dumps({"receipt": receipt, "sandbox": sandbox}))
+    result = subprocess.run(
+        [sys.executable, "-I", "-", str(smoke)],
+        input=_inline_python(_lab_weekly_step("openai4s lab smoke")),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert (result.returncode == 0) is accepted, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("tests", "skipped", "accepted"),
+    [(9, 0, True), (9, 1, False), (9, 9, False), (0, 0, False)],
+)
+def test_real_chemgymrl_tests_refuse_a_run_with_skips(
+    tmp_path, tests, skipped, accepted
+):
+    """Each external test skips itself without its variable, so "9 skipped"
+    exits 0 from pytest. The step must not report that as a green run."""
+    junit = tmp_path / "lab-external.xml"
+    junit.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests">'
+        f'<testsuite name="pytest" errors="0" failures="0" skipped="{skipped}" '
+        f'tests="{tests}"/></testsuites>'
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-", str(junit)],
+        input=_inline_python(_lab_weekly_step(LAB_WEEKLY_TESTS)),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert (result.returncode == 0) is accepted, result.stderr
 
 
 DEPENDABOT_ENTRY_KEYS = {

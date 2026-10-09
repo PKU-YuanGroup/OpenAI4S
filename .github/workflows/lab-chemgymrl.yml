@@ -1,0 +1,199 @@
+# Weekly real-provider check for the simulation Lab: the pinned ChemGymRL
+# provider, built from its hash-locked lock and run on Linux.
+#
+# Deliberately NOT a pull-request gate (maintainer decision, 2026-10-08). The
+# run downloads the provider's pinned wheels and the upstream source from PyPI
+# and GitHub, and its subject is an upstream simulator: a red result answers
+# "does the pinned provider still build, verify and run on Linux?", which no
+# contributor's pull request can fix. So it runs weekly and on manual dispatch
+# only, no required check names it, and its job name matches no release gate.
+# tests/test_governance.py pins all of that.
+#
+# Posture (the same rules as ci.yml):
+#   - Triggered by `schedule` and `workflow_dispatch` only: never
+#     `pull_request`, `push`, or a privileged `..._target` variant.
+#   - `permissions` is read-only and no repository secret is referenced.
+#   - GitHub-hosted runner only.
+#   - Every `uv run` gets OPENAI4S_DATA_DIR under $RUNNER_TEMP, and the last
+#     step fails if anything created the default `~/.openai4s`.
+#   - The provider runs with OPENAI4S_KERNEL_SANDBOX=enforce: bubblewrap
+#     under Ubuntu's restricted user-namespace profile, raw network blocked.
+#     `auto` would let a broken boundary degrade and still pass.
+#
+# A red run is a finding to report. Do not add hashes to the lock, drop
+# `--require-hashes`, or relax the sandbox to make it green.
+
+name: Lab ChemGymRL (weekly)
+
+on:
+  schedule:
+    # Sunday 19:37 UTC, Monday 03:37 in Beijing. Off the top of the hour,
+    # where GitHub delays scheduled runs the most.
+    - cron: "37 19 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Each run is evidence about one commit: queue a second dispatch rather than
+# cancel the first halfway through a provider build.
+concurrency:
+  group: lab-chemgymrl-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # An explicit `bash` adds `-o pipefail` to GitHub's default `bash -e`.
+    shell: bash
+
+jobs:
+  chemgymrl-linux:
+    name: Real ChemGymRL provider on Linux (weekly)
+    # A typical run is about ten minutes; the bounds below only catch hangs.
+    timeout-minutes: 60
+    # Pinned like ci.yml's bubblewrap jobs: 24.04 ships the
+    # bwrap-userns-restrict profile loaded below.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the revision under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv and the test interpreter
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      # Over 80 runs of ci.yml's bubblewrap jobs the same two commands fetched
+      # 12.6 MB of indices and 90 kB of packages, slowest 15 s and 18 s. At the
+      # slowest healthy mirror rate CI has recorded (about 71 kB/s) the update
+      # still finishes in three minutes, so these bounds only catch a hang.
+      - name: Refresh Ubuntu package metadata
+        timeout-minutes: 10
+        run: sudo apt-get update
+      - name: Install bubblewrap and its restricted AppArmor profile
+        timeout-minutes: 5
+        run: >-
+          sudo apt-get install --yes --no-install-recommends
+          apparmor apparmor-profiles bubblewrap
+      - name: Load Ubuntu's bwrap-only user-namespace policy
+        run: >-
+          sudo apparmor_parser --replace
+          /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+      - name: Prove bubblewrap can create PID and network namespaces
+        run: >-
+          /usr/bin/bwrap --die-with-parent --new-session --unshare-ipc --unshare-uts
+          --unshare-pid --unshare-net --ro-bind / / --dev /dev --proc /proc --
+          /usr/bin/python3 -c
+          'import os; raise SystemExit((os.getpid(), os.getppid()) != (2, 1))'
+      - name: Install the zero-dependency runtime
+        timeout-minutes: 10
+        run: uv sync --locked
+      - name: Install CPython 3.10 where lab setup discovers it
+        id: python310
+        timeout-minutes: 10
+        run: |
+          # setup-uv points UV_PYTHON_INSTALL_DIR into RUNNER_TEMP. One test
+          # runs `lab setup` without --python, and setup discovers through
+          # `uv python find` in a kernel environment that drops every UV_*
+          # variable. Install where a user's own `uv python install 3.10` would.
+          env -u UV_PYTHON_INSTALL_DIR uv python install 3.10
+          interpreter="$(env -u UV_PYTHON_INSTALL_DIR uv python find --no-project 3.10)"
+          echo "path=${interpreter}" >> "${GITHUB_OUTPUT}"
+      - name: Build and verify a provider generation
+        id: provider
+        # About 140 MB of hash-checked wheels plus upstream at its pinned
+        # commit. Each install command inside setup also has a 15-minute cap.
+        timeout-minutes: 25
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-data
+          PROVIDER_BASE_PYTHON: ${{ steps.python310.outputs.path }}
+        run: |
+          uv run openai4s lab setup chemgymrl --python "${PROVIDER_BASE_PYTHON}" \
+            > "${RUNNER_TEMP}/lab-setup.json"
+          cat "${RUNNER_TEMP}/lab-setup.json"
+          /usr/bin/python3 -I - "${RUNNER_TEMP}/lab-setup.json" "${OPENAI4S_DATA_DIR}" \
+            >> "${GITHUB_OUTPUT}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          python = Path(result["python"])
+          if result["status"] != "installed" or not python.is_relative_to(sys.argv[2]):
+              sys.exit(f"unexpected provider setup result: {result}")
+          print(f"python={python}")
+          PY
+      - name: Run one real step under enforced bubblewrap
+        # Above the provider's own hello/open/execute/stop/close timeouts
+        # (about five minutes together), so a slow open fails with its error.
+        timeout-minutes: 10
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-data
+          OPENAI4S_KERNEL_SANDBOX: enforce
+        run: |
+          uv run openai4s lab smoke --profile WaterOilExtract-v0 \
+            > "${RUNNER_TEMP}/lab-smoke.json"
+          cat "${RUNNER_TEMP}/lab-smoke.json"
+          # boundary_holds is the product's own definition of a proven
+          # boundary: enforced, self-tested, raw network blocked.
+          uv run python -I - "${RUNNER_TEMP}/lab-smoke.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          from openai4s.security.sandbox import boundary_holds
+
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          sandbox = result["sandbox"]
+          if not (
+              result["receipt"]["applied"] is True
+              and sandbox["backend"] == "bubblewrap"
+              and boundary_holds(sandbox)
+          ):
+              sys.exit(f"the provider step did not run inside enforced bubblewrap: {sandbox}")
+          PY
+      - name: Run the real-provider Lab tests
+        # Still runs when the smoke step failed: these tests answer more than
+        # the sandbox question, and a weekly run should report all of it.
+        if: ${{ !cancelled() && steps.provider.outcome == 'success' }}
+        # One of these tests builds a second generation from scratch.
+        timeout-minutes: 30
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-data
+          OPENAI4S_KERNEL_SANDBOX: enforce
+          OPENAI4S_LAB_CHEMGYMRL_PYTHON: ${{ steps.provider.outputs.python }}
+          # Must not hold a generation yet: the setup test refuses one that does.
+          OPENAI4S_LAB_SETUP_TEST_DIR: ${{ runner.temp }}/lab-setup-test
+          MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+          NUMBA_CACHE_DIR: ${{ runner.temp }}/numba
+        run: |
+          uv run pytest -m external tests/test_lab_*.py -rA \
+            --junitxml="${RUNNER_TEMP}/lab-external.xml"
+          # Every one of these tests skips itself when its variable is missing,
+          # so a green run with skips has validated nothing. Refuse it.
+          /usr/bin/python3 -I - "${RUNNER_TEMP}/lab-external.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          # iter() includes the root itself, so this reads both layouts.
+          suites = list(ET.parse(sys.argv[1]).getroot().iter("testsuite"))
+          total = sum(int(suite.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.get("skipped", "0")) for suite in suites)
+          if total == 0 or skipped:
+              sys.exit(f"{skipped} of {total} real-provider tests skipped")
+          print(f"{total} real-provider tests ran, none skipped")
+          PY
+      - name: Show the provider setup logs after a failure
+        if: failure()
+        run: >-
+          find "${RUNNER_TEMP}/openai4s-data" "${RUNNER_TEMP}/lab-setup-test"
+          -name setup.log -print -exec tail -n 200 {} \; || true
+      - name: Prove the default data directory was never created
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -e "${HOME}/.openai4s" ]; then
+            echo "::error::a command in this job wrote to the default ~/.openai4s"
+            ls -la "${HOME}/.openai4s"
+            exit 1
+          fi

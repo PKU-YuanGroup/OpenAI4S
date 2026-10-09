@@ -546,6 +546,17 @@ PID is released. `openai4s lab status` starts nothing; `openai4s lab smoke`
 runs one real step and prints only the projected receipt and the sandbox
 posture; `openai4s doctor` reports a `lab` row.
 
+The real-provider tests (`pytest -m external tests/test_lab_*.py`) need
+`OPENAI4S_LAB_CHEMGYMRL_PYTHON` set to a verified generation's interpreter and
+`OPENAI4S_LAB_SETUP_TEST_DIR` set to a fresh directory, because one of them
+builds a generation from scratch; without them each test skips. The default
+suite deselects them. `.github/workflows/lab-chemgymrl.yml` runs them on
+Ubuntu 24.04 every week and on manual dispatch, with
+`OPENAI4S_KERNEL_SANDBOX=enforce`, and fails a run in which any of them
+skipped. It is not a pull-request check and no required check names it, so a
+change to the lock, the manifests or the adapter should dispatch it before
+merging.
+
 ### Evaluation and baseline policies
 
 `lab.evaluation` is a private, simulator-ground-truth evaluation surface. It
