@@ -36,7 +36,7 @@ import { setLang, t } from "../../i18n";
 import { currentId } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { _modalMode } from "../../stores/ui";
-import { closeMenu, openMenu, type MenuItem } from "../sessions/chrome";
+import { closeMenu, openMenu, repositionMenu, type MenuItem } from "../sessions/chrome";
 import { sessionOptionsMenu } from "../sessions/actions";
 import { resetAutoModeAudits } from "./audits";
 import { autoModeHint, resetAutoModeHints } from "./hints";
@@ -160,14 +160,47 @@ describe("the menu block", () => {
     ]);
   });
 
-  it("opens the budget block when a meter is near or at its ceiling", async () => {
+  it("keeps the ceilings behind one disclosure and shows a near or at ceiling meter without it", async () => {
     autoMode = () =>
-      json(autoModeBody({ run: runBody({ budget_usage: usage({ max_extra_cells: meter(30, 25) }) }), last_event_ordinal: 3 }));
+      json(
+        autoModeBody({
+          run: runBody({
+            status: "paused",
+            terminal_reason: "budget_exhausted",
+            user_truth: "Paused · Budget exhausted",
+            budget_usage: usage({ max_extra_cells: meter(30, 25), max_review_rounds: meter(2, 2) }),
+            circuit: { state: "tripped", reason: "budget_exhausted" },
+          }),
+          last_event_ordinal: 3,
+        }),
+      );
     const { block } = await openOptions();
-    const budget = block.byClass("am-budget")!;
-    expect(budget.open).toBe(true);
-    expect(budget.find((node) => node.dataset.field === "max_extra_cells")!.dataset.flag).toBe("near");
-    expect(block.texts()).toContain("25 of 30, 5 remaining · Near ceiling");
+    const table = block.byClass("am-budget-table")!;
+    expect(table.open).toBe(false);
+    expect(table.allByClass("am-meter")).toHaveLength(13);
+    const alerts = block.byClass("am-alerts")!;
+    expect(alerts.allByClass("am-alert").map((node) => [node.dataset.field, node.dataset.flag])).toEqual([
+      ["max_review_rounds", "at"],
+      ["max_extra_cells", "near"],
+    ]);
+    expect(alerts.texts()).toEqual(
+      expect.arrayContaining([
+        "25 of 30, 5 remaining · Near ceiling",
+        "Exhausted: Reviewer attempts per candidate.",
+        "Circuit tripped · Paused · Budget exhausted",
+      ]),
+    );
+    // The Audit entry sits with the run line, above the ceilings.
+    const order = block.children.map((node) => node.className);
+    expect(order.indexOf("am-actions")).toBeLessThan(order.indexOf("am-budget am-budget-warn"));
+  });
+
+  it("re-places the menu when a disclosure opens", async () => {
+    const { block } = await openOptions();
+    vi.mocked(repositionMenu).mockClear();
+    const table = block.byClass("am-budget-table")! as unknown as { ontoggle: () => void };
+    table.ontoggle();
+    expect(repositionMenu).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the run's identity and digests in a detail row, off the run line", async () => {

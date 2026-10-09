@@ -63,11 +63,12 @@ function keyValues(rows: Array<[string, string]>, className: string): HTMLElemen
   return list;
 }
 
-function details(summary: string, body: HTMLElement, className: string, open = false): HTMLElement {
+function details(summary: string, body: HTMLElement, className: string): HTMLElement {
   const box = el("details", className);
-  if (open) box.open = true;
   box.appendChild(el("summary", null, summary));
   box.appendChild(body);
+  // Opening or closing changes the menu's height under its anchor.
+  box.ontoggle = () => repositionMenu();
   return box;
 }
 
@@ -82,24 +83,42 @@ function button(className: string, label: string, onClick: () => void): HTMLButt
   return node;
 }
 
+/**
+ * The ceilings and meters. All thirteen rows sit behind one disclosure so the
+ * menu stays short; what needs attention -- a meter near or at its ceiling,
+ * the exhausted list, a tripped circuit -- is repeated below it, always shown.
+ */
 function budgetBlock(view: AutoModeView): HTMLElement {
   const model = budgetModel(view);
+  const block = el("div", "am-budget" + (model.warn ? " am-budget-warn" : ""));
   const body = el("div", "am-budget-body");
   for (const row of model.rows) {
     const meter = el("div", "am-meter" + (row.flag ? " am-meter-" + row.flag : ""));
     meter.dataset.field = row.field;
     if (row.flag) meter.dataset.flag = row.flag;
     meter.appendChild(el("span", "am-ml", row.label));
-    if (row.ceiling !== null) meter.appendChild(el("span", "am-mc", row.ceiling));
-    if (row.meter !== null) meter.appendChild(el("span", "am-mv", row.meter));
-    if (row.authority !== null) meter.appendChild(el("span", "am-ma", row.authority));
+    meter.appendChild(el("span", "am-mc", row.ceiling ?? ""));
+    if (row.meter !== null) {
+      meter.appendChild(el("span", "am-mv", row.meter));
+      meter.appendChild(el("span", "am-ma", row.authority ?? ""));
+    }
     body.appendChild(meter);
   }
   if (model.noUsage) body.appendChild(el("div", "am-note", autoModeT("autoMode.budget.noUsage")));
-  if (model.exhausted) body.appendChild(el("div", "am-warn", model.exhausted));
-  if (model.circuit) body.appendChild(el("div", "am-warn", model.circuit));
-  const block = details(model.summary, body, "am-budget", model.warn);
-  if (model.warn) block.classList.add("am-budget-warn");
+  block.appendChild(details(model.summary, body, "am-budget-table"));
+  const alerts = el("div", "am-alerts");
+  for (const row of model.rows) {
+    if ((row.flag !== "near" && row.flag !== "at") || row.meter === null) continue;
+    const alert = el("div", "am-alert am-meter-" + row.flag);
+    alert.dataset.field = row.field;
+    alert.dataset.flag = row.flag;
+    alert.appendChild(el("span", "am-ml", row.label));
+    alert.appendChild(el("span", "am-mv", row.meter));
+    alerts.appendChild(alert);
+  }
+  if (model.exhausted) alerts.appendChild(el("div", "am-warn", model.exhausted));
+  if (model.circuit) alerts.appendChild(el("div", "am-warn", model.circuit));
+  if (alerts.firstChild) block.appendChild(alerts);
   return block;
 }
 
@@ -120,8 +139,8 @@ function readyBody(view: AutoModeView): HTMLElement[] {
       runText(view),
       runExtra.length ? details(autoModeT("autoMode.details"), keyValues(runExtra, "am-kv"), "am-detail") : null,
     ),
-    budgetBlock(view),
   ];
+  // The Audit entry belongs to the run line, above the budget block.
   const actions = el("div", "am-actions");
   actions.appendChild(
     button("am-audit", autoModeT("autoMode.audit.open"), () => {
@@ -129,7 +148,7 @@ function readyBody(view: AutoModeView): HTMLElement[] {
       void openAutoModeAudits();
     }),
   );
-  nodes.push(actions);
+  nodes.push(actions, budgetBlock(view));
   return nodes;
 }
 

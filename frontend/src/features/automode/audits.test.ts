@@ -126,6 +126,35 @@ describe("paging", () => {
     expect(shownIds()).toEqual(["audit-9"]);
   });
 
+  it("frees Load more when a page clicked during a refresh is dropped for its old cursor", async () => {
+    vi.useFakeTimers();
+    const slowRefresh = deferred<Response>();
+    const slowPage = deferred<Response>();
+    let firstPages = 0;
+    respond = (url) => {
+      if (url.searchParams.get("before")) return slowPage.promise;
+      firstPages += 1;
+      return firstPages === 1
+        ? json(auditPageBody([auditRowBody(1)], { next_before: "90", has_more: true }))
+        : slowRefresh.promise;
+    };
+    await openAutoModeAudits();
+    scheduleAutoModeAuditsRefresh();
+    await vi.advanceTimersByTimeAsync(80);
+    // The refresh is in flight and the old rows are still shown: a click now
+    // asks for the page after the old cursor.
+    body().byClass("am-more")!.click();
+    expect(body().byClass("am-more")!.disabled).toBe(true);
+    slowRefresh.resolve(json(auditPageBody([auditRowBody(2)], { next_before: "80", has_more: true })));
+    await settle();
+    slowPage.resolve(json(auditPageBody([auditRowBody(5)])));
+    await settle();
+    expect(shownIds()).toEqual(["audit-2"]);
+    const more = body().byClass("am-more")!;
+    expect(more.disabled).toBe(false);
+    expect(more.textContent).toBe("Load more");
+  });
+
   it("drops a next page that a refresh superseded", async () => {
     vi.useFakeTimers();
     const slowPage = deferred<Response>();

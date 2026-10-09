@@ -34,7 +34,7 @@
   color: var(--text-200);
 }
 .am-detail > summary,
-.am-budget > summary {
+.am-budget-table > summary {
   cursor: pointer;
   color: var(--text-200);
 }
@@ -57,7 +57,7 @@
   padding-top: 6px;
   border-top: 1px solid var(--line-soft, var(--border));
 }
-.am-budget-warn > summary {
+.am-budget-warn .am-budget-table > summary {
   color: var(--warn-text, var(--text-000));
 }
 .am-budget-body {
@@ -74,18 +74,29 @@
 .am-ml {
   color: var(--text-000);
 }
-.am-mc {
+.am-mc,
+.am-ma {
   color: var(--text-200);
   text-align: right;
+  white-space: nowrap;
 }
-.am-mv,
-.am-ma {
-  grid-column: 1 / -1;
+.am-mv {
   color: var(--text-200);
 }
 .am-meter-near .am-mv,
 .am-meter-at .am-mv {
   color: var(--warn-text, var(--text-000));
+}
+.am-alerts {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.am-alert {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  column-gap: 8px;
 }
 .am-note {
   color: var(--text-200);
@@ -105,7 +116,7 @@
 .am-audits {
   display: grid;
   gap: 10px;
-  min-width: min(640px, 80vw);
+  padding: 12px 16px 16px;
 }
 .am-filters {
   display: flex;

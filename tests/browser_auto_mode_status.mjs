@@ -597,8 +597,9 @@ async function phaseA(browser, owned, tripwire) {
           selection: c.worked,
           run: c.noRun,
           budget: async (status, label) => {
-            check(`${label}/no usage`, (await status.locator(".am-budget > summary").textContent())?.trim() === c.noUsage);
-            check(`${label}/closed`, (await status.locator(".am-budget").getAttribute("open")) === null);
+            check(`${label}/no usage`, (await status.locator(".am-budget-table > summary").textContent())?.trim() === c.noUsage);
+            check(`${label}/closed`, (await status.locator(".am-budget-table").getAttribute("open")) === null);
+            check(`${label}/no alerts`, (await status.locator(".am-alerts").count()) === 0);
           },
         }),
       },
@@ -663,7 +664,10 @@ async function phaseB(browser, owned, tripwire, previous) {
     runFixture(owned.dataDir, "frame_autonomous", id.bump, projectId);
 
     const budgetChecks = (c) => async (status, label) => {
-      check(`${label}/opened for a warning`, (await status.locator(".am-budget").getAttribute("open")) !== null);
+      check(`${label}/table stays closed`, (await status.locator(".am-budget-table").getAttribute("open")) === null);
+      check(`${label}/warnings shown without opening`, await status.locator('.am-alert[data-field="max_extra_cells"][data-flag="near"]').isVisible()
+        && await status.locator('.am-alert[data-field="max_review_rounds"][data-flag="at"]').isVisible());
+      check(`${label}/audit above the ceilings`, await status.locator(".am-actions + .am-budget").count() === 1);
       check(`${label}/near`, (await meterText(status, "max_extra_cells")) === c.nearCells, await meterText(status, "max_extra_cells"));
       check(`${label}/at`, (await meterText(status, "max_review_rounds")) === c.atReview, await meterText(status, "max_review_rounds"));
       check(`${label}/reserved`, (await meterText(status, "max_repair_rounds")) === c.reservedRepair, await meterText(status, "max_repair_rounds"));

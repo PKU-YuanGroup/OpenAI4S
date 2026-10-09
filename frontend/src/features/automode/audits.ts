@@ -111,6 +111,9 @@ async function loadFirstPage(v: AuditViewState, { clear }: { clear: boolean }): 
     error = caught;
   }
   if (!current(v, version)) return;
+  // A new first page supersedes a next page still in flight: its answer is
+  // dropped for naming another cursor, so it must not keep the button busy.
+  v.pageInFlight = false;
   if (error) {
     const { status, code } = errorCode(error);
     if (status === 400 && code === "invalid_subject_kind" && v.filter !== null) {

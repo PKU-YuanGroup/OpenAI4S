@@ -235,11 +235,11 @@ export function budgetModel(view: AutoModeView): BudgetModel {
         (circuitReason.reason && CIRCUIT_TRUTH[circuitReason.reason]) || circuitReason.reason || "—",
       )
     : null;
+  // The circuit has its own always-visible line; the summary counts meters.
   const summaryParts = [autoModeT("autoMode.budget.title")];
   if (noUsage) summaryParts.push(autoModeT("autoMode.budget.noUsage"));
   if (atCount) summaryParts.push(autoModeT("autoMode.budget.atCount", atCount));
   if (nearCount) summaryParts.push(autoModeT("autoMode.budget.nearCount", nearCount));
-  if (circuit) summaryParts.push(circuit);
   return {
     rows,
     noUsage,
