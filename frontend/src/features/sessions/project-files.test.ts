@@ -285,7 +285,13 @@ describe("project folder persistence", () => {
     expect(nodes["#proj-current"]!.textContent).toBe("Project A");
     expect(folders.value).toEqual([{ folder_id: "folder-A" }]);
     expect(sessions.value).toEqual([{ id: "session-A", project_id: "A" }]);
-    expect(hint).toHaveBeenCalledWith(copy("projectOpenFailed", `Project ${target}`), true);
+    await vi.waitFor(() => expect(hint).toHaveBeenCalledWith(copy("projectOpenFailed", `Project ${target}`), true));
+    // Recovery repaints the composer status, so the failure must be reported
+    // after it rather than be cleared by it.
+    const failure = vi.mocked(hint).mock.calls.findIndex(([text]) => text === copy("projectOpenFailed", `Project ${target}`));
+    expect(vi.mocked(hint).mock.invocationCallOrder[failure]).toBeGreaterThan(
+      Math.max(...vi.mocked(recoverConversation).mock.invocationCallOrder),
+    );
     expect(binds.openConversation).not.toHaveBeenCalled();
     expect(binds.newSession).not.toHaveBeenCalled();
     if (pending) {

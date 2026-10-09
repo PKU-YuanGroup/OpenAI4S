@@ -386,7 +386,6 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
       project.value = previousProject;
       pendingProjectOrigin = null;
       renderProjMenu();
-      hint(projectFilesCopy("projectOpenFailed", projName(id)), true);
       await Promise.allSettled([
         loadSessions(),
         recoverConversation(retained, gen),
@@ -394,6 +393,11 @@ export async function openProject(id: string, options?: { replaceUrl?: boolean }
         Promise.resolve(callLane("loadExecutionLog", retained)),
         Promise.resolve(callLane("loadWorkbenchState", retained)),
       ]);
+      // Recovery repaints the composer status. Report the failure after it,
+      // or the retained conversation's status clears it before anyone sees it.
+      if (_openGen.value === gen && currentId.value === retained) {
+        hint(projectFilesCopy("projectOpenFailed", projName(id)), true);
+      }
     } else renderProjMenu();
     return;
   }
