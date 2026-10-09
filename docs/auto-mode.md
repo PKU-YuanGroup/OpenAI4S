@@ -419,8 +419,8 @@ recovery.
 - Export is fail-closed. A run, event, or audit record that does not resolve
   against the packaged branches, ledger turns, Artifacts, and versions refuses
   the whole export as `409 session_not_exportable` rather than publishing part
-  of the history. A Web turn's run always resolves: the turn's `user` action
-  group is written before `begin_turn_run` starts the run.
+  of the history. A Web turn's run always finds its turn in the ledger: the
+  turn's `user` action group is written before `begin_turn_run` starts the run.
 - Import preserves a verifiable historical label as read-only provenance, but
   remains quarantined. It forces permission automation off, imports no reusable
   capability or standing grant, starts no Kernel/Reviewer/Repair process, and

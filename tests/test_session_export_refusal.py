@@ -12,8 +12,9 @@ response in `_route`, so a test that calls `_api` and catches the exception
 says nothing about the status a client receives.
 
 The last test pins why the first refusal below is not a production state: a
-real turn writes its `user` action group before `begin_turn_run` starts the
-Auto Run, so even a turn that ends with a sole `finalize_response` exports.
+real Auto Mode turn already has its `user` action group when `begin_turn_run`
+starts the run under that same turn id, so even a turn that ends with a sole
+`finalize_response` exports.
 """
 
 from __future__ import annotations
@@ -221,8 +222,26 @@ def test_a_real_auto_mode_turn_ended_by_finalize_response_exports(
             ),
         }
 
+    # A spy, not a stub: the real `begin_turn_run` still runs. It reads the
+    # ledger at the instant the run is started, because a run started before
+    # its turn has a group is one a crash can leave no package able to resolve.
+    begin_turn_run = runner.scientific_review.begin_turn_run
+    anchors: list[list[str]] = []
+
+    def observed_begin_turn_run(**kwargs):
+        groups = runner.store.list_action_groups(
+            kwargs["root_frame_id"],
+            branch_id=kwargs["branch_id"],
+            turn_id=kwargs["turn_id"],
+        )
+        anchors.append([group["kind"] for group in groups])
+        return begin_turn_run(**kwargs)
+
     monkeypatch.setattr(gateway_mod, "chat", fake_chat)
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *args, **kw: None)
+    monkeypatch.setattr(
+        runner.scientific_review, "begin_turn_run", observed_begin_turn_run
+    )
     try:
         project_id, root = _session(runner)
 
@@ -230,6 +249,7 @@ def test_a_real_auto_mode_turn_ended_by_finalize_response_exports(
         exported = _export(runner, root)
 
         assert result["status"] == "completed"
+        assert anchors == [["user"]]
         assert exported["code"] == 200
         package = _package(exported["body"])
         (run,) = package["review.json"]["auto_mode"]["runs"]
