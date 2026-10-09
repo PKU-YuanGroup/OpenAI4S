@@ -1714,16 +1714,17 @@ def _capture_json(
 def drive_process_config(config) -> Iterator[None]:
     """Resolve the process-global config under the drive's own data dir.
 
-    A drive hands its runner an explicit ``Config``, but a turn still reaches
-    code that resolves the process-global one -- the remote-GPU prompt note
-    reads the BYOC host registry under ``get_config().data_dir``, and the
-    judgment shadows opened ``get_store(get_config().db_path)`` until they
-    took the run's Config. In the daemon the two are one data dir. In a drive
-    the global one fell back to ``~/.openai4s``: a local
+    A drive hands its runner an explicit ``Config``, but code a turn reaches
+    has resolved the process-global one instead -- the judgment shadows
+    opened ``get_store(get_config().db_path)``, and the remote-GPU prompt
+    note read the BYOC host registry under ``get_config().data_dir``, until
+    each took the run's own. In the daemon the two are one data dir. In a
+    drive the global one fell back to ``~/.openai4s``: a local
     ``capture_response_contract.py`` run
     created and migrated the developer's real database and wrote an install id
     beside it, and the pytest drives -- module-scoped fixtures, so outside the
-    suite's per-test isolation -- opened it as well.
+    suite's per-test isolation -- opened it as well. Kept now that both are
+    fixed, so the next lookup of that kind lands in the drive's data dir too.
 
     Close the runner inside this block. A turn thread that outlives it
     resolves the global config again, from whatever the environment says then.

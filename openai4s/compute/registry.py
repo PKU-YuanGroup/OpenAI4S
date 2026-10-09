@@ -43,9 +43,18 @@ def _now_ms() -> int:
 
 
 def _data_dir() -> Path:
+    """The process default, for a caller that named no data dir.
+
+    That is the right registry only where the caller's Config *is* the
+    process default -- the daemon. Everything serving its own Config passes
+    that Config's data dir (`DataDirRegistry` binds one). Resolved without
+    ``ensure_dirs``: ``get_config()`` creates and chmods the default
+    directory, and reading a registry is no reason to; `_write` hardens the
+    directory itself if it has to create it.
+    """
     from openai4s.config import get_config
 
-    return Path(get_config().data_dir)
+    return Path(get_config(initialize_dirs=False).data_dir)
 
 
 def _path(data_dir: Path | None = None) -> Path:
@@ -111,7 +120,14 @@ def load(data_dir: Path | None = None) -> dict:
 
 def _write(data: dict, data_dir: Path | None = None) -> None:
     p = _path(data_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.parent.is_dir():
+        # The data dir also holds the credential database, so a registry
+        # write that creates it gives it the owner-only mode
+        # `Config.ensure_dirs` would have.
+        from openai4s.security.permissions import harden_dir
+
+        p.parent.mkdir(parents=True, exist_ok=True)
+        harden_dir(p.parent)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
     tmp.replace(p)
@@ -280,3 +296,34 @@ def capability_host(
         if cap_meta:
             return alias, cap_meta
     return None, None
+
+
+# --- one data dir ---------------------------------------------------------- #
+class DataDirRegistry:
+    """The registry calls the host services make, bound to one data dir.
+
+    `RemoteCapabilityService` and `RemoteScienceService` call
+    ``registry.list_hosts()`` and friends on whatever their
+    ``registry_factory`` returns. Handed the module, they read the process
+    default, so a dispatcher serving another Config reported, and ran
+    ``host.fold`` on, hosts from a registry its own ``host.compute`` never
+    consults. A dispatcher hands them this instead.
+    """
+
+    def __init__(self, data_dir: str | Path) -> None:
+        self.data_dir = Path(data_dir)
+
+    def list_hosts(self) -> dict:
+        return list_hosts(self.data_dir)
+
+    def get_host(self, alias: str) -> dict | None:
+        return get_host(alias, self.data_dir)
+
+    def default_host(self) -> str | None:
+        return default_host(self.data_dir)
+
+    def set_capability(self, alias: str, cap: str, meta: dict) -> dict:
+        return set_capability(alias, cap, meta, self.data_dir)
+
+    def capability_host(self, cap: str) -> tuple[str | None, dict | None]:
+        return capability_host(cap, self.data_dir)
