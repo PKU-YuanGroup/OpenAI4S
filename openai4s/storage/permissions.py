@@ -152,12 +152,15 @@ def literal_permission_pattern(text: str) -> str:
 # Gentle defaults for the local research daemon.  The kernel can already run
 # arbitrary Python, so routine confined work stays frictionless while genuinely
 # external or irreversible host operations ask an actively watching human.
-# Only the approval-gated Lab tools consult rules. Seeding rows for the read
-# tools and the approval-free safety stop would show operators a "deny" switch
-# that the dispatcher never reads.
+# Only the approval-gated Lab tools consult rules: create, execute and export.
+# Seeding rows for the read tools and the approval-free safety stop would show
+# operators a "deny" switch that the dispatcher never reads. lab_export joined
+# version 5 before that version shipped; without its row the unmatched default
+# already asked, but the rules panel offered no switch for it.
 _LAB_PERMISSION_RULES = (
     ("lab_create", "*", "ask"),
     ("lab_execute", "*", "ask"),
+    ("lab_export", "*", "ask"),
 )
 
 DEFAULT_PERMISSION_RULES = (

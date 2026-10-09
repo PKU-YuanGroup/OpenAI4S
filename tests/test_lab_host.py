@@ -536,7 +536,32 @@ def test_permission_v5_upgrade_preserves_operator_choices(rig):
     assert {m: rules[m] for m in NAMES | FULL if m in rules} == {
         "lab_create": "ask",
         "lab_execute": "ask",
+        "lab_export": "ask",
     }
+
+    # The seeded export row is the switch the rules panel shows: toggling it
+    # updates that one row in place, and the dispatcher resolves through it.
+    def export_rules():
+        return [
+            (r["pattern"], r["decision"])
+            for r in store.get_permission_rules(scope="global")
+            if r["tool"] == "lab_export"
+        ]
+
+    assert export_rules() == [("*", "ask")]
+    store.set_permission_rule(
+        scope="global", tool="lab_export", pattern="*", decision="deny"
+    )
+    assert export_rules() == [("*", "deny")]
+    assert (
+        store.resolve_permission(
+            root_frame_id=rig.root,
+            project_id="default",
+            tool="lab_export",
+            pattern_input="run",
+        )
+        == "deny"
+    )
     store.set_permission_rule(
         scope="global", tool="lab_execute", pattern="*", decision="deny"
     )
