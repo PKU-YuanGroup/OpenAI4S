@@ -18649,10 +18649,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 fid = m.group(1)
                 frame = store.get_frame(fid) or {}
-                exported = runner.export_session_package(
-                    fid,
-                    str(frame.get("project_id") or "default"),
-                )
+                try:
+                    exported = runner.export_session_package(
+                        fid,
+                        str(frame.get("project_id") or "default"),
+                    )
+                except SessionPackageError as error:
+                    # The package boundary refusing, on purpose, to publish
+                    # state it cannot package faithfully: Auto Mode history
+                    # that does not resolve against the packaged ledger, a
+                    # revert still awaiting recovery, records past the package
+                    # limits. Import and share already translate this error;
+                    # here it fell to the catch-all, so a deliberate refusal
+                    # answered 500 internal_error with its reason withheld.
+                    # 409, not 400: the request is well-formed, and it is the
+                    # session's current state that refuses. The text is the
+                    # author-written domain message import and share send.
+                    raise GatewayError(
+                        409, str(error), "session_not_exportable"
+                    ) from error
                 self._send(
                     200,
                     exported["data"],
