@@ -366,16 +366,25 @@ def seed_branch_activate(store: Store, config: Config, root: str, project: str) 
 def seed_source_for_import(
     store: Store, config: Config, root: str, project: str
 ) -> dict:
-    """A finished run whose package the harness exports and imports."""
+    """A finished run whose package the harness exports and imports.
 
+    The package carries Auto Mode history only for turns it also carries, so
+    the run's turn gets the action group a real turn would have written.
+    """
+
+    store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="turn-source",
+        kind="native_tools",
+        assistant_content="The turn the exported run belongs to",
+    )
     run_id = _start_run(store, config, root, key="source")
-    evidence = _candidate(store, run_id, key="source")
-    _review(store, run_id, evidence, key="source", index=0)
     store.terminate_auto_mode_run(
         run_id,
         idempotency_key=f"{run_id}:terminal",
-        status="review_unavailable",
-        reason="reviewer_unavailable",
+        status="cancelled",
+        reason="user_cancelled",
     )
     return {"run_id": run_id}
 
