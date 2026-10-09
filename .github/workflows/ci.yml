@@ -608,6 +608,12 @@ jobs:
             # Also checks exact versions, inert fallback and real Ketcher
             # edit/save. Header checks cannot prove the UI uses these paths.
             node tests/browser_sandbox_preview.mjs
+            # The read-only Auto Mode status block and Audit view, on two
+            # disposable daemons of its own (Stage 2 off with an autonomous
+            # deployment preset, then on) over SQLite state the production
+            # Store seeds. English and Chinese, hints injected on the real
+            # socket, and a failure on any non-GET the surface makes.
+            node tests/browser_auto_mode_status.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure

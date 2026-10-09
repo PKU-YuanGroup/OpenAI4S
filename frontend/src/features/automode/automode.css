@@ -1,0 +1,211 @@
+/* Read-only Auto Mode status (session options menu) and Audit view. Uses
+   existing style.css tokens; no new custom properties. */
+.am-status {
+  max-width: 380px;
+  padding: 4px 8px 6px;
+  font-size: 13px;
+  color: var(--text-000);
+}
+.am-title {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-200);
+}
+.am-line {
+  display: grid;
+  grid-template-columns: minmax(84px, max-content) 1fr;
+  column-gap: 10px;
+  row-gap: 2px;
+  padding: 3px 0;
+}
+.am-h {
+  color: var(--text-200);
+  white-space: nowrap;
+}
+.am-v {
+  overflow-wrap: anywhere;
+}
+.am-sub,
+.am-line > .am-detail {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--text-200);
+}
+.am-detail > summary,
+.am-budget-table > summary {
+  cursor: pointer;
+  color: var(--text-200);
+}
+.am-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 8px;
+  margin: 4px 0 0;
+  font: 11px/1.5 var(--mono);
+}
+.am-kv dt {
+  color: var(--text-200);
+}
+.am-kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.am-budget {
+  margin: 6px 0 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft, var(--border));
+}
+.am-budget-warn .am-budget-table > summary {
+  color: var(--warn-text, var(--text-000));
+}
+.am-budget-body {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.am-meter {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  column-gap: 8px;
+}
+.am-ml {
+  color: var(--text-000);
+}
+.am-mc,
+.am-ma {
+  color: var(--text-200);
+  text-align: right;
+  white-space: nowrap;
+}
+.am-mv {
+  color: var(--text-200);
+}
+.am-meter-near .am-mv,
+.am-meter-at .am-mv {
+  color: var(--warn-text, var(--text-000));
+}
+.am-alerts {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.am-alert {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  column-gap: 8px;
+}
+.am-note {
+  color: var(--text-200);
+  font-style: italic;
+}
+.am-warn {
+  color: var(--warn-text, var(--text-000));
+}
+.am-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.am-actions .ctx-item {
+  width: auto;
+}
+.am-audits {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px 16px;
+}
+.am-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.am-filter {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  padding: 3px 12px;
+  font-size: 13px;
+  color: var(--text-000);
+}
+.am-filter.active {
+  background: var(--bg-200);
+  border-color: var(--border-btn, var(--border));
+}
+.am-audit-list {
+  display: grid;
+  gap: 8px;
+}
+.am-audit {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 8px);
+  padding: 8px 10px;
+}
+.am-audit-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.am-audit-summary {
+  overflow-wrap: anywhere;
+}
+.am-chip {
+  display: inline-block;
+  border-radius: 999px;
+  background: var(--bg-200);
+  padding: 0 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text-000);
+}
+.am-audit-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-200);
+}
+.am-audit-facts dt::after {
+  content: ":";
+}
+.am-audit-facts dd {
+  margin: 0 0 0 -8px;
+  color: var(--text-000);
+}
+.am-findings {
+  margin-top: 6px;
+  display: grid;
+  gap: 6px;
+}
+.am-findings-title {
+  font-size: 12px;
+  color: var(--text-200);
+}
+.am-finding {
+  border-left: 2px solid var(--line-soft, var(--border));
+  padding-left: 8px;
+}
+.am-finding-head {
+  display: flex;
+  gap: 6px;
+}
+.am-finding-claim {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.am-rationale {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.am-audit-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
