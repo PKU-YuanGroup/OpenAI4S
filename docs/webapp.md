@@ -152,6 +152,18 @@ scripts.
   or runtime exists; the terminal event opens the Compute repair card. Direct
   Notebook Cells use the same boundary. Approved/resumed scientific plans are
   refused before their status transition until the check is ready.
+- **Read-only Auto Mode status** — the composer's session options menu ends
+  with three separate lines: *Availability* (whether Auto Mode storage is on,
+  or the session is an imported read-only one), *Saved selection* (the preset
+  and sub-modes in force and which source won), and *Run* (the actual Auto Run
+  on the active branch, if any). A saved `autonomous` selection never reads as
+  running or Verified. Under them, the deployment ceilings with each run's
+  used/remaining meters (unknown usage stays "No usage recorded", not zero),
+  and an **Audit** view of result and permission reviews with a kind filter
+  and paging. It only reads `GET /auto-mode` and `GET /auto-audits` — on
+  opening, retry, socket hints, reconnect and reopen — and offers no editor;
+  the menu's **Auto review** row is still the old post-answer Reviewer switch.
+  See [auto-mode.md](auto-mode.md), *Workbench status surface*.
 - **Web sharing (off by default)** — the session menu can publish a read-only
   snapshot to `https://<share-id>.<domain>/` through a relay you run, without
   binding a public port. The recipient views the conversation/Notebook/artifacts,
