@@ -192,7 +192,7 @@ describe("the audit page", () => {
   });
 
   it("scrubs a credential-shaped string out of model-written text", () => {
-    const row = sanitizeAuditRow(auditRowBody(1, { public_summary: "Leaked sk-abcdefghijklmnopqrstuvwxyz123456 here." }));
+    const row = sanitizeAuditRow(auditRowBody(1, { public_summary: "Leaked sk-abcdefghijk here." }));
     expect(row!.public_summary).toBe("Leaked [redacted] here.");
   });
 });
