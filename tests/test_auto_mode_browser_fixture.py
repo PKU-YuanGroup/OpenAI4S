@@ -26,6 +26,7 @@ import pytest
 
 from openai4s.config import AutoModeConfig, Config
 from openai4s.server.auto_mode import AutoModeService
+from openai4s.storage.snapshots import WorkspaceCAS
 from openai4s.store import Store, get_store
 
 _SCHEMA_VERSION = 1
@@ -34,6 +35,12 @@ _AUTONOMOUS = {
     "preset": "autonomous",
     "result_review_mode": "auto_fix",
     "approvals_reviewer": "auto_review",
+    "source": "frame",
+}
+_REVIEW_ONLY = {
+    "preset": "off",
+    "result_review_mode": "review_only",
+    "approvals_reviewer": "user",
     "source": "frame",
 }
 #: Seeded result reviews and permission reviews for the audit scenario. With
@@ -61,6 +68,7 @@ def _start_run(
     *,
     key: str,
     branch_id: str | None = None,
+    selection: dict[str, str] = _AUTONOMOUS,
 ) -> str:
     branch = branch_id or root
     store.ensure_session_branch(root_frame_id=root, branch_id=branch)
@@ -72,8 +80,8 @@ def _start_run(
         branch_id=branch,
         turn_id=f"turn-{key}",
         execution_id=f"execution-{key}",
-        mode="auto_fix",
-        selection=dict(_AUTONOMOUS),
+        mode=selection["result_review_mode"],
+        selection=dict(selection),
         budgets=_budgets(config),
         owner_instance_id=_OWNER,
     )
@@ -196,6 +204,133 @@ def _commit_budget(store: Store, run_id: str, consumer: str, count: int) -> None
         store.commit_auto_mode_budget(admission, committed_amount=1)
 
 
+def _issues_review(
+    store: Store,
+    run_id: str,
+    evidence: dict[str, Any],
+    *,
+    key: str,
+    round_index: int,
+    severities: tuple[str, ...] | None,
+) -> list[str]:
+    """Review ``candidate-{key}``; complete it with an issues verdict unless
+    ``severities`` is None. Returns the recorded finding ids."""
+
+    review_run_id = f"review-{key}-round-{round_index}"
+    store.start_auto_mode_review(
+        run_id,
+        review_run_id=review_run_id,
+        audit_id=f"audit-{key}-round-{round_index}",
+        idempotency_key=f"{review_run_id}:start",
+        candidate_id=f"candidate-{key}",
+        candidate_snapshot_sha256=_canonical_sha({"candidate": key}),
+        evidence_snapshot=evidence,
+        evidence_snapshot_sha256=_canonical_sha(evidence),
+        round_index=round_index,
+        attempt=1,
+        reviewer={
+            "profile_id": "scientific-reviewer",
+            "profile_revision": 1,
+            "model_fingerprint": "fixture-reviewer",
+        },
+    )
+    if severities is None:
+        return []
+    findings = [
+        {
+            "finding_id": f"finding-{key}-{index}",
+            "fingerprint": f"fingerprint-{key}-{index}",
+            "severity": severity,
+            "category": "evidence",
+            "claim": f"Claim {index} needs an independent recomputation.",
+            "evidence_refs": ["cell-1"],
+        }
+        for index, severity in enumerate(severities)
+    ]
+    store.complete_auto_mode_review(
+        review_run_id,
+        idempotency_key=f"{review_run_id}:complete",
+        status="completed",
+        verdict="issues",
+        assessment={"public_summary": f"Review of {key}: issues remain."},
+        findings=findings,
+    )
+    return [str(item["finding_id"]) for item in findings]
+
+
+def _completed_repair(
+    store: Store,
+    config: Config,
+    root: str,
+    run_id: str,
+    *,
+    key: str,
+    finding_ids: list[str],
+) -> None:
+    """One repair from a restorable checkpoint, sealed over one completed action."""
+
+    workspace = config.data_dir / "auto-mode-fixture-workspaces" / f"{root}-{key}"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "result.txt").write_text(f"{key}\n", encoding="utf-8")
+    tree = WorkspaceCAS(store.db_path.parent / "workspace-cas").capture(workspace)
+    checkpoint = store.create_session_checkpoint(
+        checkpoint_id=f"checkpoint-{root}-{key}",
+        root_frame_id=root,
+        branch_id=root,
+        reason="pre_repair",
+        workspace_tree_id=tree["tree_id"],
+        auto_event_cursor=store.auto_mode_event_cursor(root),
+    )
+    repair_run_id = f"repair-{root}-{key}"
+    store.start_auto_mode_repair(
+        run_id,
+        repair_run_id=repair_run_id,
+        idempotency_key=f"{repair_run_id}:start",
+        finding_ids=finding_ids,
+        before_version_ids=[f"version-{key}"],
+        checkpoint_id=checkpoint["checkpoint_id"],
+    )
+    group = store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id=f"turn-{key}",
+        kind="native_tools",
+        assistant_content="Bounded repair",
+    )
+    store.bind_auto_mode_repair_execution_group(
+        repair_run_id,
+        action_group_id=group["group_id"],
+        idempotency_key=f"{repair_run_id}:bind",
+    )
+    for event_type, extra in (
+        ("proposed", {}),
+        ("result", {"result": {"status": "completed"}}),
+    ):
+        store.append_action_event(
+            group_id=group["group_id"],
+            type=event_type,
+            action_id=f"{repair_run_id}-action",
+            tool_call_id=f"{repair_run_id}-action",
+            side_effect_class="workspace_write",
+            resource_keys=["workspace:result.txt"],
+            **extra,
+        )
+    attempt = store.allocate_execution_attempt(
+        group_id=group["group_id"], producing_cell_id=f"{repair_run_id}-cell"
+    )
+    store.mark_execution_attempt_started(attempt["attempt_id"])
+    store.mark_execution_attempt_response(attempt["attempt_id"])
+    store.mark_execution_attempt_capture(attempt["attempt_id"])
+    store.finish_execution_attempt(attempt["attempt_id"], terminal_state="completed")
+    store.complete_auto_mode_repair(
+        repair_run_id,
+        idempotency_key=f"{repair_run_id}:complete",
+        status="completed",
+        after_version_ids=[f"version-{key}-repaired"],
+        execution_group_ids=[group["group_id"]],
+    )
+
+
 def _set_frame_selection(store: Store, root: str, values: dict[str, str]) -> dict:
     current = store.get_auto_mode_selection("frame", root)
     revision = int((current or {}).get("revision") or 0)
@@ -315,6 +450,57 @@ def seed_terminal_safety(store: Store, config: Config, root: str, project: str) 
     return {"run_id": run_id}
 
 
+def seed_run_rounds(store: Store, config: Config, root: str, project: str) -> dict:
+    """An Auto Run re-reviewing its repaired candidate.
+
+    Round 0 found a material issue and repair 0 completed, so the repaired
+    candidate is under review in round 1. The projection reads review round 1
+    and repair round 0; the run line counts both from 1.
+    """
+
+    run_id = _start_run(store, config, root, key="rounds")
+    evidence = _candidate(store, run_id, key="rounds")
+    finding_ids = _issues_review(
+        store, run_id, evidence, key="rounds", round_index=0, severities=("major",)
+    )
+    _completed_repair(
+        store, config, root, run_id, key="rounds", finding_ids=finding_ids
+    )
+    repaired = _candidate(store, run_id, key="rounds-repaired")
+    _issues_review(
+        store, run_id, repaired, key="rounds-repaired", round_index=1, severities=None
+    )
+    return {"run_id": run_id}
+
+
+def seed_completed_with_issues(
+    store: Store, config: Config, root: str, project: str
+) -> dict:
+    """A finished review-only run whose verdict left two material issues.
+
+    The verdict also records a minor finding. N counts the material ones, as
+    the completion gate does for the message's user truth.
+    """
+
+    run_id = _start_run(store, config, root, key="issues", selection=_REVIEW_ONLY)
+    evidence = _candidate(store, run_id, key="issues")
+    _issues_review(
+        store,
+        run_id,
+        evidence,
+        key="issues",
+        round_index=0,
+        severities=("major", "high", "minor"),
+    )
+    store.terminate_auto_mode_run(
+        run_id,
+        idempotency_key=f"{run_id}:terminal",
+        status="completed_with_issues",
+        reason="completed_with_issues",
+    )
+    return {"run_id": run_id}
+
+
 def seed_audits(store: Store, config: Config, root: str, project: str) -> dict:
     """15 result reviews and 10 permission reviews on one run, newest last."""
 
@@ -397,6 +583,8 @@ SCENARIOS: dict[str, Callable[[Store, Config, str, str], dict]] = {
     "budget_meters": seed_budget_meters,
     "measurement_unavailable": seed_measurement_unavailable,
     "terminal_safety": seed_terminal_safety,
+    "run_rounds": seed_run_rounds,
+    "completed_with_issues": seed_completed_with_issues,
     "audits": seed_audits,
     "branch_runs": seed_branch_runs,
     "branch_activate": seed_branch_activate,
@@ -466,6 +654,26 @@ def _service(store: Store, *, stage2: bool = True, deployment=None) -> AutoModeS
     return AutoModeService(store=store, config=config)
 
 
+_RUN_LINE_FIELDS = (
+    "result_review_mode",
+    "approvals_reviewer",
+    "review_round",
+    "repair_round",
+    "unresolved_finding_count",
+)
+#: What every autonomous seed's run line says under "This run".
+_THIS_AUTONOMOUS_RUN = {
+    "result_review_mode": "auto_fix",
+    "approvals_reviewer": "auto_review",
+}
+
+
+def _run_line_facts(run: dict[str, Any]) -> dict[str, Any]:
+    """The run's own modes, rounds and count, as the run line reads them."""
+
+    return {name: run[name] for name in _RUN_LINE_FIELDS if name in run}
+
+
 @pytest.fixture
 def scope(tmp_path):
     store, config, root, project = _scope(tmp_path)
@@ -532,6 +740,8 @@ def test_budget_meters_scenario_is_near_at_reserved_and_tripped(scope):
     assert run["circuit"]["state"] == "tripped"
     assert run["circuit"]["reason"] == "budget_exhausted"
     assert run["user_truth"] == "Paused · Budget exhausted"
+    # Admissions are not reviews: the run line names its modes, no round.
+    assert _run_line_facts(run) == _THIS_AUTONOMOUS_RUN
 
 
 def test_measurement_and_terminal_scenarios(tmp_path):
@@ -540,6 +750,7 @@ def test_measurement_and_terminal_scenarios(tmp_path):
     run = _service(store).get(root)["run"]
     assert run["circuit"]["reason"] == "budget_measurement_unavailable"
     assert run["user_truth"] == "无法验证 token 预算"
+    assert _run_line_facts(run) == _THIS_AUTONOMOUS_RUN
     store.close()
 
     store, config, root, project = _scope(tmp_path / "safety")
@@ -547,6 +758,9 @@ def test_measurement_and_terminal_scenarios(tmp_path):
     run = _service(store).get(root)["run"]
     assert run["status"] == "failed"
     assert run["terminal_reason"] == "safety_boundary"
+    # A committed safety-boundary terminal is not a broken proof: the run
+    # still names the sub-modes it started with.
+    assert _run_line_facts(run) == _THIS_AUTONOMOUS_RUN
     store.close()
 
 
@@ -578,6 +792,8 @@ def test_audit_scenario_pages_and_filters_like_the_workbench(scope):
     for row in first["audits"]:
         assert row.get("status") != "failed", row  # no integrity downgrade
         assert row["public_summary"].endswith(".")
+    # Fifteen attempts at one candidate are still its first review round.
+    assert service.get(root)["run"]["review_round"] == 0
 
 
 def test_branch_scenarios_project_the_selected_branch(scope):
@@ -588,11 +804,44 @@ def test_branch_scenarios_project_the_selected_branch(scope):
     assert before["branch_id"] == root
     assert before["run"]["run_id"] == detail["main_run_id"]
     assert before["run"]["status"] == "running"
+    assert _run_line_facts(before["run"]) == _THIS_AUTONOMOUS_RUN
     seed_branch_activate(store, config, root, project)
     after = service.get(root)
     assert after["branch_id"] == detail["branch_id"]
     assert after["run"]["run_id"] == detail["branch_run_id"]
     assert after["run"]["status"] == "candidate"
+    assert _run_line_facts(after["run"]) == _THIS_AUTONOMOUS_RUN
+
+
+def test_rounds_scenario_is_a_re_review_after_one_repair(scope):
+    store, config, root, project = scope
+    seed_run_rounds(store, config, root, project)
+    run = _service(store).get(root)["run"]
+    assert run["status"] == "reviewing"
+    # Rounds count from 0 on the wire; the run line shows "Review round 2 ·
+    # repair round 1".
+    assert _run_line_facts(run) == {
+        **_THIS_AUTONOMOUS_RUN,
+        "review_round": 1,
+        "repair_round": 0,
+    }
+
+
+def test_completed_with_issues_scenario_names_its_material_count(scope):
+    store, config, root, project = scope
+    seed_completed_with_issues(store, config, root, project)
+    view = _service(store).get(root)
+    run = view["run"]
+    assert run["status"] == "completed_with_issues"
+    assert _run_line_facts(run) == {
+        "result_review_mode": "review_only",
+        "approvals_reviewer": "user",
+        "review_round": 0,
+        "unresolved_finding_count": 2,
+    }
+    # This run's sub-modes are its own, not the saved selection's.
+    assert view["selection"]["source"] == "built_in_defaults"
+    assert view["selection"]["result_review_mode"] == "off"
 
 
 def test_cli_seeds_through_a_fresh_store(tmp_path, capsys):

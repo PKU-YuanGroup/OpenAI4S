@@ -53,6 +53,7 @@ _RUN_FIELDS = (
     "approvals_reviewer",
     "review_round",
     "repair_round",
+    "unresolved_finding_count",
     "candidate_id",
     "candidate_digest",
     "candidate_snapshot_sha256",
@@ -69,6 +70,16 @@ _RUN_FIELDS = (
     "finished_at",
     "last_event_id",
     "last_event_ordinal",
+)
+# Facts the store derives about one run: its own frozen sub-modes, its
+# current rounds, and the N of a completed-with-issues result. An imported
+# session's run is a historical claim, so the projection drops all of them.
+_RUN_PROGRESS_FIELDS = (
+    "result_review_mode",
+    "approvals_reviewer",
+    "review_round",
+    "repair_round",
+    "unresolved_finding_count",
 )
 _AUDIT_FIELDS = (
     "audit_id",
@@ -453,7 +464,28 @@ def _public_run(raw: Any) -> dict | None:
             "user_truth",
         ),
     )
-    _drop_invalid_counts(public, ("review_round", "repair_round", "last_event_ordinal"))
+    # The run line names these modes. A spelling outside the closed set is
+    # not shown as a guess.
+    if public.get("result_review_mode") not in RESULT_REVIEW_MODES:
+        public.pop("result_review_mode", None)
+    if public.get("approvals_reviewer") not in APPROVAL_REVIEWERS:
+        public.pop("approvals_reviewer", None)
+    _drop_invalid_counts(
+        public,
+        (
+            "review_round",
+            "repair_round",
+            "unresolved_finding_count",
+            "last_event_ordinal",
+        ),
+    )
+    # N belongs only to "Completed · unverified · N unresolved issues", and
+    # that state requires at least one unresolved finding.
+    if (
+        public.get("status") != "completed_with_issues"
+        or public.get("unresolved_finding_count", 0) < 1
+    ):
+        public.pop("unresolved_finding_count", None)
     for name in (
         "candidate_digest",
         "candidate_snapshot_sha256",
@@ -849,6 +881,12 @@ class AutoModeService:
             disabled_reason = "import_quarantine"
         elif not self.feature_enabled:
             disabled_reason = "stage2_feature_disabled"
+        run = self._public_run_with_budget(raw_run, root_frame_id=root_frame_id)
+        if run is not None and quarantined:
+            # The store already withholds these from an imported run. The
+            # quarantine barrier withholds them again here, for any run.
+            for name in _RUN_PROGRESS_FIELDS:
+                run.pop(name, None)
         return {
             "schema_version": AUTO_MODE_SCHEMA_VERSION,
             "feature_enabled": self.feature_enabled,
@@ -867,7 +905,7 @@ class AutoModeService:
             # stage may add a complete only-tighten project/frame resolver;
             # accepting half-effective budget PATCHes here would be false.
             "budgets": asdict(self.config.auto_mode.budgets),
-            "run": self._public_run_with_budget(raw_run, root_frame_id=root_frame_id),
+            "run": run,
             "last_event_id": last_event_id,
             "last_event_ordinal": last_event_ordinal,
         }
