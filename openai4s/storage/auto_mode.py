@@ -65,6 +65,8 @@ _TERMINAL_STATUSES = _RUN_STATUSES - {
     "repairing",
 }
 _RUN_MODES = frozenset({"off", "review_only", "auto_fix"})
+_APPROVALS_REVIEWERS = frozenset({"user", "auto_review"})
+_MATERIAL_SEVERITIES = frozenset({"material", "major", "high", "critical"})
 _REVIEW_VERDICTS = frozenset(
     {
         "pass",
@@ -4839,6 +4841,7 @@ class AutoModeRepository:
         run_events = [event for event in events if event["run_id"] == selected]
         run = self._overlay_inert_import(self._reduce_run(run_events))
         run, run_events = self._verified_read_projection(run, run_events)
+        run.update(self._run_progress_locked(run, run_events))
         tail = run_events[-1]
         return {
             "run": run,
@@ -4846,6 +4849,144 @@ class AutoModeRepository:
             "last_event_ordinal": tail["event_cursor"],
             "events": run_events,
         }
+
+    def _run_progress_locked(
+        self,
+        run: Mapping[str, Any],
+        events: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Flat progress facts that the read projection adds to a reduced run.
+
+        The reducer keeps the run's frozen ``mode`` and ``selection`` mapping.
+        Readers also need these facts as scalars: the sub-modes this run
+        started with, the round of its latest result review and of its
+        latest repair, and the N that the ``completed_with_issues`` user
+        truth names. Each fact comes from the run's own start event or from
+        the durable review/repair rows that its visible events name. None
+        comes from the conversation's current selection. A checkpoint prefix
+        therefore sees only its own rounds.
+
+        This overlay is read-only and applies only to this projection.
+        Export and share still reduce the bare run. An imported run's rows
+        are historical claims. A run whose proof no longer validates is
+        already projected as a safety boundary. Neither gets these facts.
+        """
+
+        if (
+            run.get("trust_state", "local") != "local"
+            or run.get("source_claimed_status") is not None
+        ):
+            return {}
+        run_id = run.get("run_id")
+        owner = self._connection.execute(
+            "SELECT trust_state FROM auto_mode_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if owner is None or owner["trust_state"] != "local":
+            return {}
+        progress: dict[str, Any] = {}
+        selection = run.get("selection")
+        if not isinstance(selection, Mapping):
+            selection = {}
+        # The frozen selection and the mode column describe one start
+        # request. If they disagree, neither is shown as this run's mode.
+        mode = run.get("mode")
+        if (
+            isinstance(mode, str)
+            and mode in _RUN_MODES
+            and selection.get("result_review_mode") in (None, mode)
+        ):
+            progress["result_review_mode"] = mode
+        reviewer = selection.get("approvals_reviewer")
+        if isinstance(reviewer, str) and reviewer in _APPROVALS_REVIEWERS:
+            progress["approvals_reviewer"] = reviewer
+
+        latest_review: Any = None
+        repairs: list[Any] = []
+        verdicts: dict[str, Mapping[str, Any]] = {}
+        for event in events:
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            kind = event.get("type")
+            if payload.get("subject_kind") == "result_review":
+                if kind == "auto_audit_started":
+                    latest_review = payload.get("review_run_id")
+                elif kind == "auto_audit_completed" and isinstance(
+                    payload.get("candidate_id"), str
+                ):
+                    verdicts[payload["candidate_id"]] = payload
+            elif (
+                kind == "repair_started" and payload.get("repair_run_id") not in repairs
+            ):
+                # An execution-group binding is a repair_started event too. It
+                # names a repair that already started, so it adds no round.
+                repairs.append(payload.get("repair_run_id"))
+        if isinstance(latest_review, str):
+            row = self._connection.execute(
+                "SELECT round_index FROM review_runs "
+                "WHERE review_run_id=? AND run_id=?",
+                (latest_review, run_id),
+            ).fetchone()
+            if row is not None and type(row["round_index"]) is int:
+                progress["review_round"] = row["round_index"]
+        if repairs and all(isinstance(item, str) for item in repairs):
+            marks = ",".join("?" for _ in repairs)
+            owned = self._connection.execute(
+                "SELECT COUNT(*) FROM repair_runs WHERE run_id=? "
+                "AND repair_run_id IN (" + marks + ")",
+                (run_id, *repairs),
+            ).fetchone()[0]
+            if int(owned) == len(repairs):
+                # A repair row has no round column. Its round is its place
+                # among the visible repairs, counted from 0 like a review's
+                # ``round_index`` and the Repair Agent's own round index.
+                progress["repair_round"] = len(repairs) - 1
+        if run.get("status") == "completed_with_issues":
+            count = self._unresolved_finding_count_locked(run, verdicts)
+            if count is not None:
+                progress["unresolved_finding_count"] = count
+        return progress
+
+    def _unresolved_finding_count_locked(
+        self,
+        run: Mapping[str, Any],
+        verdicts: Mapping[str, Mapping[str, Any]],
+    ) -> int | None:
+        """N for ``Completed · unverified · N unresolved issues``, or None.
+
+        The count covers the findings that the latest completed result review
+        of the run's current candidate recorded. No later independent review
+        has cleared them, so all of them are unresolved. A repair marks a
+        finding addressed but does not resolve it. The rule matches the one
+        the completion gate uses for the message's user truth: count the
+        material findings if there are any, and count all findings
+        otherwise. There is no N without such a review, after a ``pass``,
+        or when the review recorded no finding. In those cases the run line
+        keeps the sentence without a count.
+        """
+
+        candidate_id = run.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            return None
+        verdict = verdicts.get(candidate_id)
+        if (
+            verdict is None
+            or verdict.get("status") != "completed"
+            or str(verdict.get("verdict") or "").lower() == "pass"
+            or not isinstance(verdict.get("review_run_id"), str)
+        ):
+            return None
+        severities = [
+            str(row["severity"]).lower()
+            for row in self._connection.execute(
+                "SELECT severity FROM review_findings WHERE review_run_id=? "
+                "AND run_id=? AND candidate_id=?",
+                (verdict["review_run_id"], run.get("run_id"), candidate_id),
+            ).fetchall()
+        ]
+        material = sum(1 for value in severities if value in _MATERIAL_SEVERITIES)
+        count = material or len(severities)
+        return count if count >= 1 else None
 
     def list_audits(
         self,

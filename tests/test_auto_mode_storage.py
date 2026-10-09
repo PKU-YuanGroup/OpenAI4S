@@ -16,6 +16,7 @@ from openai4s.storage.auto_mode import (
     AutoModeRepository,
 )
 from openai4s.storage.migrations import SCHEMA_VERSION
+from openai4s.storage.snapshots import WorkspaceCAS
 from openai4s.store import Store
 
 
@@ -1057,6 +1058,9 @@ def test_verified_read_boundaries_fail_closed_after_proof_tamper(tmp_path, tampe
     assert projected["run"]["source_claimed_status"] == "verified"
     assert projected["run"]["status"] == "failed"
     assert projected["run"]["terminal_reason"] == "safety_boundary"
+    # A proof that stopped validating vouches for none of its rows: no mode,
+    # no round, no count is read from them.
+    assert not set(_PROGRESS_FIELDS) & set(projected["run"])
     assert projected["events"][-1]["payload"]["status"] == "failed"
     assert projected["events"][-1]["payload"]["terminal_reason"] == "safety_boundary"
     assert _auto_row_counts(store) == before
@@ -1194,3 +1198,416 @@ def test_started_review_reopens_idempotently_and_blocks_terminal_until_completed
     )
     assert terminal["status"] == "verified"
     reopened.close()
+
+
+# --------------------------------------------------------------------------
+# The read projection's own modes, rounds, and unresolved-finding count.
+
+_PROGRESS_FIELDS = (
+    "result_review_mode",
+    "approvals_reviewer",
+    "review_round",
+    "repair_round",
+    "unresolved_finding_count",
+)
+
+
+def _progress(store: Store, root: str = "root-1", **kwargs) -> dict:
+    run = store.project_auto_mode_run(root, root, **kwargs)["run"]
+    return {name: run[name] for name in _PROGRESS_FIELDS if name in run}
+
+
+def _record(store: Store, candidate_id: str, *, version_ids: list[str]) -> None:
+    store.record_auto_mode_candidate(
+        "auto-run-1",
+        idempotency_key=f"candidate:{candidate_id}",
+        candidate_id=candidate_id,
+        candidate_snapshot_sha256=_sha({"candidate": candidate_id}),
+        evidence_snapshot_sha256=_sha({"candidate_id": candidate_id}),
+        candidate_version_ids=version_ids,
+    )
+
+
+def _finding(finding_id: str, severity: str) -> dict:
+    return {
+        "finding_id": finding_id,
+        "fingerprint": f"fingerprint-{finding_id}",
+        "severity": severity,
+        "category": "evidence",
+        "claim": f"{finding_id} needs an independent recomputation.",
+        "evidence_refs": ["cell-1"],
+        "artifact_ids": [],
+        "version_ids": [],
+        "cell_ids": ["cell-1"],
+    }
+
+
+def _review(
+    store: Store,
+    candidate_id: str,
+    *,
+    review_run_id: str,
+    round_index: int,
+    verdict: str | None,
+    findings: list[dict] | None = None,
+    status: str = "completed",
+) -> None:
+    """Start one result review and, unless ``verdict`` is None, complete it."""
+
+    store.start_auto_mode_review(
+        "auto-run-1",
+        review_run_id=review_run_id,
+        audit_id=f"audit-{review_run_id}",
+        idempotency_key=f"{review_run_id}:start",
+        candidate_id=candidate_id,
+        candidate_snapshot_sha256=_sha({"candidate": candidate_id}),
+        evidence_snapshot={"candidate_id": candidate_id},
+        evidence_snapshot_sha256=_sha({"candidate_id": candidate_id}),
+        round_index=round_index,
+        attempt=1,
+        reviewer={
+            "profile_id": "scientific-reviewer",
+            "profile_revision": 1,
+            "model_fingerprint": "reviewer-model",
+        },
+    )
+    if verdict is not None:
+        store.complete_auto_mode_review(
+            review_run_id,
+            idempotency_key=f"{review_run_id}:complete",
+            status=status,
+            verdict=verdict,
+            assessment={"public_summary": f"{review_run_id}: {verdict}."},
+            findings=findings or [],
+        )
+
+
+def _start_repair(
+    store: Store,
+    tmp_path,
+    *,
+    repair_id: str,
+    finding_ids: list[str],
+    before_version_ids: list[str],
+) -> dict:
+    """Open one repair from a restorable checkpoint and bind its action group."""
+
+    workspace = tmp_path / f"workspace-{repair_id}"
+    workspace.mkdir()
+    (workspace / "result.txt").write_text(f"{repair_id}\n", encoding="utf-8")
+    tree = WorkspaceCAS(store.db_path.parent / "workspace-cas").capture(workspace)
+    checkpoint = store.create_session_checkpoint(
+        checkpoint_id=f"checkpoint-{repair_id}",
+        root_frame_id="root-1",
+        branch_id="root-1",
+        reason="pre_repair",
+        workspace_tree_id=tree["tree_id"],
+        auto_event_cursor=store.auto_mode_event_cursor("root-1"),
+    )
+    store.start_auto_mode_repair(
+        "auto-run-1",
+        repair_run_id=repair_id,
+        idempotency_key=f"{repair_id}:start",
+        finding_ids=finding_ids,
+        before_version_ids=before_version_ids,
+        checkpoint_id=checkpoint["checkpoint_id"],
+    )
+    group = store.append_action_group(
+        root_frame_id="root-1",
+        branch_id="root-1",
+        turn_id="turn-1",
+        kind="native_tools",
+        assistant_content="bounded repair",
+    )
+    store.bind_auto_mode_repair_execution_group(
+        repair_id,
+        action_group_id=group["group_id"],
+        idempotency_key=f"{repair_id}:bind",
+    )
+    return group
+
+
+def _finish_repair(
+    store: Store, repair_id: str, group: dict, *, after_version_ids: list[str]
+) -> None:
+    """Record one completed repair action, then seal the repair as completed."""
+
+    for event_type, extra in (
+        ("proposed", {}),
+        ("result", {"result": {"status": "completed"}}),
+    ):
+        store.append_action_event(
+            group_id=group["group_id"],
+            type=event_type,
+            action_id=f"{repair_id}-action",
+            tool_call_id=f"{repair_id}-action",
+            side_effect_class="workspace_write",
+            resource_keys=["workspace:result.txt"],
+            **extra,
+        )
+    attempt = store.allocate_execution_attempt(
+        group_id=group["group_id"], producing_cell_id=f"{repair_id}-cell"
+    )
+    store.mark_execution_attempt_started(attempt["attempt_id"])
+    store.mark_execution_attempt_response(attempt["attempt_id"])
+    store.mark_execution_attempt_capture(attempt["attempt_id"])
+    store.finish_execution_attempt(attempt["attempt_id"], terminal_state="completed")
+    store.complete_auto_mode_repair(
+        repair_id,
+        idempotency_key=f"{repair_id}:complete",
+        status="completed",
+        after_version_ids=after_version_ids,
+        execution_group_ids=[group["group_id"]],
+    )
+
+
+def test_run_projection_names_its_own_modes_rounds_and_unresolved_findings(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    _start(store)
+    frozen = {"result_review_mode": "auto_fix", "approvals_reviewer": "auto_review"}
+    # Nothing reviewed or repaired yet: no round, and no count to name.
+    assert _progress(store) == frozen
+
+    _record(store, "candidate-1", version_ids=["version-1"])
+    _review(store, "candidate-1", review_run_id="review-0", round_index=0, verdict=None)
+    assert store.project_auto_mode_run("root-1", "root-1")["run"]["status"] == (
+        "reviewing"
+    )
+    assert _progress(store) == {**frozen, "review_round": 0}
+    store.complete_auto_mode_review(
+        "review-0",
+        idempotency_key="review-0:complete",
+        status="completed",
+        verdict="issues",
+        assessment={"public_summary": "Two findings."},
+        findings=[_finding("finding-a", "major"), _finding("finding-b", "major")],
+    )
+    first_verdict = store.auto_mode_event_cursor("root-1", "root-1")
+
+    group = _start_repair(
+        store,
+        tmp_path,
+        repair_id="repair-0",
+        finding_ids=["finding-a"],
+        before_version_ids=["version-1"],
+    )
+    assert store.project_auto_mode_run("root-1", "root-1")["run"]["status"] == (
+        "repairing"
+    )
+    assert _progress(store) == {**frozen, "review_round": 0, "repair_round": 0}
+    _finish_repair(store, "repair-0", group, after_version_ids=["version-2"])
+
+    _record(store, "candidate-2", version_ids=["version-2"])
+    _review(
+        store,
+        "candidate-2",
+        review_run_id="review-1",
+        round_index=1,
+        verdict="issues",
+        findings=[
+            _finding("finding-c", "high"),
+            _finding("finding-d", "minor"),
+            _finding("finding-e", "info"),
+        ],
+    )
+    # The repair's execution-group binding is a repair_started event that
+    # names repair-0 again; it is not a second round.
+    assert _progress(store) == {**frozen, "review_round": 1, "repair_round": 0}
+
+    store.terminate_auto_mode_run(
+        "auto-run-1",
+        idempotency_key="terminal:issues",
+        status="completed_with_issues",
+        reason="completed_with_issues",
+        stop_reason="budget_exhausted",
+    )
+    # N counts the current candidate's latest verdict only, and only its
+    # material finding: candidate-1's two findings are not this candidate's.
+    assert _progress(store) == {
+        **frozen,
+        "review_round": 1,
+        "repair_round": 0,
+        "unresolved_finding_count": 1,
+    }
+
+    # A checkpoint prefix sees only the rounds it contains.
+    assert _progress(store, upto_event_cursor=first_verdict) == {
+        **frozen,
+        "review_round": 0,
+    }
+    # The overlay belongs to this read projection: export and share still
+    # reduce the bare run, so a package digest cannot move with it.
+    exported = store.export_auto_mode_projection("root-1", branch_id="root-1")
+    assert not set(_PROGRESS_FIELDS) & set(exported["runs"][0])
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "verdict", "severities", "expected"),
+    [
+        # Material findings only, the same rule the completion gate uses.
+        ("completed", "issues", ["critical", "material", "minor"], 2),
+        # No material finding: every finding of the verdict is an issue.
+        ("completed", "issues", ["minor", "info"], 2),
+        ("completed", "completed_with_issues", ["major"], 1),
+        # A pass, an unavailable review, or a verdict with no finding names
+        # no N; the run line then keeps its sentence without a count.
+        ("completed", "pass", ["minor"], None),
+        ("unavailable", "unavailable", ["major"], None),
+        ("completed", "issues", [], None),
+        # The candidate was never reviewed.
+        (None, None, [], None),
+    ],
+)
+def test_unresolved_count_comes_from_the_current_candidates_latest_verdict(
+    tmp_path, status, verdict, severities, expected
+):
+    store = _store(tmp_path)
+    _start(store)
+    _record(store, "candidate-1", version_ids=[])
+    if verdict is not None:
+        _review(
+            store,
+            "candidate-1",
+            review_run_id="review-0",
+            round_index=0,
+            verdict=verdict,
+            status=status,
+            findings=[
+                _finding(f"finding-{index}", severity)
+                for index, severity in enumerate(severities)
+            ],
+        )
+    store.terminate_auto_mode_run(
+        "auto-run-1",
+        idempotency_key="terminal",
+        status="completed_with_issues",
+        reason="completed_with_issues",
+    )
+    run = store.project_auto_mode_run("root-1", "root-1")["run"]
+    assert run["status"] == "completed_with_issues"
+    assert run.get("unresolved_finding_count") == expected
+    store.close()
+
+
+def test_a_later_verdict_on_the_same_candidate_replaces_the_earlier_count(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    _record(store, "candidate-1", version_ids=[])
+    _review(
+        store,
+        "candidate-1",
+        review_run_id="review-first",
+        round_index=0,
+        verdict="issues",
+        findings=[_finding("finding-1", "major"), _finding("finding-2", "major")],
+    )
+    _review(
+        store,
+        "candidate-1",
+        review_run_id="review-second",
+        round_index=0,
+        verdict="issues",
+        findings=[_finding("finding-3", "high")],
+    )
+    store.terminate_auto_mode_run(
+        "auto-run-1",
+        idempotency_key="terminal",
+        status="completed_with_issues",
+        reason="completed_with_issues",
+    )
+    assert _progress(store)["unresolved_finding_count"] == 1
+    # Only completed_with_issues names N; another terminal never does.
+    other = _store(tmp_path, "unavailable.db")
+    _start(other)
+    _record(other, "candidate-1", version_ids=[])
+    _review(
+        other,
+        "candidate-1",
+        review_run_id="review-first",
+        round_index=0,
+        verdict="issues",
+        findings=[_finding("finding-1", "major")],
+    )
+    other.terminate_auto_mode_run(
+        "auto-run-1",
+        idempotency_key="terminal",
+        status="review_unavailable",
+        reason="reviewer_inference_failed",
+    )
+    assert "unresolved_finding_count" not in _progress(other)
+    store.close()
+    other.close()
+
+
+def test_run_modes_come_from_its_frozen_start_never_the_live_selection(tmp_path):
+    store = _store(tmp_path)
+    _start(
+        store,
+        mode="off",
+        selection={
+            "preset": "off",
+            "result_review_mode": "off",
+            "approvals_reviewer": "auto_review",
+            "source": "frame",
+        },
+    )
+    approvals_only = {"result_review_mode": "off", "approvals_reviewer": "auto_review"}
+    assert _progress(store) == approvals_only
+    # Saving a different selection changes the conversation, not this run.
+    store.set_auto_mode_selection(
+        "frame",
+        "root-1",
+        {
+            "preset": "autonomous",
+            "result_review_mode": "auto_fix",
+            "approvals_reviewer": "auto_review",
+        },
+        expected_revision=0,
+    )
+    assert _progress(store) == approvals_only
+    store.close()
+
+    # The mode column and the frozen selection describe one start request.
+    # When they disagree, or a reviewer is outside the closed set, the run
+    # line is not told a guess.
+    contradiction = _store(tmp_path, "contradiction.db")
+    _start(
+        contradiction,
+        mode="review_only",
+        selection={
+            "preset": "off",
+            "result_review_mode": "auto_fix",
+            "approvals_reviewer": "sometimes",
+            "source": "frame",
+        },
+    )
+    assert _progress(contradiction) == {}
+    contradiction.close()
+
+
+def test_imported_run_projects_no_progress_fact(tmp_path):
+    projection = _verified_projection(tmp_path)
+    assert projection["review_runs"][0]["round_index"] == 0
+    target = _store(tmp_path, "imported-progress.db")
+    created = target.create_quarantined_import_session(
+        project_id="project-import-progress",
+        quarantine_value=_quarantine_value(),
+    )
+    root = created["root_frame_id"]
+    target.import_quarantined_auto_mode_projection(
+        projection,
+        root_frame_id=root,
+        project_id=created["project_id"],
+        branch_id=root,
+        version_id_map={"version-source": "version-imported"},
+    )
+    run = target.project_auto_mode_run(root, root)["run"]
+    assert run["status"] == "unverified_import"
+    # The historical claim is still there for provenance, but no mode, round,
+    # or count is projected from rows this daemon never verified.
+    assert run["mode"] == "auto_fix"
+    assert not set(_PROGRESS_FIELDS) & set(run)
+    target.close()
