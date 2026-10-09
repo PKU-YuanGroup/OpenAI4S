@@ -89,13 +89,14 @@ def _private_default_data_dir(path: Path):
     """Point every *default* config lookup at the capture's own data dir.
 
     The runner is handed an explicit Config, but some paths still resolve the
-    process-wide default: the judgment shadows read their switches through
-    `get_config()` (`judgment/task_mode_shadow.py`, `judgment/shadow.py`), and
-    with OPENAI4S_DATA_DIR unset that default is the developer's real
-    ~/.openai4s. On 2026-10-01 a `--check` run opened that database through
-    `run_message` -> `resolve_task_mode` and migrated it to an unreleased
-    schema. Inside this block the default resolves to the temp dir as well,
-    and both the variable and the cached default are restored on the way out.
+    process-wide default (the remote-GPU prompt note reads the BYOC host
+    registry under `get_config().data_dir`), and with OPENAI4S_DATA_DIR unset
+    that default is the developer's real ~/.openai4s. On 2026-10-01 a
+    `--check` run opened that database through `run_message` ->
+    `resolve_task_mode`, whose shadow then read `get_config()`, and migrated it
+    to an unreleased schema. Inside this block the default resolves to the
+    temp dir as well, and both the variable and the cached default are
+    restored on the way out.
     """
     import openai4s.config as config_mod
 

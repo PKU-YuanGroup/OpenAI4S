@@ -3,6 +3,13 @@
 ``submit`` never changes a verdict, never blocks the caller, and swallows
 every exception. When ``safety_shadow`` is off it returns immediately and
 starts no threads.
+
+Each gate hands over the Config it screened with, and the capability check
+and the job read that run's data dir. They used to read ``get_config()``,
+which outside the daemon is a data dir nobody chose for the run: a
+benchmark's delegated child created ``~/.openai4s`` here. Without a Config the
+shadow stays off and opens nothing (``judgment/task_mode_shadow.py`` has the
+same rule and the incident).
 """
 
 from __future__ import annotations
@@ -12,7 +19,10 @@ import os
 import queue
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
+
+if TYPE_CHECKING:
+    from openai4s.config import Config
 
 QUEUE_CAPACITY = 64
 WORKER_COUNT = 2
@@ -32,6 +42,7 @@ class _Job:
     kind: str
     state: dict[str, Any]
     existing_verdict: object
+    cfg: Config
 
 
 _lock = threading.Lock()
@@ -42,7 +53,8 @@ _atexit_registered = False
 _allow_workers = True
 _generation = 0
 _backend_factory: Callable[[], Any] | None = None
-_service: Any = None
+# ``(cfg, service)`` for the last run Config seen; reused only for that object.
+_service: tuple[Any, Any] | None = None
 
 _submitted = 0
 _dropped = 0
@@ -69,7 +81,7 @@ def _env_true(raw: str | None) -> bool:
     return raw is not None and raw in _TRUE
 
 
-def _capability_on() -> bool:
+def _capability_on(cfg: Config) -> bool:
     """Cheap enable check. Env kill-switch / env-on skip Store."""
 
     master = _env_token("OPENAI4S_EXPERIMENTAL_JUDGMENT")
@@ -79,9 +91,6 @@ def _capability_on() -> bool:
     if _env_true(master) and _env_true(cap):
         return True
     try:
-        from openai4s.config import get_config
-
-        cfg = get_config()
         from openai4s.judgment.flags import resolve
         from openai4s.store import get_store
 
@@ -94,14 +103,14 @@ def _capability_on() -> bool:
         return False
 
 
-def _live_config() -> Any:
+def _live_config(cfg: Config) -> Any:
     from dataclasses import replace
 
-    from openai4s.config import ExperimentalJudgmentFlags, get_config
+    from openai4s.config import ExperimentalJudgmentFlags
     from openai4s.judgment.settings import resolve_settings_config
     from openai4s.store import get_store
 
-    base = get_config()
+    base = cfg
     live = ExperimentalJudgmentFlags()
     if live != base.experimental_judgment:
         try:
@@ -111,25 +120,26 @@ def _live_config() -> Any:
     return resolve_settings_config(base, get_store(base.db_path))
 
 
-def _store() -> Any:
+def _store(cfg: Config) -> Any:
     from openai4s.store import get_store
 
-    return get_store(_live_config().db_path)
+    return get_store(cfg.db_path)
 
 
-def _get_service() -> Any:
+def _get_service(cfg: Config) -> Any:
     global _service
     with _lock:
-        if _service is not None:
-            return _service
+        if _service is not None and _service[0] is cfg:
+            return _service[1]
         from openai4s.host.judgment import JudgmentService
 
-        _service = JudgmentService(
-            cfg_provider=_live_config,
-            store_provider=_store,
+        service = JudgmentService(
+            cfg_provider=lambda: _live_config(cfg),
+            store_provider=lambda: _store(cfg),
             backend_factory=_backend_factory,
         )
-        return _service
+        _service = (cfg, service)
+        return service
 
 
 def _empty_kind_stats() -> dict[str, dict[str, int]]:
@@ -205,7 +215,7 @@ def _run_job(job: _Job) -> None:
     if template_id is None:
         _note_result(job.kind, None, "")
         return
-    result = _get_service().run(
+    result = _get_service(job.cfg).run(
         purpose=safety_templates.PURPOSE,
         template_id=template_id,
         state=job.state,
@@ -292,11 +302,23 @@ def _ensure_workers() -> None:
         _started = True
 
 
-def submit(kind: str, *, state: Mapping[str, Any], existing_verdict: object) -> None:
-    """Queue one shadow judgment. Returns immediately. Never raises."""
+def submit(
+    kind: str,
+    *,
+    state: Mapping[str, Any],
+    existing_verdict: object,
+    cfg: Config | None = None,
+) -> None:
+    """Queue one shadow judgment. Returns immediately. Never raises.
+
+    ``cfg`` is the Config the gate screened with; without one this is a no-op.
+    """
 
     try:
-        if not _capability_on():
+        if cfg is None:
+            # Never fall back to get_config(); see the module docstring.
+            return
+        if not _capability_on(cfg):
             return
         payload = dict(state)
         job = _Job(
@@ -304,6 +326,7 @@ def submit(kind: str, *, state: Mapping[str, Any], existing_verdict: object) -> 
             kind=str(kind),
             state=payload,
             existing_verdict=existing_verdict,
+            cfg=cfg,
         )
         _ensure_workers()
         try:

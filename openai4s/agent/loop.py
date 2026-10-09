@@ -917,7 +917,9 @@ class Agent:
         # through this same path with task_mode=None, so a child whose request
         # text trips a signal inherits only the guidance, never the gate.
         explicit = bool(self.task_mode is not None and str(self.task_mode).strip())
-        mode = resolve_task_mode(task, explicit=self.task_mode)
+        # `cfg` because the task-mode shadow reads this run's data dir, and a
+        # benchmark child's or an embedder's is not the process default.
+        mode = resolve_task_mode(task, explicit=self.task_mode, cfg=self.cfg)
         set_mode = getattr(self.dispatcher, "set_task_mode", None)
         if callable(set_mode):
             set_mode(mode.value if explicit else None)

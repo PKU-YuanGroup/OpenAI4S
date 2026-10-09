@@ -8,8 +8,10 @@ system that is supposed to refuse.
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,41 @@ def _check_expectations(observed: dict[str, Any], expect: dict[str, Any]) -> lis
     return problems
 
 
+@contextlib.contextmanager
+def _process_default_data_dir(path: Path) -> Iterator[None]:
+    """Answer ``get_config()`` with a Config on ``path`` for one case.
+
+    Every step hands production code the case's own Config, so nothing in a
+    case should resolve the process default. Something did: a delegation case
+    reached the judgment shadows, which read ``get_config()``, and with
+    OPENAI4S_DATA_DIR unset that opened and migrated a developer's real
+    ~/.openai4s (2026-10-08). With the default answered from a scratch dir,
+    such a lookup touches nobody's data whatever the environment says, and
+    ``run_case`` fails the case for writing there.
+
+    Only the cached singleton is swapped. OPENAI4S_DATA_DIR stays as it is:
+    the kernel sandbox reads it to deny cells the real instance's token and
+    database, and a scratch dir in its place would drop a custom real data dir
+    from that list for the length of the case.
+    """
+
+    from openai4s import config as config_mod
+
+    previous = config_mod._CONFIG
+    config_mod._CONFIG = config_mod.Config(data_dir=path)
+    try:
+        yield
+    finally:
+        config_mod._CONFIG = previous
+
+
+def _written_under(path: Path) -> list[str]:
+    """What exists under ``path``, which nothing was supposed to create."""
+    if not path.exists():
+        return []
+    return sorted(str(item.relative_to(path)) for item in path.rglob("*")) or ["."]
+
+
 def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseResult:
     started = time.time()
     # Resolve every step up front, before allocating anything or entering the
@@ -94,15 +131,20 @@ def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseRe
         temporary = tempfile.TemporaryDirectory(prefix="openai4s-benchmark-")
         root = Path(temporary.name)
     context = make_context(Path(root))
+    # Its own temp dir rather than one under `root`: a caller-supplied root can
+    # outlive a case, and a leftover from an earlier run must not fail this one.
+    scratch = tempfile.TemporaryDirectory(prefix="openai4s-benchmark-default-")
+    process_default = Path(scratch.name) / "data"
     observed: dict[str, Any] = {}
     failure: Exception | None = None
     try:
-        for name, step in resolved:
-            merged = {**case.inputs.get("*", {}), **case.inputs.get(name, {})}
-            observed.update(step(context, merged) or {})
-            # Steps that produce a package hand its path on by convention.
-            if "path" in observed:
-                context.state.setdefault("package_path", observed["path"])
+        with _process_default_data_dir(process_default):
+            for name, step in resolved:
+                merged = {**case.inputs.get("*", {}), **case.inputs.get(name, {})}
+                observed.update(step(context, merged) or {})
+                # Steps that produce a package hand its path on by convention.
+                if "path" in observed:
+                    context.state.setdefault("package_path", observed["path"])
     except SkipCase as skip:
         if temporary is not None:
             temporary.cleanup()
@@ -118,10 +160,27 @@ def run_case(workflow: Workflow, case: Case, root: Path | None = None) -> CaseRe
     except Exception as error:  # noqa: BLE001 - the case decides if this is right
         failure = error
     finally:
+        stray = _written_under(process_default)
+        scratch.cleanup()
         if temporary is not None:
             temporary.cleanup()
 
     duration = int((time.time() - started) * 1000)
+    if stray:
+        # Whatever the declared outcome: a refusal that also wrote into
+        # another data dir is not the refusal the case meant to watch.
+        return CaseResult(
+            case.id,
+            workflow.id,
+            case.outcome,
+            passed=False,
+            detail=(
+                "resolved the process-global data dir instead of the case's own "
+                f"Config and wrote {', '.join(stray[:5])} there"
+            ),
+            duration_ms=duration,
+            observed=observed,
+        )
     expects_error = case.outcome in ("failure", "permission_denied")
 
     if failure is not None and not expects_error:

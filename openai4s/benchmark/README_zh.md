@@ -13,7 +13,7 @@
 | `__init__.py` | 对外表面：workflow API、严格验收包 API，以及工具 bring-up API（`BringupError`、`seal_record`、`verify_bringup`）。调用方应从这里 import 这些契约，而不是直连实现模块。 |
 | `acceptance.py` | 加载并重放严格、带版本的下一轮验收包：恰好六条现场路径和七类安全动作；每项输出 expected/observed/pass/evidence/duration，并聚合明确写出分母的指标。 |
 | `model.py` | workflow 与 case **是什么**，以及从哪里读。清单用 JSON 而非 YAML，理由与内核一致——决定一次发布好不好的东西，不能要求先装一个第三方库才能读；而且它带版本，因为用例能被悄悄改动的基准，跨时间什么也衡量不了。 |
-| `runner.py` | 跑一个用例，并判定发生的事情是不是它所声明的。有意思的是这个判定而不是执行：声明的结果与观察到的结果对比，任一方向不一致都算失败。 |
+| `runner.py` | 跑一个用例，并判定发生的事情是不是它所声明的。有意思的是这个判定而不是执行：声明的结果与观察到的结果对比，任一方向不一致都算失败。每个用例运行时，`get_config()` 返回的都是指向一个临时目录的 Config；用例只要往那里写了任何东西就判失败：每一步交给生产代码的都是用例自己的 Config，往那里写说明有东西改去解析了进程默认目录。`OPENAI4S_DATA_DIR` 本身保持不动，因为 kernel 沙箱的禁读凭据清单就是从它算出来的。 |
 | `steps.py` | 各个 step 的实现，一个 step 名对应一个函数，登记在 `STEPS` 里。每个函数接收共享的 `Context` 与用例的 inputs，返回一个并入结果的 dict；抛异常是 step 报告「工作流走不下去」的方式，由 runner 判定它是否符合声明。`SkipCase` 留给宿主确实跑不了某一步的情况（没有 `Rscript`、没有 shell），那是跳过，不是悄悄算过。 |
 | `bringup.py` | 工具 bring-up 契约的校验器：纯 stdlib 检查冻结的 `bringup.json` 记录——自证封印、权重摘要与大小、磁盘上的 generation manifest、canary 解析与下游消费证明、准入、运行时与成本——外加评估方持有的 `expected_weights` 参考摘要缝，以及 `seal_record` 生产者半部。 |
 

@@ -5,12 +5,20 @@ is the W4-B-sized equivalent so the two packages do not share a file.
 Merger may fold ``submit`` into a common ``shadow.submit``; the public
 shape to preserve is:
 
-* ``submit(*, request, rule_mode, explicit)`` — never raises, never
+* ``submit(*, request, rule_mode, explicit, cfg)`` — never raises, never
   blocks the caller, no-op when the ``task_mode_shadow`` capability is
-  off or when ``explicit`` is true.
+  off, when ``explicit`` is true, or when no ``cfg`` is handed over.
 * audit event ``judgment_shadow`` with ``kind="task_mode"`` and
   ``{rule_mode, explicit, shadow_choice, probabilities, confidence,
   agree}``. The raw request text is never an audit field.
+
+``cfg`` is the Config of the run that resolved the mode, and both the
+capability check and the background judgment read that run's data dir. They
+used to read ``get_config()`` instead, which is only the run's data dir inside
+the daemon. A caller with its own (a benchmark case, a capture drive, any
+embedder) got ``~/.openai4s``: on 2026-10-08 a benchmark's delegated child
+opened a developer's real database here and migrated it to an unreleased
+schema. Without a ``cfg`` the shadow stays off and opens nothing.
 
 Queue capacity, two daemon workers, drop-when-full, and atexit draining
 match the W4-A convention.
@@ -21,7 +29,10 @@ from __future__ import annotations
 import atexit
 import queue
 import threading
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from openai4s.config import Config
 
 QUEUE_CAPACITY = 64
 WORKER_COUNT = 2
@@ -47,19 +58,32 @@ _SKIPPED_EXPLICIT = 0
 
 _BOUND_ENABLED: bool | None = None
 _BOUND_SERVICE: Any | None = None
-_DEFAULT_SERVICE: Any | None = None
+# The service for the last run Config seen, as ``(cfg, service)``. Reused only
+# for that same object (a daemon hands over one Config for every turn), so a
+# run's judgment never reads another run's data dir.
+_RUN_SERVICE: tuple[Any, Any] | None = None
 
 _ATEXIT_REGISTERED = False
 
 
-def submit(*, request: str, rule_mode: str, explicit: bool) -> None:
-    """Enqueue one shadow classify. Never raises. Never blocks."""
+def submit(
+    *,
+    request: str,
+    rule_mode: str,
+    explicit: bool,
+    cfg: Config | None = None,
+) -> None:
+    """Enqueue one shadow classify. Never raises. Never blocks.
+
+    ``cfg`` is the triggering run's Config; without one this is a no-op.
+    """
 
     try:
         _submit(
             request=str(request or ""),
             rule_mode=str(rule_mode),
             explicit=bool(explicit),
+            cfg=cfg,
         )
     except Exception:  # noqa: BLE001 - shadow must not affect the caller
         return
@@ -130,7 +154,7 @@ def resume_workers() -> None:
 def reset_for_tests() -> None:
     """Drain the queue, drop test binds, and zero counters. Daemon threads stay."""
 
-    global _BOUND_SERVICE, _BOUND_ENABLED, _DEFAULT_SERVICE
+    global _BOUND_SERVICE, _BOUND_ENABLED, _RUN_SERVICE
     global _GENERATION, _SUBMITTED, _DROPPED, _PROCESSED
     global _AGREE, _DISAGREE, _INDETERMINATE, _SKIPPED_EXPLICIT, _IN_FLIGHT
     resume_workers()
@@ -138,7 +162,7 @@ def reset_for_tests() -> None:
     with _STATE:
         _BOUND_SERVICE = None
         _BOUND_ENABLED = None
-        _DEFAULT_SERVICE = None
+        _RUN_SERVICE = None
         _GENERATION += 1
         _SUBMITTED = 0
         _DROPPED = 0
@@ -151,27 +175,29 @@ def reset_for_tests() -> None:
         _IDLE.notify_all()
 
 
-def _submit(*, request: str, rule_mode: str, explicit: bool) -> None:
+def _submit(
+    *, request: str, rule_mode: str, explicit: bool, cfg: Config | None
+) -> None:
     global _SUBMITTED, _DROPPED, _SKIPPED_EXPLICIT
     if explicit:
         with _STATE:
             _SKIPPED_EXPLICIT += 1
         return
-    if not _capability_enabled():
+    if not _capability_enabled(cfg):
         return
     _ensure_workers()
     with _STATE:
         generation = _GENERATION
         _SUBMITTED += 1
     try:
-        _QUEUE.put_nowait((generation, request, rule_mode))
+        _QUEUE.put_nowait((generation, request, rule_mode, cfg))
     except queue.Full:
         with _STATE:
             _DROPPED += 1
             _SUBMITTED -= 1
 
 
-def _capability_enabled() -> bool:
+def _capability_enabled(cfg: Config | None) -> bool:
     if _BOUND_ENABLED is not None:
         return _BOUND_ENABLED
     try:
@@ -181,40 +207,42 @@ def _capability_enabled() -> bool:
         cap = _strict_env_tristate("OPENAI4S_JUDGMENT_TASK_MODE_SHADOW")
         if master is False or cap is False:
             return False
+        if cfg is None:
+            # Never fall back to get_config(): outside the daemon the process
+            # default is a data dir nobody chose for this run.
+            return False
         if master is True and cap is True:
             return True
-        from openai4s.config import get_config
         from openai4s.judgment.flags import resolve
         from openai4s.store import get_store
 
-        cfg = get_config(initialize_dirs=False)
         store = get_store(cfg.db_path)
         return bool(resolve(cfg, store).task_mode_shadow.enabled)
     except Exception:  # noqa: BLE001 - off is the fail-safe
         return False
 
 
-def _service() -> Any:
+def _service(cfg: Config | None) -> Any | None:
     if _BOUND_SERVICE is not None:
         return _BOUND_SERVICE
-    global _DEFAULT_SERVICE
+    if cfg is None:
+        return None
+    global _RUN_SERVICE
     with _STATE:
-        if _DEFAULT_SERVICE is not None:
-            return _DEFAULT_SERVICE
-    from openai4s.config import get_config
+        if _RUN_SERVICE is not None and _RUN_SERVICE[0] is cfg:
+            return _RUN_SERVICE[1]
     from openai4s.host.judgment import JudgmentService
     from openai4s.judgment.settings import resolve_settings_config
     from openai4s.store import get_store
 
-    cfg = get_config()
     service = JudgmentService(
         lambda: resolve_settings_config(cfg, get_store(cfg.db_path)),
         lambda: get_store(cfg.db_path),
     )
     with _STATE:
-        if _DEFAULT_SERVICE is None:
-            _DEFAULT_SERVICE = service
-        return _DEFAULT_SERVICE
+        if _RUN_SERVICE is None or _RUN_SERVICE[0] is not cfg:
+            _RUN_SERVICE = (cfg, service)
+        return _RUN_SERVICE[1]
 
 
 def _ensure_workers() -> None:
@@ -245,10 +273,10 @@ def _worker_loop() -> None:
             _QUEUE.task_done()
             _PARKED.set()
             continue
-        if not isinstance(item, tuple) or len(item) != 3:
+        if not isinstance(item, tuple) or len(item) != 4:
             _QUEUE.task_done()
             continue
-        generation, request, rule_mode = item
+        generation, request, rule_mode, cfg = item
         if not isinstance(generation, int):
             _QUEUE.task_done()
             continue
@@ -258,7 +286,7 @@ def _worker_loop() -> None:
                 _IN_FLIGHT += 1
         try:
             if not stale:
-                _process(generation, str(request), str(rule_mode))
+                _process(generation, str(request), str(rule_mode), cfg)
         except Exception:  # noqa: BLE001 - a failed shadow is not the user's
             pass
         finally:
@@ -270,7 +298,7 @@ def _worker_loop() -> None:
                     _IDLE.notify_all()
 
 
-def _process(generation: int, request: str, rule_mode: str) -> None:
+def _process(generation: int, request: str, rule_mode: str, cfg: Config | None) -> None:
     with _STATE:
         if generation != _GENERATION:
             return
@@ -280,7 +308,9 @@ def _process(generation: int, request: str, rule_mode: str) -> None:
         shadow_agree,
     )
 
-    service = _service()
+    service = _service(cfg)
+    if service is None:
+        return
     result = service.run(
         purpose=PURPOSE,
         template_id=TEMPLATE_ID,
