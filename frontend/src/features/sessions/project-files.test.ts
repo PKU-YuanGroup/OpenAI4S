@@ -35,7 +35,7 @@ class Node {
   attrs: Record<string, string> = {};
   children: Node[] = [];
   onclick: (() => void) | null = null;
-  onkeydown: ((event: { key: string; preventDefault: () => void }) => void) | null = null;
+  onkeydown: ((event: { key: string; isComposing?: boolean; keyCode?: number; preventDefault: () => void }) => void) | null = null;
   constructor(public tag = "div") {}
   classList = {
     contains: (cls: string) => this.className.split(" ").includes(cls),
@@ -158,6 +158,21 @@ describe("read-only project files", () => {
     expect(nodes["#modal-body"]!.all().find((node) => node.tag === "pre")!.textContent).toBe("<script>alert(1)</script>");
     expect(nodes["#modal-body"]!.texts()).toContain(copy("previewLimited"));
     expect(nodes["#modal-body"]!.all().some((node) => node.tag === "script")).toBe(false);
+  });
+
+  it("does not navigate when Enter commits an IME composition", async () => {
+    vi.mocked(api).mockResolvedValueOnce(listing(""));
+    await openProjectFiles("p", "P");
+    const input = nodes["#modal-body"]!.all().find((node) => node.tag === "input")!;
+    input.value = "数据";
+    const preventDefault = vi.fn();
+    input.onkeydown!({ key: "Enter", isComposing: true, keyCode: 229, preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(api).toHaveBeenCalledTimes(1);
+    vi.mocked(api).mockResolvedValueOnce(listing("数据", [], ""));
+    input.onkeydown!({ key: "Enter", preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(api).toHaveBeenLastCalledWith(`/projects/p/files?path=${encodeURIComponent("数据")}`);
   });
 
   it("does not let a late preview replace a newer directory read", async () => {

@@ -282,10 +282,9 @@ class ProjectHistoryAutosave:
                     first_error = saved
             outcome = first_error or result
             with self._condition:
+                # Each root keeps its own outcome: a sibling's failure must not
+                # veto deleting a session whose own snapshot was published.
                 self._project_results[pid] = outcome
-                if first_error is not None:
-                    for root in roots:
-                        self._results[root] = first_error
             if (
                 pid in complete_projects
                 and first_error is None

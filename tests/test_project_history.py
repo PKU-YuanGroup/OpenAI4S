@@ -364,3 +364,61 @@ def test_workspace_scan_bounds_directories_and_records_omission(tmp_path, monkey
     result = service.sync_session(sid)
     assert result["state"] == "saved", result
     assert {"path": "workspace", "reason": "file_count_limit"} in result["omissions"]
+
+
+def test_omitted_file_does_not_spend_the_snapshot_budget(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    (workspace / "result.csv").unlink()
+    (workspace / "a-large.bin").write_bytes(b"x" * 200)
+    (workspace / "b-small.txt").write_text("small\n")
+    monkeypatch.setattr(history, "MAX_SESSION_BYTES", 100)
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    assert result["omissions"] == [
+        {"path": "workspace/a-large.bin", "reason": "session_size_limit"}
+    ]
+    files = service.read_session(pid, sid)["files"]
+    assert [row["path"] for row in files] == ["workspace/b-small.txt"]
+
+
+def test_artifact_checksum_mismatch_is_a_named_omission(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    snapshot = cfg.data_dir / "artifact-versions" / "saved.txt"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(b"changed after capture")
+    store.record_cell_artifact(
+        path=str(workspace / "report.txt"),
+        filename="report.txt",
+        content_type="text/plain",
+        size_bytes=8,
+        checksum=hashlib.sha256(b"captured").hexdigest(),
+        producing_cell_id="cell-mismatch",
+        frame_id=sid,
+        root_frame_id=sid,
+        project_id=pid,
+        snapshot_path=str(snapshot),
+    )
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    reasons = {item["reason"] for item in result["omissions"]}
+    assert "artifact_checksum_mismatch" in reasons
+    assert "unsafe_missing_or_oversized_file" not in reasons
+
+
+def test_transient_status_read_error_is_not_remembered(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    assert service.sync_session(sid)["state"] == "saved"
+    original = history._Tree.names
+    calls = {"count": 0}
+
+    def flaky(self, path, limit=history.MAX_REVISIONS):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError("transient")
+        return original(self, path, limit)
+
+    monkeypatch.setattr(history._Tree, "names", flaky)
+    assert service.status(pid)["state"] == "error"
+    recovered = service.status(pid)
+    assert recovered["enabled"] is True
+    assert recovered["state"] == "saved" and recovered["error"] is None

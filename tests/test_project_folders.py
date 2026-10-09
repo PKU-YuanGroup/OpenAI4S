@@ -154,6 +154,18 @@ def test_project_source_cannot_overlap_daemon_state_or_output_workspace(tmp_path
             validate_folder_path(str(folder), cfg)
 
 
+def test_history_directories_cannot_become_project_folders(tmp_path):
+    archive = tmp_path / "research" / ".openai4s"
+    (archive / "sessions").mkdir(parents=True)
+    for folder in (archive, archive / "sessions"):
+        with pytest.raises(ProjectFolderError) as refused:
+            validate_folder_path(str(folder))
+        assert refused.value.code == "project_folder_history"
+    assert validate_folder_path(str(tmp_path / "research")) == str(
+        (tmp_path / "research").resolve()
+    )
+
+
 def test_missing_or_replaced_folder_is_not_recreated_or_retargeted(tmp_path):
     cfg = Config(data_dir=tmp_path / "daemon")
     store = get_store(cfg.db_path)

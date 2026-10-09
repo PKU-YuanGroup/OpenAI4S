@@ -168,6 +168,27 @@ def test_failed_session_stays_failed_after_other_session_settings_and_restart():
 
 
 @pytest.mark.stubbed_backend
+def test_sibling_failure_does_not_become_another_sessions_result():
+    autosave, service, _store = fake_autosave(debounce=0.2)
+    original = service.sync_session
+
+    def fail_two(root, *, workspace=None, branch_id=None):
+        if root == "two":
+            return {"state": "error", "error": "session two failed"}
+        return original(root, workspace=workspace, branch_id=branch_id)
+
+    service.sync_session = fail_two
+    try:
+        # Both roots land in one debounced batch, as when a turn in `two`
+        # ends just before `one` is deleted.
+        autosave.schedule_session("two")
+        assert autosave.flush_session("one")["state"] == "saved"
+        assert autosave.status("project")["state"] == "error"
+    finally:
+        autosave.close()
+
+
+@pytest.mark.stubbed_backend
 def test_startup_and_shutdown_sweep_all_sessions_with_actual_workspace():
     autosave, service, _store = fake_autosave()
     autosave.schedule_all()

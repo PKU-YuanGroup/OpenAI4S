@@ -2041,6 +2041,9 @@ class HostDispatcher:
             )
         except Exception:  # noqa: BLE001 - audit metadata stays total
             audit_resources = [f"host:{method}"]
+        # Project tools skip `tool_catalog()`: it materializes the session
+        # workspace, which must not be created inside a project source folder
+        # before `_project_files()` refuses the overlap.
         audit_side_effect = (
             str(control_tool.side_effect_class)
             if control_tool is not None and method in _PROJECT_FILE_METHODS
@@ -2323,8 +2326,11 @@ class HostDispatcher:
                         ok = False
                         return result
                 gate = permission_broker.gate(**gate_arguments)
-                permission_decision_id = gate.get("decision_id") or gate.get(
-                    "continuation_decision_id"
+                # Keep an alias approval when the main gate decided by rule.
+                permission_decision_id = (
+                    gate.get("decision_id")
+                    or gate.get("continuation_decision_id")
+                    or permission_decision_id
                 )
                 if not gate.get("allow", False):
                     msg = gate.get("message") or "denied by user"

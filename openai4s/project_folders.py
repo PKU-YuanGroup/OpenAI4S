@@ -56,6 +56,14 @@ def validate_folder_path(value: Any, cfg: Any = None) -> str | None:
         raise ProjectFolderError(404, "project folder not found") from error
     if is_secret_path(str(resolved)):
         raise ProjectFolderError(403, "credential directories cannot be projects")
+    if any(part.casefold() == ".openai4s" for part in resolved.parts):
+        # An archive holds other conversations; linking it would expose them
+        # to project tools and nest a second archive inside the first.
+        raise ProjectFolderError(
+            400,
+            "project history directories cannot be project folders",
+            "project_folder_history",
+        )
     if cfg is not None:
         data_dir = Path(cfg.data_dir).expanduser().resolve()
         if (
@@ -93,12 +101,18 @@ class ReadOnlyProjectFiles(WorkspaceFileService):
 
     def __init__(self, root: Path):
         self._project_root = Path(root)
+        self._validated = False
         super().__init__(data_dir=root, frame_id=lambda: None)
 
     def workspace(self) -> Path:
-        canonical = validate_folder_path(str(self._project_root))
-        if canonical != str(self._project_root):
-            raise ProjectFolderError(409, "project folder changed; select it again")
+        # Instances are operation-scoped, so validating once per operation keeps
+        # the "folder changed" refusal without a realpath walk per candidate;
+        # the no-follow descriptor chain still pins the root on every open.
+        if not self._validated:
+            canonical = validate_folder_path(str(self._project_root))
+            if canonical != str(self._project_root):
+                raise ProjectFolderError(409, "project folder changed; select it again")
+            self._validated = True
         return self._project_root
 
     @staticmethod

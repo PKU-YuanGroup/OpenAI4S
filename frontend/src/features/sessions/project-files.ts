@@ -170,6 +170,8 @@ export async function openProjectFiles(projectId: string, projectName: string): 
   toolbar.appendChild(up);
   toolbar.appendChild(button(copy("refresh"), () => { void showDirectory(directory); }));
   pathInput.onkeydown = (event) => {
+    // Enter that commits an IME candidate must not navigate to a partial path.
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") {
       event.preventDefault();
       void showDirectory(pathInput.value.trim());

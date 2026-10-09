@@ -576,8 +576,9 @@ class ProjectHistoryService:
             try:
                 with _Tree(base) as source:
                     data = source.read(relative.as_posix(), MAX_FILE_BYTES)
-                total += len(data)
-                if total > MAX_SESSION_BYTES:
+                # Only retained files spend the budget; an omitted large file
+                # must not crowd out smaller ones after it.
+                if total + len(data) > MAX_SESSION_BYTES:
                     omissions.append(
                         {"path": record["path"], "reason": "session_size_limit"}
                     )
@@ -587,7 +588,13 @@ class ProjectHistoryService:
                     record.get("expected_sha256")
                     and record["expected_sha256"] != digest
                 ):
-                    raise ProjectHistoryError("artifact checksum mismatch")
+                    omissions.append(
+                        {
+                            "path": record["path"],
+                            "reason": "artifact_checksum_mismatch",
+                        }
+                    )
+                    continue
                 try:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError:
@@ -608,6 +615,7 @@ class ProjectHistoryService:
             # A corrupt history object is not a source-file omission. Refuse
             # publication so a failure cannot stamp a successful archive.
             tree.write(".openai4s/objects/" + digest, data, immutable=True)
+            total += len(data)
             record.pop("expected_sha256", None)
             files.append({**record, "sha256": digest, "size_bytes": len(data)})
         settings = {
@@ -851,7 +859,9 @@ class ProjectHistoryService:
                     **self._states.get(pid, {}),
                 }
             except Exception as error:
-                return {"enabled": False, **self._error(pid, error)}
+                # A read failure is not a save outcome; remembering it would
+                # keep reporting the error after reads recover.
+                return {"enabled": False, **self._error(pid, error, remember=False)}
 
     def list_sessions(self, pid: str) -> dict:
         with _LOCK:
