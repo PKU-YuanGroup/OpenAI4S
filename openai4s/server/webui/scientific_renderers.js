@@ -171,18 +171,46 @@
     return "other";
   }
 
+  // A recognised extension names the format outright, for every line of the
+  // file.  Content is only consulted when the name says nothing: a wide line
+  // is not evidence against its own name, and BED8–12 are ordinary BED (three
+  // required fields, then nine ordered optional ones).
+  function genomeFormatFromName(lower) {
+    if (/\.vcf(?:\.gz)?$/.test(lower)) return "VCF";
+    if (/\.gtf$/.test(lower)) return "GTF";
+    if (/\.gff3?$/.test(lower)) return "GFF";
+    if (/\.bedgraph$/.test(lower)) return "bedGraph";
+    if (/\.bed$/.test(lower)) return "BED";
+    return "";
+  }
+
+  const BARE_NUMBER = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i;
+
+  // Each test rests on a column the formats cannot share.  A VCF ALT (5th) or
+  // INFO (8th) column is never a bare number, where BED keeps its score and
+  // thickEnd; a GFF 7th column is always a strand, where BED keeps thickStart.
+  function sniffGenomeFormat(fields) {
+    if (fields.length >= 8 && /^\d+$/.test(fields[1]) && fields[3] && fields[4]
+      && !BARE_NUMBER.test(fields[4]) && !BARE_NUMBER.test(fields[7])) return "VCF";
+    if (fields.length >= 9 && /^[-+.?]$/.test(fields[6])) return "GFF";
+    return "BED";
+  }
+
   function parseGenome(text, filename) {
     const lower = String(filename || "").toLowerCase();
     const features = [];
     let invalid = 0;
-    let format = /\.vcf(?:\.gz)?$/.test(lower) ? "VCF" : /\.(gff3?|gtf)$/.test(lower) ? "GFF" : /\.bedgraph$/.test(lower) ? "bedGraph" : "BED";
+    const named = genomeFormatFromName(lower);
+    let format = named || "BED";
     for (const raw of normalizeLines(text)) {
       const line = raw.trim();
       if (!line || line[0] === "#" || /^track\s|^browser\s/i.test(line)) continue;
       const fields = raw.split("\t");
+      // An unnamed file reads as BED until one line proves VCF or GFF, and
+      // keeps that format for the rest of the file.
+      if (!named && format === "BED") format = sniffGenomeFormat(fields);
       let feature = null;
-      if (format === "VCF" || (fields.length >= 8 && /^\d+$/.test(fields[1] || "") && fields[3] && fields[4])) {
-        format = "VCF";
+      if (format === "VCF") {
         const pos = Number(fields[1]);
         const ref = fields[3] || "";
         if (Number.isFinite(pos)) feature = {
@@ -190,8 +218,7 @@
           label: fields[2] && fields[2] !== "." ? fields[2] : `${ref}>${fields[4] || "?"}`,
           type: "variant", strand: "", score: fields[5] || "",
         };
-      } else if (format === "GFF" || fields.length >= 9) {
-        format = /\.gtf$/.test(lower) ? "GTF" : "GFF";
+      } else if (format === "GFF" || format === "GTF") {
         const start = Number(fields[3]); const end = Number(fields[4]);
         if (Number.isFinite(start) && Number.isFinite(end)) feature = {
           chrom: fields[0], start: Math.max(0, start - 1), end,
