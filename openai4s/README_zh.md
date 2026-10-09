@@ -14,6 +14,8 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 
 | 文件 | 职责 |
 | --- | --- |
+| [`project_folders.py`](project_folders.py) | 单机本地项目文件夹的显式只读授权、根目录校验，以及不创建目录的安全源文件读取。 |
+| [`project_history.py`](project_history.py) | 在项目 `.openai4s/` 保存可迁移对话、不可变文件版本和真实保存状态；历史记录不恢复执行权限。 |
 | [`artifact_paths.py`](artifact_paths.py) | 共享产物捕获可见性规则与数据集目标预检。 |
 | [`__init__.py`](./__init__.py) | 声明包名与版本。导入它不会启动任何服务。 |
 | [`__main__.py`](./__main__.py) | 让 `python -m openai4s` 可用，转交给 CLI 入口。 |

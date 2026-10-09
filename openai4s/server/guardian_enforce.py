@@ -130,6 +130,11 @@ _FILE_PATH_ARGUMENTS = {
     "glob": "path",
     "grep": "path",
     "list_dir": "path",
+    "project_read_file": "path",
+    "project_list_dir": "path",
+    "project_glob": "path",
+    "project_grep": "path",
+    "project_import_file": "source_path",
     "web_download": "path",
     "science_import_dataset": "path",
     "save_artifact": "path",
@@ -141,6 +146,8 @@ _DIRECT_PATH_TARGET_TOOLS = frozenset(
         "write_file",
         "edit_file",
         "list_dir",
+        "project_read_file",
+        "project_list_dir",
         "save_artifact",
     }
 )
@@ -148,12 +155,17 @@ _DIRECT_PATH_TARGET_TOOLS = frozenset(
 # canonical arguments do not expose that path, an unattended reviewer cannot
 # safely infer it from the domain/version target and must fail closed.
 _PATH_REQUIRED_FOR_REVIEW = frozenset(
-    {"web_download", "science_import_dataset", "materialise_artifact"}
+    {
+        "web_download",
+        "science_import_dataset",
+        "materialise_artifact",
+        "project_import_file",
+    }
 )
 # ``grep`` discovers and opens files only after approval. A base directory is
 # not enough to apply the unattended basename tier to every eventual read, so
 # its data-dependent file set needs a human review.
-_DYNAMIC_FILE_READ_TOOLS = frozenset({"grep"})
+_DYNAMIC_FILE_READ_TOOLS = frozenset({"grep", "project_grep"})
 
 
 def _file_path_argument(

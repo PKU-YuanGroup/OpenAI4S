@@ -91,6 +91,12 @@ export async function navigationChecks(page, api) {
     await page.locator("#proj-btn").click();
     await page.locator("#proj-menu .proj-item").filter({ hasText: p.name }).click();
   };
+  // The menu opens the chosen project's conversation: the visible
+  // conversation, its project and its source folder never diverge.
+  const opened = (p) => waitUntil(`${p.name} conversation opened`, async () => {
+    const state = await page.evaluate(() => ({ id: S.currentId, project: S.project }));
+    return state.project === p.pid && p.frames.includes(state.id);
+  });
   const rows = async (p, count) => {
     await waitUntil(`${p.name} owns ${count} sidebar rows`, async () => {
       const ids = await page.locator("#session-list .session").evaluateAll((nodes) => nodes.map((node) => node.dataset.frameId));
@@ -124,8 +130,7 @@ export async function navigationChecks(page, api) {
     try {
       await page.locator("#session-more").click();
       await waitUntil("A page two pending", oldPage.waiting);
-      await select(b); await rows(b, 100);
-      await page.locator(`.art[data-artifact-id="${upload.body.artifact_id}"]`).waitFor();
+      await select(b); await rows(b, 100); await opened(b);
       newPage = await holdResponse(page, sessionRead(b, true));
       await page.locator("#session-more").click();
       await waitUntil("B page two pending", newPage.waiting);
@@ -266,12 +271,16 @@ export async function navigationChecks(page, api) {
       await waitUntil("history navigation directory pending", failedProject.waiting);
       recoveredReads.clear();
       await failedProject.finish({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "retained project directory failed" }) });
-      await page.locator('[data-read-error="sessions"]').waitFor();
+      // The failure is reported, and the sidebar returns to the retained
+      // conversation's project instead of showing B's failed directory.
+      await page.locator("#composer-hint").filter({ hasText: b.name }).waitFor();
+      await rows(a, 100);
       await waitUntil("failed project open recovers retained history and Files", () => recoveredReads.has("messages") && recoveredReads.has("artifacts"));
       await page.locator(`.art[data-artifact-id="${upload.body.artifact_id}"]`).waitFor();
       await oldHistory.finish();
       assert.equal(await page.evaluate(() => S.currentId), a.frames[0]);
-      assert.equal(await page.evaluate(() => S.project), b.pid);
+      // The retained conversation keeps its own project (and source folder).
+      assert.equal(await page.evaluate(() => S.project), a.pid);
       assert.equal(new URL(page.url()).pathname, `/projects/${b.pid}`);
       assert.equal(framePosts, 0);
     } finally {
@@ -297,6 +306,7 @@ export async function navigationChecks(page, api) {
         await waitUntil("second creation response held", secondCreation.waiting);
         const second = secondCreation.body().id;
         assert.ok(second && first !== second);
+        a.frames.push(first, second);
         if (order === "first-read") {
           await firstRead.finish();
           await secondCreation.finish();
@@ -319,9 +329,8 @@ export async function navigationChecks(page, api) {
     await page.evaluate(({ fid, pid }) => window.openConversation(fid, pid), { fid: a.frames[0], pid: a.pid });
     if (!await page.locator(".files-search").isVisible()) await page.locator("#files-btn").click();
     await page.locator(`.art[data-artifact-id="${upload.body.artifact_id}"]`).waitFor();
-    // Sidebar B deliberately retains frame A and its real A address.
-    await select(b); await rows(b, 100);
-    await page.locator(`.art[data-artifact-id="${upload.body.artifact_id}"]`).waitFor();
+    // Frame A keeps its own project and its real A address.
+    await rows(a, 100);
     const retainedUrl = page.url();
     let refreshed = 0;
     const observeRecovery = (response) => {
@@ -339,8 +348,8 @@ export async function navigationChecks(page, api) {
       assert.equal(await page.evaluate(() => S.currentId), a.frames[0]);
       await page.locator("#composer-hint").filter({ hasText: "injected creation failure" }).waitFor();
       assert.equal(page.url(), retainedUrl);
-      assert.equal(await page.evaluate(() => S.project), b.pid);
-      await rows(b, 100);
+      assert.equal(await page.evaluate(() => S.project), a.pid);
+      await rows(a, 100);
       assert.equal(framePosts, 5);
     } finally {
       await page.unroute("**/api/v1/frames", rejectCreation);

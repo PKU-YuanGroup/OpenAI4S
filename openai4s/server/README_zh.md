@@ -47,6 +47,9 @@ gateway.py
 
 | 文件 | 职责 |
 | --- | --- |
+| [`project_folder_routes.py`](project_folder_routes.py) | 经认证、仅回环连接可用的文件夹选择、项目目录浏览和有界 UTF-8 预览，复用工作区文件描述符与秘密文件边界。团队与远程部署不能绑定任意主机目录。 |
+| [`project_history_autosave.py`](project_history_autosave.py) | 持久化 Web 变更后的合并后台保存、启动补存、关闭落盘，以及删除前保留记录。 |
+| [`project_history_routes.py`](project_history_routes.py) | 本地历史目录与状态、手动保存、只读版本查看和校验后的文件下载。 |
 | [`__init__.py`](__init__.py) | 稳定的包门面，导出 `build_server` 与 `serve`。 |
 | [`action_timeline.py`](action_timeline.py) | 把规范的 Action Ledger 投影成 UI 真正看到的 Timeline。一条记录足以说清：跑的是什么、怎么结束的、用掉哪些权限、花了多少用量、引用了哪些 Artifact，而且这些内容都有界、都经过脱敏。供应商的 `wire_state` 和原始参数字符串被刻意省略，避免有人把一个调试端点变成凭据或协议的转储口。计划模式那一轮的用户分组以任务命名，而不是以任务前面的计划模式提示命名。 |
 | [`attention.py`](attention.py) | 跨 Session 的只读「需要处理」聚合。把 running/queued 执行、待批准、可恢复失败、view-only/blocked 会话，以及 live/unknown 远程计算合成固定 shape 的卡片。team 可见性在聚合、排序、limit 之前生效。`target.surface`/`dock` 是闭集，服务端不返回任意 URL。GET 零副作用：不 spawn kernel、不打 provider、不 retry/approve/harvest。首版不建物化表。 |

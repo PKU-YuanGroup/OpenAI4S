@@ -15,6 +15,18 @@ scripts.
 - **Projects and sessions** — folder/date grouping, deep links, session search,
   command palette, rename/delete, and background turns that survive a closed
   tab.
+- **Local project folders** — bind a project to an existing directory through
+  **New project / Project settings → Local folder → Browse**. **Project files**
+  in the project menu browses nested directories and previews text files.
+  The agent can list, search, and read the selected folder on demand, then
+  import individual data files into its session workspace for Python/R analysis.
+  The folder tools are read-only; generated results, checkpoints, and session
+  deletion remain confined to the managed session workspace. This feature is
+  available on a local, single-user daemon; the picker shows the daemon's
+  filesystem. Binding a folder does not upload or preload its whole contents.
+  Folders must be inside the home directory, the temporary directory, a
+  mounted volume, or a directory listed in `OPENAI4S_PROJECT_ROOTS`
+  (see [Configuration](configuration.md)).
 - **Live turns** — prose, semantic steps, permission pauses, plans, Cell output,
   and artifacts stream over WebSocket. Reopening an in-flight session replays
   the bounded current-turn buffer; completed history reloads over REST.
@@ -166,6 +178,89 @@ Completed Notebook outputs use confirmed immutable Artifact versions for figures
 JSON tables use the union of object fields in first-seen order, including keys after the 5000-row display limit; at most 100 columns are shown. Mixed arrays retain their complete original JSON instead of dropping rows. Raw text over 300000 characters starts with a marked preview; expanding uses the already fetched text and the download retains the full version.
 
 Customize Diagnostics opens with a passive status read. Explicit checks show each item's status, detail and remedy, with known model/network/compute settings links. Facts are collapsed and limited to 20 keys and 500 characters per item. Results retain their receipt time across settings tabs; a successful configuration save marks them for rechecking. A failed check keeps prior results visibly marked as previous. Suggestions are never executed automatically.
+
+### Local folder analysis / 本地项目文件夹分析
+
+在“新建项目”或“项目设置”中填写本地文件夹路径，或点击“浏览”逐层选择文件夹。
+保存后，从项目菜单打开“项目文件”即可查看子目录和文本预览。新建该项目下的会话，
+例如输入“找到子目录中的 CSV，统计各组的均值并画图”；智能体会按需查找文件，
+把选中的数据导入会话工作区，再执行分析。无需逐个上传整个目录。
+
+本地文件夹中的业务文件是只读数据来源；此功能不会把原始目录作为会话输出目录。
+分析产物仍出现在会话的文件面板中，删除项目、会话或回退检查点不会删除原始目录。
+文件夹绑定保存后可重新打开，也可以在项目设置中清空路径解除绑定。
+目录遍历和读取有资源上限；符号链接、凭据文件及不安全别名会被拒绝或过滤。
+目录和文件是按需读取的，不表示全部文件已被模型读取。
+文件夹选择器展示运行 OpenAI4S 的电脑上的目录；该入口只适用于本机单用户服务。
+项目文件夹须位于主目录、系统临时目录、外接卷目录（macOS 的 `/Volumes`，
+Linux 的 `/media`、`/mnt`、`/run/media`）之下，或位于 `OPENAI4S_PROJECT_ROOTS`
+列出的目录（用 `:` 分隔，Windows 用 `;`）之下；`/`、`/etc` 等系统目录会被拒绝。
+
+绑定文件夹后，OpenAI4S 会在该文件夹下创建 `.openai4s/`，自动保留对话、
+执行代码与输出、会话文件版本以及项目名称、说明和上下文。这个专用目录是
+源目录内唯一的自动写入位置；API Key、连接凭据和全局配置不写入项目设置。
+项目菜单的“本地历史”显示保存目录、最后保存时间和错误，并提供“立即保存”。
+打开历史会话可切换保存版本，查看对话、代码、设置，并下载当时的文件。
+文件因安全规则或大小限制未保存时，会显示遗漏清单。
+
+每个内容版本保留独立清单，相同文件内容按 SHA-256 去重。
+每次快照记录当前活动分支的对话、代码单元和工作区；之前已保存的分支版本仍可查看，
+尚未激活或保存的分支不保证包含在本地历史中。
+删除应用内的会话或项目后，本地历史仍保留；重新绑定原文件夹可再次查看。
+“继续对话”仅对当前安装中仍存在的同项目会话显示，并打开其当前状态。
+旧版本和另一安装的记录是只读回溯资料，不会自动执行代码、恢复内核变量或授权。
+`.openai4s/` 默认带有忽略自身内容的 `.gitignore`，也不会混入智能体的项目输入搜索。
+当前保存上限为单文件 32 MiB、每个快照的文件合计 128 MiB、整个历史目录 512 MiB
+（至多 20,000 个条目），每个快照至多 1,000 个文件、5,000 条消息和 5,000 个代码单元，
+每个会话至多 1,000 个版本。达到上限会显示失败或遗漏，不会删除旧版本腾空间。
+达到历史目录上限后，删除前的最后保存无法成功，删除会被拒绝；此时可在项目设置中
+解除本地文件夹绑定后再删除，已有历史仍保留在文件夹中。
+历史记录是持久化数据库的自动副本，强制终止进程时可能落后于最后一次写入；
+再次启动会从仍存在的数据库补存。手动“立即保存”会等待保存结果。
+删除前最后保存失败时，会保留原会话并提示重试，避免丢失未归档内容。
+
+Linked projects automatically keep local history in `<project>/.openai4s/`.
+The **Local history** menu shows actual save status, supports an explicit save,
+and opens saved conversations, code, settings and downloadable file versions.
+Project name, description and context are preserved; provider credentials and
+global configuration are excluded. Immutable revisions reference deduplicated
+SHA-256 file objects, with omissions shown when a file cannot be retained.
+Each snapshot covers the active branch's conversation, cells and workspace.
+Previously saved branch revisions remain available; branches never activated
+or saved are not guaranteed to appear in local history.
+Deleting a project or conversation in the application keeps this directory.
+Relinking it in another installation allows read-only inspection; it does not
+restore a live kernel or import execution permissions. Continue opens only a
+session still present in the current project, at its current state.
+Retention is bounded: 32 MiB per file, 128 MiB of files per snapshot, 512 MiB
+and 20,000 entries per project archive, 1,000 files and 5,000 messages/cells
+per snapshot, and 1,000 revisions per session. Limits produce a visible
+failure or omission; they never silently prune earlier revisions. Once an
+archive limit is reached the final save before a deletion cannot succeed, so
+the deletion is refused; unlink the project folder in Project settings to
+delete without archiving (the existing history stays in the folder). Autosave is a secondary copy of
+the live database and may lag an abrupt process exit; startup retries from
+the retained database. A failed final save blocks deletion while keeping the
+original session available for retry.
+
+The agent uses `project_list_dir`, `project_glob`, `project_grep`, and
+`project_read_file` with paths relative to the current session's project.
+`project_import_file` copies a chosen file into the managed workspace before
+analysis. For example, a Python Cell can run:
+
+```python
+import pandas as pd
+
+item = host.project_import_file("data/measurements.csv")
+table = pd.read_csv(item["path"])
+print(table.describe())
+```
+
+R analysis can read the imported workspace file after the agent imports it
+through the native tool. A new import reads the source again; an existing
+import is a snapshot, not a live filesystem mount. Choosing a project in the
+project menu opens that project's conversation, so its source folder matches
+the conversation used for analysis.
 
 ## Notebook lifecycle and truthfulness
 

@@ -168,6 +168,7 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Bounded Web background-cell receipts. Written before the worker
         # starts; a later daemon does not replay an unfinished row.
         "background_exec_receipts",
+        "project_source_folder",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -2174,7 +2175,7 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     try:
         rows = read_rows(upgraded)
         assert secure_delete_mode(upgraded._conn) == secure_before
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 34
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 35
         assert version_33_names(upgraded) == ["redact_judge_host_call_args"]
     finally:
         upgraded.close()
@@ -2237,3 +2238,19 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     finally:
         rerun.close()
     assert_disk_has_no_sentinel()
+
+
+def test_project_folder_column_survives_another_branchs_version_35(tmp_path):
+    """Version numbers are per branch; the idempotent column is ensured anyway."""
+    path = Config(data_dir=tmp_path).db_path
+    store = get_store(path)
+    store._conn.execute("ALTER TABLE projects DROP COLUMN folder_path")
+    store.close()
+    reopened = get_store(path)
+    try:
+        project = reopened.create_project(name="linked", folder_path=str(tmp_path))
+        assert reopened.get_project(project["project_id"])["folder_path"] == str(
+            tmp_path
+        )
+    finally:
+        reopened.close()

@@ -60,10 +60,15 @@ class GlobFilesTool(Tool):
         # order, bounded memory.
         matches = BoundedSelection(_MAX_MATCHES)
         open_candidate = workspace.verified_read_opener()
+        # A context may exclude whole subtrees (project history) before they
+        # count against the scan budget.
+        excluded = getattr(workspace, "excluded_from_walk", None)
         scanned = 0
         scan_truncated = False
         deadline = time.monotonic() + MAX_SCAN_SECONDS
         for path in base.glob(pattern):
+            if excluded is not None and excluded(path):
+                continue
             scanned += 1
             # Seconds as well as entries: see `MAX_SCAN_SECONDS`.
             if scanned > MAX_SCAN_ENTRIES or time.monotonic() > deadline:

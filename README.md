@@ -257,7 +257,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | doc | what's inside |
 |---|---|
 | [**Startup guide**](docs/startup-guide.md) | macOS walkthrough: install the v0.3.0 preview image (Apple Silicon, ad-hoc signed, with its Gatekeeper steps) or from PyPI, model setup, and one-key Doubao Search authorization (with Tavily/keyless backups) |
-| [**Upgrading**](docs/upgrading.md) | Newest first. The next release (schema 32 → 34): stop the daemon and copy the data directory before the first start, because going back is unsupported. From 0.2.x: back up the database before the 27 → 32 schema migration, why going back to 0.2.x is unsupported, and the access token that is now always required |
+| [**Upgrading**](docs/upgrading.md) | Newest first. The next release (schema 32 → 35): stop the daemon and copy the data directory before the first start, because going back is unsupported. From 0.2.x: back up the database before the 27 → 32 schema migration, why going back to 0.2.x is unsupported, and the access token that is now always required |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
 | [**Model backend bring-up**](docs/model-backend-bringup.md) | local/remote GPU selection, checkpoint staging, real-inference canary admission, and connector portability |

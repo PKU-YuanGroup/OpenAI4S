@@ -4025,6 +4025,39 @@
         "type": "object"
       }
     },
+    "DELETE /local-folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /me [ok]": {
       "schema": {
         "properties": {
@@ -4809,7 +4842,25 @@
           },
           "deleted_rows": {
             "properties": {
+              "action_groups": {
+                "type": "integer"
+              },
+              "annotation_admissions": {
+                "type": "integer"
+              },
+              "annotations": {
+                "type": "integer"
+              },
+              "auto_mode_events": {
+                "type": "integer"
+              },
+              "auto_mode_runs": {
+                "type": "integer"
+              },
               "auto_mode_selections": {
+                "type": "integer"
+              },
+              "background_exec_receipts": {
                 "type": "integer"
               },
               "capability_events": {
@@ -4821,7 +4872,25 @@
               "capability_states": {
                 "type": "integer"
               },
+              "checkpoint_state_snapshots": {
+                "type": "integer"
+              },
               "compaction_archives": {
+                "type": "integer"
+              },
+              "completion_deliveries": {
+                "type": "integer"
+              },
+              "delegation_children": {
+                "type": "integer"
+              },
+              "delegation_requests": {
+                "type": "integer"
+              },
+              "delegation_sessions": {
+                "type": "integer"
+              },
+              "delegation_steering": {
                 "type": "integer"
               },
               "execution_log": {
@@ -4830,13 +4899,34 @@
               "folders": {
                 "type": "integer"
               },
+              "frame_steps": {
+                "type": "integer"
+              },
+              "frames": {
+                "type": "integer"
+              },
+              "host_call_log": {
+                "type": "integer"
+              },
+              "kernel_generations": {
+                "type": "integer"
+              },
+              "lineage_edges": {
+                "type": "integer"
+              },
               "memories": {
+                "type": "integer"
+              },
+              "messages": {
                 "type": "integer"
               },
               "notes": {
                 "type": "integer"
               },
               "permission_requests": {
+                "type": "integer"
+              },
+              "permission_review_assessments": {
                 "type": "integer"
               },
               "permission_rules": {
@@ -4846,6 +4936,42 @@
                 "type": "integer"
               },
               "projects": {
+                "type": "integer"
+              },
+              "recovery_journal": {
+                "type": "integer"
+              },
+              "repair_execution_groups": {
+                "type": "integer"
+              },
+              "repair_runs": {
+                "type": "integer"
+              },
+              "review_findings": {
+                "type": "integer"
+              },
+              "review_runs": {
+                "type": "integer"
+              },
+              "session_branch_selection": {
+                "type": "integer"
+              },
+              "session_branches": {
+                "type": "integer"
+              },
+              "session_checkpoints": {
+                "type": "integer"
+              },
+              "session_owners": {
+                "type": "integer"
+              },
+              "settings": {
+                "type": "integer"
+              },
+              "shares": {
+                "type": "integer"
+              },
+              "snapshot_operations": {
                 "type": "integer"
               }
             },
@@ -5046,7 +5172,172 @@
         "type": "object"
       }
     },
+    "DELETE /projects/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /projects/([^/]+)/files [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /projects/([^/]+)/folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /projects/([^/]+)/history [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /projects/([^/]+)/history/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /projects/([^/]+)/history/([^/]+)/file [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -16479,6 +16770,71 @@
         "type": "object"
       }
     },
+    "GET /local-folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /local-folders [ok]": {
+      "schema": {
+        "properties": {
+          "entries": {
+            "items": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "parent_path": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entries",
+          "parent_path",
+          "path",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
     "GET /me [ok]": {
       "schema": {
         "properties": {
@@ -17951,6 +18307,9 @@
                 "description": {
                   "type": "string"
                 },
+                "folder_path": {
+                  "type": "null"
+                },
                 "id": {
                   "type": "string"
                 },
@@ -17975,6 +18334,7 @@
                 "conversation_count",
                 "created_at",
                 "description",
+                "folder_path",
                 "id",
                 "is_example",
                 "last_active_at",
@@ -18011,6 +18371,9 @@
           },
           "description": {
             "type": "string"
+          },
+          "folder_path": {
+            "type": "null"
           },
           "id": {
             "type": "string"
@@ -18207,6 +18570,147 @@
         "type": "array"
       }
     },
+    "GET /projects/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/file [ok]": {
+      "schema": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "encoding",
+          "name",
+          "path",
+          "size",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/files [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/files [ok]": {
+      "schema": {
+        "properties": {
+          "entries": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "name",
+                "path",
+                "size"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "folder_path": {
+            "type": "string"
+          },
+          "parent_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entries",
+          "folder_path",
+          "parent_path",
+          "path",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
     "GET /projects/([^/]+)/folders [ok]": {
       "schema": {
         "properties": {
@@ -18216,6 +18720,302 @@
         },
         "required": [
           "folders"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/history [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/history [ok]": {
+      "schema": {
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "last_saved_at": {
+            "type": "integer"
+          },
+          "sessions": {
+            "items": {
+              "properties": {
+                "can_continue": {
+                  "type": "boolean"
+                },
+                "cell_count": {
+                  "type": "integer"
+                },
+                "file_count": {
+                  "type": "integer"
+                },
+                "message_count": {
+                  "type": "integer"
+                },
+                "revision": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "can_continue",
+                "cell_count",
+                "file_count",
+                "message_count",
+                "revision",
+                "session_id",
+                "title",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "directory",
+          "error",
+          "last_saved_at",
+          "sessions",
+          "status",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/history/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/history/([^/]+) [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "can_continue": {
+            "type": "boolean"
+          },
+          "cells": {
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "type": "integer"
+                },
+                "version_id": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "kind",
+                "name",
+                "path",
+                "sha256",
+                "size_bytes",
+                "version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "messages": {
+            "items": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "role": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "created_at",
+                "role"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "omissions": {
+            "type": "array"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "properties": {
+                "revision": {
+                  "type": "string"
+                },
+                "saved_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "revision",
+                "saved_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "saved_at": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "settings": {
+            "properties": {
+              "context": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "context",
+              "description",
+              "name"
+            ],
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          },
+          "untrusted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "can_continue",
+          "cells",
+          "files",
+          "messages",
+          "omissions",
+          "read_only",
+          "revision",
+          "revisions",
+          "saved_at",
+          "session_id",
+          "settings",
+          "title",
+          "untrusted"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /projects/([^/]+)/history/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -25761,6 +26561,39 @@
         "type": "object"
       }
     },
+    "PATCH /local-folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /me [ok]": {
       "schema": {
         "properties": {
@@ -26714,6 +27547,12 @@
           "description": {
             "type": "string"
           },
+          "folder_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -26738,6 +27577,7 @@
           "conversation_count",
           "created_at",
           "description",
+          "folder_path",
           "id",
           "is_example",
           "last_active_at",
@@ -26880,7 +27720,172 @@
         "type": "object"
       }
     },
+    "PATCH /projects/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /projects/([^/]+)/files [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /projects/([^/]+)/folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /projects/([^/]+)/history [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /projects/([^/]+)/history/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /projects/([^/]+)/history/([^/]+)/file [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -37827,6 +38832,39 @@
         "type": "object"
       }
     },
+    "POST /local-folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /me [ok]": {
       "schema": {
         "properties": {
@@ -39233,6 +40271,12 @@
           "description": {
             "type": "string"
           },
+          "folder_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -39257,6 +40301,7 @@
           "conversation_count",
           "created_at",
           "description",
+          "folder_path",
           "id",
           "is_example",
           "last_active_at",
@@ -39432,6 +40477,72 @@
         "type": "object"
       }
     },
+    "POST /projects/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/files [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /projects/([^/]+)/folders [ok]": {
       "schema": {
         "properties": {
@@ -39453,6 +40564,200 @@
           "folder_id",
           "name",
           "project_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/history [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "history": {
+            "properties": {
+              "directory": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "last_saved_at": {
+                "type": "integer"
+              },
+              "sessions": {
+                "type": "array"
+              },
+              "status": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "directory",
+              "error",
+              "last_saved_at",
+              "sessions",
+              "status",
+              "truncated"
+            ],
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/history [ok]": {
+      "schema": {
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "error": {
+            "type": "null"
+          },
+          "last_saved_at": {
+            "type": "integer"
+          },
+          "sessions": {
+            "items": {
+              "properties": {
+                "can_continue": {
+                  "type": "boolean"
+                },
+                "cell_count": {
+                  "type": "integer"
+                },
+                "file_count": {
+                  "type": "integer"
+                },
+                "message_count": {
+                  "type": "integer"
+                },
+                "revision": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "can_continue",
+                "cell_count",
+                "file_count",
+                "message_count",
+                "revision",
+                "session_id",
+                "title",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "directory",
+          "error",
+          "last_saved_at",
+          "sessions",
+          "status",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/history/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/history/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -46285,6 +47590,39 @@
         "type": "object"
       }
     },
+    "PUT /local-folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /me [ok]": {
       "schema": {
         "properties": {
@@ -47173,6 +48511,9 @@
           "description": {
             "type": "string"
           },
+          "folder_path": {
+            "type": "null"
+          },
           "id": {
             "type": "string"
           },
@@ -47197,6 +48538,7 @@
           "conversation_count",
           "created_at",
           "description",
+          "folder_path",
           "id",
           "is_example",
           "last_active_at",
@@ -47339,7 +48681,172 @@
         "type": "object"
       }
     },
+    "PUT /projects/([^/]+)/file [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /projects/([^/]+)/files [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /projects/([^/]+)/folders [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /projects/([^/]+)/history [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /projects/([^/]+)/history/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /projects/([^/]+)/history/([^/]+)/file [error]": {
       "schema": {
         "properties": {
           "code": {

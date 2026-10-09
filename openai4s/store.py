@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name          TEXT,
     description   TEXT,
     context       TEXT,               -- agent context prepended to prompts
+    folder_path   TEXT,               -- explicit read-only local source folder
     is_example    INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
@@ -1674,10 +1675,20 @@ class Store:
                         "background_exec_receipts",
                         self._apply_background_exec_receipts,
                     ),
+                    35: ("project_source_folder", self._apply_project_source_folder),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+            # Versions are numbered per branch: a database that applied another
+            # branch's version 35 skips this step, so make sure the (idempotent)
+            # column exists either way. One table_info read of a small table.
+            self._apply_project_source_folder(self._conn)
+
+    def _apply_project_source_folder(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+        if "folder_path" not in columns:
+            conn.execute("ALTER TABLE projects ADD COLUMN folder_path TEXT")
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""
@@ -2825,6 +2836,7 @@ class Store:
         name: str,
         description: str = "",
         context: str = "",
+        folder_path: str | None = None,
         project_id: str | None = None,
         is_example: bool = False,
     ) -> dict:
@@ -2832,6 +2844,7 @@ class Store:
             name=name,
             description=description,
             context=context,
+            folder_path=folder_path,
             project_id=project_id,
             is_example=is_example,
         )

@@ -690,6 +690,57 @@ def _secret_text_bytes(data: bytes) -> bool:
     return _safe_text(text) != text
 
 
+def known_secret_bytes(store: Any) -> tuple[bytes, ...]:
+    """Return configured secret values without ever serializing them."""
+
+    values: set[str] = set()
+
+    def collect(value: Any, *, secret_key: bool = False) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                collect(item, secret_key=bool(_SECRET_KEY.search(str(key))))
+        elif isinstance(value, list):
+            for item in value:
+                collect(item, secret_key=secret_key)
+        elif secret_key and isinstance(value, str) and len(value) >= 8:
+            values.add(value)
+
+    for name, value in os.environ.items():
+        if _SECRET_KEY.search(name) and len(value) >= 8:
+            values.add(value)
+    for setting in ("llm_api_key", "agent_plan_key", "model_profiles"):
+        raw = store.get_setting(setting)
+        if not raw:
+            continue
+        if setting in {"llm_api_key", "agent_plan_key"}:
+            # Resolve through the broker first. Once migrated this row holds
+            # a reference, and adding *that* to the redaction set would
+            # redact a harmless opaque string while leaving the real key —
+            # if it appeared anywhere in the export — untouched. Redaction
+            # needs the value it is redacting.
+            #
+            # An operator-injected credential has no row at all, so it is
+            # never reached here; it is covered by the environment scan
+            # above, which holds because a broker variable is named
+            # OPENAI4S_SECRET_<SCOPE>_<KEY> and every settings credential's
+            # key ends in `_api_key`. A future one that does not would need
+            # this branch to run without a row rather than a wider regex.
+            resolved = store.get_secret_setting(setting)
+            if resolved and len(resolved) >= 8:
+                values.add(resolved)
+            continue
+        try:
+            collect(json.loads(raw))
+        except (TypeError, ValueError):
+            continue
+    return tuple(
+        sorted(
+            (value.encode("utf-8") for value in values),
+            key=lambda value: (-len(value), value),
+        )
+    )
+
+
 def session_import_quarantine_key(root_frame_id: str) -> str:
     return IMPORT_QUARANTINE_SETTING_PREFIX + str(root_frame_id)
 
@@ -739,52 +790,7 @@ class SessionPackageService:
     def _known_secret_bytes(self) -> tuple[bytes, ...]:
         """Return configured secret values without ever serializing them."""
 
-        values: set[str] = set()
-
-        def collect(value: Any, *, secret_key: bool = False) -> None:
-            if isinstance(value, Mapping):
-                for key, item in value.items():
-                    collect(item, secret_key=bool(_SECRET_KEY.search(str(key))))
-            elif isinstance(value, list):
-                for item in value:
-                    collect(item, secret_key=secret_key)
-            elif secret_key and isinstance(value, str) and len(value) >= 8:
-                values.add(value)
-
-        for name, value in os.environ.items():
-            if _SECRET_KEY.search(name) and len(value) >= 8:
-                values.add(value)
-        for setting in ("llm_api_key", "agent_plan_key", "model_profiles"):
-            raw = self.store.get_setting(setting)
-            if not raw:
-                continue
-            if setting in {"llm_api_key", "agent_plan_key"}:
-                # Resolve through the broker first. Once migrated this row holds
-                # a reference, and adding *that* to the redaction set would
-                # redact a harmless opaque string while leaving the real key —
-                # if it appeared anywhere in the export — untouched. Redaction
-                # needs the value it is redacting.
-                #
-                # An operator-injected credential has no row at all, so it is
-                # never reached here; it is covered by the environment scan
-                # above, which holds because a broker variable is named
-                # OPENAI4S_SECRET_<SCOPE>_<KEY> and every settings credential's
-                # key ends in `_api_key`. A future one that does not would need
-                # this branch to run without a row rather than a wider regex.
-                resolved = self.store.get_secret_setting(setting)
-                if resolved and len(resolved) >= 8:
-                    values.add(resolved)
-                continue
-            try:
-                collect(json.loads(raw))
-            except (TypeError, ValueError):
-                continue
-        return tuple(
-            sorted(
-                (value.encode("utf-8") for value in values),
-                key=lambda value: (-len(value), value),
-            )
-        )
+        return known_secret_bytes(self.store)
 
     def _contains_secret_bytes(self, data: bytes) -> bool:
         if _secret_text_bytes(data):
