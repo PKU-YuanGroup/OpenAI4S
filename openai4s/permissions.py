@@ -37,11 +37,19 @@ def _scope(value: str | None) -> str:
 
 
 def _daemon_config():
-    """The process config, for the Guardian's feature flags and budgets."""
+    """The process config, for the Guardian's feature flags and budgets.
+
+    Only for a caller that passed no ``guardian_config``: every loop hands
+    over its own, but the harness's headless permission probe, on its own
+    Store, does not. Those flags and budgets come from the environment either
+    way, so this resolves them without ``ensure_dirs`` -- ``get_config()``
+    would create and chmod the process-default data dir for a caller whose
+    data lives somewhere else.
+    """
 
     from openai4s.config import get_config
 
-    return get_config()
+    return get_config(initialize_dirs=False)
 
 
 def _recomputed_action_digest(request) -> str | None:

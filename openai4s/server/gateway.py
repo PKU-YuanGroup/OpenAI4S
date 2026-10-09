@@ -2264,18 +2264,22 @@ def _local_accelerator_snapshot() -> dict:
     return status
 
 
-def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
+def _remote_gpu_runtime_context(user_text: str | None = None, *, data_dir: Path) -> str:
     """Prompt fragment reflecting local hardware and the remote-GPU registry.
 
     Sessions can be created before the user adds a GPU in Settings, so this
     context is injected both into the initial system prompt and into later turns.
+
+    ``data_dir`` is the runner's: the registry the turn's ``host.compute`` and
+    ``host.fold`` consult. Without it the note read the process default, which
+    gave an embedder on its own data dir the developer's real GPU hosts.
     """
     local = _local_accelerator_snapshot()
     try:
         from openai4s.compute import registry as _reg
 
-        hosts_reg = _reg.list_hosts()
-        default = _reg.default_host()
+        hosts_reg = _reg.list_hosts(Path(data_dir))
+        default = _reg.default_host(Path(data_dir))
     except Exception:  # noqa: BLE001
         hosts_reg = {}
         default = None
@@ -5851,7 +5855,7 @@ class SessionRunner:
                 )
         except Exception:  # noqa: BLE001
             pass
-        remote_ctx = _remote_gpu_runtime_context()
+        remote_ctx = _remote_gpu_runtime_context(data_dir=self.cfg.data_dir)
         if remote_ctx:
             ctx += "\n\n" + remote_ctx
         # Connectors (MCP tools) the agent can call
@@ -10528,7 +10532,9 @@ class SessionRunner:
                     stored_user_message["message_id"],
                     {"artifact_refs": message_refs},
                 )
-            remote_ctx = _remote_gpu_runtime_context(user_text)
+            remote_ctx = _remote_gpu_runtime_context(
+                user_text, data_dir=self.cfg.data_dir
+            )
             if remote_ctx:
                 resolved = (
                     resolved + "\n\n[System note: dynamic remote GPU "
@@ -13601,13 +13607,14 @@ def _probe_remote_gpu(alias: str) -> dict:
     return {"reachable": False, "gpu_count": 0, "gpus": None}
 
 
-def _remote_compute_info() -> dict:
+def _remote_compute_info(data_dir: Path) -> dict:
     """Registry-backed view of configured remote GPU hosts + their provisioned
     capabilities (the persistent 'memory'), for Settings → Remote GPU.
-    Reachability is probed per host and cached ~60s."""
+    Reachability is probed per host and cached ~60s. ``data_dir`` is the
+    handler's, so Settings shows the registry its sessions use."""
     from openai4s.compute import registry as _reg
 
-    hosts_reg = _reg.list_hosts()
+    hosts_reg = _reg.list_hosts(Path(data_dir))
     now = time.time()
     hosts = []
     for alias, h in hosts_reg.items():
@@ -13640,7 +13647,7 @@ def _remote_compute_info() -> dict:
     return {
         "configured": bool(hosts),
         "hosts": hosts,
-        "default_host": _reg.default_host(),
+        "default_host": _reg.default_host(Path(data_dir)),
         "available_aliases": _ssh_config_aliases(),
     }
 
@@ -19616,7 +19623,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"aliases": _ssh_config_aliases()})
                 return
             if sub == "/compute/remote" and method == "GET":
-                self._json(_remote_compute_info())
+                self._json(_remote_compute_info(cfg.data_dir))
                 return
             if sub == "/compute/remote" and method == "POST":
                 from openai4s.compute import registry as _reg
@@ -19642,13 +19649,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     label=(b.get("label") or alias),
                     gpus=probe.get("gpus"),
                     gpu_count=probe.get("gpu_count", 0),
+                    data_dir=Path(cfg.data_dir),
                 )
                 self._json(
                     {
                         "ok": True,
                         "alias": alias,
                         **probe,
-                        "info": _remote_compute_info(),
+                        "info": _remote_compute_info(cfg.data_dir),
                     }
                 )
                 return
@@ -19656,7 +19664,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "DELETE":
                 from openai4s.compute import registry as _reg
 
-                self._json({"ok": _reg.remove_host(m.group(1))})
+                self._json({"ok": _reg.remove_host(m.group(1), Path(cfg.data_dir))})
                 return
             if sub == "/compute/providers" and method == "GET":
                 self._json({"providers": self._compute_providers()})
