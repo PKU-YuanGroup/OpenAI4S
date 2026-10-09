@@ -10413,7 +10413,9 @@ class SessionRunner:
         # Per turn, not per session: the same session's next request can be a
         # different kind of work. An invalid explicit selection is a 400 at
         # `submit_message`; a direct caller gets the same ValueError shape.
-        st.task_mode = resolve_task_mode(user_text, explicit=task_mode).value
+        st.task_mode = resolve_task_mode(
+            user_text, explicit=task_mode, cfg=self.cfg
+        ).value
         st.task_mode_binding = bool(task_mode is not None and str(task_mode).strip())
         # Frozen above the `processing` event rather than in the failure
         # handler, because that event is how a *queued* turn announces itself:

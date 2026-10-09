@@ -70,6 +70,13 @@ acknowledgement for that capability.
 When the corresponding flag is off, each of those paths returns `disabled`
 (or, for the two shadows, does not start a worker) and sends no request.
 
+Both shadows read their switch and settings from the data dir of the run that
+triggered them. The owning loop (CLI Agent, delegated child, Web turn) and
+each screener hand over that run's Config, and a caller that hands over none
+gets no shadow. Neither falls back to the process-default data dir, which
+outside the daemon is not the run's: a benchmark case once opened and migrated
+a developer's real `~/.openai4s` that way.
+
 ## How to enable
 
 ### UI

@@ -370,10 +370,11 @@ def test_a_route_with_no_frozen_shape_fails_the_gate():
 def test_the_contract_capture_keeps_default_config_lookups_in_its_temp_dir(
     monkeypatch,
 ):
-    """`drive()` hands the runner its own Config, but the judgment shadows
-    resolve the process-wide default. With OPENAI4S_DATA_DIR unset that was the
-    developer's real ~/.openai4s, and a `--check` run migrated it. During the
-    drive the default must resolve to the capture's temp dir, and the caller's
+    """`drive()` hands the runner its own Config, but some turn paths still
+    resolve the process-wide default (the judgment shadows did, until they took
+    the run's Config). With OPENAI4S_DATA_DIR unset that was the developer's
+    real ~/.openai4s, and a `--check` run migrated it. During the drive the
+    default must resolve to the capture's temp dir, and the caller's
     environment must come back unchanged."""
     import importlib.util
     import os

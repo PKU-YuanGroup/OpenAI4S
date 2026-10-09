@@ -223,7 +223,7 @@ def test_verdicts_identical_with_shadow_off_and_on(
         prescan_out = [
             bool(
                 looks_biosecurity_relevant(
-                    item["user_text"] + "\n" + item["agent_actions"]
+                    item["user_text"] + "\n" + item["agent_actions"], cfg=cfg
                 )
             )
             for item in trajectory_items
@@ -245,16 +245,17 @@ def test_classify_code_is_not_blocked_by_slow_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     snippet = "print(1)\nprint(2)\n"
+    cfg = get_config()
     t0 = time.perf_counter()
     for _ in range(100):
-        classify_code(snippet)
+        classify_code(snippet, cfg)
     off_s = time.perf_counter() - t0
 
     _install_backend(ScriptedBackend(delay=5.0))
     _enable_shadow(monkeypatch)
     t1 = time.perf_counter()
     for _ in range(100):
-        classify_code(snippet)
+        classify_code(snippet, cfg)
     on_s = time.perf_counter() - t1
     assert on_s - off_s <= 0.5
     snapshot = stats()
@@ -267,24 +268,50 @@ def test_backend_exceptions_do_not_escape(
 ) -> None:
     _install_backend(ScriptedBackend(error=RuntimeError("shadow backend exploded")))
     _enable_shadow(monkeypatch)
-    verdict = classify_code("import numpy as np\nprint(1)")
+    cfg = get_config()
+    verdict = classify_code("import numpy as np\nprint(1)", cfg)
     assert verdict.decision == "SAFE"
-    injected = scan_tool_result("The mitochondria is the powerhouse of the cell.")
+    injected = scan_tool_result(
+        "The mitochondria is the powerhouse of the cell.", cfg=cfg
+    )
     assert injected.injected is False
-    screen = screen_trajectory("cluster these cells with leiden", "code", get_config())
+    screen = screen_trajectory("cluster these cells with leiden", "code", cfg)
     assert screen.decision == "ALLOW"
     wait_idle(timeout_s=8.0)
     assert stats()["submitted"] >= 3
 
 
+def test_each_gate_hands_its_config_to_the_shadow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a Config the shadow stays off, so a gate that dropped its own
+    would leak nothing and silently stop shadowing. One job per screen, and
+    the trajectory screen also shadows the prescan it runs first."""
+
+    set_allow_workers(False)
+    _install_backend(ScriptedBackend())
+    _enable_shadow(monkeypatch)
+    cfg = get_config()
+    classify_code("print(1)", cfg)
+    assert stats()["submitted"] == 1
+    scan_tool_result("The mitochondria is the powerhouse of the cell.", cfg=cfg)
+    assert stats()["submitted"] == 2
+    screen_trajectory("cluster these cells with leiden", "code", cfg)
+    assert stats()["submitted"] == 4
+    looks_biosecurity_relevant("cluster these cells with leiden", cfg=cfg)
+    assert stats()["submitted"] == 5
+
+
 def test_queue_full_increments_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     set_allow_workers(False)
     _enable_shadow(monkeypatch)
+    cfg = get_config()
     for index in range(QUEUE_CAPACITY + 3):
         submit(
             "code",
             state={"code": f"print({index})"},
             existing_verdict="SAFE",
+            cfg=cfg,
         )
     snapshot = stats()
     assert snapshot["submitted"] == QUEUE_CAPACITY + 3
@@ -294,11 +321,12 @@ def test_queue_full_increments_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_stats_and_agree_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_backend(ScriptedBackend(noul=0.91, choice="BLOCK"))
     _enable_shadow(monkeypatch)
-    classify_code("import numpy as np\nprint(1)")
-    classify_code('os.environ["LD_PRELOAD"] = "/tmp/x/evil.so"')
-    scan_tool_result("The mitochondria is the powerhouse of the cell.")
-    screen_trajectory("cluster these cells with leiden", "code", get_config())
-    looks_biosecurity_relevant("enhance transmissibility of h5n1")
+    cfg = get_config()
+    classify_code("import numpy as np\nprint(1)", cfg)
+    classify_code('os.environ["LD_PRELOAD"] = "/tmp/x/evil.so"', cfg)
+    scan_tool_result("The mitochondria is the powerhouse of the cell.", cfg=cfg)
+    screen_trajectory("cluster these cells with leiden", "code", cfg)
+    looks_biosecurity_relevant("enhance transmissibility of h5n1", cfg=cfg)
     wait_idle(timeout_s=8.0)
     snapshot = stats()
     assert snapshot["submitted"] >= 5
@@ -322,7 +350,7 @@ def test_audit_event_has_no_raw_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("openai4s.observability.log_event", capture)
     _install_backend(ScriptedBackend(noul=0.05))
     _enable_shadow(monkeypatch)
-    classify_code(f"print({marker!r})")
+    classify_code(f"print({marker!r})", get_config())
     wait_idle(timeout_s=8.0)
     shadow_events = [item for item in events if item[0] == "judgment_shadow"]
     assert shadow_events
@@ -344,9 +372,10 @@ def test_disabled_submit_starts_no_workers() -> None:
     import openai4s.judgment.shadow as shadow_mod
 
     started = shadow_mod._started
-    classify_code("print(1)")
-    scan_tool_result("hello")
-    looks_biosecurity_relevant("hello")
+    cfg = get_config()
+    classify_code("print(1)", cfg)
+    scan_tool_result("hello", cfg=cfg)
+    looks_biosecurity_relevant("hello", cfg=cfg)
     assert shadow_mod._started is started
     assert stats()["submitted"] == 0
 
@@ -363,7 +392,7 @@ def test_store_toggle_takes_effect_without_restarting_workers() -> None:
     cfg = get_config()
     store = get_store(cfg.db_path)
     set_allow_workers(False)
-    submit("code", state={"code": "print(1)"}, existing_verdict="SAFE")
+    submit("code", state={"code": "print(1)"}, existing_verdict="SAFE", cfg=cfg)
     assert stats()["submitted"] == 0
 
     store.set_setting(
@@ -372,11 +401,11 @@ def test_store_toggle_takes_effect_without_restarting_workers() -> None:
     )
     store.set_setting(SETTING_MASTER, "true")
     store.set_setting(SETTING_SAFETY_SHADOW, "true")
-    submit("code", state={"code": "print(2)"}, existing_verdict="SAFE")
+    submit("code", state={"code": "print(2)"}, existing_verdict="SAFE", cfg=cfg)
     assert stats()["submitted"] == 1
 
     store.set_setting(SETTING_SAFETY_SHADOW, "false")
-    submit("code", state={"code": "print(3)"}, existing_verdict="SAFE")
+    submit("code", state={"code": "print(3)"}, existing_verdict="SAFE", cfg=cfg)
     assert stats()["submitted"] == 1
 
 
@@ -412,7 +441,7 @@ def test_default_service_refreshes_models_configuration(monkeypatch):
         }
 
     monkeypatch.setattr(LlmBackend, "_chat", chat)
-    service = shadow._get_service()
+    service = shadow._get_service(cfg)
 
     def run():
         return service.run(
@@ -433,7 +462,7 @@ def test_default_service_refreshes_models_configuration(monkeypatch):
         ):
             store.set_setting(f"llm_{name}", value)
         store.set_secret_setting("llm_api_key", key, scope="llm")
-        assert shadow._get_service() is service
+        assert shadow._get_service(cfg) is service
         result = run()
         assert result.status == "ok"
         assert result.cache_hit is False
@@ -487,8 +516,9 @@ def test_backend_error_is_unavailable_not_a_verdict_change(
 ) -> None:
     _install_backend(ScriptedBackend(error=BackendError("timeout", "slow")))
     _enable_shadow(monkeypatch)
-    before = classify_code("import socket\ns = socket.socket()")
+    cfg = get_config()
+    before = classify_code("import socket\ns = socket.socket()", cfg)
     wait_idle(timeout_s=8.0)
-    after = classify_code("import socket\ns = socket.socket()")
+    after = classify_code("import socket\ns = socket.socket()", cfg)
     assert _code_key(before) == _code_key(after)
     assert before.decision == "SAFE"

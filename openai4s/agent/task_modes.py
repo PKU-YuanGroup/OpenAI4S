@@ -39,8 +39,12 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from openai4s import prompts
+
+if TYPE_CHECKING:
+    from openai4s.config import Config
 
 __all__ = [
     "TASK_MODE_DETECTED_PROMPT_NAMES",
@@ -172,7 +176,10 @@ def _coerce(value: object) -> TaskMode:
 
 
 def resolve_task_mode(
-    text: str | None, explicit: str | TaskMode | None = None
+    text: str | None,
+    explicit: str | TaskMode | None = None,
+    *,
+    cfg: Config | None = None,
 ) -> TaskMode:
     """Resolve the mode for one turn: explicit selection first, else detection.
 
@@ -181,6 +188,10 @@ def resolve_task_mode(
     and biases to :attr:`TaskMode.ANALYSIS_RUN` otherwise. When both code-shaped
     families match, :attr:`TaskMode.CODEBASE_CHANGE` wins — it is the stricter
     of the two and its guidance is a superset.
+
+    ``cfg`` is the Config of the run asking. Only the default-off task-mode
+    shadow reads it, and only that run's data dir; without one the shadow
+    stays off. The returned mode never depends on it.
     """
 
     if explicit is not None and str(explicit).strip():
@@ -197,7 +208,7 @@ def resolve_task_mode(
     try:
         from openai4s.judgment.task_mode_shadow import submit
 
-        submit(request=body, rule_mode=mode.value, explicit=False)
+        submit(request=body, rule_mode=mode.value, explicit=False, cfg=cfg)
     except Exception:  # noqa: BLE001 - shadow must never change the return
         pass
     return mode
