@@ -45,13 +45,15 @@ _VERB = (
 _OBJECT = r"(?:experiments?|simulations?|runs?|goals?|targets?|objectives?|tasks?)"
 # A negated, not-yet or only-partly clause is an honest report, never a
 # success claim; so is quoting the recorded end reason ("finished with
-# end_reason stopped").
+# end_reason stopped") or the ledger's own non-success state ("the run
+# reached quarantine").
 _NEGATED = re.compile(
     r"\b(?:not|never|no longer|cannot|can't|couldn't|didn't|wasn't|isn't|"
     r"hasn't|haven't|unable to|failed to|without|before|partially|partly|"
     r"incompletely)\b"
     rf"(?:\s+\w+){{0,4}}?\s+(?:be\s+|been\s+)?{_VERB}\b"
     r"|\b(?:complete(?:d)?|finished|done)\s+with\s+(?:an?\s+|the\s+)?end\s+reason\b"
+    r"|\breached\s+(?:an?\s+|the\s+|its\s+)?quarantined?\b"
     r"|(?:未能|未|没有|没|尚未|无法|不能)(?:完成|成功|达成|实现|结束)",
     re.IGNORECASE,
 )

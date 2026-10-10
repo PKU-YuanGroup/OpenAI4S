@@ -595,6 +595,7 @@ def _incomplete(**extra):
         "The target vessel reached 600 mL before the stop.",
         "The run completed 3 steps before the stop.",
         "The run finished with end_reason stopped.",
+        "Unresolved: the simulation run reached quarantine after an unknown outcome.",
     ],
 )
 def test_an_honest_incomplete_report_is_not_success_wording(summary):
@@ -609,6 +610,7 @@ def test_an_honest_incomplete_report_is_not_success_wording(summary):
         "The task is partially complete, but the goal was reached.",
         "The experiment succeeded with end_reason stopped.",
         "The goal was reached at step 3.",
+        "The run reached quarantine, but the goal was met.",
     ],
 )
 def test_an_honest_qualifier_does_not_cover_a_success_claim(summary):
