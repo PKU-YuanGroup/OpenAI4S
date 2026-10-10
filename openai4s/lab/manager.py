@@ -192,18 +192,39 @@ class LabManager:
         return run
 
     def _observation(
-        self, run: Mapping[str, Any], *, full: bool = False, row: Any = None
+        self,
+        run: Mapping[str, Any],
+        *,
+        full: bool = False,
+        row: Any = None,
+        channels: Any = None,
     ) -> dict[str, Any] | None:
         if row is None:
             row = self._ledger.latest_observation(run["run_id"])
         if row is None:
             return None
-        descriptor = load_descriptor(run["descriptor"])
+        if channels is None:
+            channels = load_descriptor(run["descriptor"]).observation_channels
         return project_observation(
-            observation_from_row(row),
-            channels=descriptor.observation_channels,
-            full=full,
+            observation_from_row(row), channels=channels, full=full
         )
+
+    def _command_observation(self, command: Mapping[str, Any]) -> Any:
+        """The ledger row a command recorded, or None."""
+        run_id, wanted = command["run_id"], command["observation_id"]
+        revision = command.get("applied_revision")
+        if revision is not None:
+            # An applied step's observation sequence is its revision.
+            rows = self._ledger.list_observations(
+                run_id, after_sequence=revision - 1, limit=1
+            )
+            if rows and rows[0]["observation_id"] == wanted:
+                return rows[0]
+        # A receipt recorded after the run ended carries no revision.
+        for row in self._ledger.list_observations(run_id, limit=2**63 - 1):
+            if row["observation_id"] == wanted:
+                return row
+        return None
 
     def _result(self, run_id: str, command_id: str | None = None) -> dict[str, Any]:
         run = self._ledger.get_run(run_id)
@@ -215,10 +236,9 @@ class LabManager:
             observation = self._observation(run)
         elif command["observation_id"]:
             # A replay must return this command's observation, not a later one.
-            for row in self._ledger.list_observations(run_id, limit=2**63 - 1):
-                if row["observation_id"] == command["observation_id"]:
-                    observation = self._observation(run, row=row)
-                    break
+            row = self._command_observation(command)
+            if row is not None:
+                observation = self._observation(run, row=row)
         return {
             "run": project_run(run),
             "command": project_command(command) if command is not None else None,
@@ -1097,8 +1117,14 @@ class LabManager:
         rows = self._ledger.list_observations(
             run_id, after_sequence=after_sequence, limit=limit
         )
+        channels = (
+            load_descriptor(run["descriptor"]).observation_channels if rows else ()
+        )
         return {
-            "observations": [self._observation(run, full=full, row=r) for r in rows],
+            "observations": [
+                self._observation(run, full=full, row=r, channels=channels)
+                for r in rows
+            ],
             "next_after_sequence": rows[-1]["sequence"] if rows else after_sequence,
         }
 
