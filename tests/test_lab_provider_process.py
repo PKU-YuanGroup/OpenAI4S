@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -92,6 +93,36 @@ def test_real_toy_port_lifecycle_and_private_run_cleanup(tmp_path):
     with pytest.raises(LabError) as caught:
         port.query(ident, "never")
     assert caught.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+
+
+def test_runs_left_by_a_dead_process_are_reclaimed_and_live_ones_kept(tmp_path):
+    runs, cache = tmp_path / "lab" / "runs", tmp_path / "lab" / "cache"
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    orphan = f"labrun-{gone.pid}-" + "0" * 12
+    foreign = f"labrun-{os.getppid()}-" + "1" * 12  # another live process
+    predecessor = f"labrun-{os.getpid()}-" + "2" * 12  # a restart reused the PID
+    unowned = "labrun-" + "3" * 12  # names no owner: never guessed at
+    for name in (orphan, foreign, predecessor, unowned):
+        (runs / name / "cache").mkdir(parents=True)
+    cache.mkdir()
+    for name in (orphan, foreign):
+        (cache / name).symlink_to(runs / name / "cache", target_is_directory=True)
+    port = device(tmp_path)
+    opened = port.open(open_request())
+    try:
+        kept = {foreign, unowned}
+        (mine,) = {path.name for path in runs.iterdir()} - kept
+        assert mine.startswith(f"labrun-{os.getpid()}-")
+        assert {path.name for path in cache.iterdir()} == {foreign, mine}
+        # Another session's sweep in this process keeps the first one's run.
+        other = device(tmp_path)
+        other.close(other.open(open_request()).session_id)
+        assert (runs / mine).is_dir() and port.alive(opened.session_id)
+    finally:
+        port.close(opened.session_id)
+    assert {path.name for path in runs.iterdir()} == kept
+    assert {path.name for path in cache.iterdir()} == {foreign}
 
 
 @pytest.mark.parametrize(

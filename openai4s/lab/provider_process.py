@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import re
 import secrets
 import shutil
@@ -51,6 +52,54 @@ _PROVIDER_FATAL = {
     # "No open session" from the provider is a missing session (§9 row 4).
     ErrorCode.RUN_NOT_FOUND: ErrorCode.PROVIDER_UNAVAILABLE,
 }
+
+
+# A run directory names the process that owns it, so whatever a killed daemon
+# left behind can be told apart from a live `lab smoke` or doctor run sharing
+# this root. Names this process still owns are tracked: a restarted container
+# gets its predecessor's PID.
+_RUN_DIR = re.compile(r"labrun-([0-9]+)-[0-9a-f]{12}\Z")
+_live_runs: set[str] = set()
+_live_runs_lock = threading.Lock()
+
+
+def _owner_alive(pid):
+    if os.name == "nt":
+        # os.kill(pid, 0) terminates the process there; never reclaim.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def sweep_orphaned_runs(runs_root):
+    """Remove run directories and cache links whose owning process is gone."""
+    runs_root = Path(runs_root)
+    cache_root = runs_root.parent / "cache"
+    names = set()
+    for directory in (runs_root, cache_root):
+        try:
+            names.update(entry.name for entry in directory.iterdir())
+        except OSError:
+            pass
+    for name in names:
+        match = _RUN_DIR.match(name)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        with _live_runs_lock:
+            mine = name in _live_runs
+        if mine or (pid != os.getpid() and _owner_alive(pid)):
+            continue
+        try:
+            (cache_root / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        shutil.rmtree(runs_root / name, ignore_errors=True)
 
 
 def _boundary(method):
@@ -132,9 +181,12 @@ class ProviderProcessDevice:
                 ErrorCode.PROVIDER_UNAVAILABLE, "Run openai4s lab setup chemgymrl first"
             )
         ident = "labsession-" + secrets.token_hex(6)
-        run_dir = self.runs_root / ("labrun-" + secrets.token_hex(6))
+        sweep_orphaned_runs(self.runs_root)
+        run_dir = self.runs_root / f"labrun-{os.getpid()}-{secrets.token_hex(6)}"
         cache_link = self.runs_root.parent / "cache" / run_dir.name
         sandbox = client = None
+        with _live_runs_lock:
+            _live_runs.add(run_dir.name)
         try:
             run_dir.mkdir(parents=True, mode=0o700)
             (run_dir / "cache" / "numba").mkdir(parents=True)
@@ -199,6 +251,8 @@ class ProviderProcessDevice:
                     sandbox.close()
                 cache_link.unlink(missing_ok=True)
                 shutil.rmtree(run_dir, ignore_errors=True)
+                with _live_runs_lock:
+                    _live_runs.discard(run_dir.name)
             raise
 
     def _session(self, ident):
@@ -220,7 +274,12 @@ class ProviderProcessDevice:
                 session.sandbox.close()
             finally:
                 session.cache_link.unlink(missing_ok=True)
-                shutil.rmtree(session.run_dir)
+                try:
+                    shutil.rmtree(session.run_dir)
+                finally:
+                    # Whatever could not be removed is reclaimed by a sweep.
+                    with _live_runs_lock:
+                        _live_runs.discard(session.run_dir.name)
 
     def _invalid(self, ident, code=ErrorCode.PROVIDER_PROTOCOL_ERROR):
         self._discard(ident)
