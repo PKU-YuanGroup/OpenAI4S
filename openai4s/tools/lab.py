@@ -35,6 +35,9 @@ def _page(result: dict, items_key: str, cursor: str, kept: int) -> dict:
 
 class _LabTool(Tool):
     requires_approval = False
+    # Lab failures are structured ({error, error_kind, details}), not the
+    # single-key soft-fail dict: any result carrying "error" is a failure.
+    error_result_is_failure = True
     resource_key_prefix = "lab"
     resource_target_key = "run_id"
     permission_target_key = "run_id"

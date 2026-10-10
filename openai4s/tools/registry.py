@@ -726,7 +726,10 @@ def execute_tool_call(
             isinstance(result, dict)
             and (
                 set(result.keys()) == {"error"}
-                or (tool.name.startswith("lab_") and "error" in result)
+                or (
+                    getattr(tool, "error_result_is_failure", False)
+                    and "error" in result
+                )
             )
         )
         return format_tool_result(tool, result), ok

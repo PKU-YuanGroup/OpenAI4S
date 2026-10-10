@@ -27,6 +27,7 @@ from openai4s.permissions import broker
 from openai4s.sdk.host import build_host
 from openai4s.storage.metadata import DERIVABLE_HOST_CALLS
 from openai4s.store import get_store
+from openai4s.tools.base import Tool
 from openai4s.tools.catalog import SessionToolCatalog
 from openai4s.tools.registry import (
     REGISTRY,
@@ -747,3 +748,31 @@ def test_native_invoke_falls_back_to_the_ordinary_dispatch():
 
     assert get_tool("lab_list").invoke(dispatcher, {}) == {"devices": [], "runs": []}
     assert calls == [("lab_list", [{}])]
+
+
+def test_the_structured_error_contract_is_declared_not_inferred_from_a_name():
+    structured = {"error": "Lab run was not found", "error_kind": "run_not_found"}
+
+    class Notes(Tool):
+        # A user's dynamic tool may be called anything, including lab_*.
+        name = host_method = "lab_notes_lookup"
+        description = "Look up notebook rows."
+        parameters = {"properties": {}, "required": []}
+
+    class Catalog:
+        tools = {"lab_notes_lookup": Notes(), "lab_observe": get_tool("lab_observe")}
+
+        def get(self, name):
+            return self.tools.get(name)
+
+    def run(name, arguments, result):
+        return execute_tool_call(
+            lambda method, args: result,
+            {"name": name, "arguments": arguments},
+            catalog=Catalog(),
+        )
+
+    _, ok = run("lab_notes_lookup", {}, {"rows": [], "error": None})
+    assert ok
+    _, ok = run("lab_observe", {"run_id": "labrun-0"}, structured)
+    assert not ok
