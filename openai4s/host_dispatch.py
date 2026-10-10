@@ -2125,10 +2125,12 @@ class HostDispatcher:
                     and args
                     and isinstance(args[0], dict)
                 ):
-                    observation = self._lab_service.call(
-                        "observe", {"run_id": args[0].get("run_id")}
+                    # The card names the device: the run's row, not a
+                    # projected observation.
+                    current = self._lab_service.call(
+                        "run", {"run_id": args[0].get("run_id")}
                     )
-                    run = observation.get("run") or {}
+                    run = current.get("run") or {}
                     view_args = [{**args[0], "device_id": run.get("device_id")}]
                 view = _step_begin(method, view_args)
             except Exception:  # noqa: BLE001 — step projection must never break a call

@@ -1080,6 +1080,10 @@ class LabManager:
             "latest_event_seq": self._ledger.latest_event_seq(caller.root_frame_id),
         }
 
+    def run(self, caller: LabCaller, run_id: str) -> dict[str, Any]:
+        """The run's public row alone (ledger only)."""
+        return project_run(self._run(caller, run_id))
+
     def describe_run(self, caller: LabCaller, run_id: str) -> dict[str, Any]:
         """The descriptor pinned when the run was created (ledger only)."""
         return project_descriptor(

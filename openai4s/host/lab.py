@@ -64,6 +64,7 @@ class LabService:
                     "expected_revision",
                     "idempotency_key",
                 },
+                "run": {"run_id"},
                 "observe": {"run_id"},
                 "observe_full": {"run_id"},
                 "status": {"run_id", "command_id"},
@@ -94,6 +95,8 @@ class LabService:
                 # Run projections deliberately omit the internal create-key
                 # column. Return the public request key so creation can retry.
                 return {**result, "idempotency_key": request["idempotency_key"]}
+            if operation == "run":
+                return {"run": manager.run(caller, spec["run_id"])}
             if operation in {"observe", "observe_full"}:
                 return manager.observe(
                     caller, spec["run_id"], full=operation.endswith("_full")
