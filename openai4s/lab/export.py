@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -26,17 +25,8 @@ from openai4s.lab.manifest import (
     project_run,
 )
 from openai4s.lab.models import DeviceDescriptor, ErrorCode, LabCaller, LabError
+from openai4s.lab.models import canonical_json as _json
 from openai4s.lab.ports import LabLedgerPort
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        allow_nan=False,
-        separators=(",", ":"),
-    )
 
 
 def export_run(

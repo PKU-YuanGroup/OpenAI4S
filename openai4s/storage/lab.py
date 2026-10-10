@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import secrets
 import sqlite3
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping
@@ -17,6 +16,7 @@ from openai4s.lab.models import (
     LabError,
     RunStatus,
     command_sources_for,
+    new_id,
     run_sources_for,
 )
 from openai4s.storage.migrations import apply_ddl_script
@@ -763,9 +763,7 @@ class LabLedger:
         evaluation: Mapping[str, Any] | None,
         now: int,
     ) -> dict:
-        observation_id = observation.get(
-            "observation_id"
-        ) or "labobs-" + secrets.token_hex(6)
+        observation_id = observation.get("observation_id") or new_id("labobs")
         values = {
             key: observation.get(key)
             for key in ("sim_time", "sim_time_unit", "artifact_version_id")
@@ -786,7 +784,7 @@ class LabLedger:
                 "lab_evaluations",
                 {
                     "evaluation_id": evaluation.get("evaluation_id")
-                    or "labeval-" + secrets.token_hex(6),
+                    or new_id("labeval"),
                     "run_id": run["run_id"],
                     "root_frame_id": run["root_frame_id"],
                     "command_id": command_id,
