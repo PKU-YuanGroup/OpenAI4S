@@ -409,7 +409,11 @@ one. The full matrix, and what actually ships per platform, is
 CPython 3.10 generation, installs the hash-locked runtime and pinned upstream
 commit, verifies both portable manifests byte for byte, then atomically replaces
 `<data_dir>/lab/providers/chemgymrl/current`. `--rollback` selects the previous
-verified generation. Failed generations and `setup.log` remain for diagnosis.
+verified generation. A failed generation keeps only its `setup.log`, and a
+successful setup removes every generation other than the current and previous
+one. The two download steps (pip and git) inherit `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY`, `NO_PROXY` and `PIP_INDEX_URL` from the shell that runs setup; no
+other step and no provider process sees them.
 An interrupted installer can leave `.setup-lock`; inspect its PID and ensure no
 setup process is still running before removing that lock.
 
@@ -427,7 +431,9 @@ setup process is still running before removing that lock.
 `openai4s lab smoke [--profile WaterOilExtract-v0]` opens with seed 42, executes
 one step and closes, without opening the database or printing evaluation truth.
 Per-session caches have names under `<data_dir>/lab/cache/` resolving inside the
-private run directory; both are removed on close. Ordinary provider package and
+private run directory; both are removed on close. A run directory names the
+process that owns it, so one a killed daemon left behind is reclaimed when the
+next provider session starts. Ordinary provider package and
 environment directories remain readable under the shared OS sandbox policy.
 
 Open the authenticated Web workbench, select a session, then choose **Lab** in
@@ -462,7 +468,10 @@ successful. See [Lab](lab.md) for the usage and outcome rules.
 `openai4s lab setup chemgymrl [--python PATH] [--dry-run]` 新建独立 CPython 3.10
 代际，安装带哈希锁定的运行时与固定提交的上游源码，逐字节核对两份 portable 清单后，
 才原子替换 `<data_dir>/lab/providers/chemgymrl/current`。`--rollback` 选择上一个已验证
-代际。失败代际与 `setup.log` 保留；安装被打断后若留下 `.setup-lock`，应检查其中 PID，
+代际。失败的代际只保留 `setup.log`，安装成功后会删除 current 与 previous 之外的代际。
+只有两个下载步骤（pip 与 git）继承运行 setup 的 shell 中的 `HTTP_PROXY`、`HTTPS_PROXY`、
+`ALL_PROXY`、`NO_PROXY` 与 `PIP_INDEX_URL`，其余步骤和 provider 进程都看不到它们。
+安装被打断后若留下 `.setup-lock`，应检查其中 PID，
 确认没有安装进程仍在运行后再移除。
 
 - `OPENAI4S_LAB_CHEMGYMRL_PYTHON` 显式覆盖 provider 解释器；无效覆盖会拒绝运行，
@@ -475,7 +484,8 @@ successful. See [Lab](lab.md) for the usage and outcome rules.
 
 `lab status` 列出设备、profile 和环境代际；`lab smoke [--profile WaterOilExtract-v0]`
 以 seed 42 打开、执行一步并关闭，不打开数据库，也不打印评价真值。每个 run 的缓存名
-位于 `<data_dir>/lab/cache/`，解析到私有 run 目录内部，两者在关闭时一并清除。共用 OS
+位于 `<data_dir>/lab/cache/`，解析到私有 run 目录内部，两者在关闭时一并清除。run 目录名
+带有所属进程，daemon 被强杀后留下的目录会在下一次启动 provider 会话时回收。共用 OS
 沙箱策略仍允许读取普通 provider 包与环境目录。
 
 在 daemon 环境中设置变量，打开带认证的工作台 URL，选择会话与右侧 **Lab**。

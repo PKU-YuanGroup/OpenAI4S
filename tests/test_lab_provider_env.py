@@ -137,12 +137,14 @@ def test_setup_verifies_all_profiles_before_atomic_activation_and_rollback(
             not {
                 "OPENAI4S_LLM_API_KEY",
                 "AWS_SESSION_TOKEN",
-                "HTTP_PROXY",
                 "PIP_EXTRA_INDEX_URL",
                 "PYTHONPATH",
             }
             & env.keys()
         )
+        # Only the two downloads keep the operator's proxy; the interpreter
+        # probes and the steps that import upstream code never see it.
+        assert ("HTTP_PROXY" in env) is (row["stage"] in ("dependencies", "source"))
         for key in (
             "HOME",
             "TMPDIR",
@@ -221,8 +223,36 @@ def test_failure_at_each_install_stage_preserves_previous_pointer(
     generations = list(pointer.parent.glob("gen-*"))
     assert len(generations) == 2
     failed = next(path for path in generations if path.name != first["generation"])
-    assert (failed / "setup.log").is_file()
+    # A failed generation is not an environment: only its log is kept.
+    assert [entry.name for entry in failed.iterdir()] == ["setup.log"]
     assert not (pointer.parent / ".setup-lock").exists()
+
+
+def test_a_successful_setup_keeps_only_the_current_and_previous_generation(
+    tmp_path, fake_python
+):
+    executable, config_path, config = fake_python
+    first = provider_env.setup_provider(tmp_path, python=executable)
+    root = Path(config["pointer"]).parent
+    config["fail"] = "source"
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(LabError):
+        provider_env.setup_provider(tmp_path, python=executable)
+    del config["fail"]
+    config_path.write_text(json.dumps(config))
+    second = provider_env.setup_provider(tmp_path, python=executable)
+    # The failed attempt goes with the next success; rollback still works.
+    assert {path.name for path in root.glob("gen-*")} == {
+        first["generation"],
+        second["generation"],
+    }
+    third = provider_env.setup_provider(tmp_path, python=executable)
+    assert {path.name for path in root.glob("gen-*")} == {
+        second["generation"],
+        third["generation"],
+    }
+    rolled_back = provider_env.setup_provider(tmp_path, rollback=True)
+    assert rolled_back["generation"] == second["generation"]
 
 
 def test_resolution_override_invalid_pointer_and_missing_install_never_fall_back(

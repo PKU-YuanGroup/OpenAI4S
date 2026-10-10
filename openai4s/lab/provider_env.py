@@ -32,6 +32,20 @@ _PYTHON_PROBE = (
     "import json,sys; print(json.dumps({'implementation':sys.implementation.name,"
     "'version':list(sys.version_info[:2])}))"
 )
+# The two download steps (pip, git) are the operator's own installation, so
+# they keep the operator's proxy and index mirror. No other setup step and no
+# provider process sees them: a proxy URL can embed a credential.
+_DOWNLOAD_PASSTHROUGH = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "PIP_INDEX_URL",
+)
 _SOURCE_PROBE = (
     "import importlib.metadata as m,json; d=m.distribution('chemistrygym'); "
     "print(json.dumps({'version':d.version, "
@@ -365,6 +379,35 @@ def _publish(root: Path, pointer: dict[str, Any]) -> None:
         raise
 
 
+def _keep_only_log(generation: Path) -> None:
+    """A failed generation is not an environment: keep what explains it."""
+    try:
+        for entry in generation.iterdir():
+            if entry.name == "setup.log":
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _prune(root: Path, keep: set[str | None]) -> None:
+    """Remove generations the pointer no longer names; never fail activation."""
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if (
+            _GENERATION.fullmatch(entry.name)
+            and entry.name not in keep
+            and not entry.is_symlink()
+        ):
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def setup_provider(
     data_dir: str | Path,
     *,
@@ -374,8 +417,10 @@ def setup_provider(
 ) -> dict[str, Any]:
     """Build and verify a fresh generation, then atomically activate it.
 
-    A failed generation and its setup log are retained. Rollback exchanges
-    current/previous in that same atomic pointer. Dry run is strictly read-only.
+    A failed generation keeps only its setup log, and a successful activation
+    removes every generation other than the current and previous one. Rollback
+    exchanges current/previous in that same atomic pointer. Dry run is strictly
+    read-only.
     """
     if rollback and python is not None:
         raise LabError(
@@ -458,8 +503,17 @@ def setup_provider(
             env = _environment(data_path, generation)
             interpreter = _find_python(python, env=env, cwd=generation, log=log)
             commands = _commands(interpreter, generation)
-            for command in commands[:3]:
-                _run(command, env=env, cwd=generation, log=log)
+            _run(commands[0], env=env, cwd=generation, log=log)
+            download_env = {
+                **env,
+                **{
+                    key: os.environ[key]
+                    for key in _DOWNLOAD_PASSTHROUGH
+                    if os.environ.get(key)
+                },
+            }
+            for command in commands[1:3]:
+                _run(command, env=download_env, cwd=generation, log=log)
             receipt = json.loads(
                 _run(commands[3], env=env, cwd=generation, log=log, capture=True)
             )
@@ -506,6 +560,7 @@ def setup_provider(
             **pointer,
         )
         _publish(root, pointer)
+        _prune(root, {name, previous["generation"]})
         return result
     except (
         OSError,
@@ -522,6 +577,8 @@ def setup_provider(
         )
         if log_path is not None:
             message += f". Installation log: {log_path}"
+        if generation is not None:
+            _keep_only_log(generation)
         raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, message) from exc
     finally:
         if locked:

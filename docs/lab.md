@@ -531,8 +531,11 @@ hash-locked dependencies (including the setuptools/wheel that build upstream's
 legacy `setup.py` without build isolation), upstream pinned by commit and
 checked through `direct_url.json`, and both portable manifests byte-equal to the
 committed ones. A single JSON `current` pointer switches atomically only after
-every check passes; a failure leaves it untouched and keeps the failed
-generation and its `setup.log`. A generation built from another lock is no
+every check passes; a failure leaves it untouched and keeps only the failed
+generation's `setup.log`, and a success removes every generation other than
+the current and previous one. Only the two download steps (pip and git)
+inherit the operator's `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and
+`PIP_INDEX_URL`. A generation built from another lock is no
 longer verified. The ChemGymRL backend runs only with that generation or an
 explicit `OPENAI4S_LAB_CHEMGYMRL_PYTHON`, never the daemon interpreter; the toy
 backend (daemon interpreter, stdlib only) is registered only with
