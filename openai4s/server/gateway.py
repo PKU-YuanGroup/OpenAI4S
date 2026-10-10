@@ -5938,11 +5938,11 @@ class SessionRunner:
         remote_ctx = _remote_gpu_runtime_context()
         if remote_ctx:
             ctx += "\n\n" + remote_ctx
-        # Probe at most once per daemon, never on the per-turn prompt path.
-        # Availability can inspect an installation and list_devices can sweep.
-        # Only a definite answer is remembered: a transient failure (a busy
-        # ledger, a manager being rebuilt) is retried at the next seeding,
-        # matching the startup promise that Lab is retried on first use.
+        # Probed while seeding a session, never on the per-turn prompt path:
+        # availability can inspect an installation and list_devices can sweep.
+        # Only "available" is remembered. A provider installed while the
+        # daemon runs, like a transient failure (a busy ledger, a manager
+        # being rebuilt), is found at the next seeding.
         lab_available = False
         with self.__dict__.setdefault("_lab_prompt_lock", threading.Lock()):
             if hasattr(self, "_lab_prompt_available"):
@@ -5959,10 +5959,12 @@ class SessionRunner:
                         None,
                         None,
                     )
-                    lab_available = self._lab_prompt_available = any(
+                    lab_available = any(
                         row.get("available") is True
                         for row in self.lab_manager.list_devices(caller)
                     )
+                    if lab_available:
+                        self._lab_prompt_available = True
                 except Exception:  # noqa: BLE001 - seeding never fails on Lab
                     lab_available = False
         if lab_available:

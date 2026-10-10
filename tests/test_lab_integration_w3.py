@@ -170,7 +170,9 @@ def test_real_toy_completion_and_stop_refusal(daemon, monkeypatch, door, stop):
 
 @pytest.mark.stubbed_backend
 @pytest.mark.parametrize("available", [True, False, None])
-def test_lab_seed_intro_is_available_only_and_cached(daemon, monkeypatch, available):
+def test_lab_seed_intro_is_available_only_and_remembers_available(
+    daemon, monkeypatch, available
+):
     runner = daemon.runner
     calls = []
 
@@ -199,7 +201,9 @@ def test_lab_seed_intro_is_available_only_and_cached(daemon, monkeypatch, availa
     state.messages = []
     runner._seed_messages(state)
     assert json.dumps(state.messages, ensure_ascii=False) == first
-    assert calls == [fid]
+    # Only "available" is remembered: a provider installed while the daemon
+    # runs has to be found by the next session.
+    assert calls == ([fid] if available is True else [fid, fid])
 
 
 def _process(manager, run_id):
