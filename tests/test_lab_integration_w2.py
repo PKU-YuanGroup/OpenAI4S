@@ -312,14 +312,10 @@ def test_killed_toy_provider_is_outcome_unknown_and_provider_lost(lab):
     (port,) = lab.ports
     process = _provider_process(port)
     os.killpg(process.pid, signal.SIGKILL)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG):
-                break
-        except ChildProcessError:
-            break
-        time.sleep(0.01)
+    # Not os.waitid: CPython 3.10-3.12 on macOS has none. The client observes
+    # the exit without reaping on every platform.
+    (session,) = port.inner._sessions.values()
+    assert session.client._wait_unreaped(10)
 
     with pytest.raises(LabError) as caught:
         m.execute(caller, transfer(run_id, revision=0, key="after-kill"))
