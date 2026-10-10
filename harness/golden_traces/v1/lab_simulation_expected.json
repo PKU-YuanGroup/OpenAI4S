@@ -1,0 +1,523 @@
+{
+  "cases": {
+    "lab_approval_denied": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "approval_result",
+          "payload": {
+            "alive_sessions": 1,
+            "approval_requests": 1,
+            "command_count": 0,
+            "command_state": null,
+            "denied_requests": 1,
+            "end_reason": null,
+            "error_code": "approval_denied",
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": "stopped",
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ended",
+            "step_count": 0
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    },
+    "lab_budget_exhausted": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "execute_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 1,
+            "command_state": "succeeded",
+            "end_reason": null,
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ready",
+            "step_count": 1
+          },
+          "status": "succeeded"
+        },
+        {
+          "kind": "second_result",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 2,
+            "command_state": "rejected",
+            "end_reason": "budget_exhausted",
+            "error_code": "budget_exhausted",
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ended",
+            "step_count": 1
+          },
+          "status": "rejected"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 2,
+            "command_state": null,
+            "end_reason": "budget_exhausted",
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ended",
+            "step_count": 1
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    },
+    "lab_duplicate_submission": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "execute_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 1,
+            "command_state": "succeeded",
+            "end_reason": null,
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ready",
+            "step_count": 1
+          },
+          "status": "succeeded"
+        },
+        {
+          "kind": "second_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 1,
+            "command_state": "succeeded",
+            "end_reason": null,
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ready",
+            "step_count": 1
+          },
+          "status": "succeeded"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 1,
+            "command_state": null,
+            "end_reason": "stopped",
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ended",
+            "step_count": 1
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    },
+    "lab_lost_response": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "execute_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 1,
+            "command_state": "outcome_unknown",
+            "end_reason": null,
+            "error_code": "outcome_unknown",
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 1,
+            "revision": 0,
+            "run_state": "quarantined",
+            "step_count": 0
+          },
+          "status": "outcome_unknown"
+        },
+        {
+          "kind": "status_reconciled",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 1,
+            "command_state": "succeeded",
+            "end_reason": null,
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 2,
+            "revision": 1,
+            "run_state": "ready",
+            "step_count": 1
+          },
+          "status": "succeeded"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 1,
+            "command_state": null,
+            "end_reason": "stopped",
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 2,
+            "revision": 1,
+            "run_state": "ended",
+            "step_count": 1
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    },
+    "lab_provider_lost": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "execute_result",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 1,
+            "command_state": "outcome_unknown",
+            "end_reason": "provider_lost",
+            "error_code": "outcome_unknown",
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ended",
+            "step_count": 0
+          },
+          "status": "outcome_unknown"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 1,
+            "command_state": null,
+            "end_reason": "provider_lost",
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ended",
+            "step_count": 0
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    },
+    "lab_recovery_forbidden": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "recovery_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": "replay_forbidden",
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": "stopped",
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ended",
+            "step_count": 0
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    },
+    "lab_stale_revision": {
+      "events": [
+        {
+          "kind": "run_created",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 0,
+            "command_state": null,
+            "end_reason": null,
+            "error_code": null,
+            "executions": 0,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 0,
+            "run_state": "ready",
+            "step_count": 0
+          },
+          "status": "ready"
+        },
+        {
+          "kind": "execute_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 1,
+            "command_state": "succeeded",
+            "end_reason": null,
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ready",
+            "step_count": 1
+          },
+          "status": "succeeded"
+        },
+        {
+          "kind": "second_result",
+          "payload": {
+            "alive_sessions": 1,
+            "command_count": 2,
+            "command_state": "rejected",
+            "end_reason": null,
+            "error_code": "stale_revision",
+            "executions": 1,
+            "live_providers": 1,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ready",
+            "step_count": 1
+          },
+          "status": "rejected"
+        },
+        {
+          "kind": "run_stopped",
+          "payload": {
+            "alive_sessions": 0,
+            "command_count": 2,
+            "command_state": null,
+            "end_reason": "stopped",
+            "error_code": null,
+            "executions": 1,
+            "live_providers": 0,
+            "queries": 0,
+            "revision": 1,
+            "run_state": "ended",
+            "step_count": 1
+          },
+          "status": "ended"
+        },
+        {
+          "kind": "cleanup",
+          "payload": {
+            "alive_sessions": 0,
+            "live_providers": 0
+          },
+          "status": "released"
+        }
+      ],
+      "schema_version": 1
+    }
+  },
+  "schema_version": 1
+}

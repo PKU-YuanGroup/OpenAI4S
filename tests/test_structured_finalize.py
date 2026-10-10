@@ -155,6 +155,7 @@ def test_finalize_spec_is_closed_host_strict_and_outside_control_registry():
         "next_steps",
         "completion_bullets",
         "task_status",
+        "lab_runs",
         # Code-mode evidence: optional on the wire and closed on the schema, so
         # an analysis turn is unaffected while a reusable_pipeline /
         # codebase_change turn has somewhere honest to put its deliverable.

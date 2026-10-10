@@ -76,6 +76,300 @@ def _runner(tmp_path, *, clock=lambda: 1.0):
     )
 
 
+class _LabTimer:
+    def __init__(self, delay, callback, args=()):
+        self.delay = delay
+        self.callback = callback
+        self.args = args
+        self.cancelled = False
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.callback(*self.args)
+
+
+def _lab_run(manager, root, *, key="first"):
+    from openai4s.lab.models import CommandOrigin, LabCaller
+
+    return manager.create_run(
+        LabCaller(root, root, None, CommandOrigin.HOST_SDK, None, None),
+        {
+            "device_id": "fake.extractor.01",
+            "profile": "toy-extract-v0",
+            "seed": 7,
+            "idempotency_key": key,
+        },
+    )
+
+
+def test_lab_runner_is_lazy_including_delete_and_close(tmp_path):
+    from openai4s.lab.devices import DeviceRegistry
+    from openai4s.lab.fake import fake_registration
+    from openai4s.lab.manager import LabManager
+    from openai4s.lab.models import LabError
+
+    runner = _runner(tmp_path)
+    registry = DeviceRegistry()
+    registry.register(fake_registration())
+    previous = LabManager(
+        lambda: runner.store.lab,
+        registry,
+        instance_id="previous-daemon",
+        clock_ms=lambda: 1000,
+    )
+    run_id = _lab_run(previous, "keep")["run"]["run_id"]
+    try:
+        runner.delete_session("missing")
+        runner.close()
+        assert runner._lab_manager is None
+        assert runner.store.lab.get_run(run_id)["status"] == "ready"
+        with pytest.raises(LabError):
+            runner.lab_manager
+        assert runner._lab_manager is None
+    finally:
+        previous.close_all("test")
+
+
+def test_lab_daemon_start_reconciles_and_server_close_releases(tmp_path, monkeypatch):
+    from openai4s.lab.devices import DeviceRegistry
+    from openai4s.lab.fake import fake_registration
+    from openai4s.lab.manager import LabManager
+    from openai4s.server import gateway
+
+    cfg = Config(
+        data_dir=tmp_path,
+        port=0,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    monkeypatch.setenv("OPENAI4S_SEED_DEMO", "0")
+    store = get_store(cfg.db_path)
+    registry = DeviceRegistry()
+    registry.register(fake_registration())
+    previous = LabManager(
+        lambda: store.lab,
+        registry,
+        instance_id="previous-daemon",
+        clock_ms=lambda: 1000,
+    )
+    old_id = _lab_run(previous, "old")["run"]["run_id"]
+    server = None
+    try:
+        server = gateway.build_app_server(cfg)
+        assert store.lab.get_run(old_id)["end_reason"] == "provider_lost"
+        manager = server.runner.lab_manager
+        manager._registry.register(fake_registration())
+        fresh = _lab_run(manager, "new")["run"]["run_id"]
+        live = manager._live[fresh]
+        server.server_close()
+        assert not live.port.alive(live.session_id)
+        assert store.lab.get_run(fresh)["end_reason"] == "provider_lost"
+    finally:
+        if server is not None:
+            server.server_close()
+        previous.close_all("test")
+
+
+def test_a_lab_that_cannot_be_built_does_not_block_daemon_start(
+    tmp_path, monkeypatch, capsys
+):
+    # Lab is optional: a broken manifest or a busy ledger at boot must not keep
+    # the daemon from serving; the manager is retried on first use.
+    from openai4s.server import gateway
+
+    cfg = Config(
+        data_dir=tmp_path,
+        port=0,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    monkeypatch.setenv("OPENAI4S_SEED_DEMO", "0")
+    attempts = []
+
+    def broken(registry, cfg):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("injected Lab build failure")
+
+    monkeypatch.setattr(gateway, "register_builtin_devices", broken)
+    server = None
+    try:
+        server = gateway.build_app_server(cfg)
+        assert "Lab is unavailable at startup" in capsys.readouterr().err
+        assert server.runner.lab_manager is not None and len(attempts) == 2
+    finally:
+        if server is not None:
+            server.server_close()
+
+
+def test_lab_manager_composition_is_singleton_and_tracks_store_generations(tmp_path):
+    from openai4s.lab.fake import fake_registration
+
+    runner = _runner(tmp_path)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            managers = list(pool.map(lambda _: runner.lab_manager, range(8)))
+        assert all(manager is managers[0] for manager in managers)
+        manager = managers[0]
+        manager._registry.register(fake_registration())
+        runner.store.close()
+        current = get_store(runner.cfg.db_path)
+        assert current is not runner.store
+        run_id = _lab_run(manager, "root")["run"]["run_id"]
+        assert current.lab.get_run(run_id)["status"] == "ready"
+        # The rest of SessionRunner historically retains its Store; this test
+        # exercises only the Lab ledger provider across the replacement.
+        runner.store = current
+    finally:
+        runner.close()
+
+
+def test_lab_updates_coalesce_manager_writes_and_cancel_on_deletion(tmp_path):
+    from openai4s.lab.fake import fake_registration
+
+    runner = _runner(tmp_path)
+    timers = []
+
+    def timer(*args, **kwargs):
+        value = _LabTimer(*args, **kwargs)
+        timers.append(value)
+        return value
+
+    runner._lab_updates._timer_factory = timer
+    try:
+        manager = runner.lab_manager
+        manager._registry.register(fake_registration())
+        one = _lab_run(manager, "root")["run"]["run_id"]
+        _lab_run(manager, "root", key="second")
+        assert len(timers) == 1 and not runner.hub.events
+        assert timers[0].delay == 0.25 and timers[0].started
+        timers[0].fire()
+        assert runner.hub.events == [
+            {
+                "type": "lab_update",
+                "root_frame_id": "root",
+                "frame_id": "root",
+                "run_id": None,
+                "latest_event_seq": runner.store.lab.latest_event_seq("root"),
+            }
+        ]
+        runner._lab_updates.changed("root", one)
+        runner._lab_updates.changed("root", one)
+        assert len(timers) == 2
+        timers[1].fire()
+        assert runner.hub.events[-1]["run_id"] == one
+        runner._lab_updates.changed("root", one)
+        runner._release_session_lab("root")
+        assert timers[-1].cancelled
+        before = list(runner.hub.events)
+        timers[-1].fire()
+        assert runner.hub.events == before
+        timer_count = len(timers)
+        runner._lab_updates.changed("root", "late-provider-completion")
+        assert len(timers) == timer_count
+        runner._lab_updates.changed("other", "run")
+        timers[-1].fire()
+        assert runner.hub.events[-1]["root_frame_id"] == "other"
+        before = list(runner.hub.events)
+        runner._lab_updates.changed("other", "run")
+        runner.close()
+        assert timers[-1].cancelled
+        runner._lab_updates.changed("other", "late")
+        timers[-1].fire()
+        assert runner.hub.events == before
+    finally:
+        runner.close()
+
+
+def test_lab_shutdown_continues_after_ledger_failure(tmp_path, monkeypatch):
+    from openai4s.lab.fake import fake_registration
+    from openai4s.lab.models import ErrorCode, LabError
+
+    runner = _runner(tmp_path)
+    manager = runner.lab_manager
+    manager._registry.register(fake_registration())
+    run_id = _lab_run(manager, "root")["run"]["run_id"]
+    live = manager._live[run_id]
+
+    def unavailable(*args, **kwargs):
+        raise LabError(ErrorCode.PERSISTENCE_UNAVAILABLE, "ledger unavailable")
+
+    monkeypatch.setattr(runner.store.lab, "end_run", unavailable)
+    runner.close()
+    assert not live.port.alive(live.session_id)
+    assert runner._lab_updates._closed
+
+
+@pytest.mark.parametrize("action", ["delete_session", "delete_project"])
+@pytest.mark.parametrize("phase", ["before_commit", "after_commit"])
+def test_lab_failed_deletion_resumes_only_existing_sessions(
+    tmp_path, monkeypatch, action, phase
+):
+    from openai4s.lab.fake import fake_registration
+
+    runner = _runner(tmp_path)
+    timers = []
+
+    def timer(*args, **kwargs):
+        value = _LabTimer(*args, **kwargs)
+        timers.append(value)
+        return value
+
+    runner._lab_updates._timer_factory = timer
+    project = runner.store.create_project(
+        name="Lab deletion", description="", context=""
+    )
+    root = runner.create_session(project["project_id"])
+    manager = runner.lab_manager
+    manager._registry.register(fake_registration())
+    run_id = _lab_run(manager, root)["run"]["run_id"]
+    live = manager._live[run_id]
+    store_method = "delete_frame" if action == "delete_session" else "delete_project"
+    original = getattr(runner.store, store_method)
+
+    def fail(*args, **kwargs):
+        if phase == "after_commit":
+            original(*args, **kwargs)
+        raise RuntimeError("injected deletion failure")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(runner.store, store_method, fail)
+            with pytest.raises(RuntimeError, match="injected deletion failure"):
+                getattr(runner, action)(
+                    root if action == "delete_session" else project["project_id"]
+                )
+        assert not live.port.alive(live.session_id)
+        assert timers[0].cancelled
+        assert not runner.hub.events
+        if phase == "after_commit":
+            assert runner.store.get_frame(root) is None
+            runner._lab_updates.changed(root, run_id)
+            assert len(timers) == 1
+        else:
+            assert runner.store.get_frame(root) is not None
+            # Its provider is gone, so the old run is honestly ended, not a
+            # `ready` run that refuses every command forever.
+            old = runner.store.lab.get_run(run_id)
+            assert (old["status"], old["end_reason"]) == ("ended", "deleted")
+            _lab_run(manager, root, key="after-rollback")
+            assert len(timers) == 2
+            # A cancelled old callback must not drain the replacement batch.
+            timers[0].fire()
+            assert not runner.hub.events
+            timers[1].fire()
+            assert runner.hub.events[-1]["root_frame_id"] == root
+            assert runner.hub.events[-1][
+                "latest_event_seq"
+            ] == runner.store.lab.latest_event_seq(root)
+    finally:
+        runner.close()
+
+
 def test_status_and_execution_attempt_share_persistent_generation_uuid(tmp_path):
     runner = _runner(tmp_path)
     frame_id = runner.store.new_frame(project_id="default", kind="turn")

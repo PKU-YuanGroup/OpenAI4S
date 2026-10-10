@@ -1314,6 +1314,126 @@
         404
       ]
     },
+    "/frames/([^/]+)/lab": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/devices/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/events": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs/([^/]+)/commands": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs/([^/]+)/commands/([^/]+)/reconcile": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs/([^/]+)/export": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs/([^/]+)/observations": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/lab/runs/([^/]+)/stop": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/frames/([^/]+)/message": {
       "content_types": [
         "application/json"

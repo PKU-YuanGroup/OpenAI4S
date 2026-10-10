@@ -178,7 +178,8 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     assert proc.returncode == 0, proc.stderr
     assert (
         "{serve,status,doctor,verify-package,inspect-package,diagnostics,stop,url,"
-        "run,init,setup,benchmark,env,jupyter,share,cluster,user,relay}" in proc.stdout
+        "run,init,setup,benchmark,env,lab,jupyter,share,cluster,user,relay}"
+        in proc.stdout
     )
     for command in (
         "serve",

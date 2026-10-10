@@ -22,6 +22,7 @@ from openai4s.sdk.compute import (
     _normalize_provider_params,
     _relativize_local,
 )
+from openai4s.sdk.lab import _Lab
 
 # Version of the worker-side Host RPC capability contract recorded in every
 # Kernel bootstrap manifest.  Bump this only for a compatibility-affecting
@@ -102,6 +103,7 @@ _ANALYSIS_DENY = frozenset(
         "query",
         "mcp",
         "compute",
+        "lab",
         "delegate",
         "children",
         "collect",
@@ -523,6 +525,10 @@ class _Host:
         # manager passes compute in `denied` when no provider is configured).
         if "compute" not in self._denied:
             self.compute = _Compute(self._call)
+        # Lab remains visible without a manager; the Host reports daemon-only
+        # availability on invocation. Analysis kernels omit this control plane.
+        if "lab" not in self._denied:
+            self.lab = _Lab(self._call)
         self.lineage = _Lineage(self._call)
         self.endpoints = _Endpoints(self._call)
         self.credentials = _Credentials(self._call)

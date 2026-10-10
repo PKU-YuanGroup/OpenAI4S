@@ -38,7 +38,7 @@ const BUILTINS = new Set([
   "self", "document", "console", "location", "navigator", "history", "screen",
   "localStorage", "sessionStorage", "indexedDB", "crypto", "performance",
   "Event", "CustomEvent", "MouseEvent", "KeyboardEvent", "PointerEvent",
-  "FocusEvent", "MessageEvent", "ErrorEvent", "PromiseRejectionEvent",
+  "FocusEvent", "MessageEvent", "ErrorEvent", "PromiseRejectionEvent", "PopStateEvent", "dispatchEvent",
   "EventTarget", "Node", "Element", "HTMLElement", "Document", "DocumentFragment",
   "Text", "Range", "Selection", "MutationObserver", "IntersectionObserver",
   "ResizeObserver", "AbortController", "AbortSignal", "URL", "URLSearchParams",
@@ -1247,6 +1247,8 @@ page.evaluate(() => {
   t("k");
   document.querySelector(".timeline-ledger-row");
   document.querySelectorAll("script");
+  dispatchEvent(new PopStateEvent("popstate"));
+  window.dispatchEvent(new window.PopStateEvent("popstate"));
   typeof openConversation === "function" && openConversation(local);
   throw new Error(\`\${S._timelineView.entries.map((entry) => actionTimelineEntryKey(entry))}\`);
 });
@@ -1268,7 +1270,7 @@ page.evaluate(() => typeof unsafeAlternative !== "undefined" && unsafeAlternativ
 page.evaluate(() => typeof stillRequired === "undefined" || stillRequired.pending.size === 0);
 page.evaluate(() => stillRequired());
 `;
-  const tmp = path.join(TESTS_DIR, ".extract_webui_contract_selftest.mjs");
+  const tmp = path.join(process.env.OPENAI4S_CONTRACT_SELFTEST_DIR || TESTS_DIR, ".extract_webui_contract_selftest.mjs");
   fs.writeFileSync(tmp, fixture, "utf8");
   try {
     const inv = emptyInventory();
@@ -1301,6 +1303,8 @@ page.evaluate(() => stillRequired());
     note(!globals.includes("groupId"), "arrow param groupId is not a global");
     note(!globals.includes("fid"), "evaluate param fid is not a global", JSON.stringify(globals));
     note(!globals.includes("document"), "document is a builtin");
+    note(!globals.includes("PopStateEvent"), "PopStateEvent is a browser builtin");
+    note(!globals.includes("dispatchEvent"), "bare and window dispatchEvent are browser builtins");
     const loading = inv.sFields.get("_workbenchLoading");
     note(!!loading && loading.write >= 1, "_workbenchLoading is written");
     const currentId = inv.sFields.get("currentId");

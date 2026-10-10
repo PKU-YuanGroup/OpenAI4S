@@ -197,6 +197,9 @@ def test_a_hidden_tool_called_anyway_is_still_refused_and_audited(tmp_path):
 _HIDDEN_FROM_FIRST_TURN = _ASK_BY_DEFAULT | {"web_download", "rollback_skill_version"}
 #: ... and hidden once their progressive groups activate.
 _HIDDEN_ONCE_ACTIVE = {
+    "lab_create",
+    "lab_execute",
+    "lab_export",
     "restore_artifact_version",
     "exec_background",
     "read_mcp_resource",

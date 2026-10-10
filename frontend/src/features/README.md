@@ -30,3 +30,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`onboarding/`](onboarding/) | M-01 first-run wizard: four-step machine, skip/checklist, capability badges. |
 | [`table/`](table/) | M-04 table Schema / Distribution / Export. B-07 `/table/profile` + `/table/export.csv`; approximate is explicit; flag=0 falls back to the sheet. |
 | [`judgment/`](judgment/) | Experimental semantic-judgment copy and `search_skills` recommendation chips. |
+| [`lab/`](lab/) | Simulation Lab bench, manifest-driven controls, REST state and WS hints. |

@@ -77,6 +77,11 @@ from openai4s.execution import (
 from openai4s.host.data import kernel_artifact_input_dir
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
+from openai4s.lab.builtin import register_builtin_devices
+from openai4s.lab.devices import DeviceRegistry
+from openai4s.lab.manager import LabManager
+from openai4s.lab.models import ErrorCode, LabError
+from openai4s.lab.runtime import build_lab_manager
 from openai4s.llm import (
     PROVIDERS,
     chat,
@@ -108,6 +113,7 @@ from openai4s.server import (
     file_routes,
     governance_routes,
     kernel_routes,
+    lab_routes,
     local_auth,
     onboarding_routes,
     orchestration_routes,
@@ -2729,6 +2735,20 @@ class SessionRunner:
         self._lock = threading.Lock()
         self._project_mutation_condition = threading.Condition(self._lock)
         self._closed = False
+        self._lab_manager_lock = threading.Lock()
+        self._lab_manager: LabManager | None = None
+        self._lab_creations = lab_routes.LabCreationGate()
+        # What every session dispatcher gets: the one manager, with tool/SDK
+        # creates behind the same deletion admission as the REST route.
+        self._session_lab = lab_routes.SessionLabManager(self)
+        self._lab_updates = lab_routes.LabUpdateEmitter(
+            emit=lambda root, event: self.hub.broadcast(root, event),
+            latest_seq=lambda root: get_store(self.cfg.db_path).lab.latest_event_seq(
+                root
+            ),
+            session_exists=lambda root: get_store(self.cfg.db_path).get_frame(root)
+            is not None,
+        )
         # Reconciler/lease callbacks run on the orchestration control threads.
         # A terminal session cleanup has to enter the session FIFO and may sit
         # behind a long Cell, so doing it in the callback stalls reconciliation
@@ -2932,6 +2952,7 @@ class SessionRunner:
             ),
             revoke_shares=self.shares.revoke_for_session,
             release_compute=self._release_session_compute,
+            release_lab=self._release_session_lab,
             cleanup_frameless_uploads=True,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
@@ -3834,6 +3855,51 @@ class SessionRunner:
             except (ExecutionCancelled, TimeoutError):
                 return False
 
+    @property
+    def lab_manager(self) -> LabManager:
+        """One daemon manager, resolving the current Store on every operation."""
+        with self._lab_manager_lock:
+            if self._closed:
+                raise LabError(ErrorCode.PROVIDER_UNAVAILABLE, "Lab manager is closed")
+            if self._lab_manager is None:
+                registry = DeviceRegistry()
+                register_builtin_devices(registry, self.cfg)
+                self._lab_manager = build_lab_manager(
+                    ledger_provider=lambda: get_store(self.cfg.db_path).lab,
+                    registry=registry,
+                    on_change=self._lab_updates.changed,
+                )
+            return self._lab_manager
+
+    def _restore_session_lab(self, root_frame_id: str) -> None:
+        """A deletion that did not happen: hints resume, creation reopens.
+
+        Only for a session that still exists; the manager's tombstone otherwise
+        stays (creation also requires the frame, so it is harmless either way).
+        """
+        self._lab_updates.deletion_failed(root_frame_id)
+        with self._lab_manager_lock:
+            manager = self._lab_manager
+        try:
+            exists = get_store(self.cfg.db_path).get_frame(root_frame_id) is not None
+        except Exception:  # noqa: BLE001 - must not mask the deletion error
+            exists = False
+        if manager is not None and exists:
+            manager.on_session_restored(root_frame_id)
+
+    def _release_session_lab(self, root_frame_id: str) -> None:
+        # No property access: deleting an untouched session must not reconcile
+        # the whole daemon's Lab ledger. Wait only for same-root admissions;
+        # an opening provider is discarded by the manager's tombstone.
+        with self._lab_creations.session(root_frame_id):
+            with self._lab_manager_lock:
+                manager = self._lab_manager
+            try:
+                if manager is not None:
+                    manager.on_session_deleted(root_frame_id)
+            finally:
+                self._lab_updates.drop_session(root_frame_id)
+
     def drop_session(
         self, root_frame_id: str, *, reason: str = "session_closed"
     ) -> bool:
@@ -3890,6 +3956,9 @@ class SessionRunner:
             self._deleting_sessions.add(root_frame_id)
         try:
             return self.deletions.delete_session(root_frame_id)
+        except BaseException:
+            self._restore_session_lab(root_frame_id)
+            raise
         finally:
             with self._lock:
                 self._deleting_sessions.discard(root_frame_id)
@@ -4027,6 +4096,10 @@ class SessionRunner:
                 while self._frameless_artifact_mutations:
                     self._project_mutation_condition.wait()
             return self.deletions.delete_project(project_id)
+        except BaseException:
+            for root_frame_id in roots:
+                self._restore_session_lab(root_frame_id)
+            raise
         finally:
             with self._lock:
                 self._deleting_sessions.difference_update(roots)
@@ -4445,6 +4518,17 @@ class SessionRunner:
         if tunnel is not None:
             tunnel.close()
         self.executions.close(reason="daemon_shutdown")
+        with self._lab_manager_lock:
+            lab_manager = self._lab_manager
+        try:
+            if lab_manager is not None:
+                lab_manager.close_all("daemon_shutdown")
+        except Exception:  # noqa: BLE001 - the remaining shutdown must still run
+            # close_all already releases providers even when ledger writes
+            # fail; any other failure must not skip the per-session drops.
+            pass
+        finally:
+            self._lab_updates.close()
         for st in self._session_snapshot():
             self.drop_session(st.root_frame_id, reason="daemon_shutdown")
         with self._lock:
@@ -5854,6 +5938,40 @@ class SessionRunner:
         remote_ctx = _remote_gpu_runtime_context()
         if remote_ctx:
             ctx += "\n\n" + remote_ctx
+        # Probed while seeding a session, never on the per-turn prompt path:
+        # availability can inspect an installation and list_devices can sweep.
+        # Only "available" is remembered. A provider installed while the
+        # daemon runs, like a transient failure (a busy ledger, a manager
+        # being rebuilt), is found at the next seeding.
+        lab_available = False
+        with self.__dict__.setdefault("_lab_prompt_lock", threading.Lock()):
+            if hasattr(self, "_lab_prompt_available"):
+                lab_available = self._lab_prompt_available
+            else:
+                try:
+                    from openai4s.lab.models import CommandOrigin, LabCaller
+
+                    caller = LabCaller(
+                        st.root_frame_id,
+                        st.root_frame_id,
+                        None,
+                        CommandOrigin.SYSTEM,
+                        None,
+                        None,
+                    )
+                    lab_available = any(
+                        row.get("available") is True
+                        for row in self.lab_manager.list_devices(caller)
+                    )
+                    if lab_available:
+                        self._lab_prompt_available = True
+                except Exception:  # noqa: BLE001 - seeding never fails on Lab
+                    lab_available = False
+        if lab_available:
+            ctx += (
+                "\n\nLab is simulation only; use the lab_* tools. "
+                'First load_skill("lab-simulation") for the recipe and evidence rules.'
+            )
         # Connectors (MCP tools) the agent can call
         try:
             conns = [c for c in self.store.list_connectors() if c.get("enabled")]
@@ -6041,6 +6159,18 @@ class SessionRunner:
             bind_session_domain = getattr(disp, "set_session_domain", None)
             if callable(bind_session_domain):
                 bind_session_domain(self.session_domain)
+            # Native lab_* tools and host.lab reach the daemon's one manager
+            # (never a second one: startup reconciliation would end live runs).
+            bind_lab = getattr(disp, "set_lab_manager", None)
+            if callable(bind_lab):
+                bind_lab(lambda: self._session_lab)
+            bind_lab_exporter = getattr(disp, "set_lab_exporter", None)
+            if callable(bind_lab_exporter):
+                bind_lab_exporter(
+                    lambda caller, run_id, include, bound: lab_routes.export_for_session(
+                        self, caller, run_id, include, bound, session=st
+                    )
+                )
             # Project every visible host.* call into persisted UI activity.
             disp.on_step = self._make_step_sink(st)
             disp.on_plan = self._make_plan_sink(st)
@@ -16368,6 +16498,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
             if auto_mode_routes.handle(self, method, sub, q, runner):
                 return
+            if lab_routes.handle(self, method, sub, q, runner):
+                return
             if artifact_workbench_routes.handle(self, method, sub, q, runner):
                 return
             if onboarding_routes.handle(
@@ -21183,6 +21315,18 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         _seed_example_connector(cfg)
         _migrate_builtin_connector_commands(cfg)
         _seed_datapro_connector(cfg)
+        # SessionRunner itself stays lazy for non-daemon compositions/tests.
+        # Startup reconciliation must finish before accepting HTTP requests.
+        # A Lab that cannot be built (a broken manifest, a busy ledger) must
+        # not keep the daemon from starting: the property retries on use.
+        try:
+            runner.lab_manager
+        except Exception as exc:  # noqa: BLE001 - Lab is optional at boot
+            print(
+                f"OpenAI4S Lab is unavailable at startup ({type(exc).__name__}); "
+                "it will be retried on first use",
+                file=sys.stderr,
+            )
         handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     except BaseException:

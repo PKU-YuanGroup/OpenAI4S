@@ -1,0 +1,165 @@
+{
+  "id": "lab-simulation",
+  "version": "1.0.0",
+  "title": "Offline Lab simulation",
+  "summary": "Real Store and manager admission, reconciliation and paired policy evaluation with fake devices.",
+  "steps": [
+    "lab_simulation"
+  ],
+  "permissions": [
+    "lab:simulation"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "A refused action dispatches or an expected refusal completes normally",
+    "Unknown results are retried instead of reconciled",
+    "Policies see simulator truth or use unmatched configurations",
+    "An episode leaves a live provider"
+  ],
+  "cases": [
+    {
+      "id": "lab-simulation/success",
+      "title": "success",
+      "outcome": "success",
+      "inputs": {
+        "lab_simulation": {
+          "scenario": "success"
+        }
+      },
+      "expect": {
+        "command_state": "succeeded",
+        "revision": 1,
+        "step_count": 1,
+        "observed_unknown": false,
+        "executions": 1,
+        "queries": 0
+      }
+    },
+    {
+      "id": "lab-simulation/stale_revision",
+      "title": "stale revision",
+      "outcome": "failure",
+      "inputs": {
+        "lab_simulation": {
+          "scenario": "stale_revision"
+        }
+      },
+      "expect": {
+        "error_type": "LabBenchmarkRefusal",
+        "error__contains": "stale_revision"
+      }
+    },
+    {
+      "id": "lab-simulation/approval_denied",
+      "title": "approval denied",
+      "outcome": "permission_denied",
+      "inputs": {
+        "lab_simulation": {
+          "scenario": "approval_denied"
+        }
+      },
+      "expect": {
+        "error_type": "LabBenchmarkRefusal",
+        "error__contains": "approval_denied"
+      }
+    },
+    {
+      "id": "lab-simulation/recovered",
+      "title": "recovered",
+      "outcome": "recovered",
+      "inputs": {
+        "lab_simulation": {
+          "scenario": "recovered"
+        }
+      },
+      "expect": {
+        "command_state": "succeeded",
+        "revision": 1,
+        "step_count": 1,
+        "observed_unknown": true,
+        "executions": 1,
+        "queries": 2
+      }
+    },
+    {
+      "id": "lab-simulation/policies",
+      "title": "Paired fixed, random and scripted LLM policies",
+      "outcome": "success",
+      "steps": [
+        "lab_compare_policies"
+      ],
+      "expect": {
+        "comparison": {
+          "comparable": true,
+          "policies": {
+            "fixed": {
+              "episodes": 3,
+              "goal_met_rate": 1.0,
+              "mean_action_count": 13.0
+            },
+            "random": {
+              "episodes": 3,
+              "goal_met_rate": 0.0,
+              "mean_action_count": 8.0
+            },
+            "scripted_llm": {
+              "episodes": 3,
+              "goal_met_rate": 0.3333333333333333,
+              "mean_action_count": 2.0
+            }
+          }
+        },
+        "counts": {
+          "fixed": {
+            "applied_action_count": 30,
+            "command_states": {
+              "failed": 9,
+              "succeeded": 30
+            },
+            "episode_stop_reasons": {
+              "ended": 3
+            },
+            "llm_calls": 0,
+            "rejected_illegal_action_count": 0,
+            "unresolved_count": 0,
+            "with_observation": 30
+          },
+          "random": {
+            "applied_action_count": 11,
+            "command_states": {
+              "failed": 12,
+              "rejected": 1,
+              "succeeded": 11
+            },
+            "episode_stop_reasons": {
+              "ended": 2,
+              "max_steps": 1
+            },
+            "llm_calls": 0,
+            "rejected_illegal_action_count": 0,
+            "unresolved_count": 0,
+            "with_observation": 11
+          },
+          "scripted_llm": {
+            "applied_action_count": 6,
+            "command_states": {
+              "succeeded": 6
+            },
+            "episode_stop_reasons": {
+              "ended": 3
+            },
+            "llm_calls": 6,
+            "rejected_illegal_action_count": 0,
+            "unresolved_count": 0,
+            "with_observation": 6
+          }
+        },
+        "seeds": [
+          3,
+          17,
+          41
+        ]
+      }
+    }
+  ]
+}

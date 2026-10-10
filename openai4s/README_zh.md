@@ -56,6 +56,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`execution/`](./execution/) | 科学 Cell 在内核之外要经过的环节：准入、取消、依赖投影、结果值和超时恢复。 |
 | [`host/`](./host/) | `HostDispatcher` 组合 facade 背后的聚焦服务。 |
 | [`kernel/`](./kernel/) | 常驻 Python/R worker 的所在地。语言无关的 manager 协议也在这里，还有环境选择、沙箱集成和 Cell 内的 Host RPC。 |
+| [`lab/`](./lab/) | 仿真优先的 Lab 合同：严格的值对象、状态机、设备/账本/管理器端口、按精确单位换算的能力校验、只含传感量的投影，以及进程内假设备。它是参照 Model Hardware Standard 公开理念组织的内部合同，不是 MHS 的实现；ChemGymRL provider 进程在顶层包 `openai4s_lab_provider/` 里。 |
 | [`llm/`](./llm/) | 供应商中立的 LLM 客户端。capabilities、标准化的消息与工具，以及标准库 transport，都架在每家供应商各自的 wire 适配器之上。 |
 | [`mcp_servers/`](./mcp_servers/) | 内置的纯标准库 stdio MCP 服务器：既有用于演示和测试的示例 fixture `example_server.py`，也有可部署的 `protein_design/` 后端适配器——其重型模型依赖始终留在核心之外。 |
 | [`orchestration/`](./orchestration/) | 集群控制平面：被请求的工作是什么、为其中一次尝试授予了什么资源，以及任何资源平面都要呈现的 backend Protocol。它的定义性特征在于它**不**包含什么——一条被检查的规则（INV-2）把调度器的每一个词都挡在核心的源码与 import 图之外，好让做策略的代码长不出带调度器形状的假设。 |

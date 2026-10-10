@@ -30,3 +30,6 @@ CLI 只负责组合，不负责编排。`openai4s run` 用 [`../agent/`](../agen
 - 退出码是判定结果，不是装饰。`doctor` 用 0 正常 / 1 可用但降级 / 2 检查失败作答，并且不需要 daemon —— 会让人想跑它的场景，多半正是 daemon 起不来；数据目录本身就是坏的那一项时，它也退回到朴素的 `Config` 而不是直接抛异常。`benchmark` 在工作流数为零时判失败，而不是对着零个工作流报一次干净的通过。
 - 可选的 Jupyter import 只发生在 Jupyter 子命令的 handler 里。
 - CLI 的输出和退出码是运维接口。改动它们，就要连测试和文档一起改。
+
+`openai4s lab setup chemgymrl [--python PATH] [--dry-run] [--rollback]`,
+`lab status`, `lab smoke [--profile PROFILE]`: 管理隔离仿真 provider 代际，不写数据库。

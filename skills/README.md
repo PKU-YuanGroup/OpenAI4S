@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 606 bundled Skills: 45 curated OpenAI4S recipes plus the 561
+This tree exposes 607 bundled Skills: 46 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
@@ -74,6 +74,7 @@ refuses to do:
 | [`figure-composer/`](figure-composer/) | The middle tier of the three figure Skills: make one multi-panel figure good. It turns a one-sentence claim into a panel outline on a 12-column grid, fans out a sub-agent per panel, tiles and letters the result, then runs an adversarial composite review for at most three rounds. |
 | [`figure-style/`](figure-style/) | The inner tier: the rules for one plot. Deliberately a checklist and not a house look, covering data fidelity, label economy, chart choice by data shape, and a render-then-verify pass. The correctness sections bind everywhere; the aesthetic sections are defaults a deliberate alternative can override. Every panel sub-agent loads this. |
 | [`indication-dossier/`](indication-dossier/) | Five resumable phases that build a dossier on one indication framed as a patient population rather than a disease: who they are, epidemiology, biology, standard of care, regulatory precedent, landmark trials. It expects the clinical-trials and pubmed MCP servers and falls back to web search against the public sources when they are not connected. |
+| [`lab-simulation/`](lab-simulation/) | Discover simulation devices, choose one bounded action from the live capability manifest, reconcile unknown outcomes without resending, analyze public observations in Python, and report exact run/command/observation evidence. Lab runs require the Web daemon; this recipe grants no permissions and provides no real-device instructions. |
 | [`ligandmpnn/`](ligandmpnn/) | Inverse folding when the design surface is not protein alone. Small molecules, nucleic acids, and metals are atoms the network can see, and `proteinmpnn` would simply ignore them. Its runner is also the one that threads designed sequences back onto the structure and writes PDBs. |
 | [`literature-review/`](literature-review/) | From "what is the seminal paper for X" to a full multi-source review. The discipline is the content: retrieve before writing, resolve every DOI instead of recalling it, check CrossRef for retractions, and produce paragraphs that open on your synthetic claim rather than on an author's name. |
 | [`mineral_spectra_analysis/`](mineral_spectra_analysis/) | Unmixing the Raman spectrum of an unknown mineral mixture. Preprocess once, then loop: detect residual peaks, match the library, refit all components with NNLS, subtract. The blind loop must not read `truth.json`; ground-truth evaluation is a separate step that only runs once the answer is fixed. |

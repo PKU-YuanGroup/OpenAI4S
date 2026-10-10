@@ -154,6 +154,7 @@ function languageSwitchRepaint(): (lang: Lang) => void {
     renderDockTabs();
     if (activeTab.value === "timeline") callLane("renderActionTimeline");
     else if (activeTab.value === "notebook") callLane("renderNotebook");
+    else if (activeTab.value === "lab") callLane("renderLab");
   };
 }
 

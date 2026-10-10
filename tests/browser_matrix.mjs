@@ -151,6 +151,24 @@ async function runEngine(engineName) {
       return frameId;
     });
 
+    await check(engineName, "Lab tab displays the daemon's simulation devices", async () => {
+      await page.evaluate((fid) => window.openConversation(fid), frameId);
+      if (await page.locator("#rightdock.collapsed").count()) await page.locator(".nb-tray").click();
+      await page.locator("#dock-tabs .dock-tab").filter({ hasText: /^Lab$/ }).click();
+      const pane = page.locator("#dock-lab");
+      await pane.waitFor({ state: "visible" });
+      const select = pane.locator(".lab-setup select").first();
+      await select.waitFor();
+      const listed = await pageApi(`/frames/${frameId}/lab`);
+      if (listed.status !== 200) throw new Error(`GET Lab: ${listed.status}`);
+      const expected = listed.body.devices.map((d) => d.device_id).sort();
+      const shown = (await select.locator("option").evaluateAll((nodes) => nodes.map((n) => n.value))).sort();
+      if (!expected.includes("toy.extractor.01") || JSON.stringify(shown) !== JSON.stringify(expected)) {
+        throw new Error(`Lab device options ${JSON.stringify(shown)} != ${JSON.stringify(expected)} (toy required)`);
+      }
+      return shown.join(", ");
+    });
+
     // ---- websocket: the engine's own implementation ----------------------
     await check(engineName, "websocket connects and receives", async () => {
       const opened = await page.evaluate(

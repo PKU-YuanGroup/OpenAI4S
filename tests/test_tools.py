@@ -124,6 +124,9 @@ def test_concrete_tool_instances_do_not_share_mutable_schemas():
 def test_control_tool_classes_own_their_security_policy():
     approval_methods = {tool.host_method for tool in REGISTRY if tool.requires_approval}
     assert approval_methods == {
+        "lab_create",
+        "lab_execute",
+        "lab_export",
         "list_dir",
         "read_file",
         "write_file",

@@ -2,15 +2,15 @@
 
 [English](upgrading.md)
 
-已经装了 0.3.0、要升到下一版本的，先读下一节。数据库仍在 0.2.x 的，下一版本会在一次打开里把它一直迁到 schema 34：到 schema 32 为止的步骤读后面那一节，33 和 34 读下一节。
+已经装了 0.3.0、要升到下一版本的，先读下一节。数据库仍在 0.2.x 的，下一版本会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读后面那一节，33 到 35 读下一节。
 
-## 升级到下一版本（schema 32 → 34）
+## 升级到下一版本（schema 32 → 35）
 
 schema 33 会改写已经落盘的 judge 审计行，迁移成功之后还会删掉它自己的升级前副本。那份副本不是退回上一版本的办法。升级前请自己复制整个数据目录。
 
 ### 先停守护进程，并自己复制数据目录
 
-安装或首次启动下一版本之前，先停掉守护进程。运行 `openai4s stop`，或退出应用，再用 `openai4s status` 确认没有守护进程仍在运行。如果还有进程在跑带 `host.judge`、但没有本版审计投影的构建（例如 0.3.0 之后 `main` 的源码构建，版本号仍显示 0.3.0），它可能在这次升级提交之后才写入一条带着原始参数的 `judge` 行，而第 33 步不会再跑。已发布的 0.3.0 安装包没有 `host.judge`，不写 `judge` 行。提交后的 `user_version` 是 34。
+安装或首次启动下一版本之前，先停掉守护进程。运行 `openai4s stop`，或退出应用，再用 `openai4s status` 确认没有守护进程仍在运行。如果还有进程在跑带 `host.judge`、但没有本版审计投影的构建（例如 0.3.0 之后 `main` 的源码构建，版本号仍显示 0.3.0），它可能在这次升级提交之后才写入一条带着原始参数的 `judge` 行，而第 33 步不会再跑。已发布的 0.3.0 安装包没有 `host.judge`，不写 `judge` 行。提交后的 `user_version` 是 35。
 
 然后在没有任何进程运行时复制整个数据目录。里面有 Artifact、日志和访问令牌，不只有数据库。请把 `openai4s.db` 旁边的 `openai4s.db-wal` 或 `openai4s.db-journal`（如果存在）一起复制：
 
@@ -22,9 +22,9 @@ cp -a ~/.openai4s ~/.openai4s-before-next
 
 容器镜像把数据放在 `/data`（`OPENAI4S_DATA_DIR=/data`），也就是 `compose.yaml` 里名为 `openai4s-data` 的命名卷，或 `deploy/kubernetes.yaml` 里名为 `openai4s-data` 的 PersistentVolumeClaim。请先停止容器（或把 Deployment 缩容到 0），备份这个卷或 PVC，再启动下一版本的镜像。
 
-### schema 33 和 schema 34 改了什么
+### schema 33 到 35 改了什么
 
-下一版本里第一个打开数据库的命令会把 `<data_dir>/openai4s.db` 从 schema 32 迁到 schema **34**。启动守护进程和运行 `openai4s run` 都会触发。`openai4s doctor` 和 `openai4s diagnostics` 仍然只读取 schema 版本。这次升级在一个事务里提交新 schema。失败时数据库回滚到升级前的 schema。
+下一版本里第一个打开数据库的命令会把 `<data_dir>/openai4s.db` 从 schema 32 迁到 schema **35**。启动守护进程和运行 `openai4s run` 都会触发。`openai4s doctor` 和 `openai4s diagnostics` 仍然只读取 schema 版本。这次升级在一个事务里提交新 schema。失败时数据库回滚到升级前的 schema。
 
 数据库旁边的副本，文件名是正在离开的那个 schema。schema 32 的库会被复制为 `openai4s.db.v32.bak`。迁移成功后会删除 `openai4s.db.v32.bak`。仍低于 schema 32 的库使用 0.2.x 那一节里的文件名（离开 schema 27 时仍是 `openai4s.db.v27.bak`），并在同一次打开里一直迁到新 schema。失败时数据库留在原来的 schema，副本保留，命令以一行 `error:` 停止，并给出副本位置。此时 `openai4s serve` 和 `openai4s run` 的退出码是 2。重新跑升级是安全的。
 
@@ -34,6 +34,9 @@ cp -a ~/.openai4s ~/.openai4s-before-next
 | --- | --- |
 | 33 | `redact_judge_host_call_args`：改写 `host_call_log` 里已经落盘的 `judge` 行 |
 | 34 | `background_exec_receipts`：新增表；已有行保持原样 |
+| 35 | `lab_ledger`：新增六张按会话归属的 Lab 表及索引 |
+
+schema 35（`lab_ledger`）只新增六张 `lab_*` 表及其索引，不改动已有行。六张表全部列入 `QUERY_DENYLIST`，agent SQL 无法读取；其中的行随会话一起删除。
 
 改写期间连接会执行 `PRAGMA secure_delete = ON`，并在事务提交前按名字恢复原先的模式（`OFF`、`ON` 或 `FAST`）。开着 `secure_delete` 时，SQLite 会用零覆盖这次 `UPDATE` 换下来的旧字节。
 
@@ -123,6 +126,15 @@ CLI 和子代理的后台 job 不入库，结果里是 `persistent: false`。Web
 `docs/response-schemas.json` 已按真实响应重新采集。
 
 ### 工作台
+
+右侧面板新增 **Lab** 页签，用于纯仿真的萃取实验。用
+`openai4s lab setup chemgymrl` 安装可选 CPython 3.10 provider，运行
+`openai4s lab status` 检查后，打开会话的 Lab 页签。agent/`host.lab` 的创建和执行
+默认需要批准；手动控件直接表达用户操作。**结束实验**（`end_action`）与安全**停止**
+（`stopped`）不同，二者也都不是 agent 的 Stop。**结果**区可把 run 导出为精确 Artifact
+版本并只读回放；仿真真值只会作为浏览器下载，从不存入会话。
+daemon 重启会结束失去 provider 的 run，不重放实验。安装、传感器限制与可选上游的
+GPL 许可见 [Lab 中文指南](lab.md#中文用户指南)。
 
 从用户消息创建分支的按钮，只在会话能力 `fork_from_message` 为真时显示。工作台把 `documentElement.dataset.forkFromMessage` 设为 `on` 或 `off`，`.msg-fork` 规则按这个标志显示按钮。请求是 `POST /frames/{fid}/branches/fork`，正文恰好是 `{from_message_id}`。没有检查点的消息返回 409。按钮保持不可用，并显示服务器原句；消息为空时显示「无法从此问题创建分支。」新分支有自己的工作区，在你激活之前保持不激活。
 

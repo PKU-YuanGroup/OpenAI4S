@@ -109,6 +109,7 @@ from openai4s.storage.governance import (
     create_governance_schema,
 )
 from openai4s.storage.kernels import KernelGenerationRepository
+from openai4s.storage.lab import LabLedger, create_lab_ledger_schema
 from openai4s.storage.leases import LeaseRepository, create_lease_schema
 from openai4s.storage.memories import MemoryRepository
 from openai4s.storage.metadata import (
@@ -773,6 +774,14 @@ QUERY_DENYLIST = frozenset(
         # Background-cell stdout. The peek projection is the read path; agent
         # SQL must not select the receipt table.
         "background_exec_receipts",
+        # Evaluations contain simulator truth; all other Lab tables contain raw
+        # actions/receipts. Agents must use the projected Lab tools, never SQL.
+        "lab_runs",
+        "lab_commands",
+        "lab_observations",
+        "lab_evaluations",
+        "lab_leases",
+        "lab_events",
         "skill_blobs",
         "skill_versions",
         "skill_version_files",
@@ -1380,6 +1389,7 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._lab = LabLedger(self._conn, self._lock, clock_ms=lambda: _now_ms())
         self._background_exec_receipts = BackgroundExecReceiptRepository(
             self._conn,
             self._lock,
@@ -1674,6 +1684,7 @@ class Store:
                         "background_exec_receipts",
                         self._apply_background_exec_receipts,
                     ),
+                    35: ("lab_ledger", self._apply_lab_ledger),
                 },
             )
             if report["migrated"]:
@@ -1908,6 +1919,13 @@ class Store:
                     )
         finally:
             conn.execute(f"PRAGMA secure_delete = {previous_name}").fetchall()
+
+    def _apply_lab_ledger(self, conn: sqlite3.Connection) -> None:
+        """Version 35: Additive Lab ledger tables and indexes.
+
+        Existing rows are untouched; DDL participates in the migration transaction.
+        """
+        create_lab_ledger_schema(conn)
 
     def _apply_background_exec_receipts(self, conn: sqlite3.Connection) -> None:
         """Version 34: bounded receipts for Web background cells.
@@ -2611,6 +2629,11 @@ class Store:
     def model_capability_receipts(self) -> ModelCapabilityReceiptRepository:
         """Exact probe receipts bound to profile revision + endpoint."""
         return self._model_capability_receipts
+
+    @property
+    def lab(self) -> LabLedger:
+        """Durable Lab command ledger, sharing this Store's connection and lock."""
+        return self._lab
 
     @property
     def background_exec_receipts(self) -> BackgroundExecReceiptRepository:

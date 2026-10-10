@@ -152,7 +152,19 @@ def literal_permission_pattern(text: str) -> str:
 # Gentle defaults for the local research daemon.  The kernel can already run
 # arbitrary Python, so routine confined work stays frictionless while genuinely
 # external or irreversible host operations ask an actively watching human.
+# Only the approval-gated Lab tools consult rules: create, execute and export.
+# Seeding rows for the read tools and the approval-free safety stop would show
+# operators a "deny" switch that the dispatcher never reads. lab_export joined
+# version 5 before that version shipped; without its row the unmatched default
+# already asked, but the rules panel offered no switch for it.
+_LAB_PERMISSION_RULES = (
+    ("lab_create", "*", "ask"),
+    ("lab_execute", "*", "ask"),
+    ("lab_export", "*", "ask"),
+)
+
 DEFAULT_PERMISSION_RULES = (
+    *_LAB_PERMISSION_RULES,
     ("read_file", "*.env", "deny"),
     ("read_file", "*", "allow"),
     ("write_file", "*", "allow"),
@@ -196,8 +208,9 @@ DEFAULT_PERMISSION_RULES = (
 # marker.  New releases advance this separate version and list only the rules
 # introduced by that version, so upgrades add new defaults without restoring a
 # default that an operator deliberately deleted or changed.
-_DEFAULT_PERMISSION_RULE_VERSION = 4
+_DEFAULT_PERMISSION_RULE_VERSION = 5
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
+    5: _LAB_PERMISSION_RULES,
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
 }

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "lab_approval_denied",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "lab-sim"
+  ],
+  "surface": "lab_simulation",
+  "task": "A real HostDispatcher broker denial leaves the command ledger and device untouched.",
+  "fixtures": {
+    "lab_simulation": {
+      "case": "approval_denied"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "lab_simulation"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "approval_denied",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_created",
+      "approval_result",
+      "run_stopped",
+      "cleanup"
+    ],
+    "invariants": []
+  }
+}

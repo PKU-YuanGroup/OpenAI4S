@@ -925,6 +925,66 @@ the route index so the surface is discoverable from one place.
 | `PUT /shares/{id}` | Publish or update a share (optional TTL); ensures the tunnel. Unknown id → `404`. |
 | `DELETE /shares/{id}` | Revoke a share and unregister it from the relay (`shares.revoke()`). |
 
+### Lab simulations (session-scoped frames routes)
+
+Lab routes require an existing root session. Team visibility and owner/admin
+control checks apply, and a quarantined session refuses POST with `423`.
+The caller carries the session owner's identity, including when a project
+member reads it. The daemon owns one lazily composed Lab manager and performs
+startup reconciliation before accepting requests.
+
+| Method & path | Body / 200 response |
+| --- | --- |
+| `GET /frames/{fid}/lab` | `{devices, runs, latest_event_seq}`; up to 50 runs. |
+| `GET /frames/{fid}/lab/devices/{device_id}?profile=` | `{descriptor}`; omitted profile selects the first. |
+| `POST /frames/{fid}/lab/runs` | Body `{device_id, profile, seed?, budgets?, idempotency_key}` → `{run, descriptor, observation}`. |
+| `GET /frames/{fid}/lab/runs/{run_id}` | `{run, descriptor, observation, commands}`; full observation and the latest 50 commands, read only from the ledger. |
+| `GET /frames/{fid}/lab/runs/{run_id}/commands?after_seq=&limit=` | `{commands, next_after_seq}`; defaults 0 and 50. |
+| `GET /frames/{fid}/lab/runs/{run_id}/observations?after_sequence=&limit=&full=` | `{observations, next_after_sequence}`; defaults -1, 20 and true. `full=false` requests the bounded array summary. |
+| `POST /frames/{fid}/lab/runs/{run_id}/commands` | Body `{operation, source?, target?, parameters?, expected_revision, idempotency_key}` → `{run, command, observation}`. |
+| `POST /frames/{fid}/lab/runs/{run_id}/commands/{command_id}/reconcile` | Empty body → `{run, command, observation}`; may query the existing provider once, never resends. |
+| `POST /frames/{fid}/lab/runs/{run_id}/stop` | Body `{reason?}` → `{run, stopped, semantics}`. |
+| `POST /frames/{fid}/lab/runs/{run_id}/export` | Body `{include_evaluation?: boolean}` → `{run_id, include_evaluation, command_count, observation_count, artifacts, ground_truth?}`; each Artifact has `{kind, artifact_id, version_id, filename, checksum}`. `ground_truth` `{filename, label, content}` is present only when `include_evaluation` is true. Refused with 409 `trusted_capture_busy` while a turn or execution owns the workspace. |
+| `GET /frames/{fid}/lab/events?after_seq=&limit=` | `{events, next_after_seq, latest_event_seq}`; defaults 0 and 200. |
+
+Unknown body keys (including provider `options`) and missing idempotency keys
+are `422 invalid_parameters`. Repeated POST with the same key returns the
+existing result (`200`); different requests sharing a key are `409
+idempotency_conflict`. Rejected/failed commands are also `200`: inspect
+`command.state`. An unknown outcome returns the status envelope with `200`;
+query that command's result instead of submitting a new command.
+
+Lab errors use `{error, code, status, request_id, details?}`: invalid parameters
+or mode → 422; missing run/device → 404; replay forbidden → 403; provider,
+adapter or persistence unavailable → 503. No default route exposes evaluation,
+simulation truth, provider actions, credentials, ownership or interpreter paths.
+Exports read recorded ledger evidence without executing or reconciling commands.
+They produce actions JSONL, observations JSON/CSV and a report. Every export
+creates a new version of each named Artifact; observation rows keep the first
+committed observations JSON version. Full arrays stay in files; callers get only
+counts and exact version references. Evaluation is excluded by default. A
+person's workbench request with `include_evaluation: true` receives the
+explicitly labelled **Simulation ground truth (仿真真值)** inline in that one
+response, for the browser to download. It is never committed as an Artifact or
+written to the session workspace, where the agent could read it, and the report
+only notes that it was downloaded. Tool `lab_export` and SDK
+`host.lab.export(run_id)` use the same service but cannot request truth: the
+tool schema has no such argument and the Host refuses it from any origin other
+than the workbench. Tool/SDK export requires approval (default ask, seed v5
+unchanged) and a foreground capture scope. Recovery replay refuses exports. A
+workbench export is an external Artifact mutation, like an upload: it is refused
+with 409 while a turn or execution owns the workspace. The client export
+deadline is 120 seconds; exporting never calls a provider.
+
+Recorded playback reads commands and observations only. Finishing an experiment
+executes the advertised terminal `end_experiment` capability (normal outcome
+`end_action`); the separate safety stop ends it with `stopped`. Neither playback
+nor exporting repeats a recorded command.
+
+The list and event routes may close idle simulations; run details, commands
+and observations are ledger-only. Deletion closes providers before deleting
+their ledger rows; daemon shutdown also releases every live provider.
+
 ### Compute / environments / kernel packages
 
 | Method & path | Behavior |
@@ -1029,6 +1089,7 @@ chunks and flag-off completion chunks omit `delivery_id`.
 | --- | --- | --- |
 | `notebook_cell_draft` | `frame_id`, `draft_id`, `revision`, `source`, `status`, `reason` | A Notebook cell the agent is composing, before it runs. Superseded revisions are collapsed in the resume buffer so a reconnect renders only the newest. Emitted by `server/agent_run.py`. |
 | `recovery_state` | `branch_id`, `recovery_id`, `state`, `status`, `message` | A kernel-recovery attempt changing state. Emitted by `server/recovery_execution.py`. |
+| `lab_update` | `root_frame_id`, `frame_id`, `run_id` (or null), `latest_event_seq` | Ledger-change hint from any Lab manager entry point. At most one per session every 250 ms; multiple runs in a batch produce null `run_id`. Re-read Lab REST state; the event contains no observation or provider data. The hub supplies the ordinary authorized, sequenced delivery. |
 | `recovery_log` | `branch_id`, `recovery_id`, plus the journal entry's own fields | One line of a recovery's journal, as it happens. Emitted by `server/recovery_control.py`. |
 | `branch_activated` | `branch_id`, `checkpoint_id`, `ok` | A branch became the session's active one, and its runtime state was reconstructed. Emitted by `server/session_domain.py`. |
 | `cursor_checkpoint_failed` | `branch_id`, `source_kind`, `source_id`, `reason`, `ok: false` | A cell or message completed but its cursor checkpoint could not be captured — so forking from that point will 409 rather than reconstruct state it does not have. Emitted by `server/session_domain.py`. |

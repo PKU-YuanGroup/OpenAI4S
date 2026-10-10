@@ -23,6 +23,7 @@ compromised kernel or arbitrary changes to kernel filesystem semantics.
 
 | File | Responsibility |
 | --- | --- |
+| [`lab.py`](lab.py) | Nine simulation-only Lab control tools with shared approval and resource policies. |
 | [`dataset_import.py`](dataset_import.py) | Native-only selected Zenodo file import with source verification and an immediate Artifact receipt. |
 | [`__init__.py`](./__init__.py) | Public compatibility facade: re-exports the tool classes, registry helpers, native specs, schema helpers, and the batch limits. |
 | [`artifacts.py`](./artifacts.py) | Artifact tools: list them, register an existing file, look up exact metadata or an exact version. Restoring a historical version is approval-gated. |

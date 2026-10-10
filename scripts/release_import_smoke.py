@@ -21,7 +21,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIN_CURATED_SKILLS = 20
 MIN_COLLECTION_SKILLS = 561
-MIN_BENCHMARK_WORKFLOWS = 13
+MIN_BENCHMARK_WORKFLOWS = 14
 REQUIRED_BENCHMARK_WORKFLOW_IDS = frozenset({"tool-bringup"})
 
 
@@ -101,6 +101,7 @@ def main() -> int:
         "openai4s.tools.registry",
         "openai4s.adapters.jupyter",
         "openai4s_compute_provider",
+        "openai4s_lab_provider",
         "openai4s_worker_runtime",
     )
     imported = [importlib.import_module(name) for name in modules]

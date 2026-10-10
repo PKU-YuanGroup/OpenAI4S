@@ -1,0 +1,343 @@
+{
+  "contract": "openai4s.lab/v1-draft",
+  "device_id": "chemgym.extractor.01",
+  "mode": "simulation",
+  "backend": "chemgymrl",
+  "profile": "WaterOilExtract-v0",
+  "backend_version": {
+    "package": "chemistrygym",
+    "version": "2.0.0",
+    "source_sha": "ab8227b6b33f13617b7e551bdf6b894df7eec68d",
+    "adapter_version": "1"
+  },
+  "resources": [
+    {
+      "resource_id": "extraction_vessel",
+      "kind": "vessel",
+      "label": "extraction_vessel"
+    },
+    {
+      "resource_id": "beaker_1",
+      "kind": "vessel",
+      "label": "Beaker 1"
+    },
+    {
+      "resource_id": "waste_vessel",
+      "kind": "vessel",
+      "label": "Waste Vessel"
+    },
+    {
+      "resource_id": "c6h14_vessel",
+      "kind": "source",
+      "label": "C6H14 Vessel"
+    },
+    {
+      "resource_id": "h2o_vessel",
+      "kind": "source",
+      "label": "H2O Vessel"
+    }
+  ],
+  "capabilities": [
+    {
+      "capability_id": "drain_layers:extraction_vessel->beaker_1",
+      "operation": "drain_layers",
+      "scope": "simulation_only",
+      "source": "extraction_vessel",
+      "target": "beaker_1",
+      "parameters": {
+        "pixels": {
+          "unit": "layer_px",
+          "allowed": [
+            2.0,
+            4.0,
+            6.0,
+            8.0,
+            10.0
+          ]
+        }
+      },
+      "side_effect": "moves_material",
+      "resources": [
+        "beaker_1",
+        "extraction_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "end_experiment",
+      "operation": "end_experiment",
+      "scope": "simulation_only",
+      "source": null,
+      "target": null,
+      "parameters": {},
+      "side_effect": "ends_run",
+      "resources": [
+        "extraction_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": true,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "mix_model:extraction_vessel",
+      "operation": "mix_model",
+      "scope": "simulation_only",
+      "source": "extraction_vessel",
+      "target": null,
+      "parameters": {
+        "duration": {
+          "unit": "model_time",
+          "allowed": [
+            0.2,
+            0.4,
+            0.6,
+            0.8,
+            1.0
+          ]
+        }
+      },
+      "side_effect": "changes_state",
+      "resources": [
+        "extraction_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "settle_model",
+      "operation": "settle_model",
+      "scope": "simulation_only",
+      "source": null,
+      "target": null,
+      "parameters": {
+        "duration": {
+          "unit": "model_time",
+          "allowed": [
+            0.01,
+            0.02,
+            0.04,
+            0.08,
+            0.16
+          ]
+        }
+      },
+      "side_effect": "changes_state",
+      "resources": [
+        "beaker_1",
+        "extraction_vessel",
+        "waste_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "transfer_liquid:beaker_1->extraction_vessel",
+      "operation": "transfer_liquid",
+      "scope": "shared",
+      "source": "beaker_1",
+      "target": "extraction_vessel",
+      "parameters": {
+        "volume": {
+          "unit": "mL",
+          "allowed": [
+            200.0,
+            400.0,
+            600.0,
+            800.0,
+            1000.0
+          ]
+        }
+      },
+      "side_effect": "moves_material",
+      "resources": [
+        "beaker_1",
+        "extraction_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "transfer_liquid:c6h14_vessel->extraction_vessel",
+      "operation": "transfer_liquid",
+      "scope": "shared",
+      "source": "c6h14_vessel",
+      "target": "extraction_vessel",
+      "parameters": {
+        "volume": {
+          "unit": "mL",
+          "allowed": [
+            100.0,
+            200.0,
+            300.0,
+            400.0,
+            500.0
+          ]
+        }
+      },
+      "side_effect": "moves_material",
+      "resources": [
+        "c6h14_vessel",
+        "extraction_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "transfer_liquid:extraction_vessel->waste_vessel",
+      "operation": "transfer_liquid",
+      "scope": "shared",
+      "source": "extraction_vessel",
+      "target": "waste_vessel",
+      "parameters": {
+        "volume": {
+          "unit": "mL",
+          "allowed": [
+            200.0,
+            400.0,
+            600.0,
+            800.0,
+            1000.0
+          ]
+        }
+      },
+      "side_effect": "moves_material",
+      "resources": [
+        "extraction_vessel",
+        "waste_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "transfer_liquid:h2o_vessel->extraction_vessel",
+      "operation": "transfer_liquid",
+      "scope": "shared",
+      "source": "h2o_vessel",
+      "target": "extraction_vessel",
+      "parameters": {
+        "volume": {
+          "unit": "mL",
+          "allowed": [
+            100.0,
+            200.0,
+            300.0,
+            400.0,
+            500.0
+          ]
+        }
+      },
+      "side_effect": "moves_material",
+      "resources": [
+        "extraction_vessel",
+        "h2o_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    },
+    {
+      "capability_id": "transfer_liquid:waste_vessel->extraction_vessel",
+      "operation": "transfer_liquid",
+      "scope": "shared",
+      "source": "waste_vessel",
+      "target": "extraction_vessel",
+      "parameters": {
+        "volume": {
+          "unit": "mL",
+          "allowed": [
+            200.0,
+            400.0,
+            600.0,
+            800.0,
+            1000.0
+          ]
+        }
+      },
+      "side_effect": "moves_material",
+      "resources": [
+        "extraction_vessel",
+        "waste_vessel"
+      ],
+      "observes": [
+        "layers"
+      ],
+      "terminal": false,
+      "mapping_version": "1"
+    }
+  ],
+  "capability_revision": "f6658ee41b8e98d245b145f94a2e21da83ddeebe328de6d4d030c20222e388ed",
+  "observation_channels": [
+    {
+      "name": "layers",
+      "kind": "array",
+      "shape": [
+        2,
+        100
+      ],
+      "unit": "dimensionless",
+      "source": "simulated_sensor",
+      "available": true,
+      "description": "Simulated layer colors; no material legend.",
+      "axes": [
+        {
+          "name": "resource",
+          "labels": [
+            "extraction_vessel",
+            "beaker_1"
+          ]
+        },
+        {
+          "name": "layer_px"
+        }
+      ]
+    },
+    {
+      "name": "targets",
+      "kind": "category",
+      "shape": [],
+      "unit": "dimensionless",
+      "source": "simulated_sensor",
+      "available": true,
+      "description": "Experiment target decoded from the observation one-hot."
+    }
+  ],
+  "limits": {
+    "max_steps": 50
+  },
+  "stop": {
+    "supported": true,
+    "semantics": "end_session"
+  },
+  "time": {
+    "unit": "model_time",
+    "wall_clock_equivalent": null
+  },
+  "reproducibility": {
+    "status": "unverified",
+    "evidence": null
+  },
+  "assumptions": []
+}

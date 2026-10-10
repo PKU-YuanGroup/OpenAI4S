@@ -17,6 +17,27 @@ def test_discovers_example_stats():
     assert "example_stats.kernel" in (s.import_hint or "")
 
 
+def test_lab_simulation_is_discovered_listed_and_searchable():
+    from openai4s.config import get_config
+    from openai4s.host_dispatch import build_dispatcher
+
+    loader = SkillLoader()
+    skill = loader.discover()["lab-simulation"]
+    assert skill.origin == "openai4s"
+    assert skill.read_only is True
+    assert skill.network.mode == "none"
+    assert skill.sidecar_gate() == {"ok": True, "error": None}
+
+    dispatcher = build_dispatcher(get_config())
+    listed = dispatcher("list_skills", [])
+    assert "lab-simulation" in listed["names"]
+    hits = dispatcher(
+        "search_skills", [{"query": "ChemGymRL simulation lab", "limit": 3}]
+    )
+    assert hits[0]["name"] == "lab-simulation"
+    assert hits[0]["sidecar_gate"] == {"ok": True, "error": None}
+
+
 def test_frontmatter_parsed():
     s = SkillLoader().discover()["example_stats"]
     assert s.origin == "personal"

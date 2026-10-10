@@ -1,0 +1,1192 @@
+"""Process-level Lab ownership, durable admission and conservative dispatch.
+
+The metadata lock covers short ledger operations only. Provider calls never
+hold it. A per-run nonblocking lock prevents concurrent device operations;
+stop bypasses that lock and waits only for the current receipt's event.
+"""
+
+from __future__ import annotations
+
+import math
+import secrets
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, fields, replace
+from functools import wraps
+from threading import Event, Lock, RLock, local
+from typing import Any
+
+from openai4s.lab.devices import DeviceRegistry
+from openai4s.lab.manifest import (
+    load_descriptor,
+    match_command,
+    observation_from_row,
+    project_command,
+    project_descriptor,
+    project_observation,
+    project_run,
+)
+from openai4s.lab.models import (
+    Budgets,
+    CommandRequest,
+    DeviceDescriptor,
+    Dispatch,
+    ErrorCode,
+    LabCaller,
+    LabError,
+    Receipt,
+    SessionOpenRequest,
+    canonical_json,
+    config_hash,
+    new_id,
+    request_hash,
+    sha256_hex,
+)
+from openai4s.lab.policy import admission_error
+from openai4s.lab.ports import DevicePort, LabLedgerPort
+
+_TERMINAL = {"ended", "failed"}
+_SENT = {"dispatching", "running", "stop_requested"}
+_COMMAND_DONE = {"succeeded", "failed", "rejected", "not_dispatched", "stopped"}
+_PAGE_MAX = 1000
+
+
+def _notify_changes(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Flush committed changes only after the public operation releases locks."""
+
+    @wraps(method)
+    def wrapped(self: LabManager, *args: Any, **kwargs: Any) -> Any:
+        if self._on_change is None or hasattr(self._changes, "pending"):
+            return method(self, *args, **kwargs)
+        self._changes.pending = {}
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            pending = self._changes.pending
+            # Detach before calling user code, which may reenter the manager.
+            del self._changes.pending
+            for run_id, root_frame_id in pending.items():
+                try:
+                    if root_frame_id is None:
+                        run = self._ledger.get_run(run_id)
+                        if run is None:
+                            continue
+                        root_frame_id = run["root_frame_id"]
+                    self._on_change(root_frame_id, run_id)
+                except Exception:
+                    # Notifications are hints; neither callback nor readback
+                    # failures may replace the operation's result or error.
+                    pass
+
+    return wrapped
+
+
+def _refusal_text(error: LabError) -> str:
+    # A command row keeps one message. Fold the public details into it (the
+    # allowed levels of CONTRACT §5.4, which budget ran out) so the caller can
+    # correct the request; they come from host validation, never the device.
+    if not error.details:
+        return error.message
+    try:
+        return f"{error.message} {canonical_json(error.details)}"[:2000]
+    except (TypeError, ValueError):
+        return error.message
+
+
+def _page(value: Any, *, minimum: int, name: str) -> int:
+    if type(value) is not int or not minimum <= value < 2**63:
+        raise LabError(ErrorCode.INVALID_PARAMETERS, f"Invalid {name}")
+    return value
+
+
+def _limit(value: Any) -> int:
+    limit = _page(value, minimum=1, name="limit")
+    return min(limit, _PAGE_MAX)
+
+
+@dataclass(frozen=True)
+class LabLimits:
+    max_live_providers: int = 4
+    stop_wait_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.max_live_providers) is not int
+            or self.max_live_providers < 1
+            or isinstance(self.stop_wait_seconds, bool)
+            or not isinstance(self.stop_wait_seconds, (int, float))
+            or not math.isfinite(self.stop_wait_seconds)
+            or self.stop_wait_seconds < 0
+        ):
+            raise LabError(ErrorCode.INVALID_PARAMETERS, "Invalid Lab manager limits")
+
+
+@dataclass
+class _LiveRun:
+    port: DevicePort
+    session_id: str
+    descriptor: DeviceDescriptor
+    last_activity_ms: int
+    lock: Any = field(default_factory=Lock)
+    done: Event = field(default_factory=Event)
+    active_command: str | None = None
+    stopping: bool = False
+    needs_restart: bool = False
+    # The session that owns it, kept in memory so releasing a deleted
+    # session's providers never depends on reading the ledger.
+    root_frame_id: str = ""
+
+
+class LabManager:
+    def __init__(
+        self,
+        ledger_provider: Callable[[], LabLedgerPort],
+        registry: DeviceRegistry,
+        *,
+        instance_id: str,
+        clock_ms: Callable[[], int],
+        limits: LabLimits = LabLimits(),
+        on_change: Callable[[str, str], None] | None = None,
+    ) -> None:
+        self._ledger_provider = ledger_provider
+        self._registry = registry
+        self._instance_id = instance_id
+        self._clock_ms = clock_ms
+        self._limits = limits
+        self._on_change = on_change
+        self._changes = local()
+        self._lock = RLock()
+        self._live: dict[str, _LiveRun] = {}
+        self._opening: dict[str, str] = {}
+        self._discarded: set[str] = set()
+        # Sessions whose deletion started: no entry point may open a run for
+        # them (REST, tools, host.lab, an approval answered mid-deletion).
+        self._deleted_roots: set[str] = set()
+        self._closed = False
+        self.startup_summary: dict[str, int] = {}
+
+    def _changed(self, run_id: str, root_frame_id: str | None = None) -> None:
+        pending = getattr(self._changes, "pending", None)
+        if self._on_change is not None and pending is not None:
+            pending[run_id] = root_frame_id or pending.get(run_id)
+
+    @property
+    def _ledger(self) -> LabLedgerPort:
+        # Never keep a repository belonging to a closed Store generation.
+        return self._ledger_provider()
+
+    @staticmethod
+    def _writable(caller: LabCaller) -> None:
+        if caller.execution_owner == "recovery":
+            raise LabError(
+                ErrorCode.REPLAY_FORBIDDEN, "Lab side effects cannot be replayed"
+            )
+
+    def _run(self, caller: LabCaller, run_id: str) -> dict[str, Any]:
+        run = self._ledger.get_run(run_id)
+        if (
+            run is None
+            or run["root_frame_id"] != caller.root_frame_id
+            or run["owner_user_id"] != caller.owner_user_id
+        ):
+            raise LabError(ErrorCode.RUN_NOT_FOUND, "Lab run was not found")
+        return run
+
+    def _observation(
+        self,
+        run: Mapping[str, Any],
+        *,
+        full: bool = False,
+        row: Any = None,
+        channels: Any = None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            row = self._ledger.latest_observation(run["run_id"])
+        if row is None:
+            return None
+        if channels is None:
+            channels = load_descriptor(run["descriptor"]).observation_channels
+        return project_observation(
+            observation_from_row(row), channels=channels, full=full
+        )
+
+    def _command_observation(self, command: Mapping[str, Any]) -> Any:
+        """The ledger row a command recorded, or None."""
+        run_id, wanted = command["run_id"], command["observation_id"]
+        revision = command.get("applied_revision")
+        if revision is not None:
+            # An applied step's observation sequence is its revision.
+            rows = self._ledger.list_observations(
+                run_id, after_sequence=revision - 1, limit=1
+            )
+            if rows and rows[0]["observation_id"] == wanted:
+                return rows[0]
+        # A receipt recorded after the run ended carries no revision.
+        for row in self._ledger.list_observations(run_id, limit=2**63 - 1):
+            if row["observation_id"] == wanted:
+                return row
+        return None
+
+    def _result(self, run_id: str, command_id: str | None = None) -> dict[str, Any]:
+        run = self._ledger.get_run(run_id)
+        if run is None:
+            raise LabError(ErrorCode.RUN_NOT_FOUND, "Lab run was not found")
+        command = self._ledger.get_command(command_id) if command_id else None
+        observation = None
+        if command is None:
+            observation = self._observation(run)
+        elif command["observation_id"]:
+            # A replay must return this command's observation, not a later one.
+            row = self._command_observation(command)
+            if row is not None:
+                observation = self._observation(run, row=row)
+        return {
+            "run": project_run(run),
+            "command": project_command(command) if command is not None else None,
+            "observation": observation,
+        }
+
+    @staticmethod
+    def _close(live: _LiveRun) -> None:
+        try:
+            live.port.close(live.session_id)
+        except LabError:
+            # A dead port has already lost its process/session.
+            pass
+
+    def _persist_receipt(
+        self, command_id: str, live: _LiveRun, receipt: Receipt
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            current = self._ledger.get_command(command_id)
+            if current is None or current["state"] in _COMMAND_DONE:
+                return None
+            result = self._ledger.record_receipt(
+                command_id,
+                receipt=receipt.to_dict(),
+                observation=(
+                    {
+                        **receipt.observation,
+                        "sim_time_unit": live.descriptor.time["unit"],
+                    }
+                    if receipt.observation is not None
+                    else None
+                ),
+                evaluation=receipt.evaluation,
+            )
+            self._changed(result["run"]["run_id"], result["run"]["root_frame_id"])
+            return result
+
+    def _settle_unknown(self, run_id: str, live: _LiveRun) -> None:
+        """Ask once about every unknown command while the session can answer.
+
+        Ending a run closes the only session that could say what happened, so
+        stop, idle cleanup, budgets and shutdown query first (CONTRACT §8.5).
+        Evidence is recorded exactly as status() records it; anything else
+        leaves the command unknown. Nothing is ever sent again.
+        """
+        if not self._alive(live):
+            return
+        unknown, after = [], 0
+        while True:
+            rows = self._ledger.list_commands(run_id, after_seq=after, limit=200)
+            if not rows:
+                break
+            unknown += [
+                r["command_id"] for r in rows if r["state"] == "outcome_unknown"
+            ]
+            after = rows[-1]["seq"]
+        for command_id in unknown:
+            try:
+                receipt = live.port.query(live.session_id, command_id)
+            except Exception:
+                if not self._alive(live):
+                    return
+                continue
+            try:
+                if receipt is None:
+                    with self._lock:
+                        if self._ledger.mark_not_dispatched(
+                            command_id,
+                            error_code="provider_timeout",
+                            error="Provider confirms command was never received",
+                        ):
+                            self._changed(run_id)
+                elif receipt.provider_command_id == command_id:
+                    self._persist_receipt(command_id, live, receipt)
+            except LabError:
+                # Best effort: the command simply stays unknown.
+                return
+
+    def _finish(self, run_id: str, reason: str) -> None:
+        # Make every outstanding intent reconcilable before ending the run:
+        # startup reconciliation deliberately visits only nonterminal runs.
+        with self._lock:
+            live = self._live.get(run_id)
+            settle = False
+            if live is not None:
+                live.stopping = True
+                settle = live.active_command is None and not live.needs_restart
+        recorded = False
+        try:
+            if settle:
+                assert live is not None
+                self._settle_unknown(run_id, live)
+            with self._lock:
+                for command in self._ledger.inflight_commands(run_id):
+                    if command["state"] == "admitted":
+                        if self._ledger.mark_not_dispatched(
+                            command["command_id"],
+                            error_code="run_ended",
+                            error="Lab run ended before dispatch",
+                        ):
+                            self._changed(run_id)
+                    elif command["state"] in _SENT:
+                        if self._ledger.mark_outcome_unknown(
+                            command["command_id"],
+                            error="Provider receipt is unavailable",
+                        ):
+                            self._changed(run_id)
+                if self._ledger.end_run(run_id, end_reason=reason):
+                    self._changed(run_id)
+            recorded = True
+        finally:
+            # The provider process is always released. After a ledger failure
+            # the entry stays (refusing commands) so a retry, close_all or
+            # startup reconciliation can still record how the run ended.
+            if live is not None:
+                self._close(live)
+                with self._lock:
+                    if not recorded:
+                        live.needs_restart = True
+                    elif self._live.get(run_id) is live:
+                        self._live.pop(run_id)
+
+    def _sweep(self, caller: LabCaller) -> None:
+        if caller.execution_owner == "recovery":
+            return
+        with self._lock:
+            expired = []
+            for run_id, live in self._live.items():
+                if live.active_command or live.stopping or live.needs_restart:
+                    continue
+                run = self._ledger.get_run(run_id)
+                if run is None or (
+                    self._clock_ms() - live.last_activity_ms
+                    >= run["budgets"]["idle_timeout_ms"]
+                ):
+                    # A live provider whose row is gone (its session was
+                    # deleted while a release failed) only holds a slot.
+                    live.stopping = True
+                    expired.append(run_id)
+        for run_id in expired:
+            self._finish(run_id, "idle_timeout")
+
+    @staticmethod
+    def _availability(reg: Any) -> tuple[bool | None, str | None]:
+        # The registration owns optional installation availability (builtin
+        # registrations read local files only). No provider is started just to
+        # populate the device picker. Only the verdict and the fixed remedy text
+        # are public: interpreter paths and generation names stay operator-only.
+        check = getattr(reg, "availability", None)
+        if not callable(check):
+            return None, None
+        try:
+            state = check()
+        except Exception:
+            return None, "Device availability could not be determined"
+        if not isinstance(state, Mapping):
+            return None, None
+        available = state.get("available")
+        detail = state.get("detail")
+        return (
+            available if isinstance(available, bool) else None,
+            detail if isinstance(detail, str) else None,
+        )
+
+    @_notify_changes
+    def list_devices(self, caller: LabCaller) -> list[dict[str, Any]]:
+        self._sweep(caller)
+        result = []
+        for reg in self._registry.list():
+            available, detail = self._availability(reg)
+            result.append(
+                {
+                    "device_id": reg.device_id,
+                    "backend": reg.backend,
+                    "mode": reg.mode.value,
+                    "title": reg.title,
+                    "profiles": list(reg.profiles),
+                    "available": available,
+                    "availability_detail": detail,
+                }
+            )
+        return result
+
+    @_notify_changes
+    def describe(
+        self, caller: LabCaller, device_id: str, profile: str | None = None
+    ) -> dict[str, Any]:
+        self._sweep(caller)
+        reg = self._registry.get(device_id)
+        profile = reg.profiles[0] if profile is None else profile
+        return project_descriptor(
+            load_descriptor(self._registry.describe(device_id, profile).to_dict())
+        )
+
+    @_notify_changes
+    def create_run(self, caller: LabCaller, request: dict[str, Any]) -> dict[str, Any]:
+        self._writable(caller)
+        self._sweep(caller)
+        if (
+            not isinstance(request, dict)
+            or set(request)
+            - {"device_id", "profile", "seed", "budgets", "options", "idempotency_key"}
+            or not {"device_id", "profile"} <= set(request)
+            or not all(
+                isinstance(request[k], str) and request[k]
+                for k in ("device_id", "profile")
+            )
+        ):
+            raise LabError(ErrorCode.INVALID_PARAMETERS, "Invalid Lab create request")
+        key = request.get("idempotency_key", "auto-" + secrets.token_hex(16))
+        if (
+            not isinstance(key, str)
+            or not 1 <= len(key) <= 128
+            or any(not 32 <= ord(c) <= 126 for c in key)
+        ):
+            raise LabError(
+                ErrorCode.INVALID_PARAMETERS, "Invalid create idempotency key"
+            )
+        descriptor = load_descriptor(
+            self._registry.describe(request["device_id"], request["profile"]).to_dict()
+        )
+        requested = request.get("budgets", {})
+        parsed = Budgets.from_dict(requested)
+        ceiling = replace(Budgets(), max_steps=descriptor.limits["max_steps"])
+        # Budgets are the backend's limits, not the caller's: a request may
+        # tighten them, never loosen them (CONTRACT §7). An omitted budget is
+        # its ceiling, so max_steps defaults to the profile's own limit.
+        budgets = Budgets(
+            **{
+                f.name: (
+                    min(getattr(parsed, f.name), getattr(ceiling, f.name))
+                    if f.name in requested
+                    else getattr(ceiling, f.name)
+                )
+                for f in fields(Budgets)
+            }
+        )
+        # Reuse the typed opening value to validate options and seed without
+        # reflecting arbitrary input keys or provider internals in errors.
+        opening = SessionOpenRequest.from_dict(
+            {
+                "profile": descriptor.profile,
+                "seed": request.get("seed"),
+                "options": request.get("options", {}),
+                "expected_capability_revision": descriptor.capability_revision,
+            }
+        )
+        with self._lock:
+            if caller.root_frame_id in self._deleted_roots:
+                raise LabError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Session deletion or shutdown is in progress",
+                )
+            seed = opening.seed
+            if seed is None:
+                # The ledger port has no create-key lookup. This also handles
+                # retries after a manager/daemon restart, unlike a seed cache.
+                existing = next(
+                    (
+                        r
+                        for r in self._ledger.list_runs(
+                            caller.root_frame_id, limit=2**63 - 1
+                        )
+                        if r["create_idempotency_key"] == key
+                    ),
+                    None,
+                )
+                seed = (
+                    existing["seed"]
+                    if existing is not None
+                    else secrets.randbelow(2**31)
+                )
+            opening = replace(opening, seed=seed)
+            config = {
+                "device_id": descriptor.device_id,
+                "profile": descriptor.profile,
+                "seed": seed,
+                "budgets": budgets.to_dict(),
+                "options": dict(opening.options),
+            }
+            run, created = self._ledger.create_run(
+                {
+                    "run_id": new_id("labrun"),
+                    "root_frame_id": caller.root_frame_id,
+                    "frame_id": caller.frame_id,
+                    "owner_user_id": caller.owner_user_id,
+                    "mode": descriptor.mode.value,
+                    "backend": descriptor.backend,
+                    "device_id": descriptor.device_id,
+                    "profile": descriptor.profile,
+                    "adapter_version": descriptor.backend_version["adapter_version"],
+                    "backend_source_sha": descriptor.backend_version.get("source_sha"),
+                    "capability_revision": descriptor.capability_revision,
+                    "descriptor": descriptor.to_dict(),
+                    "config": config,
+                    "config_hash": config_hash(
+                        descriptor.device_id,
+                        descriptor.profile,
+                        seed,
+                        budgets,
+                        opening.options,
+                    ),
+                    "seed": seed,
+                    "budgets": budgets.to_dict(),
+                    "daemon_instance": self._instance_id,
+                    "create_idempotency_key": key,
+                }
+            )
+            run_id = run["run_id"]
+            if created:
+                self._changed(run_id, caller.root_frame_id)
+            self._run(caller, run_id)
+            if not created:
+                return {
+                    "run": project_run(run),
+                    "descriptor": project_descriptor(
+                        load_descriptor(run["descriptor"])
+                    ),
+                    "observation": self._observation(run),
+                }
+            if (
+                self._closed
+                or len(self._live) + len(self._opening)
+                >= self._limits.max_live_providers
+            ):
+                self._ledger.end_run(
+                    run_id, end_reason="create_failed", status="failed"
+                )
+                raise LabError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    (
+                        "Lab manager is closed"
+                        if self._closed
+                        else "Lab live provider limit reached "
+                        f"({self._limits.max_live_providers} per daemon); "
+                        "stop a run first"
+                    ),
+                )
+            self._opening[run_id] = caller.root_frame_id
+        live = None
+        try:
+            port = self._registry.get(descriptor.device_id).port_factory()
+            opened = port.open(opening)
+            live = _LiveRun(
+                port,
+                opened.session_id,
+                descriptor,
+                self._clock_ms(),
+                root_frame_id=caller.root_frame_id,
+            )
+            actual = load_descriptor(opened.descriptor.to_dict())
+            if (
+                actual.device_id,
+                actual.backend,
+                actual.mode,
+                actual.profile,
+                actual.capability_revision,
+            ) != (
+                descriptor.device_id,
+                descriptor.backend,
+                descriptor.mode,
+                descriptor.profile,
+                descriptor.capability_revision,
+            ):
+                raise LabError(
+                    ErrorCode.ADAPTER_MISMATCH,
+                    "Opened device differs from registration",
+                )
+            with self._lock:
+                current = self._ledger.get_run(run_id)
+                if (
+                    self._closed
+                    or run_id in self._discarded
+                    or caller.root_frame_id in self._deleted_roots
+                    or current is None
+                    or current["status"] != "creating"
+                ):
+                    raise LabError(ErrorCode.RUN_ENDED, "Lab run ended during creation")
+                run = self._ledger.append_initial_observation(
+                    run_id,
+                    observation={
+                        **opened.observation,
+                        "sim_time_unit": descriptor.time["unit"],
+                    },
+                    evaluation=opened.evaluation,
+                    # Bind what this session runs under (wrapper and sandbox
+                    # assumptions, runtime reproducibility) to the run, so
+                    # evaluation can tell differently configured cohorts apart.
+                    descriptor=actual.to_dict(),
+                )
+                live.done.set()
+                self._opening.pop(run_id, None)
+                self._live[run_id] = live
+        except Exception as exc:
+            if live is not None:
+                self._close(live)
+            with self._lock:
+                self._live.pop(run_id, None)
+                self._ledger.end_run(
+                    run_id, end_reason="create_failed", status="failed"
+                )
+            code = (
+                exc.code
+                if isinstance(exc, LabError)
+                else ErrorCode.PROVIDER_UNAVAILABLE
+            )
+            message = "Lab provider creation failed"
+            if code is ErrorCode.PROVIDER_UNAVAILABLE:
+                # An uninstalled provider is the common cause; say how to fix it
+                # with the registration's fixed remedy, never a provider message.
+                available, detail = self._availability(
+                    next(
+                        (
+                            r
+                            for r in self._registry.list()
+                            if r.device_id == descriptor.device_id
+                        ),
+                        None,
+                    )
+                )
+                if available is False and detail:
+                    message += ": " + detail
+            raise LabError(code, message) from None
+        finally:
+            with self._lock:
+                self._opening.pop(run_id, None)
+                self._discarded.discard(run_id)
+        # The initial observation is committed and ownership is registered.
+        # A read/projection failure here must not tear down a ready session.
+        return {
+            "run": project_run(run),
+            "descriptor": project_descriptor(actual),
+            "observation": self._observation(run),
+        }
+
+    def observe(
+        self, caller: LabCaller, run_id: str, *, full: bool = False
+    ) -> dict[str, Any]:
+        # Observation is strictly ledger-only, including for recovery callers.
+        run = self._run(caller, run_id)
+        return {
+            "run": project_run(run),
+            "observation": self._observation(run, full=full),
+        }
+
+    @_notify_changes
+    def execute(self, caller: LabCaller, request: dict[str, Any]) -> dict[str, Any]:
+        self._writable(caller)
+        req = CommandRequest.from_dict(request)
+        self._sweep(caller)
+        with self._lock:
+            run = self._run(caller, req.run_id)
+            descriptor = load_descriptor(run["descriptor"])
+            normalized = None
+            error = None
+            try:
+                normalized = match_command(descriptor, req)
+            except LabError as exc:
+                error = exc
+            # CONTRACT §2: the key and the expected revision are not part of
+            # the request, normalizable or not.
+            digest = (
+                request_hash(normalized)
+                if normalized is not None
+                else sha256_hex(
+                    canonical_json(
+                        {
+                            k: v
+                            for k, v in req.to_dict().items()
+                            if k not in ("idempotency_key", "expected_revision")
+                        }
+                    )
+                )
+            )
+            # The ledger's consecutive_failures counts host rejections and
+            # failed receipts alike (CONTRACT §7), so admission and the
+            # published run counter read the same number.
+            error = error or admission_error(
+                run, Budgets.from_dict(run["budgets"]), self._clock_ms()
+            )
+            live = self._live.get(req.run_id)
+            if live is not None and live.needs_restart:
+                error = LabError(
+                    ErrorCode.RESOURCE_QUARANTINED,
+                    "Lab run requires restart reconciliation",
+                )
+            if error is None and (live is None or live.stopping):
+                error = LabError(
+                    ErrorCode.RESOURCE_BUSY if live else ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Lab provider is not accepting commands",
+                )
+            command, inserted = self._ledger.insert_command(
+                {
+                    "command_id": new_id("labcmd"),
+                    "run_id": req.run_id,
+                    "idempotency_key": req.idempotency_key,
+                    "request_hash": digest,
+                    "operation": req.operation,
+                    "capability_id": normalized.capability_id if normalized else None,
+                    "request": normalized.to_dict() if normalized else req.to_dict(),
+                    "expected_revision": req.expected_revision,
+                    "origin": caller.origin.value,
+                    "actor_frame_id": caller.frame_id,
+                    "owner_user_id": caller.owner_user_id,
+                    "approval_ref": caller.approval_ref,
+                    "state": "rejected" if error else "admitted",
+                    "error_code": error.code.value if error else None,
+                    "error": _refusal_text(error) if error else None,
+                }
+            )
+            command_id = command["command_id"]
+            if inserted:
+                self._changed(req.run_id, caller.root_frame_id)
+            if not inserted:
+                return self._result(req.run_id, command_id)
+            if error is not None:
+                if error.code is ErrorCode.BUDGET_EXHAUSTED:
+                    # Every budget is monotone: none can recover without a
+                    # command being admitted. End the run and release its
+                    # provider slot instead of refusing commands forever.
+                    self._ledger.end_run(req.run_id, end_reason="budget_exhausted")
+                    # Close outside the metadata lock below.
+                else:
+                    return self._result(req.run_id, command_id)
+            else:
+                assert live is not None and normalized is not None
+                if not live.lock.acquire(blocking=False):
+                    self._ledger.transition_command(
+                        command_id,
+                        to_state="rejected",
+                        error_code="resource_busy",
+                        error="Lab run is busy",
+                    )
+                    return self._result(req.run_id, command_id)
+                live.active_command = command_id
+                live.done.clear()
+                live.last_activity_ms = self._clock_ms()
+        if error is not None:
+            self._finish(req.run_id, "budget_exhausted")
+            return self._result(req.run_id, command_id)
+        assert live is not None and normalized is not None
+        try:
+            capability = next(
+                c
+                for c in descriptor.capabilities
+                if c.capability_id == normalized.capability_id
+            )
+            with self._lock:
+                # Stop may have won before begin_dispatch. Its durable run end
+                # prevents dispatch; its admitted intent is not_dispatched.
+                current = self._ledger.get_command(command_id)
+                if current is None or current["state"] != "admitted":
+                    return self._result(req.run_id, command_id)
+                if live.stopping:
+                    self._ledger.mark_not_dispatched(
+                        command_id,
+                        error_code="run_ended",
+                        error="Stop requested before dispatch",
+                    )
+                    return self._result(req.run_id, command_id)
+                try:
+                    token = self._ledger.begin_dispatch(
+                        command_id,
+                        resource_keys=[
+                            f"lab:{run['device_id']}#{req.run_id}:{r}"
+                            for r in capability.resources
+                        ],
+                        expected_revision=req.expected_revision,
+                    )
+                except LabError as exc:
+                    if exc.code is ErrorCode.PERSISTENCE_UNAVAILABLE:
+                        try:
+                            self._ledger.mark_not_dispatched(
+                                command_id,
+                                error_code=exc.code.value,
+                                error="Dispatch intent could not be persisted",
+                            )
+                        except LabError:
+                            live.needs_restart = True
+                        raise
+                    self._ledger.transition_command(
+                        command_id,
+                        to_state="rejected",
+                        error_code=exc.code.value,
+                        error=_refusal_text(exc),
+                    )
+                    return self._result(req.run_id, command_id)
+            try:
+                receipt = live.port.execute(
+                    live.session_id,
+                    Dispatch(
+                        command_id, normalized, {r: token for r in capability.resources}
+                    ),
+                )
+            except LabError:
+                # CONTRACT §9: a live session answers authoritatively (an
+                # encode failure, for one, sent nothing); a dead one cannot.
+                if self._alive(live):
+                    self._query(req.run_id, command_id, live)
+                else:
+                    self._unknown(req.run_id, command_id, live, lost=True)
+            except Exception:
+                # A port raising outside the §9 vocabulary cannot be trusted to
+                # have done nothing: the intent stays unknown, the run ends.
+                self._unknown(req.run_id, command_id, live, lost=True)
+            else:
+                self._record(req.run_id, command_id, live, receipt)
+            return self._result(req.run_id, command_id)
+        finally:
+            with self._lock:
+                live.active_command = None
+                live.last_activity_ms = self._clock_ms()
+                live.done.set()
+                live.lock.release()
+
+    @staticmethod
+    def _alive(live: _LiveRun) -> bool:
+        try:
+            return live.port.alive(live.session_id)
+        except LabError:
+            return False
+
+    def _record(
+        self, run_id: str, command_id: str, live: _LiveRun, receipt: Receipt
+    ) -> None:
+        if receipt.provider_command_id != command_id:
+            self._unknown(run_id, command_id, live, lost=True)
+        try:
+            result = self._persist_receipt(command_id, live, receipt)
+            if result is None:
+                return
+            ended = result["run"]["status"] in _TERMINAL
+            if ended:
+                with self._lock:
+                    live.stopping = True
+        except LabError as exc:
+            with self._lock:
+                live.needs_restart = True
+            if exc.code is ErrorCode.PERSISTENCE_UNAVAILABLE:
+                raise LabError(
+                    ErrorCode.PERSISTENCE_UNAVAILABLE,
+                    "Device may have executed; restart reconciliation is required",
+                    {"command_id": command_id},
+                ) from None
+            self._unknown(run_id, command_id, live, lost=True)
+            return
+        if ended:
+            self._finish(run_id, result["run"]["end_reason"])
+
+    def _unknown(
+        self, run_id: str, command_id: str, live: _LiveRun, *, lost: bool
+    ) -> None:
+        try:
+            with self._lock:
+                if self._ledger.mark_outcome_unknown(
+                    command_id, error="Provider receipt is unavailable"
+                ):
+                    self._changed(run_id)
+        except LabError:
+            with self._lock:
+                live.needs_restart = True
+            raise LabError(
+                ErrorCode.PERSISTENCE_UNAVAILABLE,
+                "Device may have executed; restart reconciliation is required",
+                {"command_id": command_id},
+            ) from None
+        if lost:
+            self._finish(run_id, "provider_lost")
+        raise LabError(
+            ErrorCode.OUTCOME_UNKNOWN,
+            "Command outcome is unknown; it will not be resent",
+            {"command_id": command_id},
+        )
+
+    def _query(self, run_id: str, command_id: str, live: _LiveRun) -> None:
+        try:
+            receipt = live.port.query(live.session_id, command_id)
+        except Exception as exc:
+            lost = (
+                not isinstance(exc, LabError)
+                or exc.code
+                in {ErrorCode.PROVIDER_UNAVAILABLE, ErrorCode.PROVIDER_PROTOCOL_ERROR}
+                or not self._alive(live)
+            )
+            self._unknown(run_id, command_id, live, lost=lost)
+            return
+        if receipt is not None:
+            self._record(run_id, command_id, live, receipt)
+            return
+        try:
+            with self._lock:
+                current = self._ledger.get_command(command_id)
+                if current is not None and current["state"] == "stop_requested":
+                    if self._ledger.mark_outcome_unknown(
+                        command_id,
+                        error="Resolving stop with provider non-receipt evidence",
+                    ):
+                        self._changed(run_id)
+                if self._ledger.mark_not_dispatched(
+                    command_id,
+                    error_code="provider_timeout",
+                    error="Provider confirms command was never received",
+                ):
+                    self._changed(run_id)
+        except LabError:
+            with self._lock:
+                live.needs_restart = True
+            raise LabError(
+                ErrorCode.PERSISTENCE_UNAVAILABLE,
+                "Command was not received, but that could not be recorded; "
+                "restart reconciliation is required",
+                {"command_id": command_id},
+            ) from None
+
+    @_notify_changes
+    def status(
+        self, caller: LabCaller, run_id: str, command_id: str | None = None
+    ) -> dict[str, Any]:
+        self._sweep(caller)
+        with self._lock:
+            self._run(caller, run_id)
+            command = self._ledger.get_command(command_id) if command_id else None
+            if command_id and (command is None or command["run_id"] != run_id):
+                raise LabError(ErrorCode.RUN_NOT_FOUND, "Lab command was not found")
+            live = self._live.get(run_id)
+            query = bool(
+                command
+                and command["state"] == "outcome_unknown"
+                and live
+                and not live.needs_restart
+                and not live.stopping
+                and caller.execution_owner != "recovery"
+            )
+            if query and live is not None:
+                query = live.lock.acquire(blocking=False)
+                if query:
+                    live.active_command = command_id
+                    live.done.clear()
+        if query:
+            assert live is not None and command_id is not None
+            try:
+                if self._alive(live):
+                    self._query(run_id, command_id, live)
+                else:
+                    self._unknown(run_id, command_id, live, lost=True)
+            except LabError as exc:
+                if exc.code is not ErrorCode.OUTCOME_UNKNOWN:
+                    raise
+            finally:
+                with self._lock:
+                    live.active_command = None
+                    live.done.set()
+                    live.lock.release()
+        return self._result(run_id, command_id)
+
+    @_notify_changes
+    def stop(
+        self, caller: LabCaller, run_id: str, reason: str | None = None
+    ) -> dict[str, Any]:
+        self._writable(caller)
+        self._sweep(caller)
+        with self._lock:
+            run = self._run(caller, run_id)
+            live = self._live.get(run_id)
+            if live is not None:
+                live.stopping = True
+                if live.active_command:
+                    if self._ledger.transition_command(
+                        live.active_command,
+                        to_state="stop_requested",
+                        from_states=["dispatching", "running"],
+                    ):
+                        self._changed(run_id, caller.root_frame_id)
+            semantics = project_descriptor(load_descriptor(run["descriptor"]))["stop"][
+                "semantics"
+            ]
+        if live is not None:
+            if live.active_command:
+                live.done.wait(timeout=self._limits.stop_wait_seconds)
+            else:
+                try:
+                    live.port.stop(live.session_id, reason or "stopped")
+                except LabError:
+                    pass
+        self._finish(run_id, "stopped")
+        return {
+            "run": project_run(self._run(caller, run_id)),
+            "stopped": True,
+            "semantics": semantics,
+        }
+
+    @_notify_changes
+    def list_runs(self, caller: LabCaller, *, limit: int = 20) -> list[dict[str, Any]]:
+        limit = _limit(limit)
+        self._sweep(caller)
+        # Filter by owner before the limit: another owner's runs must neither
+        # take the page nor reveal themselves by shortening it.
+        rows = self._ledger.list_runs(caller.root_frame_id, limit=2**63 - 1)
+        return [
+            project_run(r) for r in rows if r["owner_user_id"] == caller.owner_user_id
+        ][:limit]
+
+    @_notify_changes
+    def events(
+        self, caller: LabCaller, *, after_seq: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        """Metadata-only event rows the caller may see, oldest first.
+
+        ``next_after_seq`` is the cursor to pass next time: it moves past
+        rows the caller cannot see, so a page is never empty while visible
+        rows remain. ``latest_event_seq`` is the newest sequence number.
+        """
+        after_seq = _page(after_seq, minimum=0, name="after_seq")
+        limit = _limit(limit)
+        self._sweep(caller)
+        owners: dict[str, Any] = {}
+        visible: list[dict[str, Any]] = []
+        cursor = after_seq
+        while len(visible) < limit:
+            rows = self._ledger.events_since(
+                caller.root_frame_id, after_seq=cursor, limit=limit
+            )
+            if not rows:
+                break
+            for row in rows:
+                cursor = row["event_seq"]
+                if row["run_id"] not in owners:
+                    run = self._ledger.get_run(row["run_id"])
+                    owners[row["run_id"]] = (
+                        run["owner_user_id"] if run is not None else object()
+                    )
+                if owners[row["run_id"]] == caller.owner_user_id:
+                    visible.append(row)
+                    if len(visible) == limit:
+                        break
+        return {
+            "events": visible,
+            "next_after_seq": cursor,
+            "latest_event_seq": self._ledger.latest_event_seq(caller.root_frame_id),
+        }
+
+    def run(self, caller: LabCaller, run_id: str) -> dict[str, Any]:
+        """The run's public row alone (ledger only)."""
+        return project_run(self._run(caller, run_id))
+
+    def describe_run(self, caller: LabCaller, run_id: str) -> dict[str, Any]:
+        """The descriptor pinned when the run was created (ledger only)."""
+        return project_descriptor(
+            load_descriptor(self._run(caller, run_id)["descriptor"])
+        )
+
+    def commands(
+        self, caller: LabCaller, run_id: str, *, after_seq: int = 0, limit: int = 50
+    ) -> dict[str, Any]:
+        """The run's commands in order, as agents and the UI see them."""
+        after_seq = _page(after_seq, minimum=0, name="after_seq")
+        limit = _limit(limit)
+        self._run(caller, run_id)
+        rows = self._ledger.list_commands(run_id, after_seq=after_seq, limit=limit)
+        return {
+            "commands": [project_command(r) for r in rows],
+            "next_after_seq": rows[-1]["seq"] if rows else after_seq,
+        }
+
+    def observations(
+        self,
+        caller: LabCaller,
+        run_id: str,
+        *,
+        after_sequence: int = -1,
+        limit: int = 20,
+        full: bool = False,
+    ) -> dict[str, Any]:
+        """The run's observations in order, through the run's declared channels."""
+        after_sequence = _page(after_sequence, minimum=-1, name="after_sequence")
+        limit = _limit(limit)
+        if type(full) is not bool:
+            raise LabError(ErrorCode.INVALID_PARAMETERS, "Invalid full")
+        run = self._run(caller, run_id)
+        rows = self._ledger.list_observations(
+            run_id, after_sequence=after_sequence, limit=limit
+        )
+        channels = (
+            load_descriptor(run["descriptor"]).observation_channels if rows else ()
+        )
+        return {
+            "observations": [
+                self._observation(run, full=full, row=r, channels=channels)
+                for r in rows
+            ],
+            "next_after_sequence": rows[-1]["sequence"] if rows else after_sequence,
+        }
+
+    @_notify_changes
+    def close_all(self, reason: str) -> None:
+        with self._lock:
+            self._closed = True
+            runs = list(dict.fromkeys([*self._live, *self._opening]))
+        first_error = None
+        for run_id in runs:
+            try:
+                self._finish(run_id, "provider_lost")
+            except LabError as exc:
+                # Keep nonterminal rows for startup reconciliation if the
+                # ledger is unavailable, but still release every provider.
+                with self._lock:
+                    live = self._live.get(run_id)
+                    if live is not None:
+                        live.needs_restart = True
+                if live is not None:
+                    self._close(live)
+                first_error = first_error or exc
+        if first_error is not None:
+            raise first_error
+
+    @_notify_changes
+    def on_session_deleted(self, root_frame_id: str) -> None:
+        """Release a session's providers before its ledger rows are deleted.
+
+        The root is tombstoned first, so no entry point can open a new run for
+        it, and openings in flight are discarded when they finish. Its live
+        runs are found by their in-memory root (a ledger failure cannot leak a
+        provider) and ended as `deleted`: if the deletion then rolls back they
+        are honestly ended, not `ready` with no provider behind them.
+        """
+        with self._lock:
+            self._deleted_roots.add(root_frame_id)
+            self._discarded.update(
+                r for r, root in self._opening.items() if root == root_frame_id
+            )
+            owned = [
+                run_id
+                for run_id, live in self._live.items()
+                if live.root_frame_id == root_frame_id
+            ]
+        for run_id in owned:
+            try:
+                self._finish(run_id, "deleted")
+            except LabError:
+                # _finish has released the provider already. Its entry stays
+                # only to let a retry record the end, but these rows are about
+                # to go with the session: drop it so it holds no slot.
+                with self._lock:
+                    live = self._live.get(run_id)
+                    if live is not None and live.root_frame_id == root_frame_id:
+                        self._live.pop(run_id)
+
+    def on_session_restored(self, root_frame_id: str) -> None:
+        """Lift the tombstone after a deletion that did not happen."""
+        with self._lock:
+            self._deleted_roots.discard(root_frame_id)

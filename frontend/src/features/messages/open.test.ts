@@ -637,12 +637,12 @@ it.each([
 });
 
 describe("a same-frame branch reset and the dock", () => {
-  /** The four dock panes, recording which one the reset leaves visible. */
+  /** The five dock panes, recording which one the reset leaves visible. */
   function dockPanes(): Record<string, boolean> {
     const hidden: Record<string, boolean> = {};
     vi.stubGlobal("document", {
       querySelector: () => null,
-      getElementById: (id: string) => /^dock-(viewer|notebook|timeline|files)$/.test(id)
+      getElementById: (id: string) => /^dock-(viewer|notebook|timeline|files|lab)$/.test(id)
         ? { classList: { toggle: (_name: string, on: boolean) => { hidden[id] = on; } } }
         : id === "messages" || id === "jump-pill" ? {} : null,
       createDocumentFragment: () => ({}),
@@ -650,7 +650,7 @@ describe("a same-frame branch reset and the dock", () => {
     return hidden;
   }
 
-  it.each(["timeline", "files"])("stays on the %s pane, in the state and in the DOM", async (tab) => {
+  it.each(["timeline", "files", "lab"])("stays on the %s pane, in the state and in the DOM", async (tab) => {
     server(); await openConversation("f");
     activeTab.value = tab;
     const hidden = dockPanes();

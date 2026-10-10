@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "lab_lost_response",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "lab-sim"
+  ],
+  "surface": "lab_simulation",
+  "task": "A lost execute response and failed query stay unknown until explicit status reconciliation.",
+  "fixtures": {
+    "lab_simulation": {
+      "case": "lost_response"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "lab_simulation"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "succeeded",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_created",
+      "execute_result",
+      "status_reconciled",
+      "run_stopped",
+      "cleanup"
+    ],
+    "invariants": []
+  }
+}

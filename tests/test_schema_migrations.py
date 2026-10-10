@@ -168,9 +168,123 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Bounded Web background-cell receipts. Written before the worker
         # starts; a later daemon does not replay an unfinished row.
         "background_exec_receipts",
+        # Durable simulation runs, commands, observations, evaluation,
+        # resource leases, and events. Existing rows are untouched.
+        "lab_ledger",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
+
+
+def test_v35_adds_only_lab_tables_preserves_v34_rows_and_is_idempotent(
+    tmp_path, monkeypatch
+):
+    lab_tables = {
+        "lab_runs",
+        "lab_commands",
+        "lab_observations",
+        "lab_evaluations",
+        "lab_leases",
+        "lab_events",
+    }
+
+    def schema_objects(conn):
+        return {
+            (row["type"], row["name"]): (row["tbl_name"], row["sql"])
+            for row in conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_master")
+        }
+
+    def table_rows(conn, names):
+        rows = {}
+        for name in names:
+            quoted = name.replace('"', '""')
+            # The new migration record is expected; all prior records must
+            # retain their names, checksums, and timestamps.
+            where = " WHERE version <= 34" if name == "schema_migrations" else ""
+            rows[name] = sorted(
+                (
+                    tuple(row)
+                    for row in conn.execute(f'SELECT * FROM "{quoted}"{where}')
+                ),
+                key=repr,
+            )
+        return rows
+
+    db = tmp_path / "v34.db"
+    # Build the genuine v1-v34 schema without ever applying v35. Removing
+    # known Lab tables from a current Store would hide an accidental seventh
+    # table introduced by the new migration.
+    with monkeypatch.context() as before_v35:
+        before_v35.setattr(Store, "_apply_lab_ledger", lambda self, conn: None)
+        store = Store(db)
+        try:
+            root = store.new_frame(name="preserved v34 session", status="ready")
+            store.set_setting("v34-preservation-canary", "precious-data")
+            store.background_exec_receipts.begin(
+                exec_id="exec-v34",
+                root_frame_id=root,
+                frame_id=root,
+                owner_user_id=None,
+                daemon_instance="daemon-v34",
+                origin="agent",
+                code_sha256="ab" * 32,
+                code_chars=1,
+            )
+            store._conn.execute("DELETE FROM schema_migrations WHERE version >= 35")
+            store._conn.execute("PRAGMA user_version = 34")
+            store._conn.commit()
+            before_schema = schema_objects(store._conn)
+            old_tables = {name for kind, name in before_schema if kind == "table"}
+            assert not old_tables & lab_tables
+            before_rows = table_rows(store._conn, old_tables)
+        finally:
+            store.close()
+
+    upgraded = Store(db)
+    try:
+        state = upgraded.schema_state()
+        assert state["version"] == SCHEMA_VERSION == 35
+        assert {
+            row["version"]: row["name"]
+            for row in state["applied"]
+            if row["version"] >= 34
+        } == {34: "background_exec_receipts", 35: "lab_ledger"}
+        after_schema = schema_objects(upgraded._conn)
+        assert {key: after_schema[key] for key in before_schema} == before_schema
+        added = after_schema.keys() - before_schema.keys()
+        assert {name for kind, name in added if kind == "table"} == lab_tables
+        assert all(
+            kind in {"table", "index"} and after_schema[(kind, name)][0] in lab_tables
+            for kind, name in added
+        )
+        assert table_rows(upgraded._conn, old_tables) == before_rows
+        assert all(not rows for rows in table_rows(upgraded._conn, lab_tables).values())
+
+        # Re-run with the tables and a nonempty event log still present. This
+        # also protects the AUTOINCREMENT sequence from a destructive rebuild.
+        upgraded._conn.execute(
+            "INSERT INTO lab_events(root_frame_id,run_id,kind,ref_id,state,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (root, "labrun-kept", "run", "labrun-kept", "creating", 1234),
+        )
+        upgraded._conn.execute("PRAGMA user_version = 34")
+        upgraded._conn.commit()
+        before_rerun = table_rows(upgraded._conn, old_tables | lab_tables)
+    finally:
+        upgraded.close()
+
+    rerun = Store(db)
+    try:
+        assert rerun.schema_state()["version"] == SCHEMA_VERSION == 35
+        assert schema_objects(rerun._conn) == after_schema
+        assert table_rows(rerun._conn, old_tables | lab_tables) == before_rerun
+        assert [
+            row["name"]
+            for row in rerun.schema_state()["applied"]
+            if row["version"] == 35
+        ] == ["lab_ledger"]
+    finally:
+        rerun.close()
 
 
 def test_an_unversioned_database_reports_version_zero(plain_db):
@@ -2174,7 +2288,7 @@ def test_v33_redacts_historical_judge_args_and_leaves_other_rows(tmp_path, monke
     try:
         rows = read_rows(upgraded)
         assert secure_delete_mode(upgraded._conn) == secure_before
-        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 34
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION == 35
         assert version_33_names(upgraded) == ["redact_judge_host_call_args"]
     finally:
         upgraded.close()

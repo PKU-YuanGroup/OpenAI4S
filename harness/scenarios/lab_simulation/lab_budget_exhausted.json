@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "lab_budget_exhausted",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "lab-sim"
+  ],
+  "surface": "lab_simulation",
+  "task": "Exhausted step budget rejects the next command and releases the provider.",
+  "fixtures": {
+    "lab_simulation": {
+      "case": "budget_exhausted"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "lab_simulation"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "budget_exhausted",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_created",
+      "execute_result",
+      "second_result",
+      "run_stopped",
+      "cleanup"
+    ],
+    "invariants": []
+  }
+}

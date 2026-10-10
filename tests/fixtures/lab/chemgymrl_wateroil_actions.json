@@ -1,0 +1,726 @@
+{
+  "action_rows": [
+    {
+      "index": 0,
+      "event": "drain by pixel",
+      "parameters": [
+        [
+          2
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        1
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 1,
+      "event": "drain by pixel",
+      "parameters": [
+        [
+          4
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        1
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 2,
+      "event": "drain by pixel",
+      "parameters": [
+        [
+          6
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        1
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 3,
+      "event": "drain by pixel",
+      "parameters": [
+        [
+          8
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        1
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 4,
+      "event": "drain by pixel",
+      "parameters": [
+        [
+          10
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        1
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 5,
+      "event": "mix",
+      "parameters": [
+        [
+          -0.2
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": null,
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 6,
+      "event": "mix",
+      "parameters": [
+        [
+          -0.4
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": null,
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 7,
+      "event": "mix",
+      "parameters": [
+        [
+          -0.6000000000000001
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": null,
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 8,
+      "event": "mix",
+      "parameters": [
+        [
+          -0.8
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": null,
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 9,
+      "event": "mix",
+      "parameters": [
+        [
+          -1.0
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": null,
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 10,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.2
+        ]
+      ],
+      "vessels": [
+        1
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 11,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.4
+        ]
+      ],
+      "vessels": [
+        1
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 12,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.6000000000000001
+        ]
+      ],
+      "vessels": [
+        1
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 13,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.8
+        ]
+      ],
+      "vessels": [
+        1
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 14,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          1.0
+        ]
+      ],
+      "vessels": [
+        1
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 15,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.2
+        ]
+      ],
+      "vessels": [
+        2
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 16,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.4
+        ]
+      ],
+      "vessels": [
+        2
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 17,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.6000000000000001
+        ]
+      ],
+      "vessels": [
+        2
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 18,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.8
+        ]
+      ],
+      "vessels": [
+        2
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 19,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          1.0
+        ]
+      ],
+      "vessels": [
+        2
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 20,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.2
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        2
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 21,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.4
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        2
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 22,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.6000000000000001
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        2
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 23,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.8
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        2
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 24,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          1.0
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": [
+        2
+      ],
+      "dt": 0.01,
+      "terminal": false
+    },
+    {
+      "index": 25,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.1
+        ]
+      ],
+      "vessels": [
+        3
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 26,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.2
+        ]
+      ],
+      "vessels": [
+        3
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 27,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.30000000000000004
+        ]
+      ],
+      "vessels": [
+        3
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 28,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.4
+        ]
+      ],
+      "vessels": [
+        3
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 29,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.5
+        ]
+      ],
+      "vessels": [
+        3
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 30,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.1
+        ]
+      ],
+      "vessels": [
+        4
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 31,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.2
+        ]
+      ],
+      "vessels": [
+        4
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 32,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.30000000000000004
+        ]
+      ],
+      "vessels": [
+        4
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 33,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.4
+        ]
+      ],
+      "vessels": [
+        4
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 34,
+      "event": "pour by volume",
+      "parameters": [
+        [
+          0.5
+        ]
+      ],
+      "vessels": [
+        4
+      ],
+      "affected_vessels": [
+        0
+      ],
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 35,
+      "event": "mix",
+      "parameters": [
+        [
+          0.01
+        ],
+        [
+          0.01
+        ],
+        [
+          0.01
+        ]
+      ],
+      "vessels": [
+        0,
+        1,
+        2
+      ],
+      "affected_vessels": null,
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 36,
+      "event": "mix",
+      "parameters": [
+        [
+          0.02
+        ],
+        [
+          0.02
+        ],
+        [
+          0.02
+        ]
+      ],
+      "vessels": [
+        0,
+        1,
+        2
+      ],
+      "affected_vessels": null,
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 37,
+      "event": "mix",
+      "parameters": [
+        [
+          0.04000000000000001
+        ],
+        [
+          0.04000000000000001
+        ],
+        [
+          0.04000000000000001
+        ]
+      ],
+      "vessels": [
+        0,
+        1,
+        2
+      ],
+      "affected_vessels": null,
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 38,
+      "event": "mix",
+      "parameters": [
+        [
+          0.08000000000000002
+        ],
+        [
+          0.08000000000000002
+        ],
+        [
+          0.08000000000000002
+        ]
+      ],
+      "vessels": [
+        0,
+        1,
+        2
+      ],
+      "affected_vessels": null,
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 39,
+      "event": "mix",
+      "parameters": [
+        [
+          0.16
+        ],
+        [
+          0.16
+        ],
+        [
+          0.16
+        ]
+      ],
+      "vessels": [
+        0,
+        1,
+        2
+      ],
+      "affected_vessels": null,
+      "dt": 0,
+      "terminal": false
+    },
+    {
+      "index": 40,
+      "event": "mix",
+      "parameters": [
+        [
+          0
+        ]
+      ],
+      "vessels": [
+        0
+      ],
+      "affected_vessels": null,
+      "dt": 0,
+      "terminal": true
+    }
+  ],
+  "vessel_labels": [
+    "extraction_vessel",
+    "Beaker 1",
+    "Waste Vessel",
+    "C6H14 Vessel",
+    "H2O Vessel"
+  ]
+}

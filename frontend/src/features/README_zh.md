@@ -30,3 +30,4 @@
 | [`onboarding/`](onboarding/) | M-01 首次运行向导：四步状态机、skip/清单、能力 badge。 |
 | [`table/`](table/) | M-04 表格结构 / 分布 / 导出。B-07 `/table/profile` + `/table/export.csv`；approximate 明示；flag=0 回退 sheet。 |
 | [`judgment/`](judgment/) | 实验性语义判断层的功能本地文案与 `search_skills` 推荐 chip。 |
+| [`lab/`](lab/) | 仿真实验台、清单驱动控件、REST 状态和 WS 刷新提示。 |

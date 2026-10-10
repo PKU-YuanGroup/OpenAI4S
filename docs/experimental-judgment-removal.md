@@ -224,29 +224,29 @@ Do **not** edit `openai4s/egress.py`. There is no group, no domain, no
 
 ## 7. Skill-count prose (text-features)
 
-Deleting `skills/text-features/` moves the tree 45→44 curated, 606→605
+Deleting `skills/text-features/` moves the tree 46→45 curated, 607→606
 bundled, sidecar census 19→18. `tests/test_skills_installer_contract.py`
 (`test_every_prose_count_matches_the_tree` and
 `test_the_published_description_counts_the_skills_it_actually_ships`) is the
-gate: run it and fix every remaining live 606 / 45 it names. Historical
+gate: run it and fix every remaining live 607 / 46 it names. Historical
 v0.2.0 figures stay as written.
 
-Easy to miss: the parenthetical `(606 Skills: 45 curated + 561 bioSkills)` in
-the root README and installer README; `docs/skills.md` "catalog contains 606"
-and "ships all 606 Skills"; `skills/README*` after 45 has already become 44
-so the combined "606 … 45" string no longer matches; `docs/TODO.md` splits
-`has 606` / `Skills` across two lines.
+Easy to miss: the parenthetical `(607 Skills: 46 curated + 561 bioSkills)` in
+the root README and installer README; `docs/skills.md` "catalog contains 607"
+and "ships all 607 Skills"; `skills/README*` after 46 has already become 45
+so the combined "607 … 46" string no longer matches; `docs/TODO.md` splits
+`has 607` / `Skills` across two lines.
 
 | File | What to change |
 | --- | --- |
-| `package.json` | `"description"`: `606 scientific recipes` → `605` |
-| `README.md` | every live 606 / 45 that `COUNT_SITES` matches, plus the "What ships today" table `606 Skills (45 curated + 561 …)` |
-| `README_zh.md` | matching 606 / 45 sites |
-| `CLAUDE.md` / `AGENTS.md` (same file) | `606 bundled Skills: 45 curated` / `561-recipe` |
-| `docs/skills.md` | `## Bundled Skills (606)`, `45 curated`, `### Curated OpenAI4S Skills (45)`; drop `text-features` from the **ML methodology / benchmarks** cell |
+| `package.json` | `"description"`: `607 scientific recipes` → `606` |
+| `README.md` | every live 607 / 46 that `COUNT_SITES` matches, plus the "What ships today" table `607 Skills (46 curated + 561 …)` |
+| `README_zh.md` | matching 607 / 46 sites |
+| `CLAUDE.md` / `AGENTS.md` (same file) | `607 bundled Skills: 46 curated` / `561-recipe` |
+| `docs/skills.md` | `## Bundled Skills (607)`, `46 curated`, `### Curated OpenAI4S Skills (46)`; drop `text-features` from the **ML methodology / benchmarks** cell |
 | `docs/TODO.md` / `docs/TODO_zh.md` | current-tree Skill count |
 | `skills/README.md` / `skills/README_zh.md` | live totals; delete the [`text-features/`](text-features/) table row |
-| `tools/skills-installer/README.md` / `README_zh.md` | live 606 / 45 sites |
+| `tools/skills-installer/README.md` / `README_zh.md` | live 607 / 46 sites |
 | `tests/test_kernel_recovery.py` | sidecar census 19 → 18 (already in step 3) |
 
 Drop the "Experimental judgment" subsection and the documentation-table /

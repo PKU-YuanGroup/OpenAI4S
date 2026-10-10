@@ -15,6 +15,7 @@
 | 目录 | 职责 |
 | --- | --- |
 | [`baseline/`](baseline/) | 必需的离线 `tier:pr` 场景，覆盖确定性的 provider 序列、终止提交，以及计划内的故障行为。 |
+| [`lab_simulation/`](lab_simulation/) | 七个离线 `lab-sim` 场景，由真实 Store、LabManager、权限 broker 和显式假设备支撑，并精确比对经审阅的黄金轨迹。 |
 | [`orchestration/`](orchestration/) | 十二个场景，驱动**真的** `Reconciler` 去对一个脚本化的 backend（M4-4）。与 baseline 家族不同，它们是**故意**导入生产代码的——reconciler 的决策函数没有哪条活边界需要替身去顶，它的输入就是一行 workload 和一个 observation，两者都是数据。十二个里有七个声明的是非成功终态——被拒绝的提交、一次取消，或一个丢失的作业——这类场景在运行报告成功时判负。 |
 
 场景 JSON 只是喂给已声明的 Harness fake 的输入，仅此而已；它不构成重放生产副作用的许可。跑一个 tier 用 `uv run python -m harness.cli run --tier pr --offline`。

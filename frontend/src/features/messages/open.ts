@@ -133,6 +133,7 @@ function hideCancel(): void {
 }
 
 function resetSessionScoped(): void {
+  callLane("resetLab");
   liveStream.value = null;
   running.value = false;
   msgCursor.value = null;
@@ -204,12 +205,13 @@ function resetSessionScoped(): void {
  * all gated on `activeTab === "timeline"`.
  */
 function keepDockPane(tab: string): void {
-  const pane = tab === "timeline" || tab === "files" ? tab : "notebook";
+  const pane = tab === "timeline" || tab === "files" || tab === "lab" ? tab : "notebook";
   activeTab.value = pane;
   renderDockTabs();
   showDockPane(pane);
   if (pane === "timeline") renderActionTimeline();
   else if (pane === "notebook") callLane("renderNotebook");
+  else if (pane === "lab") callLane("renderLab");
 }
 
 const incomplete = (): HistoryLoadResult => ({
@@ -579,6 +581,7 @@ export async function openConversation(
   const result = await recoverConversation(fid, gen);
   if (!current(fid, gen)) return obsolete();
   callLane("loadArtifacts", fid); callLane("loadExecutionLog", fid); callLane("loadWorkbenchState", fid);
+  callLane("loadLab", fid);
   void (async () => {
     try {
       await Promise.resolve(callLane("loadAnnotations", fid));

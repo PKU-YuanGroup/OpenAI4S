@@ -7,6 +7,7 @@ import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
 import { bytes, callWindow, el, icon, translate } from "./api";
 import { artifactTabKey } from "./cache";
 import { filesT } from "./copy";
+import { labT } from "../lab/copy";
 import {
   parseArtifactDeepLink,
   rememberViewerVersion,
@@ -93,6 +94,10 @@ export function renderDockTabs(): void {
   if (activeTab.value === "timeline") timeline.classList.add("active");
   timeline.onclick = () => setActiveTab("timeline");
   bar.appendChild(timeline);
+  const lab = tabBtn("button", "flask", labT("tab"));
+  if (activeTab.value === "lab") lab.classList.add("active");
+  lab.onclick = () => setActiveTab("lab");
+  bar.appendChild(lab);
   if (activeTab.value === "files") {
     const files = tabBtn("button", "files", "Files");
     files.classList.add("active");
@@ -102,7 +107,7 @@ export function renderDockTabs(): void {
 
 export function showDockPane(pane: string): void {
   if (typeof document === "undefined") return;
-  ["viewer", "notebook", "timeline", "files"].forEach((p) => {
+  ["viewer", "notebook", "timeline", "files", "lab"].forEach((p) => {
     const n = document.getElementById("dock-" + p);
     if (n) n.classList.toggle("hidden", p !== pane);
   });
@@ -142,12 +147,15 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   dockOpen();
   renderDockTabs();
   const pane =
-    tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
+    tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : tab === "lab" ? "lab" : "viewer";
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
   else if (tab === "timeline") {
     callWindow("loadWorkbenchState", currentId.value);
     callWindow("renderActionTimeline");
+  } else if (tab === "lab") {
+    callWindow("renderLab");
+    callWindow("loadLab", currentId.value);
   } else if (tab === "files") {
     void (async () => {
       if (filesScope.value === "project") await loadProjectArtifacts();

@@ -1,7 +1,7 @@
 """The benchmark, run — not merely present.
 
-The proposal is explicit about what would make thirteen workflows and
-forty-six cases worthless: a directory of fixtures nobody executes, or cases
+The proposal is explicit about what would make fourteen workflows and
+fifty-one cases worthless: a directory of fixtures nobody executes, or cases
 that pass because the thing they exercise is a mock. So this file runs every
 case against the real subsystems and asserts the outcome each case declared.
 
@@ -49,10 +49,10 @@ CASE_PARAMS = [
 # --------------------------------------------------------------------------
 
 
-def test_thirteen_workflows_are_frozen():
+def test_fourteen_workflows_are_frozen():
     """The number is the commitment. Dropping one to make a run green is the
     failure mode this asserts against."""
-    assert len(WORKFLOWS) == 13, [w.id for w in WORKFLOWS]
+    assert len(WORKFLOWS) == 14, [w.id for w in WORKFLOWS]
 
 
 def test_every_workflow_carries_at_least_two_cases():
@@ -60,8 +60,8 @@ def test_every_workflow_carries_at_least_two_cases():
     assert not thin, f"a single case cannot represent a workflow: {thin}"
 
 
-def test_forty_six_versioned_cases_are_frozen():
-    assert len(CASES) == 46
+def test_fifty_one_versioned_cases_are_frozen():
+    assert len(CASES) == 51
 
 
 # --------------------------------------------------------------------------
@@ -73,7 +73,8 @@ def test_forty_six_versioned_cases_are_frozen():
 #: to `eleven` must be reported as a wrong value, not quietly drop out of the
 #: gate as a sentence that no longer matches.
 _COUNT = (
-    r"(?:\d+|eleven|thirteen|thirty-four|forty-six" r"|十一个|十三个|三十四个|四十六个)"
+    r"(?:\d+|eleven|thirteen|fourteen|thirty-four|forty-six|fifty-one"
+    r"|十一个|十三个|十四个|三十四个|四十六个|五十一个)"
 )
 
 #: What each count word is worth. A word missing here is a table bug, and the
@@ -81,10 +82,14 @@ _COUNT = (
 _COUNT_WORDS = {
     "eleven": 11,
     "thirteen": 13,
+    "fourteen": 14,
+    "fifty-one": 51,
     "thirty-four": 34,
     "forty-six": 46,
     "十一个": 11,
     "十三个": 13,
+    "十四个": 14,
+    "五十一个": 51,
     "三十四个": 34,
     "四十六个": 46,
 }
@@ -165,8 +170,8 @@ def _count_value(stated: str) -> int:
 def test_every_prose_count_matches_the_tree():
     """The two frozen numbers are restated in about ten prose sites.
 
-    `test_thirteen_workflows_are_frozen` and
-    `test_forty_six_versioned_cases_are_frozen` pin the numbers in code, and
+    `test_fourteen_workflows_are_frozen` and
+    `test_fifty_one_versioned_cases_are_frozen` pin the numbers in code, and
     `tests/test_release_gates.py` holds the release floor to them. Nothing read
     the prose, which is how 11/34 survived the step to 13/46 — and how a change
     that corrected six of those sites still left `README.md:123` disagreeing
@@ -1018,3 +1023,76 @@ def test_acceptance_pack_has_one_machine_readable_cli_entrypoint(capsys):
     assert len(report["field_paths"]) == 6
     assert len(report["safety_actions"]) == 7
     assert report["summary"]["capability_passes"] == 1
+
+
+# Lab runs use the real Store, manager and permission broker; no route stubs.
+LAB_WORKFLOW = next(w for w in WORKFLOWS if w.id == "lab-simulation")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [c for c in LAB_WORKFLOW.cases if c.outcome in {"failure", "permission_denied"}],
+    ids=lambda c: c.id,
+)
+def test_lab_refusal_cases_fail_if_the_step_succeeds(monkeypatch, case):
+    # Even fabricated error-looking output cannot substitute for a refusal.
+    code = case.expect["error__contains"]
+    monkeypatch.setitem(
+        STEPS,
+        "lab_simulation",
+        lambda ctx, inputs: {
+            "error_type": "LabBenchmarkRefusal",
+            "error": "LabBenchmarkRefusal: " + code,
+        },
+    )
+    result = run_case(LAB_WORKFLOW, case)
+    assert not result.passed
+    assert "without refusing anything" in result.detail
+
+
+def test_lab_policies_are_paired_repeatable_private_and_close_providers(tmp_path):
+    from openai4s.benchmark.steps import make_context
+
+    outputs = []
+    for index in range(2):
+        ctx = make_context(tmp_path / str(index))
+        try:
+            output = STEPS["lab_compare_policies"](ctx, {})
+            assert not ctx.state["lab_manager"]._live
+            assert all(not p._sessions for p in ctx.state["lab_ports"])
+            assert output["comparison"]["comparable"] is True
+            assert output["comparison"]["policies"]["scripted_llm"]["episodes"] == 3
+            assert output["counts"]["scripted_llm"]["llm_calls"] == 6
+            assert output["counts"]["fixed"]["applied_action_count"] > 5
+            encoded = json.dumps(output, sort_keys=True, separators=(",", ":"))
+            for forbidden in (
+                "reward",
+                "ground_truth",
+                "moles",
+                "purity",
+                "target_amount",
+                "volume_L",
+                "run_id",
+                "command_id",
+                "wall_ms",
+            ):
+                assert forbidden not in encoded
+            outputs.append(encoded)
+        finally:
+            ctx.store.close()
+    assert outputs[0] == outputs[1]
+
+
+def test_lab_optional_toy_uses_real_process_and_closes_it(tmp_path):
+    from openai4s.benchmark.steps import make_context
+
+    ctx = make_context(tmp_path)
+    try:
+        result = STEPS["lab_simulation"](ctx, {"backend": "toy"})
+        assert result["command_state"] == "succeeded"
+        assert result["step_count"] == 1
+        assert not ctx.state["lab_manager"]._live
+        assert ctx.state["lab_ports"]
+        assert all(not p._sessions for p in ctx.state["lab_ports"])
+    finally:
+        ctx.store.close()

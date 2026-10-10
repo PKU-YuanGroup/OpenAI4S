@@ -13,6 +13,32 @@ from openai4s.tools.registry import all_tools
 
 _GROUPS: tuple[dict[str, Any], ...] = (
     {
+        "id": "lab",
+        "always": False,
+        "description": "Simulation-only Lab devices, approved operations and sensor observations.",
+        # Whole words: a substring "lab" fires on "label" or "available", and
+        # "simulation"/"experiment" on most science prompts. search_capabilities
+        # still finds the group by those words through its description.
+        "word_match": True,
+        "keywords": (
+            "lab",
+            "labs",
+            "laboratory",
+            "chemgym",
+            "chemgymrl",
+            "chemistrygym",
+            "wateroil",
+            "genwurtz",
+            "simulated experiment",
+            "simulation lab",
+            "virtual lab",
+            "仿真实验",
+            "虚拟实验",
+            "实验台",
+            "萃取",
+        ),
+    },
+    {
         "id": "capabilities",
         "always": True,
         "description": "Active discovery for progressively disclosed tools.",
@@ -265,6 +291,21 @@ _GROUPS: tuple[dict[str, Any], ...] = (
 )
 _GROUP_BY_ID = {group["id"]: group for group in _GROUPS}
 _TOOL_GROUP = {
+    **{
+        name: "lab"
+        for name in (
+            "lab_list",
+            "lab_describe",
+            "lab_create",
+            "lab_observe",
+            "lab_execute",
+            "lab_status",
+            "lab_stop",
+            "lab_export",
+            "lab_commands",
+            "lab_observations",
+        )
+    },
     "search_capabilities": "capabilities",
     **{
         name: "core"
@@ -347,6 +388,14 @@ _TOOL_GROUP = {
 }
 
 
+def _mentions(text: str, keyword: str, whole_word: bool) -> bool:
+    if not whole_word or not keyword.isascii():
+        return keyword in text
+    return (
+        re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
+    )
+
+
 class SessionToolCatalog:
     """One non-global tool view used by model declaration and execution.
 
@@ -408,7 +457,10 @@ class SessionToolCatalog:
             for group in _GROUPS:
                 if group["always"]:
                     continue
-                if any(keyword in text for keyword in group["keywords"]):
+                if any(
+                    _mentions(text, keyword, bool(group.get("word_match")))
+                    for keyword in group["keywords"]
+                ):
                     self._active_groups.add(str(group["id"]))
             selected = tuple(
                 tool
