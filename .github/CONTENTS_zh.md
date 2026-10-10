@@ -24,7 +24,7 @@ PR 需要交代清楚哪些事，以及 GitHub 展示的社区健康文件（贡
 | --- | --- |
 | `ISSUE_TEMPLATE/` | 结构化的 issue 表单，以及公开 issue 里可以写什么的政策。 |
 | `contributors/` | 贡献者头像，裁成圆形后提交在这里，供根目录的 README 引用。 |
-| `workflows/` | 五个 GitHub Actions workflow：离线 CI 检查门、有界协议模糊测试、容器发布、draft-first 发布流水线和 OpenSSF Scorecard。凭据扫描是 CI 里的一个 job，而不是独立的 workflow。 |
+| `workflows/` | 六个 GitHub Actions workflow：离线 CI 检查门、有界协议模糊测试、容器发布、draft-first 发布流水线、OpenSSF Scorecard，以及每周一次、不属于任何必需检查的真实 ChemGymRL Lab provider 运行。凭据扫描是 CI 里的一个 job，而不是独立的 workflow。 |
 
 ## 在架构中的位置
 

@@ -362,11 +362,11 @@ def test_development_probe_defaults_to_a_fresh_temporary_work_dir(
 
 @pytest.mark.external
 @pytest.mark.parametrize("profile", ["WaterOilExtract-v0", "GenWurtzExtract-v2"])
-def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(profile):
+def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(
+    profile, tmp_path
+):
     import json
     import os
-    from pathlib import Path
-    from uuid import uuid4
 
     from openai4s.lab.policies import FixedRulePolicy, run_episode
     from scripts.lab_evaluate import _ProbeEnv, _ProviderDevice
@@ -374,9 +374,10 @@ def test_real_chemgymrl_fixed_policy_goal_matches_composition_accounting(profile
     python = os.environ.get("OPENAI4S_LAB_CHEMGYMRL_PYTHON")
     if not python:
         pytest.skip("Set OPENAI4S_LAB_CHEMGYMRL_PYTHON to the pinned isolated provider")
-    directory = (
-        Path(__file__).resolve().parents[2] / "_data/W2-C/external" / uuid4().hex
-    )
+    # Under pytest's own temp root: this used to be `parents[2] / "_data/W2-C"`,
+    # the lane layout it was written in, which from an ordinary checkout is a
+    # directory beside the repository (and on a CI runner, outside its workspace).
+    directory = tmp_path / "external"
     port = _ProviderDevice("chemgymrl", python, directory)
     env = None
     try:
