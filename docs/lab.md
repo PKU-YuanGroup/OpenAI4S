@@ -535,7 +535,8 @@ every check passes; a failure leaves it untouched and keeps only the failed
 generation's `setup.log`, and a success removes every generation other than
 the current and previous one. Only the two download steps (pip and git)
 inherit the operator's `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and
-`PIP_INDEX_URL`. A generation built from another lock is no
+`PIP_INDEX_URL`, and their output is written to `setup.log` with credentials
+replaced by `<redacted>`. A generation built from another lock is no
 longer verified. The ChemGymRL backend runs only with that generation or an
 explicit `OPENAI4S_LAB_CHEMGYMRL_PYTHON`, never the daemon interpreter; the toy
 backend (daemon interpreter, stdlib only) is registered only with

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,6 +42,13 @@ record = {"stage": stage, "args": args, "env": dict(os.environ),
           "cwd": os.getcwd()}
 with pathlib.Path(config["events"]).open("a") as events:
     events.write(json.dumps(record) + "\n")
+if stage in ("dependencies", "source"):
+    # What pip and git do with these settings: print them, on both streams.
+    for name in config.get("echo", []):
+        print("Looking in indexes:", os.environ.get(name, ""))
+        print("could not connect through", os.environ.get(name, ""), file=sys.stderr)
+    for line in config.get("say", []):
+        print(line)
 if config.get("fail") == stage:
     print("simulated installation failure", file=sys.stderr)
     raise SystemExit(29)
@@ -380,3 +389,151 @@ def test_setup_recovers_from_an_invalid_pointer_and_names_a_stale_lock(
         provider_env.setup_provider(tmp_path, python=executable)
     assert str(lock) in caught.value.message and "424242" in caught.value.message
     assert json.loads(pointer.read_text())["generation"] == installed["generation"]
+
+
+_PROXY = "http://alice:pr0xy%2Fpass@proxy.corp.example:8080"
+_INDEX = "https://tok_9f8e7d6c5b4a@pypi.corp.example/simple?key=qv_112233"
+_SOURCE_LINE = f"Cloning git+https://github.com/chemgymrl/chemgymrl@{SOURCE_SHA}"
+_BASIC = base64.b64encode(b"alice:pr0xy/pass").decode()
+_LEAKS = (
+    "pr0xy%2Fpass",
+    "pr0xy/pass",
+    "alice:",
+    "tok_9f8e7d6c5b4a",
+    "qv_112233",
+    _BASIC,
+)
+
+
+@pytest.mark.parametrize("fail", [None, "dependencies", "source"])
+def test_setup_log_never_holds_what_the_proxy_and_index_settings_carry(
+    tmp_path, fake_python, monkeypatch, fail
+):
+    executable, config_path, config = fake_python
+    monkeypatch.setenv("HTTPS_PROXY", _PROXY)
+    monkeypatch.setenv("PIP_INDEX_URL", _INDEX)
+    monkeypatch.setenv("NO_PROXY", "localhost,.corp.example")
+    config["echo"] = ["HTTPS_PROXY", "PIP_INDEX_URL", "NO_PROXY"]
+    config["say"] = [
+        # Forms a tool derives itself: decoded, masked, as a request header.
+        "407 for user alice:pr0xy/pass",
+        "Looking in indexes: https://alice:****@proxy.corp.example:8080/simple",
+        "Proxy-Authorization: Basic " + _BASIC,
+        _SOURCE_LINE,
+    ]
+    if fail:
+        config["fail"] = fail
+    config_path.write_text(json.dumps(config))
+    root = Path(config["pointer"]).parent
+    if fail:
+        with pytest.raises(LabError):
+            provider_env.setup_provider(tmp_path, python=executable)
+    else:
+        provider_env.setup_provider(tmp_path, python=executable)
+    (log_path,) = root.glob("gen-*/setup.log")
+    log = log_path.read_text()
+    for leak in _LEAKS:
+        assert leak not in log, leak
+    # The downloads did receive the settings; only their output is filtered.
+    downloads = [e for e in _events(config) if e["stage"] in ("dependencies", "source")]
+    assert downloads and all(e["env"]["HTTPS_PROXY"] == _PROXY for e in downloads)
+    # What explains a failure is still there: hosts, paths, the exclusion
+    # list, the pinned source and the tool's own words, on both streams.
+    for kept in (
+        "Looking in indexes: https://<redacted>@pypi.corp.example/simple?key=<redacted>",
+        "could not connect through http://<redacted>@proxy.corp.example:8080",
+        "Looking in indexes: https://<redacted>@proxy.corp.example:8080/simple",
+        "Looking in indexes: localhost,.corp.example",
+        "407 for user <redacted>",
+        "Proxy-Authorization: Basic <redacted>",
+        _SOURCE_LINE,
+    ):
+        assert kept in log, kept
+    if fail:
+        assert "simulated installation failure" in log
+
+
+def test_a_killed_download_leaves_only_redacted_output(tmp_path):
+    redact = provider_env._download_redactor({"HTTPS_PROXY": _PROXY})
+    script = (
+        "import os, sys, time\n"
+        "url = os.environ['HTTPS_PROXY']\n"
+        "print('retrying through', url, flush=True)\n"
+        "print('still waiting on', url, file=sys.stderr, flush=True)\n"
+        "time.sleep(120)\n"
+    )
+    with (tmp_path / "setup.log").open("xb") as log:
+        with pytest.raises(subprocess.TimeoutExpired):
+            provider_env._run(
+                # The argument is ignored by the script; the command line is
+                # part of the log too.
+                [sys.executable, "-I", "-c", script, "--proxy=" + _PROXY],
+                env={**os.environ, "HTTPS_PROXY": _PROXY},
+                cwd=tmp_path,
+                log=log,
+                timeout=5,
+                redact=redact,
+            )
+    text = (tmp_path / "setup.log").read_text()
+    host = "http://<redacted>@proxy.corp.example:8080"
+    assert "retrying through " + host in text
+    assert "still waiting on " + host in text
+    assert "--proxy=" + host in text
+    assert "pr0xy" not in text and "alice" not in text
+
+
+def test_download_redaction_removes_credentials_and_nothing_else():
+    plain = provider_env._download_redactor(
+        {"HTTPS_PROXY": "http://proxy.corp.example:8080", "NO_PROXY": "tok_secret"}
+    )
+    untouched = (
+        b"connecting to http://proxy.corp.example:8080 for "
+        b"git+https://github.com/chemgymrl/chemgymrl@abc123, "
+        b"contact admin@corp.example, bypass tok_secret"
+    )
+    # No credential was passed, and NO_PROXY is a host list, not a secret.
+    assert plain(untouched) == untouched
+    # A URL another source put a credential in loses it all the same.
+    assert plain(b"index https://x:y@host/simple and https://t0ken@host/x") == (
+        b"index https://<redacted>@host/simple and https://<redacted>@host/x"
+    )
+    short = provider_env._download_redactor({"ALL_PROXY": "socks5://bob:ab@proxy:1"})
+    # Too short to replace bare without shredding the log; gone from the URL.
+    assert short(b"lab via socks5://bob:ab@proxy:1") == (
+        b"lab via socks5://<redacted>@proxy:1"
+    )
+    # Some indexes carry the token in the path; a derived URL repeats it.
+    in_path = provider_env._download_redactor(
+        {
+            "PIP_INDEX_URL": "https://dl.corp.example/aBcD1234eFgH5678/team/python/simple/"
+        }
+    )
+    assert (
+        in_path(
+            b"Downloading https://dl.corp.example/aBcD1234eFgH5678/team/python/x.whl"
+        )
+        == b"Downloading https://dl.corp.example/<redacted>/team/python/x.whl"
+    )
+    # curl and pip accept a proxy without a scheme.
+    bare = provider_env._download_redactor(
+        {"HTTP_PROXY": "carol:hunter2pw@proxy.corp.example:3128"}
+    )
+    assert (
+        bare(b"Cannot connect to proxy carol:hunter2pw@proxy.corp.example:3128")
+        == b"Cannot connect to proxy <redacted>@proxy.corp.example:3128"
+    )
+    # A query value is found as given and as a tool would decode it.
+    query = provider_env._download_redactor(
+        {"PIP_INDEX_URL": "https://pypi.corp.example/simple?sig=a%2Bb%2Bc%2Bd"}
+    )
+    assert query(b"GET ?sig=a%2Bb%2Bc%2Bd then sig a+b+c+d") == (
+        b"GET ?sig=<redacted> then sig <redacted>"
+    )
+    broken = provider_env._download_redactor({"HTTP_PROXY": "http://[bad:s3cret"})
+    assert broken(b"invalid proxy http://[bad:s3cret given") == (
+        b"invalid proxy <redacted> given"
+    )
+    with pytest.raises(ValueError):
+        provider_env._run(
+            [], env={}, cwd=Path("."), log=None, capture=True, redact=plain
+        )

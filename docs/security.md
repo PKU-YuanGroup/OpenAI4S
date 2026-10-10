@@ -847,7 +847,11 @@ continue degraded, and `off` supplies no OS confinement. The actual posture is
 recorded in descriptor `assumptions` and shown by `lab smoke` and doctor.
 `lab status` is read-only and reports `not_probed`; it is not sandbox proof.
 Provider packages and environment directories remain readable under the shared
-sandbox policy. See [configuration](configuration.md#lab-simulation-providers).
+sandbox policy. That includes each generation's `setup.log`, so the two
+download steps that inherit the operator's proxy and index settings never write
+their output there as it came: credentials are replaced with `<redacted>`
+before anything reaches the file. See
+[configuration](configuration.md#lab-simulation-providers).
 
 Reward and exact material composition are evaluation truth, not observations.
 They stay in the separate evaluation ledger and are removed from public Lab
@@ -889,8 +893,9 @@ Lab 同样受 `OPENAI4S_KERNEL_SANDBOX=auto|enforce|off` 控制。provider 通�
 OS 沙箱请求禁止原始网络，并把可写范围约束到私有 run/cache 路径。`enforce` 在边界
 不可用时拒绝；`auto` 可降级继续；`off` 不提供 OS 隔离。实际状态写入描述的
 `assumptions`，也由 `lab smoke` 和 doctor 报告。`lab status` 只读并标为 `not_probed`，
-不能证明沙箱有效。provider 包与环境目录按共用沙箱策略保持可读，详见
-[配置](configuration.md#lab-simulation-providers)。
+不能证明沙箱有效。provider 包与环境目录按共用沙箱策略保持可读，其中包括每个代际的
+`setup.log`；因此继承操作者代理与索引设置的两个下载步骤，输出从不原样写入：凭据在
+落盘前就被替换为 `<redacted>`。详见[配置](configuration.md#lab-simulation-providers)。
 
 奖励与材料精确组成属于评价真值，不是观测。它们保存在独立评价账本中，并从公开 Lab
 投影中移除；全部六张 `lab_*` 表都禁止 agent 经 `host.query` SQL 读取。

@@ -413,7 +413,12 @@ verified generation. A failed generation keeps only its `setup.log`, and a
 successful setup removes every generation other than the current and previous
 one. The two download steps (pip and git) inherit `HTTP_PROXY`, `HTTPS_PROXY`,
 `ALL_PROXY`, `NO_PROXY` and `PIP_INDEX_URL` from the shell that runs setup; no
-other step and no provider process sees them.
+other step and no provider process sees them. Agent cells can read
+`setup.log`, so those two steps' output is written there only after
+credentials are removed: the user and password of any URL, and the passwords,
+tokens and query values those settings carry, appear as `<redacted>`. A token
+placed in the index URL's path is recognized only by its shape (16 or more
+characters with letters and digits); prefer the user name or a query value.
 An interrupted installer can leave `.setup-lock`; inspect its PID and ensure no
 setup process is still running before removing that lock.
 
@@ -471,6 +476,10 @@ successful. See [Lab](lab.md) for the usage and outcome rules.
 代际。失败的代际只保留 `setup.log`，安装成功后会删除 current 与 previous 之外的代际。
 只有两个下载步骤（pip 与 git）继承运行 setup 的 shell 中的 `HTTP_PROXY`、`HTTPS_PROXY`、
 `ALL_PROXY`、`NO_PROXY` 与 `PIP_INDEX_URL`，其余步骤和 provider 进程都看不到它们。
+agent 的 Cell 读得到 `setup.log`，所以这两步的输出要先去掉凭据才写入：任何 URL 里的
+用户名与口令，以及这些设置携带的口令、令牌和查询参数值，都写成 `<redacted>`。放在索引
+URL 路径里的令牌只能按形状识别（不少于 16 个字符且同时含字母和数字），建议改用用户名或
+查询参数。
 安装被打断后若留下 `.setup-lock`，应检查其中 PID，
 确认没有安装进程仍在运行后再移除。
 

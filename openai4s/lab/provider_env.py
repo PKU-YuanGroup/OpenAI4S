@@ -6,6 +6,7 @@ pointer publishes both the selected and previous verified generations.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,9 +16,11 @@ import shlex
 import shutil
 import signal
 import subprocess
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
+from urllib.parse import unquote, urlsplit
 
 import openai4s_lab_provider
 from openai4s.kernel.environment import build_kernel_environment
@@ -46,6 +49,17 @@ _DOWNLOAD_PASSTHROUGH = (
     "no_proxy",
     "PIP_INDEX_URL",
 )
+_REDACTED = b"<redacted>"
+# The userinfo of any URL a tool prints, whatever the tool already did to it:
+# pip masks a password but leaves a token given as the user name.
+_URL_USERINFO = re.compile(rb"([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s]*@")
+# A shorter credential is replaced only inside a URL: replacing every bare
+# "ab" would shred the log without protecting anything worth the name.
+_MIN_BARE_SECRET = 4
+# Some private indexes put the token in the URL path. A path segment cannot be
+# told from a directory name for certain, so only one shaped like a token is
+# treated as one: long, with both letters and digits.
+_PATH_TOKEN = re.compile(r"(?=[^/]*[A-Za-z])(?=[^/]*[0-9])[^/]{16,}\Z")
 _SOURCE_PROBE = (
     "import importlib.metadata as m,json; d=m.distribution('chemistrygym'); "
     "print(json.dumps({'version':d.version, "
@@ -214,6 +228,55 @@ def _environment(data_dir: Path, generation: Path) -> dict[str, str]:
     return env
 
 
+def _download_redactor(passed: Mapping[str, str]) -> Callable[[bytes], bytes]:
+    """Keep what the passed-through proxy and index settings carry out of the log.
+
+    ``setup.log`` outlives the setup and sits in a provider directory that
+    agent cells can read, so a download tool's output is never written as it
+    came. Two rules apply. Every credential found in a passed value is
+    replaced wherever it appears: its password, a token given as the user
+    name, query values, a token-shaped path segment, their percent-decoded
+    forms and the Basic-auth encoding. And the userinfo of any URL is removed,
+    which also covers a credential a tool rewrote before printing it. Hosts
+    and ordinary paths stay, because they are what explains a failed download.
+    """
+    found: set[str] = set()
+    for name, value in passed.items():
+        if name.lower() == "no_proxy":
+            continue
+        try:
+            # curl and pip also take a proxy without a scheme, as
+            # ``user:password@host:port``; read that as an authority too.
+            parts = urlsplit(value if "://" in value else "//" + value)
+            username, password = parts.username, parts.password
+        except ValueError:
+            # Not a URL this module can take apart: the whole value is secret.
+            found.add(value)
+            continue
+        pieces = [pair.partition("=")[2] for pair in parts.query.split("&")]
+        pieces += [part for part in parts.path.split("/") if _PATH_TOKEN.match(part)]
+        if password:
+            pieces += [password, f"{username}:{password}"]
+            pair = f"{unquote(username or '')}:{unquote(password)}"
+            pieces.append(base64.b64encode(pair.encode("utf-8")).decode("ascii"))
+        elif username:
+            pieces.append(username)
+        for piece in pieces:
+            found.update((piece, unquote(piece)))
+    secrets_ = sorted(
+        (item.encode("utf-8") for item in found if len(item) >= _MIN_BARE_SECRET),
+        key=len,
+        reverse=True,
+    )
+
+    def redact(data: bytes) -> bytes:
+        for secret in secrets_:
+            data = data.replace(secret, _REDACTED)
+        return _URL_USERINFO.sub(rb"\1" + _REDACTED + b"@", data)
+
+    return redact
+
+
 def _run(
     argv: list[str],
     *,
@@ -222,36 +285,57 @@ def _run(
     log: BinaryIO,
     capture: bool = False,
     timeout: float = 900,
+    redact: Callable[[bytes], bytes] | None = None,
 ) -> bytes:
-    log.write(("\n$ " + shlex.join(argv) + "\n").encode("utf-8"))
+    """Run one setup command with its output in the log.
+
+    With ``redact`` the child never holds the log: its output comes back
+    through a pipe and only the redacted bytes are written, including what a
+    killed or timed-out command had printed.
+    """
+    if capture and redact is not None:
+        raise ValueError("a redacted command's output is not returned")
+    command_line = ("\n$ " + shlex.join(argv) + "\n").encode("utf-8")
+    log.write(redact(command_line) if redact is not None else command_line)
     log.flush()
+    piped = redact is not None
     with subprocess.Popen(
         argv,
         env=env,
         cwd=cwd,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE if capture else log,
-        stderr=log,
+        stdout=subprocess.PIPE if capture or piped else log,
+        stderr=subprocess.STDOUT if piped else log,
         start_new_session=os.name != "nt",
     ) as process:
+        output: bytes | None = b""
         try:
-            output, _ = process.communicate(timeout=timeout)
-        except BaseException:
-            if process.poll() is None:
-                if os.name == "nt":
-                    process.kill()
+            try:
+                output, _ = process.communicate(timeout=timeout)
+            except BaseException:
+                if process.poll() is None:
+                    if os.name == "nt":
+                        process.kill()
+                    else:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                if piped:
+                    # Retrying loses nothing the command had already printed.
+                    output, _ = process.communicate()
                 else:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-            process.wait()
-            raise
+                    process.wait()
+                raise
+        finally:
+            if redact is not None:
+                log.write(redact(output or b""))
+                log.flush()
         if process.returncode:
             raise RuntimeError(
                 f"installation command exited with status {process.returncode}"
             )
-    return output or b""
+    return b"" if piped else output or b""
 
 
 def _find_python(
@@ -504,16 +588,15 @@ def setup_provider(
             interpreter = _find_python(python, env=env, cwd=generation, log=log)
             commands = _commands(interpreter, generation)
             _run(commands[0], env=env, cwd=generation, log=log)
-            download_env = {
-                **env,
-                **{
-                    key: os.environ[key]
-                    for key in _DOWNLOAD_PASSTHROUGH
-                    if os.environ.get(key)
-                },
+            passed = {
+                key: os.environ[key]
+                for key in _DOWNLOAD_PASSTHROUGH
+                if os.environ.get(key)
             }
+            download_env = {**env, **passed}
+            redact = _download_redactor(passed)
             for command in commands[1:3]:
-                _run(command, env=download_env, cwd=generation, log=log)
+                _run(command, env=download_env, cwd=generation, log=log, redact=redact)
             receipt = json.loads(
                 _run(commands[3], env=env, cwd=generation, log=log, capture=True)
             )
