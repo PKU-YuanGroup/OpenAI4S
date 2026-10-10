@@ -200,9 +200,14 @@ class LabExecuteTool(_LabTool):
 
 
 class LabStatusTool(_LabTool):
+    """Approval-free, but not read-only: with a command_id it records the
+    reconciliation and can end a run whose provider is gone."""
+
     name = host_method = "lab_status"
     description = "Query simulation status and reconcile the SAME unknown command using command_id; never resend with a new idempotency key. This may record reconciliation, but never dispatches a new command."
     parameters = {"properties": {**_RUN, "command_id": _ID}, "required": ["run_id"]}
+    read_only = False
+    side_effect_class = "runtime_mutation"
 
 
 class LabStopTool(_LabTool):

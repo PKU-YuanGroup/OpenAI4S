@@ -169,14 +169,21 @@ def test_lab_metadata_and_progressive_group(rig):
     assert set(group["tools"]) == NAMES and group["always"] is False
     for name, tool in tools.items():
         assert tool.read_only == (
-            name not in {"lab_create", "lab_execute", "lab_stop", "lab_export"}
+            name
+            not in {
+                "lab_create",
+                "lab_execute",
+                "lab_stop",
+                "lab_status",
+                "lab_export",
+            }
         )
         assert tool.requires_approval == (
             name in {"lab_create", "lab_execute", "lab_export"}
         )
         assert "full" not in tool.parameters["properties"]
         assert "options" not in tool.parameters["properties"]
-        if name in {"lab_create", "lab_execute", "lab_stop"}:
+        if name in {"lab_create", "lab_execute", "lab_stop", "lab_status"}:
             key = "device_id" if name == "lab_create" else "run_id"
             assert tool.resource_keys({key: "x"}) == ("lab:x",)
             assert tool.side_effect_class == "runtime_mutation"
@@ -521,6 +528,22 @@ def test_no_options_and_activity_cards_keep_only_safe_fields(rig):
     assert begin["input"]["parameters"]["duration"]["unit"] == "model_time"
     for event in events:
         assert_public(event)
+
+
+def test_a_step_card_reads_the_run_row_not_an_observation(rig):
+    run_id = create(rig)["run"]["run_id"]
+    events, reads = [], []
+    rig.dispatcher.on_step = events.append
+    ledger = rig.store.lab
+    original = ledger.latest_observation
+    ledger.latest_observation = lambda *a, **k: reads.append(a) or original(*a, **k)
+    try:
+        assert rig.host.lab.stop(run_id)["stopped"] is True
+    finally:
+        del ledger.latest_observation
+    begin = next(e for e in events if e.get("title") == "Simulation · Stop run")
+    assert begin["input"]["device_id"] == CREATE["device_id"]
+    assert reads == []
 
 
 def test_permission_v5_upgrade_preserves_operator_choices(rig):
