@@ -10,9 +10,9 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel bootstrap finder binds each permitted Skill package to its exact discovered directory, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (606)
+## Bundled Skills (611)
 
-The catalog has two maintenance tiers: 45 curated OpenAI4S Skills and a pinned,
+The catalog has two maintenance tiers: 50 curated OpenAI4S Skills and a pinned,
 read-only import of all 561 MIT-licensed
 [GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
 individually searchable and loadable, but the system prompt represents the
@@ -32,10 +32,13 @@ source commit, conversion rules, license, complete inventory, and per-file
 hashes live at its linked boundary; importing it installs no scientific
 packages and does not imply that every optional tool is ready locally.
 
-### Curated OpenAI4S Skills (45)
+### Curated OpenAI4S Skills (50)
 
 | category | Skills |
 |---|---|
+| **Empirical data preparation** | `panel-data-preprocessing` |
+| **Information systems research** | `is-research-design` · `is-survey-measurement` · `is-qualitative-analysis` |
+| **Empirical causal analysis** | `did-analysis` |
 | **Structure prediction** (GPU) | `alphafold2` · `openfold3` · `boltz` · `chai1` · `esmfold2` |
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
 | **Single-cell analysis** (CPU) | `single-cell-rna-analysis` |
@@ -47,6 +50,47 @@ packages and does not imply that every optional tool is ready locally.
 | **Platform** | `remote-compute-nvidia` · `remote-compute-ssh` · `using-model-endpoint` · `volcengine-datapro` |
 
 `example_stats` is the reference example Skill (pure-stdlib descriptive-statistics helpers).
+
+The three `is-*` Skills fill information-systems research gaps without replacing
+existing retrieval, writing, panel preparation or DiD estimation. Start with
+`is-research-design` to record the theory, constructs, rival explanations and
+evaluation plan. Use `is-survey-measurement` for survey/measurement models or
+`is-qualitative-analysis` for interview and case-study evidence. Their method
+checks guide the researcher; they are not Engine-enforced completion gates.
+Each package carries a pinned `UPSTREAM.json`, the upstream MIT `LICENSE`, and
+an adaptation record. The design recipe derives from Awesome Journal Skills;
+the measurement and qualitative recipes derive from the individual MIT-licensed
+AlterLab modules, not its separately licensed core pipeline. `origin: openai4s`
+identifies bundled distribution, not original authorship. These recipes add no
+core dependencies, and installing them does not install optional R/Python
+statistics packages. They are included in source builds, not npm 0.2.0.
+
+`panel-data-preprocessing` profiles variable types and missingness, then applies
+explicit fit-only mean/median/KNN imputation and categorical/text encoding after
+recording a researcher- or profile-based method choice. It converts mapped long/wide records to
+entity-period panels, audits full-calendar and observed-grid coverage,
+summarizes outcomes and screens abrupt persistent within-entity changes.
+Optional matplotlib facets overlay candidate and supplied event dates; gaps
+break lines and sample coverage is plotted separately. Imputed cells are marked
+and excluded from event-window eligibility; encoding features are covariates,
+not automatically screened outcomes. It exports source-row maps, fitted cleaner,
+cleaning audit, configuration and checksums. Development is recorded in
+[`doc/skill-development.md`](../doc/skill-development.md). Candidates are exploratory, not inferred
+exogenous shocks. Its actual sidecar is replayed offline with
+`python -m harness.evals.panel_data --json`.
+
+`did-analysis` receives a researcher-defined intervention and observed panel,
+then runs traditional DiD before dynamic event study and fake-time/fake-group
+placebos. It requires an independent event source, identifying argument and
+explicit assignment cluster; incomplete samples and filled outcomes cannot silently
+enter an analysis. Its stdlib sidecar supports cluster CR1 Student-t inference,
+joint dynamic covariance, unconditional staggered group-time ATT with explicit
+controls/weights, and common-time 2×2×2 triple differences. It preserves every
+requested placebo and exports design/sample/provenance evidence. It does not
+implement conditional/DR estimators, simultaneous bands or general staggered DDD.
+Random fake-group tail fractions are descriptive, not calibrated randomization
+p-values. See [`skills/did-analysis/`](../skills/did-analysis/README.md) and the
+independent [`experiments/did-skill-validation/`](../experiments/did-skill-validation/README.md).
 
 `volcengine-datapro` is intentionally limited to discovering and calling the
 configured `dataPro_search` MCP tool. Discovery is not an authentication check;
@@ -207,11 +251,11 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
 `npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. The GitHub form
-follows the repository's default branch, whose current catalog contains 606
-Skills (45 curated + 561 pinned bioSkills):
+follows the repository's default branch, whose current catalog contains 611
+Skills (50 curated + 561 pinned bioSkills):
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 45 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 50 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
 ```
 
@@ -250,7 +294,7 @@ absolute paths, `..`, drive letters and NUL are rejected, and a link member
 aborts the extraction rather than being skipped.
 
 **For an OpenAI4S user this is mostly redundant.** A wheel built from this
-checkout ships all 606 Skills and a bundled Skill takes precedence over a same-named one in
+checkout ships all 611 Skills and a bundled Skill takes precedence over a same-named one in
 `<data_dir>/user-skills`. The command exists to put these recipes in front of
 an agent that is not OpenAI4S.
 

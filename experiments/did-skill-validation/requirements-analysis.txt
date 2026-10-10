@@ -1,0 +1,5 @@
+# Optional analysis environment only; the OpenAI4S core remains zero-dependency.
+numpy==2.3.5
+scipy==1.16.3
+statsmodels==0.14.5
+matplotlib==3.10.9

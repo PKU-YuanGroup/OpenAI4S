@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 606 bundled Skills: 45 curated OpenAI4S recipes plus the 561
+This tree exposes 611 bundled Skills: 50 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
@@ -55,6 +55,11 @@ refuses to do:
 
 | Directory | Responsibility |
 | --- | --- |
+| [`is-research-design/`](is-research-design/) | IS theory, constructs and rival explanations; design-science principles and evaluation plans, adapted from pinned MISQ methods/theory guidance with attribution. Reuses existing literature and causal-analysis Skills. |
+| [`is-survey-measurement/`](is-survey-measurement/) | Survey constructs, item coding, ordinal CFA/SEM and measurement invariance, adapted from AlterLab's MIT psychometrics module. Statistical packages remain optional kernel dependencies. |
+| [`is-qualitative-analysis/`](is-qualitative-analysis/) | Interview/case-study evidence, codebook versus reflexive thematic analysis, and bounded nominal coding-agreement diagnostics, adapted from AlterLab with traceable sources. |
+| [`did-analysis/`](did-analysis/) | Audited traditional DiD, dynamic event studies, fake-time/fake-group placebo checks and bounded staggered group-time ATT or common-time triple differences; explicit researcher design, assignment clusters, sample loss and uncertainty. |
+| [`panel-data-preprocessing/`](panel-data-preprocessing/) | Profile-guided or researcher-chosen fit-only cleaning and category/text encoding, explicit panel construction, calendar/window audits and visual persistent-change discovery. Records imputation and distinguishes documented events, exposure transitions and exploratory candidates; estimates no causal effect. |
 | [`admet_genetic/`](admet_genetic/) | A genetic loop over seed SMILES, scored with RDKit descriptors, QED, SA-Score, and ADMET-AI. The sidecar ships no GA engine on purpose: mutation, crossover, filters, and scoring weights are yours to design for the objective at hand. Every logged candidate must carry the lineage that produced it. |
 | [`alphafold2/`](alphafold2/) | AF2 and AF2-Multimer through the ColabFold `colabfold_batch` runner, so a prediction is one FASTA and one command instead of a local database mount. The MSA comes from the public MMseqs2 server, which means the sequence is sent there. Proteins only. For ligands or nucleic acids, route to `boltz`, `chai1`, or `openfold3`. |
 | [`audit-dataset/`](audit-dataset/) | The check to run before anything is trained or published: schema drift, missingness, duplicate rows and IDs, target imbalance, and entities shared across train, validation, and test. Pure stdlib. A clean structural audit still says nothing about whether the data is representative or the labels are right. |

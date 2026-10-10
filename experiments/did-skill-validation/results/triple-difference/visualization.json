@@ -1,0 +1,22 @@
+{
+  "interpretation": "Pointwise cluster intervals; no simultaneous bands. Placebo/pretrend non-rejection does not establish parallel trends.",
+  "method": "did-analysis/v1",
+  "outputs": {
+    "did-diagnostics.png": {
+      "sha256": "51e75058ae83e13516a817183dfb4866f4b9bb6f85dfd36d7066f1fbf3fa6dc5"
+    },
+    "did-diagnostics.svg": {
+      "sha256": "1d2d8a3ee5a8e8b88a4232c166c68bdd43e7e91a0c3ee55663b41d1c2cb37d0c"
+    }
+  },
+  "panels": [
+    {
+      "kind": "contrasts",
+      "stages": [
+        1
+      ]
+    }
+  ],
+  "refused_stage_count": 0,
+  "result_sha256": "20a6b656f8e27b654bc8575360c53f2b3bf495a892f56b3defccceeb837f10f7"
+}

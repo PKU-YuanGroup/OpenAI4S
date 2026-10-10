@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "method": "panel-data-preprocessing/v1",
+  "source_records_sha256": "50796621393820401ed68bb9a0cabb1932568f49bbe2463e02605a6512d3f9ce",
+  "configuration_sha256": "4f54b1bcd8467d651249ade68020e325e3688ea06c8ce42c45ef787ff4b1b772",
+  "config": {
+    "entity": "entity",
+    "time": "period",
+    "numeric_columns": [
+      "activity"
+    ],
+    "frequency": "integer",
+    "wide_columns": null,
+    "aggregations": {}
+  },
+  "event_config": {
+    "treatment": "treated",
+    "window": 3,
+    "threshold": 3.0,
+    "min_abs_change": 2.0,
+    "known_events": [
+      {
+        "entity": "005",
+        "time": "25",
+        "label": "DGP jump_up",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "006",
+        "time": "25",
+        "label": "DGP jump_up",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "007",
+        "time": "25",
+        "label": "DGP jump_up",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "008",
+        "time": "25",
+        "label": "DGP jump_up",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "009",
+        "time": "25",
+        "label": "DGP jump_down",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "010",
+        "time": "25",
+        "label": "DGP jump_down",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "011",
+        "time": "25",
+        "label": "DGP jump_down",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "012",
+        "time": "25",
+        "label": "DGP jump_down",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "013",
+        "time": "25",
+        "label": "DGP noisy_jump",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "014",
+        "time": "25",
+        "label": "DGP noisy_jump",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "015",
+        "time": "25",
+        "label": "DGP noisy_jump",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      },
+      {
+        "entity": "016",
+        "time": "25",
+        "label": "DGP noisy_jump",
+        "source": "inputs/generation.json:prespecified scenario registry"
+      }
+    ],
+    "window_assessment": {
+      "requested_window": 3,
+      "window_options": [
+        3,
+        5,
+        7,
+        9
+      ],
+      "default_sweep_data_bound": "maximum observed periods within any entity; requested window always retained",
+      "maximum_inspected_sizes": 64,
+      "noise_tolerance": {
+        "activity": 0.5
+      },
+      "noise_tolerance_source": "explicit",
+      "min_noise_periods": 5,
+      "min_correlation_periods": 8,
+      "autocorrelation_threshold": 0.5,
+      "trend_residual_ratio": 0.5,
+      "recommendation_scope": "advisory only; smallest suitable inspected larger window at same first-post anchor"
+    }
+  },
+  "transformations": {
+    "source_row_count": 1462,
+    "expanded_row_count": 1462,
+    "collapsed_row_count": 0,
+    "output_row_count": 1462,
+    "source_records_sha256": "50796621393820401ed68bb9a0cabb1932568f49bbe2463e02605a6512d3f9ce"
+  },
+  "limitations": [
+    "Screening is exploratory; scores are not p-values or causal effects.",
+    "Trend, seasonality and multiple screening comparisons are not adjusted.",
+    "Do not select a DiD treatment date from the outcome being tested; corroborate independently and validate on fresh data.",
+    "First observed exposure and transitions across missing periods do not establish exact adoption dates."
+  ],
+  "raw_source_records_sha256": "3aba9754636d7dc35ca872c40de445e5f6927d568e2a4706d6574a541f50bcd2",
+  "cleaning_model_sha256": "8a122aaf030e60bfb28bb086b2b834a1c63d589a09cb17b57389fd3d214b4ecb",
+  "cleaning_config": {
+    "numeric_columns": [
+      "activity",
+      "capacity",
+      "spend",
+      "correlated_metric",
+      "signal_x",
+      "signal_z"
+    ],
+    "imputations": {
+      "capacity": "mean",
+      "spend": "median",
+      "correlated_metric": "knn"
+    },
+    "categorical_encodings": {
+      "region": "onehot",
+      "plan": {
+        "method": "ordinal",
+        "order": [
+          "bronze",
+          "silver",
+          "gold"
+        ]
+      },
+      "channel": "label"
+    },
+    "text_encodings": {
+      "comment": "tfidf"
+    },
+    "protected_columns": [
+      "entity",
+      "period",
+      "scenario",
+      "treated"
+    ],
+    "group_by": [
+      "entity"
+    ],
+    "knn_features": [
+      "signal_x",
+      "signal_z"
+    ],
+    "n_neighbors": 5,
+    "weights": "distance",
+    "unknown_categories": "indicator",
+    "text_max_features": 1000,
+    "max_generated_features": 1000
+  },
+  "cleaning_decision": {
+    "basis": "data_profile",
+    "rationale": "Known variable roles and pre16 raw profile guide distinct methods: capacity is a stable continuous measurement with approximately symmetric within-entity variation, so use mean; spend is a nonnegative heavy-tailed measurement, so use median for a robust baseline; correlated_metric has meaningful numeric similarity features with fit-only within-entity Pearson r(signal_x)=0.825025, r(signal_z)=-0.558171, so use KNN on these two features, with same-entity donors/scales. Region is nominal onehot, plan has prespecified bronze/silver/gold order, channel labels are category identifiers; comments are presegmented lexical text using fit-only TFIDF. Activity and numeric predictors remain unfilled in the primary analysis. No truth or heldout values choose these methods."
+  },
+  "outputs": {
+    "panel.csv": {
+      "sha256": "2fe1d1fc01f115da3f6842b3a88028b68d38d150b9ee7d8f45023cbd66e96476"
+    },
+    "summary.json": {
+      "sha256": "a254eb0b86ef2327c8e6b351a656a954fbf23cd1b2016786fbeec944909002f5"
+    },
+    "candidate_events.csv": {
+      "sha256": "2fa7c3f5cfcc0692b0740490933a13139efc5cb0ae1259557aa835301a2d13f6"
+    },
+    "window_assessment.json": {
+      "sha256": "69ca6748cbf805904c230b1f0444051bd335f76dee37857cdd986fdf55d9dabf"
+    },
+    "window_assessment.csv": {
+      "sha256": "41a3b03fd929b8f5ca9a8f0d679424ab2c6b976da57f2efce37d8597f9d0ccb0"
+    },
+    "cleaning_report.json": {
+      "sha256": "c12b41b73ac17142f31365c4bc91cb0fd295b9edba7000e2df122aad956ac70a"
+    },
+    "cleaning_model.json": {
+      "sha256": "b8a2ff1b7d8ff4bf631764a016ce168ceec31e79ec3cecb30e9af89be4a31b58"
+    }
+  }
+}

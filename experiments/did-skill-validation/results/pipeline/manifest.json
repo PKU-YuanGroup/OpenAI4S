@@ -1,0 +1,25 @@
+{
+  "execution_order": [
+    "traditional_did",
+    "event_study",
+    "placebo_time",
+    "placebo_group",
+    "placebo_distribution",
+    "triple_difference"
+  ],
+  "method": "did-analysis/v1",
+  "outputs": {
+    "estimates.csv": {
+      "sha256": "b76f877f854ac27c5cb7f8afd86e3977e73c75977c6d8bd2103857bbff9fdecb",
+      "size": 14480
+    },
+    "results.json": {
+      "sha256": "0e84a3993f60a7e0a069186b504b6698ec3f1d01c183533ca9ce76dab4619297",
+      "size": 223462
+    }
+  },
+  "plan_sha256": "2bbbbcaa792b7ec222af9786f4cbf9088b5b1b203058ac132d3cbe1c41a5eb85",
+  "result_sha256": "c325d0aabc19d0a056173a07d9b1fc7243577d56fb0014195f1cfa515ac7f7a2",
+  "schema_version": 1,
+  "source_records_sha256": "630618771901846bc1707a8f115023ff2faf29d404be5470e3e88c214268f011"
+}

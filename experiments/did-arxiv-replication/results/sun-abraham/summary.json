@@ -1,0 +1,1128 @@
+{
+  "audit": {
+    "entity_count": 95,
+    "observed_period_count": 10,
+    "calendar_period_count": 10,
+    "row_count": 950,
+    "missing_entity_periods": 0,
+    "balanced_calendar_grid": true,
+    "balanced_observed_grid": true,
+    "coverage": [
+      {
+        "entity": "1",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "10",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "11",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "14",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "15",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "2",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "21",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "23",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "25",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "28",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "3",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "32",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "33",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "34",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "35",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "36",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "4",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "41",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "42",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "43",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "44",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "49",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "5",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "50",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "52",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "53",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "56",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "57",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "58",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "59",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "6",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "60",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "61",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "62",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "63",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "64",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "65",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "66",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "67",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "68",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "69",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "7",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "70",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "71",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "72",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "73",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "74",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "75",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "76",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "77",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "78",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "79",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "80",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "81",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "82",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "83",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "84",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "85",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "86",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "87",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "88",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "89",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "9",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "90",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "91",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "92",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "93",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "94",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "95",
+        "observations": 10,
+        "first_period": "1",
+        "last_period": "10",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      }
+    ]
+  },
+  "columns": {
+    "y": {
+      "n": 950,
+      "mean": -0.24188087765319768,
+      "median": -0.24538367754674878,
+      "std": 3.0712861193845042,
+      "min": -12.01356995792406,
+      "max": 14.540360523476322,
+      "missing": 0
+    }
+  },
+  "timeline": [
+    {
+      "time": "1",
+      "period_index": 1,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -1.3327923063971743,
+          "median": -1.3513616659815617,
+          "std": 2.416209173458203,
+          "min": -8.699611777957362,
+          "max": 4.172394416582005
+        }
+      }
+    },
+    {
+      "time": "2",
+      "period_index": 2,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -1.4531993259875036,
+          "median": -1.4847138758927363,
+          "std": 2.3258524482625083,
+          "min": -6.216129345525312,
+          "max": 4.229167357112556
+        }
+      }
+    },
+    {
+      "time": "3",
+      "period_index": 3,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -0.633711826042268,
+          "median": -0.43932902112865313,
+          "std": 2.294469348683158,
+          "min": -5.537768450428346,
+          "max": 6.0951997900721295
+        }
+      }
+    },
+    {
+      "time": "4",
+      "period_index": 4,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -0.7580966514315824,
+          "median": -0.5921644284164074,
+          "std": 1.8779518301982354,
+          "min": -7.713550474925043,
+          "max": 3.563163752268313
+        }
+      }
+    },
+    {
+      "time": "5",
+      "period_index": 5,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -0.3857118365533338,
+          "median": -0.49135029994698004,
+          "std": 2.0719920250754127,
+          "min": -5.239035586197131,
+          "max": 5.639718436558895
+        }
+      }
+    },
+    {
+      "time": "6",
+      "period_index": 6,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -0.10223447529510485,
+          "median": 0.09639401583131751,
+          "std": 2.1315782571878676,
+          "min": -7.201190251045243,
+          "max": 4.542780687075332
+        }
+      }
+    },
+    {
+      "time": "7",
+      "period_index": 7,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": -0.20544546662233582,
+          "median": 0.0980845762553697,
+          "std": 3.1085180144652402,
+          "min": -8.960854843809454,
+          "max": 6.821339375209977
+        }
+      }
+    },
+    {
+      "time": "8",
+      "period_index": 8,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": 0.4674305700775034,
+          "median": 0.8011992701487705,
+          "std": 3.4098288992727643,
+          "min": -7.039272992268983,
+          "max": 9.227597132241922
+        }
+      }
+    },
+    {
+      "time": "9",
+      "period_index": 9,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": 0.9154328237216838,
+          "median": 1.0796583029838223,
+          "std": 4.1975237367342535,
+          "min": -12.01356995792406,
+          "max": 13.17386090380047
+        }
+      }
+    },
+    {
+      "time": "10",
+      "period_index": 10,
+      "entity_count": 95,
+      "entity_set_sha256": "2f2798cef94f18f786ca67b0903ad95cbb3aa472b1784c5ea6cf336ad108106c",
+      "metrics": {
+        "y": {
+          "n": 95,
+          "mean": 1.0695197179981386,
+          "median": 1.0285731119035029,
+          "std": 4.5490794508202335,
+          "min": -9.954535347314517,
+          "max": 14.540360523476322
+        }
+      }
+    }
+  ],
+  "interpretation": "Pooled row summaries and changing-composition period means are descriptive, not causal effects.",
+  "window_assessment_summary": [
+    {
+      "window": 3,
+      "entity_metric_count": 95,
+      "anchor_count": 950,
+      "eligible_anchor_count": 475,
+      "eligible_entity_metric_count": 95,
+      "no_eligible_entity_metric_count": 0,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 285,
+        "insufficient_post_history": 190
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 285,
+        "noise_baseline_short": 512,
+        "review_trend": 153
+      },
+      "eligible_noise_status_counts": {
+        "noise_baseline_short": 371,
+        "review_trend": 104
+      }
+    },
+    {
+      "window": 4,
+      "entity_metric_count": 95,
+      "anchor_count": 950,
+      "eligible_anchor_count": 285,
+      "eligible_entity_metric_count": 95,
+      "no_eligible_entity_metric_count": 0,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 380,
+        "insufficient_post_history": 285
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 380,
+        "noise_baseline_short": 507,
+        "review_trend": 63
+      },
+      "eligible_noise_status_counts": {
+        "noise_baseline_short": 259,
+        "review_trend": 26
+      }
+    },
+    {
+      "window": 5,
+      "entity_metric_count": 95,
+      "anchor_count": 950,
+      "eligible_anchor_count": 95,
+      "eligible_entity_metric_count": 95,
+      "no_eligible_entity_metric_count": 0,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 475,
+        "insufficient_post_history": 380
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 475,
+        "high_noise_under_iid": 172,
+        "within_tolerance_under_iid": 273,
+        "review_trend": 30
+      },
+      "eligible_noise_status_counts": {
+        "high_noise_under_iid": 33,
+        "within_tolerance_under_iid": 60,
+        "review_trend": 2
+      }
+    },
+    {
+      "window": 6,
+      "entity_metric_count": 95,
+      "anchor_count": 950,
+      "eligible_anchor_count": 0,
+      "eligible_entity_metric_count": 0,
+      "no_eligible_entity_metric_count": 95,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 570,
+        "insufficient_post_history": 475
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 570,
+        "high_noise_under_iid": 113,
+        "within_tolerance_under_iid": 241,
+        "review_trend": 26
+      },
+      "eligible_noise_status_counts": {}
+    }
+  ]
+}

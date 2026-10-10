@@ -1,0 +1,162 @@
+{
+  "protocol": {
+    "start": 910000,
+    "count": 128,
+    "increment": 1
+  },
+  "interpretation": "Rates describe finite Monte Carlo precision; no rate is a pass gate. Violated-pretrend coverage is relative to the assigned effect, although identifying assumptions are deliberately false.",
+  "scenarios": {
+    "constant_effect": {
+      "replicates": 128,
+      "bias": 0.03399511998351033,
+      "bias_mcse": 0.027387107882055964,
+      "bias_mc_95_interval": [
+        -0.019682625106032393,
+        0.08767286507305305
+      ],
+      "rmse": 0.3105035995071579,
+      "mean_standard_error": 0.27333775468976923,
+      "covers_truth": {
+        "count": 115,
+        "rate": 0.8984375,
+        "mcse": 0.026699654520492805,
+        "wilson_mc_95_interval": [
+          0.8339751366963888,
+          0.9396813512731592
+        ]
+      },
+      "rejects_zero": {
+        "count": 128,
+        "rate": 1.0,
+        "mcse": 0.0,
+        "wilson_mc_95_interval": [
+          0.9708630437264916,
+          1.0
+        ]
+      },
+      "rejects_pretrend": {
+        "count": 13,
+        "rate": 0.1015625,
+        "mcse": 0.026699654520492805,
+        "wilson_mc_95_interval": [
+          0.060318648726840854,
+          0.16602486330361116
+        ]
+      }
+    },
+    "null": {
+      "replicates": 128,
+      "bias": 0.03399511998351039,
+      "bias_mcse": 0.027387107882055967,
+      "bias_mc_95_interval": [
+        -0.019682625106032345,
+        0.08767286507305312
+      ],
+      "rmse": 0.31050359950715795,
+      "mean_standard_error": 0.27333775468976923,
+      "covers_truth": {
+        "count": 115,
+        "rate": 0.8984375,
+        "mcse": 0.026699654520492805,
+        "wilson_mc_95_interval": [
+          0.8339751366963888,
+          0.9396813512731592
+        ]
+      },
+      "rejects_zero": {
+        "count": 13,
+        "rate": 0.1015625,
+        "mcse": 0.026699654520492805,
+        "wilson_mc_95_interval": [
+          0.060318648726840854,
+          0.16602486330361116
+        ]
+      },
+      "rejects_pretrend": {
+        "count": 13,
+        "rate": 0.1015625,
+        "mcse": 0.026699654520492805,
+        "wilson_mc_95_interval": [
+          0.060318648726840854,
+          0.16602486330361116
+        ]
+      }
+    },
+    "violated_pretrends": {
+      "replicates": 128,
+      "bias": 1.4339951199835101,
+      "bias_mcse": 0.02738710788205598,
+      "bias_mc_95_interval": [
+        1.3803173748939674,
+        1.4876728650730529
+      ],
+      "rmse": 1.4668329220673806,
+      "mean_standard_error": 0.27333775468976923,
+      "covers_truth": {
+        "count": 0,
+        "rate": 0.0,
+        "mcse": 0.0,
+        "wilson_mc_95_interval": [
+          0.0,
+          0.029136956273508416
+        ]
+      },
+      "rejects_zero": {
+        "count": 128,
+        "rate": 1.0,
+        "mcse": 0.0,
+        "wilson_mc_95_interval": [
+          0.9708630437264916,
+          1.0
+        ]
+      },
+      "rejects_pretrend": {
+        "count": 62,
+        "rate": 0.484375,
+        "mcse": 0.04417258936679157,
+        "wilson_mc_95_interval": [
+          0.39952298025969557,
+          0.5701375496238515
+        ]
+      }
+    },
+    "clustered_noise": {
+      "replicates": 128,
+      "bias": 0.027881042816013505,
+      "bias_mcse": 0.045081460146377414,
+      "bias_mc_95_interval": [
+        -0.06047699544136402,
+        0.11623908107339102
+      ],
+      "rmse": 0.5088067263338252,
+      "mean_standard_error": 0.493044159648725,
+      "covers_truth": {
+        "count": 124,
+        "rate": 0.96875,
+        "mcse": 0.015378921628929319,
+        "wilson_mc_95_interval": [
+          0.9224023687386392,
+          0.9877817347549466
+        ]
+      },
+      "rejects_zero": {
+        "count": 126,
+        "rate": 0.984375,
+        "mcse": 0.010961886875314282,
+        "wilson_mc_95_interval": [
+          0.9448190233201829,
+          0.9957045502898559
+        ]
+      },
+      "rejects_pretrend": {
+        "count": 13,
+        "rate": 0.1015625,
+        "mcse": 0.026699654520492805,
+        "wilson_mc_95_interval": [
+          0.060318648726840854,
+          0.16602486330361116
+        ]
+      }
+    }
+  }
+}

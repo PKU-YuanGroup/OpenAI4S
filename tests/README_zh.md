@@ -75,6 +75,13 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_compaction_wave3_integration.py`](test_compaction_wave3_integration.py) | Lane D 与 F 之间的缝：ledger 恢复出的 note 必须与 `compact()` 在内存里构造的逐字节相同（共享 `COMPACTION_NOTE_PREFIX`），恢复一条已带框架句的 note 不得再加一次前缀。 |
 | [`test_compaction_wave4_review.py`](test_compaction_wave4_review.py) | Wave 4 审阅在各车道集成后发现的问题。持久 ledger 记录只为 policy 采纳的压缩写入；覆盖按分支拼接序列中的 group id 判定（fork 后 ordinal 从 0 重新计数），任何错位都判为一无所覆而不是覆盖到尾部；缺少 event 的压缩 group 被跳过而不是当作空 note 应用；摘要 `max_tokens` 钳到模型声明的上限，被截断的分块（`length`/`max_tokens`/`MAX_TOKENS`/`incomplete`，重试一次）绝不用占位符补齐；上下文预算为 0 意味着未知；工作区 `.openai4s/context` 被占用只损失 kernel 副本、不损失压缩；Artifact 路径同样写这份副本；重新闭合的熔断拿回完整的失败预算。 |
 | [`test_analysis_skills.py`](test_analysis_skills.py) | 内置的分析类 Skill 在这里是真的被执行，不只是被列出来。它的数据审计能抓出分组泄漏，AUC 会处理并列，bootstrap 是确定性的。 |
+| [`test_did_analysis_skill.py`](test_did_analysis_skill.py) | 传统 DiD、事件研究联合协方差、安全安慰剂、分批／DDD 估计目标、独立聚类推断核对、输入拒绝与确定性审计导出。 |
+| [`test_is_research_skills.py`](test_is_research_skills.py) | IS 研究请求检索、包内参考资源读取、Python 配方语法及固定版本第三方许可证来源检查。 |
+| [`test_is_survey_measurement.py`](test_is_survey_measurement.py) | 直接执行问卷计分配方，验证反向计分、原始数据保留、显式缺失策略、样本损失审计与非法输入拒绝。 |
+| [`test_is_qualitative_analysis.py`](test_is_qualitative_analysis.py) | 质性分析辅助函数的可手算名义编码一致性、缺失值和退化输入行为。 |
+| [`test_panel_data_preprocessing_skill.py`](test_panel_data_preprocessing_skill.py) | 面板转换、显式聚合、缺失与来源行映射、日历缺口、样本构成变化、突变与尖峰/趋势区分、处理状态删失、可校验导出和真实 sidecar 的 harness 拒绝评分。 |
+| [`test_panel_window_assessment.py`](test_panel_window_assessment.py) | 筛选前事件窗口覆盖、仅基期方差与均值噪声建议、趋势和序列依赖复核、量纲不变性、保留原筛选结果及诊断导出哈希。 |
+| [`test_panel_cleaning.py`](test_panel_cleaning.py) | 仅拟合行的填补／编码、方法概况、受保护列、填补溯源与面板筛选集成。 |
 | [`test_annotation_repository.py`](test_annotation_repository.py) | 图像 annotation。一共三个测试，真正要紧的是并发钉图时的序号分配——它必须是原子的。 |
 | [`test_artifact_control_tools.py`](test_artifact_control_tools.py) | Artifact 恢复是这里最危险的操作，所以这个模块大半在讲它怎么拒绝：损坏的快照、不可信的 ID、版本切出之后又被改动过的工作区。恢复始终要过审批，store 写失败时会回滚。 |
 | [`test_token_mint_atomicity.py`](test_token_mint_atomicity.py) | 同时启动的两个守护进程能不能对访问令牌达成一致。铸造流程先读文件、发现没有，然后以一次**无条件**的 `os.replace` 收尾——而 `os.replace` 面对一个已被占用的名字从不失败，于是每个竞争者都「赢」了：各自覆盖掉文件，而本该采纳赢家取值的那次重读根本不在任何互斥之内。八个进程在同一个 barrier 上放行，产出七个不同的令牌，磁盘上只留下最后一次写入——活下来的守护进程于是拿着一个 CLI 和启动时打印的 `?token=` URL 都读不到的值去校验 cookie。现在由 `os.link` 落到最终文件名来决定赢家——这是唯一一个只可能成功一次的发布操作——并且内容在那个名字出现之前就已完整，因此输家的重读不可能落在半写状态的文件上，而直接对最终路径做 `O_EXCL` 创建则会留下这个窗口。文件与其所在目录都会 fsync，因为一个没有 fsync 目录项的已发布名字可能在崩溃中消失、而字节还在；0o600 也是在密文的第一个字节写入之前就落在 inode 上，而不是写完再 chmod。做出判定的那个测试起的是真实进程而不是线程：缺口位于两次系统调用之间，而 GIL 本来就会在系统调用期间交出解释器，所以线程版对着坏代码也会通过。 |

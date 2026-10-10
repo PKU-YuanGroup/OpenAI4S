@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/AlterLab-IEU/AlterLab-Academic-Skills",
+  "commit": "e4836c08a20da195a11f30f203a8cf23ec30aa95",
+  "license": "MIT",
+  "sources": [
+    {
+      "path": "skills/social-science-workflow/alterlab-qualitative-analysis/SKILL.md",
+      "sha256": "8ca8421c86a6c9a03cef10016c02012d26fcd08256cba24bc94b0b45a270c986",
+      "adapted_paths": [
+        "SKILL.md"
+      ]
+    },
+    {
+      "path": "skills/social-science-workflow/alterlab-qualitative-analysis/references/reflexive_vs_codebook.md",
+      "sha256": "adf3e410f1b44dd6b77309a48b51595a02a9823ed2258cee05169c09626ef838",
+      "adapted_paths": [
+        "analysis-guide.md",
+        "SKILL.md"
+      ]
+    },
+    {
+      "path": "skills/social-science-workflow/alterlab-qualitative-analysis/references/icr_and_reporting.md",
+      "sha256": "7fe6cce56fba0586b05d65e63d0c11d200d02de1ecac687cf5490562776a9144",
+      "adapted_paths": [
+        "agreement-guide.md",
+        "SKILL.md"
+      ]
+    },
+    {
+      "path": "skills/social-science-workflow/alterlab-qualitative-analysis/scripts/icr.py",
+      "sha256": "fd8a3397008543f628aa28941f9779269e29c1e726002c213eef08b2fed31a8e",
+      "adapted_paths": [
+        "kernel.py",
+        "agreement-guide.md"
+      ]
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "ae17afb0971b6caaaadcecaa18801a81c96737a4f063750586ac5d00a91618e6",
+      "adapted_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "5398da0c0e28330d85632fbbc65488820820e5ce67bb913662e5748dfd3f3e94",
+      "adapted_paths": [
+        "NOTICE.md"
+      ]
+    }
+  ],
+  "adaptations": [
+    "Renamed the module to is-qualitative-analysis and declared bundled OpenAI4S origin with no network capability.",
+    "Removed Claude-only tool permissions, external suite routing and optional package requirements; resources are self-contained and read with host.skills.read.",
+    "Added IS interviews/cases, immutable source Artifact versions, excerpt locators, negative cases, interpretation limits and human review disclosure.",
+    "Conditioned codebooks on the selected method and clarified that consensus and reliability coefficients are not required targets of reflexive thematic analysis.",
+    "Adapted nominal coincidence alpha and pairwise agreement into kernel.py; validated rows and coder names, preserved missingness audit, and corrected undefined constant-category Cohen kappa.",
+    "Omitted the CLI runner, automatic unit bootstrap and generic reliability thresholds; uncertainty is explicitly not estimated and needs a design-specific sampling unit.",
+    "Removed the invalid interpretation of overlapping agreement CIs as human/model equivalence and distinguished model assistance from independent human coding.",
+    "Preserved exact AlterLab MIT LICENSE and the inherited K-Dense MIT notice from upstream THIRD_PARTY_NOTICES.md; no noncommercial pipeline content was imported.",
+    "Added bilingual directory documentation and independently derived offline numeric regression tests."
+  ]
+}

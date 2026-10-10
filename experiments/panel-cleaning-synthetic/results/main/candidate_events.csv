@@ -1,0 +1,36 @@
+boundary_innovation,causal_status,change,entity,from_state,kind,label,metric,observed_period,period_index,post_mean,post_support,pre_mean,previous_observed_time,score,score_basis,source,source_rows,time,to_state,window
+-3.1322379366627118,exploratory,-3.711477401315971,025,,level_shift_candidate,,activity,,4,16.765517469000233,3,20.476994870316204,,5.609714814933868,pre_window_sample_sd,,"[1119, 1120, 1121, 1122, 1123, 1124]",4,,3
+3.212740002907994,exploratory,2.768364841582109,015,,level_shift_candidate,,activity,,7,22.858388487540125,2,20.090023645958016,,11.480228639199721,pre_window_sample_sd,,"[655, 656, 657, 658, 659, 660]",7,,3
+4.536446332874842,exploratory,4.384995916653237,025,,level_shift_candidate,,activity,,8,20.026358952308005,3,15.641363035654768,,4.37591666173234,pre_window_sample_sd,,"[1123, 1124, 1125, 1126, 1127, 1128]",8,,3
+3.468235079064959,exploratory,4.305826270419974,026,,level_shift_candidate,,activity,,16,19.710259854337124,3,15.40443358391715,,8.107499134016903,pre_window_sample_sd,,"[1177, 1178, 1179, 1180, 1181, 1182]",16,,3
+2.8208698902521245,exploratory,2.9680747627253083,015,,level_shift_candidate,,activity,,17,20.861688990653978,3,17.89361422792867,,7.409460795708645,pre_window_sample_sd,,"[665, 666, 667, 668, 669, 670]",17,,3
+,unverified,,005,,documented_event,DGP jump_up,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,006,,documented_event,DGP jump_up,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,007,,documented_event,DGP jump_up,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,008,,documented_event,DGP jump_up,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,009,,documented_event,DGP jump_down,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,010,,documented_event,DGP jump_down,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,011,,documented_event,DGP jump_down,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,012,,documented_event,DGP jump_down,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,013,,documented_event,DGP noisy_jump,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,014,,documented_event,DGP noisy_jump,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,015,,documented_event,DGP noisy_jump,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+,unverified,,016,,documented_event,DGP noisy_jump,,True,25,,,,,,,inputs/generation.json:prespecified scenario registry,[],25,,
+7.267135032968941,exploratory,7.4172254866262115,005,,level_shift_candidate,,activity,,25,27.678290933182193,3,20.261065446555982,,53.30128812036882,pre_window_sample_sd,,"[207, 208, 209, 210, 211, 212]",25,,3
+,unverified,,005,0.0,treatment_adoption,,,,25,,,,24,,,,"[209, 210]",25,1.0,
+,unverified,,006,0.0,treatment_adoption,,,,25,,,,24,,,,"[253, 254]",25,1.0,
+,unverified,,007,0.0,treatment_adoption,,,,25,,,,24,,,,"[301, 302]",25,1.0,
+7.5051114641083565,exploratory,8.272308195540205,008,,level_shift_candidate,,activity,,25,28.85001629146138,3,20.577708095921174,,16.52090683487957,pre_window_sample_sd,,"[347, 348, 349, 350, 351, 352]",25,,3
+,unverified,,008,0.0,treatment_adoption,,,,25,,,,24,,,,"[349, 350]",25,1.0,
+,unverified,,009,0.0,treatment_adoption,,,,25,,,,24,,,,"[396, 397]",25,1.0,
+-7.166719941336188,exploratory,-7.1374262567303735,010,,level_shift_candidate,,activity,,25,13.5023992249586,3,20.639825481688973,,25.725207937935327,pre_window_sample_sd,,"[439, 440, 441, 442, 443, 444]",25,,3
+,unverified,,010,0.0,treatment_adoption,,,,25,,,,24,,,,"[441, 442]",25,1.0,
+,unverified,,011,0.0,treatment_adoption,,,,25,,,,24,,,,"[488, 489]",25,1.0,
+,unverified,,012,0.0,treatment_adoption,,,,25,,,,24,,,,"[533, 534]",25,1.0,
+,unverified,,013,0.0,treatment_adoption,,,,25,,,,24,,,,"[580, 581]",25,1.0,
+7.550407439155396,exploratory,6.645075289055594,014,,level_shift_candidate,,activity,,25,28.06931523230095,3,21.424239943245357,,126.5562317159794,pre_window_sample_sd,,"[626, 627, 628, 629, 630, 631]",25,,3
+,unverified,,014,0.0,treatment_adoption,,,,25,,,,24,,,,"[628, 629]",25,1.0,
+8.36332795419053,exploratory,6.168796005925401,015,,level_shift_candidate,,activity,,25,22.60078803149514,2,16.431992025569738,,5.897326440215126,pre_window_sample_sd,,"[673, 674, 675, 676, 677, 678]",25,,3
+,unverified,,015,0.0,treatment_adoption,,,,25,,,,24,,,,"[675, 676]",25,1.0,
+,unverified,,016,0.0,treatment_adoption,,,,25,,,,24,,,,"[723, 724]",25,1.0,
+2.8307594907695046,exploratory,4.600398032873391,025,,level_shift_candidate,,activity,,40,20.52148805211129,3,15.9210900192379,,14.118555793818075,pre_window_sample_sd,,"[1155, 1156, 1157, 1158, 1159, 1160]",40,,3

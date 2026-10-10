@@ -619,3 +619,13 @@ literature screening query now includes that Skill in its five results. The
 `science_search` schema gains STRING and BindingDB sources and their filters.
 The classifier snapshot remains byte-identical, and Chinese lexical queries
 remain empty. These are catalog/schema changes, not enabled semantic judgments.
+
+### IS research catalog integration — 2026-10-10
+
+The source catalog now also includes `is-research-design`,
+`is-survey-measurement` and `is-qualitative-analysis`, alongside the independently
+added panel-preparation and DiD recipes. The default-off system-context and
+search snapshots are recaptured from this catalog: additional documents change
+lexical document frequencies even for unrelated search queries. The native
+tool registry and heuristic classifier snapshots remain unchanged. No semantic
+judgment capability is enabled by importing these local research recipes.

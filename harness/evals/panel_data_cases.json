@@ -1,0 +1,1311 @@
+{
+  "version": 1,
+  "provenance": "Agent-authored synthetic fixtures; expected values declared independently of runner outputs.",
+  "cases": [
+    {
+      "id": "flat-no-event",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 5
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected": {
+        "events": {
+          "candidates": []
+        },
+        "analysis": {
+          "audit": {
+            "balanced_calendar_grid": true
+          }
+        }
+      }
+    },
+    {
+      "id": "persistent-jump",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 15
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected": {
+        "events": {
+          "candidates": [
+            {
+              "kind": "level_shift_candidate",
+              "time": "4",
+              "change": 10.0,
+              "score": null,
+              "boundary_innovation": 10.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "single-spike",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 30
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 5
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected": {
+        "events": {
+          "candidates": []
+        }
+      }
+    },
+    {
+      "id": "smooth-trend",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 1
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 3
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 4
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 6
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 7
+        },
+        {
+          "id": "a",
+          "t": 8,
+          "y": 8
+        },
+        {
+          "id": "a",
+          "t": 9,
+          "y": 9
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected": {
+        "events": {
+          "candidates": []
+        }
+      }
+    },
+    {
+      "id": "gap-does-not-create-jump",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 8,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 9,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 10,
+          "y": 15
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected": {
+        "events": {
+          "candidates": []
+        },
+        "analysis": {
+          "audit": {
+            "missing_entity_periods": 3,
+            "balanced_calendar_grid": false
+          }
+        }
+      }
+    },
+    {
+      "id": "missing-window-is-not-imputed",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": null
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 15
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected": {
+        "events": {
+          "candidates": []
+        },
+        "analysis": {
+          "columns": {
+            "y": {
+              "missing": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "duplicate-refused",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 1,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 3
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected_error": "duplicate entity-period"
+    },
+    {
+      "id": "explicit-aggregation",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 1,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 3
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "aggregations": {
+          "y": "sum"
+        }
+      },
+      "expected": {
+        "rows": [
+          {
+            "id": "a",
+            "t": "1",
+            "y": 5.0,
+            "_source_rows": [
+              1,
+              2
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "wide-to-long",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "001",
+          "a": "2",
+          "b": "5"
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "year",
+        "wide_columns": {
+          "y": {
+            "2022": "a",
+            "2023": "b"
+          }
+        }
+      },
+      "expected": {
+        "rows": [
+          {
+            "id": "001",
+            "t": "2022",
+            "y": 2.0,
+            "_source_rows": [
+              1
+            ]
+          },
+          {
+            "id": "001",
+            "t": "2023",
+            "y": 5.0,
+            "_source_rows": [
+              1
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "known-event-plus-jump",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 15
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 15
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "known_events": [
+          {
+            "label": "Launch",
+            "time": 4,
+            "source": "synthetic launch log"
+          }
+        ]
+      },
+      "expected": {
+        "events": {
+          "candidates": [
+            {
+              "kind": "documented_event",
+              "time": "4",
+              "source": "synthetic launch log"
+            },
+            {
+              "kind": "level_shift_candidate",
+              "time": "4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "adoption-and-reversal",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5,
+          "exposure": 0
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 5,
+          "exposure": 0
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 5,
+          "exposure": 1
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5,
+          "exposure": 1
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 5,
+          "exposure": 0
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "treatment": "exposure"
+      },
+      "expected": {
+        "events": {
+          "candidates": [
+            {
+              "kind": "treatment_adoption",
+              "time": "2"
+            },
+            {
+              "kind": "treatment_reversal",
+              "time": "4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "interval-censored-adoption",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 5,
+          "exposure": 0
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 5,
+          "exposure": 1
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "treatment": "exposure"
+      },
+      "expected": {
+        "events": {
+          "candidates": [
+            {
+              "kind": "interval_censored_transition",
+              "time": "3",
+              "previous_observed_time": "0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "invalid-numeric-refused",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 1,
+          "y": "not-a-number"
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer"
+      },
+      "expected_error": "invalid numeric value"
+    },
+    {
+      "id": "window-short-panel-coverage",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 2
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "window": 3,
+        "window_options": [
+          3
+        ],
+        "noise_tolerance": 1
+      },
+      "expected": {
+        "window_assessment": {
+          "summary": [
+            {
+              "window": 3,
+              "anchor_count": 5,
+              "eligible_anchor_count": 0,
+              "no_eligible_entity_metric_count": 1
+            }
+          ]
+        },
+        "events": {
+          "candidates": []
+        }
+      }
+    },
+    {
+      "id": "window-noise-comparison-coverage",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 4
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": -4
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 4
+        },
+        {
+          "id": "a",
+          "t": 8,
+          "y": -4
+        },
+        {
+          "id": "a",
+          "t": 9,
+          "y": 0
+        },
+        {
+          "id": "a",
+          "t": 10,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 11,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 12,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 13,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 14,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 15,
+          "y": 2
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "window": 5,
+        "window_options": [
+          5,
+          6
+        ],
+        "noise_tolerance": 1.5
+      },
+      "expected": {
+        "window_assessment": {
+          "config": {
+            "noise_tolerance_source": "explicit"
+          },
+          "summary": [
+            {
+              "window": 5,
+              "eligible_anchor_count": 7
+            },
+            {
+              "window": 6,
+              "eligible_anchor_count": 5
+            }
+          ]
+        },
+        "events": {
+          "candidates": []
+        }
+      }
+    },
+    {
+      "id": "window-invalid-tolerance-refused",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "a",
+          "t": 0,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 1,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 2,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 3,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 4,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 5,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 6,
+          "y": 2
+        },
+        {
+          "id": "a",
+          "t": 7,
+          "y": 2
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "noise_tolerance": 0
+      },
+      "expected_error": "noise_tolerance must be finite and positive"
+    },
+    {
+      "id": "cleaning-mean-fit-only",
+      "operation": "clean_data",
+      "rows": [
+        {
+          "x": 0
+        },
+        {
+          "x": 4
+        },
+        {
+          "x": null
+        },
+        {
+          "x": 1000
+        }
+      ],
+      "kwargs": {
+        "fit_rows": [
+          1,
+          2
+        ],
+        "numeric_columns": [
+          "x"
+        ],
+        "imputations": {
+          "x": "mean"
+        },
+        "decision": {
+          "basis": "researcher",
+          "rationale": "Declared synthetic cleaning specification for deterministic regression."
+        }
+      },
+      "expected": {
+        "rows": [
+          {
+            "x": 0.0
+          },
+          {
+            "x": 4.0
+          },
+          {
+            "x": 2.0,
+            "_imputed_columns": [
+              "x"
+            ]
+          },
+          {
+            "x": 1000.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "cleaning-median-outlier",
+      "operation": "clean_data",
+      "rows": [
+        {
+          "x": 1
+        },
+        {
+          "x": 2
+        },
+        {
+          "x": 100
+        },
+        {
+          "x": null
+        }
+      ],
+      "kwargs": {
+        "fit_rows": [
+          1,
+          2,
+          3
+        ],
+        "numeric_columns": [
+          "x"
+        ],
+        "imputations": {
+          "x": "median"
+        },
+        "decision": {
+          "basis": "researcher",
+          "rationale": "Declared synthetic cleaning specification for deterministic regression."
+        }
+      },
+      "expected": {
+        "rows": [
+          {
+            "x": 1.0
+          },
+          {
+            "x": 2.0
+          },
+          {
+            "x": 100.0
+          },
+          {
+            "x": 2.0,
+            "_imputed_columns": [
+              "x"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "cleaning-knn-selected-features",
+      "operation": "clean_data",
+      "rows": [
+        {
+          "x": 0,
+          "y": 10
+        },
+        {
+          "x": 10,
+          "y": 20
+        },
+        {
+          "x": 1,
+          "y": null
+        }
+      ],
+      "kwargs": {
+        "fit_rows": [
+          1,
+          2
+        ],
+        "numeric_columns": [
+          "x",
+          "y"
+        ],
+        "imputations": {
+          "y": "knn"
+        },
+        "knn_features": [
+          "x"
+        ],
+        "n_neighbors": 1,
+        "decision": {
+          "basis": "researcher",
+          "rationale": "Declared synthetic cleaning specification for deterministic regression."
+        }
+      },
+      "expected": {
+        "rows": [
+          {
+            "x": 0.0,
+            "y": 10.0
+          },
+          {
+            "x": 10.0,
+            "y": 20.0
+          },
+          {
+            "x": 1.0,
+            "y": 10.0,
+            "_imputed_columns": [
+              "y"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "cleaning-choice-rationale-required",
+      "operation": "clean_data",
+      "rows": [
+        {
+          "x": 1
+        },
+        {
+          "x": null
+        }
+      ],
+      "kwargs": {
+        "fit_rows": [
+          1
+        ],
+        "numeric_columns": [
+          "x"
+        ],
+        "imputations": {
+          "x": "mean"
+        },
+        "decision": {
+          "basis": "researcher",
+          "rationale": ""
+        }
+      },
+      "expected_error": "rationale"
+    },
+    {
+      "id": "cleaning-protected-column-refused",
+      "operation": "clean_data",
+      "rows": [
+        {
+          "id": "001",
+          "x": 1
+        },
+        {
+          "id": null,
+          "x": 2
+        }
+      ],
+      "kwargs": {
+        "fit_rows": [
+          1
+        ],
+        "numeric_columns": [
+          "id",
+          "x"
+        ],
+        "imputations": {
+          "id": "mean"
+        },
+        "protected_columns": [
+          "id"
+        ],
+        "decision": {
+          "basis": "researcher",
+          "rationale": "Declared synthetic cleaning specification for deterministic regression."
+        }
+      },
+      "expected_error": "protected"
+    },
+    {
+      "id": "cleaning-imputed-window-not-observed",
+      "operation": "preprocess_panel",
+      "rows": [
+        {
+          "id": "001",
+          "t": 0,
+          "y": 5
+        },
+        {
+          "id": "001",
+          "t": 1,
+          "y": 5
+        },
+        {
+          "id": "001",
+          "t": 2,
+          "y": null
+        },
+        {
+          "id": "001",
+          "t": 3,
+          "y": 5
+        },
+        {
+          "id": "001",
+          "t": 4,
+          "y": 15
+        },
+        {
+          "id": "001",
+          "t": 5,
+          "y": 15
+        },
+        {
+          "id": "001",
+          "t": 6,
+          "y": 15
+        },
+        {
+          "id": "001",
+          "t": 7,
+          "y": 15
+        }
+      ],
+      "kwargs": {
+        "entity": "id",
+        "time": "t",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "cleaning": {
+          "fit_rows": [
+            1,
+            2,
+            4
+          ],
+          "imputations": {
+            "y": "mean"
+          },
+          "decision": {
+            "basis": "researcher",
+            "rationale": "Declared synthetic cleaning specification for deterministic regression."
+          }
+        }
+      },
+      "expected": {
+        "events": {
+          "candidates": []
+        },
+        "rows": [
+          {
+            "id": "001",
+            "t": "0",
+            "y": 5.0,
+            "_period_index": 0,
+            "_source_rows": [
+              1
+            ]
+          },
+          {
+            "id": "001",
+            "t": "1",
+            "y": 5.0,
+            "_period_index": 1,
+            "_source_rows": [
+              2
+            ]
+          },
+          {
+            "id": "001",
+            "t": "2",
+            "y": 5.0,
+            "_period_index": 2,
+            "_source_rows": [
+              3
+            ],
+            "_imputed_columns": [
+              "y"
+            ]
+          },
+          {
+            "id": "001",
+            "t": "3",
+            "y": 5.0,
+            "_period_index": 3,
+            "_source_rows": [
+              4
+            ]
+          },
+          {
+            "id": "001",
+            "t": "4",
+            "y": 15.0,
+            "_period_index": 4,
+            "_source_rows": [
+              5
+            ]
+          },
+          {
+            "id": "001",
+            "t": "5",
+            "y": 15.0,
+            "_period_index": 5,
+            "_source_rows": [
+              6
+            ]
+          },
+          {
+            "id": "001",
+            "t": "6",
+            "y": 15.0,
+            "_period_index": 6,
+            "_source_rows": [
+              7
+            ]
+          },
+          {
+            "id": "001",
+            "t": "7",
+            "y": 15.0,
+            "_period_index": 7,
+            "_source_rows": [
+              8
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

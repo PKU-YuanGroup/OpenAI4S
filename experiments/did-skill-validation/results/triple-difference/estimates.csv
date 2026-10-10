@@ -1,0 +1,2 @@
+ci_high,ci_low,estimate,method,p_value,reason,se,status
+1.9756708208448512,1.1945311651180748,1.585100992981463,triple_difference,1.855816595795726e-08,,0.18880351484761682,estimated

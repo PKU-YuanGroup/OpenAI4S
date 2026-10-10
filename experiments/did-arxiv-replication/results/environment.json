@@ -1,0 +1,17 @@
+{
+  "input_csv_sha256": {
+    "base_stagg": "ba805f2eb9276ba535d2202a8b6d4b713059b4ea805f40d9fa99332cd2646fcc",
+    "mpdta": "d02c862efc18c2adf036855af5fdc5c3c0e6a69eccc722337e07b59cb4111f5f"
+  },
+  "matplotlib": "3.10.9",
+  "network_during_analysis": false,
+  "numpy": "2.3.5",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "point_estimate_checks": "Published decimal rounding intervals; no inference reproduction claimed",
+  "python": "3.13.9",
+  "random_seed": null,
+  "randomness": "None; analysis uses two fixed public input files",
+  "reference_values_sha256": "ba11df396276e2fdd52b0a96c4f22ecfc2fcf9c5007fe5d75f9ec2c82b1969eb",
+  "runner_sha256": "1924b4dd4a8af67c99ca8254caaee9f6beed38b3bd2916665dee4fab448de207",
+  "skill_kernel_sha256": "e0fd9da1b7a36183ee3cf6da07501531f0d9bf38da7c2d56b217ab0e31fdda3d"
+}

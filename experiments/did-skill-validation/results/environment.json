@@ -1,0 +1,14 @@
+{
+  "python": "3.13.9",
+  "implementation": "CPython",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "optional_analysis_packages": {
+    "numpy": "2.3.5",
+    "scipy": "1.16.3",
+    "statsmodels": "0.14.5",
+    "matplotlib": "3.10.9"
+  },
+  "skill_path": "skills/did-analysis/kernel.py",
+  "skill_sha256": "b075a9b05b17fdd15938d5f387e50df53583b62e88e0bd4855dcbff6cbae4706",
+  "plots_requested": true
+}

@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "source_records_sha256": "d6ede5a2d7912be0104dc988f750d1dd6273473d306eab140d8f73d87271cbfb",
+  "row_count": 465,
+  "protected_columns": [
+    "entity",
+    "period",
+    "scenario",
+    "treated"
+  ],
+  "columns": {
+    "activity": {
+      "inferred_type": "numeric",
+      "missing_count": 29,
+      "unique_count": 436,
+      "distribution": {
+        "n": 436,
+        "mean": 19.796201637391885,
+        "median": 19.800149753380655,
+        "sd": 2.0576952115969154,
+        "min": 14.745104134870864,
+        "max": 26.45871630353514,
+        "q1": 18.436219898603767,
+        "q3": 20.742791486588057,
+        "iqr": 2.3065715879842905,
+        "iqr_outlier_count": 14
+      },
+      "recommended_methods": [
+        "median",
+        "mean",
+        "knn"
+      ],
+      "recommendation_reason": "Median deserves review because of asymmetric values or IQR extremes; no observations are deleted. KNN is an option only with meaningful numeric similarity features and enough observed fit donors.",
+      "questions": []
+    },
+    "capacity": {
+      "inferred_type": "numeric",
+      "missing_count": 46,
+      "unique_count": 419,
+      "distribution": {
+        "n": 419,
+        "mean": 100.29525442775018,
+        "median": 102.23472199079504,
+        "sd": 11.060125663724019,
+        "min": 70.55493987345928,
+        "max": 125.78784760679348,
+        "q1": 92.44256144404628,
+        "q3": 108.8324681561636,
+        "iqr": 16.389906712117323,
+        "iqr_outlier_count": 0
+      },
+      "recommended_methods": [
+        "mean",
+        "median",
+        "knn"
+      ],
+      "recommendation_reason": "Mean or median may suit a reasonably symmetric distribution; choose a scientifically justified missingness model. KNN is an option only with meaningful numeric similarity features and enough observed fit donors.",
+      "questions": []
+    },
+    "channel": {
+      "inferred_type": "categorical_candidate",
+      "missing_count": 0,
+      "unique_count": 3,
+      "distribution": null,
+      "recommended_methods": [
+        "onehot",
+        "label",
+        "ordinal"
+      ],
+      "recommendation_reason": "Long strings suggest text features; short repeated strings suggest categories. The interpretation requires researcher confirmation.",
+      "questions": [
+        "channel: are these nominal categories, ordered categories, free text or identifiers?"
+      ]
+    },
+    "comment": {
+      "inferred_type": "text_candidate",
+      "missing_count": 0,
+      "unique_count": 4,
+      "distribution": null,
+      "recommended_methods": [
+        "count",
+        "tfidf"
+      ],
+      "recommendation_reason": "Long strings suggest text features; short repeated strings suggest categories. The interpretation requires researcher confirmation.",
+      "questions": [
+        "comment: are these nominal categories, ordered categories, free text or identifiers?",
+        "comment: Chinese text must be segmented upstream; Unicode word tokenization does not segment Chinese sentences."
+      ]
+    },
+    "correlated_metric": {
+      "inferred_type": "numeric",
+      "missing_count": 51,
+      "unique_count": 414,
+      "distribution": {
+        "n": 414,
+        "mean": 29.309597625478133,
+        "median": 29.05057546857815,
+        "sd": 4.084307719835023,
+        "min": 19.629759127739533,
+        "max": 42.00445187242155,
+        "q1": 26.52547158998637,
+        "q3": 31.90885674583936,
+        "iqr": 5.383385155852988,
+        "iqr_outlier_count": 7
+      },
+      "recommended_methods": [
+        "median",
+        "mean",
+        "knn"
+      ],
+      "recommendation_reason": "Median deserves review because of asymmetric values or IQR extremes; no observations are deleted. KNN is an option only with meaningful numeric similarity features and enough observed fit donors.",
+      "questions": []
+    },
+    "entity": {
+      "inferred_type": "protected",
+      "missing_count": 0,
+      "unique_count": 32,
+      "distribution": null,
+      "recommended_methods": [],
+      "recommendation_reason": "Protected identifiers, time and treatment columns remain unchanged.",
+      "questions": []
+    },
+    "period": {
+      "inferred_type": "protected",
+      "missing_count": 0,
+      "unique_count": 16,
+      "distribution": null,
+      "recommended_methods": [],
+      "recommendation_reason": "Protected identifiers, time and treatment columns remain unchanged.",
+      "questions": []
+    },
+    "plan": {
+      "inferred_type": "categorical_candidate",
+      "missing_count": 0,
+      "unique_count": 3,
+      "distribution": null,
+      "recommended_methods": [
+        "onehot",
+        "label",
+        "ordinal"
+      ],
+      "recommendation_reason": "Long strings suggest text features; short repeated strings suggest categories. The interpretation requires researcher confirmation.",
+      "questions": [
+        "plan: are these nominal categories, ordered categories, free text or identifiers?"
+      ]
+    },
+    "region": {
+      "inferred_type": "categorical_candidate",
+      "missing_count": 0,
+      "unique_count": 4,
+      "distribution": null,
+      "recommended_methods": [
+        "onehot",
+        "label",
+        "ordinal"
+      ],
+      "recommendation_reason": "Long strings suggest text features; short repeated strings suggest categories. The interpretation requires researcher confirmation.",
+      "questions": [
+        "region: are these nominal categories, ordered categories, free text or identifiers?"
+      ]
+    },
+    "scenario": {
+      "inferred_type": "protected",
+      "missing_count": 0,
+      "unique_count": 8,
+      "distribution": null,
+      "recommended_methods": [],
+      "recommendation_reason": "Protected identifiers, time and treatment columns remain unchanged.",
+      "questions": []
+    },
+    "signal_x": {
+      "inferred_type": "numeric",
+      "missing_count": 8,
+      "unique_count": 457,
+      "distribution": {
+        "n": 457,
+        "mean": 0.0016334484487905967,
+        "median": -0.05001111325772924,
+        "sd": 1.0120597084756469,
+        "min": -3.6361126726888005,
+        "max": 2.92620958192014,
+        "q1": -0.653226130536175,
+        "q3": 0.6816855912205446,
+        "iqr": 1.3349117217567197,
+        "iqr_outlier_count": 5
+      },
+      "recommended_methods": [
+        "median",
+        "mean",
+        "knn"
+      ],
+      "recommendation_reason": "Median deserves review because of asymmetric values or IQR extremes; no observations are deleted. KNN is an option only with meaningful numeric similarity features and enough observed fit donors.",
+      "questions": []
+    },
+    "signal_z": {
+      "inferred_type": "numeric",
+      "missing_count": 4,
+      "unique_count": 461,
+      "distribution": {
+        "n": 461,
+        "mean": -0.06473538011998352,
+        "median": -0.05403612111943679,
+        "sd": 0.9425843740648986,
+        "min": -2.988296860655621,
+        "max": 2.5861833792815268,
+        "q1": -0.686064548037842,
+        "q3": 0.5330434105339583,
+        "iqr": 1.2191079585718003,
+        "iqr_outlier_count": 4
+      },
+      "recommended_methods": [
+        "median",
+        "mean",
+        "knn"
+      ],
+      "recommendation_reason": "Median deserves review because of asymmetric values or IQR extremes; no observations are deleted. KNN is an option only with meaningful numeric similarity features and enough observed fit donors.",
+      "questions": []
+    },
+    "spend": {
+      "inferred_type": "numeric",
+      "missing_count": 48,
+      "unique_count": 417,
+      "distribution": {
+        "n": 417,
+        "mean": 28.88122510967834,
+        "median": 20.460431807066666,
+        "sd": 34.391661554715654,
+        "min": 2.176775399739725,
+        "max": 370.4438566130261,
+        "q1": 10.885513824992515,
+        "q3": 34.4848404305422,
+        "iqr": 23.599326605549685,
+        "iqr_outlier_count": 32
+      },
+      "recommended_methods": [
+        "median",
+        "mean",
+        "knn"
+      ],
+      "recommendation_reason": "Median deserves review because of asymmetric values or IQR extremes; no observations are deleted. KNN is an option only with meaningful numeric similarity features and enough observed fit donors.",
+      "questions": []
+    },
+    "treated": {
+      "inferred_type": "protected",
+      "missing_count": 0,
+      "unique_count": 1,
+      "distribution": null,
+      "recommended_methods": [],
+      "recommendation_reason": "Protected identifiers, time and treatment columns remain unchanged.",
+      "questions": []
+    }
+  },
+  "questions": [
+    "channel: are these nominal categories, ordered categories, free text or identifiers?",
+    "comment: are these nominal categories, ordered categories, free text or identifiers?",
+    "comment: Chinese text must be segmented upstream; Unicode word tokenization does not segment Chinese sentences.",
+    "plan: are these nominal categories, ordered categories, free text or identifiers?",
+    "region: are these nominal categories, ordered categories, free text or identifiers?"
+  ],
+  "decision_required": {
+    "basis": [
+      "researcher",
+      "data_profile"
+    ],
+    "rationale": "Record why the chosen methods suit variable types, distributions and the research design."
+  },
+  "limitations": [
+    "Recommendations do not modify data or establish that missingness is ignorable.",
+    "A profile of validation/post-event values must not select training methods; profile only the intended calibration sample."
+  ]
+}

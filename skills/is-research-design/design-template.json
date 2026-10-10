@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "status": "draft",
+  "research_question": null,
+  "tradition": null,
+  "it_property": null,
+  "actors": null,
+  "task_and_context": null,
+  "unit_of_analysis": null,
+  "time_ordering": null,
+  "prior_result_exposure": "unknown",
+  "preregistration_reference": null,
+  "constructs": [
+    {
+      "id": "C1",
+      "definition": null,
+      "level": null,
+      "proposed_indicators": [],
+      "measurement_timing": null,
+      "source_references": [],
+      "validity_threats": []
+    }
+  ],
+  "claims": [
+    {
+      "id": "H1",
+      "statement": null,
+      "claim_type": null,
+      "derivation_status": "unformulated",
+      "mechanism": null,
+      "boundary_conditions": [],
+      "rival_explanations": [],
+      "discriminating_evidence_needed": [],
+      "source_references": [],
+      "evidence_status": "missing",
+      "maximum_supported_claim": "No empirical claim; unfilled design worksheet."
+    }
+  ],
+  "study_design": {
+    "method": null,
+    "assignment_or_sampling_unit": null,
+    "sampling_or_case_selection": null,
+    "treatment_or_design_contrast": null,
+    "identification_or_trustworthiness_argument": null,
+    "primary_outcome_and_timing": null,
+    "power_or_precision_plan": null,
+    "missingness_attrition_and_exclusions": null,
+    "multiplicity_plan": null,
+    "consent_and_data_handling": null,
+    "open_validity_threats": []
+  },
+  "design_science": {
+    "applicable": null,
+    "problem_relevance_evidence": [],
+    "justificatory_theory_references": [],
+    "design_principles": [],
+    "implementation_choices": [],
+    "evaluation_plans": [
+      {
+        "proposition_id": null,
+        "principle": null,
+        "baseline_and_rationale": null,
+        "ablation_or_alternative": null,
+        "target_users_tasks_context": null,
+        "primary_metric": null,
+        "uncertainty_and_decision_criterion": null,
+        "held_out_evaluation_policy": null,
+        "failure_conditions_and_tradeoffs": [],
+        "evidence_references": [],
+        "status": "not_planned"
+      }
+    ]
+  },
+  "input_artifact_version_ids": [],
+  "open_questions": [],
+  "deviations_from_prior_plan": [],
+  "next_skill": null
+}

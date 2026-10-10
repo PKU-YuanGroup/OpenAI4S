@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本目录树共暴露 606 个内置 Skill：45 份由 OpenAI4S 筛选维护的配方，加上固定版本的
+本目录树共暴露 611 个内置 Skill：50 份由 OpenAI4S 筛选维护的配方，加上固定版本的
 GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，加上把它跑起来所需的
 运维知识——而不是 provider 的 JSON Tool。披露是渐进的：精选 Skill 各占一行摘要，大型
 第三方集合合计只占一行，再通过搜索或精确名称展开。只有被选中的 `SKILL.md` 和可选
@@ -33,6 +33,11 @@ curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/mai
 
 | 目录 | 职责 |
 | --- | --- |
+| [`is-research-design/`](is-research-design/) | IS 理论、构念与竞争解释，以及设计科学的设计原则和评估计划；由固定版本的 MISQ 方法与理论指南适配并保留归属，复用现有文献与因果分析 Skill。 |
+| [`is-survey-measurement/`](is-survey-measurement/) | 问卷构念、题项编码、有序 CFA/SEM 与测量不变性；由 AlterLab 的 MIT 心理测量模块适配，统计包仅作为可选内核依赖。 |
+| [`is-qualitative-analysis/`](is-qualitative-analysis/) | 访谈与案例证据、编码簿分析和反思性主题分析的区分，以及限定范围的名义编码一致性诊断；由 AlterLab 适配并保留来源。 |
+| [`did-analysis/`](did-analysis/) | 先执行经审计的传统 DiD，再做动态事件研究、伪时点／伪处理组安慰剂检验，并支持有界的分批 group-time ATT 和共同处理时点三重差分；明确科研设计、分配聚类、样本损失与不确定性。 |
+| [`panel-data-preprocessing/`](panel-data-preprocessing/) | 根据数据概况或科研人员选择，仅用拟合行清理与编码类别／文本，再构建面板、检查日历／事件窗口并可视化持续突变。记录填补，区分已知事件、处理变化和探索性候选，不估计因果效应。 |
 | [`admet_genetic/`](admet_genetic/) | 从 seed SMILES 出发的遗传式优化循环，用 RDKit 描述符、QED、SA-Score 和 ADMET-AI 打分。sidecar 故意不提供固定的 GA 引擎：突变、交叉、过滤和打分权重都要你按当前目标自己设计。每一条记录在案的候选分子都必须带着生成它的血缘。 |
 | [`alphafold2/`](alphafold2/) | 通过 ColabFold 的 `colabfold_batch` 跑 AF2 与 AF2-Multimer：一个 FASTA 加一条命令就能预测，不用在本地挂载 MSA 数据库。MSA 来自公共 MMseqs2 服务器，也就是说序列会被发到那里。只处理蛋白；要做配体或核酸，请转向 `boltz`、`chai1` 或 `openfold3`。 |
 | [`audit-dataset/`](audit-dataset/) | 训练或对外发布之前该做的那次检查：schema 漂移、缺失、重复行与重复 ID、目标类别不平衡，以及同一实体横跨 train/validation/test。纯标准库实现。结构层面查干净了，仍然说明不了数据是否有代表性、标签是否正确。 |

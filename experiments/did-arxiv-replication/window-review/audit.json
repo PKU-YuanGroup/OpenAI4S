@@ -1,0 +1,1594 @@
+{
+  "schema_version": 1,
+  "scope": "Pre-screening coverage and pre-only variability review; no screen, estimator, treatment-date or old result changes",
+  "assumptions": {
+    "mpdta": "Noise tolerance 0.05 log-employment units; educational diagnostic assumption, not a paper threshold",
+    "base_stagg": "Noise tolerance 1 outcome unit; educational diagnostic assumption, not a paper threshold",
+    "synthetic": "Noise tolerance 0.5 outcome units; constructed deterministic illustration, not evidence of independent noise",
+    "minimum_noise_periods": 5,
+    "independence": "SD/sqrt(n) assumes stable independent noise. Displayed ratios and advice are descriptive, not confidence intervals, power or event-screen calibration."
+  },
+  "public_data": {
+    "mpdta": {
+      "input": {
+        "filename": "mpdta.csv",
+        "sha256": "d02c862efc18c2adf036855af5fdc5c3c0e6a69eccc722337e07b59cb4111f5f",
+        "source": "https://raw.githubusercontent.com/bcallaway11/did/74b88eb07f1faa644df1271055a0f77848f6550c/data/mpdta.rda"
+      },
+      "panel_config": {
+        "entity": "countyreal",
+        "time": "year",
+        "numeric_columns": [
+          "lemp"
+        ],
+        "frequency": "year",
+        "wide_columns": null,
+        "aggregations": {}
+      },
+      "transformation": {
+        "source_row_count": 2500,
+        "expanded_row_count": 2500,
+        "collapsed_row_count": 0,
+        "output_row_count": 2500,
+        "source_records_sha256": "f8ac81e72065f74768f58f55583d9ffa00bb8275ab74cbe641513a84e18f82df"
+      },
+      "config": {
+        "requested_window": 2,
+        "window_options": [
+          2,
+          3
+        ],
+        "default_sweep_data_bound": "maximum observed periods within any entity; requested window always retained",
+        "maximum_inspected_sizes": 64,
+        "noise_tolerance": {
+          "lemp": 0.05
+        },
+        "noise_tolerance_source": "explicit",
+        "min_noise_periods": 5,
+        "min_correlation_periods": 8,
+        "autocorrelation_threshold": 0.5,
+        "trend_residual_ratio": 0.5,
+        "recommendation_scope": "advisory only; smallest suitable inspected larger window at same first-post anchor"
+      },
+      "summary": [
+        {
+          "window": 2,
+          "entity_metric_count": 500,
+          "anchor_count": 2500,
+          "eligible_anchor_count": 1000,
+          "eligible_entity_metric_count": 500,
+          "no_eligible_entity_metric_count": 0,
+          "blocked_by_reason": {
+            "insufficient_pre_history": 1000,
+            "insufficient_post_history": 500
+          },
+          "noise_status_counts": {
+            "pre_data_incomplete": 1000,
+            "noise_baseline_short": 1500
+          },
+          "eligible_noise_status_counts": {
+            "noise_baseline_short": 1000
+          },
+          "eligible_mean_noise_iid": {
+            "minimum": 0.0,
+            "median": 0.0357864247353894,
+            "maximum": 0.7331685343967134,
+            "median_noise_to_tolerance_ratio": 0.7157284947077879
+          },
+          "representative_eligible_assessments": [
+            {
+              "entity": "12007",
+              "metric": "lemp",
+              "time": "2005",
+              "period_index": 2005,
+              "window": 2,
+              "eligible": true,
+              "reasons": [],
+              "coverage": {
+                "pre_observed_periods": 2,
+                "post_observed_periods": 2,
+                "pre_nonmissing": 2,
+                "post_nonmissing": 2,
+                "pre_missing_periods": 0,
+                "post_missing_periods": 0,
+                "pre_missing_values": 0,
+                "post_missing_values": 0,
+                "pre_history_shortfall": 0,
+                "post_history_shortfall": 0,
+                "pre_internal_gap_periods": 0,
+                "post_internal_gap_periods": 0
+              },
+              "pre_statistics": {
+                "n": 2,
+                "variance": 0.004366747403408545,
+                "sd": 0.06608136956365648,
+                "mad": 0.046726584528555826,
+                "linear_slope": 0.09345316905711165,
+                "trend_span": 0.09345316905711165,
+                "residual_sd": null,
+                "lag1_autocorrelation": null,
+                "mean_noise_iid": 0.046726584528555826,
+                "noise_to_tolerance_ratio": 0.9345316905711165
+              },
+              "noise_status": "noise_baseline_short",
+              "pre_source_rows": [
+                51,
+                52
+              ],
+              "post_source_rows": [
+                53,
+                54
+              ]
+            }
+          ]
+        },
+        {
+          "window": 3,
+          "entity_metric_count": 500,
+          "anchor_count": 2500,
+          "eligible_anchor_count": 0,
+          "eligible_entity_metric_count": 0,
+          "no_eligible_entity_metric_count": 500,
+          "blocked_by_reason": {
+            "insufficient_pre_history": 1500,
+            "insufficient_post_history": 1000
+          },
+          "noise_status_counts": {
+            "pre_data_incomplete": 1500,
+            "noise_baseline_short": 686,
+            "review_trend": 314
+          },
+          "eligible_noise_status_counts": {},
+          "eligible_mean_noise_iid": {
+            "minimum": null,
+            "median": null,
+            "maximum": null,
+            "median_noise_to_tolerance_ratio": null
+          },
+          "representative_eligible_assessments": []
+        }
+      ],
+      "all_anchor_recommendation_counts": {
+        "coverage_insufficient": 1500,
+        "noise_baseline_short": 1000
+      },
+      "eligible_requested_recommendation_counts": {
+        "noise_baseline_short": 1000
+      },
+      "representative_eligible_recommendations": [
+        {
+          "entity": "12007",
+          "metric": "lemp",
+          "time": "2005",
+          "requested_window": 2,
+          "action": "noise_baseline_short",
+          "suggested_window": null,
+          "reason": "Short pre baseline: variance is displayed but no quantitative noise-based recommendation is reliable."
+        }
+      ],
+      "limitations": [
+        "Mean-noise SD/sqrt(n) assumes independent stable noise; it is neither a confidence interval nor a power calculation.",
+        "Short baseline and correlation thresholds are review heuristics, not statistical guarantees. Unassessed or weak correlation does not prove independence.",
+        "Noise uses pre values only; post values enter only through coverage/missingness. Windows are never automatically changed.",
+        "The existing event screen uses change/pre SD, not change/SE. Lower mean noise need not improve its score.",
+        "Baseline trend, earlier shocks and seasonality can contaminate wider windows; inspect recommendations before comparing specifications."
+      ],
+      "retention_note": "Full input and reproducible script retained; per-window API summaries and first example of each eligible status/action saved. No filtering or imputation before assessment."
+    },
+    "base_stagg": {
+      "input": {
+        "filename": "base_stagg.csv",
+        "sha256": "ba805f2eb9276ba535d2202a8b6d4b713059b4ea805f40d9fa99332cd2646fcc",
+        "source": "https://raw.githubusercontent.com/lrberge/fixest/789f888416e97673d154c840eec2d99101fc07b1/data/base_stagg.RData"
+      },
+      "panel_config": {
+        "entity": "id",
+        "time": "year",
+        "numeric_columns": [
+          "y"
+        ],
+        "frequency": "integer",
+        "wide_columns": null,
+        "aggregations": {}
+      },
+      "transformation": {
+        "source_row_count": 950,
+        "expanded_row_count": 950,
+        "collapsed_row_count": 0,
+        "output_row_count": 950,
+        "source_records_sha256": "d1e2e3a587fa21e3138bfb4d66af12dde958b188d77dd2a952beea9e9bd40281"
+      },
+      "config": {
+        "requested_window": 3,
+        "window_options": [
+          3,
+          5
+        ],
+        "default_sweep_data_bound": "maximum observed periods within any entity; requested window always retained",
+        "maximum_inspected_sizes": 64,
+        "noise_tolerance": {
+          "y": 1.0
+        },
+        "noise_tolerance_source": "explicit",
+        "min_noise_periods": 5,
+        "min_correlation_periods": 8,
+        "autocorrelation_threshold": 0.5,
+        "trend_residual_ratio": 0.5,
+        "recommendation_scope": "advisory only; smallest suitable inspected larger window at same first-post anchor"
+      },
+      "summary": [
+        {
+          "window": 3,
+          "entity_metric_count": 95,
+          "anchor_count": 950,
+          "eligible_anchor_count": 475,
+          "eligible_entity_metric_count": 95,
+          "no_eligible_entity_metric_count": 0,
+          "blocked_by_reason": {
+            "insufficient_pre_history": 285,
+            "insufficient_post_history": 190
+          },
+          "noise_status_counts": {
+            "pre_data_incomplete": 285,
+            "noise_baseline_short": 512,
+            "review_trend": 153
+          },
+          "eligible_noise_status_counts": {
+            "noise_baseline_short": 371,
+            "review_trend": 104
+          },
+          "eligible_mean_noise_iid": {
+            "minimum": 0.03148864319439762,
+            "median": 1.0009223833285312,
+            "maximum": 3.4809503071206946,
+            "median_noise_to_tolerance_ratio": 1.0009223833285312
+          },
+          "representative_eligible_assessments": [
+            {
+              "entity": "1",
+              "metric": "y",
+              "time": "4",
+              "period_index": 4,
+              "window": 3,
+              "eligible": true,
+              "reasons": [],
+              "coverage": {
+                "pre_observed_periods": 3,
+                "post_observed_periods": 3,
+                "pre_nonmissing": 3,
+                "post_nonmissing": 3,
+                "pre_missing_periods": 0,
+                "post_missing_periods": 0,
+                "pre_missing_values": 0,
+                "post_missing_values": 0,
+                "pre_history_shortfall": 0,
+                "post_history_shortfall": 0,
+                "pre_internal_gap_periods": 0,
+                "post_internal_gap_periods": 0
+              },
+              "pre_statistics": {
+                "n": 3,
+                "variance": 36.35104512193096,
+                "sd": 6.02918279055553,
+                "mad": 3.7147440247653503,
+                "linear_slope": 1.857372012382675,
+                "trend_span": 3.71474402476535,
+                "residual_sd": 8.11186961551386,
+                "lag1_autocorrelation": null,
+                "mean_noise_iid": 3.4809503071206946,
+                "noise_to_tolerance_ratio": 3.4809503071206946
+              },
+              "noise_status": "noise_baseline_short",
+              "pre_source_rows": [
+                90,
+                185,
+                280
+              ],
+              "post_source_rows": [
+                375,
+                470,
+                565
+              ]
+            },
+            {
+              "entity": "10",
+              "metric": "y",
+              "time": "6",
+              "period_index": 6,
+              "window": 3,
+              "eligible": true,
+              "reasons": [],
+              "coverage": {
+                "pre_observed_periods": 3,
+                "post_observed_periods": 3,
+                "pre_nonmissing": 3,
+                "post_nonmissing": 3,
+                "pre_missing_periods": 0,
+                "post_missing_periods": 0,
+                "pre_missing_values": 0,
+                "post_missing_values": 0,
+                "pre_history_shortfall": 0,
+                "post_history_shortfall": 0,
+                "pre_internal_gap_periods": 0,
+                "post_internal_gap_periods": 0
+              },
+              "pre_statistics": {
+                "n": 3,
+                "variance": 9.508103788615708,
+                "sd": 3.0835213293596184,
+                "mad": 2.18969340715223,
+                "linear_slope": 3.0438329462282745,
+                "trend_span": 6.087665892456549,
+                "residual_sd": 0.697402013290774,
+                "lag1_autocorrelation": null,
+                "mean_noise_iid": 1.7802718695577284,
+                "noise_to_tolerance_ratio": 1.7802718695577284
+              },
+              "noise_status": "review_trend",
+              "pre_source_rows": [
+                271,
+                366,
+                461
+              ],
+              "post_source_rows": [
+                556,
+                651,
+                746
+              ]
+            }
+          ]
+        },
+        {
+          "window": 5,
+          "entity_metric_count": 95,
+          "anchor_count": 950,
+          "eligible_anchor_count": 95,
+          "eligible_entity_metric_count": 95,
+          "no_eligible_entity_metric_count": 0,
+          "blocked_by_reason": {
+            "insufficient_pre_history": 475,
+            "insufficient_post_history": 380
+          },
+          "noise_status_counts": {
+            "pre_data_incomplete": 475,
+            "high_noise_under_iid": 172,
+            "within_tolerance_under_iid": 273,
+            "review_trend": 30
+          },
+          "eligible_noise_status_counts": {
+            "high_noise_under_iid": 33,
+            "review_trend": 2,
+            "within_tolerance_under_iid": 60
+          },
+          "eligible_mean_noise_iid": {
+            "minimum": 0.25172020424992925,
+            "median": 0.9087483581645287,
+            "maximum": 2.1908526463069076,
+            "median_noise_to_tolerance_ratio": 0.9087483581645287
+          },
+          "representative_eligible_assessments": [
+            {
+              "entity": "1",
+              "metric": "y",
+              "time": "6",
+              "period_index": 6,
+              "window": 5,
+              "eligible": true,
+              "reasons": [],
+              "coverage": {
+                "pre_observed_periods": 5,
+                "post_observed_periods": 5,
+                "pre_nonmissing": 5,
+                "post_nonmissing": 5,
+                "pre_missing_periods": 0,
+                "post_missing_periods": 0,
+                "pre_missing_values": 0,
+                "post_missing_values": 0,
+                "pre_history_shortfall": 0,
+                "post_history_shortfall": 0,
+                "pre_internal_gap_periods": 0,
+                "post_internal_gap_periods": 0
+              },
+              "pre_statistics": {
+                "n": 5,
+                "variance": 23.999176589149904,
+                "sd": 4.8988954458275495,
+                "mad": 3.2592626712521158,
+                "linear_slope": 1.144110548113494,
+                "trend_span": 4.576442192453976,
+                "residual_sd": 5.256957830455241,
+                "lag1_autocorrelation": null,
+                "mean_noise_iid": 2.1908526463069076,
+                "noise_to_tolerance_ratio": 2.1908526463069076
+              },
+              "noise_status": "high_noise_under_iid",
+              "pre_source_rows": [
+                90,
+                185,
+                280,
+                375,
+                470
+              ],
+              "post_source_rows": [
+                565,
+                660,
+                755,
+                850,
+                945
+              ]
+            },
+            {
+              "entity": "11",
+              "metric": "y",
+              "time": "6",
+              "period_index": 6,
+              "window": 5,
+              "eligible": true,
+              "reasons": [],
+              "coverage": {
+                "pre_observed_periods": 5,
+                "post_observed_periods": 5,
+                "pre_nonmissing": 5,
+                "post_nonmissing": 5,
+                "pre_missing_periods": 0,
+                "post_missing_periods": 0,
+                "pre_missing_values": 0,
+                "post_missing_values": 0,
+                "pre_history_shortfall": 0,
+                "post_history_shortfall": 0,
+                "pre_internal_gap_periods": 0,
+                "post_internal_gap_periods": 0
+              },
+              "pre_statistics": {
+                "n": 5,
+                "variance": 1.8510738415956383,
+                "sd": 1.3605417456276887,
+                "mad": 0.7272862055936367,
+                "linear_slope": -0.017262472677559492,
+                "trend_span": 0.06904989071023797,
+                "residual_sd": 1.5707021186667995,
+                "lag1_autocorrelation": null,
+                "mean_noise_iid": 0.6084527658899478,
+                "noise_to_tolerance_ratio": 0.6084527658899478
+              },
+              "noise_status": "within_tolerance_under_iid",
+              "pre_source_rows": [
+                80,
+                175,
+                270,
+                365,
+                460
+              ],
+              "post_source_rows": [
+                555,
+                650,
+                745,
+                840,
+                935
+              ]
+            },
+            {
+              "entity": "56",
+              "metric": "y",
+              "time": "6",
+              "period_index": 6,
+              "window": 5,
+              "eligible": true,
+              "reasons": [],
+              "coverage": {
+                "pre_observed_periods": 5,
+                "post_observed_periods": 5,
+                "pre_nonmissing": 5,
+                "post_nonmissing": 5,
+                "pre_missing_periods": 0,
+                "post_missing_periods": 0,
+                "pre_missing_values": 0,
+                "post_missing_values": 0,
+                "pre_history_shortfall": 0,
+                "post_history_shortfall": 0,
+                "pre_internal_gap_periods": 0,
+                "post_internal_gap_periods": 0
+              },
+              "pre_statistics": {
+                "n": 5,
+                "variance": 6.3324124189095885,
+                "sd": 2.5164285046290487,
+                "mad": 2.5651523934727423,
+                "linear_slope": 1.4567364669366591,
+                "trend_span": 5.826945867746637,
+                "residual_sd": 1.1703045664280947,
+                "lag1_autocorrelation": null,
+                "mean_noise_iid": 1.1253810393737393,
+                "noise_to_tolerance_ratio": 1.1253810393737393
+              },
+              "noise_status": "review_trend",
+              "pre_source_rows": [
+                35,
+                130,
+                225,
+                320,
+                415
+              ],
+              "post_source_rows": [
+                510,
+                605,
+                700,
+                795,
+                890
+              ]
+            }
+          ]
+        }
+      ],
+      "all_anchor_recommendation_counts": {
+        "consider_larger_for_baseline": 65,
+        "coverage_insufficient": 475,
+        "noise_baseline_short": 306,
+        "review_trend": 104
+      },
+      "eligible_requested_recommendation_counts": {
+        "consider_larger_for_baseline": 65,
+        "noise_baseline_short": 306,
+        "review_trend": 104
+      },
+      "representative_eligible_recommendations": [
+        {
+          "entity": "1",
+          "metric": "y",
+          "time": "4",
+          "requested_window": 3,
+          "action": "noise_baseline_short",
+          "suggested_window": null,
+          "reason": "Short pre baseline: variance is displayed but no quantitative noise-based recommendation is reliable."
+        },
+        {
+          "entity": "1",
+          "metric": "y",
+          "time": "6",
+          "requested_window": 3,
+          "action": "consider_larger_for_baseline",
+          "suggested_window": 5,
+          "reason": "Short pre baseline: variance is displayed but no quantitative noise-based recommendation is reliable."
+        },
+        {
+          "entity": "10",
+          "metric": "y",
+          "time": "6",
+          "requested_window": 3,
+          "action": "review_trend",
+          "suggested_window": null,
+          "reason": "Pre-window drift dominates residual variation; inspect trend rather than automatically widening."
+        }
+      ],
+      "limitations": [
+        "Mean-noise SD/sqrt(n) assumes independent stable noise; it is neither a confidence interval nor a power calculation.",
+        "Short baseline and correlation thresholds are review heuristics, not statistical guarantees. Unassessed or weak correlation does not prove independence.",
+        "Noise uses pre values only; post values enter only through coverage/missingness. Windows are never automatically changed.",
+        "The existing event screen uses change/pre SD, not change/SE. Lower mean noise need not improve its score.",
+        "Baseline trend, earlier shocks and seasonality can contaminate wider windows; inspect recommendations before comparing specifications."
+      ],
+      "retention_note": "Full input and reproducible script retained; per-window API summaries and first example of each eligible status/action saved. No filtering or imputation before assessment."
+    }
+  },
+  "synthetic": {
+    "panel_config": {
+      "entity": "id",
+      "time": "period",
+      "numeric_columns": [
+        "y"
+      ],
+      "frequency": "integer",
+      "wide_columns": null,
+      "aggregations": {}
+    },
+    "transformation": {
+      "source_row_count": 96,
+      "expanded_row_count": 96,
+      "collapsed_row_count": 0,
+      "output_row_count": 96,
+      "source_records_sha256": "01b8881d56b3dd14ec2cee469a6baf9449eae60a91af06e97c0a2effc8001f6e"
+    },
+    "config": {
+      "requested_window": 5,
+      "window_options": [
+        3,
+        5,
+        7
+      ],
+      "default_sweep_data_bound": "maximum observed periods within any entity; requested window always retained",
+      "maximum_inspected_sizes": 64,
+      "noise_tolerance": {
+        "y": 0.5
+      },
+      "noise_tolerance_source": "explicit",
+      "min_noise_periods": 5,
+      "min_correlation_periods": 8,
+      "autocorrelation_threshold": 0.5,
+      "trend_residual_ratio": 0.5,
+      "recommendation_scope": "advisory only; smallest suitable inspected larger window at same first-post anchor"
+    },
+    "summary": [
+      {
+        "window": 3,
+        "entity_metric_count": 3,
+        "anchor_count": 96,
+        "eligible_anchor_count": 81,
+        "eligible_entity_metric_count": 3,
+        "no_eligible_entity_metric_count": 0,
+        "blocked_by_reason": {
+          "insufficient_pre_history": 9,
+          "insufficient_post_history": 6
+        },
+        "noise_status_counts": {
+          "pre_data_incomplete": 9,
+          "noise_baseline_short": 52,
+          "review_trend": 35
+        },
+        "eligible_noise_status_counts": {
+          "noise_baseline_short": 48,
+          "review_trend": 33
+        },
+        "eligible_mean_noise_iid": {
+          "minimum": 0.019641226483541614,
+          "median": 0.19962075153762082,
+          "maximum": 0.8166054398817368,
+          "median_noise_to_tolerance_ratio": 0.39924150307524164
+        },
+        "representative_eligible_assessments": [
+          {
+            "entity": "noisy",
+            "metric": "y",
+            "time": "4",
+            "period_index": 4,
+            "window": 3,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 3,
+              "post_observed_periods": 3,
+              "pre_nonmissing": 3,
+              "post_nonmissing": 3,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 3,
+              "variance": 1.4076333333333324,
+              "sd": 1.1864372437399848,
+              "mad": 0.33000000000000007,
+              "linear_slope": 0.9349999999999996,
+              "trend_span": 1.8699999999999992,
+              "residual_sd": 1.032868174873573,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.6849898620498779,
+              "noise_to_tolerance_ratio": 1.3699797240997558
+            },
+            "noise_status": "noise_baseline_short",
+            "pre_source_rows": [
+              33,
+              34,
+              35
+            ],
+            "post_source_rows": [
+              36,
+              37,
+              38
+            ]
+          },
+          {
+            "entity": "noisy",
+            "metric": "y",
+            "time": "5",
+            "period_index": 5,
+            "window": 3,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 3,
+              "post_observed_periods": 3,
+              "pre_nonmissing": 3,
+              "post_nonmissing": 3,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 3,
+              "variance": 0.8752333333333331,
+              "sd": 0.935539060292692,
+              "mad": 0.33000000000000007,
+              "linear_slope": -0.8799999999999999,
+              "trend_span": 1.7599999999999998,
+              "residual_sd": 0.44907311951024914,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.5401337282973953,
+              "noise_to_tolerance_ratio": 1.0802674565947905
+            },
+            "noise_status": "review_trend",
+            "pre_source_rows": [
+              34,
+              35,
+              36
+            ],
+            "post_source_rows": [
+              37,
+              38,
+              39
+            ]
+          }
+        ]
+      },
+      {
+        "window": 5,
+        "entity_metric_count": 3,
+        "anchor_count": 96,
+        "eligible_anchor_count": 69,
+        "eligible_entity_metric_count": 3,
+        "no_eligible_entity_metric_count": 0,
+        "blocked_by_reason": {
+          "insufficient_pre_history": 15,
+          "insufficient_post_history": 12
+        },
+        "noise_status_counts": {
+          "pre_data_incomplete": 15,
+          "high_noise_under_iid": 27,
+          "within_tolerance_under_iid": 27,
+          "review_trend": 27
+        },
+        "eligible_noise_status_counts": {
+          "high_noise_under_iid": 23,
+          "review_trend": 23,
+          "within_tolerance_under_iid": 23
+        },
+        "eligible_mean_noise_iid": {
+          "minimum": 0.018676188047886,
+          "median": 0.24875449744678,
+          "maximum": 0.513595171316865,
+          "median_noise_to_tolerance_ratio": 0.49750899489356
+        },
+        "representative_eligible_assessments": [
+          {
+            "entity": "noisy",
+            "metric": "y",
+            "time": "6",
+            "period_index": 6,
+            "window": 5,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 5,
+              "post_observed_periods": 5,
+              "pre_nonmissing": 5,
+              "post_nonmissing": 5,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 5,
+              "variance": 1.3189000000000002,
+              "sd": 1.1484337159801605,
+              "mad": 0.7700000000000014,
+              "linear_slope": 0.35200000000000015,
+              "trend_span": 1.4080000000000006,
+              "residual_sd": 1.1599655167288379,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.513595171316865,
+              "noise_to_tolerance_ratio": 1.02719034263373
+            },
+            "noise_status": "high_noise_under_iid",
+            "pre_source_rows": [
+              33,
+              34,
+              35,
+              36,
+              37
+            ],
+            "post_source_rows": [
+              38,
+              39,
+              40,
+              41,
+              42
+            ]
+          },
+          {
+            "entity": "quiet",
+            "metric": "y",
+            "time": "6",
+            "period_index": 6,
+            "window": 5,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 5,
+              "post_observed_periods": 5,
+              "pre_nonmissing": 5,
+              "post_nonmissing": 5,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 5,
+              "variance": 0.0017439999999999995,
+              "sd": 0.041761226035642196,
+              "mad": 0.02800000000000047,
+              "linear_slope": 0.012800000000000011,
+              "trend_span": 0.051200000000000044,
+              "residual_sd": 0.042180564244685,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.018676188047886,
+              "noise_to_tolerance_ratio": 0.037352376095772
+            },
+            "noise_status": "within_tolerance_under_iid",
+            "pre_source_rows": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "post_source_rows": [
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          {
+            "entity": "trend",
+            "metric": "y",
+            "time": "6",
+            "period_index": 6,
+            "window": 5,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 5,
+              "post_observed_periods": 5,
+              "pre_nonmissing": 5,
+              "post_nonmissing": 5,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 5,
+              "variance": 0.330394,
+              "sd": 0.5747990953367969,
+              "mad": 0.3379999999999992,
+              "linear_slope": 0.3628,
+              "trend_span": 1.4512,
+              "residual_sd": 0.042180564244685255,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.25705797011569204,
+              "noise_to_tolerance_ratio": 0.5141159402313841
+            },
+            "noise_status": "review_trend",
+            "pre_source_rows": [
+              65,
+              66,
+              67,
+              68,
+              69
+            ],
+            "post_source_rows": [
+              70,
+              71,
+              72,
+              73,
+              74
+            ]
+          }
+        ]
+      },
+      {
+        "window": 7,
+        "entity_metric_count": 3,
+        "anchor_count": 96,
+        "eligible_anchor_count": 57,
+        "eligible_entity_metric_count": 3,
+        "no_eligible_entity_metric_count": 0,
+        "blocked_by_reason": {
+          "insufficient_pre_history": 21,
+          "insufficient_post_history": 18
+        },
+        "noise_status_counts": {
+          "pre_data_incomplete": 21,
+          "within_tolerance_under_iid": 50,
+          "review_trend": 25
+        },
+        "eligible_noise_status_counts": {
+          "review_trend": 19,
+          "within_tolerance_under_iid": 38
+        },
+        "eligible_mean_noise_iid": {
+          "minimum": 0.013574686325788059,
+          "median": 0.2852792879072078,
+          "maximum": 0.4571569938290376,
+          "median_noise_to_tolerance_ratio": 0.5705585758144156
+        },
+        "representative_eligible_assessments": [
+          {
+            "entity": "noisy",
+            "metric": "y",
+            "time": "8",
+            "period_index": 8,
+            "window": 7,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 7,
+              "post_observed_periods": 7,
+              "pre_nonmissing": 7,
+              "post_nonmissing": 7,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 7,
+              "variance": 1.3085285714285713,
+              "sd": 1.143909337066785,
+              "mad": 0.7700000000000014,
+              "linear_slope": 0.1060714285714286,
+              "trend_span": 0.6364285714285716,
+              "residual_sd": 1.2276920856399038,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.4323570897547818,
+              "noise_to_tolerance_ratio": 0.8647141795095636
+            },
+            "noise_status": "within_tolerance_under_iid",
+            "pre_source_rows": [
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39
+            ],
+            "post_source_rows": [
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46
+            ]
+          },
+          {
+            "entity": "trend",
+            "metric": "y",
+            "time": "8",
+            "period_index": 8,
+            "window": 7,
+            "eligible": true,
+            "reasons": [],
+            "coverage": {
+              "pre_observed_periods": 7,
+              "post_observed_periods": 7,
+              "pre_nonmissing": 7,
+              "post_nonmissing": 7,
+              "pre_missing_periods": 0,
+              "post_missing_periods": 0,
+              "pre_missing_values": 0,
+              "post_missing_values": 0,
+              "pre_history_shortfall": 0,
+              "post_history_shortfall": 0,
+              "pre_internal_gap_periods": 0,
+              "post_internal_gap_periods": 0
+            },
+            "pre_statistics": {
+              "n": 7,
+              "variance": 0.5859969523809525,
+              "sd": 0.7655043777673336,
+              "mad": 0.6359999999999992,
+              "linear_slope": 0.3538571428571429,
+              "trend_span": 2.1231428571428577,
+              "residual_sd": 0.04464334856872381,
+              "lag1_autocorrelation": null,
+              "mean_noise_iid": 0.2893334587290866,
+              "noise_to_tolerance_ratio": 0.5786669174581732
+            },
+            "noise_status": "review_trend",
+            "pre_source_rows": [
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71
+            ],
+            "post_source_rows": [
+              72,
+              73,
+              74,
+              75,
+              76,
+              77,
+              78
+            ]
+          }
+        ]
+      }
+    ],
+    "all_anchor_recommendation_counts": {
+      "consider_larger_under_iid": 19,
+      "coverage_insufficient": 27,
+      "no_inspected_window_meets_tolerance": 4,
+      "retain_current_under_iid": 23,
+      "review_trend": 23
+    },
+    "eligible_requested_recommendation_counts": {
+      "consider_larger_under_iid": 19,
+      "no_inspected_window_meets_tolerance": 4,
+      "retain_current_under_iid": 23,
+      "review_trend": 23
+    },
+    "representative_eligible_recommendations": [
+      {
+        "entity": "noisy",
+        "metric": "y",
+        "time": "6",
+        "requested_window": 5,
+        "action": "no_inspected_window_meets_tolerance",
+        "suggested_window": null,
+        "reason": "No inspected larger complete window meets the target without trend/dependence/short-baseline review; collect more history or revise the exploratory plan."
+      },
+      {
+        "entity": "noisy",
+        "metric": "y",
+        "time": "8",
+        "requested_window": 5,
+        "action": "consider_larger_under_iid",
+        "suggested_window": 7,
+        "reason": "Smallest inspected larger complete window meeting the mean-noise target, conditional on independent stable noise."
+      },
+      {
+        "entity": "quiet",
+        "metric": "y",
+        "time": "6",
+        "requested_window": 5,
+        "action": "retain_current_under_iid",
+        "suggested_window": null,
+        "reason": "Requested window meets the mean-noise target under independent stable noise; this is not proof of independence or event-detection power."
+      },
+      {
+        "entity": "trend",
+        "metric": "y",
+        "time": "6",
+        "requested_window": 5,
+        "action": "review_trend",
+        "suggested_window": null,
+        "reason": "Pre-window drift dominates residual variation; inspect trend rather than automatically widening."
+      }
+    ],
+    "limitations": [
+      "Mean-noise SD/sqrt(n) assumes independent stable noise; it is neither a confidence interval nor a power calculation.",
+      "Short baseline and correlation thresholds are review heuristics, not statistical guarantees. Unassessed or weak correlation does not prove independence.",
+      "Noise uses pre values only; post values enter only through coverage/missingness. Windows are never automatically changed.",
+      "The existing event screen uses change/pre SD, not change/SE. Lower mean noise need not improve its score.",
+      "Baseline trend, earlier shocks and seasonality can contaminate wider windows; inspect recommendations before comparing specifications."
+    ],
+    "retention_note": "Full input and reproducible script retained; per-window API summaries and first example of each eligible status/action saved. No filtering or imputation before assessment.",
+    "construction": "32 periods, base10; repeated fluctuations[-1.3,0.7,0.4,-0.9,1.1] with amplitude0.04 quiet/trend or1.1 noisy; trend adds0.35*(period-1); no treatment or jump",
+    "fixed_anchor": "17",
+    "fixed_anchor_assessments": [
+      {
+        "entity": "noisy",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 3,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 3,
+          "post_observed_periods": 3,
+          "pre_nonmissing": 3,
+          "post_nonmissing": 3,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 3,
+          "variance": 2.0005333333333346,
+          "sd": 1.4144021116123005,
+          "mad": 0.4399999999999995,
+          "linear_slope": -0.21999999999999975,
+          "trend_span": 0.4399999999999995,
+          "residual_sd": 1.9759217258450976,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.8166054398817368,
+          "noise_to_tolerance_ratio": 1.6332108797634737
+        },
+        "noise_status": "noise_baseline_short",
+        "pre_source_rows": [
+          46,
+          47,
+          48
+        ],
+        "post_source_rows": [
+          49,
+          50,
+          51
+        ]
+      },
+      {
+        "entity": "noisy",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 5,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 5,
+          "post_observed_periods": 5,
+          "pre_nonmissing": 5,
+          "post_nonmissing": 5,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 5,
+          "variance": 1.3189000000000002,
+          "sd": 1.1484337159801605,
+          "mad": 0.7700000000000014,
+          "linear_slope": -0.3629999999999997,
+          "trend_span": 1.4519999999999988,
+          "residual_sd": 1.148609304042647,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.513595171316865,
+          "noise_to_tolerance_ratio": 1.02719034263373
+        },
+        "noise_status": "high_noise_under_iid",
+        "pre_source_rows": [
+          44,
+          45,
+          46,
+          47,
+          48
+        ],
+        "post_source_rows": [
+          49,
+          50,
+          51,
+          52,
+          53
+        ]
+      },
+      {
+        "entity": "noisy",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 7,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 7,
+          "post_observed_periods": 7,
+          "pre_nonmissing": 7,
+          "post_nonmissing": 7,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 7,
+          "variance": 1.4629476190476194,
+          "sd": 1.2095237157855232,
+          "mad": 0.7700000000000014,
+          "linear_slope": -0.15714285714285717,
+          "trend_span": 0.9428571428571431,
+          "residual_sd": 1.27171200693059,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.4571569938290376,
+          "noise_to_tolerance_ratio": 0.9143139876580751
+        },
+        "noise_status": "within_tolerance_under_iid",
+        "pre_source_rows": [
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48
+        ],
+        "post_source_rows": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55
+        ]
+      },
+      {
+        "entity": "quiet",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 3,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 3,
+          "post_observed_periods": 3,
+          "pre_nonmissing": 3,
+          "post_nonmissing": 3,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 3,
+          "variance": 0.002645333333333338,
+          "sd": 0.05143280405862914,
+          "mad": 0.016000000000000014,
+          "linear_slope": -0.008000000000000007,
+          "trend_span": 0.016000000000000014,
+          "residual_sd": 0.07185169912163995,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.029694743268426815,
+          "noise_to_tolerance_ratio": 0.05938948653685363
+        },
+        "noise_status": "noise_baseline_short",
+        "pre_source_rows": [
+          14,
+          15,
+          16
+        ],
+        "post_source_rows": [
+          17,
+          18,
+          19
+        ]
+      },
+      {
+        "entity": "quiet",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 5,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 5,
+          "post_observed_periods": 5,
+          "pre_nonmissing": 5,
+          "post_nonmissing": 5,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 5,
+          "variance": 0.0017439999999999995,
+          "sd": 0.041761226035642196,
+          "mad": 0.02800000000000047,
+          "linear_slope": -0.013199999999999967,
+          "trend_span": 0.05279999999999987,
+          "residual_sd": 0.04176761105609628,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.018676188047886,
+          "noise_to_tolerance_ratio": 0.037352376095772
+        },
+        "noise_status": "within_tolerance_under_iid",
+        "pre_source_rows": [
+          12,
+          13,
+          14,
+          15,
+          16
+        ],
+        "post_source_rows": [
+          17,
+          18,
+          19,
+          20,
+          21
+        ]
+      },
+      {
+        "entity": "quiet",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 7,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 7,
+          "post_observed_periods": 7,
+          "pre_nonmissing": 7,
+          "post_nonmissing": 7,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 7,
+          "variance": 0.0019344761904761913,
+          "sd": 0.04398268057401904,
+          "mad": 0.02800000000000047,
+          "linear_slope": -0.0057142857142857195,
+          "trend_span": 0.034285714285714315,
+          "residual_sd": 0.046244072979294185,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.01662389068469228,
+          "noise_to_tolerance_ratio": 0.03324778136938456
+        },
+        "noise_status": "within_tolerance_under_iid",
+        "pre_source_rows": [
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16
+        ],
+        "post_source_rows": [
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23
+        ]
+      },
+      {
+        "entity": "trend",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 3,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 3,
+          "post_observed_periods": 3,
+          "pre_nonmissing": 3,
+          "post_nonmissing": 3,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 3,
+          "variance": 0.11954533333333364,
+          "sd": 0.34575328390824234,
+          "mad": 0.25400000000000134,
+          "linear_slope": 0.3420000000000005,
+          "trend_span": 0.684000000000001,
+          "residual_sd": 0.07185169912163923,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.19962075153762082,
+          "noise_to_tolerance_ratio": 0.39924150307524164
+        },
+        "noise_status": "review_trend",
+        "pre_source_rows": [
+          78,
+          79,
+          80
+        ],
+        "post_source_rows": [
+          81,
+          82,
+          83
+        ]
+      },
+      {
+        "entity": "trend",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 5,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 5,
+          "post_observed_periods": 5,
+          "pre_nonmissing": 5,
+          "post_nonmissing": 5,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 5,
+          "variance": 0.28489400000000004,
+          "sd": 0.5337546252726997,
+          "mad": 0.4299999999999997,
+          "linear_slope": 0.33680000000000004,
+          "trend_span": 1.3472000000000002,
+          "residual_sd": 0.041767611056095916,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.23870232508293673,
+          "noise_to_tolerance_ratio": 0.47740465016587347
+        },
+        "noise_status": "review_trend",
+        "pre_source_rows": [
+          76,
+          77,
+          78,
+          79,
+          80
+        ],
+        "post_source_rows": [
+          81,
+          82,
+          83,
+          84,
+          85
+        ]
+      },
+      {
+        "entity": "trend",
+        "metric": "y",
+        "time": "17",
+        "period_index": 17,
+        "window": 7,
+        "eligible": true,
+        "reasons": [],
+        "coverage": {
+          "pre_observed_periods": 7,
+          "post_observed_periods": 7,
+          "pre_nonmissing": 7,
+          "post_nonmissing": 7,
+          "pre_missing_periods": 0,
+          "post_missing_periods": 0,
+          "pre_missing_values": 0,
+          "post_missing_values": 0,
+          "pre_history_shortfall": 0,
+          "post_history_shortfall": 0,
+          "pre_internal_gap_periods": 0,
+          "post_internal_gap_periods": 0
+        },
+        "pre_statistics": {
+          "n": 7,
+          "variance": 0.5549344761904756,
+          "sd": 0.744939243287985,
+          "mad": 0.7279999999999998,
+          "linear_slope": 0.34428571428571414,
+          "trend_span": 2.065714285714285,
+          "residual_sd": 0.046244072979293935,
+          "lag1_autocorrelation": null,
+          "mean_noise_iid": 0.28156056851323574,
+          "noise_to_tolerance_ratio": 0.5631211370264715
+        },
+        "noise_status": "review_trend",
+        "pre_source_rows": [
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80
+        ],
+        "post_source_rows": [
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87
+        ]
+      }
+    ],
+    "fixed_anchor_recommendations": [
+      {
+        "entity": "noisy",
+        "metric": "y",
+        "time": "17",
+        "requested_window": 5,
+        "action": "consider_larger_under_iid",
+        "suggested_window": 7,
+        "reason": "Smallest inspected larger complete window meeting the mean-noise target, conditional on independent stable noise."
+      },
+      {
+        "entity": "quiet",
+        "metric": "y",
+        "time": "17",
+        "requested_window": 5,
+        "action": "retain_current_under_iid",
+        "suggested_window": null,
+        "reason": "Requested window meets the mean-noise target under independent stable noise; this is not proof of independence or event-detection power."
+      },
+      {
+        "entity": "trend",
+        "metric": "y",
+        "time": "17",
+        "requested_window": 5,
+        "action": "review_trend",
+        "suggested_window": null,
+        "reason": "Pre-window drift dominates residual variation; inspect trend rather than automatically widening."
+      }
+    ]
+  }
+}

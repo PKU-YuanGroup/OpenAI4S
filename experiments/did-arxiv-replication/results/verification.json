@@ -1,0 +1,26 @@
+{
+  "verdict": "REPRODUCIBLE",
+  "classification": "Deterministic fixed-data analysis in the recorded environment; exact byte comparison, no timing comparison",
+  "published_reference_checks": {
+    "passed": 24,
+    "total": 24
+  },
+  "independent_estimation": {
+    "sun_abraham_explicit_fe_vs_within_projection_max_coefficient_error": 5.417888360170764e-14,
+    "sun_abraham_coefficients_checked": 81,
+    "callaway_santanna_change_regression_vs_difference_in_means_max_error": 1.4155343563970746e-15,
+    "callaway_santanna_cells_checked": 12,
+    "tolerance": 1e-09,
+    "passed": true,
+    "statsmodels_version": "0.14.5"
+  },
+  "input_checksum_checks_passed": 4,
+  "input_checksum_checks_total": 4,
+  "rerun_files_checked": 48,
+  "mismatched_artifacts": [],
+  "rerun_output": "<temporary rerun directory>/results",
+  "scope": "Reproducibility of our bounded worked-example replications, not verification of the entire papers or inferential results",
+  "publication_redactions": [
+    "Machine-local rerun_output path replaced for publication; numerical checks and artifact hashes retained."
+  ]
+}

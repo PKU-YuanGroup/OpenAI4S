@@ -21,6 +21,17 @@ the bundled retrosynthesis Skill, the `Reconciler` decision loop in
 `orchestration.py` — which needs no fake because there is no live boundary to
 stand in for.
 
+The separate `python -m harness.evals.panel_data --json` replay also calls
+production analysis: the bundled panel-preprocessing sidecar on synthetic
+records. It verifies fit-only cleaning, imputation exclusions, data transformations,
+window readiness, candidate detection and refusals,
+without claiming to exercise a model, kernel or visual interpretation.
+
+The separate `python -m harness.evals.did_analysis --json` replay exercises the
+actual DiD sidecar on prespecified synthetic contrasts and expected refusals,
+including placebo contamination and imputed-outcome exclusion. It verifies
+algebra and support handling, not real-study identification.
+
 `auto_mode_contract.py` is also production-independent. It is the frozen Stage
 0 contract adapter for the Auto Mode user states, not evidence about the
 production implementation. Its traces say this explicitly and pin the order

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/brycewang-stanford/Awesome-Journal-Skills",
+  "commit": "932eb23331721b16e967c59f093781be1928b498",
+  "license": "MIT",
+  "sources": [
+    {
+      "path": "MIS-Quarterly-Skills/skills/misq-theory-development/SKILL.md",
+      "sha256": "24c95c66273d7d6b87b309e74d725200dae5c7e126e4e7d77955a44af35b232a",
+      "adapted_paths": [
+        "SKILL.md",
+        "design-template.json"
+      ]
+    },
+    {
+      "path": "MIS-Quarterly-Skills/skills/misq-methods/SKILL.md",
+      "sha256": "8f6e938834f3945158ab7e33326dff999c741c7f6d0eee294a797c2c77fbcd5f",
+      "adapted_paths": [
+        "SKILL.md",
+        "design-template.json"
+      ]
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "bad075617318f23249188e9f4561c8f5fa1a3e992d1e6c95a8740750aba98540",
+      "adapted_paths": [
+        "LICENSE"
+      ]
+    }
+  ],
+  "adaptations": [
+    "Combined the two source recipes into one Information Systems research-design workflow; retained behavioral, economic, organizational and design-science distinctions.",
+    "Removed journal submission/page-budget guidance, external shared-resource links and unavailable StatsPAI/Stata MCP invocations.",
+    "Reused existing OpenAI4S literature-review, panel-data-preprocessing, did-analysis, ML planning and evaluation skills instead of duplicating retrieval or estimators.",
+    "Added a local JSON design/claim-evidence worksheet, actual host.skills.read and host.write_file examples, explicit missing-evidence and exploratory-status handling.",
+    "Added bilingual directory documentation; retained the upstream MIT license unchanged. The OpenAI4S origin field records distribution, not original authorship."
+  ]
+}

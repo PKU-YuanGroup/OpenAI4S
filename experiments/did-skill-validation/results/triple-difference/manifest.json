@@ -1,0 +1,22 @@
+{
+  "configuration_sha256": "067d06ebed3b95da93dbb03fc2feb3b0ae447e06f743c95b2052e7e09d37fcf4",
+  "estimator": "triple_difference",
+  "formula": "Saturated delta OLS [1,T,S,T*S]; T*S coefficient is DDD; full joint cluster CR1 covariance",
+  "method": "did-analysis/v1",
+  "outputs": {
+    "estimates.csv": {
+      "sha256": "8e9d30e20505a9cbeaa1b25cf86668314038671a844054a356ca1631fb047c27",
+      "size": 183
+    },
+    "results.json": {
+      "sha256": "f6b6c85732f640257f1a75158aa709e2195ca1a0476707bf869fee5906cd9e78",
+      "size": 36085
+    }
+  },
+  "sample_sha256": "c53d13e6ae044e751642d8e4115d293486e255c3304ad1095a7f5d7d04453c4a",
+  "schema_version": 1,
+  "software": "Python standard library; no external DID package or bootstrap",
+  "source_entity_count": 48,
+  "source_records_sha256": "0cd6cad21d1c7e3701b409e87cdcdf3e8c104407a30ae6fa81793ad5d098bf30",
+  "source_row_count": 384
+}

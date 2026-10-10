@@ -8,6 +8,10 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| [`did_analysis.py`](did_analysis.py) | 用已声明的合成代数对比和预期拒绝执行真实标准库 DiD sidecar；运行 `python -m harness.evals.did_analysis --json`。不宣称验证了模型／内核、视觉判断或真实研究的识别。 |
+| [`did_analysis_cases.json`](did_analysis_cases.json) | 版本化完整处理历史、预设传统／DDD／安慰剂结果，以及污染窗口、伪组、缺失／填补结果的拒绝和显式完整案例行为。 |
+| [`panel_data.py`](panel_data.py) | 用版本化合成输入执行真实面板预处理 sidecar，计分显式拟合范围的清理、编码记录、面板转换、窗口可用性、持续突变、处理状态删失与预期拒绝。运行 `python -m harness.evals.panel_data --json`；不声称验证了模型、内核或视觉判断。 |
+| [`panel_data_cases.json`](panel_data_cases.json) | 二十二个独立声明预期结果的合成案例，包括 mean／median／KNN 清理、受保护列拒绝、填补窗口排除和孤立尖峰／趋势／断档不应成为事件的情况。不包含私有数据或外部事件查询。 |
 | [`__init__.py`](__init__.py) | 导出 Action routing 和逆合成外部后端评测接口。 |
 | [`action_routing.py`](action_routing.py) | 给确定性路由函数 `route_action` 打分。每条 fixture 是一份录制下来的模型回复，各代表一类任务：原生 Tool batch、Python 或 R Cell、Engine finalization、不能被当成完成信号的普通散文、不支持的 fence，以及两条优先级规则——原生 Tool batch 优先于 fence 里的 Cell，一条回复里也只路由第一个 Cell。报告给出准确率、混淆情况，以及每条 case 的通过与否。 |
 | [`retrosynthesis_backends.py`](retrosynthesis_backends.py) | 不加载模型权重，而是把版本化的外部模型响应重新送入生产响应规范化器。它评测 schema、预期成功/错误行为、预测数量、checkpoint provenance 完整度、带分数预测覆盖率，以及确定性的响应摘要。 |

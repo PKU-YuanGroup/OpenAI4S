@@ -1,0 +1,22 @@
+{
+  "configuration_sha256": "8bd9f77b839e9d0406b1e19c289ab1e0913dea8f1481a4d88184fccd3282eb5d",
+  "estimator": "staggered_did",
+  "formula": "ATT(g,t)=mean(Yt-Yg-1|G=g)-mean(Yt-Yg-1|eligible controls); joint per-cell CR1 score covariance; explicit cohort-size linear aggregation",
+  "method": "did-analysis/v1",
+  "outputs": {
+    "estimates.csv": {
+      "sha256": "b70690d0aab7f8df21dd57e45d14aac64b4532d319f7accf6efbf00701e6d194",
+      "size": 1118
+    },
+    "results.json": {
+      "sha256": "b24e447c66da8ce9d8e605167e93348cc20e3dfbdd103a3afc27afd8f2eb551c",
+      "size": 197756
+    }
+  },
+  "sample_sha256": "4eeaebe738481f49132f356363e5d28fce27e25d2951a1235a90a147c34b6e5d",
+  "schema_version": 1,
+  "software": "Python standard library; no external DID package or bootstrap",
+  "source_entity_count": 48,
+  "source_records_sha256": "72f5ad86055fb959c39ea3822a30566583db27d5a02a28e21e42a85f796720db",
+  "source_row_count": 384
+}

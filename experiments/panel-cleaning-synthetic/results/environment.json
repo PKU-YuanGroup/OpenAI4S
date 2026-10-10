@@ -1,0 +1,15 @@
+{
+  "python": "3.13.9",
+  "matplotlib": "3.10.9",
+  "source_sha256": {
+    "experiments/panel-cleaning-synthetic/run_experiment.py": "a1d36abf1aecd3a65d129f70c6592372f05127831ca9aec6885cd00a7f57efca",
+    "skills/panel-data-preprocessing/kernel.py": "e0fd9da1b7a36183ee3cf6da07501531f0d9bf38da7c2d56b217ab0e31fdda3d",
+    "skills/panel-data-preprocessing/SKILL.md": "fad795017198c2e22562a02e938a731cc280953745a343bc2f8987ae5a35a851"
+  },
+  "generation_seed": 20261007,
+  "plot_rc": {
+    "svg.hashsalt": "openai4s-panel-cleaning-synthetic-v1",
+    "font.family": "DejaVu Sans"
+  },
+  "evaluation_truth_usage": "Evaluation after methods/models fixed; never in fitting, profiling, thresholds or seed selection."
+}

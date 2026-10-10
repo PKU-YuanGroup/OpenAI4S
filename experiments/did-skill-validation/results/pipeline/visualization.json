@@ -1,0 +1,84 @@
+{
+  "interpretation": "Pointwise cluster intervals; no simultaneous bands. Placebo/pretrend non-rejection does not establish parallel trends.",
+  "method": "did-analysis/v1",
+  "outputs": {
+    "did-diagnostics.png": {
+      "sha256": "b6733633bd69b38b8866468eecaebacb5aaf2cb5b92c85d85a0e1c4a2487f87f"
+    },
+    "did-diagnostics.svg": {
+      "sha256": "5f0e6ce6bd6ccad62328efab70f8e8d5420f6c5af14a8ebf2680f155c81a17fa"
+    }
+  },
+  "panels": [
+    {
+      "kind": "contrasts",
+      "stages": [
+        1,
+        3,
+        4,
+        6
+      ]
+    },
+    {
+      "adoption_event_time": 0,
+      "joint_pretrend": {
+        "df_den": 23,
+        "df_num": 3,
+        "f_statistic": 1.3284852637530655,
+        "interpretation": "Non-rejection does not prove parallel trends; rejection can reflect design failures or chance.",
+        "p_value": 0.28941108572706986,
+        "reason": null,
+        "status": "available",
+        "wald": 3.985455791259197
+      },
+      "kind": "event_study",
+      "plotted_periods": [
+        {
+          "event_time": -4,
+          "period": 0
+        },
+        {
+          "event_time": -3,
+          "period": 1
+        },
+        {
+          "event_time": -2,
+          "period": 2
+        },
+        {
+          "event_time": 0,
+          "period": 4
+        },
+        {
+          "event_time": 1,
+          "period": 5
+        },
+        {
+          "event_time": 2,
+          "period": 6
+        },
+        {
+          "event_time": 3,
+          "period": 7
+        }
+      ],
+      "reference_event_time": -1,
+      "reference_period": 3,
+      "stage": 2,
+      "treatment_time": 4
+    },
+    {
+      "descriptive_tail_fraction": 0.0,
+      "distribution_sha256": "009ecb25d9fa8a08a10e8833a1952dcead9c251691a278fe4883a52031840be0",
+      "draws": 99,
+      "fake_cluster_count": 6,
+      "interpretation": "Descriptive fraction of sampled placebo absolute effects >= real absolute estimate; not a randomization p-value.",
+      "kind": "placebo_distribution",
+      "real_reference": 2.0967725052746062,
+      "seed": 620241,
+      "stage": 5
+    }
+  ],
+  "refused_stage_count": 0,
+  "result_sha256": "b0f89420945cf3ab70cee944840cdae38ace3ee3d953936d8811868d4aa7d5a5"
+}

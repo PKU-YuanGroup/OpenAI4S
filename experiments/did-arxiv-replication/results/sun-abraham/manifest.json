@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "method": "panel-data-preprocessing/v1",
+  "source_records_sha256": "d81cbd45c693b5d057c68129ca1b345ff7ce48a06975ca7028beefc860ff0737",
+  "configuration_sha256": "b6af6795335b915c967721669244e8831b2ddc211511fdcae87ea21922c00c6e",
+  "config": {
+    "entity": "id",
+    "time": "year",
+    "numeric_columns": [
+      "y"
+    ],
+    "frequency": "integer",
+    "wide_columns": null,
+    "aggregations": {}
+  },
+  "event_config": {
+    "treatment": "exposed",
+    "window": 3,
+    "threshold": 3.0,
+    "min_abs_change": 1.0,
+    "known_events": [],
+    "window_assessment": {
+      "requested_window": 3,
+      "window_options": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "default_sweep_data_bound": "maximum observed periods within any entity; requested window always retained",
+      "maximum_inspected_sizes": 64,
+      "noise_tolerance": {
+        "y": 1.0
+      },
+      "noise_tolerance_source": "min_abs_change",
+      "min_noise_periods": 5,
+      "min_correlation_periods": 8,
+      "autocorrelation_threshold": 0.5,
+      "trend_residual_ratio": 0.5,
+      "recommendation_scope": "advisory only; smallest suitable inspected larger window at same first-post anchor"
+    }
+  },
+  "transformations": {
+    "source_row_count": 950,
+    "expanded_row_count": 950,
+    "collapsed_row_count": 0,
+    "output_row_count": 950,
+    "source_records_sha256": "d81cbd45c693b5d057c68129ca1b345ff7ce48a06975ca7028beefc860ff0737"
+  },
+  "limitations": [
+    "Screening is exploratory; scores are not p-values or causal effects.",
+    "Trend, seasonality and multiple screening comparisons are not adjusted.",
+    "Do not select a DiD treatment date from the outcome being tested; corroborate independently and validate on fresh data.",
+    "First observed exposure and transitions across missing periods do not establish exact adoption dates."
+  ],
+  "outputs": {
+    "panel.csv": {
+      "sha256": "6f0cb61cdd5e6d5b4caa688a258b1d6ec3666e177f3d58ba53b00ec4cac96132"
+    },
+    "summary.json": {
+      "sha256": "d6fc43c8617bdcc8172549a74a7c9eb6b29627f0544dee7dd0df9d62736f4904"
+    },
+    "candidate_events.csv": {
+      "sha256": "1e52bbb857118ffaa313b63efdea75cf3fcc06565a42d15009f3cbfc0b1e2b65"
+    },
+    "window_assessment.json": {
+      "sha256": "98098452fa281cb18d74a06d5ad4c72931f0f5a761a8f82b949ff16238306c8f"
+    },
+    "window_assessment.csv": {
+      "sha256": "f2113c1fbe3dee4a86e7f0c4f9779bc9295ef72bcaf74976b134f65b729253d7"
+    }
+  }
+}

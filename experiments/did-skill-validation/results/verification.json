@@ -1,0 +1,444 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "tolerance": {
+    "absolute": 1e-09,
+    "relative": 1e-09
+  },
+  "comparison": "Independent statsmodels saturated entity-change OLS; CR1 cluster covariance; SciPy t and F tails; joint cluster influence cross-products",
+  "statsmodels": "0.14.5",
+  "numpy": "2.3.5",
+  "scipy": "1.16.3",
+  "checks": {
+    "artifact_hashes": 45,
+    "csv_lf": 12,
+    "descriptive_tail": 1,
+    "dgp_exposure": 2304,
+    "dgp_identity": 2304,
+    "dgp_known_effect": 2304,
+    "dgp_shape": 6,
+    "event_joint_covariance": 4,
+    "event_periods": 4,
+    "finite_json": 17,
+    "manifest_completeness": 1,
+    "mc_entity_count": 512,
+    "mc_panel_count": 1,
+    "mc_prespecified_seeds": 4,
+    "monte_carlo_decisions": 1536,
+    "monte_carlo_regression": 2048,
+    "monte_carlo_summary": 72,
+    "pipeline_consistency": 5,
+    "pipeline_estimated_status": 5,
+    "pipeline_order": 1,
+    "placebo_cluster_assignment": 99,
+    "placebo_csv_draws": 297,
+    "placebo_csv_reference": 1,
+    "placebo_csv_roles": 1,
+    "placebo_draws": 99,
+    "placebo_rng": 99,
+    "plot_distribution": 2,
+    "plot_dynamic_support": 1,
+    "plot_event_dates": 1,
+    "plot_hashes": 6,
+    "plot_result_binding": 3,
+    "pretrend_joint": 12,
+    "refusal_continuation": 3,
+    "refusal_export": 2,
+    "refusal_retention": 3,
+    "replay_bytes": 45,
+    "replay_manifest": 1,
+    "skill_output_hashes": 4,
+    "skill_output_json": 1,
+    "source_hashes": 7,
+    "staggered_aggregate": 4,
+    "staggered_cells": 16,
+    "staggered_dynamic": 20,
+    "staggered_joint_covariance": 2,
+    "statsmodels_covariance": 7,
+    "statsmodels_regression": 315
+  },
+  "maximum_absolute_error": {
+    "descriptive_tail": 0.0,
+    "dgp_identity": 0.0,
+    "dgp_known_effect": 0.0,
+    "event_joint_covariance": 1.6653345369377348e-16,
+    "monte_carlo_regression": 6.661338147750939e-15,
+    "monte_carlo_summary": 0.0,
+    "placebo_csv_draws": 0.0,
+    "placebo_csv_reference": 0.0,
+    "placebo_draws": 1.1102230246251565e-15,
+    "plot_distribution": 0.0,
+    "pretrend_joint": 1.4210854715202004e-14,
+    "staggered_aggregate": 1.3322676295501878e-15,
+    "staggered_dynamic": 1.7763568394002505e-15,
+    "staggered_joint_covariance": 1.1102230246251565e-16,
+    "statsmodels_covariance": 4.440892098500626e-16,
+    "statsmodels_regression": 4.3053338671938945e-12
+  },
+  "failures": [],
+  "independent_references": {
+    "constant_effect": {
+      "estimate": 2.096772505274607,
+      "se": 0.29114132086230465,
+      "ci_low": 1.4945007961653487,
+      "ci_high": 2.6990442143838655,
+      "p_value": 2.4782372905023914e-07,
+      "joint_pretrend_p_value": 0.2894110857270678
+    },
+    "null": {
+      "estimate": 0.09677250527460735,
+      "se": 0.2911413208623047,
+      "ci_low": -0.5054992038346511,
+      "ci_high": 0.6990442143838658,
+      "p_value": 0.7426050702800917,
+      "joint_pretrend_p_value": 0.2894110857270678
+    },
+    "violated_pretrends": {
+      "estimate": 3.496772505274607,
+      "se": 0.29114132086230465,
+      "ci_low": 2.8945007961653486,
+      "ci_high": 4.0990442143838655,
+      "p_value": 2.1716959233608548e-11,
+      "joint_pretrend_p_value": 0.0002135558510241644
+    },
+    "clustered_noise": {
+      "estimate": 2.236058659010027,
+      "se": 0.464130823820716,
+      "ci_low": 1.2759308980832438,
+      "ci_high": 3.1961864199368097,
+      "p_value": 7.334311854735987e-05,
+      "joint_pretrend_p_value": 0.3697515496555143
+    },
+    "triple_difference": {
+      "estimate": 1.5851009929814637,
+      "se": 0.18880351484761673,
+      "ci_low": 1.194531165118077,
+      "ci_high": 1.9756708208448504,
+      "p_value": 1.8558165957957e-08
+    },
+    "staggered_never_treated": {
+      "aggregate": {
+        "estimate": 2.6017629208110367,
+        "variance": 0.044970848338578825,
+        "truth": 2.3125,
+        "se": 0.21206331209942664,
+        "ci_low": 2.1630765363458897,
+        "ci_high": 3.0404493052761836,
+        "p_value": 1.4186158907261325e-11
+      },
+      "dynamics": [
+        {
+          "event_time": 0,
+          "estimate": 2.4339314359847655,
+          "variance": 0.036073497011761185,
+          "truth": 2.0,
+          "se": 0.1899302424885547,
+          "ci_low": 2.041030794412083,
+          "ci_high": 2.826832077557448,
+          "p_value": 5.891319636140896e-12
+        },
+        {
+          "event_time": 1,
+          "estimate": 2.665520433619306,
+          "variance": 0.06900009975984392,
+          "truth": 2.4,
+          "se": 0.26267870062082294,
+          "ci_low": 2.122128140485056,
+          "ci_high": 3.208912726753556,
+          "p_value": 5.79555611599756e-10
+        },
+        {
+          "event_time": 2,
+          "estimate": 2.942669887977031,
+          "variance": 0.10557768772238865,
+          "truth": 2.8,
+          "se": 0.32492720372783296,
+          "ci_low": 2.270506755153271,
+          "ci_high": 3.614833020800791,
+          "p_value": 4.7929488142700895e-09
+        },
+        {
+          "event_time": 3,
+          "estimate": 2.477956460204257,
+          "variance": 0.2841949067318581,
+          "truth": 1.9,
+          "se": 0.5330993403971328,
+          "ci_low": 1.353215167301793,
+          "ci_high": 3.6026977531067215,
+          "p_value": 0.00023018611020363025
+        },
+        {
+          "event_time": 4,
+          "estimate": 2.251903391121831,
+          "variance": 0.1821234322795333,
+          "truth": 2.2,
+          "se": 0.4267592204973822,
+          "ci_low": 1.3515201397325087,
+          "ci_high": 3.152286642511153,
+          "p_value": 6.166873066164163e-05
+        }
+      ],
+      "cells": [
+        {
+          "cohort": 3,
+          "period": 3,
+          "event_time": 0,
+          "treated_entities": 12,
+          "true_effect": 1.0,
+          "estimate": 1.2960226058692295,
+          "se": 0.2241540281186324,
+          "ci_low": 0.823098945510482,
+          "ci_high": 1.768946266227977,
+          "p_value": 2.2110273595352025e-05
+        },
+        {
+          "cohort": 3,
+          "period": 4,
+          "event_time": 1,
+          "treated_entities": 12,
+          "true_effect": 1.3,
+          "estimate": 1.3445715568369587,
+          "se": 0.5331003877223096,
+          "ci_low": 0.2198280542715214,
+          "ci_high": 2.469315059402396,
+          "p_value": 0.021928458982347084
+        },
+        {
+          "cohort": 3,
+          "period": 5,
+          "event_time": 2,
+          "treated_entities": 12,
+          "true_effect": 1.6,
+          "estimate": 1.8224607915002087,
+          "se": 0.3925647847261688,
+          "ci_low": 0.9942214933762087,
+          "ci_high": 2.6507000896242086,
+          "p_value": 0.00023302396747851102
+        },
+        {
+          "cohort": 3,
+          "period": 6,
+          "event_time": 3,
+          "treated_entities": 12,
+          "true_effect": 1.9,
+          "estimate": 2.477956460204257,
+          "se": 0.5330993403971315,
+          "ci_low": 1.3532151673017958,
+          "ci_high": 3.6026977531067184,
+          "p_value": 0.00023018611020362512
+        },
+        {
+          "cohort": 3,
+          "period": 7,
+          "event_time": 4,
+          "treated_entities": 12,
+          "true_effect": 2.2,
+          "estimate": 2.251903391121831,
+          "se": 0.42675922049738124,
+          "ci_low": 1.3515201397325107,
+          "ci_high": 3.152286642511151,
+          "p_value": 6.166873066164026e-05
+        },
+        {
+          "cohort": 5,
+          "period": 5,
+          "event_time": 0,
+          "treated_entities": 12,
+          "true_effect": 3.0,
+          "estimate": 3.5718402661003017,
+          "se": 0.35780904583262535,
+          "ci_low": 2.816929167313002,
+          "ci_high": 4.326751364887601,
+          "p_value": 1.588462820173529e-08
+        },
+        {
+          "cohort": 5,
+          "period": 6,
+          "event_time": 1,
+          "treated_entities": 12,
+          "true_effect": 3.5,
+          "estimate": 3.9864693104016538,
+          "se": 0.3836670955283486,
+          "ci_low": 3.177002495553933,
+          "ci_high": 4.795936125249375,
+          "p_value": 8.805975958839174e-09
+        },
+        {
+          "cohort": 5,
+          "period": 7,
+          "event_time": 2,
+          "treated_entities": 12,
+          "true_effect": 4.0,
+          "estimate": 4.062878984453853,
+          "se": 0.5949566385464499,
+          "ci_low": 2.8076302003132882,
+          "ci_high": 5.318127768594418,
+          "p_value": 2.933021231447826e-06
+        }
+      ]
+    },
+    "staggered_not_yet_treated": {
+      "aggregate": {
+        "estimate": 2.5743518199808557,
+        "variance": 0.044944448539364835,
+        "truth": 2.3125,
+        "se": 0.21200105787322107,
+        "ci_low": 2.1357942181945293,
+        "ci_high": 3.012909421767182,
+        "p_value": 1.743876437476542e-11
+      },
+      "dynamics": [
+        {
+          "event_time": 0,
+          "estimate": 2.330476641492462,
+          "variance": 0.05388619672138242,
+          "truth": 2.0,
+          "se": 0.2321340059564355,
+          "ci_low": 1.8502708634336227,
+          "ci_high": 2.810682419551301,
+          "p_value": 7.098133053323247e-10
+        },
+        {
+          "event_time": 1,
+          "estimate": 2.6593308247908873,
+          "variance": 0.06749006508115353,
+          "truth": 2.4,
+          "se": 0.2597885006715146,
+          "ci_low": 2.1219173657774064,
+          "ci_high": 3.1967442838043683,
+          "p_value": 4.909130595464387e-10
+        },
+        {
+          "event_time": 2,
+          "estimate": 2.942669887977031,
+          "variance": 0.10557768772238865,
+          "truth": 2.8,
+          "se": 0.32492720372783296,
+          "ci_low": 2.270506755153271,
+          "ci_high": 3.614833020800791,
+          "p_value": 4.7929488142700895e-09
+        },
+        {
+          "event_time": 3,
+          "estimate": 2.477956460204257,
+          "variance": 0.2841949067318581,
+          "truth": 1.9,
+          "se": 0.5330993403971328,
+          "ci_low": 1.353215167301793,
+          "ci_high": 3.6026977531067215,
+          "p_value": 0.00023018611020363025
+        },
+        {
+          "event_time": 4,
+          "estimate": 2.251903391121831,
+          "variance": 0.1821234322795333,
+          "truth": 2.2,
+          "se": 0.4267592204973822,
+          "ci_low": 1.3515201397325087,
+          "ci_high": 3.152286642511153,
+          "p_value": 6.166873066164163e-05
+        }
+      ],
+      "cells": [
+        {
+          "cohort": 3,
+          "period": 3,
+          "event_time": 0,
+          "treated_entities": 12,
+          "true_effect": 1.0,
+          "estimate": 1.0891130168846215,
+          "se": 0.25231085939028275,
+          "ci_low": 0.5671682374155446,
+          "ci_high": 1.6110577963536983,
+          "p_value": 0.00025579606426918283
+        },
+        {
+          "cohort": 3,
+          "period": 4,
+          "event_time": 1,
+          "treated_entities": 12,
+          "true_effect": 1.3,
+          "estimate": 1.3321923391801211,
+          "se": 0.43700410901272524,
+          "ci_low": 0.428180463286555,
+          "ci_high": 2.236204215073687,
+          "p_value": 0.005701556005957504
+        },
+        {
+          "cohort": 3,
+          "period": 5,
+          "event_time": 2,
+          "treated_entities": 12,
+          "true_effect": 1.6,
+          "estimate": 1.8224607915002087,
+          "se": 0.3925647847261688,
+          "ci_low": 0.9942214933762087,
+          "ci_high": 2.6507000896242086,
+          "p_value": 0.00023302396747851102
+        },
+        {
+          "cohort": 3,
+          "period": 6,
+          "event_time": 3,
+          "treated_entities": 12,
+          "true_effect": 1.9,
+          "estimate": 2.477956460204257,
+          "se": 0.5330993403971315,
+          "ci_low": 1.3532151673017958,
+          "ci_high": 3.6026977531067184,
+          "p_value": 0.00023018611020362512
+        },
+        {
+          "cohort": 3,
+          "period": 7,
+          "event_time": 4,
+          "treated_entities": 12,
+          "true_effect": 2.2,
+          "estimate": 2.251903391121831,
+          "se": 0.42675922049738124,
+          "ci_low": 1.3515201397325107,
+          "ci_high": 3.152286642511151,
+          "p_value": 6.166873066164026e-05
+        },
+        {
+          "cohort": 5,
+          "period": 5,
+          "event_time": 0,
+          "treated_entities": 12,
+          "true_effect": 3.0,
+          "estimate": 3.5718402661003017,
+          "se": 0.35780904583262535,
+          "ci_low": 2.816929167313002,
+          "ci_high": 4.326751364887601,
+          "p_value": 1.588462820173529e-08
+        },
+        {
+          "cohort": 5,
+          "period": 6,
+          "event_time": 1,
+          "treated_entities": 12,
+          "true_effect": 3.5,
+          "estimate": 3.9864693104016538,
+          "se": 0.3836670955283486,
+          "ci_low": 3.177002495553933,
+          "ci_high": 4.795936125249375,
+          "p_value": 8.805975958839174e-09
+        },
+        {
+          "cohort": 5,
+          "period": 7,
+          "event_time": 2,
+          "treated_entities": 12,
+          "true_effect": 4.0,
+          "estimate": 4.062878984453853,
+          "se": 0.5949566385464499,
+          "ci_low": 2.8076302003132882,
+          "ci_high": 5.318127768594418,
+          "p_value": 2.933021231447826e-06
+        }
+      ]
+    }
+  },
+  "replay_requested": true,
+  "monte_carlo_rates_are_pass_gates": false
+}

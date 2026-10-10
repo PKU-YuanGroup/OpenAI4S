@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "method": "panel-data-preprocessing/v1",
+  "source_records_sha256": "5c8809eaa09b30a6734bf0e1ce78d671c66188d16f0b718178d930cfd9815679",
+  "configuration_sha256": "ffac81064af10832e40d46d1e56381287b993100da164effe560a43b3344b310",
+  "config": {
+    "entity": "countyreal",
+    "time": "year",
+    "numeric_columns": [
+      "lemp"
+    ],
+    "frequency": "year",
+    "wide_columns": null,
+    "aggregations": {}
+  },
+  "event_config": {
+    "treatment": "exposed",
+    "window": 3,
+    "threshold": 3.0,
+    "min_abs_change": 0.05,
+    "known_events": [
+      {
+        "label": "Minimum wage cohort 2004",
+        "time": "2004",
+        "source": "https://bcallaway11.github.io/did/articles/did-basics.html#an-example-with-real-data; first.treat in pinned mpdta"
+      },
+      {
+        "label": "Minimum wage cohort 2006",
+        "time": "2006",
+        "source": "https://bcallaway11.github.io/did/articles/did-basics.html#an-example-with-real-data; first.treat in pinned mpdta"
+      },
+      {
+        "label": "Minimum wage cohort 2007",
+        "time": "2007",
+        "source": "https://bcallaway11.github.io/did/articles/did-basics.html#an-example-with-real-data; first.treat in pinned mpdta"
+      }
+    ],
+    "window_assessment": {
+      "requested_window": 3,
+      "window_options": [
+        3,
+        4,
+        5
+      ],
+      "default_sweep_data_bound": "maximum observed periods within any entity; requested window always retained",
+      "maximum_inspected_sizes": 64,
+      "noise_tolerance": {
+        "lemp": 0.05
+      },
+      "noise_tolerance_source": "min_abs_change",
+      "min_noise_periods": 5,
+      "min_correlation_periods": 8,
+      "autocorrelation_threshold": 0.5,
+      "trend_residual_ratio": 0.5,
+      "recommendation_scope": "advisory only; smallest suitable inspected larger window at same first-post anchor"
+    }
+  },
+  "transformations": {
+    "source_row_count": 2500,
+    "expanded_row_count": 2500,
+    "collapsed_row_count": 0,
+    "output_row_count": 2500,
+    "source_records_sha256": "5c8809eaa09b30a6734bf0e1ce78d671c66188d16f0b718178d930cfd9815679"
+  },
+  "limitations": [
+    "Screening is exploratory; scores are not p-values or causal effects.",
+    "Trend, seasonality and multiple screening comparisons are not adjusted.",
+    "Do not select a DiD treatment date from the outcome being tested; corroborate independently and validate on fresh data.",
+    "First observed exposure and transitions across missing periods do not establish exact adoption dates."
+  ],
+  "outputs": {
+    "panel.csv": {
+      "sha256": "5e7911f985daf4d2565aa4c515cafc0007f3dfa9e0522c54201e7407fbc6bf9f"
+    },
+    "summary.json": {
+      "sha256": "b51db37c3e5e536d123cd9addf3b2e9c3f72ede063456bfba7bdac3f37e25d9b"
+    },
+    "candidate_events.csv": {
+      "sha256": "66275636f4cf9a30579b3a25a332d39e0a5fd835e062060020c22c47b229631c"
+    },
+    "window_assessment.json": {
+      "sha256": "a4920ea3030961427ae7d63090bc883d44dd8830b6f9549331730eccf27e6e28"
+    },
+    "window_assessment.csv": {
+      "sha256": "54d0bc1d5a635602318997f5244bcb8b5b0c69f494a1aec278f7dcfd686cca38"
+    }
+  }
+}
