@@ -43,18 +43,24 @@ _VERB = (
     r"reached|attained|accomplished|done)"
 )
 _OBJECT = r"(?:experiments?|simulations?|runs?|goals?|targets?|objectives?|tasks?)"
-# A negated or not-yet clause is an honest report, never a success claim.
+# A negated, not-yet or only-partly clause is an honest report, never a
+# success claim; so is quoting the recorded end reason ("finished with
+# end_reason stopped").
 _NEGATED = re.compile(
     r"\b(?:not|never|no longer|cannot|can't|couldn't|didn't|wasn't|isn't|"
-    r"hasn't|haven't|unable to|failed to|without|before)\b"
+    r"hasn't|haven't|unable to|failed to|without|before|partially|partly|"
+    r"incompletely)\b"
     rf"(?:\s+\w+){{0,4}}?\s+(?:be\s+|been\s+)?{_VERB}\b"
+    r"|\b(?:complete(?:d)?|finished|done)\s+with\s+(?:an?\s+|the\s+)?end\s+reason\b"
     r"|(?:未能|未|没有|没|尚未|无法|不能)(?:完成|成功|达成|实现|结束)",
     re.IGNORECASE,
 )
 # Success is a claim about the experiment, run, goal or task. A bullet like
-# "Completed two transfers before the stop" reports progress and passes.
+# "Completed two transfers before the stop" reports progress and passes, and
+# a verb followed by a number ("reached 600 mL", "completed 3 steps") is a
+# measurement or a count.
 _SUCCESS = re.compile(
-    rf"\b{_OBJECT}\b(?:\s+\w+){{0,4}}?\s+{_VERB}\b"
+    rf"\b{_OBJECT}\b(?:\s+\w+){{0,4}}?\s+{_VERB}\b(?!\s+\d)"
     rf"|\b{_VERB}\s+(?:the\s+|this\s+|our\s+|its\s+|all\s+)?(?:\w+\s+)?{_OBJECT}\b"
     r"|(?:实验|仿真|目标|任务)[^。！？；，,.!?;\n]{0,8}(?:完成|成功|达成|实现|完毕)"
     r"|(?:完成|达成|实现)(?:了)?[^。！？；，,.!?;\n]{0,4}(?:实验|仿真|目标|任务)",
@@ -73,13 +79,17 @@ def _success_prose(claim, parent=""):
     # before entering this recursion; nested keys are prose like any other.
     # A structured claim reads as "<parent> <key> <value>", so a nested
     # {"task_status": "completed"} or {"experiment_completed": true} counts.
+    # A number under a key is a count or a measurement ({"completed_steps":
+    # 3}), not a claim.
     if isinstance(claim, str):
         return _success_text(claim)
     if isinstance(claim, Mapping):
         for key, value in claim.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                continue
             if _success_text(f"{parent} {key}"):
                 return True
-            if isinstance(value, (str, bool, int, float)) and _success_text(
+            if isinstance(value, (str, bool)) and _success_text(
                 f"{parent} {key} {value}"
             ):
                 return True

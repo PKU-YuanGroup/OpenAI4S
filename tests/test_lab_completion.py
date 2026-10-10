@@ -580,6 +580,42 @@ def test_honest_incomplete_reports_pass(door, wording):
     assert completed is not None, error
 
 
+def _incomplete(**extra):
+    ledger = SnapshotLedger()
+    ledger.run.update(status="ended", end_reason="stopped")
+    payload = claim(task_status="partial", **extra)
+    del payload["lab_runs"]
+    return lab_completion_check(ledger, "root", payload)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The task is only partially complete: the run was stopped.",
+        "The target vessel reached 600 mL before the stop.",
+        "The run completed 3 steps before the stop.",
+        "The run finished with end_reason stopped.",
+    ],
+)
+def test_an_honest_incomplete_report_is_not_success_wording(summary):
+    assert _incomplete(summary=summary) is None
+    # A count or a measurement in structured output is not a claim either.
+    assert _incomplete(output={"run": {"completed_steps": 3}}) is None
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The task is partially complete, but the goal was reached.",
+        "The experiment succeeded with end_reason stopped.",
+        "The goal was reached at step 3.",
+    ],
+)
+def test_an_honest_qualifier_does_not_cover_a_success_claim(summary):
+    assert _incomplete(summary=summary) == INCOMPLETE_WORDING
+    assert _incomplete(output={"experiment_completed": True}) == INCOMPLETE_WORDING
+
+
 @pytest.mark.parametrize("door", ["web", "cli", "submit"])
 @pytest.mark.parametrize(
     "wording",
