@@ -11,13 +11,18 @@ run cannot vouch for an experiment that this turn stopped or left running. A
 turn that did no Lab work, and a delegated child (which has no Lab), needs no
 declaration. Incomplete reports can omit declarations with
 partial/blocked/failed task_status.
+
+What a person does in the workbench while the turn runs is not the turn's: a
+command recorded with origin ``manual_ui`` is not "used", and neither is a run
+the turn did not create itself. A run whose creation failed never opened a
+session, so there is no experiment to declare for it.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from openai4s.lab.evaluation import default_goal, evaluate_run
@@ -97,23 +102,49 @@ def _claim_success_prose(claim):
     return _success_prose(public)
 
 
-def _turn_runs(ledger, root, turn_cursor):
+def _turn_runs(ledger, root, turn_cursor, created_runs=None):
     """Runs this turn created or commanded; without a turn, every run."""
     if turn_cursor is None:
-        return {row["run_id"] for row in ledger.list_runs(root, limit=_ALL_ROWS)}
+        return {
+            row["run_id"]
+            for row in ledger.list_runs(root, limit=_ALL_ROWS)
+            if row.get("status") != "failed"
+        }
     used, after = set(), turn_cursor
+    manual: dict[Any, bool] = {}
     while True:
         page = ledger.events_since(root, after_seq=after, limit=_EVENT_PAGE)
         for event in page:
+            run_id = event.get("run_id")
+            if not run_id:
+                continue
             # Sweeps and stops of untouched runs emit run events only.
-            if event.get("run_id") and (
-                event.get("kind") == "command"
-                or (event.get("kind") == "run" and event.get("state") == "creating")
+            if event.get("kind") == "command":
+                ref = event.get("ref_id")
+                if ref not in manual:
+                    # A command without its row is not proof of a person's
+                    # action: it stays the turn's.
+                    command = ledger.get_command(ref)
+                    manual[ref] = (
+                        command is not None and command.get("origin") == "manual_ui"
+                    )
+                if not manual[ref]:
+                    used.add(run_id)
+            elif (
+                event.get("kind") == "run"
+                and event.get("state") == "creating"
+                and (created_runs is None or run_id in created_runs)
             ):
-                used.add(event["run_id"])
+                used.add(run_id)
         if len(page) < _EVENT_PAGE:
-            return used
+            break
         after = page[-1]["event_seq"]
+    # Only a run still being created can fail (create_failed): it never ran.
+    return {
+        run_id
+        for run_id in used
+        if (ledger.get_run(run_id) or {}).get("status") != "failed"
+    }
 
 
 def lab_completion_check(
@@ -122,28 +153,32 @@ def lab_completion_check(
     claim: Mapping[str, Any],
     *,
     turn_cursor: int | None = None,
+    created_runs: Collection[str] | None = None,
 ) -> str | None:
     """Return a fixed, value-free refusal or accept the exact declared runs.
 
     ``turn_cursor`` is the session's Lab event cursor when the current turn
-    began; None treats every run in the session as this turn's. Reads exhaust
+    began; None treats every run in the session as this turn's.
+    ``created_runs`` names the runs this turn's own create calls returned, so
+    a run a person created in the workbench meanwhile is not the turn's; None
+    counts every run created since the cursor. Reads exhaust
     repository limits, and the event cursor fences a concurrent write across
     the snapshot. Any unavailable evidence fails closed; neither exceptions
     nor evaluation diagnostics are reflected to the caller or log.
     """
     try:
-        return _check(ledger, root_frame_id, claim, turn_cursor)
+        return _check(ledger, root_frame_id, claim, turn_cursor, created_runs)
     except Exception:
         return _UNVERIFIABLE
 
 
-def _check(ledger, root, claim, turn_cursor):
+def _check(ledger, root, claim, turn_cursor, created_runs=None):
     output = claim.get("output")
     payload = output if isinstance(output, Mapping) else claim
     declarations = payload.get("lab_runs")
     if "lab_runs" in claim and payload is not claim:
         return "Put lab_runs inside the submit_output output dictionary."
-    used = _turn_runs(ledger, root, turn_cursor)
+    used = _turn_runs(ledger, root, turn_cursor, created_runs)
     if not used and (declarations is None or not ledger.list_runs(root, limit=1)):
         # No Lab work this turn. In a session that never used Lab, a key
         # named lab_runs is ordinary output data, not a declaration.

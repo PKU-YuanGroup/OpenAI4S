@@ -28,6 +28,7 @@ class SnapshotLedger:
         self.cursor = 1
         self.extra_runs = []
         self.events = []
+        self.origins = {}
 
     def list_runs(self, root, *, limit):
         runs = ([self.run] if self.run else []) + self.extra_runs
@@ -43,11 +44,25 @@ class SnapshotLedger:
         rows = [e for e in self.events if e["event_seq"] > after_seq]
         return rows[:limit] if root == "root" else []
 
-    def use(self, run_id, kind="command", state="succeeded"):
+    def use(self, run_id, kind="command", state="succeeded", origin=None):
         self.cursor += 1
+        ref_id = f"ref-{self.cursor}"
+        if origin is not None:
+            self.origins[ref_id] = origin
         self.events.append(
-            {"event_seq": self.cursor, "run_id": run_id, "kind": kind, "state": state}
+            {
+                "event_seq": self.cursor,
+                "run_id": run_id,
+                "kind": kind,
+                "ref_id": ref_id,
+                "state": state,
+            }
         )
+
+    def get_command(self, command_id):
+        if command_id not in self.origins:
+            return None
+        return {"command_id": command_id, "origin": self.origins[command_id]}
 
     def latest_event_seq(self, root):
         return self.cursor
@@ -448,6 +463,63 @@ def test_a_turn_without_lab_work_needs_no_declaration(door):
     )
     completed, error = finish(door, service, payload)
     assert completed is None and "explicit lab_runs" in error
+
+
+def test_a_persons_workbench_commands_are_not_the_turns():
+    ledger = _two_runs()
+    turn = ledger.cursor
+    payload = claim(summary="Paris is the capital of France.")
+    del payload["lab_runs"]
+    # The person steps a run from the Lab tab while the turn is running.
+    ledger.use("stopped", origin="manual_ui")
+    assert lab_completion_check(ledger, "root", payload, turn_cursor=turn) is None
+    # The same command from the agent or a Python Cell is the turn's.
+    for origin in ("agent_tool", "host_sdk", "system"):
+        used = _two_runs()
+        used.use("stopped", origin=origin)
+        refusal = lab_completion_check(used, "root", payload, turn_cursor=turn)
+        assert "explicit lab_runs" in refusal and "stopped" in refusal
+
+
+def test_a_run_someone_else_created_is_not_the_turns():
+    ledger = _two_runs()
+    turn = ledger.cursor
+    ledger.use("stopped", kind="run", state="creating")
+    payload = claim(summary="Paris is the capital of France.")
+    del payload["lab_runs"]
+
+    def check(created_runs):
+        return lab_completion_check(
+            ledger, "root", payload, turn_cursor=turn, created_runs=created_runs
+        )
+
+    assert check(frozenset()) is None
+    assert "explicit lab_runs" in check(frozenset({"stopped"}))
+    # A caller that does not track its own creations counts every one.
+    assert "explicit lab_runs" in check(None)
+
+
+@pytest.mark.parametrize("scope", ["turn", "session"])
+def test_a_failed_creation_is_never_a_used_run(scope):
+    ledger = SnapshotLedger()
+    turn = ledger.cursor
+    failed = deepcopy(ledger.run)
+    failed.update(run_id="never-opened", status="failed", end_reason="create_failed")
+    ledger.extra_runs.append(failed)
+    ledger.use("never-opened", kind="run", state="creating")
+    ledger.use("run", origin="agent_tool")
+    cursor = turn if scope == "turn" else None
+    # The verified run completes; the run that never opened needs no entry.
+    assert lab_completion_check(ledger, "root", claim(), turn_cursor=cursor) is None
+    # It still cannot be declared as anything it was not.
+    for status, expected in (
+        ("completed", "not ended normally"),
+        ("running", "no longer running"),
+    ):
+        declared = claim(task_status="partial" if status == "running" else None)
+        declared["lab_runs"].append({"run_id": "never-opened", "status": status})
+        refusal = lab_completion_check(ledger, "root", declared, turn_cursor=cursor)
+        assert expected in refusal
 
 
 @pytest.mark.parametrize("door", ["web", "cli", "submit"])

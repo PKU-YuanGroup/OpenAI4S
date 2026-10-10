@@ -1230,6 +1230,9 @@ class HostDispatcher:
         # The session's Lab event cursor when the current user turn began, so
         # completion evidence covers exactly the runs this turn used.
         self._lab_turn_cursor: int | None = None
+        # The runs this turn's own create calls returned. A run a person
+        # creates in the workbench during the turn is not the turn's.
+        self._lab_turn_created: set[str] = set()
         from openai4s.lab.evidence import lab_completion_check
 
         self._completion_service = CompletionService(
@@ -1257,6 +1260,7 @@ class HostDispatcher:
                     self._lab_caller().root_frame_id,
                     claim,
                     turn_cursor=self._lab_turn_cursor,
+                    created_runs=frozenset(self._lab_turn_created),
                 )
             ),
         )
@@ -1798,6 +1802,7 @@ class HostDispatcher:
             str(branch_id or self.frame_id or "") if turn_id else None
         )
         self._lab_turn_cursor = self._lab_event_cursor() if turn_id else None
+        self._lab_turn_created = set()
 
     def _lab_event_cursor(self) -> int | None:
         """The session's latest Lab event, or None to check every run."""
@@ -3207,7 +3212,11 @@ class HostDispatcher:
         return self._lab_service.call("describe", spec if spec is not None else {})
 
     def _m_lab_create(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self._lab_service.call("create", spec if spec is not None else {})
+        result = self._lab_service.call("create", spec if spec is not None else {})
+        run = result.get("run")
+        if isinstance(run, dict) and isinstance(run.get("run_id"), str):
+            self._lab_turn_created.add(run["run_id"])
+        return result
 
     def _m_lab_observe(self, spec: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._lab_service.call("observe", spec if spec is not None else {})

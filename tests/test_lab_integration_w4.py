@@ -19,6 +19,7 @@ from openai4s.benchmark import lab as benchmark_lab
 from openai4s.benchmark import load_workflows, run_case
 from openai4s.host.delegation_policy import ChildExecutionPolicy
 from openai4s.host_dispatch import build_dispatcher
+from openai4s.lab.manager import LabLimits
 from openai4s.lab.models import CommandOrigin, LabCaller, LabError
 from openai4s.tools.registry import get_tool
 from tests.test_lab_completion import finish
@@ -95,6 +96,35 @@ def test_a_later_turn_without_lab_work_completes_normally(daemon):
     _ended_run(host, key="again")
     refusal = dispatcher.verify_code_evidence(plain())
     assert "explicit lab_runs" in refusal and stopped not in refusal
+
+
+def test_a_persons_workbench_lab_work_is_not_the_agents_turn(daemon):
+    fid, dispatcher, host = daemon.session()
+    dispatcher.set_task_evidence_scope(turn_id="turn-1")
+    # While the turn runs, the person creates and steps a run in the Lab tab.
+    base = f"/frames/{fid}/lab"
+    status, created = daemon.request(
+        "POST",
+        f"{base}/runs",
+        {"device_id": TOY, "profile": PROFILE, "seed": 7, "idempotency_key": "person"},
+    )
+    assert status == 200, created
+    run_id = created["run"]["run_id"]
+    status, stepped = daemon.request(
+        "POST", f"{base}/runs/{run_id}/commands", transfer("person-move")
+    )
+    assert status == 200 and stepped["command"]["origin"] == "manual_ui", stepped
+    assert dispatcher.verify_code_evidence(plain()) is None
+    # A failed creation of the agent's own never opened a session either.
+    daemon.runner.lab_manager._limits = LabLimits(max_live_providers=1)
+    with pytest.raises(RuntimeError):
+        host.lab.create(TOY, PROFILE, seed=8, idempotency_key="no-slot")
+    assert dispatcher.verify_code_evidence(plain()) is None
+    # Once the agent commands the person's run, it is this turn's too.
+    moved = host.lab.execute(run_id, **transfer("agent-move", revision=1))
+    assert moved["command"]["state"] == "succeeded"
+    refusal = dispatcher.verify_code_evidence(plain())
+    assert "explicit lab_runs" in refusal and run_id in refusal
 
 
 def test_delegated_children_are_not_held_to_lab_evidence(daemon):
