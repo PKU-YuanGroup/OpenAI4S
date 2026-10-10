@@ -12,7 +12,9 @@ function browserDownload(filename: string, content: string): void {
   const link = doc.createElement("a");
   link.href = url; link.download = filename; link.rel = "noopener";
   doc.body.appendChild(link); link.click(); link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  // Same lifetime as every other download here: revoking at once can abort the save
+  // in Safari and Firefox, and this content is handed over only once.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 type Intent = { kind: "create"; body: CreateRequest } | { kind: "execute"; runId: string; body: CommandRequest };
