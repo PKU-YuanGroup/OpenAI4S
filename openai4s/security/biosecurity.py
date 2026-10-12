@@ -98,8 +98,12 @@ class ScreenVerdict:
         return self.decision == "ESCALATE"
 
 
-def looks_biosecurity_relevant(text: str) -> bool:
-    """Cheap gate: is this text worth a trajectory screen at all?"""
+def looks_biosecurity_relevant(text: str, *, cfg=None) -> bool:
+    """Cheap gate: is this text worth a trajectory screen at all?
+
+    `cfg` is the screening run's Config. Only the default-off judgment shadow
+    reads it; the answer never depends on it.
+    """
     hit = bool(text) and _BIO_TRIGGERS.search(text) is not None
     try:
         from openai4s.judgment.shadow import submit
@@ -108,6 +112,7 @@ def looks_biosecurity_relevant(text: str) -> bool:
             "bio_prescan",
             state={"text": (text or "")[:20000]},
             existing_verdict=bool(hit),
+            cfg=cfg,
         )
     except Exception:
         pass
@@ -143,6 +148,7 @@ def screen_trajectory(
                 "agent_actions": (agent_actions or "")[:12000],
             },
             existing_verdict=verdict.decision,
+            cfg=cfg,
         )
     except Exception:
         pass
@@ -157,7 +163,7 @@ def _screen_trajectory(
     usage_sink: Callable[[Any], None] | None = None,
 ) -> ScreenVerdict:
     combined = f"{user_text}\n{agent_actions}"
-    if not looks_biosecurity_relevant(combined):
+    if not looks_biosecurity_relevant(combined, cfg=cfg):
         return ScreenVerdict(
             "ALLOW", reason="no biosecurity-relevant content", screened=False
         )

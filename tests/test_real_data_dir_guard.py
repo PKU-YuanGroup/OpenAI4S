@@ -21,6 +21,7 @@ from pathlib import Path
 import conftest
 import pytest
 
+from openai4s.config import get_config
 from openai4s.store import Store, get_store
 
 
@@ -179,7 +180,7 @@ def test_unfinished_shadow_work_cannot_silently_outlive_isolation(
         monkeypatch.setenv("OPENAI4S_EXPERIMENTAL_JUDGMENT", "1")
         monkeypatch.setenv("OPENAI4S_JUDGMENT_SAFETY_SHADOW", "1")
         work_queue = shadow._queue
-        shadow.submit("code", state={}, existing_verdict="SAFE")
+        shadow.submit("code", state={}, existing_verdict="SAFE", cfg=get_config())
     else:
         monkeypatch.setattr(shadow, "_process", blocked_job)
         shadow.bind(enabled=True)

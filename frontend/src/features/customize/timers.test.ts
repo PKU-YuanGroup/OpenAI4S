@@ -213,7 +213,10 @@ describe("F-19 window exports", () => {
     const target: Record<string, unknown> = {};
     installCustomize(target);
     (target.openCust as (tab?: string) => void)("models");
-    await vi.waitFor(() => expect(customizeOpen.value).toBe(true));
+    // Await the shared lazy mount instead of racing a cold import against
+    // waitFor's one-second polling budget on slower developer machines.
+    await ensureCustomizeMounted();
+    expect(customizeOpen.value).toBe(true);
     expect(customizeTab.value).toBe("models");
   });
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * F-07: mechanically extract I18N.zh / I18N.en from app.js Object.assign
  * blocks (app.js:250-2668) into TypeScript modules.
@@ -144,7 +143,10 @@ export function checkDicts(dicts) {
       continue;
     }
     const expected = emitDictTs(dicts[lang]);
-    const actual = fs.readFileSync(file, "utf8");
+    // Compare content, not checkout line endings: Git for Windows' default
+    // core.autocrlf materializes the generated files as CRLF, and a verbatim
+    // read then reports drift on a clean checkout.
+    const actual = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
     if (expected !== actual) {
       errors.push(
         `${path.relative(ROOT, file)} drifted from app.js (re-run extract-i18n.mjs)`,

@@ -252,7 +252,7 @@ def test_default_service_refreshes_models_configuration(monkeypatch):
         }
 
     monkeypatch.setattr(LlmBackend, "_chat", chat)
-    service = task_mode_shadow._service()
+    service = task_mode_shadow._service(cfg)
 
     def run():
         return service.run(
@@ -271,7 +271,7 @@ def test_default_service_refreshes_models_configuration(monkeypatch):
         ):
             store.set_setting(f"llm_{name}", value)
         store.set_secret_setting("llm_api_key", key, scope="llm")
-        assert task_mode_shadow._service() is service
+        assert task_mode_shadow._service(cfg) is service
         result = run()
         assert result.status == "ok"
         assert result.cache_hit is False
@@ -319,7 +319,7 @@ def test_wait_idle_includes_dequeued_unfinished_jobs(reset: bool) -> None:
             f"""
 from openai4s.judgment import task_mode_shadow as shadow
 
-shadow._QUEUE.put((0, "plot the residuals", "analysis_run"))
+shadow._QUEUE.put((0, "plot the residuals", "analysis_run", None))
 shadow._QUEUE.get_nowait()
 if {reset!r}:
     shadow._IN_FLIGHT = 1

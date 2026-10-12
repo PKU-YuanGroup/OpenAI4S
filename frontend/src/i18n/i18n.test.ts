@@ -57,8 +57,12 @@ describe("F-07 extract vs app.js", () => {
   });
 
   it("emitted zh.ts/en.ts match the script output byte-for-byte", () => {
-    expect(emitDictTs(extracted.zh)).toBe(readFileSync(join(HERE, "zh.ts"), "utf8"));
-    expect(emitDictTs(extracted.en)).toBe(readFileSync(join(HERE, "en.ts"), "utf8"));
+    // Normalize checkout line endings: core.autocrlf materializes the
+    // generated files as CRLF on Windows, and the content is still correct.
+    const onDisk = (name: string) =>
+      readFileSync(join(HERE, name), "utf8").replace(/\r\n/g, "\n");
+    expect(emitDictTs(extracted.zh)).toBe(onDisk("zh.ts"));
+    expect(emitDictTs(extracted.en)).toBe(onDisk("en.ts"));
     expect(checkDicts(extracted)).toEqual([]);
   });
 

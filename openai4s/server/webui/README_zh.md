@@ -15,6 +15,7 @@
 - WebSocket 事件驱动流式文本、Cell、activity、执行所有权以及 Workbench 的读模型；REST 负责有界读取和显式写入。订阅时会带上 `since_seq` 和这条流的 `epoch`，所以重连是在 `replay_begin`/`replay_end` 之间续传，而不是整段重取；而 epoch 一变，这个标签页手里的游标全部作废，绝不会拿去给一条本 daemon 从未产生过的流编号。一轮由它的 `execution_id` 追踪，绝不用它所在的会话来追踪：frame 活得比 turn 长，两个 turn 也会重叠。
 - 一次应答丢失会毁掉的那点状态，由客户端自己保管。钉住评论的 admission id 在这里生成，取自平台 CSPRNG，并在消息**发出之前**写进 `localStorage`，于是一个没收到 202 的标签页可以去问这些评论后来怎么了，而不必重发、也不必悄悄丢掉。长列表是分页而不是截断：会话列表跟着服务端那个不透明的 keyset 游标走，配一个「加载更多」控件；更早的一页消息按时间插入而不是追加，因为这一栏里本来就有比最新一页消息更早的 activity 步骤。
 - Artifact 的渲染器由服务端 [`../renderers.py`](../renderers.py) 决定。sequence、alignment、genome、Molfile/SMILES 与 LaTeX 的解析在 [`scientific_renderers.js`](scientific_renderers.js) 中；现行查看器在 `frontend/` 中组合。HTML preview 最初使用空 iframe sandbox；只有 grant 请求成功且 origin 校验通过，才在另一个 loopback 主机名上升级为 `allow-scripts allow-same-origin`，支持交互报告与授权范围内的同目录资源。服务端把 grant 绑定到该 Host、签发时的父页面 origin、非空 frame 及过期时间；应用 Host 无法使用它。不支持的部署与失败的 grant 保持静态预览。应用源上的 Artifact 响应仍带禁止脚本的 CSP，PDF iframe 仍使用空 sandbox。grant URL 是脚本可读取的 bearer 凭证；CSP 不能阻止 iframe 通过自身导航向外携带数据。见[安全契约与剩余风险](../../../docs/security.md#executable-artifact-previews-use-a-scoped-alternate-origin)。
+- 基因组轨道根据已识别的文件扩展名，为整个文件选择 BED、bedGraph、VCF、GFF 或 GTF。BED8–12 保留 BED 坐标与标签。缺少扩展名或扩展名未知时，启发式识别会检查 VCF 的参考碱基与质量字段，或 GFF 的坐标与链方向；有歧义的自定义列数据应使用明确的扩展名。
 - 新的工作台 UI 在 [`../../../frontend/`](../../../frontend/)。请保持 DOM ID 和事件名稳定，离线静态契约测试和浏览器冒烟测试都是照着它们写的。
 
 ## 文件
