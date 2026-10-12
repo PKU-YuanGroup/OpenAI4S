@@ -13,6 +13,7 @@ from openai4s.host.files import (
     UnsafeWorkspaceCandidate,
     WorkspaceFileService,
     is_secret_path,
+    splits_secret_directory,
 )
 
 
@@ -109,7 +110,7 @@ def validate_folder_path(value: Any, cfg: Any = None) -> str | None:
         raise ProjectFolderError(404, "project folder not found")
     if not is_dir:
         raise ProjectFolderError(400, "project folder is not a directory")
-    if is_secret_path(str(resolved)):
+    if is_secret_path(str(resolved)) or splits_secret_directory(str(resolved)):
         raise ProjectFolderError(403, "credential directories cannot be projects")
     if any(part.casefold() == ".openai4s" for part in resolved.parts):
         # An archive holds other conversations; linking it would expose them

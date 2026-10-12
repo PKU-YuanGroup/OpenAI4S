@@ -234,6 +234,21 @@ def test_agent_sql_never_reads_a_projects_host_path(tmp_path):
         assert [row["leaked"] for row in store.query(probe) if row["leaked"]] == []
 
 
+def test_a_folder_that_splits_a_credential_sequence_cannot_be_linked(tmp_path):
+    """`.config/gcloud` is refused by sequence; linking `.config` would hide it."""
+    config = tmp_path / ".config"
+    (config / "gcloud").mkdir(parents=True)
+    (config / "gcloud" / "application_default_credentials.json").write_text("{}")
+    (config / "my-tool").mkdir()
+    for folder in (config, config / "gcloud"):
+        with pytest.raises(ProjectFolderError) as refused:
+            validate_folder_path(str(folder))
+        assert refused.value.status == 403
+    assert validate_folder_path(str(config / "my-tool")) == str(
+        (config / "my-tool").resolve()
+    )
+
+
 def test_history_directories_cannot_become_project_folders(tmp_path):
     archive = tmp_path / "research" / ".openai4s"
     (archive / "sessions").mkdir(parents=True)
