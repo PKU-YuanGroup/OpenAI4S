@@ -212,6 +212,28 @@ def test_picker_stops_at_a_project_root(tmp_path, monkeypatch):
         local_folders(str(tmp_path))
 
 
+def test_agent_sql_never_reads_a_projects_host_path(tmp_path):
+    cfg = Config(data_dir=tmp_path / "daemon")
+    store = get_store(cfg.db_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    project = store.create_project(name="linked", folder_path=str(source.resolve()))
+    assert store.get_project(project["project_id"])["folder_path"] == str(
+        source.resolve()
+    )
+    assert "folder_path" not in store.schema()["projects"]
+    rows = store.query("SELECT * FROM projects WHERE name='linked'")
+    assert [row["name"] for row in rows] == ["linked"]
+    assert rows[0]["folder_path"] is None
+    for probe in (
+        "SELECT folder_path AS leaked FROM projects",
+        "SELECT substr(folder_path, 1, 1) AS leaked FROM projects",
+        "SELECT name AS leaked FROM projects WHERE folder_path LIKE '/%'",
+        "SELECT name AS leaked FROM projects WHERE folder_path IS NOT NULL",
+    ):
+        assert [row["leaked"] for row in store.query(probe) if row["leaked"]] == []
+
+
 def test_history_directories_cannot_become_project_folders(tmp_path):
     archive = tmp_path / "research" / ".openai4s"
     (archive / "sessions").mkdir(parents=True)

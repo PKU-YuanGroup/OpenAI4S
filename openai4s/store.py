@@ -1112,6 +1112,14 @@ _TEAM_VIEW_ONLY_TABLES = frozenset(
 )
 
 
+#: Columns agent SQL reads as NULL. A linked project's absolute host path is
+#: the one thing the read-only project tools never reveal: a cell that learned
+#: it could open files those tools refuse (credentials beside research data).
+#: Ignored rather than denied so `SELECT * FROM projects` keeps working; NULL
+#: also makes the value unreachable through a WHERE/LIKE probe.
+_QUERY_HIDDEN_COLUMNS = frozenset({("projects", "folder_path")})
+
+
 class _QueryAuthorizer:
     """SQLite's own answer to "may this statement touch that table?".
 
@@ -1193,6 +1201,8 @@ class _QueryAuthorizer:
             return self._deny(table)
         if table in QUERY_DENYLIST:
             return self._deny(table)
+        if (table, (arg2 or "").lower()) in _QUERY_HIDDEN_COLUMNS:
+            return sqlite3.SQLITE_IGNORE
         if table in self._view_only:
             # Permitted only as the underlying read of a trusted scoped view
             # that this statement actually published. `_SCOPED_VIEWS` alone was
@@ -6020,7 +6030,11 @@ class Store:
                 ):
                     continue
                 cols = self._conn.execute(f"PRAGMA table_info({name})").fetchall()
-                out[name] = [c["name"] for c in cols]
+                out[name] = [
+                    c["name"]
+                    for c in cols
+                    if (name.lower(), c["name"].lower()) not in _QUERY_HIDDEN_COLUMNS
+                ]
         return out
 
 
