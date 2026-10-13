@@ -122,10 +122,14 @@ export type AutoModeRun = {
   status: RunStatus;
   user_truth: string | null;
   terminal_reason: string | null;
+  /** This run's own sub-modes, frozen when it started; never the saved selection. */
   result_review_mode: ResultReviewMode | null;
   approvals_reviewer: ApprovalsReviewer | null;
+  /** Round indexes as the server sends them, counted from 0. The run line shows them counted from 1. */
   review_round: number | null;
   repair_round: number | null;
+  /** N in "Completed · unverified · N unresolved issues": `completed_with_issues` only, at least 1. */
+  unresolved_finding_count: number | null;
   /** True when the store returned no budget projection: usage is unknown, not zero. */
   legacy: boolean;
   budget_usage: Partial<Record<BudgetField, BudgetMeter>>;

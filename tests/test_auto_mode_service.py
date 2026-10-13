@@ -381,6 +381,92 @@ def test_projection_and_audits_are_allowlisted_not_raw_database_rows():
         service.list_audits("root", subject_kind="guardian", limit=10)
 
 
+_PROGRESS_FIELDS = (
+    "result_review_mode",
+    "approvals_reviewer",
+    "review_round",
+    "repair_round",
+    "unresolved_finding_count",
+)
+
+
+def _progress_run(**overrides) -> dict:
+    run = {
+        "run_id": "run-1",
+        "root_frame_id": "root",
+        "branch_id": "branch",
+        "turn_id": "turn-1",
+        "execution_id": "execution-1",
+        "status": "completed_with_issues",
+        "mode": "review_only",
+        "selection": {
+            "result_review_mode": "review_only",
+            "approvals_reviewer": "user",
+        },
+        "result_review_mode": "review_only",
+        "approvals_reviewer": "user",
+        "review_round": 1,
+        "repair_round": 0,
+        "unresolved_finding_count": 2,
+    }
+    run.update(overrides)
+    return run
+
+
+def test_run_progress_facts_pass_the_allowlist_only_as_closed_values():
+    store = _Store()
+    service = _service(store)
+
+    store.projection = {"run": _progress_run()}
+    run = service.get("root")["run"]
+    assert {name: run[name] for name in _PROGRESS_FIELDS} == {
+        "result_review_mode": "review_only",
+        "approvals_reviewer": "user",
+        "review_round": 1,
+        "repair_round": 0,
+        "unresolved_finding_count": 2,
+    }
+    # The frozen selection mapping itself is never serialized.
+    assert "selection" not in run
+
+    # A value outside the closed vocabulary, or a count that is not a
+    # non-negative integer, is dropped rather than shown as a guess.
+    store.projection = {
+        "run": _progress_run(
+            result_review_mode="autonomous",
+            approvals_reviewer="guardian",
+            review_round=-1,
+            repair_round=True,
+            unresolved_finding_count=1.5,
+        )
+    }
+    assert not set(_PROGRESS_FIELDS) & set(service.get("root")["run"])
+
+    # N belongs only to completed_with_issues, which has at least one.
+    for overrides in (
+        {"status": "candidate"},
+        {"status": "verified"},
+        {"unresolved_finding_count": 0},
+    ):
+        store.projection = {"run": _progress_run(**overrides)}
+        assert "unresolved_finding_count" not in service.get("root")["run"]
+
+
+def test_quarantine_withholds_every_run_progress_fact():
+    store = _Store()
+    store.settings[session_import_quarantine_key("root")] = '{"state":"quarantined"}'
+    store.projection = {"run": _progress_run()}
+
+    view = _service(store).get("root")
+
+    assert view["disabled_reason"] == "import_quarantine"
+    # The run stays visible as provenance, but whatever the store derived
+    # from an imported session is not presented as this daemon's truth.
+    assert view["run"]["run_id"] == "run-1"
+    assert view["run"]["status"] == "completed_with_issues"
+    assert not set(_PROGRESS_FIELDS) & set(view["run"])
+
+
 def test_only_newly_created_canonical_committed_event_is_broadcast():
     store = _Store()
     emitted: list[tuple[str, dict]] = []

@@ -186,6 +186,9 @@ function sanitizeRun(raw: unknown): AutoModeRun | null {
     const value = digest(r[name]);
     if (value) digests.push([name, value]);
   }
+  // N exists only for a finished run with issues, and a count of none is no N.
+  const issues = count(r.unresolved_finding_count);
+  const unresolved = status === "completed_with_issues" && issues !== null && issues >= 1 ? issues : null;
   return {
     run_id: identifier(r.run_id),
     turn_id: identifier(r.turn_id),
@@ -197,6 +200,7 @@ function sanitizeRun(raw: unknown): AutoModeRun | null {
     approvals_reviewer: oneOf(r.approvals_reviewer, APPROVALS_REVIEWERS),
     review_round: count(r.review_round),
     repair_round: count(r.repair_round),
+    unresolved_finding_count: unresolved,
     legacy,
     budget_usage: usage,
     circuit: legacy ? null : sanitizeCircuit(r.circuit),

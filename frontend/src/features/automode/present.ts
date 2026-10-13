@@ -93,12 +93,16 @@ export function runInProgress(run: AutoModeRun): boolean {
 /**
  * The run's own sentence: the server's `user_truth` unchanged when it sent one,
  * then the frozen sentence for a finished run's terminal reason, then the one
- * for its status.
+ * for its status. A run with issues names N when the server counted them.
  */
 export function runSentence(run: AutoModeRun): string {
   if (run.user_truth) return run.user_truth;
   if (run.terminal_reason && !runInProgress(run) && REASON_SENTENCES.has(run.terminal_reason)) {
     return autoModeT("autoMode.reason." + run.terminal_reason);
+  }
+  if (run.status === "completed_with_issues" && run.unresolved_finding_count !== null) {
+    const n = run.unresolved_finding_count;
+    return autoModeT(n === 1 ? "autoMode.status.completed_with_issues.one" : "autoMode.status.completed_with_issues.n", n);
   }
   return autoModeT("autoMode.status." + run.status);
 }
@@ -112,12 +116,13 @@ function thisRunClause(run: AutoModeRun): string | null {
   return null;
 }
 
+/** The server counts rounds from 0, as its durable round index does; the line counts them from 1. */
 function roundsClause(run: AutoModeRun): string | null {
-  if (run.review_round !== null && run.repair_round !== null) {
-    return autoModeT("autoMode.run.rounds", run.review_round, run.repair_round);
-  }
-  if (run.review_round !== null) return autoModeT("autoMode.run.reviewRound", run.review_round);
-  if (run.repair_round !== null) return autoModeT("autoMode.run.repairRound", run.repair_round);
+  const review = run.review_round === null ? null : run.review_round + 1;
+  const repair = run.repair_round === null ? null : run.repair_round + 1;
+  if (review !== null && repair !== null) return autoModeT("autoMode.run.rounds", review, repair);
+  if (review !== null) return autoModeT("autoMode.run.reviewRound", review);
+  if (repair !== null) return autoModeT("autoMode.run.repairRound", repair);
   return null;
 }
 

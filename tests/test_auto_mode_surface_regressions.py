@@ -17,12 +17,20 @@ import pytest
 
 from openai4s.server import local_auth
 from openai4s.server.session_package import SessionPackageError
+from openai4s.storage.snapshots import WorkspaceCAS
 from tests.test_team_auth_routes import _TeamDaemon
 
 _SAFE_SELECTION = {
     "preset": "off",
     "result_review_mode": "off",
     "approvals_reviewer": "user",
+}
+_RUN_PROGRESS_FIELDS = {
+    "result_review_mode",
+    "approvals_reviewer",
+    "review_round",
+    "repair_round",
+    "unresolved_finding_count",
 }
 
 
@@ -155,6 +163,52 @@ def _seed_verified(daemon: _TeamDaemon, root: str) -> dict[str, Any]:
     return {"started": started, "candidate": candidate, "terminal": terminal}
 
 
+def _seed_issues_review(daemon: _TeamDaemon, root: str) -> list[str]:
+    """Candidate, then a round-0 review with two material and one minor finding."""
+
+    _start_run(daemon, root)
+    _record_candidate(daemon, root)
+    evidence = {"candidate_id": f"candidate-{root}", "complete": True}
+    review_run_id = f"review-issues-{root}"
+    daemon.store.start_auto_mode_review(
+        f"auto-run-{root}",
+        review_run_id=review_run_id,
+        audit_id=f"audit-issues-{root}",
+        idempotency_key="auto-surface:issues:start",
+        candidate_id=f"candidate-{root}",
+        candidate_snapshot_sha256="a" * 64,
+        evidence_snapshot=evidence,
+        evidence_snapshot_sha256=_digest(evidence),
+        round_index=0,
+        attempt=1,
+        reviewer={
+            "profile_id": "scientific-reviewer",
+            "profile_revision": 1,
+            "model_fingerprint": "independent-reviewer-model",
+        },
+    )
+    findings = [
+        {
+            "finding_id": f"finding-{severity}-{root}",
+            "fingerprint": f"fingerprint-{severity}",
+            "severity": severity,
+            "category": "evidence",
+            "claim": f"A {severity} claim needs an independent recomputation.",
+            "evidence_refs": ["cell-1"],
+        }
+        for severity in ("major", "high", "minor")
+    ]
+    daemon.store.complete_auto_mode_review(
+        review_run_id,
+        idempotency_key="auto-surface:issues:complete",
+        status="completed",
+        verdict="issues",
+        assessment={"public_summary": "Three findings, two of them material."},
+        findings=findings,
+    )
+    return [str(item["finding_id"]) for item in findings]
+
+
 def _tamper_completed_assessment(daemon: _TeamDaemon, root: str) -> None:
     daemon.store._conn.execute(
         "UPDATE review_runs SET assessment_digest=? WHERE review_run_id=?",
@@ -168,6 +222,8 @@ def _assert_failed_safety_boundary(payload: dict[str, Any]) -> None:
     assert run["status"] == "failed"
     assert run["status"] != "verified"
     assert run["terminal_reason"] == "safety_boundary"
+    # A broken proof vouches for none of its rows: no mode, round, or count.
+    assert not _RUN_PROGRESS_FIELDS & set(run)
 
 
 def test_post_terminal_proof_tamper_fails_closed_over_rest_and_reopen(
@@ -329,6 +385,90 @@ def test_enabled_selection_and_audits_have_real_http_success_shapes(
         daemon.store.close()
 
 
+def test_run_progress_facts_have_real_http_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Capture the run line's own modes, rounds, and N through the real route.
+
+    One session is mid-repair, so both rounds are present. The other finished
+    ``completed_with_issues``, so its run names how many issues remain.
+    """
+
+    monkeypatch.setenv("OPENAI4S_STAGE2_AUTO_RUN_STORAGE", "1")
+    daemon = _TeamDaemon(tmp_path, team_mode=False)
+    try:
+        _project_id, repairing_root = _new_session(daemon)
+        finding_ids = _seed_issues_review(daemon, repairing_root)
+        workspace = tmp_path / "repair-workspace"
+        workspace.mkdir()
+        (workspace / "result.txt").write_text("candidate\n", encoding="utf-8")
+        tree = WorkspaceCAS(daemon.store.db_path.parent / "workspace-cas").capture(
+            workspace
+        )
+        checkpoint = daemon.store.create_session_checkpoint(
+            checkpoint_id=f"checkpoint-{repairing_root}",
+            root_frame_id=repairing_root,
+            branch_id=repairing_root,
+            reason="pre_repair",
+            workspace_tree_id=tree["tree_id"],
+            auto_event_cursor=daemon.store.auto_mode_event_cursor(repairing_root),
+        )
+        daemon.store.start_auto_mode_repair(
+            f"auto-run-{repairing_root}",
+            repair_run_id=f"repair-{repairing_root}",
+            idempotency_key="auto-surface:repair:start",
+            finding_ids=finding_ids[:2],
+            before_version_ids=[],
+            checkpoint_id=checkpoint["checkpoint_id"],
+        )
+
+        status, repairing = _request_json(
+            daemon, "GET", f"/api/v1/frames/{repairing_root}/auto-mode"
+        )
+        assert status == 200
+        run = repairing["run"]
+        assert run["status"] == "repairing"
+        assert {
+            key: run.get(key)
+            for key in (
+                "result_review_mode",
+                "approvals_reviewer",
+                "review_round",
+                "repair_round",
+                "unresolved_finding_count",
+            )
+        } == {
+            "result_review_mode": "auto_fix",
+            "approvals_reviewer": "auto_review",
+            "review_round": 0,
+            "repair_round": 0,
+            "unresolved_finding_count": None,
+        }
+        assert "selection" not in run
+
+        _project_id, finished_root = _new_session(daemon)
+        _seed_issues_review(daemon, finished_root)
+        daemon.store.terminate_auto_mode_run(
+            f"auto-run-{finished_root}",
+            idempotency_key="auto-surface:issues:terminal",
+            status="completed_with_issues",
+            reason="completed_with_issues",
+        )
+        status, finished = _request_json(
+            daemon, "GET", f"/api/v1/frames/{finished_root}/auto-mode"
+        )
+        assert status == 200
+        run = finished["run"]
+        assert run["status"] == "completed_with_issues"
+        assert run["unresolved_finding_count"] == 2
+        assert run["review_round"] == 0
+        assert "repair_round" not in run
+    finally:
+        daemon.close()
+        daemon.store.close()
+
+
 def test_corrupt_verified_proof_refuses_package_and_share_publication(
     tmp_path: Path,
 ):
@@ -380,6 +520,9 @@ def test_imported_auto_mode_is_inert_over_rest_and_share(tmp_path: Path):
         assert rest["selection"]["source"] == "import_quarantine"
         assert rest["run"]["status"] == "unverified_import"
         assert rest["run"]["status"] != "verified"
+        # The source run was reviewed in round 0 with its own sub-modes; an
+        # imported copy projects none of them.
+        assert not _RUN_PROGRESS_FIELDS & set(rest["run"])
 
         status, refused = _request_json(
             daemon,
