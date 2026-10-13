@@ -2264,18 +2264,22 @@ def _local_accelerator_snapshot() -> dict:
     return status
 
 
-def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
+def _remote_gpu_runtime_context(user_text: str | None = None, *, data_dir: Path) -> str:
     """Prompt fragment reflecting local hardware and the remote-GPU registry.
 
     Sessions can be created before the user adds a GPU in Settings, so this
     context is injected both into the initial system prompt and into later turns.
+
+    ``data_dir`` is the runner's: the registry the turn's ``host.compute`` and
+    ``host.fold`` consult. Without it the note read the process default, which
+    gave an embedder on its own data dir the developer's real GPU hosts.
     """
     local = _local_accelerator_snapshot()
     try:
         from openai4s.compute import registry as _reg
 
-        hosts_reg = _reg.list_hosts()
-        default = _reg.default_host()
+        hosts_reg = _reg.list_hosts(Path(data_dir))
+        default = _reg.default_host(Path(data_dir))
     except Exception:  # noqa: BLE001
         hosts_reg = {}
         default = None
@@ -5851,7 +5855,7 @@ class SessionRunner:
                 )
         except Exception:  # noqa: BLE001
             pass
-        remote_ctx = _remote_gpu_runtime_context()
+        remote_ctx = _remote_gpu_runtime_context(data_dir=self.cfg.data_dir)
         if remote_ctx:
             ctx += "\n\n" + remote_ctx
         # Connectors (MCP tools) the agent can call
@@ -10413,7 +10417,9 @@ class SessionRunner:
         # Per turn, not per session: the same session's next request can be a
         # different kind of work. An invalid explicit selection is a 400 at
         # `submit_message`; a direct caller gets the same ValueError shape.
-        st.task_mode = resolve_task_mode(user_text, explicit=task_mode).value
+        st.task_mode = resolve_task_mode(
+            user_text, explicit=task_mode, cfg=self.cfg
+        ).value
         st.task_mode_binding = bool(task_mode is not None and str(task_mode).strip())
         # Frozen above the `processing` event rather than in the failure
         # handler, because that event is how a *queued* turn announces itself:
@@ -10526,7 +10532,9 @@ class SessionRunner:
                     stored_user_message["message_id"],
                     {"artifact_refs": message_refs},
                 )
-            remote_ctx = _remote_gpu_runtime_context(user_text)
+            remote_ctx = _remote_gpu_runtime_context(
+                user_text, data_dir=self.cfg.data_dir
+            )
             if remote_ctx:
                 resolved = (
                     resolved + "\n\n[System note: dynamic remote GPU "
@@ -13599,13 +13607,14 @@ def _probe_remote_gpu(alias: str) -> dict:
     return {"reachable": False, "gpu_count": 0, "gpus": None}
 
 
-def _remote_compute_info() -> dict:
+def _remote_compute_info(data_dir: Path) -> dict:
     """Registry-backed view of configured remote GPU hosts + their provisioned
     capabilities (the persistent 'memory'), for Settings → Remote GPU.
-    Reachability is probed per host and cached ~60s."""
+    Reachability is probed per host and cached ~60s. ``data_dir`` is the
+    handler's, so Settings shows the registry its sessions use."""
     from openai4s.compute import registry as _reg
 
-    hosts_reg = _reg.list_hosts()
+    hosts_reg = _reg.list_hosts(Path(data_dir))
     now = time.time()
     hosts = []
     for alias, h in hosts_reg.items():
@@ -13638,7 +13647,7 @@ def _remote_compute_info() -> dict:
     return {
         "configured": bool(hosts),
         "hosts": hosts,
-        "default_host": _reg.default_host(),
+        "default_host": _reg.default_host(Path(data_dir)),
         "available_aliases": _ssh_config_aliases(),
     }
 
@@ -16995,7 +17004,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
             m = re.fullmatch(r"/projects/([^/]+)/action-timeline", sub)
             if m and method == "GET":
-                limit = int((q.get("limit") or ["500"])[0])
+                # Same guard the messages route carries: a non-integer limit is
+                # a client mistake, and answering 500 made it read as a broken
+                # server instead.
+                try:
+                    limit = int((q.get("limit") or ["500"])[0])
+                except (TypeError, ValueError):
+                    raise GatewayError(400, "limit must be an integer", "invalid_limit")
+                if limit < 1:
+                    raise GatewayError(
+                        400, "limit must be a positive integer", "invalid_limit"
+                    )
                 self._json(
                     global_views.timeline_view(
                         unquote(m.group(1)),
@@ -17006,7 +17025,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/projects/([^/]+)/lineage", sub)
             if m and method == "GET":
-                limit = int((q.get("limit") or ["2000"])[0])
+                try:
+                    limit = int((q.get("limit") or ["2000"])[0])
+                except (TypeError, ValueError):
+                    raise GatewayError(400, "limit must be an integer", "invalid_limit")
+                if limit < 1:
+                    raise GatewayError(
+                        400, "limit must be a positive integer", "invalid_limit"
+                    )
                 self._json(
                     global_views.lineage_view(
                         unquote(m.group(1)),
@@ -18649,10 +18675,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 fid = m.group(1)
                 frame = store.get_frame(fid) or {}
-                exported = runner.export_session_package(
-                    fid,
-                    str(frame.get("project_id") or "default"),
-                )
+                try:
+                    exported = runner.export_session_package(
+                        fid,
+                        str(frame.get("project_id") or "default"),
+                    )
+                except SessionPackageError as error:
+                    # The package boundary refusing, on purpose, to publish
+                    # state it cannot package faithfully: Auto Mode history
+                    # that does not resolve against the packaged ledger, a
+                    # revert still awaiting recovery, records past the package
+                    # limits. Import and share already translate this error;
+                    # here it fell to the catch-all, so a deliberate refusal
+                    # answered 500 internal_error with its reason withheld.
+                    # 409, not 400: the request is well-formed, and it is the
+                    # session's current state that refuses. The text is the
+                    # author-written domain message import and share send.
+                    raise GatewayError(
+                        409, str(error), "session_not_exportable"
+                    ) from error
                 self._send(
                     200,
                     exported["data"],
@@ -19614,7 +19655,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"aliases": _ssh_config_aliases()})
                 return
             if sub == "/compute/remote" and method == "GET":
-                self._json(_remote_compute_info())
+                self._json(_remote_compute_info(cfg.data_dir))
                 return
             if sub == "/compute/remote" and method == "POST":
                 from openai4s.compute import registry as _reg
@@ -19640,13 +19681,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     label=(b.get("label") or alias),
                     gpus=probe.get("gpus"),
                     gpu_count=probe.get("gpu_count", 0),
+                    data_dir=Path(cfg.data_dir),
                 )
                 self._json(
                     {
                         "ok": True,
                         "alias": alias,
                         **probe,
-                        "info": _remote_compute_info(),
+                        "info": _remote_compute_info(cfg.data_dir),
                     }
                 )
                 return
@@ -19654,7 +19696,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "DELETE":
                 from openai4s.compute import registry as _reg
 
-                self._json({"ok": _reg.remove_host(m.group(1))})
+                self._json({"ok": _reg.remove_host(m.group(1), Path(cfg.data_dir))})
                 return
             if sub == "/compute/providers" and method == "GET":
                 self._json({"providers": self._compute_providers()})

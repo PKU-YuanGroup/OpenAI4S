@@ -28,6 +28,6 @@ W0 提供的 `NullBackend` 永远抛 `BackendError("disabled")`。
 | [`registry.py`](registry.py) | 模板注册表（`register_template` / `get_template`）以及内置的连接测试模板 `system.probe`。 |
 | [`settings.py`](settings.py) | 网关和 doctor 用的设置面：`status` / `update` / `probe_connection`，TypeSafe key 走 SecretBroker（不写入 env、不回显），以及「`api.typesafe.ai` 是否已授权」的 egress **报告**。不新增 egress 分组。 |
 | [`templates/`](templates/) | Skill 推荐问题模板（`skills.suggest`）以及生成的 bioSkills 领域索引。 |
-| [`shadow.py`](shadow.py) | 有界安全影子队列：2 个守护线程、队列满则丢弃、`judgment_shadow` 审计不含原始代码、`stats()`。 |
-| [`task_mode_shadow.py`](task_mode_shadow.py) | `task_mode.classify` 的有界后台影子通道。永不改变 `resolve_task_mode` 的返回值，也不把原始请求写进审计。 |
+| [`shadow.py`](shadow.py) | 有界安全影子队列：2 个守护线程、队列满则丢弃、`judgment_shadow` 审计不含原始代码、`stats()`。每个闸门交出它筛查时用的 Config，开关和后台任务都读这次运行的数据目录；没有 Config 时影子保持关闭。 |
+| [`task_mode_shadow.py`](task_mode_shadow.py) | `task_mode.classify` 的有界后台影子通道。永不改变 `resolve_task_mode` 的返回值，也不把原始请求写进审计。读取的是交给 `resolve_task_mode` 的那次运行的 Config 所在的数据目录，从不读进程默认目录；没有 Config 时保持关闭。 |
 | [`llm_backend.py`](llm_backend.py) | 可选 `LlmBackend`：用已配置的主模型经 `chat()` 回答同样的类型化问题。只能通过 `OPENAI4S_JUDGMENT_PROVIDER=llm` 显式选择，永不作为 TypeSafe 失败时的静默回退。结果标记 `calibrated=False`。 |

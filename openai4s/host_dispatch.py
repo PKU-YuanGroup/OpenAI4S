@@ -1287,6 +1287,7 @@ class HostDispatcher:
         )
         self._doubao_search_service = DoubaoSearchService(self.store)
         self._remote_capability_service = RemoteCapabilityService(
+            registry_factory=self._compute_registry,
             normalize_probe=lambda spec: _normalize_remote_capability_probe(spec),
         )
         from openai4s.host.accelerators import (
@@ -1300,6 +1301,7 @@ class HostDispatcher:
             remote_status=self._remote_gpu_status_payload,
         )
         self._remote_science_service = RemoteScienceService(
+            registry_factory=self._compute_registry,
             provenance_recorder=lambda *args: self._record_remote_prov(*args),
         )
         # App tiles rendered this session, most recent last.
@@ -2519,6 +2521,19 @@ class HostDispatcher:
         return self._llm_service.list_models()
 
     # --- identity / capabilities ------------------------------------
+    def _compute_registry(self) -> Any:
+        """The BYOC host registry under this dispatcher's own data dir.
+
+        Resolved per call, like ``self.cfg`` everywhere here: the Web runner
+        replaces ``cfg`` every turn. ``host.compute`` already checks aliases
+        against this data dir, and the remote-GPU services read the same one
+        through this -- not the process default, which is this data dir only
+        inside the daemon.
+        """
+        from openai4s.compute.registry import DataDirRegistry
+
+        return DataDirRegistry(Path(self.cfg.data_dir))
+
     def _remote_gpu_status_payload(self) -> dict:
         return self._remote_capability_service.status()
 

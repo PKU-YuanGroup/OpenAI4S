@@ -171,18 +171,48 @@
     return "other";
   }
 
+  // A recognised extension names the format outright, for every line of the
+  // file.  Content is only consulted when the name says nothing: a wide line
+  // is not evidence against its own name, and BED8–12 are ordinary BED (three
+  // required fields, then nine ordered optional ones).
+  function genomeFormatFromName(lower) {
+    if (/\.vcf(?:\.gz)?$/.test(lower)) return "VCF";
+    if (/\.gtf$/.test(lower)) return "GTF";
+    if (/\.gff3?$/.test(lower)) return "GFF";
+    if (/\.bedgraph$/.test(lower)) return "bedGraph";
+    if (/\.bed$/.test(lower)) return "BED";
+    return "";
+  }
+
+  const BARE_NUMBER = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i;
+
+  // Standard BED score/thickEnd columns exclude VCF; custom BED6+N extras
+  // need more evidence. Require VCF reference bases and QUAL, or GFF's
+  // integer coordinates and strand, before abandoning BED.
+  function sniffGenomeFormat(fields) {
+    if (fields.length >= 8 && /^\d+$/.test(fields[1]) && /^[ACGTN]+$/i.test(fields[3]) && fields[4]
+      && (fields[5] === "." || BARE_NUMBER.test(fields[5]) || /^[-+]?(?:inf(?:inity)?|nan)$/i.test(fields[5]))
+      && !BARE_NUMBER.test(fields[4]) && !BARE_NUMBER.test(fields[7])) return "VCF";
+    if (fields.length >= 9 && /^\d+$/.test(fields[3]) && /^\d+$/.test(fields[4])
+      && /^[-+.?]$/.test(fields[6])) return "GFF";
+    return "BED";
+  }
+
   function parseGenome(text, filename) {
     const lower = String(filename || "").toLowerCase();
     const features = [];
     let invalid = 0;
-    let format = /\.vcf(?:\.gz)?$/.test(lower) ? "VCF" : /\.(gff3?|gtf)$/.test(lower) ? "GFF" : /\.bedgraph$/.test(lower) ? "bedGraph" : "BED";
+    const named = genomeFormatFromName(lower);
+    let format = named || "BED";
     for (const raw of normalizeLines(text)) {
       const line = raw.trim();
       if (!line || line[0] === "#" || /^track\s|^browser\s/i.test(line)) continue;
       const fields = raw.split("\t");
+      // An unnamed file reads as BED until one line proves VCF or GFF, and
+      // keeps that format for the rest of the file.
+      if (!named && format === "BED") format = sniffGenomeFormat(fields);
       let feature = null;
-      if (format === "VCF" || (fields.length >= 8 && /^\d+$/.test(fields[1] || "") && fields[3] && fields[4])) {
-        format = "VCF";
+      if (format === "VCF") {
         const pos = Number(fields[1]);
         const ref = fields[3] || "";
         if (Number.isFinite(pos)) feature = {
@@ -190,8 +220,7 @@
           label: fields[2] && fields[2] !== "." ? fields[2] : `${ref}>${fields[4] || "?"}`,
           type: "variant", strand: "", score: fields[5] || "",
         };
-      } else if (format === "GFF" || fields.length >= 9) {
-        format = /\.gtf$/.test(lower) ? "GTF" : "GFF";
+      } else if (format === "GFF" || format === "GTF") {
         const start = Number(fields[3]); const end = Number(fields[4]);
         if (Number.isFinite(start) && Number.isFinite(end)) feature = {
           chrom: fields[0], start: Math.max(0, start - 1), end,

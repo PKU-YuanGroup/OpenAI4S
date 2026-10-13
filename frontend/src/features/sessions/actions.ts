@@ -2,6 +2,7 @@
 
 import { t } from "../../i18n";
 import { validateSessionArtifacts } from "../artifacts/validation";
+import { autoModeMenuItem, beginAutoModeStatusRead } from "../automode";
 import { openCustomize } from "../customize";
 import { nestedEditor, type SkillSeed } from "../customize/state";
 import { artifacts } from "../../stores/artifacts";
@@ -175,17 +176,25 @@ export async function requestReview(): Promise<void> {
 }
 
 export async function sessionOptionsMenu(anchor: Element): Promise<void> {
-  if (!currentId.value) return;
+  const frameId = currentId.value;
+  const openGen = _openGen.value;
+  if (!frameId) return;
+  // Beside the review-settings read, not after it: opening the menu is one
+  // of the moments the read-only Auto Mode block re-reads from the server.
+  void beginAutoModeStatusRead();
   let review: { auto_review?: boolean; reviewer_model?: string; delegation_enabled?: boolean } = {
     auto_review: false,
     reviewer_model: "",
     delegation_enabled: true,
   };
   try {
-    review = (await api(`/frames/${currentId.value}/review-settings`)) as typeof review;
+    review = (await api(`/frames/${frameId}/review-settings`)) as typeof review;
   } catch {
     /* defaults */
   }
+  // A delayed settings response must not open a menu after navigation or a
+  // branch reopen. Its Auto Mode read belongs to the previous opening too.
+  if (currentId.value !== frameId || _openGen.value !== openGen) return;
   const checked = (on: boolean) => (on ? "✓  " : "");
   openMenu(anchor, [
     {
@@ -238,6 +247,11 @@ export async function sessionOptionsMenu(anchor: Element): Promise<void> {
     { label: t("composer.option.memory"), icon: "book", onClick: () => callLane("openCust", "memory") },
     { label: t("composer.option.specialist"), icon: "users", onClick: () => callLane("openCust", "specialists") },
     { label: t("composer.option.compute"), icon: "terminal", onClick: () => callLane("openCust", "compute") },
+    // Read-only, and separate from the Auto review row above: that row is the
+    // old post-completion Reviewer switch and still talks only to
+    // review-settings; this block is availability, saved selection and run.
+    { sep: true },
+    autoModeMenuItem(),
   ]);
 }
 

@@ -15,7 +15,7 @@ const loadMock = vi.hoisted(() => ({ loadSessions: vi.fn(async () => {}) }));
 vi.mock("../ws/connect", () => wsMock);
 vi.mock("../sessions/load", () => loadMock);
 
-import { t } from "../../i18n/runtime";
+import { setLang, t } from "../../i18n/runtime";
 import { _openGen, currentId, project } from "../../stores/session";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
@@ -206,6 +206,9 @@ describe("send(): a message the server refuses before admission", () => {
   });
 
   it("asks about a moved profile without claiming the pinned configuration no longer exists", async () => {
+    // The confirm text is dictionary prose; pin the language so a non-English
+    // dev box does not paint these assertions in another dictionary.
+    await setLang("en");
     // gateway._unusable_pin_error for a credential scope mismatch (SEC-2): the
     // profile still exists, it now names a different provider or endpoint.
     routes["/frames/frame_1/message"] = refusal(
@@ -225,6 +228,7 @@ describe("send(): a message the server refuses before admission", () => {
     expect(asked[0]).not.toMatch(/no longer exists/);
     expect(asked[0]).toMatch(/provider or endpoint/);
     expect(nodes.composer!.value).toBe("hello");
+    await setLang("system");
   });
 
   it("keeps the text after a confirmed rebind, and says what the rebind actually did", async () => {
@@ -417,7 +421,8 @@ describe("send(): a message the server refuses before admission", () => {
 describe("rebindConfirmText", () => {
   const unavailable = (error: string) => ({ code: "model_revision_unavailable", message: error });
 
-  it("says 'no longer exists' only when the server said it", () => {
+  it("says 'no longer exists' only when the server said it", async () => {
+    await setLang("en");
     expect(
       rebindConfirmText(unavailable("this session is pinned to a model configuration that no longer exists; choose one to continue")),
     ).toMatch(/no longer exists/);
@@ -430,15 +435,18 @@ describe("rebindConfirmText", () => {
     ]) {
       expect(rebindConfirmText(unavailable(message))).not.toMatch(/no longer exists/);
     }
+    await setLang("system");
   });
 
-  it("names the actual reason for a moved profile, a missing key and an ambiguous match", () => {
+  it("names the actual reason for a moved profile, a missing key and an ambiguous match", async () => {
+    await setLang("en");
     const moved = rebindConfirmText(unavailable("... the profile now names a different provider or endpoint; ..."));
     const keyless = rebindConfirmText(unavailable("... whose credential is not available; add its API key ..."));
     const ambiguous = rebindConfirmText({ code: "model_revision_ambiguous", message: "more than one model profile matches 'gpt-4o'" });
     expect(new Set([moved, keyless, ambiguous, rebindConfirmText(unavailable(""))]).size).toBe(4);
     expect(keyless).toMatch(/API key/);
     expect(ambiguous).toMatch(/more than one/i);
+    await setLang("system");
   });
 });
 

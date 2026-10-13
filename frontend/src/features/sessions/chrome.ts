@@ -48,9 +48,17 @@ export function reportFailure(error: unknown): void {
   hint(actionFailedCopy(apiErrorText(error)), true);
 }
 
+/**
+ * A separator, a button, or a caller-owned `node` placed as is: a read-only
+ * block (the Auto Mode status) that repaints itself while the menu is open,
+ * which is why it is not a button that closes the menu on click.
+ */
 export type MenuItem =
-  | { sep: true; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined }
-  | { sep?: false; label: string; icon?: string; danger?: boolean; onClick?: () => void };
+  | { sep: true; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined; node?: undefined }
+  | { sep?: false; label: string; icon?: string; danger?: boolean; onClick?: () => void; node?: undefined }
+  | { node: HTMLElement; sep?: undefined; label?: undefined; icon?: undefined; danger?: undefined; onClick?: undefined };
+
+let menuAnchor: Element | null = null;
 
 function menuOutside(e: MouseEvent): void {
   const menu = _menu.value as HTMLElement | null;
@@ -69,9 +77,26 @@ export function closeMenu(): void {
   if (menu) {
     menu.remove();
     _menu.value = null;
+    menuAnchor = null;
     document.removeEventListener("mousedown", menuOutside);
     document.removeEventListener("keydown", menuKeydown);
   }
+}
+
+function placeMenu(m: HTMLElement, anchor: Element): void {
+  const r = anchor.getBoundingClientRect();
+  let top = r.bottom + 4;
+  if (top + m.offsetHeight > window.innerHeight - 8) {
+    top = Math.max(8, r.top - m.offsetHeight - 4);
+  }
+  m.style.top = top + "px";
+  m.style.left = Math.max(8, Math.min(r.left, window.innerWidth - m.offsetWidth - 8)) + "px";
+}
+
+/** Re-place the open menu against its anchor after a `node` item changed its height. */
+export function repositionMenu(): void {
+  const menu = _menu.value as HTMLElement | null;
+  if (menu && menuAnchor && menu.isConnected) placeMenu(menu, menuAnchor);
 }
 
 export function openMenu(anchor: Element, items: MenuItem[]): void {
@@ -81,6 +106,10 @@ export function openMenu(anchor: Element, items: MenuItem[]): void {
   items.forEach((it) => {
     if (it.sep) {
       m.appendChild(el("div", "ctx-sep"));
+      return;
+    }
+    if (it.node) {
+      m.appendChild(it.node);
       return;
     }
     const b = el("button", "ctx-item" + (it.danger ? " danger" : ""));
@@ -101,13 +130,8 @@ export function openMenu(anchor: Element, items: MenuItem[]): void {
   });
   document.body.appendChild(m);
   _menu.value = m;
-  const r = anchor.getBoundingClientRect();
-  let top = r.bottom + 4;
-  if (top + m.offsetHeight > window.innerHeight - 8) {
-    top = Math.max(8, r.top - m.offsetHeight - 4);
-  }
-  m.style.top = top + "px";
-  m.style.left = Math.max(8, Math.min(r.left, window.innerWidth - m.offsetWidth - 8)) + "px";
+  menuAnchor = anchor;
+  placeMenu(m, anchor);
   const first = m.querySelector("button");
   if (first instanceof HTMLElement) first.focus();
   setTimeout(() => {

@@ -111,6 +111,7 @@ def scan_tool_result(
             "injection",
             state={"content": (content or "")[:32768]},
             existing_verdict=bool(verdict.injected),
+            cfg=cfg,
         )
     except Exception:
         pass

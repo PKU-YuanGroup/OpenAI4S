@@ -350,6 +350,7 @@ def classify_code(
             "code",
             state={"code": (code or "")[:20000]},
             existing_verdict=verdict.decision,
+            cfg=cfg,
         )
     except Exception:
         pass
