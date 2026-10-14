@@ -1,27 +1,40 @@
 # Publish the daemon container image to GitHub Packages (ghcr.io).
 #
-# Two triggers. `workflow_dispatch` is the normal path: release.yml's `finalize`
-# job dispatches it for the tag right after making the release public, because
-# that job publishes with its GITHUB_TOKEN and GitHub starts no workflow run for
-# a `release` event that token raised. `release: published` still covers a
-# release a maintainer publishes by hand. A manual dispatch against an existing
-# tag works too (the first publication for a release that predates this
-# workflow). Either way `scripts/verify_release_tag.py` refuses a tree whose
-# declared versions do not match the tag — so an image can never carry a tag
-# its own `__version__` disagrees with.
+# The image is pushed to *this* repository's own registry namespace,
+# `ghcr.io/<owner>/<repo>` (lowercased), so a fork publishes to itself and
+# never needs write access to the upstream package.
+#
+# Three ways in:
+#
+# * `workflow_dispatch` with `ref` set to a release tag. This is the normal
+#   release path: release.yml's `finalize` job dispatches it for the tag right
+#   after making the release public, because that job publishes with its
+#   GITHUB_TOKEN and GitHub starts no workflow run for a `release` event that
+#   token raised. A manual dispatch against an existing tag works too (the
+#   first publication for a release that predates this workflow).
+# * `release: published` still covers a release a maintainer publishes by hand.
+# * `workflow_dispatch` with `ref` left empty: a manual build of whatever branch
+#   or commit was selected as the workflow ref ("Run workflow" in the Actions
+#   tab). It is tagged `sha-<12-char sha>` and with the sanitized branch name,
+#   plus `:latest` only when the `latest` input is ticked. No release-tag
+#   checks apply, because there is no tag to prove.
+#
+# For the two release paths `scripts/verify_release_tag.py` refuses a tree
+# whose declared versions do not match the tag — so an image can never carry a
+# version tag its own `__version__` disagrees with.
 #
 # What gets *checked out* is `github.sha`, never the tag: a tag is mutable, and
 # this job holds `packages: write` and then runs repository code. The tag is an
 # identity assertion, proved against that SHA before the build and again
 # immediately before the push, the way release.yml's boundaries do. On a manual
-# run that means selecting the tag itself (or a branch whose tip is the tagged
-# commit) as the workflow ref, and passing the same tag as `ref`.
+# release run that means selecting the tag itself (or a branch whose tip is the
+# tagged commit) as the workflow ref, and passing the same tag as `ref`.
 #
 # The image is not merely built: `scripts/container_smoke.sh` — the same gate
 # PR CI runs — builds it and then proves the daemon actually boots and serves
-# inside it. Only a smoke-passing image is pushed. Smoke is not the Python
-# 3.14 offline suite: that series is in ci.yml's full matrix and in the
-# quality-receipt check-suite gates. linux/amd64 only for now: the science
+# inside it. Only a smoke-passing image is pushed, on every path. Smoke is not
+# the Python 3.14 offline suite: that series is in ci.yml's full matrix and in
+# the quality-receipt check-suite gates. linux/amd64 only for now: the science
 # stack under QEMU multiplies the build time without a user on the other
 # end; an arm64 slice is a deliberate later addition, not a flag flip.
 #
@@ -36,19 +49,22 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Release tag to build from, e.g. v0.2.0"
-        required: true
+        description: "Release tag to build from, e.g. v0.2.0. Leave empty to build the selected branch/commit."
+        required: false
+        default: ""
         type: string
+      latest:
+        description: "Also tag a non-release build as :latest (release tags always update :latest)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-image-${{ github.event.release.tag_name || inputs.ref }}
+  group: publish-image-${{ github.event.release.tag_name || inputs.ref || github.sha }}
   cancel-in-progress: false
-
-env:
-  IMAGE: ghcr.io/pku-yuangroup/openai4s
 
 jobs:
   publish:
@@ -56,7 +72,7 @@ jobs:
     timeout-minutes: 45
     environment:
       name: ghcr
-      url: https://github.com/PKU-YuanGroup/OpenAI4S/pkgs/container/openai4s
+      url: ${{ steps.ref.outputs.url }}
     permissions:
       contents: read
       packages: write
@@ -65,8 +81,30 @@ jobs:
         id: ref
         env:
           REF: ${{ github.event.release.tag_name || inputs.ref }}
+          LATEST: ${{ inputs.latest }}
         run: |
           set -euo pipefail
+          # This repository's own namespace; ghcr requires lowercase names.
+          repo="${GITHUB_REPOSITORY#*/}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pkgs/container/${repo,,}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$REF" ]; then
+            # Manual build of the selected branch/commit: no release identity
+            # to prove, so `tag` stays empty and the tag checks below skip.
+            branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9_.-]+/-/g; s/^[.-]+//' | cut -c1-100)"
+            extra="${branch}"
+            if [ "$LATEST" = "true" ]; then
+              extra="$extra latest"
+            fi
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "primary=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+            echo "extra=$extra" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Anchored, not the `v[0-9]*.[0-9]*.[0-9]*` glob this replaces: that
           # form also matches `v1.2.3;anything`, and the value is interpolated
           # into later steps.
@@ -76,6 +114,8 @@ jobs:
           fi
           echo "tag=$REF" >> "$GITHUB_OUTPUT"
           echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+          echo "primary=${REF#v}" >> "$GITHUB_OUTPUT"
+          echo "extra=latest" >> "$GITHUB_OUTPUT"
 
       # `github.sha` rather than the tag: a tag is mutable, and this job holds
       # `packages: write` and then runs repository code from the checkout. The
@@ -89,36 +129,58 @@ jobs:
           persist-credentials: false
 
       - name: The tag must peel to the immutable workflow SHA
+        if: steps.ref.outputs.tag != ''
         env:
           TAG: ${{ steps.ref.outputs.tag }}
           SHA: ${{ github.sha }}
         run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
 
       - name: Tag matches the tree's declared versions
+        if: steps.ref.outputs.tag != ''
         run: python3 scripts/verify_release_tag.py "${{ steps.ref.outputs.tag }}"
 
       - name: Build the image and smoke it
+        env:
+          PRIMARY: ${{ steps.ref.outputs.primary }}
         run: |
-          OPENAI4S_SMOKE_IMAGE="$IMAGE:${{ steps.ref.outputs.version }}" \
+          OPENAI4S_SMOKE_IMAGE="$IMAGE:$PRIMARY" \
             bash scripts/container_smoke.sh
 
       # The window this closes: minutes to tens of minutes have passed since
       # the release event, and the push below is the outward-facing act.
       - name: Revalidate the remote annotated tag before pushing
+        if: steps.ref.outputs.tag != ''
         env:
           TAG: ${{ steps.ref.outputs.tag }}
           SHA: ${{ github.sha }}
         run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
 
       - name: Push the smoke-passing image
+        env:
+          PRIMARY: ${{ steps.ref.outputs.primary }}
+          EXTRA: ${{ steps.ref.outputs.extra }}
         run: |
+          set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$IMAGE:${{ steps.ref.outputs.version }}"
-          docker tag "$IMAGE:${{ steps.ref.outputs.version }}" "$IMAGE:latest"
-          docker push "$IMAGE:latest"
+          docker push "$IMAGE:$PRIMARY"
+          for tag in $EXTRA; do
+            docker tag "$IMAGE:$PRIMARY" "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
 
       - name: Report the published digest
+        env:
+          PRIMARY: ${{ steps.ref.outputs.primary }}
+          EXTRA: ${{ steps.ref.outputs.extra }}
         run: |
+          set -euo pipefail
           docker inspect --format '{{ range .RepoDigests }}{{ . }}{{ "\n" }}{{ end }}' \
-            "$IMAGE:${{ steps.ref.outputs.version }}"
+            "$IMAGE:$PRIMARY"
+          {
+            echo "### Published \`$IMAGE\`"
+            echo
+            for tag in $PRIMARY $EXTRA; do
+              echo "- \`docker pull $IMAGE:$tag\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
