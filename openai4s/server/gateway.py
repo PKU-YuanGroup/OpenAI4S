@@ -4601,8 +4601,9 @@ class SessionRunner:
                     0, self._frameless_artifact_mutations - 1
                 )
                 self._project_mutation_condition.notify_all()
-
-            self.project_history_autosave.schedule_project(project_id)
+            # No history save: a session archives only its own root's
+            # Artifacts, so a frameless one changes no archive. This used to
+            # re-snapshot every session in the project on each upload.
 
     @contextmanager
     def _external_artifact_mutation(

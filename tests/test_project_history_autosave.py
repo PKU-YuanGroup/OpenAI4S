@@ -517,3 +517,32 @@ def test_new_session_and_deletion_do_not_resnapshot_the_whole_project(tmp_path):
         assert runner.store.get_frame(root) is not None
     finally:
         runner.close()
+
+
+def test_frameless_project_upload_resnapshots_no_session(tmp_path):
+    runner, _hub, _folder, pid, root = runner_with_project(tmp_path)
+    runner.create_session(pid)
+    autosave = runner.project_history_autosave
+    assert autosave._wait(autosave._issued, 5)
+    saved = []
+    original = runner.project_history.sync_session
+
+    def record(session, **kwargs):
+        saved.append(session)
+        return original(session, **kwargs)
+
+    runner.project_history.sync_session = record
+    try:
+        issued = autosave._issued
+        uploaded = runner.upload_artifact(
+            {"project_id": pid, "filename": "shared.txt", "content_text": "shared"}
+        )
+        artifact = runner.store.get_artifact(
+            uploaded.get("artifact_id") or uploaded["id"]
+        )
+        assert artifact["root_frame_id"] is None
+        # No session archives a frameless Artifact, so nothing is queued.
+        assert autosave._issued == issued
+        assert saved == []
+    finally:
+        runner.close()
