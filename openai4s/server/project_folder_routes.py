@@ -55,7 +55,7 @@ def _relative(raw: str) -> str:
 
 
 def local_folders(raw: str) -> dict:
-    current = Path(validate_folder_path(raw or str(Path.home())) or "")
+    current = Path(validate_folder_path(raw or str(Path.home()), browsing=True) or "")
     entries = []
     truncated = False
     deadline = time.monotonic() + MAX_SCAN_SECONDS

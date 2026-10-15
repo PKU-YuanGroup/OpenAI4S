@@ -28,8 +28,8 @@ export { resumeWatch } from "../send/ticket";
 
 /**
  * Who owns the *view*. Not a list-read owner: session and folder rows are
- * scoped to their project (`load.ts: listScope`), and the project menu cancels
- * a pending open through `projects.ts: projectFilterVersion`.
+ * scoped to their project (`load.ts: listScope`), and the project menu opens
+ * its choice through `projects.ts: openProject`, a navigation of its own.
  */
 type ViewOwner = { generation: number; projectId: string | null };
 const viewOwner = (): ViewOwner => ({ generation: _openGen.value, projectId: project.value });

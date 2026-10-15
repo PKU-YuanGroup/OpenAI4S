@@ -3101,7 +3101,7 @@ class SessionRunner:
         project_id = str(frame.get("project_id") or "")
         project = self.store.get_project(project_id) or {}
         self.project_history_autosave.project_changed(
-            project_id, project.get("folder_path")
+            project_id, project.get("folder_path"), schedule=False
         )
         workspace, branch_id = self._project_history_placement(root_frame_id)
         # Probe while the runtime still exists, so a folder that cannot be
@@ -4080,7 +4080,7 @@ class SessionRunner:
                 except Exception:  # noqa: BLE001
                     pass
         self.project_history_autosave.project_changed(
-            project_id, project.get("folder_path")
+            project_id, project.get("folder_path"), schedule=False
         )
         self.project_history_autosave.schedule_session(fid)
         return fid
@@ -4108,7 +4108,7 @@ class SessionRunner:
                     self._project_mutation_condition.wait()
             project = self.store.get_project(project_id) or {}
             self.project_history_autosave.project_changed(
-                project_id, project.get("folder_path")
+                project_id, project.get("folder_path"), schedule=False
             )
             archived = self.project_history_autosave.flush_project_settings(project_id)
             if archived.get("state") == "error":
@@ -17017,16 +17017,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 b = self._body()
                 folder_path = None
                 if "folder_path" in b:
-                    try:
-                        if b["folder_path"] not in (None, ""):
-                            project_folder_routes.require_local_request(self, cfg)
-                        folder_path = project_folder_routes.validate_folder_path(
-                            b["folder_path"], cfg
-                        )
-                    except project_folder_routes.ProjectFolderError as error:
-                        raise GatewayError(
-                            error.status, str(error), error.code
-                        ) from error
+                    folder_path = _requested_folder_path(self, cfg, b["folder_path"])
                 p = store.create_project(
                     name=b.get("name") or "Untitled project",
                     description=b.get("description") or "",
@@ -17071,18 +17062,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         raise GatewayError(404, "project not found")
                     body = self._body()
                     if "folder_path" in body:
-                        try:
-                            if body["folder_path"] not in (None, ""):
-                                project_folder_routes.require_local_request(self, cfg)
-                            body["folder_path"] = (
-                                project_folder_routes.validate_folder_path(
-                                    body["folder_path"], cfg
-                                )
-                            )
-                        except project_folder_routes.ProjectFolderError as error:
-                            raise GatewayError(
-                                error.status, str(error), error.code
-                            ) from error
+                        body["folder_path"] = _requested_folder_path(
+                            self, cfg, body["folder_path"]
+                        )
                     store.update_project(
                         pid,
                         **{
@@ -20725,6 +20707,16 @@ def _frame_json(f: dict | None, store: Store) -> dict:
     out["model_profile_id"] = f.get("model_profile_id") or None
     out["model_profile_revision"] = f.get("model_profile_revision") or None
     return out
+
+
+def _requested_folder_path(handler: Any, cfg: Config, value: Any) -> str | None:
+    """Validate a project body's ``folder_path``; only a grant needs a local peer."""
+    try:
+        if value not in (None, ""):
+            project_folder_routes.require_local_request(handler, cfg)
+        return project_folder_routes.validate_folder_path(value, cfg)
+    except project_folder_routes.ProjectFolderError as error:
+        raise GatewayError(error.status, str(error), error.code) from error
 
 
 def _history_save_refusal(result: dict, retained: str) -> GatewayError:

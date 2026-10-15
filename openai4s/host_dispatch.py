@@ -1422,26 +1422,14 @@ class HostDispatcher:
 
     def _project_files(self) -> WorkspaceFileService:
         """Resolve folder authority from the live frame, never model arguments."""
-        from openai4s.project_folders import ReadOnlyProjectFiles, project_folder_path
-        from openai4s.server.session_package import session_import_quarantine_key
+        from openai4s.project_folders import session_project_files
 
-        scope = self.store.resolve_frame_scope(self.frame_id)
-        root = scope.get("root_frame_id")
-        if not root or self.store.get_frame(str(root)) is None:
-            raise ValueError("project folder access requires a persisted session")
-        if self.store.get_setting(session_import_quarantine_key(str(root))) is not None:
-            raise ValueError(
-                "imported Session is quarantined; project folder access is unavailable"
-            )
-        path = project_folder_path(
-            self.store, self.cfg, str(scope.get("project_id") or "")
+        return session_project_files(
+            self.store,
+            self.cfg,
+            self.frame_id,
+            workspace=lambda: self.workspace_path or self._files.workspace(),
         )
-        workspace = self.workspace_path or self._files.workspace()
-        if path == workspace or path in workspace.parents or workspace in path.parents:
-            raise ValueError(
-                "project source folder must not overlap the session workspace"
-            )
-        return ReadOnlyProjectFiles(path)
 
     @property
     def compute(self) -> Any:

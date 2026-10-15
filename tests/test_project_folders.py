@@ -249,6 +249,26 @@ def test_a_folder_that_splits_a_credential_sequence_cannot_be_linked(tmp_path):
     )
 
 
+def test_picker_passes_through_a_split_credential_parent_without_granting_it(
+    tmp_path, monkeypatch
+):
+    home, _scratch = _confine_default_roots(tmp_path, monkeypatch)
+    config = home / ".config"
+    (config / "gcloud").mkdir(parents=True)
+    (config / "gh").mkdir()
+    (config / "my-tool").mkdir()
+    listed = local_folders(str(config))
+    assert [entry["name"] for entry in listed["entries"]] == ["my-tool"]
+    assert local_folders(str(config / "my-tool"))["path"] == str(
+        (config / "my-tool").resolve()
+    )
+    for folder in (config / "gcloud", config / "gh"):
+        with pytest.raises(ProjectFolderError):
+            local_folders(str(folder))
+    with pytest.raises(ProjectFolderError):
+        validate_folder_path(str(config))
+
+
 def test_history_directories_cannot_become_project_folders(tmp_path):
     archive = tmp_path / "research" / ".openai4s"
     (archive / "sessions").mkdir(parents=True)

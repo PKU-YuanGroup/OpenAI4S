@@ -340,4 +340,14 @@ describe("project folder persistence", () => {
     expect(request!.method).toBe("PATCH");
     expect(JSON.parse(String(request!.body)).folder_path).toBe(folderPath);
   });
+
+  it("does not resend an unchanged folder, so a rename never revalidates it", async () => {
+    openProjectModal({ project_id: "p", name: "Research", folder_path: "/unmounted" });
+    nodes["#pm-name"]!.value = "Renamed";
+    vi.mocked(api).mockResolvedValueOnce({ project_id: "p" });
+    await submitProjectModal();
+    const body = JSON.parse(String(vi.mocked(api).mock.calls[0]![1]!.body));
+    expect(body.name).toBe("Renamed");
+    expect(body).not.toHaveProperty("folder_path");
+  });
 });

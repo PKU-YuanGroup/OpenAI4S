@@ -189,6 +189,34 @@ def test_sibling_failure_does_not_become_another_sessions_result():
 
 
 @pytest.mark.stubbed_backend
+def test_settings_flush_is_not_refused_by_a_sibling_sessions_failure():
+    autosave, service, _store = fake_autosave(debounce=0.2)
+    service.sync_session = lambda root, *, workspace=None, branch_id=None: {
+        "state": "error",
+        "error": "session two failed",
+    }
+    try:
+        # A running session's event lands in the same batch as the
+        # pre-deletion settings flush; only the settings outcome counts.
+        autosave.schedule_session("two")
+        assert autosave.flush_project_settings("project")["state"] == "saved"
+    finally:
+        autosave.close()
+
+
+@pytest.mark.stubbed_backend
+def test_tracking_a_binding_without_scheduling_saves_only_what_is_asked():
+    autosave, service, _store = fake_autosave()
+    try:
+        autosave.project_changed("project", "/source", schedule=False)
+        assert autosave._thread is None
+        assert autosave.flush_session("one")["state"] == "saved"
+        assert [root for root, _workspace in service.calls] == ["one"]
+    finally:
+        autosave.close()
+
+
+@pytest.mark.stubbed_backend
 def test_startup_and_shutdown_sweep_all_sessions_with_actual_workspace():
     autosave, service, _store = fake_autosave()
     autosave.schedule_all()
@@ -381,3 +409,26 @@ def test_transient_session_change_is_reported_but_not_remembered():
         assert autosave.status("project")["state"] == "saved"
     finally:
         autosave.close()
+
+
+def test_new_session_and_deletion_do_not_resnapshot_the_whole_project(tmp_path):
+    runner, _hub, _folder, pid, root = runner_with_project(tmp_path)
+    saved = []
+    original = runner.project_history.sync_session
+
+    def record(session, **kwargs):
+        saved.append(session)
+        return original(session, **kwargs)
+
+    runner.project_history.sync_session = record
+    try:
+        other = runner.create_session(pid)
+        flushed = runner.project_history_autosave.flush_session(other)
+        assert flushed["state"] in {"saved", "unchanged"}, flushed
+        assert saved == [other]
+        saved.clear()
+        runner.delete_session(other)
+        assert set(saved) == {other}
+        assert runner.store.get_frame(root) is not None
+    finally:
+        runner.close()

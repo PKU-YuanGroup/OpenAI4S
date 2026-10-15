@@ -6,10 +6,9 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai4s.host.files import (
-    SecureWorkspaceDirectory,
     UnsafeWorkspaceCandidate,
     WorkspaceFileService,
     is_secret_path,
@@ -81,8 +80,15 @@ def _inside_allowed_root(real: str) -> str | None:
     return None
 
 
-def validate_folder_path(value: Any, cfg: Any = None) -> str | None:
-    """Validate an explicit grant without creating or changing the directory."""
+def validate_folder_path(
+    value: Any, cfg: Any = None, *, browsing: bool = False
+) -> str | None:
+    """Validate an explicit grant without creating or changing the directory.
+
+    ``browsing`` admits a directory that only *splits* a credential sequence
+    (``~/.config``): the picker may pass through it to an ordinary subfolder,
+    whose credential siblings it already hides, but it cannot be granted.
+    """
     if value is None or value == "":
         return None
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
@@ -110,7 +116,9 @@ def validate_folder_path(value: Any, cfg: Any = None) -> str | None:
         raise ProjectFolderError(404, "project folder not found")
     if not is_dir:
         raise ProjectFolderError(400, "project folder is not a directory")
-    if is_secret_path(str(resolved)) or splits_secret_directory(str(resolved)):
+    if is_secret_path(str(resolved)) or (
+        not browsing and splits_secret_directory(str(resolved))
+    ):
         raise ProjectFolderError(403, "credential directories cannot be projects")
     if any(part.casefold() == ".openai4s" for part in resolved.parts):
         # An archive holds other conversations; linking it would expose them
@@ -150,6 +158,31 @@ def project_folder_path(store: Any, cfg: Any, project_id: str) -> Path:
         raise ProjectFolderError(409, "project folder changed; select it again")
     assert canonical is not None
     return Path(canonical)
+
+
+def session_project_files(
+    store: Any, cfg: Any, frame_id: str | None, *, workspace: Callable[[], Path]
+) -> "ReadOnlyProjectFiles":
+    """A session's read-only folder, resolved from its live frame.
+
+    ``workspace`` is called only once a folder is bound, so a session without
+    one never materializes its workspace here.
+    """
+    from openai4s.server.session_package import session_import_quarantine_key
+
+    scope = store.resolve_frame_scope(frame_id)
+    root = scope.get("root_frame_id")
+    if not root or store.get_frame(str(root)) is None:
+        raise ValueError("project folder access requires a persisted session")
+    if store.get_setting(session_import_quarantine_key(str(root))) is not None:
+        raise ValueError(
+            "imported Session is quarantined; project folder access is unavailable"
+        )
+    path = project_folder_path(store, cfg, str(scope.get("project_id") or ""))
+    current = workspace()
+    if path == current or path in current.parents or current in path.parents:
+        raise ValueError("project source folder must not overlap the session workspace")
+    return ReadOnlyProjectFiles(path)
 
 
 class ReadOnlyProjectFiles(WorkspaceFileService):
@@ -195,11 +228,6 @@ class ReadOnlyProjectFiles(WorkspaceFileService):
                 "project history is available through the Local history view"
             )
         return parts
-
-    def open_verified_directory(self, relative: str | Path) -> SecureWorkspaceDirectory:
-        directory = super().open_verified_directory(relative)
-        directory._predicate = self.is_secret_path
-        return directory
 
     def resolve(self, relative: str, *, must_exist: bool = False) -> Path:
         self._candidate_parts(relative)

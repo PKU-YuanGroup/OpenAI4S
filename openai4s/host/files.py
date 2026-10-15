@@ -1545,7 +1545,9 @@ class WorkspaceFileService:
             descriptor,
             relative=str(Path(*parts)) if parts else ".",
             aliases=aliases,
-            predicate=is_secret_path,
+            # Through `self` so a narrower service (read-only project folders)
+            # classifies listed children with its own denylist.
+            predicate=self.is_secret_path,
         )
 
     def _resolved_path_checker(

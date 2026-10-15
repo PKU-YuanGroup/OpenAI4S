@@ -61,6 +61,9 @@ class ProjectHistoryAutosave:
         self._thread: threading.Thread | None = None
         self._results: dict[str, dict[str, Any]] = {}
         self._project_results: dict[str, dict[str, Any]] = {}
+        # The settings sync alone: a sibling session's failure in the same
+        # batch must not read as a failed settings archive.
+        self._settings_results: dict[str, dict[str, Any]] = {}
         self._errors: dict[str, dict[str, Any]] = {}
         # Initial discovery is one cheap query during composition; no worker
         # or filesystem save exists on installs with no bound project folders.
@@ -99,6 +102,7 @@ class ProjectHistoryAutosave:
                             self._results[pending_id] = failure
                     for pid in self._enabled:
                         self._project_results[pid] = failure
+                        self._settings_results[pid] = failure
                         self._errors[pid] = {
                             **failure,
                             "failed_at": int(time.time() * 1000),
@@ -107,13 +111,18 @@ class ProjectHistoryAutosave:
             self._condition.notify_all()
             return self._issued
 
-    def project_changed(self, project_id: str, folder_path: str | None) -> None:
+    def project_changed(
+        self, project_id: str, folder_path: str | None, *, schedule: bool = True
+    ) -> None:
+        """Track the binding; ``schedule=False`` when the caller already
+        queues exactly what it needs (one session, or the settings) rather
+        than a re-snapshot of every session in the project."""
         with self._condition:
             if folder_path:
                 self._enabled.add(project_id)
             else:
                 self._enabled.discard(project_id)
-        if folder_path:
+        if folder_path and schedule:
             self._enqueue("project", project_id)
 
     def schedule_session(self, root_frame_id: str) -> None:
@@ -254,6 +263,7 @@ class ProjectHistoryAutosave:
             if project is None or not project.get("folder_path"):
                 with self._condition:
                     self._project_results[pid] = {"state": "skipped"}
+                    self._settings_results[pid] = {"state": "skipped"}
                     for root in roots:
                         self._results[root] = {"state": "skipped"}
                 continue
@@ -262,6 +272,8 @@ class ProjectHistoryAutosave:
             except Exception as error:
                 result = self._safe_error(error)
             self._remember(pid, result, component="settings")
+            with self._condition:
+                self._settings_results[pid] = result
             first_error = result if result.get("state") == "error" else None
             for root in sorted(roots):
                 try:
@@ -328,6 +340,7 @@ class ProjectHistoryAutosave:
                             self._results[identity] = failure
                     for pid in projects:
                         self._project_results[pid] = failure
+                        self._settings_results[pid] = failure
                 for project in projects:
                     self._remember(project, failure, component="project")
             finally:
@@ -417,7 +430,7 @@ class ProjectHistoryAutosave:
             self._remember(project_id, failure, component="settings")
             return failure
         with self._condition:
-            return dict(self._project_results.get(project_id) or {"state": "skipped"})
+            return dict(self._settings_results.get(project_id) or {"state": "skipped"})
 
     def flush_project(
         self, project_id: str, *, timeout: float = 30.0

@@ -516,3 +516,88 @@ def test_revision_picker_does_not_reread_every_manifest(tmp_path, monkeypatch):
     snapshot = service.read_session(pid, sid)
     assert len(snapshot["revisions"]) == 3
     assert len(calls) == 1
+
+
+def test_uncommitted_session_and_stray_entries_do_not_hide_the_archive(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    assert service.sync_session(sid)["state"] == "saved"
+    sessions = source / ".openai4s/sessions"
+    # A first save that published payloads but never reached index.json, and
+    # a Finder file, are not archived sessions.
+    (sessions / "interrupted-session" / "revisions" / ("a" * 64)).mkdir(parents=True)
+    (sessions / ".DS_Store").write_bytes(b"\0")
+    listed = service.list_sessions(pid)
+    assert listed["error"] is None, listed
+    assert [row["session_id"] for row in listed["sessions"]] == [sid]
+    status = service.status(pid)
+    assert status["enabled"] is True and status["sessions_count"] == 1
+
+
+def test_interrupted_revision_without_manifest_is_completed_and_skipped(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    first = service.sync_session(sid)
+    assert first["state"] == "saved", first
+    store.add_message(root_frame_id=sid, role="user", content="Next")
+    second = service.sync_session(sid)
+    revision = source / ".openai4s/sessions" / sid / "revisions" / second["revision_id"]
+    # Interrupted after the payloads were linked, before the manifest.
+    (revision / "manifest.json").unlink()
+    assert service.read_session(pid, sid, first["revision_id"])["state"] == "ready"
+    retried = service.sync_session(sid)
+    assert retried["state"] in {"saved", "unchanged"}, retried
+    assert retried["revision_id"] == second["revision_id"]
+    snapshot = service.read_session(pid, sid)
+    assert snapshot["state"] == "ready", snapshot
+    assert len(snapshot["revisions"]) == 2
+
+
+def test_partial_unlisted_revision_does_not_hide_readable_ones(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    saved = service.sync_session(sid)
+    partial = source / ".openai4s/sessions" / sid / "revisions" / ("b" * 64)
+    partial.mkdir()
+    (partial / "messages.jsonl").write_bytes(b"")
+    snapshot = service.read_session(pid, sid)
+    assert snapshot["state"] == "ready", snapshot
+    assert [row["revision_id"] for row in snapshot["revisions"]] == [
+        saved["revision_id"]
+    ]
+
+
+def test_user_edited_gitignore_and_corrupt_index_do_not_block_saving(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    assert service.sync_session(sid)["state"] == "saved"
+    (source / ".openai4s/.gitignore").write_text("!sessions/\n")
+    (source / ".openai4s/sessions" / sid / "index.json").write_text("{not json")
+    store.add_message(root_frame_id=sid, role="user", content="Again")
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    assert (source / ".openai4s/.gitignore").read_text() == "!sessions/\n"
+    assert service.list_sessions(pid)["sessions"][0]["message_count"] == 3
+
+
+def test_artifact_snapshots_under_a_symlinked_data_dir_are_archived(tmp_path):
+    real = tmp_path / "real-daemon"
+    real.mkdir()
+    (tmp_path / "daemon").symlink_to(real, target_is_directory=True)
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    snapshot = cfg.data_dir / "artifact-versions" / "saved.txt"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(b"captured")
+    store.record_cell_artifact(
+        path=str(workspace / "report.txt"),
+        filename="report.txt",
+        content_type="text/plain",
+        size_bytes=8,
+        checksum=hashlib.sha256(b"captured").hexdigest(),
+        producing_cell_id="cell-linked",
+        frame_id=sid,
+        root_frame_id=sid,
+        project_id=pid,
+        snapshot_path=str(snapshot),
+    )
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    assert not result["omissions"], result["omissions"]
+    files = service.read_session(pid, sid)["files"]
+    assert [row["kind"] for row in files].count("artifact") == 1

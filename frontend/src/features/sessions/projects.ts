@@ -419,9 +419,14 @@ export function closeProjectModal(): void {
   editingProject.value = null;
 }
 
+// The folder the edited project opened with. A PATCH sends `folder_path` only
+// when it changed, so an unrelated edit never revalidates an unavailable folder.
+let editingFolderPath = "";
+
 export function openProjectModal(proj?: ProjectLike | null): void {
   const p = proj || null;
   editingProject.value = p ? p.project_id || p.id : null;
+  editingFolderPath = p?.folder_path || "";
   const title = $("#proj-modal .modal-head span");
   if (title) title.textContent = t(p ? "projModal.editTitle" : "projModal.title");
   const name = $("#pm-name") as HTMLInputElement | null;
@@ -445,13 +450,14 @@ export async function submitProjectModal(): Promise<void> {
   if (btn) btn.disabled = true;
   try {
     if (editingProject.value) {
+      const folderPath = ($("#pm-folder") as HTMLInputElement | null)?.value.trim() || "";
       await api(`/projects/${editingProject.value}`, {
         method: "PATCH",
         body: JSON.stringify({
           name,
           description: ($("#pm-desc") as HTMLTextAreaElement | null)?.value,
           context: ($("#pm-ctx") as HTMLTextAreaElement | null)?.value,
-          folder_path: ($("#pm-folder") as HTMLInputElement | null)?.value.trim() || "",
+          ...(folderPath === editingFolderPath ? {} : { folder_path: folderPath }),
         }),
       });
       // The directory carries the new name to the header and the switcher; a
