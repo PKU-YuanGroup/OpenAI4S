@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -87,15 +89,115 @@ def test_changed_files_and_messages_create_revisions_with_shared_objects(tmp_pat
     store.add_message(root_frame_id=sid, role="user", content="Repeat")
     second = service.sync_session(sid)
     assert second["revision_id"] != first["revision_id"]
-    assert len(list((source / ".openai4s/objects").iterdir())) == 1
+
+    def file_objects(saved):
+        files = service.read_session(pid, sid, saved["revision_id"])["files"]
+        return {row["sha256"] for row in files}
+
+    assert file_objects(second) == file_objects(first)
     (workspace / "result.csv").write_text("value\n9\n")
     third = service.sync_session(sid)
     assert third["revision_id"] != second["revision_id"]
-    assert len(list((source / ".openai4s/objects").iterdir())) == 2
+    assert len(file_objects(first) | file_objects(third)) == 2
     old = service.read_file(pid, sid, first["revision_id"], "workspace/result.csv")
     new = service.read_file(pid, sid, third["revision_id"], "workspace/result.csv")
     assert old["data"] == b"value\n3\n5\n" and new["data"] == b"value\n9\n"
     assert len(service.read_session(pid, sid)["revisions"]) == 3
+
+
+def _archive_files(source):
+    return {
+        str(path.relative_to(source)): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in (source / ".openai4s").rglob("*")
+        if path.is_file()
+    }
+
+
+def test_unchanged_session_writes_nothing_even_when_its_frame_moves(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    first = service.sync_session(sid)
+    assert first["state"] == "saved", first
+    before = _archive_files(source)
+    stamp = store.get_frame(sid)["updated_at"]
+    time.sleep(0.005)
+    # A status change bumps the frame's updated_at; nothing archived moved.
+    store.update_frame(sid, status="done")
+    assert store.get_frame(sid)["updated_at"] != stamp
+    again = service.sync_session(sid)
+    assert again["state"] == "unchanged", again
+    assert again["revision_id"] == first["revision_id"]
+    assert _archive_files(source) == before
+    assert len(service.read_session(pid, sid)["revisions"]) == 1
+
+
+def test_long_session_archive_grows_linearly(tmp_path):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    session = source / ".openai4s/sessions" / sid
+
+    def archived():
+        return sum(
+            path.stat().st_size
+            for path in (source / ".openai4s").rglob("*")
+            if path.is_file()
+        )
+
+    sizes = []
+    for turn in range(80):
+        store.add_message(
+            root_frame_id=sid, role="user", content=f"Question {turn}: " + "q" * 300
+        )
+        store.add_message(
+            root_frame_id=sid, role="assistant", content=f"Answer {turn}: " + "a" * 900
+        )
+        store.log_cell(
+            frame_id=sid,
+            root_frame_id=sid,
+            project_id=pid,
+            code=f"value = {turn}",
+            result={"id": f"turn-{turn}", "stdout": "o" * 300 + "\n", "stderr": ""},
+        )
+        assert service.sync_session(sid)["state"] == "saved"
+        sizes.append(archived())
+    first, last = sizes[19] - sizes[0], sizes[79] - sizes[60]
+    conversation = sum(
+        (session / name).stat().st_size for name in ("messages.jsonl", "cells.jsonl")
+    )
+    # A full copy per revision made the last quarter of this session grow
+    # about six times faster than the first, to ~70x the conversation; shared
+    # chunks keep each quarter's growth about even.
+    assert last < 2.5 * first, (first, last)
+    assert sizes[-1] < 12 * conversation, (sizes[-1], conversation)
+    snapshot = service.read_session(pid, sid)
+    assert len(snapshot["messages"]) == 162 and len(snapshot["cells"]) == 81
+    assert len(snapshot["revisions"]) == 80
+
+
+def test_reads_do_not_wait_behind_a_running_save(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    saved = service.sync_session(sid)
+    started, release = threading.Event(), threading.Event()
+    original = service._snapshot
+
+    def slow(*args, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_snapshot", slow)
+    store.add_message(root_frame_id=sid, role="user", content="slow")
+    saver = threading.Thread(target=service.sync_session, args=(sid,))
+    saver.start()
+    try:
+        assert started.wait(5)
+        began = time.monotonic()
+        assert service.read_session(pid, sid)["revision_id"] == saved["revision_id"]
+        assert service.list_sessions(pid)["sessions"][0]["session_id"] == sid
+        assert service.status(pid)["enabled"] is True
+        assert time.monotonic() - began < 2
+    finally:
+        release.set()
+        saver.join(10)
+    assert service.read_session(pid, sid)["messages"][-1]["content"] == "slow"
 
 
 def test_clean_database_rebind_reads_archive_after_live_project_is_deleted(tmp_path):
@@ -139,7 +241,8 @@ def test_tampering_and_hardlinks_are_refused_without_replacing_old_revision(tmp_
     source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
     saved = service.sync_session(sid)
     revision = saved["revision_id"]
-    object_file = next((source / ".openai4s/objects").iterdir())
+    digest = service.read_session(pid, sid)["files"][0]["sha256"]
+    object_file = source / ".openai4s/objects" / digest
     object_file.write_text("tampered")
     assert (
         service.read_file(pid, sid, revision, "workspace/result.csv")["state"]

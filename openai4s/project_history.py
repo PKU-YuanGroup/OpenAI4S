@@ -1,8 +1,10 @@
 """Portable, inert project history under the explicitly selected .openai4s dir.
 
 SQLite remains the live authority. This archive is an append-only human-readable
-copy, never an execution restore or a source of permissions. File objects are
-content-addressed and revisions remain after the live project/session is deleted.
+copy, never an execution restore or a source of permissions. File versions and
+conversation records are content-addressed objects shared by every revision
+that contains them, and revisions remain after the live project/session is
+deleted.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import stat
 import threading
 import time
 import uuid
+import zlib
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -40,9 +43,24 @@ MAX_FILES = 1000
 MAX_RECORDS = 5000
 MAX_REVISIONS = 1000
 MAX_SCAN_ENTRIES = 20_000
-_LOCK = threading.RLock()
+#: Manifest format. 2 moved the payloads out of each revision directory into
+#: shared chunk objects and dropped the frame's ``updated_at`` from identity.
+_SCHEMA = 2
+#: Each a JSONL list of records, stored as chunks under ``objects/``.
+_MEMBERS = ("messages.jsonl", "cells.jsonl", "files.jsonl")
+_CHUNK_BYTES = 256 * 1024
+#: A record closes its chunk with probability 1/_CHUNK_SPLIT; no chunk holds
+#: more than _CHUNK_RECORDS, which bounds the open tail each save rewrites.
+_CHUNK_SPLIT = 8
+_CHUNK_RECORDS = 2 * _CHUNK_SPLIT
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+#: Per-archive locks, keyed by the project folder. Saves of one archive run
+#: one at a time; readers never wait for a save, only for the replacement of
+#: the two pointer files they read (``index.json``, ``revisions.json``).
+_GUARD = threading.Lock()
+_SAVING: dict[str, threading.RLock] = {}
+_POINTERS: dict[str, threading.RLock] = {}
 #: Error code for a reached archive limit. Retrying cannot clear it, so the
 #: deletion refusal names the way out instead of only "retry".
 LIMIT_CODE = "project_history_limit"
@@ -98,6 +116,59 @@ def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _archive_lock(table: dict[str, threading.RLock], root: Path) -> threading.RLock:
+    with _GUARD:
+        return table.setdefault(str(root), threading.RLock())
+
+
+def _chunks(lines: list[bytes]) -> list[bytes]:
+    """Group JSONL records into content-defined chunks.
+
+    A record closes its chunk when its own CRC selects it or the chunk reaches
+    ``_CHUNK_RECORDS`` or ``_CHUNK_BYTES``. Each depends only on the records
+    since the previous boundary, so appending records leaves every closed
+    chunk byte-identical and therefore shared by address with the previous
+    revision. Copying the whole payload into each revision made a long
+    conversation's archive grow with the square of its length.
+    """
+    chunks: list[bytes] = []
+    current: list[bytes] = []
+    size = 0
+    for line in lines:
+        current.append(line)
+        size += len(line)
+        if (
+            size >= _CHUNK_BYTES
+            or len(current) >= _CHUNK_RECORDS
+            or zlib.crc32(line) % _CHUNK_SPLIT == 0
+        ):
+            chunks.append(b"".join(current))
+            current, size = [], 0
+    if current:
+        chunks.append(b"".join(current))
+    return chunks
+
+
+def _records(data: bytes) -> list[Any]:
+    return [json.loads(line) for line in data.split(b"\n") if line]
+
+
+def _transcript(title: Any, messages: list[dict]) -> bytes:
+    """A readable rendering of the messages; derived, so never archived."""
+    return (
+        "# "
+        + str(title)
+        + "\n\n"
+        + "\n\n".join(
+            "## "
+            + str(item.get("role") or "message")
+            + "\n\n"
+            + str(item.get("content") or "")
+            for item in messages
+        )
+    ).encode("utf-8")
+
+
 def _identity(value: str, *, digest: bool = False) -> str:
     if not isinstance(value, str) or not (_DIGEST if digest else _ID).fullmatch(value):
         raise ProjectHistoryError(
@@ -147,6 +218,10 @@ class _Tree:
             os.close(descriptor)
             raise
         self.fd = descriptor
+        # Measured by the first write that would grow the archive, then kept
+        # current by every write; a save that adds nothing never walks it.
+        self.used_bytes: int | None = None
+        self.used_entries = 0
 
     def __enter__(self):
         return self
@@ -161,6 +236,8 @@ class _Tree:
                 if create:
                     try:
                         os.mkdir(part, 0o700, dir_fd=descriptor)
+                        if self.used_bytes is not None:
+                            self.used_entries += 1
                     except FileExistsError:
                         pass
                 child = os.open(part, _flags(True), dir_fd=descriptor)
@@ -223,6 +300,46 @@ class _Tree:
         finally:
             os.close(parent)
 
+    def measure(self) -> int:
+        """Walk the archive once; refuse unsafe entries and reached limits."""
+        total = entries = 0
+        stack = [(".openai4s",)]
+        while stack:
+            parts = stack.pop()
+            try:
+                descriptor = self.directory(parts)
+            except FileNotFoundError:
+                continue
+            try:
+                with os.scandir(descriptor) as items:
+                    for entry in items:
+                        entries += 1
+                        if entries > MAX_SCAN_ENTRIES:
+                            raise ProjectHistoryError(
+                                "project history reached its entry limit",
+                                409,
+                                LIMIT_CODE,
+                            )
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            stack.append((*parts, entry.name))
+                        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                            total += info.st_size
+                        else:
+                            raise ProjectHistoryError(
+                                "project history contains an unsafe file"
+                            )
+                        if total > MAX_ARCHIVE_BYTES:
+                            raise ProjectHistoryError(
+                                "project history reached its storage limit",
+                                409,
+                                LIMIT_CODE,
+                            )
+            finally:
+                os.close(descriptor)
+        self.used_bytes, self.used_entries = total, entries
+        return total
+
     def has_object(self, digest: str, size: int) -> bool:
         try:
             info = self.stat(".openai4s/objects/" + digest)
@@ -269,10 +386,16 @@ class _Tree:
                         )
                     return
             delta = len(data) - (existing.st_size if existing else 0)
-            if getattr(self, "used_bytes", 0) + delta > MAX_ARCHIVE_BYTES:
-                raise ProjectHistoryError(
-                    "project history reached its storage limit", 409, LIMIT_CODE
-                )
+            if existing is None or delta > 0:
+                used = self.measure() if self.used_bytes is None else self.used_bytes
+                if used + delta > MAX_ARCHIVE_BYTES:
+                    raise ProjectHistoryError(
+                        "project history reached its storage limit", 409, LIMIT_CODE
+                    )
+                if existing is None and self.used_entries >= MAX_SCAN_ENTRIES:
+                    raise ProjectHistoryError(
+                        "project history reached its entry limit", 409, LIMIT_CODE
+                    )
             descriptor = os.open(
                 temporary,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -302,7 +425,10 @@ class _Tree:
             else:
                 os.replace(temporary, parts[-1], src_dir_fd=parent, dst_dir_fd=parent)
             os.fsync(parent)
-            self.used_bytes = getattr(self, "used_bytes", 0) + delta
+            if self.used_bytes is not None:
+                self.used_bytes += delta
+                if existing is None:
+                    self.used_entries += 1
         finally:
             try:
                 os.unlink(temporary, dir_fd=parent)
@@ -402,35 +528,38 @@ class ProjectHistoryService:
         tree.write(
             f".openai4s/settings-revisions/{_hash(data)}.json", data, immutable=True
         )
-        tree.write(".openai4s/settings.json", data)
+        try:
+            current = tree.read(".openai4s/settings.json")
+        except (FileNotFoundError, ProjectHistoryError):
+            current = None
+        if current != data:
+            tree.write(".openai4s/settings.json", data)
 
     def sync_project(self, pid: str, *, include_sessions: bool = False) -> dict:
-        with _LOCK:
-            try:
-                root = self._root(pid)
-                settings = self._settings(pid)
-                with _Tree(root) as tree:
-                    self._archive_budget(tree)
-                    self._write_settings(tree, settings)
-                if include_sessions:
-                    sessions = self.store.project_session_ids(pid)
-                    if len(sessions) > MAX_FILES:
-                        raise ProjectHistoryError(
-                            "project has too many sessions to archive in one operation"
-                        )
-                    for session in sessions:
-                        result = self.sync_session(session)
-                        if result["state"] == "error":
-                            return result
-                result = {
-                    "state": "saved",
-                    "last_saved_at": int(time.time() * 1000),
-                    "error": None,
-                }
-                self._states[pid] = result
-                return result
-            except Exception as error:
-                return self._error(pid, error)
+        try:
+            root = self._root(pid)
+            settings = self._settings(pid)
+            with _archive_lock(_SAVING, root), _Tree(root) as tree:
+                self._write_settings(tree, settings)
+            if include_sessions:
+                sessions = self.store.project_session_ids(pid)
+                if len(sessions) > MAX_FILES:
+                    raise ProjectHistoryError(
+                        "project has too many sessions to archive in one operation"
+                    )
+                for session in sessions:
+                    result = self.sync_session(session)
+                    if result["state"] == "error":
+                        return result
+            result = {
+                "state": "saved",
+                "last_saved_at": int(time.time() * 1000),
+                "error": None,
+            }
+            self._states[pid] = result
+            return result
+        except Exception as error:
+            return self._error(pid, error)
 
     def _file_sources(
         self, rootid: str, workspace: Path, omissions: list[dict]
@@ -587,7 +716,9 @@ class ProjectHistoryService:
         tree: _Tree,
         branch_id: str,
         secrets: tuple[bytes, ...],
-    ) -> tuple[dict, dict[str, bytes]]:
+    ) -> tuple[dict, dict[str, bytes], dict[str, bytes]]:
+        """Return the manifest, its chunk objects by digest, and the whole
+        payloads (for the session's convenience copies)."""
         rootid = str(frame.get("frame_id") or frame.get("id"))
         pid = str(frame.get("project_id") or "default")
         omissions: list[dict] = []
@@ -628,47 +759,35 @@ class ProjectHistoryService:
         )
         if len(cell_rows) > MAX_RECORDS:
             omissions.append({"path": "cells", "reason": "record_count_limit"})
-        cells = []
-        for item in cell_rows[:MAX_RECORDS]:
-            detail = (
-                self.store.cell_detail(str(item.get("producing_cell_id") or "")) or item
+        # ``list_cells`` rows already carry every archived column; a
+        # ``cell_detail`` query per cell on every save added nothing.
+        cells = [
+            _scrub(
+                {
+                    key: item.get(key)
+                    for key in (
+                        "producing_cell_id",
+                        "cell_index",
+                        "state_revision",
+                        "branch_id",
+                        "language",
+                        "code",
+                        "stdout",
+                        "stderr",
+                        "error",
+                        "created_at",
+                    )
+                },
+                secrets,
             )
-            cells.append(
-                _scrub(
-                    {
-                        key: detail.get(key)
-                        for key in (
-                            "producing_cell_id",
-                            "cell_index",
-                            "state_revision",
-                            "branch_id",
-                            "language",
-                            "code",
-                            "stdout",
-                            "stderr",
-                            "error",
-                            "created_at",
-                        )
-                    },
-                    secrets,
-                )
-            )
-        payloads = {
-            "messages.jsonl": b"".join(_json(item) + b"\n" for item in messages),
-            "cells.json": _json(cells),
-            "transcript.md": (
-                "# "
-                + title
-                + "\n\n"
-                + "\n\n".join(
-                    "## "
-                    + str(item.get("role") or "message")
-                    + "\n\n"
-                    + str(item.get("content") or "")
-                    for item in messages
-                )
-            ).encode("utf-8"),
+            for item in cell_rows[:MAX_RECORDS]
+        ]
+        records = {
+            "messages.jsonl": [_json(item) + b"\n" for item in messages],
+            "cells.jsonl": [_json(item) + b"\n" for item in cells],
         }
+        payloads = {name: b"".join(lines) for name, lines in records.items()}
+        payloads["transcript.md"] = _transcript(title, messages)
         if any(len(data) > MAX_METADATA_BYTES for data in payloads.values()):
             raise ProjectHistoryError("conversation text exceeds the archive limit")
         files = []
@@ -767,8 +886,27 @@ class ProjectHistoryService:
                 secrets,
             ),
         }
+        records["files.jsonl"] = [_json(item) + b"\n" for item in files]
+        payloads["files.jsonl"] = b"".join(records["files.jsonl"])
+        if len(payloads["files.jsonl"]) > MAX_METADATA_BYTES:
+            raise ProjectHistoryError("file list exceeds the archive limit")
+        objects: dict[str, bytes] = {}
+        members = {}
+        for name, lines in records.items():
+            digests = []
+            for chunk in _chunks(lines):
+                digest = _hash(chunk)
+                objects[digest] = chunk
+                digests.append(digest)
+            members[name] = {
+                "sha256": _hash(payloads[name]),
+                "size_bytes": len(payloads[name]),
+                "chunks": digests,
+            }
+        # Identity is archived content only. The frame's ``updated_at`` moves
+        # with every status change, which made an unchanged session look new.
         manifest = {
-            "schema_version": 1,
+            "schema_version": _SCHEMA,
             "session_id": rootid,
             "branch_id": branch_id,
             "history_scope": {
@@ -778,63 +916,19 @@ class ProjectHistoryService:
                 "artifacts": "all_retained_session_versions",
             },
             "title": title,
-            "updated_at": int(frame.get("updated_at") or 0),
             "settings": settings,
             "message_count": len(messages),
             "cell_count": len(cells),
             "file_count": len(files),
-            "files": files,
             "omissions": omissions,
-            "members": {
-                name: {"sha256": _hash(data), "size_bytes": len(data)}
-                for name, data in payloads.items()
-            },
+            "members": members,
         }
         for data in (*payloads.values(), _json(manifest)):
             if any(secret in data for secret in secrets):
                 raise ProjectHistoryError(
                     "project history snapshot still contains secret material"
                 )
-        return manifest, payloads
-
-    def _archive_budget(self, tree: _Tree) -> None:
-        total = 0
-        stack = [(".openai4s",)]
-        scanned = 0
-        while stack:
-            parts = stack.pop()
-            try:
-                descriptor = tree.directory(parts)
-            except FileNotFoundError:
-                continue
-            try:
-                with os.scandir(descriptor) as entries:
-                    for entry in entries:
-                        scanned += 1
-                        if scanned > MAX_SCAN_ENTRIES:
-                            raise ProjectHistoryError(
-                                "project history reached its entry limit",
-                                409,
-                                LIMIT_CODE,
-                            )
-                        info = entry.stat(follow_symlinks=False)
-                        if stat.S_ISDIR(info.st_mode):
-                            stack.append((*parts, entry.name))
-                        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                            total += info.st_size
-                        else:
-                            raise ProjectHistoryError(
-                                "project history contains an unsafe file"
-                            )
-                        if total > MAX_ARCHIVE_BYTES:
-                            raise ProjectHistoryError(
-                                "project history reached its storage limit",
-                                409,
-                                LIMIT_CODE,
-                            )
-            finally:
-                os.close(descriptor)
-        tree.used_bytes = total
+        return manifest, objects, payloads
 
     def sync_session(
         self,
@@ -844,99 +938,109 @@ class ProjectHistoryService:
         branch_id: str | None = None,
     ) -> dict:
         pid = ""
-        with _LOCK:
-            try:
-                _identity(rootid)
-                frame = self.store.get_frame(rootid)
-                if frame is None or (frame.get("root_frame_id") or rootid) != rootid:
-                    raise ProjectHistoryError("session not found")
-                pid = str(frame.get("project_id") or "default")
-                root = self._root(pid)
-                guard = self.store.session_export_guard(rootid)
-                active_branch = str(guard["active_branch_id"])
-                if guard.get("recovery_marker_present") or (
-                    branch_id is not None and branch_id != active_branch
-                ):
-                    raise ProjectHistoryError(
-                        "session branch changed or is recovering; save again",
-                        409,
-                        CHANGED_CODE,
-                    )
-                if workspace is None and active_branch != rootid:
-                    # The Web runner owns active branch/placement workspace
-                    # resolution; guessing the main workspace would mislabel it.
-                    raise ProjectHistoryError(
-                        "active branch workspace is required for this snapshot",
-                        409,
-                        "project_history_workspace_required",
-                    )
-                workspace = (
-                    Path(workspace)
-                    if workspace is not None
-                    else Path(self.cfg.data_dir) / "agent-workspaces" / rootid
+        try:
+            _identity(rootid)
+            frame = self.store.get_frame(rootid)
+            if frame is None or (frame.get("root_frame_id") or rootid) != rootid:
+                raise ProjectHistoryError("session not found")
+            pid = str(frame.get("project_id") or "default")
+            root = self._root(pid)
+            guard = self.store.session_export_guard(rootid)
+            active_branch = str(guard["active_branch_id"])
+            if guard.get("recovery_marker_present") or (
+                branch_id is not None and branch_id != active_branch
+            ):
+                raise ProjectHistoryError(
+                    "session branch changed or is recovering; save again",
+                    409,
+                    CHANGED_CODE,
                 )
-                if workspace.is_symlink():
-                    raise ProjectHistoryError(
-                        "history source workspace is a symbolic link"
-                    )
-                workspace = workspace.resolve()
-                if (
-                    root == workspace
-                    or root in workspace.parents
-                    or workspace in root.parents
-                ):
-                    raise ProjectHistoryError(
-                        "history source workspace overlaps the project folder"
-                    )
-                # Configured key values, so a key with no recognizable prefix
-                # is still caught; the same residual check Session packages
-                # fail closed on. Resolved once per save, not per use.
-                secrets = known_secret_bytes(self.store)
-                with _Tree(root) as tree:
-                    self._archive_budget(tree)
-                    manifest, payloads = self._snapshot(
-                        frame, workspace, tree, active_branch, secrets
-                    )
-                    self._check_snapshot_guard(rootid, pid, root, guard)
-                    revision = _hash(_json(manifest))
-                    session = ".openai4s/sessions/" + rootid
-                    revisions = tree.names(session + "/revisions")
-                    if revision not in revisions and len(revisions) >= MAX_REVISIONS:
-                        raise ProjectHistoryError(
-                            "session history reached its revision limit",
-                            409,
-                            LIMIT_CODE,
-                        )
-                    try:
-                        previous = json.loads(tree.read(session + "/index.json"))
-                    except (FileNotFoundError, ValueError):
-                        # Only reports "unchanged"; this save rewrites it.
-                        previous = {}
-                    if not isinstance(previous, dict):
-                        previous = {}
-                    prefix = session + "/revisions/" + revision + "/"
-                    now = int(time.time() * 1000)
-                    manifest["created_at"] = now
-                    if revision in revisions:
-                        try:
-                            _, old_manifest = self._read_revision(
-                                tree, rootid, revision
-                            )
-                            manifest["created_at"] = old_manifest["created_at"]
-                        except FileNotFoundError:
-                            # An interrupted earlier save left the payloads
-                            # without a manifest; the writes below complete it.
-                            pass
-                    if len(_json(manifest)) > MAX_METADATA_BYTES:
-                        raise ProjectHistoryError(
-                            "session manifest exceeds the archive limit"
-                        )
-                    for name, data in payloads.items():
-                        tree.write(prefix + name, data, immutable=True)
+            if workspace is None and active_branch != rootid:
+                # The Web runner owns active branch/placement workspace
+                # resolution; guessing the main workspace would mislabel it.
+                raise ProjectHistoryError(
+                    "active branch workspace is required for this snapshot",
+                    409,
+                    "project_history_workspace_required",
+                )
+            workspace = (
+                Path(workspace)
+                if workspace is not None
+                else Path(self.cfg.data_dir) / "agent-workspaces" / rootid
+            )
+            if workspace.is_symlink():
+                raise ProjectHistoryError("history source workspace is a symbolic link")
+            workspace = workspace.resolve()
+            if (
+                root == workspace
+                or root in workspace.parents
+                or workspace in root.parents
+            ):
+                raise ProjectHistoryError(
+                    "history source workspace overlaps the project folder"
+                )
+            # Configured key values, so a key with no recognizable prefix
+            # is still caught; the same residual check Session packages
+            # fail closed on. Resolved once per save, not per use.
+            secrets = known_secret_bytes(self.store)
+            with _archive_lock(_SAVING, root), _Tree(root) as tree:
+                manifest, objects, payloads = self._snapshot(
+                    frame, workspace, tree, active_branch, secrets
+                )
+                self._check_snapshot_guard(rootid, pid, root, guard)
+                revision = _hash(_json(manifest))
+                session = ".openai4s/sessions/" + rootid
+                # Chunks a previous revision already holds cost one stat each.
+                for digest, chunk in objects.items():
                     tree.write(
-                        prefix + "manifest.json", _json(manifest), immutable=True
+                        ".openai4s/objects/" + digest,
+                        chunk,
+                        immutable=True,
+                        content_addressed=True,
                     )
-                    self._record_revision(tree, session, manifest, revision)
+                try:
+                    with _archive_lock(_POINTERS, root):
+                        previous = json.loads(tree.read(session + "/index.json"))
+                except (FileNotFoundError, ValueError):
+                    # Only reports "unchanged"; a changed save rewrites it.
+                    previous = {}
+                if not isinstance(previous, dict):
+                    previous = {}
+                now = int(time.time() * 1000)
+                try:
+                    _, archived = self._read_revision(tree, rootid, revision)
+                except FileNotFoundError:
+                    # New, or an interrupted save never wrote its manifest.
+                    archived = None
+                if archived is None or previous.get("revision_id") != revision:
+                    if archived is None:
+                        revisions = tree.names(session + "/revisions")
+                        if (
+                            revision not in revisions
+                            and len(revisions) >= MAX_REVISIONS
+                        ):
+                            raise ProjectHistoryError(
+                                "session history reached its revision limit",
+                                409,
+                                LIMIT_CODE,
+                            )
+                        manifest["created_at"] = now
+                        data = _json(manifest)
+                        if len(data) > MAX_METADATA_BYTES:
+                            raise ProjectHistoryError(
+                                "session manifest exceeds the archive limit"
+                            )
+                        tree.write(
+                            session + "/revisions/" + revision + "/manifest.json",
+                            data,
+                            immutable=True,
+                        )
+                    else:
+                        created = archived.get("created_at")
+                        manifest["created_at"] = (
+                            created if isinstance(created, int) else now
+                        )
+                    count = self._record_revision(tree, session, manifest, revision)
                     self._write_settings(tree, self._settings(pid, secrets))
                     index = {
                         key: manifest[key]
@@ -944,47 +1048,48 @@ class ProjectHistoryService:
                             "session_id",
                             "branch_id",
                             "title",
-                            "updated_at",
                             "message_count",
                             "cell_count",
                             "file_count",
                         )
                     }
                     index.update(
+                        updated_at=int(frame.get("updated_at") or 0),
                         revision_id=revision,
                         last_saved_at=now,
-                        revisions_count=len(set(revisions) | {revision}),
+                        revisions_count=count,
                     )
                     # A reader sees either the previous committed revision or
                     # this complete one. Convenience files are non-authoritative.
                     for name, data in payloads.items():
                         tree.write(session + "/" + name, data)
-                    self._archive_budget(tree)
                     self._check_snapshot_guard(rootid, pid, root, guard)
-                    tree.write(session + "/index.json", _json(index))
-                result = {
-                    "state": (
-                        "unchanged"
-                        if previous.get("revision_id") == revision
-                        else "saved"
-                    ),
-                    "session_id": rootid,
-                    "revision_id": revision,
-                    "last_saved_at": now,
-                    "omissions": manifest["omissions"],
-                    "error": None,
-                }
-                self._states[pid] = result
-                return result
-            except Exception as error:
-                # A session that moved on mid-snapshot is transient: the call
-                # still reports it (deletion must not proceed), but it is not
-                # remembered as the project's save state.
-                transient = getattr(error, "code", "") == CHANGED_CODE
-                return {
-                    **self._error(pid, error, remember=not transient),
-                    "session_id": rootid,
-                }
+                    with _archive_lock(_POINTERS, root):
+                        tree.write(session + "/index.json", _json(index))
+                # Otherwise nothing archived changed, and nothing is written:
+                # an unchanged session never adds a revision, so autosave
+                # cannot spend the archive's limits on it.
+            result = {
+                "state": (
+                    "unchanged" if previous.get("revision_id") == revision else "saved"
+                ),
+                "session_id": rootid,
+                "revision_id": revision,
+                "last_saved_at": now,
+                "omissions": manifest["omissions"],
+                "error": None,
+            }
+            self._states[pid] = result
+            return result
+        except Exception as error:
+            # A session that moved on mid-snapshot is transient: the call
+            # still reports it (deletion must not proceed), but it is not
+            # remembered as the project's save state.
+            transient = getattr(error, "code", "") == CHANGED_CODE
+            return {
+                **self._error(pid, error, remember=not transient),
+                "session_id": rootid,
+            }
 
     def _check_snapshot_guard(
         self, rootid: str, pid: str, root: Path, guard: dict
@@ -1006,7 +1111,8 @@ class ProjectHistoryService:
     def _listed_revisions(tree: _Tree, session: str) -> dict[str, dict]:
         """Read the non-authoritative revision list; ignore malformed rows."""
         try:
-            rows = json.loads(tree.read(session + "/revisions.json"))
+            with _archive_lock(_POINTERS, tree.root):
+                rows = json.loads(tree.read(session + "/revisions.json"))
         except (FileNotFoundError, ValueError):
             return {}
         listed: dict[str, dict] = {}
@@ -1025,20 +1131,25 @@ class ProjectHistoryService:
 
     def _record_revision(
         self, tree: _Tree, session: str, manifest: dict, revision: str
-    ) -> None:
+    ) -> int:
+        """List ``revision`` once; return how many revisions are listed."""
         listed = self._listed_revisions(tree, session)
         if revision in listed:
-            return
+            return len(listed)
         listed[revision] = {
             "revision_id": revision,
             "created_at": int(manifest["created_at"]),
             "branch_id": str(manifest.get("branch_id") or ""),
         }
-        tree.write(session + "/revisions.json", _json(list(listed.values())))
+        with _archive_lock(_POINTERS, tree.root):
+            tree.write(session + "/revisions.json", _json(list(listed.values())))
+        return len(listed)
 
     def _index(self, tree: _Tree, sid: str) -> dict:
         _identity(sid)
-        row = json.loads(tree.read(f".openai4s/sessions/{sid}/index.json"))
+        with _archive_lock(_POINTERS, tree.root):
+            raw = tree.read(f".openai4s/sessions/{sid}/index.json")
+        row = json.loads(raw)
         if not isinstance(row, dict) or row.get("session_id") != sid:
             raise ProjectHistoryError("invalid archived session index")
         _identity(row.get("revision_id"), digest=True)
@@ -1064,49 +1175,45 @@ class ProjectHistoryService:
         It does not walk the whole archive: limits and unsafe entries are
         reported by the save that meets them.
         """
-        with _LOCK:
-            try:
-                root = self._root(pid)
-                if sessions is not None:
-                    rows = sessions
-                else:
-                    with _Tree(root) as tree:
-                        rows = self._indexes(tree)
-                latest = max(
-                    (int(row.get("last_saved_at") or 0) for row in rows), default=0
-                )
-                return {
-                    "enabled": True,
-                    "folder_path": str(root),
-                    "history_path": str(root / ".openai4s"),
-                    "state": "ready",
-                    "sessions_count": len(rows),
-                    "last_saved_at": latest or None,
-                    "error": None,
-                    **self._states.get(pid, {}),
-                }
-            except Exception as error:
-                # A read failure is not a save outcome; remembering it would
-                # keep reporting the error after reads recover.
-                return {"enabled": False, **self._error(pid, error, remember=False)}
+        try:
+            root = self._root(pid)
+            if sessions is not None:
+                rows = sessions
+            else:
+                with _Tree(root) as tree:
+                    rows = self._indexes(tree)
+            latest = max(
+                (int(row.get("last_saved_at") or 0) for row in rows), default=0
+            )
+            return {
+                "enabled": True,
+                "folder_path": str(root),
+                "history_path": str(root / ".openai4s"),
+                "state": "ready",
+                "sessions_count": len(rows),
+                "last_saved_at": latest or None,
+                "error": None,
+                **self._states.get(pid, {}),
+            }
+        except Exception as error:
+            # A read failure is not a save outcome; remembering it would
+            # keep reporting the error after reads recover.
+            return {"enabled": False, **self._error(pid, error, remember=False)}
 
     def list_sessions(self, pid: str) -> dict:
-        with _LOCK:
-            try:
-                with _Tree(self._root(pid)) as tree:
-                    rows = self._indexes(tree)
-                rows.sort(
-                    key=lambda row: int(row.get("last_saved_at") or 0), reverse=True
-                )
-                return {
-                    "state": "ready",
-                    "sessions": rows,
-                    "read_only": True,
-                    "untrusted": True,
-                    "error": None,
-                }
-            except Exception as error:
-                return {**self._error(pid, error, remember=False), "sessions": []}
+        try:
+            with _Tree(self._root(pid)) as tree:
+                rows = self._indexes(tree)
+            rows.sort(key=lambda row: int(row.get("last_saved_at") or 0), reverse=True)
+            return {
+                "state": "ready",
+                "sessions": rows,
+                "read_only": True,
+                "untrusted": True,
+                "error": None,
+            }
+        except Exception as error:
+            return {**self._error(pid, error, remember=False), "sessions": []}
 
     def _read_revision(
         self, tree: _Tree, sid: str, revision: str | None
@@ -1130,108 +1237,124 @@ class ProjectHistoryService:
             )
             != revision
             or manifest.get("session_id") != sid
-            or manifest.get("schema_version") != 1
+            or manifest.get("schema_version") != _SCHEMA
         ):
             raise ProjectHistoryError("project history integrity check failed")
         return revision, manifest
 
+    @staticmethod
+    def _member(tree: _Tree, manifest: dict, name: str) -> bytes:
+        """Reassemble one payload from its chunks, verifying each and the whole."""
+        receipt = (manifest.get("members") or {}).get(name)
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(receipt.get("chunks"), list)
+            or len(receipt["chunks"]) > MAX_RECORDS
+            or not isinstance(receipt.get("size_bytes"), int)
+            or not 0 <= receipt["size_bytes"] <= MAX_METADATA_BYTES
+        ):
+            raise ProjectHistoryError("project history integrity check failed")
+        parts = []
+        size = 0
+        for digest in receipt["chunks"]:
+            if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+                raise ProjectHistoryError("project history integrity check failed")
+            data = tree.read(".openai4s/objects/" + digest)
+            size += len(data)
+            if _hash(data) != digest or size > receipt["size_bytes"]:
+                raise ProjectHistoryError("project history integrity check failed")
+            parts.append(data)
+        data = b"".join(parts)
+        if _hash(data) != receipt.get("sha256") or len(data) != receipt["size_bytes"]:
+            raise ProjectHistoryError("project history integrity check failed")
+        return data
+
     def read_session(self, pid: str, sid: str, revision_id: str | None = None) -> dict:
-        with _LOCK:
-            try:
-                with _Tree(self._root(pid)) as tree:
-                    revision, manifest = self._read_revision(tree, sid, revision_id)
-                    payloads = {}
-                    for name in ("messages.jsonl", "cells.json", "transcript.md"):
-                        data = tree.read(
-                            f".openai4s/sessions/{sid}/revisions/{revision}/{name}"
-                        )
-                        receipt = manifest["members"][name]
-                        if (
-                            _hash(data) != receipt["sha256"]
-                            or len(data) != receipt["size_bytes"]
-                        ):
-                            raise ProjectHistoryError(
-                                "project history integrity check failed"
-                            )
-                        payloads[name] = data
-                    # The picker needs ids and times, not every manifest hashed;
-                    # the selected revision above is still fully verified.
-                    listed = self._listed_revisions(tree, f".openai4s/sessions/{sid}")
-                    revisions = []
-                    for value in tree.names(f".openai4s/sessions/{sid}/revisions"):
-                        if not _DIGEST.fullmatch(value):
-                            continue
-                        row = listed.get(value)
-                        if row is None:
-                            try:
-                                _, archived = self._read_revision(tree, sid, value)
-                            except (FileNotFoundError, ProjectHistoryError):
-                                # An interrupted save's partial directory is
-                                # not a revision; the selected one is verified.
-                                continue
-                            row = {
-                                "revision_id": value,
-                                "created_at": archived.get("created_at"),
-                                "branch_id": archived.get("branch_id"),
-                            }
-                        revisions.append(row)
-                    revisions.sort(
-                        key=lambda item: int(item.get("created_at") or 0), reverse=True
-                    )
-                return {
-                    **manifest,
-                    "revision_id": revision,
-                    "revisions": revisions,
-                    "messages": [
-                        json.loads(line)
-                        for line in payloads["messages.jsonl"].splitlines()
-                        if line
-                    ],
-                    "cells": json.loads(payloads["cells.json"]),
-                    "transcript": payloads["transcript.md"].decode("utf-8"),
-                    "state": "ready",
-                    "read_only": True,
-                    "untrusted": True,
-                    "error": None,
+        try:
+            with _Tree(self._root(pid)) as tree:
+                revision, manifest = self._read_revision(tree, sid, revision_id)
+                payloads = {
+                    name: self._member(tree, manifest, name) for name in _MEMBERS
                 }
-            except Exception as error:
-                return self._error(pid, error, remember=False)
+                # The picker needs ids and times, not every manifest hashed;
+                # the selected revision above is still fully verified.
+                listed = self._listed_revisions(tree, f".openai4s/sessions/{sid}")
+                revisions = []
+                for value in tree.names(f".openai4s/sessions/{sid}/revisions"):
+                    if not _DIGEST.fullmatch(value):
+                        continue
+                    row = listed.get(value)
+                    if row is None:
+                        try:
+                            _, archived = self._read_revision(tree, sid, value)
+                        except (FileNotFoundError, ProjectHistoryError):
+                            # An interrupted save's partial directory is
+                            # not a revision; the selected one is verified.
+                            continue
+                        row = {
+                            "revision_id": value,
+                            "created_at": archived.get("created_at"),
+                            "branch_id": archived.get("branch_id"),
+                        }
+                    revisions.append(row)
+                revisions.sort(
+                    key=lambda item: int(item.get("created_at") or 0), reverse=True
+                )
+            messages = _records(payloads["messages.jsonl"])
+            return {
+                **manifest,
+                "revision_id": revision,
+                "revisions": revisions,
+                "messages": messages,
+                "cells": _records(payloads["cells.jsonl"]),
+                "files": _records(payloads["files.jsonl"]),
+                "transcript": _transcript(manifest.get("title"), messages).decode(
+                    "utf-8"
+                ),
+                "state": "ready",
+                "read_only": True,
+                "untrusted": True,
+                "error": None,
+            }
+        except Exception as error:
+            return self._error(pid, error, remember=False)
 
     def read_file(self, pid: str, sid: str, revision_id: str | None, path: str) -> dict:
-        with _LOCK:
-            try:
-                with _Tree(self._root(pid)) as tree:
-                    revision, manifest = self._read_revision(tree, sid, revision_id)
-                    record = next(
-                        (
-                            item
-                            for item in manifest["files"]
-                            if item.get("path") == path
-                        ),
-                        None,
+        try:
+            with _Tree(self._root(pid)) as tree:
+                revision, manifest = self._read_revision(tree, sid, revision_id)
+                record = next(
+                    (
+                        item
+                        for item in _records(
+                            self._member(tree, manifest, "files.jsonl")
+                        )
+                        if isinstance(item, dict) and item.get("path") == path
+                    ),
+                    None,
+                )
+                if record is None:
+                    raise ProjectHistoryError(
+                        "archived file not found", 404, "history_not_found"
                     )
-                    if record is None:
-                        raise ProjectHistoryError(
-                            "archived file not found", 404, "history_not_found"
-                        )
-                    digest = _identity(record["sha256"], digest=True)
-                    data = tree.read(".openai4s/objects/" + digest, MAX_FILE_BYTES)
-                    if _hash(data) != digest or len(data) != record["size_bytes"]:
-                        raise ProjectHistoryError(
-                            "project history file integrity check failed"
-                        )
-                return {
-                    "state": "ready",
-                    "data": data,
-                    "name": Path(str(record["name"])).name,
-                    "content_type": mimetypes.guess_type(str(record["name"]))[0]
-                    or "application/octet-stream",
-                    "size_bytes": len(data),
-                    "sha256": digest,
-                    "revision_id": revision,
-                    "read_only": True,
-                    "untrusted": True,
-                    "error": None,
-                }
-            except Exception as error:
-                return self._error(pid, error, remember=False)
+                digest = _identity(record["sha256"], digest=True)
+                data = tree.read(".openai4s/objects/" + digest, MAX_FILE_BYTES)
+                if _hash(data) != digest or len(data) != record["size_bytes"]:
+                    raise ProjectHistoryError(
+                        "project history file integrity check failed"
+                    )
+            return {
+                "state": "ready",
+                "data": data,
+                "name": Path(str(record["name"])).name,
+                "content_type": mimetypes.guess_type(str(record["name"]))[0]
+                or "application/octet-stream",
+                "size_bytes": len(data),
+                "sha256": digest,
+                "revision_id": revision,
+                "read_only": True,
+                "untrusted": True,
+                "error": None,
+            }
+        except Exception as error:
+            return self._error(pid, error, remember=False)

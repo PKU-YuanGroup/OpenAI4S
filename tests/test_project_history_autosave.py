@@ -92,9 +92,29 @@ def test_debounces_each_project_and_never_saves_text_tokens():
             autosave.observe("one", {"type": "text_chunk", "chunk": "token"})
         assert autosave._thread is None
         for _ in range(100):
-            autosave.observe("one", {"type": "artifact_created"})
+            autosave.observe("one", {"type": "execution_state", "status": "completed"})
         assert autosave.flush_session("one")["state"] == "saved"
         assert service.projects == ["project"]
+        assert service.calls == [("one", Path("/workspace/one"))]
+    finally:
+        autosave.close()
+
+
+@pytest.mark.stubbed_backend
+def test_in_turn_events_wait_for_the_execution_boundary():
+    autosave, service, _store = fake_autosave()
+    try:
+        for event in (
+            {"type": "frame_update", "status": "processing"},
+            {"type": "execution_state", "status": "running"},
+            {"type": "artifact_created"},
+            {"type": "cell_result"},
+            {"type": "step_update"},
+        ):
+            autosave.observe("one", event)
+        assert autosave._thread is None and service.calls == []
+        autosave.observe("one", {"type": "execution_state", "status": "completed"})
+        assert autosave._wait(autosave._issued, 2)
         assert service.calls == [("one", Path("/workspace/one"))]
     finally:
         autosave.close()
@@ -387,11 +407,76 @@ def test_archive_limit_refusal_names_the_way_out(tmp_path, monkeypatch):
     from openai4s import project_history
 
     runner, _hub, _folder, _pid, root = runner_with_project(tmp_path)
+    runner.store.add_message(root_frame_id=root, role="user", content="not archived")
     monkeypatch.setattr(project_history, "MAX_SCAN_ENTRIES", 1)
     try:
         with pytest.raises(GatewayError, match="unlink the project folder"):
             runner.delete_session(root)
         assert runner.store.get_frame(root) is not None
+    finally:
+        runner.close()
+
+
+def test_full_archive_still_deletes_a_session_it_already_holds(tmp_path, monkeypatch):
+    from openai4s import project_history
+
+    runner, _hub, _folder, pid, root = runner_with_project(tmp_path)
+    monkeypatch.setattr(project_history, "MAX_SCAN_ENTRIES", 1)
+    try:
+        # The final save has nothing to add, so the limit cannot refuse it.
+        runner.delete_session(root)
+        assert runner.store.get_frame(root) is None
+        assert runner.project_history.read_session(pid, root)["state"] == "ready"
+    finally:
+        runner.close()
+
+
+def test_an_execution_saves_its_cells_once_and_an_unchanged_session_never(tmp_path):
+    runner, hub, _folder, pid, root = runner_with_project(tmp_path)
+    autosave = runner.project_history_autosave
+    try:
+        state = runner._state(root, pid)
+        with runner._session_execution(
+            state, owner="user", owner_id="test-cells", reason="cells"
+        ):
+            for index in range(3):
+                runner._record_cell_with_cursor_checkpoint(
+                    frame_id=root,
+                    root_frame_id=root,
+                    project_id=pid,
+                    code=f"value = {index}",
+                    result={"id": f"in-turn-{index}", "stdout": "", "stderr": ""},
+                )
+                hub.broadcast(root, {"type": "artifact_created", "frame_id": root})
+            assert not autosave._pending
+        issued = autosave._issued
+        assert issued and autosave._wait(issued, 5)
+        snapshot = runner.project_history.read_session(pid, root)
+        assert len(snapshot["cells"]) == 3
+        assert len(snapshot["revisions"]) == 2
+        hub.broadcast(
+            root, {"type": "frame_update", "frame_id": root, "status": "done"}
+        )
+        assert autosave.flush_session(root)["state"] == "unchanged"
+        assert len(runner.project_history.read_session(pid, root)["revisions"]) == 2
+    finally:
+        runner.close()
+
+
+def test_http_artifact_upload_is_archived_without_a_turn(tmp_path):
+    runner, hub, _folder, pid, root = runner_with_project(tmp_path)
+    autosave = runner.project_history_autosave
+    try:
+        issued = autosave._issued
+        runner.upload_artifact(
+            {"frame_id": root, "filename": "notes.txt", "content_text": "uploaded"},
+            broadcast=hub.broadcast,
+        )
+        assert autosave._issued > issued and autosave._wait(autosave._issued, 5)
+        files = runner.project_history.read_session(pid, root)["files"]
+        assert [row["name"] for row in files if row["kind"] == "artifact"] == [
+            "notes.txt"
+        ]
     finally:
         runner.close()
 

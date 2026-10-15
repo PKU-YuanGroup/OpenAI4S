@@ -4702,6 +4702,8 @@ class SessionRunner:
                 yield
         finally:
             state.turn_lock.release()
+            # Refused while an execution runs, so no turn end archives it.
+            self.project_history_autosave.schedule_session(canonical_root)
 
     def upload_artifact(self, payload: dict, *, broadcast=None) -> dict:
         with self._external_artifact_mutation(
@@ -12488,8 +12490,8 @@ class SessionRunner:
                     else self.store.active_session_branch(str(root_frame_id))
                 ),
             )
-        if root_frame_id:
-            self.project_history_autosave.schedule_session(str(root_frame_id))
+        # No history save per Cell: every Web Cell runs inside an execution,
+        # and that execution's end archives the session once.
         return cell_id
 
     def _allocate_cell_attempt(

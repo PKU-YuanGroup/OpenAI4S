@@ -12,28 +12,26 @@ from typing import Any, Callable
 class ProjectHistoryAutosave:
     """One lazy writer; producers enqueue identities without touching the DB.
 
-    Streaming text is deliberately absent. A durable mutation queues one root,
-    repeated mutations collapse into one batch, and a mutation arriving while
-    a batch runs remains queued for the next pass. Flush waits for an exact
-    queue generation rather than guessing that an empty queue means saved.
+    Saves follow durable boundaries, not every mutation: the end of an
+    execution (an agent turn, a REPL cell, a lifecycle operation), an HTTP
+    Artifact mutation, a rename, a branch switch. Cells and Artifact captures
+    inside a running turn are archived once, by the turn's terminal
+    ``execution_state``; snapshotting on each of them made a single turn
+    publish many revisions. Repeated boundaries collapse into one batch, and
+    one arriving while a batch runs remains queued for the next pass. Flush
+    waits for an exact queue generation rather than guessing that an empty
+    queue means saved.
     """
 
     EVENTS = frozenset(
         {
             "frame_update",
-            "artifact_created",
-            "artifact_deleted",
-            "cell_result",
-            "cell_recorded",
-            "cell_update",
             "branch_activated",
-            "session_reverted",
-            "session_forked",
-            "review_completed",
+            "branch_reverted",
             "auto_run_terminal",
-            "completion_delivery_updated",
         }
     )
+    _TERMINAL = frozenset({"completed", "failed", "cancelled"})
     _STATUS_PREFIX = "project_history:autosave:"
 
     def __init__(
@@ -133,7 +131,15 @@ class ProjectHistoryAutosave:
         self._enqueue("project", project_id)
 
     def observe(self, root_frame_id: str, event: dict) -> None:
-        if event.get("type") in self.EVENTS:
+        kind = event.get("type")
+        if kind == "execution_state":
+            if event.get("status") in self._TERMINAL:
+                self.schedule_session(root_frame_id)
+        elif kind in self.EVENTS and not (
+            # A turn starting changes nothing its end will not save.
+            kind == "frame_update"
+            and event.get("status") == "processing"
+        ):
             self.schedule_session(root_frame_id)
 
     def schedule_all(self) -> None:

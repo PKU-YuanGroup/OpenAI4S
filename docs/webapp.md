@@ -203,7 +203,10 @@ Linux 的 `/media`、`/mnt`、`/run/media`）之下，或位于 `OPENAI4S_PROJEC
 打开历史会话可切换保存版本，查看对话、代码、设置，并下载当时的文件。
 文件因安全规则或大小限制未保存时，会显示遗漏清单。
 
-每个内容版本保留独立清单，相同文件内容按 SHA-256 去重。
+每个内容版本保留独立清单；文件内容和对话记录都按 SHA-256 去重存放，新版本只写入
+变化的部分，因此历史目录随对话长度线性增长。只有归档内容变化时才产生新版本；
+自动保存发生在一次执行（智能体回合或代码单元）结束、上传或修改文件、重命名和切换分支时，
+而不是每个代码单元或文件捕获之后。
 每次快照记录当前活动分支的对话、代码单元和工作区；之前已保存的分支版本仍可查看，
 尚未激活或保存的分支不保证包含在本地历史中。
 删除应用内的会话或项目后，本地历史仍保留；重新绑定原文件夹可再次查看。
@@ -213,8 +216,9 @@ Linux 的 `/media`、`/mnt`、`/run/media`）之下，或位于 `OPENAI4S_PROJEC
 当前保存上限为单文件 32 MiB、每个快照的文件合计 128 MiB、整个历史目录 512 MiB
 （至多 20,000 个条目），每个快照至多 1,000 个文件、5,000 条消息和 5,000 个代码单元，
 每个会话至多 1,000 个版本。达到上限会显示失败或遗漏，不会删除旧版本腾空间。
-达到历史目录上限后，删除前的最后保存无法成功，删除会被拒绝；此时可在项目设置中
-解除本地文件夹绑定后再删除，已有历史仍保留在文件夹中。
+达到历史目录上限后，仍有未归档变更的会话无法完成删除前的最后保存，删除会被拒绝
+（最新状态已归档的会话仍可删除）；此时可在项目设置中解除本地文件夹绑定后再删除，
+已有历史仍保留在文件夹中。
 历史记录是持久化数据库的自动副本，强制终止进程时可能落后于最后一次写入；
 再次启动会从仍存在的数据库补存。手动“立即保存”会等待保存结果。
 删除前最后保存失败时，会保留原会话并提示重试，避免丢失未归档内容。
@@ -224,7 +228,12 @@ The **Local history** menu shows actual save status, supports an explicit save,
 and opens saved conversations, code, settings and downloadable file versions.
 Project name, description and context are preserved; provider credentials and
 global configuration are excluded. Immutable revisions reference deduplicated
-SHA-256 file objects, with omissions shown when a file cannot be retained.
+SHA-256 objects for both files and conversation records, so each revision
+stores only what changed and the archive grows linearly with the conversation;
+omissions are shown when a file cannot be retained. A revision is created only
+when archived content changes. Autosave runs when an execution (an agent turn
+or a cell) ends, after a file upload or edit, a rename or a branch switch, not
+after every cell or file capture.
 Each snapshot covers the active branch's conversation, cells and workspace.
 Previously saved branch revisions remain available; branches never activated
 or saved are not guaranteed to appear in local history.
@@ -236,9 +245,11 @@ Retention is bounded: 32 MiB per file, 128 MiB of files per snapshot, 512 MiB
 and 20,000 entries per project archive, 1,000 files and 5,000 messages/cells
 per snapshot, and 1,000 revisions per session. Limits produce a visible
 failure or omission; they never silently prune earlier revisions. Once an
-archive limit is reached the final save before a deletion cannot succeed, so
-the deletion is refused; unlink the project folder in Project settings to
-delete without archiving (the existing history stays in the folder). Autosave is a secondary copy of
+archive limit is reached, a session with unarchived changes cannot complete
+its final save before deletion, so the deletion is refused (a session whose
+latest state is already archived can still be deleted); unlink the project
+folder in Project settings to delete without archiving (the existing history
+stays in the folder). Autosave is a secondary copy of
 the live database and may lag an abrupt process exit; startup retries from
 the retained database. A failed final save blocks deletion while keeping the
 original session available for retry.
