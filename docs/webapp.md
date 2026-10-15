@@ -214,7 +214,7 @@ Linux 的 `/media`、`/mnt`、`/run/media`）之下，或位于 `OPENAI4S_PROJEC
 旧版本和另一安装的记录是只读回溯资料，不会自动执行代码、恢复内核变量或授权。
 `.openai4s/` 默认带有忽略自身内容的 `.gitignore`，也不会混入智能体的项目输入搜索。
 当前保存上限为单文件 32 MiB、每个快照的文件合计 128 MiB、整个历史目录 512 MiB
-（至多 20,000 个条目），每个快照至多 1,000 个文件、5,000 条消息和 5,000 个代码单元，
+（至多 20,000 个条目），每个快照至多 1,000 个文件、最近的 5,000 条消息和 5,000 个代码单元，
 每个会话至多 1,000 个版本。达到上限会显示失败或遗漏，不会删除旧版本腾空间。
 达到历史目录上限后，仍有未归档变更的会话无法完成删除前的最后保存，删除会被拒绝
 （最新状态已归档的会话仍可删除）；此时可在项目设置中解除本地文件夹绑定后再删除，
@@ -242,8 +242,8 @@ Relinking it in another installation allows read-only inspection; it does not
 restore a live kernel or import execution permissions. Continue opens only a
 session still present in the current project, at its current state.
 Retention is bounded: 32 MiB per file, 128 MiB of files per snapshot, 512 MiB
-and 20,000 entries per project archive, 1,000 files and 5,000 messages/cells
-per snapshot, and 1,000 revisions per session. Limits produce a visible
+and 20,000 entries per project archive, 1,000 files and the latest 5,000
+messages/cells per snapshot, and 1,000 revisions per session. Limits produce a visible
 failure or omission; they never silently prune earlier revisions. Once an
 archive limit is reached, a session with unarchived changes cannot complete
 its final save before deletion, so the deletion is refused (a session whose

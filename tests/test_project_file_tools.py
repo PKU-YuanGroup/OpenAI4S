@@ -319,3 +319,26 @@ def test_project_history_does_not_spend_the_search_scan_budget(tmp_path, monkeyp
     # History entries are skipped before they count against the walk, not
     # opened and refused one by one.
     assert opened and not any(".openai4s" in path for path in opened)
+
+
+@pytest.mark.parametrize(
+    "tool, arguments",
+    [("glob", {"pattern": "**/*"}), ("grep", {"pattern": "x"})],
+)
+def test_walking_project_history_spends_the_search_time_budget(
+    tmp_path, monkeypatch, tool, arguments
+):
+    from openai4s.host import files
+    from openai4s.project_folders import ReadOnlyProjectFiles
+    from openai4s.tools.content_search import ContentSearchTool
+    from openai4s.tools.glob_files import GlobFilesTool
+
+    source = tmp_path / "project"
+    (source / ".openai4s" / "objects").mkdir(parents=True)
+    (source / ".openai4s" / "objects" / ("0" * 64)).write_bytes(b"x")
+    # The walk still descends into history; an expired budget must stop it
+    # there instead of letting excluded entries run past the deadline.
+    monkeypatch.setattr(files, "MAX_SCAN_SECONDS", -1.0)
+    runner = GlobFilesTool() if tool == "glob" else ContentSearchTool()
+    result = runner.execute(ReadOnlyProjectFiles(source.resolve()), arguments)
+    assert result.get("scan_truncated") is True, result

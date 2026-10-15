@@ -67,7 +67,12 @@ class GlobFilesTool(Tool):
         scan_truncated = False
         deadline = time.monotonic() + MAX_SCAN_SECONDS
         for path in base.glob(pattern):
+            # The walk still descends into an excluded subtree, so its entries
+            # spend the seconds budget even though they are not counted.
             if excluded is not None and excluded(path):
+                if time.monotonic() > deadline:
+                    scan_truncated = True
+                    break
                 continue
             scanned += 1
             # Seconds as well as entries: see `MAX_SCAN_SECONDS`.

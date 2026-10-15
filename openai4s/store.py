@@ -4373,6 +4373,9 @@ class Store:
     def list_versions(self, artifact_id: str) -> list[dict]:
         return self._artifacts.list_versions(artifact_id)
 
+    def list_root_artifact_versions(self, root_frame_id: str) -> dict[str, list[dict]]:
+        return self._artifacts.list_root_artifact_versions(root_frame_id)
+
     def update_version_path(
         self,
         version_id: str,

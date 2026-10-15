@@ -641,9 +641,12 @@ class ProjectHistoryService:
         artifacts = self.store.list_artifacts({"root_frame_id": rootid})
         if len(artifacts) > MAX_FILES:
             omissions.append({"path": "artifacts", "reason": "file_count_limit"})
+        # One read for every version and its snapshot path, not a
+        # list_versions + version_meta query per Artifact and version.
+        versions = self.store.list_root_artifact_versions(rootid)
         for artifact in artifacts[:MAX_FILES]:
             aid = str(artifact.get("artifact_id") or artifact.get("id") or "")
-            for version in self.store.list_versions(aid):
+            for version in versions.get(aid, ()):
                 if len(sources) >= MAX_FILES:
                     omissions.append(
                         {"path": "artifacts", "reason": "file_count_limit"}
@@ -657,13 +660,7 @@ class ProjectHistoryService:
                     continue
                 vid = str(version.get("version_id") or "")
                 _identity(vid)
-                metadata = self.store.version_meta(vid) or {}
-                if metadata.get("artifact_id") != aid:
-                    omissions.append(
-                        {"path": filename, "reason": "artifact_version_unavailable"}
-                    )
-                    continue
-                snapshot = metadata.get("snapshot_path")
+                snapshot = version.get("snapshot_path")
                 if not snapshot:
                     omissions.append(
                         {"path": filename, "reason": "no_immutable_snapshot"}
@@ -723,11 +720,14 @@ class ProjectHistoryService:
         pid = str(frame.get("project_id") or "default")
         omissions: list[dict] = []
         title = _scrub(frame.get("name") or "Conversation", secrets)
-        messages = self.store.list_branch_message_boundaries(
-            rootid, branch_id=branch_id, limit=MAX_RECORDS + 1
+        # Past the cap keep the newest records: the end of a conversation is
+        # what has not been archived yet, and what a deletion would lose.
+        newest = self.store.list_branch_message_boundaries(
+            rootid, branch_id=branch_id, limit=MAX_RECORDS + 1, newest_first=True
         )
-        if len(messages) > MAX_RECORDS:
+        if len(newest) > MAX_RECORDS:
             omissions.append({"path": "messages", "reason": "record_count_limit"})
+        messages = list(reversed(newest[:MAX_RECORDS]))
         messages = [
             _scrub(
                 {
@@ -743,7 +743,7 @@ class ProjectHistoryService:
                 },
                 secrets,
             )
-            for item in messages[:MAX_RECORDS]
+            for item in messages
         ]
         cell_rows = project_branch_records(
             self.store,
@@ -780,7 +780,7 @@ class ProjectHistoryService:
                 },
                 secrets,
             )
-            for item in cell_rows[:MAX_RECORDS]
+            for item in cell_rows[-MAX_RECORDS:]
         ]
         records = {
             "messages.jsonl": [_json(item) + b"\n" for item in messages],
@@ -1168,6 +1168,10 @@ class ProjectHistoryService:
             except FileNotFoundError:
                 continue
         return rows
+
+    def forget_project(self, pid: str) -> None:
+        """Drop a deleted project's remembered save state."""
+        self._states.pop(pid, None)
 
     def status(self, pid: str, *, sessions: list[dict] | None = None) -> dict:
         """Read-only status; ``sessions`` reuses rows a caller already read.

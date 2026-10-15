@@ -546,3 +546,24 @@ def test_frameless_project_upload_resnapshots_no_session(tmp_path):
         assert saved == []
     finally:
         runner.close()
+
+
+def test_deleted_sessions_and_projects_leave_no_autosave_state(tmp_path):
+    runner, _hub, _folder, pid, root = runner_with_project(tmp_path)
+    autosave = runner.project_history_autosave
+    key = autosave._STATUS_PREFIX + pid
+    try:
+        other = runner.create_session(pid)
+        assert autosave.flush_session(other)["state"] in {"saved", "unchanged"}
+        assert other in autosave._results
+        runner.delete_session(other)
+        assert other not in autosave._results
+        assert runner.store.get_setting(key) is not None
+        runner.delete_project(pid)
+        assert runner.store.get_setting(key) is None
+        assert root not in autosave._results
+        assert pid not in autosave._project_results
+        assert pid not in autosave._errors
+        assert pid not in runner.project_history._states
+    finally:
+        runner.close()

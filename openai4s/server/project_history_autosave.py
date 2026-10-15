@@ -207,6 +207,30 @@ class ProjectHistoryAutosave:
                 # Keep the in-memory result when the DB itself is unavailable.
                 pass
 
+    def forget_session(self, root_frame_id: str) -> None:
+        """Drop a deleted session's remembered outcome."""
+        with self._condition:
+            self._results.pop(root_frame_id, None)
+            self._workspaces.pop(root_frame_id, None)
+
+    def forget_project(self, project_id: str, roots: tuple[str, ...] = ()) -> None:
+        """Drop a deleted project's outcomes and its persisted status row."""
+        with self._condition:
+            self._enabled.discard(project_id)
+            for table in (self._project_results, self._settings_results, self._errors):
+                table.pop(project_id, None)
+            for root in roots:
+                self._results.pop(root, None)
+                self._workspaces.pop(root, None)
+        try:
+            self.store.delete_setting(self._STATUS_PREFIX + project_id)
+        except Exception:
+            # Best effort: a leftover row names a project that no longer exists.
+            pass
+        forget = getattr(self.service, "forget_project", None)
+        if callable(forget):
+            forget(project_id)
+
     def clear_error(self, project_id: str) -> None:
         """Clear after an explicit, successful full-project save only."""
         self._remember(

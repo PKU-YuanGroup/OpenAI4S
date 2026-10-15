@@ -704,3 +704,59 @@ def test_artifact_snapshots_under_a_symlinked_data_dir_are_archived(tmp_path):
     assert not result["omissions"], result["omissions"]
     files = service.read_session(pid, sid)["files"]
     assert [row["kind"] for row in files].count("artifact") == 1
+
+
+def test_record_cap_keeps_the_newest_conversation(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    store.add_message(root_frame_id=sid, role="user", content="newest question")
+    for index in (5, 6):
+        store.log_cell(
+            frame_id=sid,
+            root_frame_id=sid,
+            project_id=pid,
+            code=f"print({index})",
+            result={"id": f"cell-{index}", "stdout": f"{index}\n", "stderr": ""},
+        )
+    monkeypatch.setattr(history, "MAX_RECORDS", 2)
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    reasons = {(item["path"], item["reason"]) for item in result["omissions"]}
+    assert {("messages", "record_count_limit"), ("cells", "record_count_limit")} <= (
+        reasons
+    )
+    snapshot = service.read_session(pid, sid)
+    assert [row["content"] for row in snapshot["messages"]] == [
+        "The mean is 4.",
+        "newest question",
+    ]
+    assert [row["code"] for row in snapshot["cells"]] == ["print(5)", "print(6)"]
+
+
+def test_artifact_versions_are_read_without_a_query_per_version(tmp_path, monkeypatch):
+    source, cfg, store, pid, sid, workspace, service = _setup(tmp_path)
+    for index, content in enumerate((b"first", b"second")):
+        snapshot = cfg.data_dir / "artifact-versions" / f"bulk-{index}.txt"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_bytes(content)
+        store.record_cell_artifact(
+            path=str(workspace / "report.txt"),
+            filename="report.txt",
+            content_type="text/plain",
+            size_bytes=len(content),
+            checksum=hashlib.sha256(content).hexdigest(),
+            producing_cell_id=f"cell-bulk-{index}",
+            frame_id=sid,
+            root_frame_id=sid,
+            project_id=pid,
+            snapshot_path=str(snapshot),
+        )
+
+    def per_version(*_args, **_kwargs):
+        raise AssertionError("history must not query each Artifact version")
+
+    monkeypatch.setattr(store, "version_meta", per_version)
+    monkeypatch.setattr(store, "list_versions", per_version)
+    result = service.sync_session(sid)
+    assert result["state"] == "saved", result
+    files = service.read_session(pid, sid)["files"]
+    assert [row["kind"] for row in files].count("artifact") == 2

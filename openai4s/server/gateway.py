@@ -3964,7 +3964,9 @@ class SessionRunner:
                 raise GatewayError(409, "session deletion is already in progress")
             self._deleting_sessions.add(root_frame_id)
         try:
-            return self.deletions.delete_session(root_frame_id)
+            result = self.deletions.delete_session(root_frame_id)
+            self.project_history_autosave.forget_session(root_frame_id)
+            return result
         finally:
             with self._lock:
                 self._deleting_sessions.discard(root_frame_id)
@@ -4113,7 +4115,9 @@ class SessionRunner:
             archived = self.project_history_autosave.flush_project_settings(project_id)
             if archived.get("state") == "error":
                 raise _history_save_refusal(archived, "the project was retained")
-            return self.deletions.delete_project(project_id)
+            result = self.deletions.delete_project(project_id)
+            self.project_history_autosave.forget_project(project_id, roots)
+            return result
         finally:
             with self._lock:
                 self._deleting_sessions.difference_update(roots)
