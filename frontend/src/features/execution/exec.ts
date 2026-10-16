@@ -39,6 +39,9 @@ export function execSourcesState(): ExecSourcesState {
   return st;
 }
 
+// Per-frame ownership lets unrelated reads populate their own cache slots.
+const cellRequests = new WeakMap<ExecSourcesState, Map<string, number>>();
+
 let paintExec: (() => void) | null = null;
 
 export function setPaintExecutionChrome(fn: (() => void) | null): void {
@@ -67,7 +70,12 @@ export function toggleExecutedCode(): void {
   st.open = !st.open;
   // Every open re-reads: it only ever loaded once, and then showed that first
   // snapshot for the rest of the session. The old one stays up meanwhile.
-  if (st.open && !st.loading) void loadExecutionSources();
+  if (st.open) void loadExecutionSources();
+  else {
+    // Closing retires both snapshot and log reads, including a quick reopen.
+    st.request += 1;
+    st.loading = false;
+  }
   paint();
 }
 
@@ -82,6 +90,8 @@ export async function loadExecutionSources(): Promise<void> {
   if (!id) return;
   const st = execSourcesState();
   const request = (st.request = (st.request || 0) + 1);
+  const ownsRequest = () =>
+    id === currentId.value && execSources.value === st && request === st.request;
   st.loading = true;
   st.error = "";
   st.stamp = executedCellsStamp();
@@ -90,7 +100,9 @@ export async function loadExecutionSources(): Promise<void> {
     const d = (await api(`/frames/${encodeURIComponent(id)}/execution-sources`)) as {
       frames?: ExecFrame[];
     };
-    if (id !== currentId.value || execSources.value !== st || request !== st.request) return;
+    if (!ownsRequest()) return;
+    // Reads started while the snapshot was loading also belong to the old view.
+    cellRequests.get(st)?.clear();
     st.data = d;
     if (!st.selected) st.selected = (d && d.frames && d.frames[0] && d.frames[0].frame_id) || id;
     // Cell lists were read against the previous snapshot: keep the selected
@@ -99,38 +111,44 @@ export async function loadExecutionSources(): Promise<void> {
     st.cells = kept ? { [st.selected]: kept } : {};
     loaded = true;
   } catch (e) {
-    if (id === currentId.value && execSources.value === st) st.error = publicText(apiErrorText(e), 240);
+    if (ownsRequest()) st.error = publicText(apiErrorText(e), 240);
   } finally {
-    if (id === currentId.value && execSources.value === st) {
+    if (ownsRequest()) {
       st.loading = false;
       paint();
     }
   }
-  if (execSources.value === st && st.data && st.selected) void selectExecFrame(st.selected, loaded);
+  if (ownsRequest() && loaded && st.selected) void selectExecFrame(st.selected, true);
 }
 
 export async function selectExecFrame(frameId: string, force = false): Promise<void> {
+  const id = currentId.value;
   const st = execSourcesState();
+  const snapshot = st.request;
   st.selected = frameId;
+  // Even a cached selection retires the previous selection's error ownership.
+  const request = (st.cellRequest = (st.cellRequest || 0) + 1);
   paint();
   if (!force && st.cells[frameId]) return;
-  // Guarded like loadExecutionSources: a stale response (frame re-selected,
-  // session switched) may still fill its own cache slot, but only the latest
-  // request owns the shared error banner.
-  const request = (st.cellRequest = (st.cellRequest || 0) + 1);
+  let requests = cellRequests.get(st);
+  if (!requests) cellRequests.set(st, (requests = new Map()));
+  requests.set(frameId, request);
+  const ownsRequest = () =>
+    id === currentId.value && execSources.value === st && snapshot === st.request &&
+    requests.get(frameId) === request;
   try {
     const d = (await api(`/frames/${encodeURIComponent(frameId)}/execution-log`)) as {
       entries?: unknown[];
     };
+    if (!ownsRequest()) return;
     st.cells[frameId] = (d && d.entries) || [];
-    if (execSources.value === st && request === st.cellRequest) st.error = "";
+    if (request === st.cellRequest) st.error = "";
   } catch (e) {
-    // Do not cache the failure: an empty slot lets the next click retry
-    // instead of pinning an empty cell list until the session reopens.
-    if (execSources.value === st && request === st.cellRequest)
+    // Do not cache the failure: an empty slot lets the next click retry.
+    if (ownsRequest() && request === st.cellRequest)
       st.error = t("nb.exec.loadFailed", publicText(apiErrorText(e), 200));
   }
-  if (execSources.value === st && st.open) paint();
+  if (ownsRequest() && st.open) paint();
 }
 
 export function buildExecutedCodeView(st: ExecSourcesState): HTMLElement {
