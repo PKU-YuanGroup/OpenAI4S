@@ -416,6 +416,11 @@ recovery.
   snapshot digests, findings, repair/version references, and sanitized Guardian
   audit references needed to reproduce the projection. Export does not convert
   internal consistency into authorship or scientific truth.
+- Export is fail-closed. A run, event, or audit record that does not resolve
+  against the packaged branches, ledger turns, Artifacts, and versions refuses
+  the whole export as `409 session_not_exportable` rather than publishing part
+  of the history. A Web turn's run always finds its turn in the ledger: the
+  turn's `user` action group is written before `begin_turn_run` starts the run.
 - Import preserves a verifiable historical label as read-only provenance, but
   remains quarantined. It forces permission automation off, imports no reusable
   capability or standing grant, starts no Kernel/Reviewer/Repair process, and
@@ -497,18 +502,21 @@ See [Architecture](architecture.md), [Configuration](configuration.md), and
 the [Web App API contract](webapp-api.md) for the Stage 1 implementation
 boundary.
 
-## Workbench status surface (specification — not shipped)
+## Workbench status surface (read-only part shipped; editor not built)
 
-This section specifies how the default workbench will show Auto Mode. It is
-not implemented. This version adds no control, no menu row, and no call to
-`/auto-mode` or `/auto-audits`. The session options menu in
-`frontend/src/features/sessions/actions.ts` (`sessionOptionsMenu`) and the
-legacy `app.js` hatch still talk only to `/frames/{id}/review-settings`.
+This section specifies how the default workbench shows Auto Mode. The
+read-only part is shipped (issue #217): the status block, the budget block
+and the Audit view of sections 2, 3, 5, 6 and 7, implemented in
+`frontend/src/features/automode/`. The editor of section 4 is not built:
+the workbench sends no `PATCH /frames/{id}/auto-mode`, and nothing in the
+block starts a review, repair, resume, approval or cancellation. The legacy
+`app.js` hatch still talks only to `/frames/{id}/review-settings`.
 
-The surface, when a later version builds it, is three stacked lines in that
-session options menu. A successful `GET /frames/{id}/auto-mode` fills all
-three. The lines stay separate. Their headings do not change to match the
-preset.
+The surface is three stacked lines at the foot of the session options menu
+(`sessionOptionsMenu` in `frontend/src/features/sessions/actions.ts`), under
+an "Auto Mode status" / "自动模式状态" caption. A successful
+`GET /frames/{id}/auto-mode` fills all three. The lines stay separate. Their
+headings do not change to match the preset.
 
 | Line | English heading | Chinese heading | What it answers |
 | --- | --- | --- | --- |
@@ -526,7 +534,7 @@ second on/off switch.
 
 | Non-goal | What this version keeps |
 | --- | --- |
-| No new control | No preset picker, no sub-mode picker, no clear button, no audit button, and no budget editor. The three lines above are the later layout. They are not added now. |
+| No new control | No preset picker, no sub-mode picker, no clear button, and no budget editor. The block's only controls are the Audit entry (a read-only view, not a mode switch) and, after a failed read, an explicit retry that is another GET. |
 | No automatic run | Reading or, later, saving a selection does not start a Reviewer, a Repair Agent, a Permission Guardian, or a model call. There is no transition route. `PATCH /frames/{id}/auto-mode` writes configuration only. |
 | `review-settings` keeps its meaning | `PATCH /frames/{id}/review-settings` with `{auto_review}` still writes the old post-completion Reviewer switch. This surface does not reinterpret that switch, remove it, or rename it to Auto Mode. |
 
@@ -562,8 +570,37 @@ the closed sets in `openai4s/server/auto_mode.py` and
 
 `run` public fields used by the run line are `status`, `user_truth`,
 `terminal_reason`, `result_review_mode`, `approvals_reviewer`,
-`review_round`, and `repair_round`. `run_id`, `turn_id`, and `execution_id`
-stay on a secondary detail row. Digests stay in that detail row.
+`review_round`, `repair_round`, and `unresolved_finding_count`. `run_id`,
+`turn_id`, and `execution_id` stay on a secondary detail row. Digests stay
+in that detail row.
+
+The last five fields are facts about this run. The store derives them when
+the run is read. They never come from `selection`:
+
+- `result_review_mode` and `approvals_reviewer` are the values frozen when
+  the run started. `result_review_mode` is the run's mode. It is sent only
+  when the frozen selection does not name a different mode. The permission
+  gate resolves the conversation's current selection for each `ask`, so a
+  reviewer saved after the run started appears on the saved-selection line,
+  not here.
+- `review_round` is the durable `round_index` of the latest result review in
+  the visible event history. It counts from 0, like the `review_round` of a
+  live `auto_audit_started` event. `repair_round` is the 0-based position of
+  the latest visible repair among the repair rows that this history names.
+  Each field is absent until the first review or repair starts. A
+  checkpoint prefix sees only its own rounds.
+- `unresolved_finding_count` is the N of **Completed · unverified · N
+  unresolved issues**. It is sent only for `completed_with_issues`, and only
+  when N is at least 1. N counts the findings recorded by the latest
+  completed result review of the run's current candidate. No later
+  independent review has cleared them. N counts them the way the completion
+  gate does for the message's user truth: the material ones (`material`,
+  `major`, `high`, `critical`) when there are any, otherwise all of them.
+- None of the five is sent for an imported (`quarantined_import`) run, for
+  any run in a quarantined session, or for a run whose proof no longer
+  validates. That last run is projected as `failed` / `safety_boundary`.
+  Export and share do not carry the five fields either, because they belong
+  to this read projection and not to the run record.
 
 `run.status` is one of `running`, `candidate`, `reviewing`, `repairing`,
 `verified`, `completed_with_issues`, `review_unavailable`,
@@ -596,7 +633,7 @@ show `status`.
 | `source` `built_in_defaults` | Unchanged. | Built-in default. `explicit` is false. | Unchanged. |
 | `source` `import_quarantine` | Read only, as above. | Safe triple, as above. | As the quarantine row above. |
 | `run` null | Unchanged. | Unchanged. | No Auto Run. Ceilings may still be listed. No meter is near its ceiling. |
-| `run` object, `status` in `running`, `candidate`, `reviewing`, `repairing` | Unchanged. | Unchanged. The selection triple is not rewritten to match the run. | In progress, then the status sentence. The line also shows this run's own `result_review_mode` and `approvals_reviewer` when those fields are present, plus `review_round` and `repair_round` when present. |
+| `run` object, `status` in `running`, `candidate`, `reviewing`, `repairing` | Unchanged. | Unchanged. The selection triple is not rewritten to match the run. | In progress, then the status sentence. The line also shows this run's own `result_review_mode` and `approvals_reviewer` when those fields are present, plus `review_round` and `repair_round` when present, each counted from 1. |
 | `run` object, any other `status` | Unchanged. | Unchanged. | Finished, then `user_truth` or the terminal sentence for `status` / `terminal_reason`. A paused budget stop uses **Paused · Budget exhausted**. It does not read as in progress. |
 | A meter is near its ceiling | Unchanged. | Unchanged. | The budget block, not the selection line, carries the warning. Rule below. |
 | HTTP 503 `auto_mode_storage_unavailable` | Status unavailable. | Status unavailable. The client does not invent an off preset. | Status unavailable. |
@@ -666,15 +703,49 @@ Chinese:
 
 Run value shape:
 
-`{In progress | Finished | No Auto Run}. {user_truth or status sentence}. This run: result review {run.result_review_mode}; approvals {run.approvals_reviewer}.`
+`{In progress | Finished | No Auto Run}. {user_truth or status sentence}. This run: result review {run.result_review_mode}; approvals {run.approvals_reviewer}. Review round {run.review_round + 1} · repair round {run.repair_round + 1}.`
 
 The “this run” clause is omitted when the run is null or those fields are
-absent. The status sentence is the frozen user truth from this document, or
-`run.user_truth` when the payload has it. The client does not translate
-`run.user_truth`.
+absent. The rounds clause appears only while the run is in progress, and it
+names only the rounds the run carries. The status sentence is the frozen
+user truth from this document, or `run.user_truth` when the payload has it.
+The client does not translate `run.user_truth`.
 
 The words “On”, “Enabled”, and “已开启” are not values on these three lines.
 The existing composer on/off hint remains the legacy switch only.
+
+The shipped block needs some copy the table above does not fix. It lives in
+`frontend/src/features/automode/copy.ts`, beside the strings above:
+
+| Slot | English | Chinese | When |
+| --- | --- | --- | --- |
+| Block caption | Auto Mode status | 自动模式状态 | Above the three lines; also the block's accessible name |
+| Loading | Loading… | 正在读取… | All three lines until this menu opening's own GET answers. A previous answer cached in the tab is never shown first. |
+| Retry | Retry reading | 重试读取 | After a failed or unreadable status or audit read. Another GET. |
+| Detail row | Details | 详情 | Run identity and digests; audit and finding identity |
+| `running` | Running · not verified | 运行中 · 未验证 | No frozen user truth exists for this status |
+| `reviewing` | Reviewing the candidate · not verified | 正在审核候选 · 未验证 | Same |
+| `repairing` | Repairing · not verified | 正在修复 · 未验证 | Same |
+| `completed_with_issues` | Completed · unverified · {N} unresolved issues (“1 unresolved issue” when N is 1) | 已完成 · 未验证 · {N} 个未解决的问题 | `run.unresolved_finding_count` is N |
+| `completed_with_issues`, no count | Completed · unverified · unresolved issues | 已完成 · 未验证 · 有未解决的问题 | The run carries no `unresolved_finding_count` |
+| Rounds | Review round {r} · repair round {p}. | 审核第 {r} 轮 · 修复第 {p} 轮。 | In progress only. Each round is the field plus 1. With one field only: “Review round {r}.” / “Repair round {p}.” |
+| `unverified_import` | Unverified · imported history | 未验证 · 导入的历史 | |
+| Budget meter | `{used} of {limit}, {remaining} remaining` | `已用 {used}/{limit}，剩余 {remaining}` | Plus “{n} reserved” / “预留 {n}” and the near/at mark |
+| Exhausted list | Exhausted: {meters}. | 已耗尽：{meters}。 | `terminal_reason` or `circuit.reason` is `budget_exhausted` |
+| Circuit | Circuit tripped · {reason} | 熔断已触发 · {reason} | The reason is shown as the server's own user-truth string in either language |
+| Audit filter | All kinds / Result review / Permission review | 全部类型 / 结果审核 / 权限审核 | `subject_kind` omitted / `result_review` / `permission_review` |
+| Audit paging | Load more | 加载更多 | `has_more` with a `next_before` |
+
+The thirteen ceiling labels (for example “Additional Cells” / “额外 Cell”) are
+in the same file. Client-rendered status and terminal sentences are
+localized; a `run.user_truth` the server sent is shown exactly as sent.
+
+In the menu the Audit entry sits directly under the run line, and the
+thirteen ceilings sit behind one closed disclosure whose summary counts the
+meters at and near their ceilings. What needs attention -- each near or at
+ceiling meter, the exhausted list and a tripped circuit -- is repeated below
+that disclosure and is always visible, so the menu stays shorter than the
+window without hiding a warning.
 
 Later editor copy, unused until a version that implements section 4:
 
@@ -740,14 +811,18 @@ when the open session is the root. The status lines follow the GET
 | Auto review checkmark off, `source` `frame` or `project` or `deployment_explicit` | The saved-selection line shows the Auto Mode source. The checkmark is not cleared to match it, and the Auto Mode line is not turned off to match the checkmark. |
 | `source` `import_quarantine` | The saved-selection line is the safe triple. The old checkmark, if still readable, keeps its own label and is not offered as a way out of quarantine. |
 
-A later read-only status block sits with the session options menu and does
-not replace the Auto review row.
+The read-only status block sits at the foot of the session options menu,
+after a separator, and does not replace the Auto review row.
+If the conversation switches or reopens while the menu's settings read is
+pending, that opening is discarded. The next menu opening reads the current
+conversation's settings and Auto Mode status together.
 
 ### 6. Audit entry
 
-A later version adds an Audit / 审计 control on the run line. It is not a
-mode switch. This version does not add it. The control calls
-`GET /frames/{id}/auto-audits`.
+The block carries an Audit / 审计 control under the run line. It is not a
+mode switch. It closes the menu and opens a read-only Audit view in the
+workbench modal, which calls `GET /frames/{id}/auto-audits` with a kind
+filter (All kinds, Result review, Permission review) and pages of 20.
 
 | Query | Rule |
 | --- | --- |
@@ -759,6 +834,10 @@ mode switch. This version does not add it. The control calls
 
 Response keys are `schema_version`, `root_frame_id`, `branch_id`,
 `subject_kind`, `audits`, `next_before`, and `has_more`.
+If a next page names a different `branch_id` (for example, another tab
+activated a branch), the panel discards that page and reloads the first
+page. A numeric cursor may be valid on both branches; it does not establish
+that their audit rows belong in the same list.
 
 | HTTP | Code | Panel |
 | --- | --- | --- |
@@ -814,12 +893,28 @@ does not retry a side effect.
 | `auto_run_terminal` | GET `/auto-mode`. If the audit panel is open, GET `/auto-audits` again. |
 
 Any other event type leaves the three lines alone. The client does not copy
-event fields onto the lines in place of the GET body. After GET, if
-`last_event_ordinal` is newer than the cursor the client stored, the GET body
-replaces the lines and the cursor.
+event fields onto the lines in place of the GET body. A hint reads only while
+the block (or, for the audit list, the Audit view) is on screen; opening the
+menu is itself a read, so a hint missed while it was closed costs nothing.
+
+The event registry takes exactly one handler per type. `candidate_ready` and
+`auto_run_terminal` already belong to the send lane (the gated-candidate card
+and the workbench refresh), which keeps that work and passes the event on as
+a hint; the automode lane registers the other five.
+
+Which GET body the lines show:
+
+| Situation | Rule |
+| --- | --- |
+| The conversation was switched or reopened (`_openGen` moved: a branch activation and a revert both reopen it) | Everything held is dropped and the lines read “Loading…” until a read issued under the new opening answers. A response to a read issued before is dropped, even if it is the only one to arrive. |
+| A read was issued after the shown read arrived | It replaces the shown one whatever its cursor says. The server answered it later, and a revert can legitimately move a branch's cursor back. |
+| Two reads were in flight together, for the same branch | The higher `last_event_ordinal` wins. At an equal cursor the higher `selection.revision` wins, then the higher `selection.source_revision` when both name the same source: frame and project selection saves emit no event. Revisions from different sources are not compared. At a full tie the later-issued read wins, so deployment and legacy changes with no revision still land. |
+| Two reads in flight together named different branches | The later-issued read wins. |
+| A failed read | It follows the same rules, so a stale success cannot hide that the latest read failed, and a failure older than the shown answer cannot replace it. |
 
 Reopen and reconnect use the same GET. They do not replay the socket buffer
-as authority.
+as authority. A reconnect (a socket after the first that opens) reads again
+if the block or the Audit view is on screen.
 
 A selection PATCH does not emit these events. The lines change because the
 PATCH response is a GET body.
@@ -883,12 +978,19 @@ a tightened ceiling as a used meter.
 | `OPENAI4S_AUTO_GUARDIAN_WINDOW_SIZE` | 50 | 50–50 |
 | `OPENAI4S_AUTO_GUARDIAN_WINDOW_DENIAL_LIMIT` | 10 | 1–10 |
 
-### 9. Test plan for a later implementation
+### 9. Tests
 
-This version adds no test. The implementation that builds the surface extends
-`tests/test_auto_mode_service.py` and adds menu coverage beside
-`frontend/src/features/sessions/actions.menu.test.ts`, which already mocks
-`openMenu`. `sessionOptionsMenu` is the function under test.
+The read-only surface is covered by the Vitest files in
+`frontend/src/features/automode/` (sanitizer, both languages' copy, the
+read-ordering rules above, the block inside the real `sessionOptionsMenu`,
+the Audit view, hint composition with the send lane), by
+`tests/test_auto_mode_browser_fixture.py` (SQLite seeds pinned against the
+real `AutoModeService`), and by `tests/browser_auto_mode_status.mjs`, which
+drives a real gateway in English and Chinese and fails on any non-GET the
+surface makes. The service assertions and menu cases below are the contract
+those files check; the rows about PATCH, clear, revision conflict and the
+autonomous confirm belong to the section 4 editor and stay open until it is
+built.
 
 Service assertions to keep or add, against the real handler or the service
 the route calls:

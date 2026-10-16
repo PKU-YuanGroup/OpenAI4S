@@ -11937,6 +11937,9 @@
           },
           "run": {
             "properties": {
+              "approvals_reviewer": {
+                "type": "string"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -12424,6 +12427,15 @@
               "recovery_required": {
                 "type": "boolean"
               },
+              "repair_round": {
+                "type": "integer"
+              },
+              "result_review_mode": {
+                "type": "string"
+              },
+              "review_round": {
+                "type": "integer"
+              },
               "root_frame_id": {
                 "type": "string"
               },
@@ -12444,6 +12456,9 @@
               },
               "turn_id": {
                 "type": "string"
+              },
+              "unresolved_finding_count": {
+                "type": "integer"
               },
               "updated_at": {
                 "type": "integer"

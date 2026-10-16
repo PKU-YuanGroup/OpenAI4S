@@ -9,6 +9,7 @@
 
 import { _openGen } from "../../stores/session";
 import { running } from "../../stores/stream";
+import { autoModeHint } from "../automode/hints";
 import { enableComposer } from "../sessions/dom";
 import { scheduleWorkbenchRefresh } from "../timeline/island";
 import { eventFrameId, isStaleTurnEvent, mine } from "../ws/guards";
@@ -98,16 +99,29 @@ function handlePermissionResolved(m: WsMessage): void {
   }
 }
 
+// `candidate_ready` and `auto_run_terminal` are two of the seven canonical
+// Auto Mode events, and the registry takes one handler per type. These two
+// keep their own work and also hand the event to the read-only Auto Mode
+// status as a refresh hint; `autoModeHint` never throws, and `finally` keeps
+// the hint even when the card work fails.
 function handleCandidateReady(m: WsMessage): void {
-  // The original branch is `type === "candidate_ready" && m.gates_completion`.
-  if (!m.gates_completion) return;
-  const fid = eventFrameId(m);
-  if (mine(fid) || mine(m.root_frame_id)) markCandidateReady(m);
+  try {
+    // The original branch is `type === "candidate_ready" && m.gates_completion`.
+    if (!m.gates_completion) return;
+    const fid = eventFrameId(m);
+    if (mine(fid) || mine(m.root_frame_id)) markCandidateReady(m);
+  } finally {
+    autoModeHint(m);
+  }
 }
 
 function handleAutoRunTerminal(m: WsMessage): void {
-  const fid = eventFrameId(m);
-  if (mine(fid) || mine(m.root_frame_id)) scheduleWorkbenchRefresh(60);
+  try {
+    const fid = eventFrameId(m);
+    if (mine(fid) || mine(m.root_frame_id)) scheduleWorkbenchRefresh(60);
+  } finally {
+    autoModeHint(m);
+  }
 }
 
 function handleCandidateResolved(m: WsMessage): void {
