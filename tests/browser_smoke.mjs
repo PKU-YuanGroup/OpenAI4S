@@ -131,6 +131,118 @@ async function dumpBranchForkState(frameId) {
   return { snapshot, apiBranches };
 }
 
+// A real gateway and persisted sessions exercise the bundled frontend. Only
+// the two compute GET routes are controlled fixtures: this does not allocate
+// a cluster or claim live provider coverage (Local/Slurm are ineligible here).
+async function computeStatusTruthScenes(projectId) {
+  const first = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const second = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const fid = first.id || first.frame_id;
+  const other = second.id || second.frame_id;
+  const cluster = {
+    location: "cluster", readiness: { ready: true },
+    allocation: { allocation_id: "browser-fixture-only", phase: "ready" },
+    workload: { profile: "Browser fixture cluster" }, state_lost_epochs: [1],
+  };
+  let mode = "cluster";
+  let profiles = "ok";
+  let held = null;
+  const statusRoute = `**/api/v1/sessions/*/compute`;
+  const profileRoute = "**/api/v1/orchestration/profiles";
+  const json = (route, body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  const reopen = (id) => page.evaluate(async ({ id, projectId }) => window.openConversation(id, projectId), { id, projectId });
+  const unavailable = () => waitUntil("unavailable run-location badge", async () => /Run location unavailable/.test(await page.locator("#compute-badge").innerText()));
+  await page.route(statusRoute, async (route) => {
+    assert.equal(route.request().method(), "GET", "fixture must never allocate or release real compute");
+    if (mode === "hold") { held = route; return; }
+    if (mode === "disconnect") return route.abort("connectionfailed");
+    if (mode === "fail") return json(route, { error: "injected status failure" }, 500);
+    return json(route, mode === "local" ? { location: "local", state_lost_epochs: [] } : cluster);
+  });
+  await page.route(profileRoute, (route) => profiles === "fail"
+    ? json(route, { error: "injected catalog failure" }, 500)
+    : json(route, { profiles: profiles === "empty" ? [] : [{ name: "Browser fixture cluster", cpus: 4, memory_mb: 8192, walltime_s: 3600 }] }));
+  try {
+    await reopen(fid);
+    await page.locator("#compute-badge.ready").waitFor();
+    await page.locator("#compute-lost").waitFor();
+    mode = "fail";
+    await page.locator("#compute-badge").click();
+    await page.locator(".rl-retry").waitFor();
+    await unavailable();
+    assert.match(await page.locator("#compute-badge").innerText(), /last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 1);
+    assert.equal(await page.locator(".rl-option.current").count(), 0);
+    assert.equal(await page.locator(".rl-option:not([disabled])").count(), 0);
+    mode = "disconnect";
+    await page.locator(".rl-retry").click();
+    await page.locator(".rl-retry").waitFor();
+    await unavailable();
+    assert.match(await page.locator("#compute-badge").innerText(), /last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 1);
+    mode = "cluster";
+    await page.locator(".rl-retry").click();
+    await page.locator("#compute-badge.ready").waitFor();
+    await page.locator(".rl-option.current").waitFor();
+    assert.equal(await page.locator(".rl-retry").count(), 0);
+    await page.locator("#modal-close").click();
+    mode = "fail";
+    await reopen(fid); // same-session navigation changes its request generation
+    await unavailable();
+    assert.match(await page.locator("#compute-badge").innerText(), /last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 1);
+    await reopen(other);
+    await unavailable();
+    assert.doesNotMatch(await page.locator("#compute-badge").innerText(), /Local|Browser fixture cluster|last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 0);
+    await page.locator("#compute-badge").click();
+    await page.locator(".rl-retry").waitFor();
+    assert.equal(await page.locator(".rl-option.current").count(), 0);
+    profiles = "fail"; mode = "cluster";
+    await page.locator(".rl-retry").click();
+    await page.getByText("Could not load cluster profiles", { exact: true }).waitFor();
+    assert.equal(await page.locator(".rl-empty").count(), 0);
+    profiles = "empty";
+    await page.locator(".rl-retry").click();
+    await page.locator(".rl-empty").waitFor();
+    assert.equal(await page.locator(".rl-error").count(), 0);
+    await page.locator("#modal-close").click();
+    // Reopening the same modal owns a distinct request, even for the same fid.
+    mode = "hold";
+    await page.locator("#compute-badge").click();
+    await waitUntil("held first dialog", async () => !!held);
+    await page.locator("#modal-close").click();
+    mode = "local";
+    await page.locator("#compute-badge").click();
+    await page.locator(".rl-option.current").waitFor();
+    assert.match(await page.locator(".rl-option.current").innerText(), /This machine/);
+    const oldDialog = held; held = null;
+    await json(oldDialog, cluster);
+    await page.waitForTimeout(100);
+    assert.match(await page.locator(".rl-option.current").innerText(), /This machine/);
+    assert.equal(await page.locator("#compute-badge").count(), 0);
+    await page.locator("#modal-close").click();
+    // A late old-session response cannot repaint a newer session's local state.
+    mode = "hold";
+    await reopen(fid);
+    await waitUntil("held compute response", async () => !!held);
+    mode = "local";
+    await reopen(other);
+    await page.locator("#compute-badge").waitFor({ state: "detached" });
+    const old = held; held = null;
+    await json(old, cluster);
+    // The page's response listener is not enough: drain the normal microtasks.
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator("#compute-badge").count(), 0);
+    assert.equal(await page.locator("#compute-lost").count(), 0);
+    console.log("Compute browser: stale evidence, initial unknown, Retry, catalog distinction, same-session reopen, and late-session response fixtures passed");
+  } finally {
+    if (held) await held.abort().catch(() => {});
+    await page.unroute(statusRoute);
+    await page.unroute(profileRoute);
+  }
+}
+
 // C1/C3/C7 correctness cases use real persisted Cells/Artifacts. REST faults
 // and anonymous event interleavings are explicitly injected UI fault fixtures.
 async function correctnessScenes(projectId) {
@@ -747,6 +859,7 @@ try {
   });
   const projectId = project.project_id || project.id;
   if (!projectId) throw new Error("project creation did not return an id");
+  await computeStatusTruthScenes(projectId);
   await correctnessScenes(projectId);
   await newSessionNotebookScene(projectId);
   const frame = await api("/frames", {
