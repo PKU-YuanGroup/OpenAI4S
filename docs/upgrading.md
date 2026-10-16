@@ -4,10 +4,10 @@
 
 An install that is already on 0.3.0 reads the next section before the first
 start of the next release. A database still on 0.2.x is migrated by the next
-release straight to schema 34 in one open: read the later section for the
-steps up to schema 32 and the next section for 33 and 34.
+release straight to schema 35 in one open: read the later section for the
+steps up to schema 32 and the next section for 33 through 35.
 
-## Upgrading to the next release (schema 32 → 34)
+## Upgrading to the next release (schema 32 → 35)
 
 Schema 33 rewrites judge audit rows that are already stored, and a successful
 migration then deletes its own pre-upgrade copy. That copy is not a way back
@@ -22,7 +22,7 @@ daemon is still running. A process still running a build that has
 checkout of `main` after 0.3.0 (it still reports 0.3.0), can store a `judge`
 row with the original arguments after this upgrade has committed, and step 33
 does not run again. The published 0.3.0 package has no `host.judge` and writes
-no `judge` rows. The committed `user_version` is 34.
+no `judge` rows. The committed `user_version` is 35.
 
 Then copy the whole data directory while nothing is running. It holds
 artifacts, logs, and the access token, as well as the database. Include any
@@ -41,10 +41,10 @@ That is the `openai4s-data` named volume in `compose.yaml`, or the
 container, or scale the Deployment to zero, and back up the volume or the PVC
 before you start the next image.
 
-### What schema 33 and schema 34 change
+### What schemas 33 through 35 change
 
 The first command of the next release that opens the database migrates
-`<data_dir>/openai4s.db` from schema 32 to schema **34**. Starting the daemon
+`<data_dir>/openai4s.db` from schema 32 to schema **35**. Starting the daemon
 or running `openai4s run` both do this. `openai4s doctor` and
 `openai4s diagnostics` still only read the schema version. The upgrade
 commits the new schema in one transaction. A failure rolls the database back
@@ -67,6 +67,7 @@ old data.
 | --- | --- |
 | 33 | `redact_judge_host_call_args`: rewrite stored `judge` rows in `host_call_log` |
 | 34 | `background_exec_receipts`: add the table; existing rows stay as they are |
+| 35 | `project_source_folder`: add nullable `projects.folder_path`; existing projects have no folder attached |
 
 During the rewrite the connection sets `PRAGMA secure_delete = ON`, then
 restores the previous mode by name (`OFF`, `ON`, or `FAST`) before the
@@ -117,6 +118,15 @@ Anything created under the next release is absent from that copy. A
 failed attempt. It is the wrong file to keep as your rollback copy: a
 successful migration deletes it, and until then it holds the unredacted judge
 text.
+
+### Local project source folders
+
+A standalone loopback daemon can now attach a local source folder to a project.
+Existing projects remain unbound until you choose a folder. The grant is read-only:
+browse and read its subfolders, then import selected files into the separate
+session workspace for Python/R analysis. Source folders are not moved or deleted
+when you delete a project. Team mode and remote deployments cannot attach host
+folders. See [the workbench guide](webapp.md).
 
 ### Egress allowlist
 

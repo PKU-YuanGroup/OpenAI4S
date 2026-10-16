@@ -169,8 +169,9 @@ def test_every_frame_route_is_behind_the_scope_guard():
         'm = re.fullmatch(r"/frames/([^/]+)/visibility", sub)'
     ], routed_early
 
-    # Sub-routers claim a prefix rather than a literal path, so the same
-    # question has to be asked of each one dispatched before the guard.
+    # Sub-routers declare exact RouteSpecs or a legacy path prefix. Every
+    # declaration dispatched before the guard must stay outside its scope;
+    # missing metadata is a failure, never a reason to skip a new router.
     import importlib
     import re as _re
 
@@ -178,8 +179,16 @@ def test_every_frame_route_is_behind_the_scope_guard():
     assert modules, "the sub-router dispatch moved; this guard must follow it"
     for name in sorted(set(modules)):
         module = importlib.import_module(f"openai4s.server.{name}")
-        prefix = str(getattr(module, "_PATH_PREFIX", None) or getattr(module, "_PATH"))
-        assert not prefix.startswith(("/frames", "/artifacts")), (name, prefix)
+        declared = getattr(module, "ROUTES", ())
+        if declared:
+            paths = [route.pattern for route in declared]
+        else:
+            paths = [
+                getattr(module, "_PATH_PREFIX", None) or getattr(module, "_PATH", None)
+            ]
+        assert paths and all(isinstance(path, str) and path for path in paths), name
+        for path in paths:
+            assert not path.startswith(("/frames", "/artifacts")), (name, path)
 
 
 def test_a_project_member_may_read_a_project_visible_session(daemon):

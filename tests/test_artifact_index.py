@@ -562,7 +562,7 @@ def test_malformed_limit_and_origin_are_refused(server):
 def test_the_browse_index_exists_and_dropping_it_does_not_touch_rows(tmp_path):
     store = get_store(Config(data_dir=tmp_path).db_path)
     try:
-        assert store.schema_state()["version"] == SCHEMA_VERSION == 34
+        assert store.schema_state()["version"] == SCHEMA_VERSION
         names = {
             row[1] for row in store._conn.execute("PRAGMA index_list('artifacts')")
         }

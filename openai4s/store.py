@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name          TEXT,
     description   TEXT,
     context       TEXT,               -- agent context prepended to prompts
+    folder_path   TEXT,               -- explicit read-only local source folder
     is_example    INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
@@ -1111,6 +1112,14 @@ _TEAM_VIEW_ONLY_TABLES = frozenset(
 )
 
 
+#: Columns agent SQL reads as NULL. A linked project's absolute host path is
+#: the one thing the read-only project tools never reveal: a cell that learned
+#: it could open files those tools refuse (credentials beside research data).
+#: Ignored rather than denied so `SELECT * FROM projects` keeps working; NULL
+#: also makes the value unreachable through a WHERE/LIKE probe.
+_QUERY_HIDDEN_COLUMNS = frozenset({("projects", "folder_path")})
+
+
 class _QueryAuthorizer:
     """SQLite's own answer to "may this statement touch that table?".
 
@@ -1192,6 +1201,8 @@ class _QueryAuthorizer:
             return self._deny(table)
         if table in QUERY_DENYLIST:
             return self._deny(table)
+        if (table, (arg2 or "").lower()) in _QUERY_HIDDEN_COLUMNS:
+            return sqlite3.SQLITE_IGNORE
         if table in self._view_only:
             # Permitted only as the underlying read of a trusted scoped view
             # that this statement actually published. `_SCOPED_VIEWS` alone was
@@ -1674,10 +1685,20 @@ class Store:
                         "background_exec_receipts",
                         self._apply_background_exec_receipts,
                     ),
+                    35: ("project_source_folder", self._apply_project_source_folder),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+            # Versions are numbered per branch: a database that applied another
+            # branch's version 35 skips this step, so make sure the (idempotent)
+            # column exists either way. One table_info read of a small table.
+            self._apply_project_source_folder(self._conn)
+
+    def _apply_project_source_folder(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+        if "folder_path" not in columns:
+            conn.execute("ALTER TABLE projects ADD COLUMN folder_path TEXT")
 
     def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
         """Version 16: lossless local indexing for DataPro responses."""
@@ -2825,6 +2846,7 @@ class Store:
         name: str,
         description: str = "",
         context: str = "",
+        folder_path: str | None = None,
         project_id: str | None = None,
         is_example: bool = False,
     ) -> dict:
@@ -2832,6 +2854,7 @@ class Store:
             name=name,
             description=description,
             context=context,
+            folder_path=folder_path,
             project_id=project_id,
             is_example=is_example,
         )
@@ -4349,6 +4372,9 @@ class Store:
 
     def list_versions(self, artifact_id: str) -> list[dict]:
         return self._artifacts.list_versions(artifact_id)
+
+    def list_root_artifact_versions(self, root_frame_id: str) -> dict[str, list[dict]]:
+        return self._artifacts.list_root_artifact_versions(root_frame_id)
 
     def update_version_path(
         self,
@@ -6007,7 +6033,11 @@ class Store:
                 ):
                     continue
                 cols = self._conn.execute(f"PRAGMA table_info({name})").fetchall()
-                out[name] = [c["name"] for c in cols]
+                out[name] = [
+                    c["name"]
+                    for c in cols
+                    if (name.lower(), c["name"].lower()) not in _QUERY_HIDDEN_COLUMNS
+                ]
         return out
 
 

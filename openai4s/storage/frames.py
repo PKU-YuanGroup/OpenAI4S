@@ -427,6 +427,7 @@ class FrameRepository:
         name: str,
         description: str = "",
         context: str = "",
+        folder_path: str | None = None,
         project_id: str | None = None,
         is_example: bool = False,
     ) -> dict:
@@ -434,12 +435,13 @@ class FrameRepository:
         now = self._clock_ms()
         self._execute(
             "INSERT OR REPLACE INTO projects(project_id,name,description,context,"
-            "is_example,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            "folder_path,is_example,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
             (
                 project_id,
                 name,
                 description,
                 context,
+                folder_path,
                 1 if is_example else 0,
                 now,
                 now,

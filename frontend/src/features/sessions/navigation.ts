@@ -4,9 +4,9 @@
  * Deliberately *not* a list-read owner. `_openGen` says who owns the view:
  * every conversation open and every trip Home bumps it, and neither makes
  * project P's session rows wrong. List reads are scoped to their project
- * instead (`load.ts: listScope`), and the project menu cancels a pending
- * project open through its own counter (`projects.ts: projectFilterVersion`)
- * rather than by retiring the open conversation's reads.
+ * instead (`load.ts: listScope`). The project menu opens the chosen project
+ * through `projects.ts: openProject`, which takes a new generation like any
+ * other navigation.
  */
 import { _foldersFor, _msgEarlierLoading, _openGen, _sessionScope, _sessionsLoadingMore, folders, foldersLoadError, foldersLoading, project, sessionPages, sessions, sessionsHasMore, sessionsLoadError, sessionsLoading } from "../../stores/session";
 

@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+[`project_files.py`](./project_files.py) 复用受限文件访问边界，读取、列出和搜索当前项目绑定的本地目录。导入操作按字节预算复制稳定的源文件到会话工作区，记录 SHA-256 来源信息，不修改项目原文件。
+
 Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都声明在这里。控制 catalog 本身已经实现；每个工具指向的服务，各自保留 Implemented、Partial 或 Prototype 状态。shell 执行、科学计算和 `submit_output` 有意留在本包之外，它们都不是原生工具。
 
 ## 在架构中的位置

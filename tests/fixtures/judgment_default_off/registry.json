@@ -140,6 +140,120 @@
     }
   },
   {
+    "description": "List one directory inside this session's attached local project folder. Paths are project-relative; source files are read-only.",
+    "name": "project_list_dir",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Directory to list, relative to the workspace (default '.').",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "description": "Read a UTF-8 file or bounded line window inside the attached project folder, using a project-relative path. Import binary/data files with project_import_file before analysis.",
+    "name": "project_read_file",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of lines to return.",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "0-based first line to return.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "File to read.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    }
+  },
+  {
+    "description": "Recursively find files in the attached project folder by glob, e.g. '**/*.csv'. Paths are relative to that folder.",
+    "name": "project_glob",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Directory to glob under (default the workspace root).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Glob pattern.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "description": "Search UTF-8 contents recursively inside the attached project folder. Uses a regular expression and optional filename glob.",
+    "name": "project_grep",
+    "parameters": {
+      "properties": {
+        "include": {
+          "description": "Glob limiting which files are searched, e.g. '*.py'. Applied recursively, like the unfiltered search.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory to search under (default the workspace root).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Regular expression.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "description": "Copy one file from the attached project folder into this session for Python/R analysis, preserving source bytes and recording SHA-256 provenance. source_path is project-relative; path defaults to project-inputs/<source_path>. Never changes the source.",
+    "name": "project_import_file",
+    "parameters": {
+      "properties": {
+        "max_bytes": {
+          "description": "Copy budget in bytes; defaults to 256 MiB, maximum 1 GiB.",
+          "maximum": 1073741824,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Destination relative to the session workspace.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_path": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_path"
+      ]
+    }
+  },
+  {
     "description": "List the prebuilt runtime environments (optionally check package coverage).",
     "name": "env_list",
     "parameters": {

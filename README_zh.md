@@ -245,7 +245,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 | 文档 | 内容 |
 |---|---|
 | [**上手指南**](docs/startup-guide.md#zh) | macOS 全流程：安装 v0.3.0 预览镜像（Apple Silicon，ad-hoc 签名，含 Gatekeeper 步骤）或从 PyPI 安装、配置模型，以及用一个 Agent Plan Key 授权豆包搜索（Tavily/免密钥备用） |
-| [**升级**](docs/upgrading_zh.md) | 新的在前。下一版本（schema 32 → 34）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
+| [**升级**](docs/upgrading_zh.md) | 新的在前。下一版本（schema 32 → 35）：首次启动前先停守护进程并复制数据目录，因为不支持退回。从 0.2.x 升级：在 schema 27 → 32 迁移之前备份数据库、为什么不支持退回 0.2.x，以及现在总是必需的访问令牌 |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
 | [**模型后端 bring-up**](docs/model-backend-bringup_zh.md) | 本地/远程 GPU 选择、checkpoint staging、真实推理 canary 准入与 connector 可移植性 |

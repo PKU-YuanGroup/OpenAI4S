@@ -88,8 +88,12 @@ class SessionDeletionService:
         self, project_id: str, *, reason: str = "project_deleted"
     ) -> dict[str, Any]:
         roots = self.store.project_session_ids(project_id)
+        # `drop_runtime` may refuse (the Gateway archives each session first).
+        # Finish every refusable step before releasing compute or revoking a
+        # share, so a refusal on a later root leaves earlier ones intact.
         for root_frame_id in roots:
             self._drop_runtime(root_frame_id, reason)
+        for root_frame_id in roots:
             self._release_compute_safe(root_frame_id)
             self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_project(project_id)

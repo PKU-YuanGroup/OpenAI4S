@@ -2064,6 +2064,23 @@ class ArtifactRepository:
                 )
             return rows
 
+    def list_root_artifact_versions(self, root_frame_id: str) -> dict[str, list[dict]]:
+        """Every version of one session's Artifacts in a single read, keyed by
+        Artifact and newest first, with the snapshot path ``list_versions``
+        omits."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT v.version_id,v.artifact_id,v.filename,v.checksum,"
+                "v.snapshot_path FROM artifact_versions v JOIN artifacts a "
+                "ON a.artifact_id=v.artifact_id WHERE a.root_frame_id=? "
+                "ORDER BY v.created_at DESC, v.rowid DESC",
+                (root_frame_id,),
+            ).fetchall()
+        grouped: dict[str, list[dict]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["artifact_id"]), []).append(dict(row))
+        return grouped
+
     def list_versions(self, artifact_id: str) -> list[dict]:
         with self._lock:
             latest = self._connection.execute(

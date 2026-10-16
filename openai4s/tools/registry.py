@@ -80,6 +80,13 @@ from openai4s.tools.progress import (
     UpdatePlanStepTool,
     WriteTodosTool,
 )
+from openai4s.tools.project_files import (
+    ProjectGlobTool,
+    ProjectGrepTool,
+    ProjectImportFileTool,
+    ProjectListDirectoryTool,
+    ProjectReadFileTool,
+)
 from openai4s.tools.read_text_file import ReadTextFileTool
 from openai4s.tools.remote_capabilities import (
     AcceleratorStatusTool,
@@ -128,6 +135,11 @@ TOOL_TYPES: tuple[type[Tool], ...] = (
     GlobFilesTool,
     ContentSearchTool,
     EditFileTool,
+    ProjectListDirectoryTool,
+    ProjectReadFileTool,
+    ProjectGlobTool,
+    ProjectGrepTool,
+    ProjectImportFileTool,
     EnvListTool,
     EnvUseTool,
     EnvCreateTool,

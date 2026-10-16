@@ -151,12 +151,9 @@ export async function realArtifactProvenanceCheck(page, api, source) {
 }
 
 export async function provenanceChecks(page, api) {
-  const project = await api("/projects", { method: "POST", data: { name: "Provenance read boundaries" } });
+  const projectName = `Provenance read boundaries ${Date.now().toString(36)}`;
+  const project = await api("/projects", { method: "POST", data: { name: projectName } });
   assert.equal(project.status, 200); const pid = project.body.project_id || project.body.id;
-  const alternateName = `Prov alt ${Date.now().toString(36)}`;
-  const alternate = await api("/projects", { method: "POST", data: { name: alternateName } });
-  assert.equal(alternate.status, 200);
-  const alternateId = alternate.body.project_id || alternate.body.id;
   const frames = [];
   for (let i = 0; i < 2; i++) {
     const made = await api("/frames", { method: "POST", data: { project_id: pid } });
@@ -177,7 +174,7 @@ export async function provenanceChecks(page, api) {
   const producerId = generatedLineage.body.producer.producing_cell_id;
   assert.ok(producerId);
   await page.evaluate(() => window.showDashboard());
-  await page.locator("#dash-projects .d-row").filter({ hasText: alternateName }).waitFor();
+  await page.locator("#dash-projects .d-row").filter({ hasText: projectName }).waitFor();
   await page.evaluate(({ fid, pid }) => window.openConversation(fid, pid), { fid, pid });
   const reads = [];
   const observer = (request) => { if (/\/(lineage|environment)(\?|$)/.test(request.url())) reads.push({ url: request.url(), method: request.method() }); };
@@ -226,13 +223,12 @@ export async function provenanceChecks(page, api) {
 
     // The project Files action may show another session's artifact while A
     // remains the current Notebook. It must not acquire A's Cell links/log.
+    // The project menu now opens the chosen project's conversation, so it no
+    // longer serves as a scope change that keeps A open.
     const heldLineage = await holdReads(page, (url) => url.pathname === `/api/v1/artifacts/${generated.id}/lineage`);
     try {
       await open(page, generated, "review");
-      await waitUntil("lineage pending before sidebar navigation", () => heldLineage.captured.length === 1);
-      await page.locator("#proj-btn").click();
-      await page.locator("#proj-menu .proj-item").filter({ hasText: alternateName }).click();
-      assert.equal(await page.evaluate(() => window.S.project), alternateId);
+      await waitUntil("lineage pending while A stays current", () => heldLineage.captured.length === 1);
       assert.equal(await page.evaluate(() => window.S.currentId), fid);
     } finally { await heldLineage.finish(); }
     await waitUntil("other session lineage", async () => (await page.locator(".prov-card").count()) > 0);

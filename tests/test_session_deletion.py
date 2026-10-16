@@ -743,3 +743,34 @@ def test_deleting_a_project_takes_every_admission_ledger_in_it(tmp_path):
     assert store.get_admission("resv-doomed-second-0001") is None
     assert store.get_admission("resv-survivor-000000001") is not None
     store.close()
+
+
+def test_project_delete_refusal_leaves_shares_and_compute_untouched(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(project_id="science", name="Science")
+    roots = [store.new_frame(project_id="science", status="ready") for _ in range(3)]
+    events: list[tuple[str, str]] = []
+
+    def drop(root, _reason):
+        events.append(("drop", root))
+        # Refuse the second root in whatever order the service visits them.
+        if len(events) > 1:
+            raise RuntimeError("archive refused")
+
+    service = SessionDeletionService(
+        store,
+        data_dir=tmp_path,
+        cas=WorkspaceCAS(tmp_path / "workspace-cas"),
+        drop_runtime=drop,
+        drop_resume_window=lambda _root: None,
+        revoke_shares=lambda root: events.append(("revoke", root)),
+        release_compute=lambda root: events.append(("release", root)),
+    )
+
+    with pytest.raises(RuntimeError, match="archive refused"):
+        service.delete_project("science")
+
+    assert [kind for kind, _root in events] == ["drop", "drop"]
+    assert {root for _kind, root in events} <= set(roots)
+    assert store.get_project("science") is not None

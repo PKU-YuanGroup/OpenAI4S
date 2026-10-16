@@ -64,6 +64,15 @@ afterEach(() => {
 });
 
 describe("the Shell repainted after a language switch", () => {
+  it("offers an unbound project-folder input and an inline directory picker", () => {
+    const tree = paintAt("/");
+    const input = byId(tree, "pm-folder");
+    expect(input?.props).not.toHaveProperty("value");
+    expect(input?.props?.["aria-describedby"]).toBe("pm-folder-help pm-history-help");
+    expect(byId(tree, "pm-history-help")).not.toBeNull();
+    expect(byId(tree, "pm-browse")?.props?.onClick).toBeTypeOf("function");
+    expect(classes(byId(tree, "pm-folder-picker"))).toContain("hidden");
+  });
   it("does not bind the session title the router writes", () => {
     // A bound `value` is compared with the live input on every repaint, so a
     // language switch put "会话" back over the session's name.

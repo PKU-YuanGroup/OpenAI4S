@@ -8,7 +8,11 @@ export type OpenConversation = (
 /** The project override exists so an empty project creates its conversation
  *  in the project just opened, not in whichever one is active by the time the
  *  shared creation promise settles. */
-export type NewSession = (projectId?: string) => Promise<void> | void;
+export type NewSessionOptions = {
+  /** The conversation retained while an empty project creates its first frame. */
+  restoreOnFailure?: { frameId: string; projectId: string | null };
+};
+export type NewSession = (projectId?: string, options?: NewSessionOptions) => Promise<void> | void;
 
 export const binds = {
   openConversation: (() => {}) as OpenConversation,

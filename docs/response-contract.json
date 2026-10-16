@@ -1631,6 +1631,18 @@
         404
       ]
     },
+    "/local-folders": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/me": {
       "content_types": [
         "application/json"
@@ -2013,6 +2025,30 @@
         404
       ]
     },
+    "/projects/([^/]+)/file": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/projects/([^/]+)/files": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/projects/([^/]+)/folders": {
       "content_types": [
         "application/json"
@@ -2022,6 +2058,42 @@
       ],
       "statuses": [
         200,
+        404
+      ]
+    },
+    "/projects/([^/]+)/history": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/projects/([^/]+)/history/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/projects/([^/]+)/history/([^/]+)/file": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
         404
       ]
     },

@@ -3,7 +3,7 @@
 import { t } from "../../i18n";
 import { _msgEarlierLoading, _openGen, currentId, project } from "../../stores/session";
 import { apiErrorText } from "./api";
-import { binds } from "./binds";
+import { binds, type NewSessionOptions } from "./binds";
 import { hint } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
 import { $, FRAME_ROUTE, PROJECT_ROUTE } from "./dom";
@@ -28,15 +28,15 @@ export { resumeWatch } from "../send/ticket";
 
 /**
  * Who owns the *view*. Not a list-read owner: session and folder rows are
- * scoped to their project (`load.ts: listScope`), and the project menu cancels
- * a pending open through `projects.ts: projectFilterVersion`.
+ * scoped to their project (`load.ts: listScope`), and the project menu opens
+ * its choice through `projects.ts: openProject`, a navigation of its own.
  */
 type ViewOwner = { generation: number; projectId: string | null };
 const viewOwner = (): ViewOwner => ({ generation: _openGen.value, projectId: project.value });
 const ownsView = (owner: ViewOwner): boolean =>
   _openGen.value === owner.generation && project.value === owner.projectId;
 
-export async function newSession(projectId?: string): Promise<void> {
+export async function newSession(projectId?: string, options?: NewSessionOptions): Promise<void> {
   // onclick passes a MouseEvent, and `window.newSession` is reachable from the
   // legacy shell too. Only an explicit string is a project override; a user
   // click creates the new conversation in the active project.
@@ -81,6 +81,15 @@ export async function newSession(projectId?: string): Promise<void> {
     if (currentId.value === frameId) $("#composer")?.focus();
   } catch (e) {
     if (!ownsView(owner)) return;
+    const restore = options?.restoreOnFailure;
+    if (restore && currentId.value === restore.frameId) {
+      // An empty-project open temporarily selected its destination before
+      // creating a frame. A failed POST retains the old conversation, whose
+      // project and source folder must remain the ones shown beside it.
+      project.value = restore.projectId;
+      owner.projectId = restore.projectId;
+      renderProjMenu();
+    }
     const error = t("folder.create.failed", apiErrorText(e));
     hint(error, true);
     if (fresh && currentId.value) {

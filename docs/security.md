@@ -423,6 +423,7 @@ it:
   rejected, while an identifier-quoted table reference (`FROM "settings"`)
   still trips it.
 - Because the denylist is a table-name match, a query that reads the unrelated `agents.connectors` *column* is also refused; no bundled skill relies on that read.
+- `projects.folder_path` (a linked project's absolute host path) reads as `NULL` from agent SQL and is absent from `host.query.schema()`, so a cell cannot learn where the folder is and open files the read-only project tools refuse. `SELECT * FROM projects` keeps working.
 
 Credential values passed to `host.credentials.set(name, value)` are held only in an in-memory vault (never persisted). To keep that true end to end, the **RPC audit log** redacts them: `credentials_get` / `credentials_list` are not logged at all, and `credentials_set` is logged for audit **with its args redacted** — the plaintext value never enters `host_call_log`. The replay tape recorder likewise skips `credentials_set`, so an exported notebook cannot carry a plaintext credential. `host.judge` is a different projection on the same log: `args_preview` keeps a template id only when the judgment registry resolves it and replaces state and params with fixed markers (`<redacted judge state>`, `<redacted judge params>`). The call stays on the replay tape, and `result_preview` stays. `result_digest` stays too, except for a soft-fail error, which is stored without one.
 

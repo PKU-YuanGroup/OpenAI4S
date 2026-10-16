@@ -166,6 +166,21 @@ def is_secret_path(path: str) -> bool:
     return _has_secret_directory(segments)
 
 
+def splits_secret_directory(path: str) -> bool:
+    """Whether a root ends partway through a credential directory sequence.
+
+    Paths under a root are classified relative to it, so a root such as
+    ``~/.config`` would turn ``.config/gcloud`` into a bare ``gcloud`` that no
+    sequence matches. Such a root cannot be granted as a whole.
+    """
+    segments = _path_segments(path)
+    return any(
+        segments[-size:] == sequence[:size]
+        for sequence in _SECRET_DIR_SEQUENCES
+        for size in range(1, len(sequence))
+    )
+
+
 def is_credential_path(path: str) -> bool:
     """``is_secret_path`` widened for automatic approval review.
 
@@ -1530,7 +1545,9 @@ class WorkspaceFileService:
             descriptor,
             relative=str(Path(*parts)) if parts else ".",
             aliases=aliases,
-            predicate=is_secret_path,
+            # Through `self` so a narrower service (read-only project folders)
+            # classifies listed children with its own denylist.
+            predicate=self.is_secret_path,
         )
 
     def _resolved_path_checker(
@@ -1675,4 +1692,5 @@ __all__ = [
     "WorkspaceFileService",
     "is_credential_path",
     "is_secret_path",
+    "splits_secret_directory",
 ]

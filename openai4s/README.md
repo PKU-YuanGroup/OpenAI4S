@@ -14,6 +14,8 @@ Control-only work can finish through the Engine-owned finalizer. From inside a P
 
 | File | Responsibility |
 | --- | --- |
+| [`project_folders.py`](project_folders.py) | Explicit standalone-local read-only project folder grants, root validation, and secure source reads without creating directories. |
+| [`project_history.py`](project_history.py) | Portable project-local conversations, immutable file revisions and explicit save status under `.openai4s/`, with no execution restore. |
 | [`artifact_paths.py`](artifact_paths.py) | Shared Artifact capture visibility and dataset destination preflight. |
 | [`__init__.py`](./__init__.py) | Names the package and holds its version. Importing it starts nothing. |
 | [`__main__.py`](./__main__.py) | Makes `python -m openai4s` work by handing off to the CLI entry point. |

@@ -7,6 +7,7 @@ objects that implement the relevant port only after a call has been approved.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -71,6 +72,7 @@ class ControlToolContext:
         dispatch_host: Callable[[str, list[Any]], Any] | None = None,
         search_web: Callable[..., dict[str, Any]] | None = None,
         get_download_cancelled: Callable[[], Callable[[], bool] | None] | None = None,
+        get_project_files: Callable[[], WorkspaceToolContext] | None = None,
     ) -> None:
         self._workspace = workspace
         self._get_active_env_bin = get_active_env_bin
@@ -82,6 +84,19 @@ class ControlToolContext:
         self._dispatch_host = dispatch_host
         self._search_web = search_web
         self._get_download_cancelled = get_download_cancelled
+        self._get_project_files = get_project_files
+
+    def project_files(self) -> WorkspaceToolContext:
+        """Resolve the current project's explicitly attached read-only folder."""
+        if self._get_project_files is None:
+            raise RuntimeError("this session has no local project folder")
+        return self._get_project_files()
+
+    def with_project_files(self, files: WorkspaceToolContext) -> "ControlToolContext":
+        """Pin one approved input root without changing concurrent tool calls."""
+        context = copy.copy(self)
+        context._get_project_files = lambda: files
+        return context
 
     def download_cancellation(self) -> Callable[[], bool] | None:
         """Read the owning execution's cancellation hook, never a model argument."""

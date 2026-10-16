@@ -3,6 +3,8 @@ import { HistoryLoadStatus } from "../../features/messages/components";
 import { finishArtifactsBoot } from "../../features/artifacts/boot";
 import { bindWorkbench } from "../../features/sessions/boot";
 import { routesToWorkspace } from "../../features/sessions/dom";
+import { projectFilesCopy } from "../../features/sessions/copy";
+import { browseProjectFolder } from "../../features/sessions/project-files";
 import { DashHeroText } from "./DashHero";
 import { ModelSelect } from "./ModelSelect";
 import "./dashboard.css";
@@ -149,6 +151,7 @@ export function Shell() {
               type="button"
             />
           </div>
+          <div id="proj-folder-path" class="project-source-path hidden" />
           <div id="proj-menu" class="proj-menu hidden" role="menu" />
           <nav class="side-nav">
             <button id="search-btn" class="side-nav-item" type="button">
@@ -461,6 +464,22 @@ export function Shell() {
               data-i18n-ph="projModal.name.placeholder"
               placeholder="Project name"
             />
+            <label for="pm-folder">{projectFilesCopy("folder")}</label>
+            <div class="project-folder-actions">
+              <input
+                id="pm-folder"
+                type="text"
+                class="project-folder-input"
+                placeholder={projectFilesCopy("folderPlaceholder")}
+                aria-describedby="pm-folder-help pm-history-help"
+              />
+              <button id="pm-browse" class="outline-btn" type="button" onClick={() => { void browseProjectFolder(); }}>
+                {projectFilesCopy("browse")}
+              </button>
+            </div>
+            <p id="pm-folder-help" class="project-folder-note">{projectFilesCopy("folderHelp")}</p>
+            <p id="pm-history-help" class="project-folder-note">{projectFilesCopy("historyHelp")}</p>
+            <div id="pm-folder-picker" class="project-folder-picker hidden" aria-live="polite" />
             <label data-i18n="skill.label.desc">Description</label>
             <textarea
               id="pm-desc"
