@@ -1936,7 +1936,7 @@ class ArtifactRepository:
     def version_for_path(
         self, path: str, *, root_frame_id: str | None, project_id: str
     ) -> str | None:
-        """The version a path belongs to, within one session.
+        """The version a live path or frozen snapshot belongs to, in one session.
 
         Scope is keyword-only and required, so an unscoped call is
         unrepresentable rather than defaulted. It has to be: `artifact_versions`
@@ -1961,6 +1961,18 @@ class ArtifactRepository:
         root_args: tuple = (root_frame_id,) if root_frame_id is not None else ()
         scope_args = (project_id, *root_args)
         with self._lock:
+            # host.artifact_path(version_id) returns this version's immutable
+            # snapshot. Resolve it before the mutable path's latest version;
+            # otherwise a real kernel read cannot recover its input identity.
+            snapshot = self._connection.execute(
+                "SELECT v.version_id FROM artifact_versions v "
+                "JOIN artifacts a ON a.artifact_id=v.artifact_id "
+                f"WHERE a.project_id=? AND {root_clause} AND v.snapshot_path=? "
+                "ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1",
+                (*scope_args, str(path)),
+            ).fetchone()
+            if snapshot:
+                return snapshot["version_id"]
             exact = self._connection.execute(
                 "SELECT v.version_id,v.created_at,v.rowid AS version_rowid "
                 "FROM artifact_versions v "
@@ -1974,7 +1986,7 @@ class ArtifactRepository:
                 return exact["version_id"] if exact else None
             if exact:
                 candidates = self._connection.execute(
-                    "SELECT v.version_id,v.path FROM artifact_versions v "
+                    "SELECT v.version_id,v.path,v.snapshot_path FROM artifact_versions v "
                     "JOIN artifacts a ON a.artifact_id=v.artifact_id "
                     f"WHERE a.project_id=? AND {root_clause} AND "
                     "(v.created_at>? OR (v.created_at=? AND v.rowid>?)) "
@@ -1988,14 +2000,18 @@ class ArtifactRepository:
                 ).fetchall()
             else:
                 candidates = self._connection.execute(
-                    "SELECT v.version_id,v.path FROM artifact_versions v "
+                    "SELECT v.version_id,v.path,v.snapshot_path FROM artifact_versions v "
                     "JOIN artifacts a ON a.artifact_id=v.artifact_id "
                     f"WHERE a.project_id=? AND {root_clause} "
                     "ORDER BY v.created_at DESC, v.rowid DESC",
                     scope_args,
                 ).fetchall()
         for candidate in candidates:
-            if self._identify_file(candidate["path"]) == identity:
+            snapshot_path = candidate["snapshot_path"]
+            if self._identify_file(candidate["path"]) == identity or (
+                snapshot_path is not None
+                and self._identify_file(snapshot_path) == identity
+            ):
                 return candidate["version_id"]
         return exact["version_id"] if exact else None
 

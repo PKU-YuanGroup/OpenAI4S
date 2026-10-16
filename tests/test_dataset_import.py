@@ -700,7 +700,7 @@ def test_cancel_during_workspace_copy_stops_before_writing_or_publishing(
 
 @contextlib.contextmanager
 def native_dataset_session(tmp_path, monkeypatch, *, stage1):
-    """Real workspace publication, Gateway capture and Store; offline network."""
+    """Real publication, capture, kernel and Store; network/readiness injected."""
     from openai4s.server.gateway import SessionRunner, WSHub
     from openai4s.tools.registry import execute_tool_call
 
@@ -710,6 +710,10 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
         roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=stage1),
     )
     runner = SessionRunner(cfg, WSHub(), start_idle_sweeper=False)
+    # Standard environment installation has its own readiness contracts. These
+    # workflow cases need no Python/R profile installation on the CI host; the
+    # analysis still executes in the real persistent Python kernel below.
+    monkeypatch.setattr(runner, "standard_profile_readiness", lambda: {"ready": True})
     frame = runner.store.new_frame(
         kind="turn", project_id="dataset-contract", status="ready"
     )
@@ -727,7 +731,11 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
 
     def fetch(url, **_kwargs):
         reads.append(url)
-        payload = json.dumps(document).encode()
+        if url.startswith("https://zenodo.org/api/records?"):
+            payload = json.dumps({"hits": {"hits": [document]}, "links": {}}).encode()
+        else:
+            assert url == selection().metadata_url
+            payload = json.dumps(document).encode()
         return {
             "content": payload.decode(),
             "raw_sha256": hashlib.sha256(payload).hexdigest(),
@@ -742,11 +750,11 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
     monkeypatch.setattr(webtools, "web_fetch", fetch)
     monkeypatch.setattr(webtools, "_open_http_response", response)
 
-    def invoke(emit):
+    def invoke(emit, *, arguments=None):
         call = {
             "id": "import-input",
             "name": "science_import_dataset",
-            "arguments": spec(),
+            "arguments": spec() if arguments is None else arguments,
         }
         return runner._invoke_control_with_artifacts(
             state, call, emit, lambda: execute_tool_call(dispatcher, call)
@@ -756,6 +764,205 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
         yield runner, state, document, reads, invoke
     finally:
         runner.close()
+
+
+def _discover_dataset_input(runner, state, events):
+    """Select the exact file declarations the real native observation exposed."""
+    from openai4s.tools.registry import execute_tool_call
+
+    runner.store.set_permission_rule(
+        scope="conversation",
+        scope_id=state.root_frame_id,
+        tool="science_search",
+        pattern="zenodo",
+        decision="allow",
+    )
+    call = {
+        "id": "discover-input",
+        "name": "science_search",
+        "arguments": {"database": "zenodo", "query": "spectra", "limit": 1},
+    }
+    observation, ok = runner._invoke_control_with_artifacts(
+        state,
+        call,
+        events.append,
+        lambda: execute_tool_call(runner._ensure_runtime(state), call),
+    )
+    assert ok, observation
+    row = json.loads(observation.split("results (1):\n", 1)[1])
+    file = next(
+        entry for entry in row["attributes"]["files"] if entry["key"] == "spectra.csv"
+    )
+    return {
+        "record_id": row["id"],
+        "file_key": file["key"],
+        "path": "datasets/spectra.csv",
+        "expected_size": file["declared_size_bytes"],
+        "expected_checksum": file["declared_checksum"],
+        "max_bytes": 1024 * 1024,
+    }
+
+
+def _analyse_dataset_version(runner, state, version_id, events):
+    """Use a real persistent kernel and let production record the input edge."""
+    pytest.importorskip("pandas")
+    # Use the production scientific reader/writer hooks. csv.DictReader,
+    # scalar conversion and json.dump do not preserve object provenance.
+    code = (
+        "import pandas as pd\n"
+        f"input_path = host.artifact_path({version_id!r})\n"
+        "data = pd.read_csv(input_path)\n"
+        "data['mean'] = data['intensity'].mean()\n"
+        "data['rows'] = len(data)\n"
+        f"data['input_version'] = {version_id!r}\n"
+        "data.to_json('summary.json', orient='records')\n"
+    )
+    executed = runner._execute_and_log(
+        state, code, "agent", events.append, stream=False, language="python"
+    )
+    assert executed["executed"] is True, executed
+    assert not executed["result"].get("error"), executed["result"]
+    artifact = runner.store.artifact_by_filename(
+        "summary.json", state.root_frame_id, strict=True
+    )
+    assert artifact is not None, executed
+    metadata = runner.store.version_meta(artifact["latest_version_id"])
+    assert metadata["producing_cell_id"] == executed["cell_id"]
+    assert runner.store.cell_detail(executed["cell_id"])["status"] == "ok"
+    assert json.loads(Path(metadata["snapshot_path"]).read_text(encoding="utf-8")) == [
+        {
+            "wavelength": 500,
+            "intensity": 0.75,
+            "input_version": version_id,
+            "mean": 0.75,
+            "rows": 1,
+        }
+    ]
+    inputs = runner.store.lineage_inputs(metadata["version_id"])
+    assert {entry["version_id"] for entry in inputs} == {version_id}
+    return metadata
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="native workspace capture requires POSIX"
+)
+@pytest.mark.parametrize("stage1", [False, True])
+def test_native_input_analysis_keeps_its_exact_lineage_after_store_reopen(
+    tmp_path, monkeypatch, stage1
+):
+    """Discovery -> native import -> real analysis -> durable input/result edge.
+
+    A second import of identical bytes changes the latest version and source.
+    The analysis explicitly names the first version: resolving a filename or
+    attaching the current head's lineage would pass a same-byte check but fail
+    this workflow. No test code creates a lineage edge or an analysis artifact.
+    """
+    from openai4s.store import get_store
+
+    with native_dataset_session(tmp_path, monkeypatch, stage1=stage1) as (
+        runner,
+        state,
+        document,
+        reads,
+        invoke,
+    ):
+        events = []
+        selected = _discover_dataset_input(runner, state, events)
+        observation, ok = invoke(events.append, arguments=selected)
+        assert ok, observation
+        first = runner.store.artifact_by_filename(
+            selected["path"], state.root_frame_id, strict=True
+        )
+        assert first is not None
+        first_id = first["latest_version_id"]
+        first_meta = runner.store.version_meta(first_id)
+        document["metadata"]["title"] = "Later source annotation"
+        observation, ok = invoke(events.append, arguments=selected)
+        assert ok, observation
+        latest = runner.store.get_artifact(first["artifact_id"])["latest_version_id"]
+        assert latest != first_id
+        assert runner.store.version_meta(latest)["checksum"] == first_meta["checksum"]
+        summary = _analyse_dataset_version(runner, state, first_id, events)
+        summary_bytes = Path(summary["snapshot_path"]).read_bytes()
+        assert runner.store.version_meta(first_id)["source"] == first_meta["source"]
+        assert reads[0].startswith("https://zenodo.org/api/records?")
+        assert reads[1:] == [selection().metadata_url, selection().download_url] * 2
+        db_path = runner.cfg.db_path
+
+    runner.store.close()
+    reopened = get_store(db_path)
+    try:
+        assert reopened.version_meta(first_id)["source"] == first_meta["source"]
+        assert (
+            reopened.get_artifact(first["artifact_id"])["latest_version_id"] == latest
+        )
+        assert (
+            json.loads(reopened.version_meta(latest)["source"])["dataset"]["title"]
+            == "Later source annotation"
+        )
+        result = reopened.version_meta(summary["version_id"])
+        assert result["producing_cell_id"] == summary["producing_cell_id"]
+        assert Path(result["snapshot_path"]).read_bytes() == summary_bytes
+        assert result["checksum"] == hashlib.sha256(summary_bytes).hexdigest()
+        assert {
+            entry["version_id"]
+            for entry in reopened.lineage_inputs(result["version_id"])
+        } == {first_id}
+        assert latest not in {
+            entry["version_id"]
+            for entry in reopened.lineage_inputs(result["version_id"])
+        }
+    finally:
+        reopened.close()
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="native workspace capture requires POSIX"
+)
+@pytest.mark.parametrize("stage1", [False, True])
+@pytest.mark.parametrize("fault", ["stale_size", "checksum_mismatch"])
+def test_refused_reimport_leaves_the_prior_input_available_for_exact_analysis(
+    tmp_path, monkeypatch, stage1, fault
+):
+    with native_dataset_session(tmp_path, monkeypatch, stage1=stage1) as (
+        runner,
+        state,
+        document,
+        reads,
+        invoke,
+    ):
+        events = []
+        selected = _discover_dataset_input(runner, state, events)
+        observation, ok = invoke(events.append, arguments=selected)
+        assert ok, observation
+        original = runner.store.artifact_by_filename(
+            selected["path"], state.root_frame_id, strict=True
+        )
+        version_id = original["latest_version_id"]
+        source = runner.store.version_meta(version_id)["source"]
+        if fault == "stale_size":
+            document["files"][0]["size"] += 1
+        else:
+
+            @contextlib.contextmanager
+            def mismatched_response(url, **_kwargs):
+                reads.append(url)
+                yield io.BytesIO(b"x" * len(BODY)), url, "text/csv"
+
+            monkeypatch.setattr(webtools, "_open_http_response", mismatched_response)
+
+        observation, ok = invoke(events.append, arguments=selected)
+        assert ok is False, observation
+        assert ("size changed" if fault == "stale_size" else "checksum") in observation
+        assert (state.workspace / selected["path"]).read_bytes() == BODY
+        assert len(runner.store.list_versions(original["artifact_id"])) == 1
+        assert runner.store.version_meta(version_id)["source"] == source
+        # The user explicitly chooses the already accepted version after the
+        # failed replacement; this is not a silent fallback or a tool retry.
+        _analyse_dataset_version(runner, state, version_id, events)
+        assert reads.count(selection().download_url) == (
+            1 if fault == "stale_size" else 2
+        )
 
 
 @pytest.mark.skipif(
