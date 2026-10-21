@@ -857,6 +857,7 @@ def _install_host(ns: dict, *, mode: str) -> None:
         from openai4s.kernel import provenance
 
         provenance.install(host_call)
+        _PROVENANCE_TAGGED[:] = provenance.TAGGED_TYPES
     except Exception as e:  # noqa: BLE001
         _write_frame({"type": "log", "msg": f"provenance unavailable: {e}"})
 
@@ -1222,6 +1223,19 @@ _SAFE_SCALAR_TYPES = (type(None), bool, int, float, str, bytes)
 _SAFE_CONTAINER_TYPES = (list, tuple, dict, set, frozenset)
 _INSPECT_SAMPLE_ITEMS = 12
 _INSPECT_HASH_BYTES = 32_768
+#: Provenance's tagged `str`/`bytes` subclasses with the plain type each copies,
+#: filled once provenance installs. A value read from a tracked artifact is one
+#: of them, so the inspector and the read observer take it as its plain value.
+#: Matched by exact type: every other subclass is still refused.
+_PROVENANCE_TAGGED: list[tuple[type, type]] = []
+
+
+def _untagged(value: object) -> object:
+    value_type = type(value)
+    for tagged, plain in _PROVENANCE_TAGGED:
+        if value_type is tagged:
+            return plain(value)
+    return value
 
 
 def _safe_type_name(value: object) -> str:
@@ -1247,6 +1261,7 @@ def _bounded_bytes(value: bytes) -> bytes:
 
 
 def _primitive_token(value: object) -> bytes | None:
+    value = _untagged(value)
     value_type = type(value)
     if value is None:
         return b"none"
@@ -1287,6 +1302,7 @@ def _primitive_token(value: object) -> bytes | None:
 
 
 def _primitive_preview(value: object) -> object:
+    value = _untagged(value)
     value_type = type(value)
     if value is None or value_type is bool:
         return value
@@ -1402,6 +1418,7 @@ def _safe_container_summary(value: object) -> tuple[str, int, str, str] | None:
 
 
 def _inspect_one(name: str, value: object) -> dict:
+    value = _untagged(value)
     entry = {"name": name[:160], "type": _safe_type_name(value)}
     value_type = type(value)
     if value_type in _SAFE_SCALAR_TYPES:
@@ -1534,6 +1551,7 @@ def _install_file_read_audit_hook() -> None:
         _separator=path_separator,
         _getcwd=getcwd,
         _fsdecode=fsdecode,
+        _plain=_untagged,
         _getframe=sys._getframe,
         _o_accmode=getattr(os, "O_ACCMODE", os.O_WRONLY | os.O_RDWR),
         _o_wronly=os.O_WRONLY,
@@ -1548,7 +1566,7 @@ def _install_file_read_audit_hook() -> None:
                 return
             if not args:
                 return
-            raw_path = args[0]
+            raw_path = _plain(args[0])
             if isinstance(raw_path, bytes):
                 raw_path = _fsdecode(raw_path)
             if type(raw_path) is not str or not raw_path or "\x00" in raw_path:

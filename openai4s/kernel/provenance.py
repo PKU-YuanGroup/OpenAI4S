@@ -495,6 +495,10 @@ def _make_tagged_class(base: type) -> type:
 _TaggedStr = _make_tagged_class(str)
 _TaggedBytes = _make_tagged_class(bytes)
 
+#: Each tagged subclass with the plain type it copies, for worker code that
+#: shows or observes a value as the value itself.
+TAGGED_TYPES = ((_TaggedStr, str), (_TaggedBytes, bytes))
+
 
 def _tag_scalar(value: Any, tags: frozenset) -> Any:
     """Return a tagged view of a str/bytes scalar (or side-table for others)."""
