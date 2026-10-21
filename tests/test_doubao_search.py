@@ -28,6 +28,7 @@ from openai4s.doubao_search import (
     TRAFFIC_TAG,
     DoubaoSearchAuthError,
     DoubaoSearchError,
+    DoubaoSearchQuotaError,
     DoubaoSearchResponseError,
     DoubaoSearchService,
 )
@@ -499,6 +500,45 @@ def test_auth_and_quota_errors_are_hard_doubao_failures_not_empty_successes(
     assert _OLD_SECRET not in str(raised.value)
     assert _OLD_SECRET not in repr(raised.value)
     assert _OLD_SECRET not in caplog.text
+
+
+@pytest.mark.parametrize("code", ["10406", "429", "700429", "FlowLimitExceeded"])
+def test_a_spent_quota_is_told_apart_from_a_rejected_key(tmp_path, code):
+    # The Host offers a fallback engine for a spent quota only; it is still an
+    # auth-or-quota failure to every other handler.
+    opener = _RecordingOpener([{"ResponseMetadata": {"Error": {"Code": code}}}])
+    _store_obj, service = _service(tmp_path, opener)
+
+    with pytest.raises(DoubaoSearchQuotaError) as raised:
+        service.search("quota")
+
+    assert isinstance(raised.value, DoubaoSearchAuthError)
+
+
+@pytest.mark.parametrize("code", ["invalid_api_key", "10403", "10412"])
+def test_a_rejected_key_is_not_reported_as_a_spent_quota(tmp_path, code):
+    opener = _RecordingOpener([{"ResponseMetadata": {"Error": {"Code": code}}}])
+    _store_obj, service = _service(tmp_path, opener)
+
+    with pytest.raises(DoubaoSearchAuthError) as raised:
+        service.search("auth")
+
+    assert not isinstance(raised.value, DoubaoSearchQuotaError)
+
+
+@pytest.mark.parametrize(
+    "status, quota", [(429, True), (402, True), (401, False), (403, False)]
+)
+def test_http_status_tells_a_spent_quota_from_a_rejected_key(tmp_path, status, quota):
+    opener = _RecordingOpener(
+        [urllib.error.HTTPError(ENDPOINT, status, "refused", {}, None)]
+    )
+    _store_obj, service = _service(tmp_path, opener)
+
+    with pytest.raises(DoubaoSearchAuthError) as raised:
+        service.search("status")
+
+    assert isinstance(raised.value, DoubaoSearchQuotaError) is quota
 
 
 def test_primary_search_never_falls_back_after_a_configured_key_is_rejected(

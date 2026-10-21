@@ -1,0 +1,19 @@
+{
+  "callaway_santanna": {
+    "source": "https://bcallaway11.github.io/did/articles/did-basics.html",
+    "scope": "Official real-data example, xformla=~1, never-treated controls, varying pre-period base; point estimates only, rounded to four decimals",
+    "tolerance": 0.00005,
+    "group_time": {"2004:2004": -0.0105, "2004:2005": -0.0704, "2004:2006": -0.1373, "2004:2007": -0.1008, "2006:2004": 0.0065, "2006:2005": -0.0028, "2006:2006": -0.0046, "2006:2007": -0.0412, "2007:2004": 0.0305, "2007:2005": -0.0027, "2007:2006": -0.0311, "2007:2007": -0.0261},
+    "dynamic": {"-3": 0.0305, "-2": -0.0006, "-1": -0.0245, "0": -0.0199, "1": -0.0510, "2": -0.1373, "3": -0.1008},
+    "overall_dynamic_att": -0.0772
+  },
+  "sun_abraham": {
+    "source": "https://lrberge.github.io/fixest/articles/fixest_walkthrough.html",
+    "scope": "Official fixest simulation example, y ~ x1 + sunab(year_treated,year) | id + year; point estimates only, rounded to six decimals",
+    "tolerance": 0.0000005,
+    "x1": 0.994678,
+    "overall_att": -1.133749,
+    "true_overall_att": -1.0,
+    "rmse": 0.921817
+  }
+}

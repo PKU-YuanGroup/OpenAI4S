@@ -1,0 +1,65 @@
+{
+  "selected_entities": [
+    "001",
+    "005",
+    "009",
+    "013",
+    "017",
+    "021",
+    "025",
+    "029"
+  ],
+  "excluded_entities": [
+    "002",
+    "003",
+    "004",
+    "006",
+    "007",
+    "008",
+    "010",
+    "011",
+    "012",
+    "014",
+    "015",
+    "016",
+    "018",
+    "019",
+    "020",
+    "022",
+    "023",
+    "024",
+    "026",
+    "027",
+    "028",
+    "030",
+    "031",
+    "032"
+  ],
+  "selected_metrics": [
+    "activity"
+  ],
+  "source_records_sha256": "119f2f67a4f956a596143f7351c9f2342e5ec964ab6a831f01dbdb3f9bc5e13a",
+  "config_sha256": "6815e050c9de919c508ad356bef70084c18a2525fbaa025f5f5eb58833d6a489",
+  "outputs": {
+    "metric-1.png": {
+      "sha256": "b91053b925502d4c6b8a997f93cbb477f55a6ab3275183ae4a43a795b83c8ba5"
+    },
+    "metric-1.svg": {
+      "sha256": "a2ceb392955f1e8f9d12dbb56323c4c6f1caffcad3700f8e0c60acd5c01bca57"
+    },
+    "sample-coverage.png": {
+      "sha256": "83be86fc1db549e38651fd6484a04f7c684a295f2bb332f627ea021f38914f18"
+    },
+    "sample-coverage.svg": {
+      "sha256": "3e14d17e9a7e593e6181565006001bf277e511a5993930e09469b71660519744"
+    },
+    "window-readiness.png": {
+      "sha256": "384e6a328341b498ae36f3f48af2f65ccad1f9fb504166e110f82ed2dc4f0080"
+    },
+    "window-readiness.svg": {
+      "sha256": "710b57cb49cb6bd4f08b8353035988582f721269b96b9691480be1b98c88bf41"
+    }
+  },
+  "interpretation": "Selected trajectories are descriptive. Coverage uses the full sample. Candidate dates do not identify causal effects.",
+  "selection_basis": "Prespecified first entity in each of eight DGP scenarios:001,005,009,013,017,021,025,029; no candidate- or truth-score selection. Excluded IDs are retained in the existing field."
+}

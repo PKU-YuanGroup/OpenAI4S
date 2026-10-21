@@ -10,7 +10,7 @@ name: Publish release
 #
 # The entry point is now explicit: a maintainer creates the draft release
 # (`gh release create vX.Y.Z --draft --verify-tag`; a tag push creates nothing),
-# then runs this workflow against that tag. With
+# then runs this workflow from main with that tag as the source input. With
 # `publish` unset it is a dry run — everything is built and verified, nothing
 # leaves. With `publish` set the run must name an existing *draft*, which the
 # guard job proves before anything else starts.
@@ -58,17 +58,16 @@ permissions:
   contents: read
 
 jobs:
-  # Validate the immutable workflow SHA once, before anything else starts.
-  #
-  # A user-supplied tag is only an identity assertion: it must peel to the
-  # immutable github.sha selected for this run. No checkout ever resolves an
-  # input or a step output. The ancestor-of-main assertion applies
-  # to dry runs and recovery publication as well as ordinary publication, so
-  # untrusted code never reaches a release runner's cache credentials.
+  # Freeze tooling and product sources separately. Both must belong to main;
+  # the product tag must be an ancestor of the immutable tooling commit. No
+  # downstream checkout resolves a mutable input. This lets release tooling
+  # evolve without rewriting an already-created product tag.
   freeze:
     name: Freeze the source SHA
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
       - name: Checkout the immutable workflow SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,6 +76,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Validate the workflow SHA and optional release tag
+        id: source
         env:
           TAG: ${{ inputs.tag }}
           PUBLISH: ${{ inputs.publish }}
@@ -88,29 +88,30 @@ jobs:
             [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
             *) echo "::error::github.sha is not a full commit SHA: $SHA"; exit 1 ;;
           esac
+          SOURCE_SHA="$SHA"
           if [ -n "$TAG" ]; then
             if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::release tag must be a stable vMAJOR.MINOR.PATCH"
               exit 1
             fi
             TAG_SHA="$(git rev-parse --verify "${TAG}^{commit}")"
-            if [ "$TAG_SHA" != "$SHA" ]; then
-              echo "::error::$TAG peels to $TAG_SHA, not immutable workflow SHA $SHA"
+            if [ "$(git cat-file -t "$TAG")" != "tag" ]; then
+              echo "::error::Release tags must be annotated."
               exit 1
             fi
-            if [ "$PUBLISH" = "true" ] || [ "$PYPI_ONLY" = "true" ]; then
-              if [ "$(git cat-file -t "$TAG")" != "tag" ]; then
-                echo "::error::Release tags must be annotated."
-                exit 1
-              fi
+            if ! git merge-base --is-ancestor "$TAG_SHA" "$SHA"; then
+              echo "::error::release source must be an ancestor of the frozen tooling commit"
+              exit 1
             fi
+            SOURCE_SHA="$TAG_SHA"
           fi
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$SHA" origin/main; then
             echo "::error::$SHA is not an ancestor of origin/main."
             exit 1
           fi
-          echo "validated immutable release source $SHA"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "validated product source $SOURCE_SHA with release tooling $SHA"
 
   guard:
     name: Require the release state the mode expects
@@ -193,7 +194,7 @@ jobs:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install uv
@@ -214,7 +215,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
         # `--slurp` wraps every page in one JSON array. Without it gh writes a
         # document per page back to back, which is not one JSON value; the
         # reader accepts both, so a SHA with more than 100 check runs (nightly
@@ -241,7 +242,7 @@ jobs:
           name: quality-receipt
           path: quality-receipt.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 90
 
   # The platform checks cannot be attested: the nightly sandbox jobs in ci.yml
   # run only on `schedule`/`workflow_dispatch`, so no check run for them exists at
@@ -271,7 +272,7 @@ jobs:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -297,7 +298,7 @@ jobs:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install uv
@@ -326,7 +327,7 @@ jobs:
       # from one built from the released sources.
       - name: Receipt the distributions against the frozen SHA
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
           OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           uv run --locked python scripts/release_receipts.py \
@@ -339,7 +340,7 @@ jobs:
           name: python-package-distributions
           path: dist/
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 90
 
   macos-app:
     name: Build the macOS app image (arm64)
@@ -377,7 +378,7 @@ jobs:
         if: ${{ inputs.macos_asset == 'notarized' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           persist-credentials: false
       - name: Fail fast when notarization was requested without credentials
         if: ${{ inputs.macos_asset == 'notarized' }}
@@ -476,7 +477,7 @@ jobs:
       - name: Receipt the image against the frozen SHA
         if: ${{ inputs.macos_asset == 'notarized' }}
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
           OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           python3 scripts/release_receipts.py \
@@ -494,7 +495,7 @@ jobs:
             dist/*.dmg.components.json
             dist/build-receipt-macos.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 90
 
   linux-app:
     name: Build the Linux app bundle (x86_64)
@@ -521,7 +522,7 @@ jobs:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -540,7 +541,7 @@ jobs:
       # `attach` downloaded", not "these are the bytes built from this source".
       - name: Receipt the bundle against the frozen SHA
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
           OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           uv run --locked python scripts/release_receipts.py \
@@ -560,7 +561,7 @@ jobs:
             dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
             dist/build-receipt-*.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 90
 
   windows-package:
     name: Build the Windows package (WSL2 payload)
@@ -580,7 +581,7 @@ jobs:
       - name: Checkout the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           persist-credentials: false
       - name: Download the verified Linux bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -605,7 +606,7 @@ jobs:
         run: python3 scripts/verify_windows_zip.py dist/OpenAI4S-*-windows-x86_64.zip
       - name: Receipt the package against the frozen SHA
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
           OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           uv run --locked python scripts/release_receipts.py \
@@ -621,7 +622,7 @@ jobs:
             dist/OpenAI4S-*-windows-x86_64.zip.sha256
             dist/build-receipt-*.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 90
 
   windows-launcher:
     name: Parse the shipped Windows launcher on Windows
@@ -688,10 +689,10 @@ jobs:
           exit 0
 
   attach:
-    name: Stage assets onto the draft
+    name: Prepare downloads and optionally stage the draft
     # Staging only. This job never makes anything public: the flip lives in
     # `finalize`, after PyPI.
-    if: inputs.publish
+    if: ${{ !failure() && !cancelled() && !inputs.pypi_only }}
     needs: [freeze, guard, quality, build, macos-app, linux-app, windows-package, windows-launcher]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -729,14 +730,21 @@ jobs:
       - name: Check out the pipeline at the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
           path: source
+      - name: Checkout the immutable release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: release-tools
       - name: Revalidate the remote annotated tag before staging
+        if: inputs.tag != ''
         env:
           TAG: ${{ inputs.tag }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
         working-directory: source
         run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
       # `--from-artifacts` is what stops this job from re-running `build` and
@@ -751,20 +759,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
+          PUBLISH: ${{ inputs.publish }}
           OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         # Run from inside the checkout: the pipeline asks git which commit it
         # is releasing, and outside a work tree that question has no answer --
         # which the receipt check correctly refuses to guess at.
         working-directory: source
         run: |
-          python scripts/release_pipeline.py \
-            --version "${TAG#v}" \
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then VERSION=$(python -c 'import openai4s; print(openai4s.__version__)'); fi
+          STOP=checksums
+          if [ "$PUBLISH" = "true" ]; then STOP=reverify; fi
+          python ../release-tools/scripts/release_pipeline.py \
+            --version "$VERSION" \
+            --source-root . \
+            --github-layout downloads \
             --mode release \
             --from-artifacts \
             --source-sha "$SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
-            --stop-after reverify \
+            --stop-after "$STOP" \
             --assets-dir ../assets \
             --json
       # The attestation must leave through the workflow's artifact store, not
@@ -773,12 +789,13 @@ jobs:
       # so anything able to replace an asset could replace the manifest in the
       # same motion and the check passed.
       - name: Upload the staging attestation for finalize to verify against
+        if: inputs.publish
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage-attestation
           path: assets/stage-attestation.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
       # The evidence bundle is a mandatory product of the run, so it is kept
       # where a reader can find it even if the release never goes public.
       - name: Upload the sealed evidence bundle
@@ -786,6 +803,13 @@ jobs:
         with:
           name: release-evidence
           path: assets/openai4s-*-evidence*.zip
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload the public download manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-download-manifest
+          path: assets/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
 
@@ -815,7 +839,7 @@ jobs:
       - name: Check out the pipeline at the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           persist-credentials: false
           path: source
       - name: Download verified distributions
@@ -836,7 +860,7 @@ jobs:
       - name: Revalidate the remote annotated tag before PyPI publication
         env:
           TAG: ${{ inputs.tag }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
         working-directory: source
         run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
       - name: Publish package distributions
@@ -870,7 +894,7 @@ jobs:
       - name: Check out the pipeline at the frozen release SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.freeze.outputs.source_sha }}
           # This job holds `contents: write`, so the checkout is immutable and
           # its token is never left in git configuration for repository code.
           persist-credentials: false
@@ -878,15 +902,26 @@ jobs:
       # The record the draft cannot rewrite. Downloaded rather than re-derived:
       # the whole point is that this job's view of "what was staged" does not
       # come from the mutable thing it is about to publish.
+      - name: Download the original Python distributions for cross-channel verification
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+          path: python-dist/
       - name: Download the staging attestation
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: stage-attestation
           path: attestation/
+      - name: Checkout the immutable release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: release-tools
       - name: Revalidate the remote annotated tag before release publication
         env:
           TAG: ${{ inputs.tag }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
         working-directory: source
         run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
       - name: Publish, once PyPI has the version
@@ -894,9 +929,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          SHA: ${{ needs.freeze.outputs.source_sha }}
           OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
-          python source/scripts/release_pipeline.py \
+          python release-tools/scripts/release_pipeline.py \
+            --source-root source \
+            --source-sha "$SHA" \
+            --github-layout downloads \
+            --python-dist-dir python-dist \
             --version "${TAG#v}" \
             --mode release \
             --only publish \

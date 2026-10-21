@@ -1,0 +1,59 @@
+boundary_innovation,causal_status,change,entity,from_state,kind,metric,period_index,post_mean,post_support,pre_mean,previous_observed_time,score,score_basis,source_rows,time,to_state,window
+,unverified,,14,0.0,treatment_adoption,,2,,,,1,,,"[77, 172]",2,1.0,
+,unverified,,33,0.0,treatment_adoption,,2,,,,1,,,"[58, 153]",2,1.0,
+,unverified,,52,0.0,treatment_adoption,,2,,,,1,,,"[39, 134]",2,1.0,
+,unverified,,71,0.0,treatment_adoption,,2,,,,1,,,"[20, 115]",2,1.0,
+,unverified,,90,0.0,treatment_adoption,,2,,,,1,,,"[1, 96]",2,1.0,
+,unverified,,13,0.0,treatment_adoption,,3,,,,2,,,"[173, 268]",3,1.0,
+,unverified,,32,0.0,treatment_adoption,,3,,,,2,,,"[154, 249]",3,1.0,
+,unverified,,51,0.0,treatment_adoption,,3,,,,2,,,"[135, 230]",3,1.0,
+,unverified,,70,0.0,treatment_adoption,,3,,,,2,,,"[116, 211]",3,1.0,
+,unverified,,89,0.0,treatment_adoption,,3,,,,2,,,"[97, 192]",3,1.0,
+,unverified,,12,0.0,treatment_adoption,,4,,,,3,,,"[269, 364]",4,1.0,
+,unverified,,31,0.0,treatment_adoption,,4,,,,3,,,"[250, 345]",4,1.0,
+4.806811312632739,exploratory,4.567846216761321,33,,level_shift_candidate,y,4,3.00035039950786,3,-1.567495817253461,,3.998115492085823,pre_window_sample_sd,"[58, 153, 248, 343, 438, 533]",4,,3
+,unverified,,50,0.0,treatment_adoption,,4,,,,3,,,"[231, 326]",4,1.0,
+2.5036492554810423,exploratory,3.8738223398621194,65,,level_shift_candidate,y,4,-0.2218717676102228,3,-4.095694107472342,,8.938856622332901,pre_window_sample_sd,"[26, 121, 216, 311, 406, 501]",4,,3
+,unverified,,69,0.0,treatment_adoption,,4,,,,3,,,"[212, 307]",4,1.0,
+,unverified,,88,0.0,treatment_adoption,,4,,,,3,,,"[193, 288]",4,1.0,
+,unverified,,11,0.0,treatment_adoption,,5,,,,4,,,"[365, 460]",5,1.0,
+2.240347684212688,exploratory,3.2815908285663955,26,,level_shift_candidate,y,5,1.0694216202097464,3,-2.212169208356649,,5.359265069848773,pre_window_sample_sd,"[160, 255, 350, 445, 540, 635]",5,,3
+-1.4362125974636326,exploratory,-2.0795738054980637,28,,level_shift_candidate,y,5,-2.962692177881223,2,-0.8831183723831595,,8.563499400113685,pre_window_sample_sd,"[158, 253, 348, 443, 538, 633]",5,,3
+,unverified,,30,0.0,treatment_adoption,,5,,,,4,,,"[346, 441]",5,1.0,
+,unverified,,49,0.0,treatment_adoption,,5,,,,4,,,"[327, 422]",5,1.0,
+,unverified,,68,0.0,treatment_adoption,,5,,,,4,,,"[308, 403]",5,1.0,
+,unverified,,87,0.0,treatment_adoption,,5,,,,4,,,"[289, 384]",5,1.0,
+,unverified,,10,0.0,treatment_adoption,,6,,,,5,,,"[461, 556]",6,1.0,
+,unverified,,29,0.0,treatment_adoption,,6,,,,5,,,"[442, 537]",6,1.0,
+,unverified,,48,0.0,treatment_adoption,,6,,,,5,,,"[423, 518]",6,1.0,
+3.091254908739346,exploratory,2.5830229400295126,63,,level_shift_candidate,y,6,2.0859318506066167,3,-0.4970910894228957,,14.13489981184191,pre_window_sample_sd,"[218, 313, 408, 503, 598, 693]",6,,3
+,unverified,,67,0.0,treatment_adoption,,6,,,,5,,,"[404, 499]",6,1.0,
+,unverified,,86,0.0,treatment_adoption,,6,,,,5,,,"[385, 480]",6,1.0,
+,unverified,,28,0.0,treatment_adoption,,7,,,,6,,,"[538, 633]",7,1.0,
+-3.026998194346765,exploratory,-2.1554506421494817,38,,level_shift_candidate,y,7,-2.4257569400093075,3,-0.2703062978598257,,6.200033084286809,pre_window_sample_sd,"[338, 433, 528, 623, 718, 813]",7,,3
+-3.2598239017322026,exploratory,-1.796327344343915,47,,level_shift_candidate,y,7,-2.293309530513039,2,-0.4969821861691242,,5.419659765579441,pre_window_sample_sd,"[329, 424, 519, 614, 709, 804]",7,,3
+,unverified,,47,0.0,treatment_adoption,,7,,,,6,,,"[519, 614]",7,1.0,
+,unverified,,66,0.0,treatment_adoption,,7,,,,6,,,"[500, 595]",7,1.0,
+5.132431490439826,exploratory,2.3969336491614617,77,,level_shift_candidate,y,7,1.7208973077592895,2,-0.6760363414021723,,5.839579003479984,pre_window_sample_sd,"[299, 394, 489, 584, 679, 774]",7,,3
+-7.2952756859746595,exploratory,-5.720488888190024,85,,level_shift_candidate,y,7,-6.419956816844706,3,-0.6994679286546817,,10.25340398203766,pre_window_sample_sd,"[291, 386, 481, 576, 671, 766]",7,,3
+,unverified,,85,0.0,treatment_adoption,,7,,,,6,,,"[481, 576]",7,1.0,
+1.664902345027142,exploratory,6.963556358815735,88,,level_shift_candidate,y,7,3.4751062283517578,3,-3.4884501304639777,,3.911069503488929,pre_window_sample_sd,"[288, 383, 478, 573, 668, 763]",7,,3
+,unverified,,9,0.0,treatment_adoption,,7,,,,6,,,"[557, 652]",7,1.0,
+-6.1368096070315765,exploratory,-2.77759462919692,94,,level_shift_candidate,y,7,-2.273765632542459,3,0.5038289966544609,,4.523527791874674,pre_window_sample_sd,"[377, 472, 567, 662, 757, 852]",7,,3
+4.024023252168824,exploratory,3.730726336166333,11,,level_shift_candidate,y,8,2.012590345843945,2,-1.7181359903223883,,3.2732366976971172,pre_window_sample_sd,"[460, 555, 650, 745, 840, 935]",8,,3
+,unverified,,27,0.0,treatment_adoption,,8,,,,7,,,"[634, 729]",8,1.0,
+7.007286416046551,exploratory,5.332392058405906,30,,level_shift_candidate,y,8,0.3829098946995528,3,-4.949482163706354,,8.620457778815291,pre_window_sample_sd,"[441, 536, 631, 726, 821, 916]",8,,3
+,unverified,,46,0.0,treatment_adoption,,8,,,,7,,,"[615, 710]",8,1.0,
+,unverified,,65,0.0,treatment_adoption,,8,,,,7,,,"[596, 691]",8,1.0,
+,unverified,,8,0.0,treatment_adoption,,8,,,,7,,,"[653, 748]",8,1.0,
+,unverified,,84,0.0,treatment_adoption,,8,,,,7,,,"[577, 672]",8,1.0,
+,unverified,,26,0.0,treatment_adoption,,9,,,,8,,,"[730, 825]",9,1.0,
+,unverified,,45,0.0,treatment_adoption,,9,,,,8,,,"[711, 806]",9,1.0,
+,unverified,,64,0.0,treatment_adoption,,9,,,,8,,,"[692, 787]",9,1.0,
+,unverified,,7,0.0,treatment_adoption,,9,,,,8,,,"[749, 844]",9,1.0,
+,unverified,,83,0.0,treatment_adoption,,9,,,,8,,,"[673, 768]",9,1.0,
+,unverified,,25,0.0,treatment_adoption,,10,,,,9,,,"[826, 921]",10,1.0,
+,unverified,,44,0.0,treatment_adoption,,10,,,,9,,,"[807, 902]",10,1.0,
+,unverified,,6,0.0,treatment_adoption,,10,,,,9,,,"[845, 940]",10,1.0,
+,unverified,,63,0.0,treatment_adoption,,10,,,,9,,,"[788, 883]",10,1.0,
+,unverified,,82,0.0,treatment_adoption,,10,,,,9,,,"[769, 864]",10,1.0,

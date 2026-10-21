@@ -421,7 +421,15 @@ def test_bundled_sidecar_recovery_compatibility_is_explicit():
         except ValueError as error:
             rejected[path.parent.name] = str(error)
 
-    assert len(sidecars) == 19
+    from openai4s.skills_loader import SkillLoader
+
+    # Catalog additions must participate in the recovery gate without a stale
+    # unrelated numeric count hiding a missed sidecar.
+    catalog_sidecars = {
+        skill.name for skill in SkillLoader().discover().values() if skill.has_kernel
+    }
+    assert {path.parent.name for path in sidecars} == catalog_sidecars
+    assert "did-analysis" in catalog_sidecars
     # These packages intentionally read mutable package resources. Their
     # runtime import remains supported, but recovery must be marked partial
     # until those dependent resources are frozen alongside kernel.py.

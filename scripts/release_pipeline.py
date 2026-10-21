@@ -18,7 +18,7 @@ script it runs on a laptop, in `--dry-run`, and under pytest.
     existing draft
       → build exact artifacts → test → smoke the exact wheel
       → sbom → provenance → verify → seal evidence
-      → checksums over everything → stage unchanged bytes
+      → checksums over GitHub downloads → stage unchanged bytes
       → upload → remote digest verification
       → PyPI publish
       → GitHub publish
@@ -36,9 +36,10 @@ and nothing needs rebuilding. Re-run:
 
     scripts/release_pipeline.py --version <v> --mode release --only publish
 
-Do not bump the version and do not rebuild: the artifacts on the draft are the
-ones PyPI already has, and rebuilding would publish different bytes under the
-same version.
+Do not bump the version and do not rebuild: the original Actions distribution
+artifact contains the bytes PyPI already has. For the downloads layout, supply
+that artifact with --python-dist-dir and the same run's --attestation; see
+docs/release-validation.md for recovery from a separate source checkout.
 
 ## Modes
 
@@ -840,6 +841,9 @@ class Pipeline:
         attestation: Path | None = None,
         workflow_run_id: str = "",
         workflow_inputs: Mapping[str, Any] | None = None,
+        source_root: Path | None = None,
+        github_layout: str = "full",
+        python_dist_dir: Path | None = None,
     ) -> None:
         self.version = version
         self.mode = mode
@@ -850,6 +854,15 @@ class Pipeline:
         #: the mutable `inputs.tag` independently, so the gates, the wheel and the
         #: DMG could each be a different commit with nothing comparing them.
         self.source_sha = str(source_sha or "")
+        # Release tooling may advance without rewriting an existing product tag.
+        # All source commands still execute in the independently frozen checkout.
+        self.source_root = Path(source_root or ROOT).resolve()
+        if github_layout not in {"full", "downloads"}:
+            raise ReleaseError(f"unknown GitHub asset layout: {github_layout}")
+        self.github_layout = github_layout
+        self.python_dist_dir = (
+            Path(python_dist_dir).resolve() if python_dist_dir else None
+        )
         #: Where the finalize job finds the staging job's attestation. Outside the
         #: draft, because a document stored in the draft can be replaced by
         #: whatever replaced the asset it vouches for.
@@ -867,8 +880,10 @@ class Pipeline:
         # as a *sibling* of the checkout. A relative path would make pip in
         # `step_smoke`, and the gh upload/download, look for the wheel under
         # ROOT/assets, where it does not exist.
-        self.assets_dir = Path(assets_dir or ROOT / "dist").resolve()
-        self._run = runner or _run
+        self.assets_dir = Path(assets_dir or self.source_root / "dist").resolve()
+        self._run = runner or (
+            lambda argv, cwd=None: _run(argv, cwd or self.source_root)
+        )
         self._gh = gh or (lambda argv: _run(["gh", *argv]))
         self._pypi_check = pypi_check or _pypi_has_version
         self._pypi_digests = pypi_digests or _pypi_file_digests
@@ -1189,7 +1204,10 @@ class Pipeline:
             env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
             env["OPENAI4S_DATA_DIR"] = str(root / "data")
             smoke = subprocess.run(
-                [str(python), str(ROOT / "scripts" / "release_import_smoke.py")],
+                [
+                    str(python),
+                    str(self.source_root / "scripts" / "release_import_smoke.py"),
+                ],
                 cwd=str(root),
                 env=env,
                 capture_output=True,
@@ -1562,6 +1580,7 @@ class Pipeline:
                     )
                 ),
                 *sorted(self.assets_dir.glob(f"*{SIGNATURE_RECEIPT_SUFFIX}")),
+                *sorted(self.assets_dir.glob("*.components.json")),
             )
             if path.is_file()
         ]
@@ -1610,11 +1629,17 @@ class Pipeline:
         if self.dry_run:
             return StepResult("checksums", True, "would write SHA256SUMS")
         target = self.assets_dir / "SHA256SUMS"
-        covered = sorted(a for a in self.assets if a.name != target.name)
+        covered = sorted(a for a in self.github_assets() if a.name != target.name)
         target.write_text(
             "".join(f"{sha256_file(a)}  {a.name}\n" for a in covered), encoding="utf-8"
         )
         self.assets.append(target)
+        if self.github_layout == "downloads" and (
+            self.from_artifacts or self.mode == "release"
+        ):
+            # Rehearsal stops here, so exercise the same complete evidence gate
+            # before either channel receives anything.
+            self._verify_consistency(self.assets)
         return StepResult(
             "checksums",
             True,
@@ -1841,17 +1866,16 @@ class Pipeline:
         return StepResult("draft", True, f"draft v{self.version} confirmed")
 
     def step_upload(self) -> StepResult:
+        assets = self.github_assets()
         if self.dry_run or self.mode != "release":
-            return StepResult(
-                "upload", True, f"would upload {len(self.assets)} asset(s)"
-            )
+            return StepResult("upload", True, f"would upload {len(assets)} asset(s)")
         self._verify_consistency(self.assets)
         completed = self._gh(
             [
                 "release",
                 "upload",
                 f"v{self.version}",
-                *[str(a) for a in self.assets],
+                *[str(a) for a in assets],
                 "--clobber",
             ]
         )
@@ -1860,7 +1884,34 @@ class Pipeline:
                 f"asset upload failed: "
                 f"{(completed.stderr or b'').decode('utf-8', 'replace')}"
             )
-        return StepResult("upload", True, f"{len(self.assets)} asset(s) uploaded")
+        return StepResult("upload", True, f"{len(assets)} asset(s) uploaded")
+
+    def github_assets(self) -> list[Path]:
+        """Public downloads only; Python bytes remain in the Actions/PyPI channel.
+
+        The full layout remains readable for recovery of historical releases.
+        SBOM and provenance are sealed in evidence, never discarded.
+        """
+        if self.github_layout == "full":
+            return list(self.assets)
+        python_names = self.python_distribution_names()
+        actual_python = {
+            asset.name
+            for asset in self.assets
+            if asset.suffix == ".whl" or asset.name == f"openai4s-{self.version}.tar.gz"
+        }
+        if not self.dry_run and actual_python != python_names:
+            raise ReleaseError(
+                "downloads layout requires exactly the OpenAI4S wheel and sdist"
+            )
+        internal = python_names | {SBOM_NAME, PROVENANCE_NAME}
+        return [asset for asset in self.assets if asset.name not in internal]
+
+    def python_distribution_names(self) -> set[str]:
+        return {
+            f"openai4s-{self.version}-py3-none-any.whl",
+            f"openai4s-{self.version}.tar.gz",
+        }
 
     def step_reverify(self) -> StepResult:
         """Hash what was uploaded, not what was built.
@@ -1872,6 +1923,7 @@ class Pipeline:
         """
         if self.dry_run or self.mode != "release":
             return StepResult("reverify", True, "would re-hash the uploaded assets")
+        assets = self.github_assets()
         completed = self._gh(
             ["release", "view", f"v{self.version}", "--json", "assets"]
         )
@@ -1882,14 +1934,14 @@ class Pipeline:
         except ValueError as e:
             raise ReleaseError(f"the release listing was not JSON: {e}") from e
         listing = {str(item.get("name")): item for item in (remote.get("assets") or [])}
-        missing = sorted({a.name for a in self.assets} - set(listing))
+        missing = sorted({a.name for a in assets} - set(listing))
         if missing:
             raise ReleaseError(f"assets did not survive the upload: {missing}")
         # Exact set, not just a superset. `gh release upload --clobber` overwrites
         # matching names but leaves anything extra in place, so an asset from an
         # earlier staging attempt would ride along — published without appearing
         # in checksums, provenance, or this read-back.
-        unexpected = sorted(set(listing) - {a.name for a in self.assets})
+        unexpected = sorted(set(listing) - {a.name for a in assets})
         if unexpected:
             raise ReleaseError(
                 f"the draft carries assets this release did not produce: "
@@ -1900,7 +1952,7 @@ class Pipeline:
         mismatched: list[str] = []
         checked: dict[str, str] = {}
         with tempfile.TemporaryDirectory(prefix="openai4s-reverify-") as temp:
-            for asset in self.assets:
+            for asset in assets:
                 local = sha256_file(asset)
                 size = listing[asset.name].get("size")
                 if isinstance(size, int) and size != asset.stat().st_size:
@@ -1965,7 +2017,7 @@ class Pipeline:
         attestation = release_receipts.build_stage_attestation(
             version=self.version,
             source_sha=self._frozen_sha(),
-            assets=[a for a in self.assets if a.is_file()],
+            assets=[a for a in assets if a.is_file()],
             workflow_run_id=self.workflow_run_id,
             workflow_inputs=self.workflow_inputs,
             check_runs=check_runs,
@@ -2040,6 +2092,12 @@ class Pipeline:
         except ValueError as e:
             raise ReleaseError(f"the draft listing was not JSON: {e}") from e
         present = {str(item.get("name")) for item in (remote.get("assets") or [])}
+        if self.github_layout == "downloads":
+            forbidden = self.python_distribution_names() | {SBOM_NAME, PROVENANCE_NAME}
+            if present & forbidden:
+                raise ReleaseError(
+                    "downloads layout must not carry Python distributions or metadata sidecars"
+                )
         if "SHA256SUMS" not in present:
             raise ReleaseError(
                 "the draft has no SHA256SUMS manifest; refusing to publish an "
@@ -2047,6 +2105,10 @@ class Pipeline:
             )
 
         attested: dict[str, str] | None = None
+        if self.github_layout == "downloads" and self.attestation is None:
+            raise ReleaseError(
+                "downloads layout requires the out-of-band stage attestation"
+            )
         if self.attestation is not None:
             if not self.attestation.is_file():
                 raise ReleaseError(
@@ -2058,6 +2120,18 @@ class Pipeline:
                 attested = release_receipts.verify_stage_attestation(
                     self.attestation, version=self.version
                 )
+                document = json.loads(self.attestation.read_text("utf-8"))
+                for key, expected_value in (
+                    ("source_sha", self.source_sha),
+                    ("workflow_run_id", self.workflow_run_id),
+                ):
+                    if (
+                        expected_value
+                        and str(document.get(key) or "") != expected_value
+                    ):
+                        raise ReleaseError(
+                            f"stage attestation {key} differs from this release"
+                        )
             except release_receipts.ReceiptError as error:
                 raise ReleaseError(str(error)) from error
             unexpected = sorted(present - set(attested))
@@ -2120,9 +2194,40 @@ class Pipeline:
                     )
             # `checked` holds the digest of every one of these files, taken in
             # the loop above; the gate does not read them all a second time.
-            self._verify_consistency(
-                [Path(temp) / name for name in expected], digests=checked
-            )
+            complete = [Path(temp) / name for name in expected]
+            if self.github_layout == "downloads":
+                # Recover metadata from the attested evidence ZIP and Python
+                # bytes from the *same run's* distribution artifact. Then run
+                # the existing full chain verifier, including Windows payload
+                # equality. No fabricated files or digest-only substitutions.
+                evidence = Path(temp) / evidence_bundle_name(self.version)
+                try:
+                    with zipfile.ZipFile(evidence) as archive:
+                        for name in (SBOM_NAME, PROVENANCE_NAME):
+                            target = Path(temp) / name
+                            target.write_bytes(archive.read(f"artifacts/{name}"))
+                            complete.append(target)
+                except (OSError, KeyError, zipfile.BadZipFile) as error:
+                    raise ReleaseError(
+                        f"cannot recover sealed release metadata: {error}"
+                    ) from error
+                if self.python_dist_dir is None:
+                    raise ReleaseError(
+                        "downloads layout requires the original Python distribution artifact"
+                    )
+                for name in sorted(self.python_distribution_names()):
+                    source = self.python_dist_dir / name
+                    if not source.is_file():
+                        raise ReleaseError(
+                            f"original Python distribution artifact is missing {name}"
+                        )
+                    target = Path(temp) / name
+                    shutil.copyfile(source, target)
+                    complete.append(target)
+                for path in complete:
+                    if path.name not in checked:
+                        checked[path.name] = sha256_file(path)
+            self._verify_consistency(complete, digests=checked)
         return checked
 
     def _verify_consistency(
@@ -2177,6 +2282,9 @@ class Pipeline:
         # Linux platform proof omits that platform's public asset rather than
         # labelling a preview.
         checked = self._revalidate_draft_from_checksums()
+        # In the downloads layout, checked also includes the original Python
+        # distributions restored from Actions and verified against sealed build
+        # receipts. They need not be GitHub attachments to anchor to PyPI.
         # ...but that manifest comes from the same *mutable* draft, so a second
         # staging run for this tag that clobbered both the assets and SHA256SUMS
         # would still self-validate while PyPI already holds the first run's
@@ -2356,6 +2464,8 @@ class Pipeline:
             # ordinary report is also built on the failure path where raising
             # would replace the real reason with a git error.
             document["source_sha"] = self.source_sha or self._head_sha()
+            document["workflow_sha"] = os.environ.get("GITHUB_SHA", "")
+            document["github_layout"] = self.github_layout
             document["builder"] = release_gates.builder_facts()
             document["artifacts"] = {
                 asset.name: sha256_file(asset)
@@ -2510,6 +2620,17 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--assets-dir", type=Path)
     parser.add_argument(
+        "--source-root", type=Path, help="checkout of the frozen product sources"
+    )
+    parser.add_argument(
+        "--github-layout", choices=("full", "downloads"), default="full"
+    )
+    parser.add_argument(
+        "--python-dist-dir",
+        type=Path,
+        help="same-run Python artifact for downloads-layout finalize",
+    )
+    parser.add_argument(
         "--from-artifacts",
         action="store_true",
         help="staging only: consume already-built, already-verified assets",
@@ -2580,6 +2701,9 @@ def main() -> int:
         attestation=args.attestation,
         workflow_run_id=args.workflow_run_id,
         workflow_inputs=inputs,
+        source_root=args.source_root,
+        github_layout=args.github_layout,
+        python_dist_dir=args.python_dist_dir,
     )
     report = pipeline.run()
     if args.json:

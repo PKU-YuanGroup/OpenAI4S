@@ -26,6 +26,7 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 | [`SkillImport.test.tsx`](SkillImport.test.tsx) | 导入审阅在启用前展示 requirements、网络模式与 readiness；导入一落地，背后的 Skills 列表就重新读取，不管审阅面板用哪种方式关闭。 |
 | [`NetworkTab.tsx`](NetworkTab.tsx) | 豆包卡、allowlist、Tavily 备份、telemetry drain。 |
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | 按作用域的审批规则。规则的决定是乐观更新，服务端拒绝时回到原值。 |
+| [`SearchEngines.tsx`](SearchEngines.tsx) | 「网络」页的搜索引擎顺序：豆包固定置顶，备用引擎可拖动或用箭头排序、可开关，并可填写 Tavily / You.com key。 |
 | [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | 服务端接受的决定保持显示；被拒绝的决定回到规则原来的值（会触发重新渲染，下拉框随之复位）。 |
 | [`refresh.test.tsx`](refresh.test.tsx) | 写入返回前用户已切到别的 tab 或打开了另一个嵌套编辑器，返回后不把用户拉回去；写入时 tab 仍在显示的，原地重读，不重新挂载。 |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | 个人 / 项目 / collection Skills。 |

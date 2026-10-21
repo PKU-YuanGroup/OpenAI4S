@@ -831,25 +831,25 @@ def _checkout_refs(job):
     return refs
 
 
-def test_every_release_job_checks_out_the_immutable_workflow_sha():
-    """Item 1. No checkout may resolve a dispatch input or step output.
-
-    A tag is mutable, so the gates could run on one commit while the wheel came
-    from a second and the DMG from a third. ``github.sha`` is fixed when the run
-    is created; the freeze job separately proves it belongs to ``origin/main``.
-    """
+def test_release_jobs_use_only_the_frozen_source_or_tooling_sha():
+    """Builds use the once-validated source; pipeline code uses immutable tooling."""
     workflow = _workflow("release.yml")
     jobs = workflow["jobs"]
     assert "freeze" in jobs, "no job validates the source SHA"
 
-    offenders = {}
     for name, job in jobs.items():
-        for ref in _checkout_refs(job):
-            if ref != "${{ github.sha }}":
-                offenders.setdefault(name, []).append(ref)
-    assert (
-        not offenders
-    ), f"these jobs check out something other than github.sha: {offenders}"
+        for step in job.get("steps") or []:
+            if "actions/checkout" not in str(step.get("uses") or ""):
+                continue
+            settings = step["with"]
+            tooling = name == "freeze" or settings.get("path") == "release-tools"
+            expected = (
+                "${{ github.sha }}"
+                if tooling
+                else "${{ needs.freeze.outputs.source_sha }}"
+            )
+            assert settings["ref"] == expected, name
+            assert settings["persist-credentials"] is False
 
     validation_step = next(
         step
@@ -858,10 +858,10 @@ def test_every_release_job_checks_out_the_immutable_workflow_sha():
     )
     validation = str(validation_step.get("run") or "")
     assert 'git merge-base --is-ancestor "$SHA" origin/main' in validation
-    assert '"$TAG_SHA" != "$SHA"' in validation
+    assert 'git merge-base --is-ancestor "$TAG_SHA" "$SHA"' in validation
+    assert 'echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"' in validation
     assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in validation
     assert validation_step["env"]["PYPI_ONLY"] == "${{ inputs.pypi_only }}"
-    assert 'if [ "$PUBLISH" = "true" ] || [ "$PYPI_ONLY" = "true" ]; then' in validation
     assert 'git cat-file -t "$TAG"' in validation
 
 
@@ -877,6 +877,79 @@ def test_every_downstream_checkout_waits_for_source_validation():
             assert (
                 "freeze" in needs
             ), f"{name} executes a checkout without waiting for the freeze job"
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["older_tag", "lightweight", "untrusted_tools", "future_source", "invalid_tag"],
+)
+def test_freeze_resolves_once_and_rejects_untrusted_history(tmp_path, case):
+    import os
+    import subprocess
+
+    def git(*args):
+        return (
+            subprocess.check_output(
+                ["git", *args], cwd=tmp_path, stderr=subprocess.DEVNULL
+            )
+            .decode()
+            .strip()
+        )
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Release test")
+    git("config", "user.email", "release@example.invalid")
+    git("commit", "--allow-empty", "-m", "product")
+    source = git("rev-parse", "HEAD")
+    if case == "lightweight":
+        git("tag", "v0.3.1")
+    else:
+        git("tag", "-a", "v0.3.1", "-m", "release")
+    git("commit", "--allow-empty", "-m", "tooling")
+    tooling = git("rev-parse", "HEAD")
+    if case == "untrusted_tools":
+        git("checkout", "-b", "untrusted")
+        git("commit", "--allow-empty", "-m", "untrusted")
+        tooling = git("rev-parse", "HEAD")
+    elif case == "future_source":
+        tooling = source
+        git("tag", "-f", "-a", "v0.3.1", "-m", "newer product")
+    git("remote", "add", "origin", str(tmp_path))
+    output = tmp_path / "output"
+    step = next(
+        s
+        for s in _workflow("release.yml")["jobs"]["freeze"]["steps"]
+        if s.get("id") == "source"
+    )
+    result = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SHA": tooling,
+            "TAG": "v0.3.1;bad" if case == "invalid_tag" else "v0.3.1",
+            "GITHUB_OUTPUT": str(output),
+            "PUBLISH": "false",
+            "PYPI_ONLY": "false",
+        },
+    )
+    if case == "older_tag":
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().strip() == f"source_sha={source}"
+        assert tooling != source
+        # The pipeline's git commands read the product checkout, not its own
+        # newer tools checkout; the supplied SHA is still checked, not trusted.
+        git("checkout", "--detach", source)
+        assert (
+            Pipeline("0.3.1", source_root=tmp_path, source_sha=source)._frozen_sha()
+            == source
+        )
+        with pytest.raises(ReleaseError, match="release was frozen"):
+            Pipeline("0.3.1", source_root=tmp_path, source_sha=tooling)._frozen_sha()
+    else:
+        assert result.returncode != 0
+        assert not output.exists()
 
 
 def test_every_publication_boundary_revalidates_the_remote_annotated_tag():
@@ -901,7 +974,7 @@ def test_every_publication_boundary_revalidates_the_remote_annotated_tag():
         step = candidates[0]
         assert step["env"] == {
             "TAG": "${{ inputs.tag }}",
-            "SHA": "${{ github.sha }}",
+            "SHA": "${{ needs.freeze.outputs.source_sha }}",
         }
         # Each boundary *calls* the one implementation. Asserting substrings of
         # three inline copies made the gate mirror the copy-paste instead of

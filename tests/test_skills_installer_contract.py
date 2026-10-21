@@ -391,3 +391,25 @@ def test_every_npm_pin_names_a_published_release():
         "install pins name npm versions not recorded as published in "
         f"PUBLISHED_NPM_VERSIONS: {unpublished}"
     )
+
+
+@pytest.mark.parametrize(
+    "name", ["future-unpublished-recipe", "target_druggability_screening"]
+)
+@pytest.mark.parametrize("lang", ["README.md", "README_zh.md"])
+def test_unknown_recipes_default_to_github_only(name, lang):
+    text = install_sections.render(
+        "skill", name, lang, install_sections.installer_constants()
+    )
+    assert f"npx github:PKU-YuanGroup/OpenAI4S install {name}" in text
+    assert f"npx @pku-yuangroup/openai4s-skills install {name}" not in text
+
+
+def test_a_recipe_in_the_frozen_npm_release_keeps_its_install_command():
+    text = install_sections.render(
+        "skill",
+        "literature-review",
+        "README.md",
+        install_sections.installer_constants(),
+    )
+    assert "npx @pku-yuangroup/openai4s-skills install literature-review" in text

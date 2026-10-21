@@ -1,7 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { t } from "../../i18n";
 import { api } from "../../features/customize/api";
-import { refreshCustTab } from "../../features/customize/actions";
 import { asList, asString, hint } from "../../features/customize/host";
 import {
   createTelemetryDrain,
@@ -12,6 +11,7 @@ import { useOptimisticToggle, useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
+import { SearchEngines } from "./SearchEngines";
 
 export function NetworkTab() {
   const alive = useAlive();
@@ -25,8 +25,6 @@ export function NetworkTab() {
     error: unknown;
   }>({ config: null, error: null });
   const [search, setSearch] = useState<Record<string, unknown>>({});
-  const [searchKey, setSearchKey] = useState("");
-  const [savingSearch, setSavingSearch] = useState(false);
   const network = useOptimisticToggle(
     allow.enabled,
     (on) =>
@@ -86,51 +84,7 @@ export function NetworkTab() {
         </div>
         <Toggle on={network.on} disabled={!network.ready} onClick={network.toggle} />
       </div>
-      <div class="cust-row">
-        <div class="info">
-          <div class="nm">{t("cust.search.name")}</div>
-          <div class="ds">
-            {(search.api_key_configured ? t("cust.search.set") : t("cust.search.unset")) +
-              " · " +
-              (asString(search.endpoint) || "https://api.tavily.com/search")}
-          </div>
-          <div class="job-submit">
-            <input
-              class="cust-input"
-              type="password"
-              placeholder={t("cust.search.ph")}
-              autocomplete="off"
-              value={searchKey}
-              onInput={(e) => setSearchKey((e.target as HTMLInputElement).value)}
-            />
-            <button
-              type="button"
-              class="solid-btn small"
-              disabled={savingSearch}
-              onClick={async () => {
-                const k = searchKey.trim();
-                if (!k) return;
-                setSavingSearch(true);
-                try {
-                  await api("/search/config", {
-                    method: "POST",
-                    body: JSON.stringify({ api_key: k }),
-                  });
-                  hint(t("cust.search.saved"));
-                  setSearchKey("");
-                  refreshCustTab("network");
-                } catch (e) {
-                  hint((e as Error).message, true);
-                } finally {
-                  if (alive()) setSavingSearch(false);
-                }
-              }}
-            >
-              {t("common.save")}
-            </button>
-          </div>
-        </div>
-      </div>
+      <SearchEngines raw={search} onSaved={setSearch} />
       {allow.groups.map((g, i) => (
         <div class="cust-row" key={i}>
           <div class="info">

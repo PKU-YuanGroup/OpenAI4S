@@ -77,6 +77,7 @@ class MigrationReport:
 SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
     ("llm_api_key", "llm"),
     ("tavily_api_key", "search"),
+    ("you_api_key", "search"),
     ("agent_plan_key", "agent_plan"),
 )
 

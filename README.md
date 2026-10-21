@@ -85,6 +85,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 
 ## 📣 News
 
+- **`2026-10-18`** 📁 **[`v0.3.1`](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) — local project folders and portable history** — link source folders, browse saved conversation history, import scientific datasets with checksum verification, and work with **611 bundled Skills**. Linux and Windows/WSL2 packages are on GitHub, Python packages on PyPI, and the public container image on GHCR. macOS uses PyPI while signing and notarization are deferred. The database moves from schema 32 to 35; read **[Upgrading to 0.3.1](docs/upgrading.md)** before the first start.
 - **`2026-09`** 🧭 **`v0.3.0` — the new workbench, and the first Windows package** — the Preact/TypeScript workbench replaces the `app.js` monolith as the default UI, and the release adds the first **Windows/WSL2 zip** beside the Linux tarball. Every local daemon now requires its access token: the `OPENAI4S_REQUIRE_TOKEN=0` loopback opt-out is gone. Interactive HTML reports run on a separate sandboxed origin, Notebook cells keep the exact artifact versions they produced, long-context compaction actually lands and survives a restart, delegated sub-agents inherit their environment and leave durable, exportable cell records, and Auto Mode admits budget atomically and stops a run that makes no progress. The single-cell RNA analysis Skill brings the total to 604. The Apple Silicon **macOS image** is an ad-hoc-signed preview, not a notarized one. The database schema moves from 27 to 32, so read **[Upgrading from 0.2.x](docs/upgrading.md)** before the first start.
 - **`2026-08-24`** 🚀 **`v0.2.0` — the multi-platform release** — one release, two desktop packages: the Apple Silicon **`.dmg`** and a relocatable **Linux `x86_64` tarball** carrying the same embedded Python and science stack (the Windows/WSL2 zip is built and under stabilization — it ships in a coming release). Underneath: **Auto Mode** with a Guardian review boundary, honest **completion-evidence reconciliation** (a crashed cell can no longer render as a clean success), the **MCP Streamable HTTP** transport with the Volcengine DataPro connector and Doubao web search, **Anthropic Messages SSE streaming**, the pinned **561-recipe bioSkills collection** (603 Skills in all, installable anywhere via `npx`), a trajectory-ledger view in the workbench, Docker/Kubernetes deployment, `openai4s --version`, and the interrupt-signal train that makes a running R cell reliably stoppable on every platform.
 - **`2026-08-04`** 🔭 **`main` — on the way to `v0.2.0`** — **read-only session sharing** over an outbound relay tunnel (`openai4s share` / `openai4s relay`), **seven normalized public-database connectors** that carry where a record came from and when, a versioned **`/api/v1`** surface (keyset pagination, one error envelope, a resumable WebSocket cursor), **environments as a transaction** (`openai4s env plan|apply|rollback`), a redacted `doctor` / `diagnostics` support bundle, consent-gated revocable telemetry, a retrosynthesis-planning Skill, and a **10-workflow / 20-case benchmark** that runs against the real Store, kernels, and dispatcher. Linux and Windows desktop packages were built and tested here — the Linux package ships in `v0.2.0` above, and the Windows package follows in a coming release.
@@ -101,7 +102,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 606 bundled Skills** — 45 curated OpenAI4S recipes for GPU/model science, research workflows, and platform operations, plus all 561 recipes from the pinned MIT-licensed GPTomics/bioSkills collection. Skills are **recipes of code**, not JSON schemas; the large third-party collection is searched on demand and occupies only one always-on prompt line. User-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **🔬 611 bundled Skills** — 50 curated OpenAI4S recipes for GPU/model science, research workflows, and platform operations, plus all 561 recipes from the pinned MIT-licensed GPTomics/bioSkills collection. Skills are **recipes of code**, not JSON schemas; the large third-party collection is searched on demand and occupies only one always-on prompt line. User-authored Skills stay under the data directory and cannot shadow bundled trust.
 - **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 - **🔗 Read-only session sharing** — publish a session as a snapshot anyone with the link can view and import, through a relay **you** run. The daemon never binds a public port; it dials out. Memories, permission state, and keys never leave, and residual secrets fail the publish closed. → [Web sharing](docs/webshare.md)
 - **🔎 Source-attributed retrieval** — seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex). Retrieved records carry where they came from and when, without the API key that fetched them.
@@ -116,7 +117,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 | plane | what's implemented |
 |---|---|
 | **Control & orchestration** | class-based native `Tool`s · append-only Action Ledger · plan/review with a durable state machine · context compaction that archives the raw slices it summarizes · concurrent sub-agent delegation (fanout 48, depth 4) a user can stop mid-flight · enforced Specialist allowlists a child cannot widen · MCP connectors · cross-session memory |
-| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 606 Skills (45 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
+| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 611 Skills (50 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
 | **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
@@ -153,8 +154,20 @@ States. → [Experimental semantic judgment](docs/experimental-judgment.md)
 
 ## ⚡ Quickstart
 
+**Current release: [0.3.1](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1).** Choose an installation channel below. If you already have data from 0.3.0 or earlier, stop the daemon and back up the whole data directory before installing; see [Upgrading](docs/upgrading.md).
+
+| Channel | 0.3.1 download |
+| --- | --- |
+| Linux x86_64 | [Standalone tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-linux-x86_64.tar.gz) |
+| Windows x86_64 with WSL2 | [Complete ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip) |
+| Python, including macOS | [PyPI: openai4s 0.3.1](https://pypi.org/project/openai4s/0.3.1/) |
+| Containers (linux/amd64) | [GHCR: openai4s](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s), tag `0.3.1` |
+| Download verification | [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS) · [Build and validation evidence](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/openai4s-0.3.1-evidence.zip) |
+
+To run the released source:
+
 ```bash
-git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
+git clone --branch v0.3.1 --depth 1 https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ./setup.sh     # one-time: build the environment with uv
 ./start.sh     # launch the web UI at http://127.0.0.1:8760/
 ```
@@ -164,13 +177,13 @@ git clone https://github.com/PKU-YuanGroup/OpenAI4S && cd OpenAI4S
 ### macOS
 
 > [!NOTE]
-> **`v0.3.0` ships a preview macOS image, not a notarized one.** `OpenAI4S-0.3.0-macos-arm64.dmg` on the [v0.3.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0) is Apple Silicon only, ad-hoc signed and not notarized, so Gatekeeper blocks its first launch; the [startup guide](docs/startup-guide.md) has the steps. It was built and attached outside the release workflow, which still uploads a `.dmg` only when it is Developer-ID-signed and notarized, and the credentials for that do not exist yet. Use that pinned page rather than the newest release, because a release the workflow produces carries no image. On an Intel Mac, or if you would rather not run an un-notarized app, install from PyPI as below or run from the source checkout above. Coming from the v0.2.0 app, read [Upgrading from 0.2.x](docs/upgrading.md) first: 0.3.0 upgrades the data directory, and 0.2.0 must not open it afterwards.
+> **0.3.1 has no macOS DMG while Developer ID signing and notarization are deferred.** Use [PyPI 0.3.1](https://pypi.org/project/openai4s/0.3.1/) on Apple Silicon or Intel, or the tagged source checkout above. The old preview images install older versions; see the historical notes in the [startup guide](docs/startup-guide.md).
 
 Install from PyPI into a virtual environment of its own. This works on Apple Silicon and Intel, with Python 3.10 or newer:
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-pip install "openai4s[science]"   # numpy · pandas · matplotlib · scikit-learn; use [science,chemistry] for RDKit
+python -m pip install --upgrade "openai4s[science]==0.3.1"   # use "openai4s[science,chemistry]==0.3.1" for RDKit
 openai4s serve                    # starts the daemon and opens the workbench with its access token
 ```
 
@@ -181,26 +194,27 @@ Data lives in `~/.openai4s`. If you close the tab, `openai4s url` prints the aut
 1. **Model API** — open **Settings ⚙ → Models**, pick a protocol (**Ark-compatible** for Doubao/GLM/Kimi/DeepSeek/MiniMax, or **OpenAI-** / **Anthropic-compatible**), paste your **API Key**, click **Add**, then **Set active**. Cheapest path: the `ark` protocol on Volcengine Ark's ¥9.9/mo plan.
 2. **Search API** *(optional, recommended)* — open **Settings ⚙ → Network**, keep **Allow network access** on, and paste your Ark **Agent Plan Key** into the primary **Doubao Search Custom** card → **Save credential**. If the active model is an Ark **Agent Plan**, you can skip this step: OpenAI4S saves that key as the default for both Doubao Search and DataPro professional datasets, and they keep working after you switch to another model. Tavily and keyless engines remain backup options; the dedicated Doubao health check never reports a fallback result as Doubao.
 
-Full walkthrough (install → model → search → R kernel, plus the Gatekeeper steps for the v0.2.0 preview image): **[Startup guide](docs/startup-guide.md)**.
+Full 0.3.1 walkthrough (install → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
 
 ### Linux app (no toolchain required)
 
-> [!NOTE]
-> The Linux package ships with `v0.2.0` and every later release. The Windows/WSL2 package ships from `v0.3.0` on; see its section below. On older releases (`v0.1.0` carried the macOS image only, and `v0.2.0` had no Windows package), use the source checkout above or `pip install openai4s`.
-
-Download `OpenAI4S-<version>-linux-x86_64.tar.gz` from the [latest release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest), unpack it anywhere, and run it. It embeds its own Python and the pre-baked science stack, as a relocatable directory:
+Download the [0.3.1 Linux tarball](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-linux-x86_64.tar.gz) and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS) into the same directory. Verify it, unpack it anywhere, and run it. It embeds its own Python and the pre-baked science stack, as a relocatable directory:
 
 ```bash
-tar -xzf OpenAI4S-*-linux-x86_64.tar.gz && cd OpenAI4S-*-linux-x86_64
+sha256sum --ignore-missing -c SHA256SUMS   # the Linux tarball must report OK
+tar -xzf OpenAI4S-0.3.1-linux-x86_64.tar.gz
+cd OpenAI4S-0.3.1-linux-x86_64
 ./OpenAI4S          # starts the daemon and opens http://127.0.0.1:8760/
 ./install.sh        # optional: `openai4s` on your PATH + an application-menu entry
 ```
 
-`install.sh` is per-user and needs no root — it only writes into `$HOME`, and `./uninstall.sh` undoes it while leaving your data in `~/.openai4s` alone. Install `bubblewrap` (`apt install bubblewrap`) so cells run sandboxed; without it the default `OPENAI4S_KERNEL_SANDBOX=auto` reports a visibly degraded, unisolated kernel. Only `x86_64` is published — on arm64 Linux, install from PyPI (`pip install openai4s`).
+`install.sh` is per-user and needs no root — it only writes into `$HOME`, and `./uninstall.sh` undoes it while leaving your data in `~/.openai4s` alone. Install `bubblewrap` (`apt install bubblewrap`) so cells run sandboxed; without it the default `OPENAI4S_KERNEL_SANDBOX=auto` reports a visibly degraded, unisolated kernel. Only `x86_64` is published — on arm64 Linux, use a virtual environment and the pinned PyPI command above.
 
 ### Windows (via WSL2)
 
-Download `OpenAI4S-<version>-windows-x86_64.zip`, unzip it, and double-click `OpenAI4S.cmd`. The first run checks WSL2 and a working bubblewrap 0.8.0+ sandbox, verifies and installs the bundled Linux payload, creates `~/.local/bin/openai4s`, starts the daemon there, and opens an authenticated local URL in your Windows browser. No application download, no `pip`, no toolchain. Ubuntu 24.04 is the supported baseline; mainland PyPI/Conda mirrors and an optional WSL-reachable proxy can be configured by the launcher. See the bilingual [Windows/WSL2 guide](docs/windows-wsl.md).
+Download the [complete 0.3.1 Windows ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip) and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS), verify the ZIP as described in the [Windows/WSL2 guide](docs/windows-wsl.md#english), then extract all files and double-click `OpenAI4S.cmd`. No split-file restoration is needed. The first run checks WSL2 and a working bubblewrap 0.8.0+ sandbox, verifies and installs the bundled Linux payload, creates `~/.local/bin/openai4s`, starts the daemon there, and opens an authenticated local URL in your Windows browser. No application download, no `pip`, no toolchain. Ubuntu 24.04 is the supported baseline; mainland PyPI/Conda mirrors and an optional WSL-reachable proxy can be configured by the launcher.
+
+**0.3.1 validation:** archive structure, launcher checks, and the embedded Linux payload passed verification; full Windows/WSL2 runtime acceptance was not performed for this version.
 
 `v0.3.0` is the first release that ships this package. Its acceptance evidence covers WSL2 on x86_64 with the tested Ubuntu 24.04 distribution. The last section of the [WSL2 parity audit](docs/windows-wsl-parity-audit.md) ("Fix verification — 2026-09-07") leaves the following unverified:
 
@@ -216,18 +230,25 @@ Download `OpenAI4S-<version>-windows-x86_64.zip`, unzip it, and double-click `Op
 
 ### 🐳 Docker and Kubernetes
 
+The [public GHCR package](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s) can be pulled without signing in. Pin `0.3.1` for this release; `latest` follows future releases. The image is **linux/amd64**; ARM hosts require amd64 emulation.
+
 ```bash
-docker compose up -d --build          # http://127.0.0.1:8760/
-docker compose exec openai4s openai4s url   # the URL, token included
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:0.3.1
+docker run -d --name openai4s --platform linux/amd64 \
+  -p 127.0.0.1:8760:8760 \
+  -v openai4s-data:/data \
+  -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
+  ghcr.io/pku-yuangroup/openai4s:0.3.1
+docker exec openai4s openai4s url   # the URL, token included
 ```
 
-The image is built from this tree — Debian-slim CPython, the wheel, and the `science` extra — and runs as an unprivileged user with one volume at `/data`. Supply the model key as `OPENAI4S_SECRET_LLM_LLM_API_KEY` (a `Secret` in the cluster); the image reads credentials from the environment and writes nothing credential-shaped to the volume. For a cluster, `kubectl apply -f deploy/kubernetes.yaml` gives a single-replica Deployment, a `ReadWriteOnce` claim and a ClusterIP Service, with probes on `/health`.
+The image contains Debian-slim CPython, the wheel, and the `science` extra, and runs as an unprivileged user with one volume at `/data`. The command forwards the model key from your shell's `OPENAI4S_LLM_API_KEY` to the container's `OPENAI4S_SECRET_LLM_LLM_API_KEY`; configure the provider and model as described in the [container guide](docs/docker.md). Credentials are read from the environment. To build from the checkout instead, use `docker compose up -d --build`. For Kubernetes, replace `image: openai4s:local` in `deploy/kubernetes.yaml` with `image: ghcr.io/pku-yuangroup/openai4s:0.3.1` before applying it to amd64 nodes; the guide covers the Secret, persistent volume, and access URL.
 
-Release images are published to GitHub Packages as `ghcr.io/pku-yuangroup/openai4s:<version>` and `:latest` (linux/amd64, from `0.2.0` on) by `publish-image.yml`, which pushes an image only after it passes the same `container_smoke.sh` that gates every pull request. If `docker pull ghcr.io/pku-yuangroup/openai4s:latest` asks you to log in, build the image from the checkout as above. Two things are worth knowing before you expose it. Binding `0.0.0.0` inside the container makes the access token mandatory and switches the DNS-rebind `Host` allowlist off, so the token becomes the only control in front of endpoints that execute code — which is why the compose file publishes to loopback and the Service is a `ClusterIP`. And an unprivileged container cannot give bubblewrap the namespaces it needs, so the kernel sandbox degrades visibly and the container becomes the boundary; that is a coarser one, and **[the container guide](docs/docker.md)** says exactly what it stops covering.
+Release images pass `container_smoke.sh` before publication. Binding `0.0.0.0` inside the container makes the access token mandatory and switches the DNS-rebind `Host` allowlist off, so keep the published port on loopback. An unprivileged container cannot give bubblewrap the namespaces it needs, so the kernel sandbox degrades visibly and the container becomes the boundary; **[the container guide](docs/docker.md)** explains these limits.
 
 ### 🧩 Take the Skills anywhere (`npx`)
 
-The 606 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
+The 611 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
 
 ```bash
 npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
@@ -237,16 +258,16 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 list
 npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (606 Skills: 45 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
+`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (611 Skills: 50 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 45 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 50 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned bioinformatics recipes
 ```
 
 Both sources use the same target and overwrite rules. `--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written there, and `--dry-run` stops at that plan. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited or one it did not install, and an uninstall removes only files it wrote. Every curated Skill page and the collection root under [`skills/`](skills/) carry an **Install** section with their own name already filled in, so you can install from whichever page you landed on.
 
-If you already run OpenAI4S from this checkout, you already have all 606 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
+If you already run OpenAI4S from this checkout, you already have all 611 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
 
 ---
 
@@ -256,12 +277,14 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 | doc | what's inside |
 |---|---|
-| [**Startup guide**](docs/startup-guide.md) | macOS walkthrough: install the v0.3.0 preview image (Apple Silicon, ad-hoc signed, with its Gatekeeper steps) or from PyPI, model setup, and one-key Doubao Search authorization (with Tavily/keyless backups) |
-| [**Upgrading**](docs/upgrading.md) | Newest first. The next release (schema 32 → 35): stop the daemon and copy the data directory before the first start, because going back is unsupported. From 0.2.x: back up the database before the 27 → 32 schema migration, why going back to 0.2.x is unsupported, and the access token that is now always required |
+| [**Startup guide**](docs/startup-guide.md) | macOS 0.3.1 walkthrough: PyPI installation on Apple Silicon and Intel, model setup, and Doubao Search; older previews remain as historical reference |
+| [**Upgrading**](docs/upgrading.md) | Newest first. 0.3.1 (schema 32 → 35): stop the daemon and copy the data directory before the first start, because going back is unsupported. From 0.2.x: back up the database before the 27 → 32 schema migration, why going back to 0.2.x is unsupported, and the access token that is now always required |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
 | [**Model backend bring-up**](docs/model-backend-bringup.md) | local/remote GPU selection, checkpoint staging, real-inference canary admission, and connector portability |
-| [**Skills**](docs/skills.md) | 45 curated Skills + 561 pinned bioSkills + how to write your own |
+| [**Skills**](docs/skills.md) | 50 curated Skills + 561 pinned bioSkills + how to write your own |
+| [**Skill development record**](docs/skill-development.md) | the empirical-analysis Skills developed here, their method choices, implementation and validation |
+| [**Research experiments**](experiments/README.md) | Separate data and results for bounded DiD worked-example replications using the panel preprocessing Skill |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Science connectors**](docs/science-connectors.md) | the seven public databases, their filters, and retrieval provenance |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |
@@ -303,7 +326,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 ### Next
 
-- [ ] **A notarized macOS image and arm64 packages.** The Linux package ships from `v0.2.0` and the Windows/WSL2 package from `v0.3.0`, but the macOS image is still an ad-hoc-signed preview that Gatekeeper blocks on first launch, and only `x86_64` is published for Linux and Windows. A Developer ID-signed, notarized `.dmg` plus arm64 Linux and Windows-on-ARM packages would let every supported platform install without a toolchain.
+- [ ] **A notarized macOS image and arm64 packages.** The Linux package ships from `v0.2.0` and the Windows/WSL2 package from `v0.3.0`, while 0.3.1 omits the macOS DMG (older images remain unnotarized previews), and only `x86_64` is published for Linux and Windows. A Developer ID-signed, notarized `.dmg` plus arm64 Linux and Windows-on-ARM packages would let every supported platform install without a toolchain.
 - [ ] **NVIDIA scientific computing suites** — bring **BioNeMo** (biomolecular foundation models) and **Parabricks** (GPU-accelerated genomics pipelines) in as first-class Skills and BYOC backends, beyond today's NVIDIA NIM integration.
 - [ ] Local GPU model serving so structure/design Skills run without remote compute.
 - [ ] More BYOC providers (Modal / SLURM) beyond SSH + NVIDIA NIM.

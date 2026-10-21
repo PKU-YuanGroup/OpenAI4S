@@ -1,0 +1,67 @@
+{
+  "acquisition_date_utc": "2026-10-05",
+  "datasets": {
+    "mpdta": {
+      "url": "https://raw.githubusercontent.com/bcallaway11/did/74b88eb07f1faa644df1271055a0f77848f6550c/data/mpdta.rda",
+      "repository": "bcallaway11/did",
+      "commit": "74b88eb07f1faa644df1271055a0f77848f6550c",
+      "license": "GPL-3; upstream package DESCRIPTION",
+      "binary_filename": "mpdta.rda",
+      "binary_sha256": "0be3bc5eaaedaa50e047deaf45ad0e193e7210df1644103c63a6c1baa75965d4",
+      "csv_filename": "mpdta.csv",
+      "csv_sha256": "d02c862efc18c2adf036855af5fdc5c3c0e6a69eccc722337e07b59cb4111f5f",
+      "rows": 2500,
+      "columns": [
+        "year",
+        "countyreal",
+        "lpop",
+        "lemp",
+        "first.treat",
+        "treat"
+      ],
+      "conversion": "pyreadr.read_r -> pandas.to_csv(index=False,float_format='%.17g'); no filtering, rounding, imputation or row sorting"
+    },
+    "base_stagg": {
+      "url": "https://raw.githubusercontent.com/lrberge/fixest/789f888416e97673d154c840eec2d99101fc07b1/data/base_stagg.RData",
+      "repository": "lrberge/fixest",
+      "commit": "789f888416e97673d154c840eec2d99101fc07b1",
+      "license": "GPL-3; upstream package DESCRIPTION",
+      "binary_filename": "base_stagg.RData",
+      "binary_sha256": "f29125dab85d511e8f129f6497135646b605868f40c930a870cb7d0f4c94048b",
+      "csv_filename": "base_stagg.csv",
+      "csv_sha256": "ba805f2eb9276ba535d2202a8b6d4b713059b4ea805f40d9fa99332cd2646fcc",
+      "rows": 950,
+      "columns": [
+        "id",
+        "year",
+        "year_treated",
+        "time_to_treatment",
+        "treated",
+        "treatment_effect_true",
+        "x1",
+        "y"
+      ],
+      "conversion": "pyreadr.read_r -> pandas.to_csv(index=False,float_format='%.17g'); no filtering, rounding, imputation or row sorting"
+    }
+  },
+  "conversion_runtime": {
+    "python": "3.13.9",
+    "pyreadr": "0.5.7",
+    "pandas": "3.0.3"
+  },
+  "license_url": "https://www.gnu.org/licenses/gpl-3.0.txt",
+  "papers": [
+    {
+      "title": "Difference-in-Differences with Multiple Time Periods",
+      "authors": "Brantly Callaway; Pedro H. C. Sant'Anna",
+      "arxiv": "https://arxiv.org/abs/1803.09015v4",
+      "replication_scope": "Unconditional point estimates in authors' official did worked example on a subset, not the full paper's empirical application or bootstrap inference."
+    },
+    {
+      "title": "Estimating Dynamic Treatment Effects in Event Studies with Heterogeneous Treatment Effects",
+      "authors": "Liyang Sun; Sarah Abraham",
+      "arxiv": "https://arxiv.org/abs/1804.05785v2",
+      "replication_scope": "Section 4 interaction-weighted estimator on fixest's official simulation example; not the paper's empirical application."
+    }
+  ]
+}

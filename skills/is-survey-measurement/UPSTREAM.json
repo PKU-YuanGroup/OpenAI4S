@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/AlterLab-IEU/AlterLab-Academic-Skills",
+  "commit": "e4836c08a20da195a11f30f203a8cf23ec30aa95",
+  "license": "MIT",
+  "sources": [
+    {
+      "path": "LICENSE",
+      "sha256": "ae17afb0971b6caaaadcecaa18801a81c96737a4f063750586ac5d00a91618e6",
+      "adapted_paths": [
+        "LICENSE"
+      ]
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "5398da0c0e28330d85632fbbc65488820820e5ce67bb913662e5748dfd3f3e94",
+      "adapted_paths": [
+        "UPSTREAM.json",
+        "NOTICE.md"
+      ]
+    },
+    {
+      "path": "skills/social-science-workflow/alterlab-sem-psychometrics/SKILL.md",
+      "sha256": "9c14c9bfd79f4de0e905f666758858e04bb1f4935e9dd58850bb5769cfb79ec5",
+      "adapted_paths": [
+        "SKILL.md",
+        "method-notes.md"
+      ]
+    },
+    {
+      "path": "skills/social-science-workflow/alterlab-sem-psychometrics/references/fit_and_invariance.md",
+      "sha256": "6a5718fb752d9a2f22687ef0653d30fa70f505cb3e90d263130b0e4ba9d56058",
+      "adapted_paths": [
+        "method-notes.md"
+      ]
+    }
+  ],
+  "adaptations": [
+    "Renamed alterlab-sem-psychometrics to is-survey-measurement; origin openai4s identifies bundled distribution, not upstream authorship.",
+    "The source skill declares license MIT; THIRD_PARTY_NOTICES.md was checked for per-skill exceptions. Its four CC-BY-NC core skills are not imported or adapted.",
+    "Retained the upstream MIT LICENSE unchanged. The source skill and method reference are adapted rather than vendored byte-for-byte.",
+    "Restricted the recipe to IS reflective survey measurement; route generic audits, literature retrieval, research design and DiD to existing or companion OpenAI4S skills.",
+    "Replaced Claude allowed-tools and sibling-skill references with OpenAI4S host.skills.read, workspace artifact handoff and native R cells without Host RPC.",
+    "Replaced the Python SEM/IRT/EFA stack and external omega script with an explicitly optional lavaan ordinal CFA recipe plus semTools ordinal-response reliability; no core packages, external MCP or automatic installs are required.",
+    "Added explicit source-preserving Likert item checks, instrument-based reverse coding, category counts, recorded missingness and a fail-closed missing-data default using Python stdlib.",
+    "Qualified fit cutoffs, alpha and loading-only omega assumptions; distinguish continuous and ordinal invariance, exploratory edits, unsupported comparisons and causal interpretation.",
+    "Added bilingual README inventories and a self-contained method-notes.md; all required local resource references remain inside this skill directory.",
+    "Retained the suite-inherited K-Dense MIT notice in NOTICE.md without attributing this specific AlterLab module to K-Dense."
+  ]
+}

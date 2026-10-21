@@ -14,6 +14,7 @@
 | `windows-wsl-parity-audit_zh.md` | WSL2/macOS 对齐调查的中文正文。 |
 | `windows-wsl-parity-evidence.json` | 真实 WSL 下使用合成数据的探针回执，包含 Windows 互操作边界与安全密钥存储观察。 |
 | `windows-wsl-shell-inventory.json` | 基线逐文件脚本清单、Ubuntu Bash 语法结果、生成模板及可识别的 Python 进程调用。 |
+| `skill-development.md` / `skill-development_zh.md` | 实证分析 Skill 开发记录、已实现 API 与验证边界。 |
 | `architecture.md` | 当前的双循环架构与 Host API 概览，也是贡献者使用的兼容入口。 |
 | `ark-agent-plan-9.9.png` | 源码仓库根 README 展示的火山方舟 Agent 套餐价格截图。 |
 | `auto-mode.md` | 冻结的 Stage 0 Auto Mode 产品契约与当前 Stage 1–12 实现契约：无矛盾预设与优先级、有限预算上限、候选/终态真值、持久证据、恢复、投影规则，以及各阶段互相独立且默认关闭的渐进开启边界。 |
@@ -22,20 +23,20 @@
 | `backend-refactor-architecture.md` | backend refactor 的历史设计记录。它记的是当时定下的方案，不能用来证明当前已经端到端实现。 |
 | `compute.md` | 远程计算、BYOC provider 与 `host.fold` 的行为和限制。 |
 | `configuration.md` | provider、环境、daemon、内核与数据目录分别怎么配置。 |
-| `docker.md` | 双语容器指南：镜像、`compose.yaml`、Kubernetes 清单，以及通配绑定究竟改变了什么。它把容器与内核沙箱之间的取舍说清楚，而不是暗示容器能替代沙箱；写明镜像期望的 `OPENAI4S_SECRET_<SCOPE>_<NAME>` 推导变量名；也列出了今天真实存在的限制——没有 R、不支持 IPv6、没有访问日志。启动日志不含访问令牌；`docker exec … openai4s url` 会打印登录链接。 |
+| `docker.md` | 双语容器指南：公开 GHCR 0.3.1 镜像、固定版本的拉取与运行命令、`compose.yaml`、Kubernetes 清单，以及通配绑定究竟改变了什么。它把容器与内核沙箱之间的取舍说清楚，而不是暗示容器能替代沙箱；写明镜像期望的 `OPENAI4S_SECRET_<SCOPE>_<NAME>` 推导变量名；也列出了今天真实存在的限制——没有 R、不支持 IPv6、没有访问日志。启动日志不含访问令牌；`docker exec … openai4s url` 会打印登录链接。 |
 | `jupyter.md` | 可选的 Jupyter 适配器：它对外暴露什么、执行边界划在哪里，以及相关的兼容说明。 |
 | `model-backend-bringup.md` | 模型 backend bring-up 与准入指南的英文版。 |
 | `model-backend-bringup_zh.md` | 框架级加速器路由、checkpoint staging、真实推理 canary 准入、connector 可移植性，以及依赖 checkpoint 的模型工具扩展契约。 |
 | `package-architecture.md` | 分解工作期间使用的历史清单，记录包与归属关系。 |
-| `platforms.md` | 代码实际强制执行的平台支持矩阵：macOS 稳定、Linux beta、Windows **拒绝启动**而不是仅仅警告。它点名尚未满足的门槛（Developer ID 签名与公证，这也是 v0.3.0 不发布 DMG 的原因）而不是暗示已经满足，并解释各层级差异的来源——不是代码不同，而是被证明的程度不同。此外还回答了另一个问题：每个平台真正发出去的是什么，以及为什么「有 Windows 下载」和「Windows 平台被拒绝」并不矛盾。 |
+| `platforms.md` | 代码实际强制执行的平台支持矩阵：macOS 稳定、Linux beta、Windows **拒绝启动**而不是仅仅警告。它点名尚未满足的门槛（Developer ID 签名与公证，这也是 v0.3.1 不发布 DMG 的原因）而不是暗示已经满足，并解释各层级差异的来源——不是代码不同，而是被证明的程度不同。此外还回答了另一个问题：每个平台真正发出去的是什么，以及为什么「有 Windows 下载」和「Windows 平台被拒绝」并不矛盾。 |
 | `plan-corecoder-refactor.md` | 内部的历史重构计划；不进入公开网站的内容。 |
 | `refactor-plan.md` | 为保留决策上下文而留存的历史迁移计划。 |
 | `release-validation.md` | 发布要过的几道关卡：本地关卡、证据包、被强制的契约、macOS app image、Linux app bundle、Windows 包、可信发布、draft-first 流水线，以及有意留在 CI 之外的外部关卡。它还把 macOS 的签名状态收敛成一个具名取值，由证据而不是由配置算出，并且直说本版本里 `verified` 不可达——不需要任何读者从「没有声明」里去推断一条限制。 |
 | `science-connectors.md` | `science_search` 背后默认的七个公开科学数据库，以及三个由 Stage 10 开关管控的数据源：各自的接口、学科范围，以及归一化后返回的记录字段。另有并列记述的两个火山引擎托管面 —— 豆包搜索 Custom（首选的托管网页搜索，其产品检查刻意不设兜底）和固定的 `volcengine-datapro` MCP Streamable HTTP 专业数据集连接器 —— 二者共用的 Agent Plan Key 都经 SecretBroker 保管，仅在拼装每个出站请求的那一刻才解析出来。 |
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
-| `startup-guide.md` | 双语 macOS 上手全流程：安装 v0.3.0 预览镜像（Apple Silicon，ad-hoc 签名）及其 Gatekeeper 步骤，或从 PyPI 安装、配置模型，以及在 UI 里用一个 Agent Plan Key 授权豆包搜索；Tavily/免密钥搜索保留为备用。 |
-| `upgrading.md` | 升级指南，新的在前。下一版本（schema 32 到 35）：先停 daemon 并复制数据目录，因为 judge 审计改写成功后会删除自己的升级前副本，且不支持降级；然后是出口 allowlist 关卡、令牌不再进日志、后台 Cell 收据，以及 `GET /frames/{fid}/delegations` 的形状变化。0.2.x 到 0.3.0：首次启动前备份 `openai4s.db`（schema 从 27 升到 32）、为什么不支持退回 0.2.x、现在总是必需的访问令牌，以及升级用户会遇到的其他变化。 |
+| `startup-guide.md` | 双语 macOS 0.3.1 上手全流程：Apple Silicon 与 Intel 通过 PyPI 安装、配置模型与豆包搜索；旧版预览镜像与 Gatekeeper 步骤保留作历史参考。 |
+| `upgrading.md` | 升级指南，新的在前。0.3.1（schema 32 到 35）：先停 daemon 并复制数据目录，因为 judge 审计改写成功后会删除自己的升级前副本，且不支持降级；然后是出口 allowlist 关卡、令牌不再进日志、后台 Cell 收据，以及 `GET /frames/{fid}/delegations` 的形状变化。0.2.x 到 0.3.0：首次启动前备份 `openai4s.db`（schema 从 27 升到 32）、为什么不支持退回 0.2.x、现在总是必需的访问令牌，以及升级用户会遇到的其他变化。 |
 | `upgrading_zh.md` | 升级指南的中文版。 |
 | `team-server.md` / `team-server_zh.md` | 多用户模式的运维页：开什么、按什么顺序开、每个开关到底暴露了什么。里面所有东西默认都是关的，所以默认安装仍是它一直以来的那个单用户工作台（INV-1）。它对两件最容易搞错的事说得很直白——团队模式加的是账号而不是"可以暴露"；relay 也不是访问实验室服务器的第三条路（它发布的是单个会话的脱敏投影，不是工作台）。 |
 | `team-server-plan.md` | 多用户 Team Server 模式的冻结执行计划（M1 多租户 → M2 治理 → M3a/M3b Slurm 编排 → M4）：产品决策、约束性不变量、逐里程碑工作项与门禁，以及为自主执行代理写就的非阻塞规则。该计划是意图记录；执行期间只允许追加其「偏差记录」附录。 |

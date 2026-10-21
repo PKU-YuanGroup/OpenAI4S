@@ -30,9 +30,8 @@ npx github:PKU-YuanGroup/OpenAI4S install target_druggability_screening --target
 to anywhere you name. The resolved absolute path is printed before anything is
 written there, and `--dry-run` stops at that plan. A reinstall refuses to
 overwrite a copy you have edited or one it did not install, and `uninstall`
-removes only the files it wrote. For a recipe included in the npm release,
-`npx @pku-yuangroup/openai4s-skills install target_druggability_screening --target claude`
-installs the published copy. The npm catalog can differ from this repository.
+removes only the files it wrote. npm 0.2.0 does not include this recipe. Use the
+GitHub installation command above.
 
 Without Node, take the directory itself — and turn it into a `.zip` if an upload
 field wants one. The tarball is the whole repository (over 100 MB), and the pipe

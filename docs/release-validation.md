@@ -152,9 +152,10 @@ from PyPI instead.
 
 Two properties of the image are deliberate. A local build without a configured
 Developer ID identity is **ad-hoc signed**; a configured release build may use
-Developer ID. Neither path currently submits the image for notarization or
-staples a ticket, so the release gate rejects the DMG even when the signature is
-valid. For local preview images Gatekeeper may therefore refuse first launch,
+Developer ID. The builder itself does not submit the image for notarization or
+staple a ticket: `notarize_macos_dmg.sh` performs that separate step. Until it
+succeeds, the release gate rejects even a correctly signed DMG.
+For local preview images Gatekeeper may therefore refuse first launch,
 and the shipped `READ ME` gives both the macOS 15+ ("Open Anyway" in Privacy &
 Security) and the macOS 12–14 (right-click → Open) paths, since Sequoia removed
 the latter. The image also bundles **Python only**: the R kernel needs a conda
@@ -164,6 +165,18 @@ to Python. The app therefore also ships the `openai4s` CLI at
 `Contents/Resources/runtime/bin/openai4s` — without it, `openai4s setup` (the
 one documented way to add that R environment) would be unreachable for anyone
 who only downloaded the image.
+
+Developer ID builds use `sign_macos_bundle.py` to sign every embedded Mach-O
+before sealing the app. Signing only the outer bundle with `--deep` misses
+Python and science libraries in Resources. Python alone receives
+`allow-jit` for Numba/LLVM and ctypes callbacks,
+`allow-unsigned-executable-memory` for UMAP's eager Numba compilation (which
+terminates during import with `allow-jit` alone), and `disable-library-validation`
+for scientific wheels installed into the user site. These executable-memory
+exceptions are limited to Python; libraries receive no
+entitlements. Every signature is verified, and distribution signatures require
+a Developer ID authority and secure timestamp. `--sign -` exercises this order
+locally with ad-hoc hardened-runtime signatures; it is not notarization evidence.
 
 Two contracts hold the runtime to that promise from opposite ends. Bytecode is
 precompiled with `--invalidation-mode unchecked-hash` **before** signing, so the
@@ -305,7 +318,7 @@ Old schema-1 receipts remain readable JSON and cannot satisfy this gate.
 Publishing is isolated in `.github/workflows/release.yml`, and only a
 maintainer's dispatch starts it. No release event triggers it. A maintainer
 creates a **draft** release for an annotated tag, then dispatches the workflow
-against that tag ([Draft-first](#draft-first-from-v02) below explains why).
+from `main`, with that tag as the product source ([Draft-first](#draft-first-from-v02) below explains why).
 A `publish=true` run builds from the immutable commit the tag peels to. It
 re-runs the offline gates into a quality receipt, builds and verifies every
 asset, stages the assets onto the draft, publishes the wheel and sdist to PyPI,
@@ -349,12 +362,13 @@ To publish `vX.Y.Z` from a green `main` commit `S`:
    gh release create vX.Y.Z --draft --verify-tag --title "OpenAI4S vX.Y.Z" --notes-file notes.md
    ```
 
-4. Optionally, rehearse. `gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`
-   builds and verifies everything and publishes nothing.
+4. Optionally, rehearse. `gh workflow run release.yml --ref main -f tag=vX.Y.Z`
+   builds and verifies everything, seals the evidence and checks the final
+   download manifest without changing the draft or publishing either channel.
 5. Publish, then approve the `pypi` deployment when the run asks for it:
 
    ```bash
-   gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish=true
+   gh workflow run release.yml --ref main -f tag=vX.Y.Z -f publish=true
    ```
 
    Add `-f macos_asset=notarized` only when the complete Developer ID and
@@ -399,11 +413,15 @@ secret-free default gate.
 
 The pipeline no longer starts after the release is public. `release.yml` is
 `workflow_dispatch` only: a maintainer creates the draft, then runs the
-workflow against that tag, and every step runs while nothing is visible. In
-the Actions UI, select a branch whose tip is the tagged commit and enter the
-tag in the `tag` input; from the CLI, prefer passing both `--ref TAG` and
-`-f tag=TAG`. The workflow requires that the tag peel to the immutable
-`github.sha`, so repository code is never selected by the mutable input.
+workflow from `main` with the release tag in the `tag` input. The freeze job
+validates the immutable workflow commit against `origin/main`, resolves the
+annotated tag once to a product source SHA, and requires that source to be an
+ancestor of the tooling commit. Every product checkout uses the frozen SHA;
+only the staging/finalization tools use `github.sha`. The evidence records
+both identities. A tooling fix therefore does not require moving a release tag.
+Remote tag revalidation still runs before staging, PyPI, and GitHub publication.
+The source quality gate manifest must match the tooling's verifier; an
+incompatible older receipt fails closed.
 
 It used to trigger on `release: [created]`. GitHub does not emit that event for
 a *draft*, so the intended entry point could never fire and the pipeline was
@@ -422,21 +440,35 @@ Before upload and again after downloading the draft for publication, the
 pipeline checks the relationships between assets: provenance and SBOM hashes,
 the sealed evidence's artifact inventory and build receipts, and the Windows
 package's embedded Linux payload must agree with the exact distributions being
-released. This check also applies to a hand-run `--only publish` without a stage
-attestation. Updating `SHA256SUMS` after replacing a ZIP cannot make its older
+released. The historical full layout also checks this chain during hand-run recovery. Updating `SHA256SUMS` after replacing a ZIP cannot make its older
 build receipt valid. These checks establish consistency; the out-of-band stage
 attestation remains the protection against replacing an entire draft and its
 evidence together. When `--source-sha` or `--workflow-run-id` is supplied, the
 sealed report and the sealed build receipts must also name that commit and that
 run, as they must at staging.
 
-Run a hand-run `--only publish` from a checkout of the release tag. The sealed
-quality receipt is verified against the gate manifest of the checkout running
-the script, so a later `main` whose gate list has moved refuses an intact draft
-— after PyPI has already taken the version. The refusal names the release
-commit to check out. A staging retry in the same `--assets-dir` is supported:
-the previous attempt's `-evidence.zip` and `-evidence-stopped.zip` are this
-pipeline's own outputs and are never collected as distributions.
+The normal GitHub layout is `--github-layout downloads`: Linux and Windows
+packages, `openai4s-<version>-evidence.zip`, and `SHA256SUMS` (plus a DMG only
+when explicitly selected and notarized). With `macos_asset=omit` these are
+exactly four attachments. GitHub also supplies its own two source archives.
+Python wheel/sdist files are distributed by PyPI; containers by GHCR. SBOM,
+provenance, build receipts, component inventories and quality evidence stay
+inside the evidence ZIP. `SHA256SUMS` covers only the public download files.
+
+Finalization downloads the original Python artifact from the **same workflow
+run**, restores metadata from the attested evidence ZIP, and verifies the full
+cross-channel evidence chain. It then requires exact Python filenames and
+digests to match immutable PyPI. The out-of-band staging attestation is
+mandatory for this layout; removing wheel/sdist from GitHub does not remove
+the PyPI anchor. The distribution artifact and attestation are retained for
+90 days. Prefer re-running the failed finalize job on the original run.
+Manual recovery requires that run's tooling checkout, product checkout,
+`--source-root`, `--source-sha`, `--workflow-run-id`, `--github-layout downloads`,
+`--python-dist-dir` (the original artifact), and `--attestation`.
+
+The default script layout `full` remains available for historical releases;
+its hand-run finalizer must use the release tag's gate manifest. A staging
+retry excludes previous evidence ZIPs from distribution collection.
 
 If a draft asset was replaced, restore the original verified bytes and their
 matching evidence. If the replacement changes the release source, merge the

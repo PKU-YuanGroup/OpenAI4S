@@ -5607,13 +5607,63 @@
           "api_key_configured": {
             "type": "boolean"
           },
+          "doubao_configured": {
+            "type": "boolean"
+          },
           "endpoint": {
             "type": "string"
+          },
+          "engines": {
+            "items": {
+              "properties": {
+                "accepts_key": {
+                  "type": "boolean"
+                },
+                "api_key_configured": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "needs_key": {
+                  "type": "boolean"
+                },
+                "usable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "accepts_key",
+                "api_key_configured",
+                "enabled",
+                "endpoint",
+                "id",
+                "needs_key",
+                "usable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "api_key_configured",
-          "endpoint"
+          "doubao_configured",
+          "endpoint",
+          "engines",
+          "order"
         ],
         "type": "object"
       }
@@ -19868,13 +19918,63 @@
           "api_key_configured": {
             "type": "boolean"
           },
+          "doubao_configured": {
+            "type": "boolean"
+          },
           "endpoint": {
             "type": "string"
+          },
+          "engines": {
+            "items": {
+              "properties": {
+                "accepts_key": {
+                  "type": "boolean"
+                },
+                "api_key_configured": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "needs_key": {
+                  "type": "boolean"
+                },
+                "usable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "accepts_key",
+                "api_key_configured",
+                "enabled",
+                "endpoint",
+                "id",
+                "needs_key",
+                "usable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "api_key_configured",
-          "endpoint"
+          "doubao_configured",
+          "endpoint",
+          "engines",
+          "order"
         ],
         "type": "object"
       }
@@ -28170,13 +28270,63 @@
           "api_key_configured": {
             "type": "boolean"
           },
+          "doubao_configured": {
+            "type": "boolean"
+          },
           "endpoint": {
             "type": "string"
+          },
+          "engines": {
+            "items": {
+              "properties": {
+                "accepts_key": {
+                  "type": "boolean"
+                },
+                "api_key_configured": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "needs_key": {
+                  "type": "boolean"
+                },
+                "usable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "accepts_key",
+                "api_key_configured",
+                "enabled",
+                "endpoint",
+                "id",
+                "needs_key",
+                "usable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "api_key_configured",
-          "endpoint"
+          "doubao_configured",
+          "endpoint",
+          "engines",
+          "order"
         ],
         "type": "object"
       }
@@ -41248,13 +41398,63 @@
           "api_key_configured": {
             "type": "boolean"
           },
+          "doubao_configured": {
+            "type": "boolean"
+          },
           "endpoint": {
             "type": "string"
+          },
+          "engines": {
+            "items": {
+              "properties": {
+                "accepts_key": {
+                  "type": "boolean"
+                },
+                "api_key_configured": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "needs_key": {
+                  "type": "boolean"
+                },
+                "usable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "accepts_key",
+                "api_key_configured",
+                "enabled",
+                "endpoint",
+                "id",
+                "needs_key",
+                "usable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "api_key_configured",
-          "endpoint"
+          "doubao_configured",
+          "endpoint",
+          "engines",
+          "order"
         ],
         "type": "object"
       }
@@ -49131,13 +49331,63 @@
           "api_key_configured": {
             "type": "boolean"
           },
+          "doubao_configured": {
+            "type": "boolean"
+          },
           "endpoint": {
             "type": "string"
+          },
+          "engines": {
+            "items": {
+              "properties": {
+                "accepts_key": {
+                  "type": "boolean"
+                },
+                "api_key_configured": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "needs_key": {
+                  "type": "boolean"
+                },
+                "usable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "accepts_key",
+                "api_key_configured",
+                "enabled",
+                "endpoint",
+                "id",
+                "needs_key",
+                "usable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "api_key_configured",
-          "endpoint"
+          "doubao_configured",
+          "endpoint",
+          "engines",
+          "order"
         ],
         "type": "object"
       }

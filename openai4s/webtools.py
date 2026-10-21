@@ -3,9 +3,11 @@
 These give the Code-as-Action agent the same online reach opencode's `websearch`
 and `webfetch` tools provide, implemented over the stdlib + (optionally) requests
 and BeautifulSoup, which the kernel ships preinstalled. No API key is required:
-search walks a chain of keyless engines (DuckDuckGo → Bing → DuckDuckGo lite →
-Mojeek) with scholarly fast paths (a DOI resolves via Crossref, an arXiv id via
-the arXiv API); fetch downloads a URL and converts HTML to readable markdown/text.
+search walks an ordered list of engines — Tavily (keyed), the You.com Search
+API (keyless free tier) and a chain of keyless scrapers (DuckDuckGo → Bing →
+DuckDuckGo lite → Mojeek) — with scholarly fast paths (a DOI resolves via
+Crossref, an arXiv id via the arXiv API); fetch downloads a URL and converts
+HTML to readable markdown/text.
 
 Networking can be globally gated by ``OPENAI4S_ALLOW_NETWORK`` (default on);
 the daemon's Customize → Network panel flips this.
@@ -30,7 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, BinaryIO, Callable, Iterator
+from typing import Any, BinaryIO, Callable, Iterator, Sequence
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -358,7 +360,9 @@ def _open_http_response(
     method = str(method or "GET").upper()
     if method not in ("GET", "HEAD"):
         raise ValueError(f"unsupported method {method!r}; expected GET or HEAD")
-    hdrs = {"User-Agent": _UA, "Accept": "*/*"}
+    # identity: `requests` would otherwise ask for gzip and the caller reads
+    # the undecoded `response.raw`. http.client already sends identity.
+    hdrs = {"User-Agent": _UA, "Accept": "*/*", "Accept-Encoding": "identity"}
     if headers:
         hdrs.update(headers)
     try:
@@ -864,6 +868,27 @@ _AD_URL_BITS = (
 _TRACKING_PARAMS = {"fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "igshid"}
 
 
+def _post_json(url: str, body: dict, *, headers: dict, timeout: float) -> bytes:
+    """POST a JSON body to a keyed search API under the guards `_http_get`
+    applies per hop: the network switch, the egress allowlist, the SSRF check,
+    no followed redirect (urllib would copy the credential header onto the
+    hop) and a capped read. `_open_http_response` is GET/HEAD only, so every
+    keyed provider comes through here rather than opening its own socket."""
+    _require_network()
+    from openai4s import egress
+
+    egress.check_url(url)
+    _guard_url(url)
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", **headers},
+    )
+    with _no_redirect_opener().open(req, timeout=timeout) as resp:  # noqa: S310
+        return _read_capped(resp, MAX_FETCH_BYTES)
+
+
 def _tavily_key() -> str:
     """Tavily API key from the environment. A key saved from the UI (global
     Search settings) is written to this env var — live by the Search settings
@@ -881,22 +906,19 @@ def _tavily_search(query: str, num_results: int, timeout: float) -> list[dict]:
     key = _tavily_key()
     if not key or timeout <= 0:
         return []
-    body = json.dumps(
-        {
-            "query": query,
-            "max_results": max(1, min(int(num_results), 20)),
-            "search_depth": "basic",
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.tavily.com/search",
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
+    body = {
+        "query": query,
+        "max_results": max(1, min(int(num_results), 20)),
+        "search_depth": "basic",
+    }
     try:
-        with urllib.request.urlopen(req, timeout=min(timeout, 15.0)) as resp:
-            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        raw = _post_json(
+            "https://api.tavily.com/search",
+            body,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=min(timeout, 15.0),
+        )
+        payload = json.loads(raw.decode("utf-8", "replace"))
     except Exception:  # noqa: BLE001 - any failure → fall back to keyless engines
         return []
     out: list[dict] = []
@@ -916,15 +938,120 @@ def _tavily_search(query: str, num_results: int, timeout: float) -> list[dict]:
     return out
 
 
-def web_search(query: str, num_results: int = 8, timeout: float = 20.0) -> dict:
-    """Multi-engine web search. When ``OPENAI4S_TAVILY_API_KEY`` is set, an
-    authenticated Tavily query is tried first (the keyless scrapers get
-    bot-blocked). A DOI in the query is answered straight
-    from Crossref and an arXiv id from the arXiv API (structured, reliable
-    metadata); otherwise the engine chain DuckDuckGo → Bing → DuckDuckGo lite →
-    Mojeek is walked until one returns hits, retrying once (and once more with a
-    simplified query) if everything comes back empty. Results are deduplicated
-    by normalized URL. `timeout` is the budget for the WHOLE call (every engine,
+_YOU_FREE_URL = "https://api.you.com/v1/agents/search"
+_YOU_KEYED_URL = "https://ydc-index.io/v1/search"
+_YOU_UA = "youdotcom-integration/pku-yuangroup-openai4s"
+#: You.com answers JSON in a second or two; a stalled one must not take the
+#: whole 12 s per-engine slice from the engines behind it.
+_YOU_TIMEOUT = 5.0
+#: A spent free quota answers 429 until it resets. After one, You.com is
+#: skipped for the server's Retry-After (seconds) or an hour, instead of every
+#: search paying a doomed round trip first. Process-wide; a race between two
+#: searches at worst asks once more.
+_YOU_BACKOFF_DEFAULT = 3600.0
+_you_backoff_until = 0.0
+
+
+def _note_you_rate_limit(error: BaseException) -> None:
+    """Start the backoff if ``error`` is a 429 (urllib or requests shape)."""
+    global _you_backoff_until
+    status, headers = getattr(error, "code", None), getattr(error, "headers", None)
+    response = getattr(error, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+        headers = getattr(response, "headers", None)
+    if status != 429:
+        return
+    try:
+        wait = float((headers or {}).get("Retry-After") or _YOU_BACKOFF_DEFAULT)
+    except (TypeError, ValueError):  # an HTTP-date, or garbage
+        wait = _YOU_BACKOFF_DEFAULT
+    _you_backoff_until = time.monotonic() + min(max(wait, 0.0), 86400.0)
+
+
+def _you_search(query: str, num_results: int, timeout: float) -> list[dict]:
+    """You.com Search API (https://you.com). Keyless by default: the free
+    endpoint allows 100 searches a day per IP with no account. With
+    ``YDC_API_KEY`` set, the keyed endpoint is used instead. Returns [] on any
+    error (including 429 past the free quota or an unexpected payload shape),
+    so the next engine still runs. The keyless GET goes through
+    ``_http_get``, the keyed POST through ``_post_json``. stdlib-only."""
+    if timeout <= 0 or time.monotonic() < _you_backoff_until:
+        return []
+    timeout = min(timeout, _YOU_TIMEOUT)
+    count = max(1, min(int(num_results), 20))
+    key = os.environ.get("YDC_API_KEY", "").strip()
+    try:
+        if key:
+            raw = _post_json(
+                _YOU_KEYED_URL,
+                {"query": query, "count": count},
+                headers={"X-API-Key": key, "User-Agent": _YOU_UA},
+                timeout=timeout,
+            )
+        else:
+            url = (
+                _YOU_FREE_URL
+                + "?"
+                + urllib.parse.urlencode({"query": query, "count": count})
+            )
+            raw, _final, _ctype = _http_get(
+                url,
+                timeout=timeout,
+                headers={"User-Agent": _YOU_UA, "Accept": "application/json"},
+            )
+        payload = json.loads(raw.decode("utf-8", "replace"))
+        out: list[dict] = []
+        for r in (payload.get("results") or {}).get("web") or []:
+            url = (r.get("url") or "").strip()
+            if not url:
+                continue
+            snippets = r.get("snippets")
+            if not isinstance(snippets, list):
+                snippets = []
+            snippets = [x for x in snippets if isinstance(x, str)]
+            snippet = " ".join(snippets) or (r.get("description") or "")
+            out.append(
+                {
+                    "title": (r.get("title") or "").strip() or url,
+                    "url": url,
+                    "snippet": snippet.strip()[:500],
+                }
+            )
+            if len(out) >= num_results:
+                break
+    except Exception as error:  # noqa: BLE001 - any failure → next engine
+        _note_you_rate_limit(error)
+        return []
+    return out
+
+
+#: The backup engines behind Doubao, in their default order. ``builtin`` is
+#: the keyless scraper chain (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek).
+#: `openai4s.search_settings` stores the user's order and on/off choices.
+SEARCH_ENGINES = ("tavily", "you", "builtin")
+_ENGINE_LABELS = {
+    "tavily": "Tavily",
+    "you": "You.com",
+    "builtin": "DuckDuckGo/Bing/Mojeek",
+}
+
+
+def web_search(
+    query: str,
+    num_results: int = 8,
+    timeout: float = 20.0,
+    engines: Sequence[str] = SEARCH_ENGINES,
+) -> dict:
+    """Multi-engine web search. A DOI in the query is answered straight from
+    Crossref and an arXiv id from the arXiv API (structured, reliable
+    metadata); otherwise ``engines`` are tried in order until one returns hits:
+    ``tavily`` (only when ``OPENAI4S_TAVILY_API_KEY`` is set — the keyless
+    scrapers get bot-blocked), ``you`` (the You.com Search API: keyless free
+    tier, or keyed with ``YDC_API_KEY``) and ``builtin`` (DuckDuckGo → Bing →
+    DuckDuckGo lite → Mojeek, retried once, and once more with a simplified
+    query, if everything comes back empty). Results are deduplicated by
+    normalized URL. `timeout` is the budget for the WHOLE call (every engine,
     the retry pass, and the fallback combined), so hanging endpoints can't blow
     past it. Returns {query, count, results:[{title,url,snippet}], source}."""
     _require_network()
@@ -944,41 +1071,76 @@ def web_search(query: str, num_results: int = 8, timeout: float = 20.0) -> dict:
             "results": results[:num_results],
             "source": source,
         }
-    # Authenticated engine first — the keyless scrapers below get bot-blocked;
-    # silently falls through when the key is unset or the call errors.
-    if _time_left(deadline) > 0:
-        tav = _tavily_search(query, num_results, _req_timeout(deadline))
-        if tav:
-            return {
+    if not engines:
+        return {
+            "query": query,
+            "count": 0,
+            "results": [],
+            "note": "no web search engine is enabled — turn one on in "
+            "Settings → Network",
+        }
+    tried: list[str] = []
+    for engine in engines:
+        if _time_left(deadline) <= 0:
+            break
+        note = None
+        if engine == "tavily":
+            if not _tavily_key():
+                continue
+            results = _tavily_search(query, num_results, _req_timeout(deadline))
+            source = "tavily"
+        elif engine == "you":
+            results = _dedupe(_you_search(query, num_results, _req_timeout(deadline)))
+            source = "you.com"
+        elif engine == "builtin":
+            results, source, note = _builtin_search(query, num_results, deadline)
+        else:
+            continue
+        tried.append(_ENGINE_LABELS[engine])
+        results = results[:num_results]
+        if results:
+            out: dict = {
                 "query": query,
-                "count": len(tav),
-                "results": tav[:num_results],
-                "source": "tavily",
+                "count": len(results),
+                "results": results,
+                "source": source,
             }
-    results, source = _engine_sweep(query, num_results, deadline)
-    note = None
-    if not results and _time_left(deadline) > 0:
-        simplified = _simplify_query(query)
-        if simplified and simplified.lower() != query.lower():
-            results, source = _engine_sweep(simplified, num_results, deadline)
-            if results:
-                note = (
-                    f"no hits for the full query — showing results for the "
-                    f"simplified query {simplified!r}"
-                )
-    out: dict = {"query": query, "count": len(results), "results": results}
-    if source:
-        out["source"] = source
-    if note:
-        out["note"] = note
-    if not results:
-        out["note"] = (
-            "no results from any engine (DuckDuckGo/Bing/Mojeek) — "
-            "they may be rate-limiting; retry shortly with different "
+            if note:
+                out["note"] = note
+            return out
+    return {
+        "query": query,
+        "count": 0,
+        "results": [],
+        "note": (
+            f"no results from any engine ({', '.join(tried) or 'none reached'}) "
+            "— they may be rate-limiting; retry shortly with different "
             "terms, or use host.web_fetch on a known URL / a specific "
             "database API instead."
-        )
-    return out
+        ),
+    }
+
+
+def _builtin_search(
+    query: str, num_results: int, deadline: float
+) -> tuple[list[dict], str | None, str | None]:
+    """The keyless scraper chain, then once more with a simplified query.
+    Returns (results, source engine, note)."""
+    results, source = _engine_sweep(query, num_results, deadline)
+    if results or _time_left(deadline) <= 0:
+        return results, source, None
+    simplified = _simplify_query(query)
+    if not simplified or simplified.lower() == query.lower():
+        return [], None, None
+    results, source = _engine_sweep(simplified, num_results, deadline)
+    if not results:
+        return [], None, None
+    return (
+        results,
+        source,
+        f"no hits for the full query — showing results for the simplified "
+        f"query {simplified!r}",
+    )
 
 
 # ---- budget helpers -------------------------------------------------------- #

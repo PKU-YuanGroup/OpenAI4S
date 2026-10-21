@@ -716,6 +716,30 @@ class PermissionBroker:
         except Exception:  # noqa: BLE001 - explanatory only; never a grant
             return False
 
+    def human_reachable(
+        self, *, store, frame_id: str | None, action_group_id: str | None = None
+    ) -> bool:
+        """Whether a person can answer a prompt for this frame right now.
+
+        True only when a UI channel is attached for the conversation and no
+        active Auto Mode run owns the action. Callers that must not let an
+        unattended run decide for the user -- a run that would otherwise be
+        refused by the unattended policy, or auto-reviewed by the Guardian --
+        ask this first and skip the prompt altogether.
+        """
+
+        root, _proj = self._permission_scope(store, frame_id, None)
+        with self._lock:
+            if root is None or root not in self._channels:
+                return False
+        try:
+            run = _active_auto_mode_run_for_permission(
+                store, root, {"action_group_id": action_group_id}
+            )
+        except Exception:  # noqa: BLE001 - an unreadable run is not attendance
+            return False
+        return run is None
+
     def approval_reachable(
         self,
         *,
@@ -901,7 +925,11 @@ class PermissionBroker:
         guardian_config: Any = None,
         approvals_reviewer: str | None = None,
         timeout: float | None = None,
+        choices: list[dict] | None = None,
     ) -> dict:
+        # ``choices`` turns the card into "allow, using which one": each entry
+        # is {"id", "label"}, the person picks one, and the chosen id is both
+        # the returned ``choice`` and the pattern of any remembered rule.
         # Resolve the conversation identity + project from the dispatcher's frame
         # (works for root, background and delegated child dispatchers alike).
         root, proj = self._permission_scope(store, frame_id, project_id)
@@ -1013,6 +1041,13 @@ class PermissionBroker:
             # fact without a migration.
             "dangerous": bool(dangerous),
         }
+        choice_ids = [str(c.get("id") or "") for c in choices or () if c.get("id")]
+        if choice_ids:
+            payload["choices"] = [
+                {"id": str(c["id"]), "label": str(c.get("label") or c["id"])}
+                for c in choices or ()
+                if c.get("id")
+            ]
         if file_policy_reason is not None:
             # The standing rule stays bound to the raw permission target. The
             # approval card additionally needs the reason automatic review
@@ -1279,6 +1314,11 @@ class PermissionBroker:
                     pend.allow, pend.message = False, "approval timed out"
                     break
 
+            if choice_ids and pend.allow and pend.pattern not in choice_ids:
+                # An allow that names no offered option authorizes nothing; it
+                # is recorded as a once-only denial so no rule is left behind.
+                pend.allow, pend.scope = False, "once"
+                pend.message = "no offered option was chosen"
             requested_allow = bool(pend.allow)
             durable_state = (
                 "allowed"
@@ -1403,6 +1443,8 @@ class PermissionBroker:
                 }
                 pend.resolution_done.set()
         if effective_allow:
+            if choice_ids:
+                return {"allow": True, "decision_id": did, "choice": pend.pattern}
             return {"allow": True, "decision_id": did}
         return {
             "allow": False,

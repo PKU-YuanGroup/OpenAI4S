@@ -1,0 +1,4661 @@
+{
+  "audit": {
+    "entity_count": 500,
+    "observed_period_count": 5,
+    "calendar_period_count": 5,
+    "row_count": 2500,
+    "missing_entity_periods": 0,
+    "balanced_calendar_grid": true,
+    "balanced_observed_grid": true,
+    "coverage": [
+      {
+        "entity": "12007",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12051",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12071",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12087",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12093",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12097",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12113",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "12121",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13011",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13037",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13039",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13049",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13057",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13077",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13093",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13097",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13113",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13117",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13129",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13135",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13147",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13155",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13161",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13179",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13195",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13197",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13209",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13211",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13213",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13217",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13223",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13227",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13233",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13237",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13241",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13263",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13271",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13273",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13297",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13303",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13313",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13317",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "13321",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16003",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16045",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16067",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "16083",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17035",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17049",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17053",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17089",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17097",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17113",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17125",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17135",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17155",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17161",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17169",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17193",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17195",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17199",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "17203",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18035",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18053",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18083",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18091",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18093",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18113",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18115",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18119",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18133",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18145",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18157",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18175",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18179",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "18181",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19069",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19077",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19083",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19087",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19111",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19113",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19123",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19131",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19137",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19141",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19153",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19157",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19159",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19183",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19185",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "19187",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20027",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20031",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20045",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20085",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20095",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20103",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20133",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20137",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20143",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20145",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20171",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20183",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "20205",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22007",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22045",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22069",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22071",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22087",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22091",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22111",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22115",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "22119",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24009",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24027",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "24033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26027",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26031",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26057",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26061",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26065",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26085",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26089",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26105",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26127",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26129",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26137",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "26149",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27009",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27035",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27043",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27049",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27051",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27055",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27091",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27115",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27123",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27129",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27149",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27157",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27163",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "27165",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29003",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29011",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29065",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29077",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29085",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29089",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29101",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29105",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29107",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29117",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29119",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29127",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29131",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29149",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29155",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29163",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29177",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29201",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29209",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29211",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29215",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29229",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "29510",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30009",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30011",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30049",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30087",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30095",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30101",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "30109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31003",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31031",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31055",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31059",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31061",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31083",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31101",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31107",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31123",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31127",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31131",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31133",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31147",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31151",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31153",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31155",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31161",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "31177",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "32007",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "32011",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "32033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "35006",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "35013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "35025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "35033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "35045",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37051",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37057",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37059",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37075",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37085",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37093",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37103",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37105",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37117",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37123",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37127",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37155",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37161",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37163",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37165",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37167",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37175",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37189",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "37191",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38001",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38035",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38037",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38049",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38061",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38097",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "38105",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39035",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39055",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39071",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39095",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39097",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39107",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39111",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39119",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39143",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39163",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "39173",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40003",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40039",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40069",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40075",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40083",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40101",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40119",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40137",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40143",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40145",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "40153",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45007",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45009",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45037",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45051",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45055",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45059",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45067",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "45087",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46033",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46065",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46075",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46095",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46105",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46115",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46119",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "46121",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47007",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47009",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47013",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47065",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47097",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47125",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47145",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47157",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47171",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "47173",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48031",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48043",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48055",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48061",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48073",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48077",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48113",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48117",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48121",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48151",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48173",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48213",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48221",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48223",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48245",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48249",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48271",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48277",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48291",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48295",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48305",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48317",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48323",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48341",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48351",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48357",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48363",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48369",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48383",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48385",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48397",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48399",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48409",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48415",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48417",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48447",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48461",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48465",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48477",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48493",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48503",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48505",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "48507",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "49003",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "49011",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "49023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "49037",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "49053",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51003",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51015",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51025",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51053",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51059",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51061",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51077",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51079",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51089",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51111",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51121",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51149",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51185",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51515",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51520",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51630",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51650",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51660",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51680",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51700",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51710",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51735",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51770",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51790",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51800",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51830",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "51840",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54005",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54017",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54021",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54027",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54037",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54047",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54051",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54085",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54087",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "54099",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55001",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55051",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55059",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55069",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55081",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55085",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55103",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55109",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55123",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55131",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "55137",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8001",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8019",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8023",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8029",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8041",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8063",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8075",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8103",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8117",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      },
+      {
+        "entity": "8123",
+        "observations": 5,
+        "first_period": "2003",
+        "last_period": "2007",
+        "internal_missing_periods": 0,
+        "late_entry_periods": 0,
+        "early_exit_periods": 0
+      }
+    ]
+  },
+  "columns": {
+    "lemp": {
+      "n": 2500,
+      "mean": 5.772516326427231,
+      "median": 5.697093486505405,
+      "std": 1.5087811753105371,
+      "min": 1.0986122886681098,
+      "max": 10.442696530693889,
+      "missing": 0
+    }
+  },
+  "timeline": [
+    {
+      "time": "2003",
+      "period_index": 2003,
+      "entity_count": 500,
+      "entity_set_sha256": "c4eb7c83bba68c418aaa1a6b207f23da595d7bd22787a9f0d15daca10548e8c0",
+      "metrics": {
+        "lemp": {
+          "n": 500,
+          "mean": 5.798510219559183,
+          "median": 5.703760251940137,
+          "std": 1.4879848879630253,
+          "min": 2.1972245773362196,
+          "max": 10.442696530693889
+        }
+      }
+    },
+    {
+      "time": "2004",
+      "period_index": 2004,
+      "entity_count": 500,
+      "entity_set_sha256": "c4eb7c83bba68c418aaa1a6b207f23da595d7bd22787a9f0d15daca10548e8c0",
+      "metrics": {
+        "lemp": {
+          "n": 500,
+          "mean": 5.743974418109174,
+          "median": 5.669785789079267,
+          "std": 1.510685268571073,
+          "min": 1.0986122886681098,
+          "max": 10.33912616065184
+        }
+      }
+    },
+    {
+      "time": "2005",
+      "period_index": 2005,
+      "entity_count": 500,
+      "entity_set_sha256": "c4eb7c83bba68c418aaa1a6b207f23da595d7bd22787a9f0d15daca10548e8c0",
+      "metrics": {
+        "lemp": {
+          "n": 500,
+          "mean": 5.753451807809772,
+          "median": 5.698768529948046,
+          "std": 1.5187249144701584,
+          "min": 1.6094379124341003,
+          "max": 10.337118907970643
+        }
+      }
+    },
+    {
+      "time": "2006",
+      "period_index": 2006,
+      "entity_count": 500,
+      "entity_set_sha256": "c4eb7c83bba68c418aaa1a6b207f23da595d7bd22787a9f0d15daca10548e8c0",
+      "metrics": {
+        "lemp": {
+          "n": 500,
+          "mean": 5.7763538390426685,
+          "median": 5.695412812654052,
+          "std": 1.516489620443656,
+          "min": 1.3862943611198906,
+          "max": 10.378478723292902
+        }
+      }
+    },
+    {
+      "time": "2007",
+      "period_index": 2007,
+      "entity_count": 500,
+      "entity_set_sha256": "c4eb7c83bba68c418aaa1a6b207f23da595d7bd22787a9f0d15daca10548e8c0",
+      "metrics": {
+        "lemp": {
+          "n": 500,
+          "mean": 5.790291347615354,
+          "median": 5.703760251940137,
+          "std": 1.5151326869281103,
+          "min": 1.3862943611198906,
+          "max": 10.435262205052501
+        }
+      }
+    }
+  ],
+  "interpretation": "Pooled row summaries and changing-composition period means are descriptive, not causal effects.",
+  "window_assessment_summary": [
+    {
+      "window": 3,
+      "entity_metric_count": 500,
+      "anchor_count": 2500,
+      "eligible_anchor_count": 0,
+      "eligible_entity_metric_count": 0,
+      "no_eligible_entity_metric_count": 500,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 1500,
+        "insufficient_post_history": 1000
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 1500,
+        "noise_baseline_short": 686,
+        "review_trend": 314
+      },
+      "eligible_noise_status_counts": {}
+    },
+    {
+      "window": 4,
+      "entity_metric_count": 500,
+      "anchor_count": 2500,
+      "eligible_anchor_count": 0,
+      "eligible_entity_metric_count": 0,
+      "no_eligible_entity_metric_count": 500,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 2000,
+        "insufficient_post_history": 1500
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 2000,
+        "noise_baseline_short": 391,
+        "review_trend": 109
+      },
+      "eligible_noise_status_counts": {}
+    },
+    {
+      "window": 5,
+      "entity_metric_count": 500,
+      "anchor_count": 2500,
+      "eligible_anchor_count": 0,
+      "eligible_entity_metric_count": 0,
+      "no_eligible_entity_metric_count": 500,
+      "blocked_by_reason": {
+        "insufficient_pre_history": 2500,
+        "insufficient_post_history": 2000
+      },
+      "noise_status_counts": {
+        "pre_data_incomplete": 2500
+      },
+      "eligible_noise_status_counts": {}
+    }
+  ]
+}

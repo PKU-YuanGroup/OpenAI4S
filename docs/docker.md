@@ -55,20 +55,39 @@ understanding before you publish anything:
 
 ## Quick start
 
+The [public GHCR package](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)
+provides `ghcr.io/pku-yuangroup/openai4s:0.3.1`; no registry login is required.
+Pin `0.3.1` for this release. `latest` follows subsequent releases.
+Only **linux/amd64** is published; ARM hosts need amd64 emulation.
+Before reusing existing data, stop the old container and back up its volume
+as described in [Upgrading to 0.3.1](upgrading.md).
+
 ```bash
-docker build -t openai4s:local .
-docker run -d --name openai4s \
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:0.3.1
+docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
-  -e OPENAI4S_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  openai4s:local
+  -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
+  ghcr.io/pku-yuangroup/openai4s:0.3.1
 docker exec openai4s openai4s url
 ```
 
+The command forwards a model key already set in your shell's
+`OPENAI4S_LLM_API_KEY` to the container's credential backend. Without a key the
+daemon still boots; configure one before asking the model to run. Provider and
+model settings can be supplied through environment variables or the UI; see
+the configuration table below. To confirm the installed version, run
+`docker exec openai4s openai4s --version`.
+
 The last line prints a sign-in link. In single-user mode the link carries the
 token; container logs do not. In team mode open `http://<host>:<port>/login`
-instead — a `?token=` link is not a browser login there. Or with Compose,
-which sets the same things and adds a health check and a stop grace period:
+instead — a `?token=` link is not a browser login there.
+
+### Build from source instead
+
+From a source checkout, `docker build -t openai4s:local .` builds a local image.
+The repository's Compose configuration also builds locally, adding a health
+check and a stop grace period. Use the `v0.3.1` checkout to build this release:
 
 ```bash
 docker compose up -d --build
@@ -139,6 +158,7 @@ upper-cased with every non-alphanumeric run collapsed to `_`. So:
 |---|---|
 | model API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
 | Tavily search key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
+| You.com search key | `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` |
 
 Use that plain form in a manifest. The UI's refusal names a *namespaced*
 variant (`OPENAI4S_SECRET_V2_<NS>_…`), which also works, but the namespace is
@@ -217,7 +237,7 @@ Your options, in order of strength:
 2. Grant the namespace privileges and set `OPENAI4S_KERNEL_SANDBOX=enforce`, so
    a kernel that cannot be isolated refuses to start instead of degrading.
    Verify with `openai4s doctor` inside the container:
-   `docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN openai4s:local openai4s doctor`.
+   `docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN ghcr.io/pku-yuangroup/openai4s:0.3.1 openai4s doctor`.
    Note that this hands the container capabilities that weaken *its* boundary,
    which is a real trade and not a free upgrade.
 3. Set `OPENAI4S_KERNEL_SANDBOX=off` if you have decided the container is the
@@ -241,6 +261,12 @@ mode, the pidfile singleton only guards `serve`, and the manifests pin
 `replicas: 1` with a `Recreate` strategy for exactly this reason.
 
 ## Kubernetes
+
+Before applying the manifest, replace `image: openai4s:local` in
+[`deploy/kubernetes.yaml`](../deploy/kubernetes.yaml) with
+`image: ghcr.io/pku-yuangroup/openai4s:0.3.1`. Schedule it on amd64 nodes;
+in a mixed-architecture cluster, add `nodeSelector: {kubernetes.io/arch: amd64}`
+under `spec.template.spec`. The public image needs no `imagePullSecrets`.
 
 ```bash
 kubectl create namespace openai4s
@@ -362,19 +388,32 @@ grant，Workbench 对 HTML 报表始终保留惰性、不执行脚本的预览�
 
 ## 快速开始
 
+[公开 GHCR 包](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)提供
+`ghcr.io/pku-yuangroup/openai4s:0.3.1`，无需登录镜像仓库。安装本版请固定 `0.3.1`；
+`latest` 会随后续版本移动。目前只发布 **linux/amd64**，ARM 主机需要 amd64 模拟支持。
+复用已有数据之前，请先停止旧容器并备份其数据卷，步骤见[升级到 0.3.1](upgrading_zh.md)。
+
 ```bash
-docker build -t openai4s:local .
-docker run -d --name openai4s \
+docker pull --platform linux/amd64 ghcr.io/pku-yuangroup/openai4s:0.3.1
+docker run -d --name openai4s --platform linux/amd64 \
   -p 127.0.0.1:8760:8760 \
   -v openai4s-data:/data \
-  -e OPENAI4S_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
-  openai4s:local
+  -e OPENAI4S_SECRET_LLM_LLM_API_KEY="$OPENAI4S_LLM_API_KEY" \
+  ghcr.io/pku-yuangroup/openai4s:0.3.1
 docker exec openai4s openai4s url
 ```
 
+命令将当前 shell 中已经设置的 `OPENAI4S_LLM_API_KEY` 传给容器的凭据后端。
+没有 Key 时守护进程仍可启动；请在调用模型前配置凭据。供应商与模型可通过环境变量
+或 UI 设置，见下方配置表。运行 `docker exec openai4s openai4s --version` 可确认版本。
+
 最后一行会打印登录链接。单人模式下这条链接带着令牌；容器日志里没有。团队模式请
-打开 `http://<host>:<port>/login`——`?token=` 链接在那里不是浏览器登录。或者用
-Compose——它设置同样的东西，另外加上健康检查与停止宽限期：
+打开 `http://<host>:<port>/login`——`?token=` 链接在那里不是浏览器登录。
+
+### 从源码构建
+
+在源码目录里运行 `docker build -t openai4s:local .` 可构建本地镜像。仓库随附的
+Compose 配置也在本地构建，并加上健康检查与停止宽限期。构建本版时请使用 `v0.3.1` 的源码：
 
 ```bash
 docker compose up -d --build
@@ -440,6 +479,7 @@ cookie 也随之失效。
 |---|---|
 | 模型 API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
 | Tavily 搜索 key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
+| You.com 搜索 key | `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` |
 
 清单里请用上面这个朴素形式。UI 的拒绝信息给出的是**带命名空间**的变体
 （`OPENAI4S_SECRET_V2_<NS>_…`），它同样有效，但命名空间是从数据目录的真实路径推导出来
@@ -505,7 +545,7 @@ secret-read 掩码与网络命名空间是一起消失的。那些掩码正是�
    `kubectl port-forward`。随附文件就是这么做的。
 2. 授予命名空间权限并设 `OPENAI4S_KERNEL_SANDBOX=enforce`，这样无法隔离的内核会
    拒绝启动而不是降级。在容器里用 `openai4s doctor` 验证：
-   `docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN openai4s:local openai4s doctor`。
+   `docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN ghcr.io/pku-yuangroup/openai4s:0.3.1 openai4s doctor`。
    注意这是把削弱*容器自身*边界的能力交了出去，是一笔真实的交易，不是白捡的升级。
 3. 如果你已经决定由容器充当边界，就设 `OPENAI4S_KERNEL_SANDBOX=off`。它只是让那
    条警告不再出现，别的什么都不改变。
@@ -527,6 +567,11 @@ Kubernetes 里由 `fsGroup: 1000` 负责这件事。
 单例也只守着 `serve`；清单里把 `replicas: 1` 与 `Recreate` 策略钉死，正是为此。
 
 ## Kubernetes
+
+应用清单之前，请先把 [`deploy/kubernetes.yaml`](../deploy/kubernetes.yaml) 中的
+`image: openai4s:local` 改为 `image: ghcr.io/pku-yuangroup/openai4s:0.3.1`。
+请调度到 amd64 节点；混合架构集群应在 `spec.template.spec` 下添加
+`nodeSelector: {kubernetes.io/arch: amd64}`。公开镜像无需 `imagePullSecrets`。
 
 ```bash
 kubectl create namespace openai4s

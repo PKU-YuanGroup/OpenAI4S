@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.release_pipeline import (  # noqa: E402
     EXTERNAL,
+    PROVENANCE_NAME,
+    SBOM_NAME,
     STAGING_SKIPPED,
     STEPS,
     Pipeline,
@@ -42,6 +45,7 @@ from scripts.release_pipeline import (  # noqa: E402
     build_provenance,
     build_sbom,
     canonical_source_uri,
+    parse_checksums,
     read_signature,
     sha256_file,
     wheel_components,
@@ -1836,6 +1840,145 @@ def _desktop_release_assets(assets, *, payload=b"linux-bundle"):
     _write_build_receipt(assets, "linux", [linux])
     _write_build_receipt(assets, "windows", [windows])
     return linux, windows
+
+
+def _stage_downloads(assets, tmp_path):
+    """Separate build, GitHub, and PyPI stores, like the real workflow jobs."""
+    import shutil
+
+    _desktop_release_assets(assets)
+    remote = tmp_path / "github"
+    remote.mkdir()
+    delegate = _gh_for(remote)
+
+    def gh(argv):
+        if argv[1] == "upload":
+            for filename in argv[3:-1]:
+                shutil.copyfile(filename, remote / Path(filename).name)
+            return _completed()
+        return delegate(argv)
+
+    pipeline = _pipeline(
+        assets,
+        mode="release",
+        github_layout="downloads",
+        gh=gh,
+        source_sha=FAKE_HEAD,
+        workflow_run_id="7100",
+        stop_after="reverify",
+    )
+    result = pipeline.run()
+    assert result["ok"], result
+    return remote, pipeline
+
+
+@pytest.mark.stubbed_backend
+def test_downloads_layout_stages_four_files_and_finalizes_against_pypi(
+    assets, tmp_path
+):
+    remote, staged = _stage_downloads(assets, tmp_path)
+    names = {p.name for p in remote.iterdir()}
+    assert names == {
+        "OpenAI4S-0.2.0-linux-x86_64.tar.gz",
+        "OpenAI4S-0.2.0-windows-x86_64.zip",
+        "openai4s-0.2.0-evidence.zip",
+        "SHA256SUMS",
+    }
+    assert set(parse_checksums((remote / "SHA256SUMS").read_text())) == names - {
+        "SHA256SUMS"
+    }
+    with zipfile.ZipFile(remote / "openai4s-0.2.0-evidence.zip") as archive:
+        assert f"artifacts/{SBOM_NAME}" in archive.namelist()
+        assert f"artifacts/{PROVENANCE_NAME}" in archive.namelist()
+        assert not any(
+            name.endswith((".whl", ".tar.gz")) for name in archive.namelist()
+        )
+    result = _pipeline(
+        assets,
+        mode="release",
+        only="publish",
+        github_layout="downloads",
+        python_dist_dir=assets,
+        source_sha=FAKE_HEAD,
+        workflow_run_id="7100",
+        gh=_gh_for(remote),
+        attestation=assets / "stage-attestation.json",
+    ).run()
+    assert result["ok"] and result["published"], result["steps"][-1]
+    assert {p.name for p in remote.iterdir()} == names
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "pypi_digest",
+        "missing_sdist",
+        "changed_wheel",
+        "wrong_run",
+        "wrong_source",
+        "no_attestation",
+        "extra_asset",
+        "changed_download",
+    ],
+)
+def test_downloads_finalize_refuses_broken_cross_channel_evidence(
+    assets, tmp_path, mutation
+):
+    remote, staged = _stage_downloads(assets, tmp_path)
+    kwargs = dict(
+        mode="release",
+        only="publish",
+        github_layout="downloads",
+        python_dist_dir=assets,
+        source_sha=FAKE_HEAD,
+        workflow_run_id="7100",
+        gh=_gh_for(remote),
+        attestation=assets / "stage-attestation.json",
+    )
+    original_pypi = _matching_pypi(assets)("openai4s", "0.2.0")
+    kwargs["pypi_digests"] = lambda *_: original_pypi
+    if mutation == "pypi_digest":
+        original_pypi["openai4s-0.2.0-py3-none-any.whl"] = "f" * 64
+    elif mutation == "missing_sdist":
+        (assets / "openai4s-0.2.0.tar.gz").unlink()
+    elif mutation == "changed_wheel":
+        (assets / "openai4s-0.2.0-py3-none-any.whl").write_bytes(b"replacement")
+    elif mutation in {"wrong_run", "wrong_source"}:
+        key = "workflow_run_id" if mutation == "wrong_run" else "source_sha"
+        kwargs[key] = "99" if mutation == "wrong_run" else "f" * 40
+    elif mutation == "no_attestation":
+        kwargs["attestation"] = None
+    elif mutation == "extra_asset":
+        (remote / "unverified.txt").write_text("leftover")
+    else:
+        target = remote / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+        target.write_bytes(b"replacement")
+        (remote / "SHA256SUMS").write_text(
+            "".join(
+                f"{sha256_file(p)}  {p.name}\n"
+                for p in remote.iterdir()
+                if p.name != "SHA256SUMS"
+            )
+        )
+    result = _pipeline(assets, **kwargs).run()
+    assert not result["ok"] and not result["published"], result
+
+
+@pytest.mark.stubbed_backend
+def test_downloads_rehearsal_verifies_without_calling_github(assets):
+    _desktop_release_assets(assets)
+    calls = []
+    result = _pipeline(
+        assets,
+        mode="release",
+        github_layout="downloads",
+        stop_after="checksums",
+        gh=lambda argv: calls.append(argv),
+    ).run()
+    assert result["ok"] and not result["published"], result
+    assert not calls
+    assert len(parse_checksums((assets / "SHA256SUMS").read_text())) == 3
 
 
 @pytest.mark.stubbed_backend

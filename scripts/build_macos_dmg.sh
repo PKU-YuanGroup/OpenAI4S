@@ -368,9 +368,8 @@ if [ -n "$SIGNING_IDENTITY" ]; then
   # setting the secret changed nothing about the image and everything about
   # what the pipeline believed.
   echo "-- [9/10] codesigning with Developer ID --"
-  codesign --force --deep --options runtime --timestamp \
+  python3 "$REPO_ROOT/scripts/sign_macos_bundle.py" \
     --sign "$SIGNING_IDENTITY" "$APP"
-  codesign --verify --deep --strict "$APP"
   echo "   codesign verify: OK (Developer ID)"
   SIGNING_KIND="Developer ID signed"
 else

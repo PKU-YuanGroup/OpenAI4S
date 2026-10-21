@@ -1,0 +1,5518 @@
+{
+  "schema_version": 1,
+  "seed": 20261007,
+  "rng_seeds": {
+    "data": 20261007,
+    "missingness": 20279960,
+    "category_drift": 20310097
+  },
+  "parameters": {
+    "n_entities": 32,
+    "n_periods": 48,
+    "entities_per_scenario": 4,
+    "scenarios": [
+      "quiet",
+      "jump_up",
+      "jump_down",
+      "noisy_jump",
+      "linear_trend",
+      "single_spike",
+      "seasonal",
+      "late_entry"
+    ],
+    "persistent_event_period": 25,
+    "persistent_effects": {
+      "jump_up": 8.0,
+      "jump_down": -7.0,
+      "noisy_jump": 5.0
+    },
+    "activity_noise_sd": {
+      "quiet": 0.4,
+      "jump_up": 0.4,
+      "jump_down": 0.4,
+      "noisy_jump": 3.0,
+      "linear_trend": 0.3,
+      "single_spike": 0.4,
+      "seasonal": 0.4,
+      "late_entry": 0.4
+    },
+    "linear_slope": 0.2,
+    "spike_size": 8.0,
+    "seasonal_amplitude": 3.0,
+    "seasonal_period": 8,
+    "capacity_within_entity_sd": 4.0,
+    "spend_log_mean": 3.0,
+    "spend_log_sd": 0.9,
+    "correlated_metric_formula": "entity_offset + 2*signal_x - 1.5*signal_z + N(0,0.2^2)",
+    "calendar_delete_probability": 0.025,
+    "cell_mask_probabilities": {
+      "activity": 0.07,
+      "capacity": 0.1,
+      "spend": 0.1,
+      "correlated_metric": 0.1,
+      "signal_x": 0.02,
+      "signal_z": 0.02
+    },
+    "late_entry_first_observed_period": 9,
+    "fit_period_max": 16,
+    "new_category_start_period": 35,
+    "new_category_probability": 0.12,
+    "new_text_probability": 0.12
+  },
+  "mechanisms": {
+    "cell_missingness": "Artificial MCAR: independent Bernoulli masks, separate RNG from numeric DGP, retained rows only scored.",
+    "calendar_deletion": "Independent Bernoulli deletion within seven non-late-entry scenarios; all mask draws precede retention decisions.",
+    "structural_missingness": "Four late-entry entities are deterministically unobserved before period9; separate from MCAR masks.",
+    "new_categories_text": "Artificial schema/vocabulary changes after period35; not numeric outcome events."
+  },
+  "persistent_events": [
+    {
+      "truth_id": "jump_up:005:25",
+      "entity": "005",
+      "scenario": "jump_up",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 8.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_up:006:25",
+      "entity": "006",
+      "scenario": "jump_up",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 8.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_up:007:25",
+      "entity": "007",
+      "scenario": "jump_up",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 8.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_up:008:25",
+      "entity": "008",
+      "scenario": "jump_up",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 8.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_down:009:25",
+      "entity": "009",
+      "scenario": "jump_down",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": -7.0,
+      "direction": "down",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_down:010:25",
+      "entity": "010",
+      "scenario": "jump_down",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": -7.0,
+      "direction": "down",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_down:011:25",
+      "entity": "011",
+      "scenario": "jump_down",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": -7.0,
+      "direction": "down",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "jump_down:012:25",
+      "entity": "012",
+      "scenario": "jump_down",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": -7.0,
+      "direction": "down",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "noisy_jump:013:25",
+      "entity": "013",
+      "scenario": "noisy_jump",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 5.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "noisy_jump:014:25",
+      "entity": "014",
+      "scenario": "noisy_jump",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 5.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "noisy_jump:015:25",
+      "entity": "015",
+      "scenario": "noisy_jump",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 5.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    },
+    {
+      "truth_id": "noisy_jump:016:25",
+      "entity": "016",
+      "scenario": "noisy_jump",
+      "metric": "activity",
+      "time": "25",
+      "period_index": 25,
+      "effect": 5.0,
+      "direction": "up",
+      "source": "inputs/generation.json:prespecified scenario registry"
+    }
+  ],
+  "structural_absence": [
+    {
+      "entity": "029",
+      "period": "1",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "2",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "3",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "4",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "5",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "6",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "7",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "029",
+      "period": "8",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "1",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "2",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "3",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "4",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "5",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "6",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "7",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "030",
+      "period": "8",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "1",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "2",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "3",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "4",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "5",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "6",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "7",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "031",
+      "period": "8",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "1",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "2",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "3",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "4",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "5",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "6",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "7",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    },
+    {
+      "entity": "032",
+      "period": "8",
+      "scenario": "late_entry",
+      "reason": "prespecified_late_entry_before_period9"
+    }
+  ],
+  "calendar_deleted_records": [
+    {
+      "entity": "001",
+      "period": "41",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "002",
+      "period": "3",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "002",
+      "period": "8",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "003",
+      "period": "22",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "003",
+      "period": "33",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "004",
+      "period": "9",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "004",
+      "period": "26",
+      "scenario": "quiet",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "005",
+      "period": "30",
+      "scenario": "jump_up",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "005",
+      "period": "37",
+      "scenario": "jump_up",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "006",
+      "period": "5",
+      "scenario": "jump_up",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "006",
+      "period": "22",
+      "scenario": "jump_up",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "008",
+      "period": "34",
+      "scenario": "jump_up",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "009",
+      "period": "34",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "009",
+      "period": "38",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "010",
+      "period": "3",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "011",
+      "period": "19",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "011",
+      "period": "27",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "011",
+      "period": "34",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "012",
+      "period": "6",
+      "scenario": "jump_down",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "013",
+      "period": "17",
+      "scenario": "noisy_jump",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "014",
+      "period": "29",
+      "scenario": "noisy_jump",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "016",
+      "period": "26",
+      "scenario": "noisy_jump",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "017",
+      "period": "1",
+      "scenario": "linear_trend",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "017",
+      "period": "44",
+      "scenario": "linear_trend",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "018",
+      "period": "16",
+      "scenario": "linear_trend",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "019",
+      "period": "9",
+      "scenario": "linear_trend",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "019",
+      "period": "34",
+      "scenario": "linear_trend",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "020",
+      "period": "7",
+      "scenario": "linear_trend",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "021",
+      "period": "2",
+      "scenario": "single_spike",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "021",
+      "period": "29",
+      "scenario": "single_spike",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "021",
+      "period": "33",
+      "scenario": "single_spike",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "021",
+      "period": "46",
+      "scenario": "single_spike",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "022",
+      "period": "2",
+      "scenario": "single_spike",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "022",
+      "period": "20",
+      "scenario": "single_spike",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "026",
+      "period": "4",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "026",
+      "period": "6",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "026",
+      "period": "22",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "026",
+      "period": "23",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "028",
+      "period": "10",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "028",
+      "period": "19",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "028",
+      "period": "28",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    },
+    {
+      "entity": "028",
+      "period": "40",
+      "scenario": "seasonal",
+      "reason": "independent_bernoulli_calendar_deletion"
+    }
+  ],
+  "masked_cells": [
+    {
+      "entity": "001",
+      "period": "1",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 1,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "1",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 1,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "7",
+      "scenario": "quiet",
+      "column": "signal_x",
+      "raw_row": 7,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "9",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 9,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "12",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 12,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "13",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 13,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "14",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 14,
+      "split": "fit"
+    },
+    {
+      "entity": "001",
+      "period": "19",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 19,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "20",
+      "scenario": "quiet",
+      "column": "signal_x",
+      "raw_row": 20,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "21",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 21,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "21",
+      "scenario": "quiet",
+      "column": "signal_z",
+      "raw_row": 21,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "22",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 22,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "29",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 29,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "34",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 34,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "36",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 36,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "39",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 39,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "39",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 39,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "42",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 41,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "45",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 44,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "46",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 45,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "46",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 45,
+      "split": "heldout"
+    },
+    {
+      "entity": "001",
+      "period": "48",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 47,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "1",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 48,
+      "split": "fit"
+    },
+    {
+      "entity": "002",
+      "period": "4",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 50,
+      "split": "fit"
+    },
+    {
+      "entity": "002",
+      "period": "7",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 53,
+      "split": "fit"
+    },
+    {
+      "entity": "002",
+      "period": "15",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 60,
+      "split": "fit"
+    },
+    {
+      "entity": "002",
+      "period": "17",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 62,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "20",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 65,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "25",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 70,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "27",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 72,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "34",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 79,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "35",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 80,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "36",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 81,
+      "split": "heldout"
+    },
+    {
+      "entity": "002",
+      "period": "47",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 92,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "1",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 94,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "1",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 94,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "2",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 95,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "4",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 97,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "4",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 97,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "7",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 100,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "8",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 101,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "8",
+      "scenario": "quiet",
+      "column": "signal_x",
+      "raw_row": 101,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "11",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 104,
+      "split": "fit"
+    },
+    {
+      "entity": "003",
+      "period": "19",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 112,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "20",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 113,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "23",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 115,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "24",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 116,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "24",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 116,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "25",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 117,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "25",
+      "scenario": "quiet",
+      "column": "signal_x",
+      "raw_row": 117,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "26",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 118,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "32",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 124,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "34",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 125,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "36",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 127,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "37",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 128,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "41",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 132,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "42",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 133,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "43",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 134,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "44",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 135,
+      "split": "heldout"
+    },
+    {
+      "entity": "003",
+      "period": "45",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 136,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "5",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 144,
+      "split": "fit"
+    },
+    {
+      "entity": "004",
+      "period": "5",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 144,
+      "split": "fit"
+    },
+    {
+      "entity": "004",
+      "period": "8",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 147,
+      "split": "fit"
+    },
+    {
+      "entity": "004",
+      "period": "14",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 152,
+      "split": "fit"
+    },
+    {
+      "entity": "004",
+      "period": "21",
+      "scenario": "quiet",
+      "column": "activity",
+      "raw_row": 159,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "23",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 161,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "27",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 164,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "29",
+      "scenario": "quiet",
+      "column": "correlated_metric",
+      "raw_row": 166,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "33",
+      "scenario": "quiet",
+      "column": "signal_z",
+      "raw_row": 170,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "35",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 172,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "37",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 174,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "38",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 175,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "39",
+      "scenario": "quiet",
+      "column": "spend",
+      "raw_row": 176,
+      "split": "heldout"
+    },
+    {
+      "entity": "004",
+      "period": "42",
+      "scenario": "quiet",
+      "column": "capacity",
+      "raw_row": 179,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "3",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 188,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "3",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 188,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "5",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 190,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "5",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 190,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "8",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 193,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "11",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 196,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "12",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 197,
+      "split": "fit"
+    },
+    {
+      "entity": "005",
+      "period": "17",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 202,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "18",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 203,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "24",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 209,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "27",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 212,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "32",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 216,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "33",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 217,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "34",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 218,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "34",
+      "scenario": "jump_up",
+      "column": "signal_z",
+      "raw_row": 218,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "35",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 219,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "38",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 221,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "44",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 227,
+      "split": "heldout"
+    },
+    {
+      "entity": "005",
+      "period": "47",
+      "scenario": "jump_up",
+      "column": "signal_x",
+      "raw_row": 230,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "7",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 237,
+      "split": "fit"
+    },
+    {
+      "entity": "006",
+      "period": "10",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 240,
+      "split": "fit"
+    },
+    {
+      "entity": "006",
+      "period": "17",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 247,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "19",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 249,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "21",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 251,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "26",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 255,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "30",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 259,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "31",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 260,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "34",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 263,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "34",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 263,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "35",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 264,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "36",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 265,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "37",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 266,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "38",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 267,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "42",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 271,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "43",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 272,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "45",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 274,
+      "split": "heldout"
+    },
+    {
+      "entity": "006",
+      "period": "47",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 276,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "1",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 278,
+      "split": "fit"
+    },
+    {
+      "entity": "007",
+      "period": "7",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 284,
+      "split": "fit"
+    },
+    {
+      "entity": "007",
+      "period": "8",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 285,
+      "split": "fit"
+    },
+    {
+      "entity": "007",
+      "period": "9",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 286,
+      "split": "fit"
+    },
+    {
+      "entity": "007",
+      "period": "10",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 287,
+      "split": "fit"
+    },
+    {
+      "entity": "007",
+      "period": "17",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 294,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "17",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 294,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "18",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 295,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "19",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 296,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "22",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 299,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "26",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 303,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "30",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 307,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "32",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 309,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "39",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 316,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "45",
+      "scenario": "jump_up",
+      "column": "signal_z",
+      "raw_row": 322,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "47",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 324,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "48",
+      "scenario": "jump_up",
+      "column": "signal_x",
+      "raw_row": 325,
+      "split": "heldout"
+    },
+    {
+      "entity": "007",
+      "period": "48",
+      "scenario": "jump_up",
+      "column": "signal_z",
+      "raw_row": 325,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "10",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 335,
+      "split": "fit"
+    },
+    {
+      "entity": "008",
+      "period": "12",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 337,
+      "split": "fit"
+    },
+    {
+      "entity": "008",
+      "period": "13",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 338,
+      "split": "fit"
+    },
+    {
+      "entity": "008",
+      "period": "16",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 341,
+      "split": "fit"
+    },
+    {
+      "entity": "008",
+      "period": "19",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 344,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "24",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 349,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "24",
+      "scenario": "jump_up",
+      "column": "signal_x",
+      "raw_row": 349,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "25",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 350,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "26",
+      "scenario": "jump_up",
+      "column": "signal_z",
+      "raw_row": 351,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "27",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 352,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "33",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 358,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "36",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 360,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "37",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 361,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "39",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 363,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "42",
+      "scenario": "jump_up",
+      "column": "activity",
+      "raw_row": 366,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "46",
+      "scenario": "jump_up",
+      "column": "capacity",
+      "raw_row": 370,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "46",
+      "scenario": "jump_up",
+      "column": "spend",
+      "raw_row": 370,
+      "split": "heldout"
+    },
+    {
+      "entity": "008",
+      "period": "48",
+      "scenario": "jump_up",
+      "column": "correlated_metric",
+      "raw_row": 372,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "7",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 379,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "9",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 381,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "10",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 382,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "12",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 384,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "12",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 384,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "13",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 385,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "15",
+      "scenario": "jump_down",
+      "column": "signal_x",
+      "raw_row": 387,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "16",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 388,
+      "split": "fit"
+    },
+    {
+      "entity": "009",
+      "period": "17",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 389,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "19",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 391,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "20",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 392,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "23",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 395,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "25",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 397,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "33",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 405,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "36",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 407,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "37",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 408,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "39",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 409,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "40",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 410,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "40",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 410,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "41",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 411,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "41",
+      "scenario": "jump_down",
+      "column": "signal_x",
+      "raw_row": 411,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "42",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 412,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "42",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 412,
+      "split": "heldout"
+    },
+    {
+      "entity": "009",
+      "period": "48",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 418,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "5",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 422,
+      "split": "fit"
+    },
+    {
+      "entity": "010",
+      "period": "10",
+      "scenario": "jump_down",
+      "column": "signal_x",
+      "raw_row": 427,
+      "split": "fit"
+    },
+    {
+      "entity": "010",
+      "period": "22",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 439,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "26",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 443,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "30",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 447,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "31",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 448,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "33",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 450,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "35",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 452,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "38",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 455,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "39",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 456,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "45",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 462,
+      "split": "heldout"
+    },
+    {
+      "entity": "010",
+      "period": "47",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 464,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "2",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 467,
+      "split": "fit"
+    },
+    {
+      "entity": "011",
+      "period": "6",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 471,
+      "split": "fit"
+    },
+    {
+      "entity": "011",
+      "period": "6",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 471,
+      "split": "fit"
+    },
+    {
+      "entity": "011",
+      "period": "8",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 473,
+      "split": "fit"
+    },
+    {
+      "entity": "011",
+      "period": "10",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 475,
+      "split": "fit"
+    },
+    {
+      "entity": "011",
+      "period": "11",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 476,
+      "split": "fit"
+    },
+    {
+      "entity": "011",
+      "period": "18",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 483,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "21",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 485,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "28",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 491,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "28",
+      "scenario": "jump_down",
+      "column": "signal_z",
+      "raw_row": 491,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "29",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 492,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "30",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 493,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "33",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 496,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "35",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 497,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "39",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 501,
+      "split": "heldout"
+    },
+    {
+      "entity": "011",
+      "period": "44",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 506,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "7",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 516,
+      "split": "fit"
+    },
+    {
+      "entity": "012",
+      "period": "13",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 522,
+      "split": "fit"
+    },
+    {
+      "entity": "012",
+      "period": "15",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 524,
+      "split": "fit"
+    },
+    {
+      "entity": "012",
+      "period": "16",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 525,
+      "split": "fit"
+    },
+    {
+      "entity": "012",
+      "period": "16",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 525,
+      "split": "fit"
+    },
+    {
+      "entity": "012",
+      "period": "20",
+      "scenario": "jump_down",
+      "column": "capacity",
+      "raw_row": 529,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "25",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 534,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "25",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 534,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "28",
+      "scenario": "jump_down",
+      "column": "correlated_metric",
+      "raw_row": 537,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "31",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 540,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "35",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 544,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "37",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 546,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "42",
+      "scenario": "jump_down",
+      "column": "activity",
+      "raw_row": 551,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "43",
+      "scenario": "jump_down",
+      "column": "spend",
+      "raw_row": 552,
+      "split": "heldout"
+    },
+    {
+      "entity": "012",
+      "period": "46",
+      "scenario": "jump_down",
+      "column": "signal_z",
+      "raw_row": 555,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "7",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 564,
+      "split": "fit"
+    },
+    {
+      "entity": "013",
+      "period": "8",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 565,
+      "split": "fit"
+    },
+    {
+      "entity": "013",
+      "period": "19",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 575,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "20",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 576,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "21",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 577,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "21",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 577,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "23",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 579,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "24",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 580,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "25",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 581,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "26",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 582,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "27",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 583,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "28",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 584,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "28",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 584,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "29",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 585,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "29",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 585,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "34",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 590,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "41",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 597,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "41",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 597,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "41",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 597,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "44",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 600,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "44",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 600,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "45",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 601,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "45",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 601,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "46",
+      "scenario": "noisy_jump",
+      "column": "signal_x",
+      "raw_row": 602,
+      "split": "heldout"
+    },
+    {
+      "entity": "013",
+      "period": "47",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 603,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "4",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 608,
+      "split": "fit"
+    },
+    {
+      "entity": "014",
+      "period": "6",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 610,
+      "split": "fit"
+    },
+    {
+      "entity": "014",
+      "period": "8",
+      "scenario": "noisy_jump",
+      "column": "signal_x",
+      "raw_row": 612,
+      "split": "fit"
+    },
+    {
+      "entity": "014",
+      "period": "11",
+      "scenario": "noisy_jump",
+      "column": "signal_z",
+      "raw_row": 615,
+      "split": "fit"
+    },
+    {
+      "entity": "014",
+      "period": "14",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 618,
+      "split": "fit"
+    },
+    {
+      "entity": "014",
+      "period": "14",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 618,
+      "split": "fit"
+    },
+    {
+      "entity": "014",
+      "period": "18",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 622,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "21",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 625,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "21",
+      "scenario": "noisy_jump",
+      "column": "signal_x",
+      "raw_row": 625,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "30",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 633,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "34",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 637,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "36",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 639,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "37",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 640,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "39",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 642,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "41",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 644,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "42",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 645,
+      "split": "heldout"
+    },
+    {
+      "entity": "014",
+      "period": "46",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 649,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "1",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 652,
+      "split": "fit"
+    },
+    {
+      "entity": "015",
+      "period": "3",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 654,
+      "split": "fit"
+    },
+    {
+      "entity": "015",
+      "period": "5",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 656,
+      "split": "fit"
+    },
+    {
+      "entity": "015",
+      "period": "9",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 660,
+      "split": "fit"
+    },
+    {
+      "entity": "015",
+      "period": "12",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 663,
+      "split": "fit"
+    },
+    {
+      "entity": "015",
+      "period": "13",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 664,
+      "split": "fit"
+    },
+    {
+      "entity": "015",
+      "period": "17",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 668,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "18",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 669,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "18",
+      "scenario": "noisy_jump",
+      "column": "signal_x",
+      "raw_row": 669,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "28",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 679,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "30",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 681,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "33",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 684,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "34",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 685,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "39",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 690,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "39",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 690,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "40",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 691,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "45",
+      "scenario": "noisy_jump",
+      "column": "signal_z",
+      "raw_row": 696,
+      "split": "heldout"
+    },
+    {
+      "entity": "015",
+      "period": "47",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 698,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "2",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 701,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "3",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 702,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "3",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 702,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "3",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 702,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "4",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 703,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "4",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 703,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "5",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 704,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "9",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 708,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "10",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 709,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "12",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 711,
+      "split": "fit"
+    },
+    {
+      "entity": "016",
+      "period": "18",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 717,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "18",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 717,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "19",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 718,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "23",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 722,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "24",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 723,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "31",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 729,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "32",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 730,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "34",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 732,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "35",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 733,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "35",
+      "scenario": "noisy_jump",
+      "column": "correlated_metric",
+      "raw_row": 733,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "36",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 734,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "36",
+      "scenario": "noisy_jump",
+      "column": "signal_z",
+      "raw_row": 734,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "37",
+      "scenario": "noisy_jump",
+      "column": "activity",
+      "raw_row": 735,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "37",
+      "scenario": "noisy_jump",
+      "column": "capacity",
+      "raw_row": 735,
+      "split": "heldout"
+    },
+    {
+      "entity": "016",
+      "period": "44",
+      "scenario": "noisy_jump",
+      "column": "spend",
+      "raw_row": 742,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "2",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 747,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "2",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 747,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "3",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 748,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "3",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 748,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "4",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 749,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "6",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 751,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "7",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 752,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "9",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 754,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "9",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 754,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "11",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 756,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "12",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 757,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "14",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 759,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "16",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 761,
+      "split": "fit"
+    },
+    {
+      "entity": "017",
+      "period": "17",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 762,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "18",
+      "scenario": "linear_trend",
+      "column": "signal_z",
+      "raw_row": 763,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "23",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 768,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "24",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 769,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "24",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 769,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "26",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 771,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "34",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 779,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "34",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 779,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "35",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 780,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "35",
+      "scenario": "linear_trend",
+      "column": "signal_z",
+      "raw_row": 780,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "38",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 783,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "39",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 784,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "39",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 784,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "40",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 785,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "41",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 786,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "47",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 791,
+      "split": "heldout"
+    },
+    {
+      "entity": "017",
+      "period": "48",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 792,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "1",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 793,
+      "split": "fit"
+    },
+    {
+      "entity": "018",
+      "period": "3",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 795,
+      "split": "fit"
+    },
+    {
+      "entity": "018",
+      "period": "8",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 800,
+      "split": "fit"
+    },
+    {
+      "entity": "018",
+      "period": "13",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 805,
+      "split": "fit"
+    },
+    {
+      "entity": "018",
+      "period": "15",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 807,
+      "split": "fit"
+    },
+    {
+      "entity": "018",
+      "period": "21",
+      "scenario": "linear_trend",
+      "column": "signal_z",
+      "raw_row": 812,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "23",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 814,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "29",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 820,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "29",
+      "scenario": "linear_trend",
+      "column": "signal_x",
+      "raw_row": 820,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "30",
+      "scenario": "linear_trend",
+      "column": "signal_x",
+      "raw_row": 821,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "32",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 823,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "33",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 824,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "34",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 825,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "35",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 826,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "42",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 833,
+      "split": "heldout"
+    },
+    {
+      "entity": "018",
+      "period": "45",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 836,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "2",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 841,
+      "split": "fit"
+    },
+    {
+      "entity": "019",
+      "period": "5",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 844,
+      "split": "fit"
+    },
+    {
+      "entity": "019",
+      "period": "6",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 845,
+      "split": "fit"
+    },
+    {
+      "entity": "019",
+      "period": "7",
+      "scenario": "linear_trend",
+      "column": "signal_x",
+      "raw_row": 846,
+      "split": "fit"
+    },
+    {
+      "entity": "019",
+      "period": "14",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 852,
+      "split": "fit"
+    },
+    {
+      "entity": "019",
+      "period": "18",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 856,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "24",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 862,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "28",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 866,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "29",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 867,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "30",
+      "scenario": "linear_trend",
+      "column": "signal_x",
+      "raw_row": 868,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "32",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 870,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "32",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 870,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "38",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 875,
+      "split": "heldout"
+    },
+    {
+      "entity": "019",
+      "period": "42",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 879,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "8",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 892,
+      "split": "fit"
+    },
+    {
+      "entity": "020",
+      "period": "10",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 894,
+      "split": "fit"
+    },
+    {
+      "entity": "020",
+      "period": "12",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 896,
+      "split": "fit"
+    },
+    {
+      "entity": "020",
+      "period": "15",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 899,
+      "split": "fit"
+    },
+    {
+      "entity": "020",
+      "period": "24",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 908,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "25",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 909,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "25",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 909,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "26",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 910,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "26",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 910,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "26",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 910,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "32",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 916,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "32",
+      "scenario": "linear_trend",
+      "column": "correlated_metric",
+      "raw_row": 916,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "34",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 918,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "35",
+      "scenario": "linear_trend",
+      "column": "activity",
+      "raw_row": 919,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "36",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 920,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "39",
+      "scenario": "linear_trend",
+      "column": "capacity",
+      "raw_row": 923,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "40",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 924,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "42",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 926,
+      "split": "heldout"
+    },
+    {
+      "entity": "020",
+      "period": "43",
+      "scenario": "linear_trend",
+      "column": "spend",
+      "raw_row": 927,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "1",
+      "scenario": "single_spike",
+      "column": "signal_z",
+      "raw_row": 933,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "4",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 935,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "7",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 938,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "7",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 938,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "9",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 940,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "11",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 942,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "12",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 943,
+      "split": "fit"
+    },
+    {
+      "entity": "021",
+      "period": "18",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 949,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "22",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 953,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "24",
+      "scenario": "single_spike",
+      "column": "signal_z",
+      "raw_row": 955,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "30",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 960,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "30",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 960,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "31",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 961,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "32",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 962,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "34",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 963,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "35",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 964,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "44",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 973,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "45",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 974,
+      "split": "heldout"
+    },
+    {
+      "entity": "021",
+      "period": "48",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 976,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "5",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 980,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "6",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 981,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "9",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 984,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "11",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 986,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "12",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 987,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "13",
+      "scenario": "single_spike",
+      "column": "signal_x",
+      "raw_row": 988,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "14",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 989,
+      "split": "fit"
+    },
+    {
+      "entity": "022",
+      "period": "17",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 992,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "21",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 995,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "23",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 997,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "26",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1000,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "28",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1002,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "30",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1004,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "31",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1005,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "32",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1006,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "32",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1006,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "34",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1008,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "40",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1014,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "40",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1014,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "42",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1016,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "44",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1018,
+      "split": "heldout"
+    },
+    {
+      "entity": "022",
+      "period": "45",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1019,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "1",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1023,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "2",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1024,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "8",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1030,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "8",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1030,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "11",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1033,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "14",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1036,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "16",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1038,
+      "split": "fit"
+    },
+    {
+      "entity": "023",
+      "period": "18",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1040,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "19",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1041,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "20",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1042,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "20",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1042,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "21",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1043,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "24",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1046,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "35",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1057,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "35",
+      "scenario": "single_spike",
+      "column": "signal_x",
+      "raw_row": 1057,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "38",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1060,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "39",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1061,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "43",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1065,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "46",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1068,
+      "split": "heldout"
+    },
+    {
+      "entity": "023",
+      "period": "48",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1070,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "3",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1073,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "5",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1075,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "7",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1077,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "8",
+      "scenario": "single_spike",
+      "column": "signal_z",
+      "raw_row": 1078,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "9",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1079,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "11",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1081,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "11",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1081,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "15",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1085,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "15",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1085,
+      "split": "fit"
+    },
+    {
+      "entity": "024",
+      "period": "18",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1088,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "20",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1090,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "21",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1091,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "25",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1095,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "25",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1095,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "28",
+      "scenario": "single_spike",
+      "column": "correlated_metric",
+      "raw_row": 1098,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "29",
+      "scenario": "single_spike",
+      "column": "activity",
+      "raw_row": 1099,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "36",
+      "scenario": "single_spike",
+      "column": "capacity",
+      "raw_row": 1106,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "37",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1107,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "39",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1109,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "42",
+      "scenario": "single_spike",
+      "column": "signal_x",
+      "raw_row": 1112,
+      "split": "heldout"
+    },
+    {
+      "entity": "024",
+      "period": "47",
+      "scenario": "single_spike",
+      "column": "spend",
+      "raw_row": 1117,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "4",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1122,
+      "split": "fit"
+    },
+    {
+      "entity": "025",
+      "period": "11",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1129,
+      "split": "fit"
+    },
+    {
+      "entity": "025",
+      "period": "11",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1129,
+      "split": "fit"
+    },
+    {
+      "entity": "025",
+      "period": "11",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1129,
+      "split": "fit"
+    },
+    {
+      "entity": "025",
+      "period": "13",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1131,
+      "split": "fit"
+    },
+    {
+      "entity": "025",
+      "period": "14",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1132,
+      "split": "fit"
+    },
+    {
+      "entity": "025",
+      "period": "18",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1136,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "20",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1138,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "23",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1141,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "24",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1142,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "25",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1143,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "26",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1144,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "27",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1145,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "33",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1151,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "37",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1155,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "38",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1156,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "38",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1156,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "39",
+      "scenario": "seasonal",
+      "column": "signal_x",
+      "raw_row": 1157,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "44",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1162,
+      "split": "heldout"
+    },
+    {
+      "entity": "025",
+      "period": "46",
+      "scenario": "seasonal",
+      "column": "signal_z",
+      "raw_row": 1164,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "12",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1176,
+      "split": "fit"
+    },
+    {
+      "entity": "026",
+      "period": "18",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1182,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "19",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1183,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "28",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1190,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "33",
+      "scenario": "seasonal",
+      "column": "signal_z",
+      "raw_row": 1195,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "34",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1196,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "34",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1196,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "38",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1200,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "45",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1207,
+      "split": "heldout"
+    },
+    {
+      "entity": "026",
+      "period": "47",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1209,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "5",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1215,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "6",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1216,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "8",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1218,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "9",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1219,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "10",
+      "scenario": "seasonal",
+      "column": "signal_z",
+      "raw_row": 1220,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "15",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1225,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "16",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1226,
+      "split": "fit"
+    },
+    {
+      "entity": "027",
+      "period": "21",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1231,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "21",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1231,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "22",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1232,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "22",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1232,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "30",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1240,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "31",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1241,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "31",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1241,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "34",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1244,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "34",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1244,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "34",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1244,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "37",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1247,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "37",
+      "scenario": "seasonal",
+      "column": "signal_x",
+      "raw_row": 1247,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "42",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1252,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "43",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1253,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "44",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1254,
+      "split": "heldout"
+    },
+    {
+      "entity": "027",
+      "period": "48",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1258,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "1",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1259,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "3",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1261,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "4",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1262,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "7",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1265,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "9",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1267,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "14",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1271,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "14",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1271,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "16",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1273,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "16",
+      "scenario": "seasonal",
+      "column": "signal_x",
+      "raw_row": 1273,
+      "split": "fit"
+    },
+    {
+      "entity": "028",
+      "period": "17",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1274,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "20",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1276,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "20",
+      "scenario": "seasonal",
+      "column": "signal_x",
+      "raw_row": 1276,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "21",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1277,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "23",
+      "scenario": "seasonal",
+      "column": "signal_z",
+      "raw_row": 1279,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "24",
+      "scenario": "seasonal",
+      "column": "activity",
+      "raw_row": 1280,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "27",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1283,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "29",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1284,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "30",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1285,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "32",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1287,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "36",
+      "scenario": "seasonal",
+      "column": "capacity",
+      "raw_row": 1291,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "39",
+      "scenario": "seasonal",
+      "column": "correlated_metric",
+      "raw_row": 1294,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "42",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1296,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "42",
+      "scenario": "seasonal",
+      "column": "signal_z",
+      "raw_row": 1296,
+      "split": "heldout"
+    },
+    {
+      "entity": "028",
+      "period": "45",
+      "scenario": "seasonal",
+      "column": "spend",
+      "raw_row": 1299,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "12",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1306,
+      "split": "fit"
+    },
+    {
+      "entity": "029",
+      "period": "13",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1307,
+      "split": "fit"
+    },
+    {
+      "entity": "029",
+      "period": "16",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1310,
+      "split": "fit"
+    },
+    {
+      "entity": "029",
+      "period": "16",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1310,
+      "split": "fit"
+    },
+    {
+      "entity": "029",
+      "period": "19",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1313,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "22",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1316,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "22",
+      "scenario": "late_entry",
+      "column": "signal_x",
+      "raw_row": 1316,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "22",
+      "scenario": "late_entry",
+      "column": "signal_z",
+      "raw_row": 1316,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "24",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1318,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "24",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1318,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "26",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1320,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "27",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1321,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "29",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1323,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "32",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1326,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "41",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1335,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "43",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1337,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "43",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1337,
+      "split": "heldout"
+    },
+    {
+      "entity": "029",
+      "period": "48",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1342,
+      "split": "heldout"
+    },
+    {
+      "entity": "030",
+      "period": "11",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1345,
+      "split": "fit"
+    },
+    {
+      "entity": "030",
+      "period": "12",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1346,
+      "split": "fit"
+    },
+    {
+      "entity": "030",
+      "period": "15",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1349,
+      "split": "fit"
+    },
+    {
+      "entity": "030",
+      "period": "16",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1350,
+      "split": "fit"
+    },
+    {
+      "entity": "030",
+      "period": "16",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1350,
+      "split": "fit"
+    },
+    {
+      "entity": "030",
+      "period": "20",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1354,
+      "split": "heldout"
+    },
+    {
+      "entity": "030",
+      "period": "22",
+      "scenario": "late_entry",
+      "column": "signal_x",
+      "raw_row": 1356,
+      "split": "heldout"
+    },
+    {
+      "entity": "030",
+      "period": "28",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1362,
+      "split": "heldout"
+    },
+    {
+      "entity": "030",
+      "period": "34",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1368,
+      "split": "heldout"
+    },
+    {
+      "entity": "030",
+      "period": "44",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1378,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "12",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1386,
+      "split": "fit"
+    },
+    {
+      "entity": "031",
+      "period": "14",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1388,
+      "split": "fit"
+    },
+    {
+      "entity": "031",
+      "period": "15",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1389,
+      "split": "fit"
+    },
+    {
+      "entity": "031",
+      "period": "16",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1390,
+      "split": "fit"
+    },
+    {
+      "entity": "031",
+      "period": "23",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1397,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "25",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1399,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "26",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1400,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "29",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1403,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "31",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1405,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "31",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1405,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "32",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1406,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "36",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1410,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "39",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1413,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "42",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1416,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "44",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1418,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "45",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1419,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "46",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1420,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "47",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1421,
+      "split": "heldout"
+    },
+    {
+      "entity": "031",
+      "period": "48",
+      "scenario": "late_entry",
+      "column": "signal_z",
+      "raw_row": 1422,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "9",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1423,
+      "split": "fit"
+    },
+    {
+      "entity": "032",
+      "period": "11",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1425,
+      "split": "fit"
+    },
+    {
+      "entity": "032",
+      "period": "12",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1426,
+      "split": "fit"
+    },
+    {
+      "entity": "032",
+      "period": "14",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1428,
+      "split": "fit"
+    },
+    {
+      "entity": "032",
+      "period": "15",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1429,
+      "split": "fit"
+    },
+    {
+      "entity": "032",
+      "period": "15",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1429,
+      "split": "fit"
+    },
+    {
+      "entity": "032",
+      "period": "17",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1431,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "20",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1434,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "20",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1434,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "21",
+      "scenario": "late_entry",
+      "column": "signal_x",
+      "raw_row": 1435,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "23",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1437,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "25",
+      "scenario": "late_entry",
+      "column": "signal_z",
+      "raw_row": 1439,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "29",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1443,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "29",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1443,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "30",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1444,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "35",
+      "scenario": "late_entry",
+      "column": "activity",
+      "raw_row": 1449,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "41",
+      "scenario": "late_entry",
+      "column": "spend",
+      "raw_row": 1455,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "44",
+      "scenario": "late_entry",
+      "column": "capacity",
+      "raw_row": 1458,
+      "split": "heldout"
+    },
+    {
+      "entity": "032",
+      "period": "45",
+      "scenario": "late_entry",
+      "column": "correlated_metric",
+      "raw_row": 1459,
+      "split": "heldout"
+    }
+  ],
+  "counts": {
+    "truth_rows": 1536,
+    "raw_rows": 1462,
+    "structural_absence": 32,
+    "calendar_deleted_rows": 42,
+    "masked_cells": 603
+  },
+  "evaluation_policy": {
+    "truth_usage": "Evaluation only after fitting/method choice; truth values never supplied to cleaners or profiles.",
+    "primary_screen": {
+      "window": 3,
+      "window_options": [
+        3,
+        5,
+        7,
+        9
+      ],
+      "threshold": 3.0,
+      "min_abs_change": 2.0,
+      "noise_tolerance": {
+        "activity": 0.5
+      },
+      "min_noise_periods": 5
+    },
+    "event_date_tolerances": [
+      0,
+      1
+    ],
+    "require_direction_agreement": true,
+    "seed_threshold_tuning": "None; single fixed design/draw.",
+    "event_matching": "Same entity and activity; one-to-one exact/nearest/earliest; one true persistent event per affected entity."
+  },
+  "inputs": {
+    "raw.csv": {
+      "sha256": "21437b8a65abc5ec4df1911ba0cf1086a9017e2297a2d06ecd747ef0c36b90a8",
+      "parsed_records_sha256": "3aba9754636d7dc35ca872c40de445e5f6927d568e2a4706d6574a541f50bcd2"
+    },
+    "truth.csv": {
+      "sha256": "7fa91d72d1b4152a1d9758c2aec36f79d85947792a0d785419f6b250df39d3fc",
+      "parsed_records_sha256": "c9c74ccf4f6d7d91380e6f24aec8842a5edbd8c3849caa142eb74b8f601743e1"
+    }
+  }
+}

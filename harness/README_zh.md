@@ -6,6 +6,10 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 
 这里的东西都带版本、只用标准库，也不在生产代码的 import 图里。通用 runner 只验证 Harness 自身的 schema/event/fault 循环，刻意不导入生产运行时。目前的例外是四个文件，而且它们的例外方式并不相同：`characterize.py` 隔着标准库 `unittest.mock` 的 fake 去驱动选定的生产入口；action-routing 与 retrosynthesis-backend 这两个 eval 和编排 runner 则是拿录制好的输入直接调用一个生产函数——`openai4s/agent/actions.py` 里的 router、内置 retrosynthesis Skill 里的响应规范化函数，以及 `orchestration.py` 驱动的 `Reconciler` 决策循环——这里不需要 fake，因为根本没有活的边界需要顶替。
 
+独立的 `python -m harness.evals.did_analysis --json` 回放用预设的合成对比和预期拒绝
+执行真实 DiD sidecar，包括安慰剂污染与填补结果排除。它验证代数和样本支持处理，
+不能验证真实研究的识别。
+
 `auto_mode_contract.py` 同样与生产实现无关。它是冻结 Stage 0 Auto Mode 用户状态的契约适配器，不能单独证明生产实现。它在每条 trace 中都明确写出这一点，并钉住已集成运行时必须满足的事件顺序和失败即拒绝语义。
 规范的 identity、candidate、完整且冻结的 evidence、Artifact 集合、action、仅含请求侧事实的 review policy、audit request 和 completion assessment digest 都从严格规范 JSON 计算，再与单独审阅的 `golden_traces/v1/auto_mode_contract_expected.json` 比较；只改场景自身的预期结果无法让场景自证通过。Material finding 与 termination basis 属于响应侧 assessment 事实，既不会泄漏到临时候选，也不会被 audit request 预先承诺。Hash mismatch 场景会重新散列实际发生变异的 runtime fixture，而不接受调用方声称的 observed digest。完整 evidence snapshot 必须恰好一次引用每个已声明的 Artifact／provenance 版本。Stage 0 的 `allow_once` trace 只接受封闭的内部 `results/` 文件写类别，action 自报的风险标签不能扩大这个集合。
 
@@ -82,3 +86,5 @@ uv run python -m harness.cli characterize --write  # 审阅后重新生成
 ## 治理
 
 Harness 的改动遵循项目维护的 [Harness invariant](../.github/CONTRIBUTING.md#harness-invariants) 与离线测试策略。新行为应当有确定性的场景契约兜底；有意改动 golden 时，必须显式审阅。
+
+面板数据的独立回放入口为 `python -m harness.evals.panel_data --json`，直接执行内置预处理 sidecar 的二十二个合成案例，验证仅拟合行的清理、填补窗口排除、转换、候选突变与拒绝行为；不声称验证模型、内核或视觉判断。

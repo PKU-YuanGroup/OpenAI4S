@@ -34,6 +34,9 @@ Claude Science 首次启动自动准备 Python/R 环境并不完全相同。
 
 ### 密钥、分析环境和升级
 
+升级到 0.3.1 前，先停止旧服务并备份 WSL 内的整个 `~/.openai4s` 数据目录。
+本版会将 schema 从 32 升到 35，步骤与自定义数据目录说明见[升级指南](upgrading_zh.md)。
+
 新 WSL 安装的模型密钥由当前 Windows 登录账户的 DPAPI 保护；已有可用的 Linux
 钥匙串会继续使用。无需为新安装手动配置 Linux 桌面钥匙串。DPAPI 密钥在 Windows 用户目录中加密保存，按 WSL 安装、Linux 用户和应用
 数据目录隔离；需要保留 Windows 互操作供后台服务使用。分析代码的沙箱会
@@ -90,12 +93,24 @@ bwrap --version
 
 ### 3. 启动 Windows 包
 
-解压 `OpenAI4S-<version>-windows-x86_64.zip`，不要只取出其中几个文件。
-双击：
+从 [0.3.1 release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) 下载
+[完整 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip)
+和 [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS)，放到同一目录。
+在该目录打开 PowerShell，计算 ZIP 的 SHA-256：
+
+```powershell
+Get-FileHash .\OpenAI4S-0.3.1-windows-x86_64.zip -Algorithm SHA256
+```
+
+将输出与 `SHA256SUMS` 中该 ZIP 对应的值逐字比较（忽略大小写），只有一致才继续。
+这是完整 ZIP，无需 `Restore-ZIP.cmd` 或合并分卷。解压全部文件，不要只取出其中几个文件，再双击：
 
 ```text
 OpenAI4S.cmd
 ```
+
+**0.3.1 验证范围：**归档结构、启动器检查和内嵌 Linux payload 已通过验证；
+本版未进行完整的 Windows/WSL2 运行验收，启动器仍未签名。
 
 启动器会依次完成：
 
@@ -267,6 +282,10 @@ $env:OPENAI4S_WSL_PROXY = 'http://172.24.128.1:7897'
 
 ### Credentials, analysis environments and updates
 
+Before upgrading to 0.3.1, stop the old service and back up the whole
+`~/.openai4s` data directory inside WSL. This version migrates schema 32 to 35;
+see [Upgrading](upgrading.md) for the steps and custom data-directory handling.
+
 Fresh WSL installations use the current Windows login's DPAPI-protected storage;
 an existing usable Linux keyring remains preferred. No Linux desktop keyring setup
 is required for a new installation. DPAPI-encrypted values are partitioned by WSL
@@ -306,8 +325,22 @@ no global WSL configuration change is needed.
    sudo apt install -y bubblewrap
    ```
 
-3. Unzip `OpenAI4S-<version>-windows-x86_64.zip` and double-click
-   `OpenAI4S.cmd`.
+3. Download the [complete 0.3.1 ZIP](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/OpenAI4S-0.3.1-windows-x86_64.zip)
+   and [SHA256SUMS](https://github.com/PKU-YuanGroup/OpenAI4S/releases/download/v0.3.1/SHA256SUMS)
+   from the [release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1)
+   into the same directory. Open PowerShell there and calculate the ZIP's SHA-256:
+
+   ```powershell
+   Get-FileHash .\OpenAI4S-0.3.1-windows-x86_64.zip -Algorithm SHA256
+   ```
+
+   Compare it with the ZIP's entry in `SHA256SUMS` (case-insensitively), and proceed
+   only if they match. This is a complete ZIP; no `Restore-ZIP.cmd` or split-file
+   restoration is needed. Extract all files, then double-click `OpenAI4S.cmd`.
+
+**0.3.1 validation:** archive structure, launcher checks, and the embedded Linux
+payload passed verification. Full Windows/WSL2 runtime acceptance was not performed
+for this version, and the launcher remains unsigned.
 
 The ZIP carries the complete Linux application, so first installation is
 offline. The launcher refuses WSL1, performs a real bubblewrap namespace test,

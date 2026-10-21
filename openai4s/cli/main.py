@@ -1533,6 +1533,26 @@ def _onboarding_service():
     return OnboardingService(cfg, store, PROVIDERS), store
 
 
+def _prompt_search() -> tuple[str | None, str]:
+    """Interactive init's one web-search decision; (None, "") keeps the setup."""
+
+    print(
+        "Web search: 1) Doubao (Agent Plan key)  2) Tavily (API key)  "
+        "3) You.com (free; key optional)  4) built-in keyless engines only"
+    )
+    answer = input("Choose 1-4, or press Enter to keep the current setup: ").strip()
+    choice = {"1": "doubao", "2": "tavily", "3": "you", "4": "builtin"}.get(answer)
+    if choice == "doubao":
+        return choice, getpass.getpass("Agent Plan key (input hidden): ")
+    if choice == "tavily":
+        return choice, getpass.getpass("Tavily API key (input hidden): ")
+    if choice == "you":
+        return choice, getpass.getpass(
+            "You.com API key (optional; Enter for the free tier, input hidden): "
+        )
+    return choice, ""
+
+
 def _prompt_value(label: str, default: str) -> str:
     suffix = f" [{default}]" if default else ""
     return input(f"{label}{suffix}: ").strip() or default
@@ -1542,8 +1562,16 @@ def cmd_init(args) -> int:
     service, store = _onboarding_service()
     try:
         defaults = service.defaults(args.provider)
+        if args.api_key_stdin and args.search_key_stdin:
+            raise ValueError(
+                "stdin carries one key per run: use --api-key-stdin or "
+                "--search-key-stdin, not both"
+            )
         interactive = (
-            not args.non_interactive and not args.api_key_stdin and sys.stdin.isatty()
+            not args.non_interactive
+            and not args.api_key_stdin
+            and not args.search_key_stdin
+            and sys.stdin.isatty()
         )
         provider = args.provider or defaults["provider"]
         model = args.model
@@ -1572,6 +1600,19 @@ def cmd_init(args) -> int:
             api_key=api_key,
             clear_api_key=args.clear_api_key,
         )
+
+        search_choice, search_key = args.search, ""
+        if interactive and not search_choice:
+            search_choice, search_key = _prompt_search()
+        elif args.search_key_stdin:
+            search_key = sys.stdin.readline().rstrip("\r\n")
+        search = None
+        if search_choice:
+            from openai4s import search_settings
+
+            search = search_settings.apply_setup_choice(
+                store, search_choice, search_key
+            )
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1579,6 +1620,8 @@ def cmd_init(args) -> int:
         store.close()
 
     payload = result.as_dict()
+    if search is not None:
+        payload["search"] = search
     if args.json:
         # OnboardingResult.as_dict() is an explicit secret-free projection:
         # has_api_key is a boolean and the credential value never reaches it,
@@ -1589,6 +1632,10 @@ def cmd_init(args) -> int:
         print(f"Settings stored in {result.data_dir}")
         if not result.has_api_key:
             print("No API key stored; add one in Customize → Models after launch.")
+        if search is not None:
+            backups = [e["id"] for e in search["engines"] if e["usable"]]
+            lead = "Doubao, then " if search["doubao_configured"] else ""
+            print(f"Web search: {lead}{' → '.join(backups)}")
         if not result.native_runtime_supported:
             print("Native Windows kernels are unsupported; run OpenAI4S under WSL2.")
         print("Next: openai4s serve")
@@ -2696,6 +2743,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--clear-api-key",
         action="store_true",
         help="remove the stored API key for the selected profile",
+    )
+    pi.add_argument(
+        "--search",
+        choices=("doubao", "tavily", "you", "builtin"),
+        help="web search: Doubao (Agent Plan key), or the backup engine to try "
+        "first (builtin = keyless engines only)",
+    )
+    pi.add_argument(
+        "--search-key-stdin",
+        action="store_true",
+        help="read the --search key from stdin (not with --api-key-stdin)",
     )
     pi.add_argument(
         "--non-interactive",

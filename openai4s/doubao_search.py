@@ -43,6 +43,11 @@ _AUTH_OR_QUOTA_CODES = frozenset(
         "invalid_api_key",
     }
 )
+#: The subset of the codes above that mean "quota or rate spent", not "key
+#: rejected". 10406 is the provider's quota-exhausted answer.
+_QUOTA_CODES = frozenset({"429", "10406", "700429", "flowlimitexceeded"})
+#: HTTP statuses with the same meaning: rate limited, or out of balance.
+_QUOTA_STATUSES = frozenset({402, 429})
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
@@ -64,6 +69,18 @@ class DoubaoSearchAuthError(DoubaoSearchError):
     """The configured key, entitlement, rate, or quota was rejected."""
 
     error_code = "doubao_search_auth_or_quota"
+
+
+class DoubaoSearchQuotaError(DoubaoSearchAuthError):
+    """The key is valid but its quota or rate limit is spent.
+
+    A subclass of the auth error so every existing handler still treats it as
+    a hard Doubao failure; the Host is the only caller that tells the two
+    apart, because a spent quota is the one case it may offer the user a
+    fallback engine for. A rejected key is a configuration error to fix.
+    """
+
+    error_code = "doubao_search_quota"
 
 
 class DoubaoSearchResponseError(DoubaoSearchError):
@@ -178,7 +195,8 @@ def _safe_error_code(value: Any) -> str:
     return ""
 
 
-def _provider_error(payload: Mapping[str, Any]) -> tuple[str, bool] | None:
+def _provider_error(payload: Mapping[str, Any]) -> tuple[str, bool, bool] | None:
+    """(display code, auth-or-quota failure, quota/rate failure) or None."""
     metadata = payload.get("ResponseMetadata")
     if not isinstance(metadata, Mapping):
         return None
@@ -194,8 +212,11 @@ def _provider_error(payload: Mapping[str, Any]) -> tuple[str, bool] | None:
         if code
     ]
     code = codes[0] if codes else ""
-    return code, any(
-        candidate.casefold() in _AUTH_OR_QUOTA_CODES for candidate in codes
+    folded = [candidate.casefold() for candidate in codes]
+    return (
+        code,
+        any(candidate in _AUTH_OR_QUOTA_CODES for candidate in folded),
+        any(candidate in _QUOTA_CODES for candidate in folded),
     )
 
 
@@ -290,8 +311,12 @@ def _normalize(payload: Any, *, query: str, limit: int) -> dict[str, Any]:
 
     provider_error = _provider_error(payload)
     if provider_error is not None:
-        code, auth_or_quota = provider_error
+        code, auth_or_quota, quota = provider_error
         suffix = f" (code {code})" if code else ""
+        if quota:
+            raise DoubaoSearchQuotaError(
+                f"Doubao search quota or rate limit is spent{suffix}"
+            )
         if auth_or_quota:
             raise DoubaoSearchAuthError(
                 "Doubao search rejected the Agent Plan Key, entitlement, rate, "
@@ -431,7 +456,12 @@ class DoubaoSearchService:
                     raise DoubaoSearchError(
                         f"Doubao search redirect was refused (status {int(status)})"
                     )
-                if int(status) in (401, 402, 403, 429):
+                if int(status) in _QUOTA_STATUSES:
+                    raise DoubaoSearchQuotaError(
+                        "Doubao search quota or rate limit is spent "
+                        f"(HTTP {int(status)})"
+                    )
+                if int(status) in (401, 403):
                     raise DoubaoSearchAuthError(
                         "Doubao search rejected the Agent Plan Key, entitlement, "
                         f"rate, or quota (HTTP {int(status)})"
@@ -456,7 +486,11 @@ class DoubaoSearchService:
                 raise DoubaoSearchError(
                     f"Doubao search redirect was refused (status {status})"
                 ) from None
-            if status in (401, 402, 403, 429):
+            if status in _QUOTA_STATUSES:
+                raise DoubaoSearchQuotaError(
+                    f"Doubao search quota or rate limit is spent (HTTP {status})"
+                ) from None
+            if status in (401, 403):
                 raise DoubaoSearchAuthError(
                     "Doubao search rejected the Agent Plan Key, entitlement, rate, "
                     f"or quota (HTTP {status})"
@@ -566,6 +600,7 @@ __all__ = [
     "TRAFFIC_TAG",
     "DoubaoSearchAuthError",
     "DoubaoSearchError",
+    "DoubaoSearchQuotaError",
     "DoubaoSearchResponseError",
     "DoubaoSearchService",
 ]

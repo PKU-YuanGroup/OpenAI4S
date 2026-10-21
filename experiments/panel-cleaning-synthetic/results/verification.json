@@ -1,0 +1,410 @@
+{
+  "verdict": "PASS",
+  "checks_total": 298130,
+  "checks_passed": 298130,
+  "check_groups": {
+    "artifact_byte_equality": {
+      "total": 49,
+      "passed": 49
+    },
+    "artifact_manifest": {
+      "total": 97,
+      "passed": 97
+    },
+    "branch_invariance": {
+      "total": 5852,
+      "passed": 5852
+    },
+    "branch_manifest": {
+      "total": 26,
+      "passed": 26
+    },
+    "calendar": {
+      "total": 4,
+      "passed": 4
+    },
+    "candidate_screen": {
+      "total": 286,
+      "passed": 286
+    },
+    "cleaning_config": {
+      "total": 16,
+      "passed": 16
+    },
+    "encoding_fit": {
+      "total": 54,
+      "passed": 54
+    },
+    "encoding_transform": {
+      "total": 81880,
+      "passed": 81880
+    },
+    "evaluation_design": {
+      "total": 4,
+      "passed": 4
+    },
+    "event_accounting": {
+      "total": 480,
+      "passed": 480
+    },
+    "event_matching": {
+      "total": 44,
+      "passed": 44
+    },
+    "fit_donors": {
+      "total": 1060,
+      "passed": 1060
+    },
+    "fit_profile": {
+      "total": 5,
+      "passed": 5
+    },
+    "fit_selection": {
+      "total": 6,
+      "passed": 6
+    },
+    "fit_statistics": {
+      "total": 1536,
+      "passed": 1536
+    },
+    "fresh_rerun": {
+      "total": 2,
+      "passed": 2
+    },
+    "generator_design": {
+      "total": 4630,
+      "passed": 4630
+    },
+    "imputation": {
+      "total": 20332,
+      "passed": 20332
+    },
+    "imputation_flags": {
+      "total": 2924,
+      "passed": 2924
+    },
+    "input_hashes": {
+      "total": 4,
+      "passed": 4
+    },
+    "knn_distances": {
+      "total": 5088,
+      "passed": 5088
+    },
+    "missingness": {
+      "total": 1866,
+      "passed": 1866
+    },
+    "output_refusal": {
+      "total": 3,
+      "passed": 3
+    },
+    "preservation": {
+      "total": 42866,
+      "passed": 42866
+    },
+    "provenance": {
+      "total": 9,
+      "passed": 9
+    },
+    "raw_truth_preservation": {
+      "total": 19865,
+      "passed": 19865
+    },
+    "record_hashes": {
+      "total": 22,
+      "passed": 22
+    },
+    "screening_config": {
+      "total": 10,
+      "passed": 10
+    },
+    "truth_error_rows": {
+      "total": 7192,
+      "passed": 7192
+    },
+    "truth_metrics": {
+      "total": 236,
+      "passed": 236
+    },
+    "visualization_scope": {
+      "total": 6,
+      "passed": 6
+    },
+    "window_config": {
+      "total": 6,
+      "passed": 6
+    },
+    "window_coverage": {
+      "total": 11696,
+      "passed": 11696
+    },
+    "window_eligibility": {
+      "total": 23394,
+      "passed": 23394
+    },
+    "window_noise": {
+      "total": 66556,
+      "passed": 66556
+    },
+    "window_summary": {
+      "total": 24,
+      "passed": 24
+    }
+  },
+  "failures": [],
+  "details": {
+    "generated_sample": {
+      "seed": 20261007,
+      "truth_rows": 1536,
+      "raw_rows": 1462,
+      "entities": 32,
+      "structural_absence": 32,
+      "calendar_deleted_records": 42,
+      "numeric_masked_cells": {
+        "spend": 158,
+        "correlated_metric": 159,
+        "capacity": 131,
+        "activity": 102,
+        "signal_z": 25,
+        "signal_x": 28
+      },
+      "fit_rows": 465,
+      "heldout_rows": 997
+    },
+    "main_visualization": {
+      "selected_entities": [
+        "001",
+        "005",
+        "009",
+        "013",
+        "017",
+        "021",
+        "025",
+        "029"
+      ],
+      "excluded_entity_count": 24
+    },
+    "filled-outcome_visualization": {
+      "selected_entities": [
+        "001",
+        "005",
+        "009",
+        "013",
+        "017",
+        "021",
+        "025",
+        "029"
+      ],
+      "excluded_entity_count": 24
+    },
+    "main_knn_fills_recalculated": 159,
+    "main_event_recovery": {
+      "exact": {
+        "tp": 5,
+        "fp": 6,
+        "fn": 7,
+        "precision": 0.45454545454545453,
+        "recall": 0.4166666666666667,
+        "eligible_truth_recovery": {
+          "n_eligible": 5,
+          "tp": 5,
+          "fn": 0,
+          "recall": 1.0,
+          "matched_ineligible_truth": []
+        }
+      },
+      "tolerance_1": {
+        "tp": 5,
+        "fp": 6,
+        "fn": 7,
+        "precision": 0.45454545454545453,
+        "recall": 0.4166666666666667,
+        "eligible_truth_recovery": {
+          "n_eligible": 5,
+          "tp": 5,
+          "fn": 0,
+          "recall": 1.0,
+          "matched_ineligible_truth": []
+        }
+      }
+    },
+    "filled-outcome_knn_fills_recalculated": 159,
+    "filled-outcome_event_recovery": {
+      "exact": {
+        "tp": 5,
+        "fp": 6,
+        "fn": 7,
+        "precision": 0.45454545454545453,
+        "recall": 0.4166666666666667,
+        "eligible_truth_recovery": {
+          "n_eligible": 5,
+          "tp": 5,
+          "fn": 0,
+          "recall": 1.0,
+          "matched_ineligible_truth": []
+        }
+      },
+      "tolerance_1": {
+        "tp": 5,
+        "fp": 6,
+        "fn": 7,
+        "precision": 0.45454545454545453,
+        "recall": 0.4166666666666667,
+        "eligible_truth_recovery": {
+          "n_eligible": 5,
+          "tp": 5,
+          "fn": 0,
+          "recall": 1.0,
+          "matched_ineligible_truth": []
+        }
+      }
+    },
+    "missing_to_imputed_reason_changes": 3083,
+    "imputation_truth_metrics": {
+      "main": {
+        "capacity": {
+          "method": "mean",
+          "overall": {
+            "n_masked": 131,
+            "n_filled": 131,
+            "fill_rate": 1.0,
+            "n_error": 131,
+            "mae": 3.396224616972733,
+            "rmse": 4.441552380330109,
+            "bias": -0.2349785405992808
+          },
+          "fit": {
+            "n_masked": 46,
+            "n_filled": 46,
+            "fill_rate": 1.0,
+            "n_error": 46,
+            "mae": 3.249278587288582,
+            "rmse": 3.9590900592720586,
+            "bias": -0.12769123316897837
+          },
+          "heldout": {
+            "n_masked": 85,
+            "n_filled": 85,
+            "fill_rate": 1.0,
+            "n_error": 85,
+            "mae": 3.475748350684156,
+            "rmse": 4.681962434459533,
+            "bias": -0.2930399069733268
+          }
+        },
+        "spend": {
+          "method": "median",
+          "overall": {
+            "n_masked": 158,
+            "n_filled": 158,
+            "fill_rate": 1.0,
+            "n_error": 158,
+            "mae": 18.00802424748957,
+            "rmse": 27.48064293676835,
+            "bias": -6.985094074852964
+          },
+          "fit": {
+            "n_masked": 48,
+            "n_filled": 48,
+            "fill_rate": 1.0,
+            "n_error": 48,
+            "mae": 22.359043223101814,
+            "rmse": 35.41183294853968,
+            "bias": -9.776173119026138
+          },
+          "heldout": {
+            "n_masked": 110,
+            "n_filled": 110,
+            "fill_rate": 1.0,
+            "n_error": 110,
+            "mae": 16.109397785404227,
+            "rmse": 23.184525895373174,
+            "bias": -5.767168673759215
+          }
+        },
+        "correlated_metric": {
+          "method": "knn",
+          "overall": {
+            "n_masked": 159,
+            "n_filled": 159,
+            "fill_rate": 1.0,
+            "n_error": 159,
+            "mae": 1.0328321267015934,
+            "rmse": 1.499607368687337,
+            "bias": 0.07835345856524017
+          },
+          "fit": {
+            "n_masked": 51,
+            "n_filled": 51,
+            "fill_rate": 1.0,
+            "n_error": 51,
+            "mae": 1.1704854929825181,
+            "rmse": 1.5976289511059436,
+            "bias": -0.012151093093080975
+          },
+          "heldout": {
+            "n_masked": 108,
+            "n_filled": 108,
+            "fill_rate": 1.0,
+            "n_error": 108,
+            "mae": 0.9678291481800457,
+            "rmse": 1.451019462306589,
+            "bias": 0.12109171907055849
+          }
+        }
+      },
+      "filled-outcome": {
+        "activity": {
+          "method": "mean",
+          "overall": {
+            "n_masked": 102,
+            "n_filled": 102,
+            "fill_rate": 1.0,
+            "n_error": 102,
+            "mae": 2.0548312756046485,
+            "rmse": 3.4418789963779317,
+            "bias": -0.46095877127086293
+          },
+          "fit": {
+            "n_masked": 29,
+            "n_filled": 29,
+            "fill_rate": 1.0,
+            "n_error": 29,
+            "mae": 0.8166096047550021,
+            "rmse": 1.2341750442433066,
+            "bias": 0.11880439009699875
+          },
+          "heldout": {
+            "n_masked": 73,
+            "n_filled": 73,
+            "fill_rate": 1.0,
+            "n_error": 73,
+            "mae": 2.5467275558051927,
+            "rmse": 3.9934427614014005,
+            "bias": -0.691275643595082
+          }
+        }
+      }
+    },
+    "reproducibility": {
+      "files_compared": 49,
+      "file_types": {
+        ".md": 8,
+        ".json": 18,
+        ".csv": 9,
+        ".png": 7,
+        ".svg": 7
+      },
+      "mismatched_artifacts": [],
+      "rerun_output": "<temporary rerun directory>/bundle",
+      "scope": "All files in generated inputs/ and results/, including CSV, JSON, PNG, SVG and bilingual README files. Excludes results/verification.json written after generation; root prose and source scripts are outside the runner output. File timestamps are not compared.",
+      "repeat_output_returncode": 1
+    }
+  },
+  "verifier_sha256": "09be2b6fd8b88b53b6f54c01c10097a44a07242e6350fb9a094aebc2acad0a56",
+  "scope": "Independent arithmetic and invariants for one fixed-seed synthetic realization; no claim of calibrated detection performance, causal identification, or missingness uncertainty.",
+  "publication_redactions": [
+    "Machine-local rerun_output path replaced; all numerical checks and artifact hashes retained."
+  ]
+}

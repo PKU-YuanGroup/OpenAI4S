@@ -1,0 +1,136 @@
+{
+  "interpretation": "Pointwise cluster intervals; no simultaneous bands. Placebo/pretrend non-rejection does not establish parallel trends.",
+  "method": "did-analysis/v1",
+  "outputs": {
+    "did-diagnostics.png": {
+      "sha256": "4e382637f7834a9c6d70e0b429f04937f99bfbe9087a444dec5bacb8da2420d4"
+    },
+    "did-diagnostics.svg": {
+      "sha256": "3a262d4b3ff5fbbe5b2bcc8a1c6136f04c9cd2c4a34f0f48f5939da63a0a2f38"
+    }
+  },
+  "panels": [
+    {
+      "aggregate": {
+        "cell_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "ci_high": 3.0404493052761867,
+        "ci_low": 2.1630765363458893,
+        "estimate": 2.601762920811038,
+        "inference": {
+          "alpha": 0.05,
+          "cell_cluster_counts": {},
+          "ci_high": 3.0404493052761867,
+          "ci_low": 2.1630765363458893,
+          "cluster_count": 24,
+          "cr1_factor": null,
+          "df": 23,
+          "group_cluster_counts": {},
+          "limitations": "Many independent assignment clusters are needed; two clusters per group is a refusal floor, not a reliability guarantee.",
+          "method": "Linear aggregation of joint per-cell CR1 cluster influence covariance; Student-t union-cluster G-1 reference",
+          "p_value": 1.4186158907261112e-11,
+          "se": 0.2120633120994266,
+          "status": "available",
+          "unavailable_reasons": []
+        },
+        "p_value": 1.4186158907261112e-11,
+        "se": 0.2120633120994266,
+        "variance": 0.04497084833857882,
+        "weights": [
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125
+        ]
+      },
+      "dynamic_support": [
+        {
+          "cell_indices": [
+            0,
+            5
+          ],
+          "event_time": 0,
+          "supported_cohorts": [
+            3,
+            5
+          ],
+          "weights": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "cell_indices": [
+            1,
+            6
+          ],
+          "event_time": 1,
+          "supported_cohorts": [
+            3,
+            5
+          ],
+          "weights": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "cell_indices": [
+            2,
+            7
+          ],
+          "event_time": 2,
+          "supported_cohorts": [
+            3,
+            5
+          ],
+          "weights": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "cell_indices": [
+            3
+          ],
+          "event_time": 3,
+          "supported_cohorts": [
+            3
+          ],
+          "weights": [
+            1.0
+          ]
+        },
+        {
+          "cell_indices": [
+            4
+          ],
+          "event_time": 4,
+          "supported_cohorts": [
+            3
+          ],
+          "weights": [
+            1.0
+          ]
+        }
+      ],
+      "kind": "staggered_did",
+      "stage": 1,
+      "unsupported_cells": []
+    }
+  ],
+  "refused_stage_count": 0,
+  "result_sha256": "86e9129a49f98412b26a39a2d21d702f241c7860b00a1599bbd4807908270c15"
+}

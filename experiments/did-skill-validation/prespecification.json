@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1,
+  "example_seed": 20261010,
+  "replicate_seeds": {"start": 910000, "count": 128, "increment": 1},
+  "entities": 48,
+  "assignment_clusters": 24,
+  "entities_per_cluster": 2,
+  "periods": [0, 1, 2, 3, 4, 5, 6, 7],
+  "common_treatment_time": 4,
+  "pre_periods": [0, 1, 2, 3],
+  "post_periods": [4, 5, 6, 7],
+  "event_reference_period": 3,
+  "placebo": {"fake_treatment_time": 2, "pre_periods": [0, 1], "post_periods": [2, 3], "random_draws": 99, "random_seed": 620241, "fake_cluster_count": 6},
+  "inference": {"alpha": 0.05, "regression": "entity post-minus-pre changes on intercept and treated indicator; cluster CR1 with N=entities,K=2; Student t with cluster_count-1 df; DDD uses intercept,T,S,T*S with K=4", "staggered": "unconditional group-time mean changes with entity influence functions aggregated by assignment cluster"},
+  "scenarios": {
+    "constant_effect": {"effect": 2.0, "treated_trend": 0.0, "cluster_sd": 0.7, "cluster_ar": 0.5, "entity_noise_sd": 0.5},
+    "null": {"effect": 0.0, "treated_trend": 0.0, "cluster_sd": 0.7, "cluster_ar": 0.5, "entity_noise_sd": 0.5},
+    "violated_pretrends": {"effect": 2.0, "treated_trend": 0.35, "cluster_sd": 0.7, "cluster_ar": 0.5, "entity_noise_sd": 0.5},
+    "clustered_noise": {"effect": 2.0, "treated_trend": 0.0, "cluster_sd": 1.5, "cluster_ar": 0.8, "entity_noise_sd": 0.2},
+    "triple_difference": {"effect": 0.7, "subgroup_effect": 1.5, "subgroup_time_trend": 0.2, "treated_subgroup_static": 0.4, "cluster_sd": 0.7, "cluster_ar": 0.5, "entity_noise_sd": 0.5},
+    "heterogeneous_staggered": {"cohort_clusters": {"3": 6, "5": 6, "0": 12}, "effect_at_cohort": {"3": 1.0, "5": 3.0}, "effect_growth": {"3": 0.3, "5": 0.5}, "cluster_sd": 0.7, "cluster_ar": 0.5, "entity_noise_sd": 0.5}
+  },
+  "monte_carlo_scenarios": ["constant_effect", "null", "violated_pretrends", "clustered_noise"],
+  "monte_carlo_metrics": ["bias relative to assigned treatment effect", "RMSE", "mean standard error", "95% interval coverage of assigned effect", "rejection of zero", "joint pretrend rejection"],
+  "pass_gates": "Only deterministic arithmetic, artifact integrity, finite JSON, schema and replay comparisons are pass gates. Monte Carlo rejection or coverage rates have no statistical pass threshold.",
+  "scope": "Synthetic validation of the actual did-analysis Skill. No empirical causal claim, conditional covariate-adjusted ATT, doubly robust estimator, multiplier bootstrap, or exact full Callaway-Sant'Anna replication is claimed."
+}

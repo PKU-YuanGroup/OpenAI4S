@@ -1,0 +1,2669 @@
+{
+  "version": 1,
+  "scope": "Deterministic declared algebraic contrasts and expected refusals. Synthetic full exposure histories retained.",
+  "datasets": {
+    "common": [
+      {
+        "id": "000-0",
+        "period": 1,
+        "cluster": "000",
+        "y": 11.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 2,
+        "cluster": "000",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 3,
+        "cluster": "000",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 4,
+        "cluster": "000",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 5,
+        "cluster": "000",
+        "y": 17.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 6,
+        "cluster": "000",
+        "y": 18.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "000-1",
+        "period": 1,
+        "cluster": "000",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 2,
+        "cluster": "000",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 3,
+        "cluster": "000",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 4,
+        "cluster": "000",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 5,
+        "cluster": "000",
+        "y": 19.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 6,
+        "cluster": "000",
+        "y": 20.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "001-0",
+        "period": 1,
+        "cluster": "001",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 2,
+        "cluster": "001",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 3,
+        "cluster": "001",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 4,
+        "cluster": "001",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 5,
+        "cluster": "001",
+        "y": 18.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 6,
+        "cluster": "001",
+        "y": 19.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "001-1",
+        "period": 1,
+        "cluster": "001",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 2,
+        "cluster": "001",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 3,
+        "cluster": "001",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 4,
+        "cluster": "001",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 5,
+        "cluster": "001",
+        "y": 20.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 6,
+        "cluster": "001",
+        "y": 21.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "002-0",
+        "period": 1,
+        "cluster": "002",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 2,
+        "cluster": "002",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 3,
+        "cluster": "002",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 4,
+        "cluster": "002",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 5,
+        "cluster": "002",
+        "y": 19.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 6,
+        "cluster": "002",
+        "y": 20.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "002-1",
+        "period": 1,
+        "cluster": "002",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 2,
+        "cluster": "002",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 3,
+        "cluster": "002",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 4,
+        "cluster": "002",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 5,
+        "cluster": "002",
+        "y": 21.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 6,
+        "cluster": "002",
+        "y": 22.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "003-0",
+        "period": 1,
+        "cluster": "003",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 2,
+        "cluster": "003",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 3,
+        "cluster": "003",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 4,
+        "cluster": "003",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 5,
+        "cluster": "003",
+        "y": 20.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 6,
+        "cluster": "003",
+        "y": 21.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "003-1",
+        "period": 1,
+        "cluster": "003",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 2,
+        "cluster": "003",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 3,
+        "cluster": "003",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 4,
+        "cluster": "003",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 5,
+        "cluster": "003",
+        "y": 22.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 6,
+        "cluster": "003",
+        "y": 23.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "004-0",
+        "period": 1,
+        "cluster": "004",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 2,
+        "cluster": "004",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 3,
+        "cluster": "004",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 4,
+        "cluster": "004",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 5,
+        "cluster": "004",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 6,
+        "cluster": "004",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-1",
+        "period": 1,
+        "cluster": "004",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 2,
+        "cluster": "004",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 3,
+        "cluster": "004",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 4,
+        "cluster": "004",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 5,
+        "cluster": "004",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 6,
+        "cluster": "004",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-0",
+        "period": 1,
+        "cluster": "005",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 2,
+        "cluster": "005",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 3,
+        "cluster": "005",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 4,
+        "cluster": "005",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 5,
+        "cluster": "005",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 6,
+        "cluster": "005",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-1",
+        "period": 1,
+        "cluster": "005",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 2,
+        "cluster": "005",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 3,
+        "cluster": "005",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 4,
+        "cluster": "005",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 5,
+        "cluster": "005",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 6,
+        "cluster": "005",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-0",
+        "period": 1,
+        "cluster": "006",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 2,
+        "cluster": "006",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 3,
+        "cluster": "006",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 4,
+        "cluster": "006",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 5,
+        "cluster": "006",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 6,
+        "cluster": "006",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-1",
+        "period": 1,
+        "cluster": "006",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 2,
+        "cluster": "006",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 3,
+        "cluster": "006",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 4,
+        "cluster": "006",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 5,
+        "cluster": "006",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 6,
+        "cluster": "006",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-0",
+        "period": 1,
+        "cluster": "007",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 2,
+        "cluster": "007",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 3,
+        "cluster": "007",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 4,
+        "cluster": "007",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 5,
+        "cluster": "007",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 6,
+        "cluster": "007",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-1",
+        "period": 1,
+        "cluster": "007",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 2,
+        "cluster": "007",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 3,
+        "cluster": "007",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 4,
+        "cluster": "007",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 5,
+        "cluster": "007",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 6,
+        "cluster": "007",
+        "y": 24.0,
+        "exposed": 0,
+        "eligible": 1
+      }
+    ],
+    "missing": [
+      {
+        "id": "000-0",
+        "period": 1,
+        "cluster": "000",
+        "y": 11.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 2,
+        "cluster": "000",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 3,
+        "cluster": "000",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 4,
+        "cluster": "000",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 5,
+        "cluster": "000",
+        "y": null,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 6,
+        "cluster": "000",
+        "y": 18.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "000-1",
+        "period": 1,
+        "cluster": "000",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 2,
+        "cluster": "000",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 3,
+        "cluster": "000",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 4,
+        "cluster": "000",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 5,
+        "cluster": "000",
+        "y": 19.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 6,
+        "cluster": "000",
+        "y": 20.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "001-0",
+        "period": 1,
+        "cluster": "001",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 2,
+        "cluster": "001",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 3,
+        "cluster": "001",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 4,
+        "cluster": "001",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 5,
+        "cluster": "001",
+        "y": 18.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 6,
+        "cluster": "001",
+        "y": 19.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "001-1",
+        "period": 1,
+        "cluster": "001",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 2,
+        "cluster": "001",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 3,
+        "cluster": "001",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 4,
+        "cluster": "001",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 5,
+        "cluster": "001",
+        "y": 20.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 6,
+        "cluster": "001",
+        "y": 21.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "002-0",
+        "period": 1,
+        "cluster": "002",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 2,
+        "cluster": "002",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 3,
+        "cluster": "002",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 4,
+        "cluster": "002",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 5,
+        "cluster": "002",
+        "y": 19.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 6,
+        "cluster": "002",
+        "y": 20.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "002-1",
+        "period": 1,
+        "cluster": "002",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 2,
+        "cluster": "002",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 3,
+        "cluster": "002",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 4,
+        "cluster": "002",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 5,
+        "cluster": "002",
+        "y": 21.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 6,
+        "cluster": "002",
+        "y": 22.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "003-0",
+        "period": 1,
+        "cluster": "003",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 2,
+        "cluster": "003",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 3,
+        "cluster": "003",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 4,
+        "cluster": "003",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 5,
+        "cluster": "003",
+        "y": 20.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 6,
+        "cluster": "003",
+        "y": 21.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "003-1",
+        "period": 1,
+        "cluster": "003",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 2,
+        "cluster": "003",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 3,
+        "cluster": "003",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 4,
+        "cluster": "003",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 5,
+        "cluster": "003",
+        "y": 22.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 6,
+        "cluster": "003",
+        "y": 23.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "004-0",
+        "period": 1,
+        "cluster": "004",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 2,
+        "cluster": "004",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 3,
+        "cluster": "004",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 4,
+        "cluster": "004",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 5,
+        "cluster": "004",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 6,
+        "cluster": "004",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-1",
+        "period": 1,
+        "cluster": "004",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 2,
+        "cluster": "004",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 3,
+        "cluster": "004",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 4,
+        "cluster": "004",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 5,
+        "cluster": "004",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 6,
+        "cluster": "004",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-0",
+        "period": 1,
+        "cluster": "005",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 2,
+        "cluster": "005",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 3,
+        "cluster": "005",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 4,
+        "cluster": "005",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 5,
+        "cluster": "005",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 6,
+        "cluster": "005",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-1",
+        "period": 1,
+        "cluster": "005",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 2,
+        "cluster": "005",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 3,
+        "cluster": "005",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 4,
+        "cluster": "005",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 5,
+        "cluster": "005",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 6,
+        "cluster": "005",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-0",
+        "period": 1,
+        "cluster": "006",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 2,
+        "cluster": "006",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 3,
+        "cluster": "006",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 4,
+        "cluster": "006",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 5,
+        "cluster": "006",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 6,
+        "cluster": "006",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-1",
+        "period": 1,
+        "cluster": "006",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 2,
+        "cluster": "006",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 3,
+        "cluster": "006",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 4,
+        "cluster": "006",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 5,
+        "cluster": "006",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 6,
+        "cluster": "006",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-0",
+        "period": 1,
+        "cluster": "007",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 2,
+        "cluster": "007",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 3,
+        "cluster": "007",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 4,
+        "cluster": "007",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 5,
+        "cluster": "007",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 6,
+        "cluster": "007",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-1",
+        "period": 1,
+        "cluster": "007",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 2,
+        "cluster": "007",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 3,
+        "cluster": "007",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 4,
+        "cluster": "007",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 5,
+        "cluster": "007",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 6,
+        "cluster": "007",
+        "y": 24.0,
+        "exposed": 0,
+        "eligible": 1
+      }
+    ],
+    "imputed": [
+      {
+        "id": "000-0",
+        "period": 1,
+        "cluster": "000",
+        "y": 11.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 2,
+        "cluster": "000",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 3,
+        "cluster": "000",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 4,
+        "cluster": "000",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "000-0",
+        "period": 5,
+        "cluster": "000",
+        "y": 17.0,
+        "exposed": 1,
+        "eligible": 0,
+        "_imputed_columns": [
+          "y"
+        ]
+      },
+      {
+        "id": "000-0",
+        "period": 6,
+        "cluster": "000",
+        "y": 18.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "000-1",
+        "period": 1,
+        "cluster": "000",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 2,
+        "cluster": "000",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 3,
+        "cluster": "000",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 4,
+        "cluster": "000",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 5,
+        "cluster": "000",
+        "y": 19.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "000-1",
+        "period": 6,
+        "cluster": "000",
+        "y": 20.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "001-0",
+        "period": 1,
+        "cluster": "001",
+        "y": 12.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 2,
+        "cluster": "001",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 3,
+        "cluster": "001",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 4,
+        "cluster": "001",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 5,
+        "cluster": "001",
+        "y": 18.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "001-0",
+        "period": 6,
+        "cluster": "001",
+        "y": 19.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "001-1",
+        "period": 1,
+        "cluster": "001",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 2,
+        "cluster": "001",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 3,
+        "cluster": "001",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 4,
+        "cluster": "001",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 5,
+        "cluster": "001",
+        "y": 20.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "001-1",
+        "period": 6,
+        "cluster": "001",
+        "y": 21.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "002-0",
+        "period": 1,
+        "cluster": "002",
+        "y": 13.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 2,
+        "cluster": "002",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 3,
+        "cluster": "002",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 4,
+        "cluster": "002",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 5,
+        "cluster": "002",
+        "y": 19.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "002-0",
+        "period": 6,
+        "cluster": "002",
+        "y": 20.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "002-1",
+        "period": 1,
+        "cluster": "002",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 2,
+        "cluster": "002",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 3,
+        "cluster": "002",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 4,
+        "cluster": "002",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 5,
+        "cluster": "002",
+        "y": 21.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "002-1",
+        "period": 6,
+        "cluster": "002",
+        "y": 22.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "003-0",
+        "period": 1,
+        "cluster": "003",
+        "y": 14.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 2,
+        "cluster": "003",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 3,
+        "cluster": "003",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 4,
+        "cluster": "003",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 5,
+        "cluster": "003",
+        "y": 20.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "003-0",
+        "period": 6,
+        "cluster": "003",
+        "y": 21.0,
+        "exposed": 1,
+        "eligible": 0
+      },
+      {
+        "id": "003-1",
+        "period": 1,
+        "cluster": "003",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 2,
+        "cluster": "003",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 3,
+        "cluster": "003",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 4,
+        "cluster": "003",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 5,
+        "cluster": "003",
+        "y": 22.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "003-1",
+        "period": 6,
+        "cluster": "003",
+        "y": 23.5,
+        "exposed": 1,
+        "eligible": 1
+      },
+      {
+        "id": "004-0",
+        "period": 1,
+        "cluster": "004",
+        "y": 15.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 2,
+        "cluster": "004",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 3,
+        "cluster": "004",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 4,
+        "cluster": "004",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 5,
+        "cluster": "004",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-0",
+        "period": 6,
+        "cluster": "004",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "004-1",
+        "period": 1,
+        "cluster": "004",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 2,
+        "cluster": "004",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 3,
+        "cluster": "004",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 4,
+        "cluster": "004",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 5,
+        "cluster": "004",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "004-1",
+        "period": 6,
+        "cluster": "004",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-0",
+        "period": 1,
+        "cluster": "005",
+        "y": 16.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 2,
+        "cluster": "005",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 3,
+        "cluster": "005",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 4,
+        "cluster": "005",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 5,
+        "cluster": "005",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-0",
+        "period": 6,
+        "cluster": "005",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "005-1",
+        "period": 1,
+        "cluster": "005",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 2,
+        "cluster": "005",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 3,
+        "cluster": "005",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 4,
+        "cluster": "005",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 5,
+        "cluster": "005",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "005-1",
+        "period": 6,
+        "cluster": "005",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-0",
+        "period": 1,
+        "cluster": "006",
+        "y": 17.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 2,
+        "cluster": "006",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 3,
+        "cluster": "006",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 4,
+        "cluster": "006",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 5,
+        "cluster": "006",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-0",
+        "period": 6,
+        "cluster": "006",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "006-1",
+        "period": 1,
+        "cluster": "006",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 2,
+        "cluster": "006",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 3,
+        "cluster": "006",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 4,
+        "cluster": "006",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 5,
+        "cluster": "006",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "006-1",
+        "period": 6,
+        "cluster": "006",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-0",
+        "period": 1,
+        "cluster": "007",
+        "y": 18.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 2,
+        "cluster": "007",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 3,
+        "cluster": "007",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 4,
+        "cluster": "007",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 5,
+        "cluster": "007",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-0",
+        "period": 6,
+        "cluster": "007",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 0
+      },
+      {
+        "id": "007-1",
+        "period": 1,
+        "cluster": "007",
+        "y": 19.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 2,
+        "cluster": "007",
+        "y": 20.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 3,
+        "cluster": "007",
+        "y": 21.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 4,
+        "cluster": "007",
+        "y": 22.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 5,
+        "cluster": "007",
+        "y": 23.0,
+        "exposed": 0,
+        "eligible": 1
+      },
+      {
+        "id": "007-1",
+        "period": 6,
+        "cluster": "007",
+        "y": 24.0,
+        "exposed": 0,
+        "eligible": 1
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "traditional-known-contrast",
+      "operation": "traditional_did",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        }
+      },
+      "expected": {
+        "estimate": 2.75
+      }
+    },
+    {
+      "id": "ddd-known-contrast",
+      "operation": "triple_difference",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "subgroup": "eligible"
+      },
+      "expected": {
+        "estimate": 1.5
+      }
+    },
+    {
+      "id": "fake-time-null",
+      "operation": "placebo_time",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          1,
+          2
+        ],
+        "post_periods": [
+          3,
+          4
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "fake_treatment_time": 3
+      },
+      "expected": {
+        "estimate": 0.0
+      }
+    },
+    {
+      "id": "fake-group-null",
+      "operation": "placebo_group",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "fake_treated_entities": [
+          "004-0",
+          "004-1",
+          "005-0",
+          "005-1"
+        ]
+      },
+      "expected": {
+        "estimate": 0.0
+      }
+    },
+    {
+      "id": "contaminated-fake-time-refused",
+      "operation": "placebo_time",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          1,
+          2
+        ],
+        "post_periods": [
+          3,
+          5
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "fake_treatment_time": 3
+      },
+      "expected_error": "strictly before real treatment"
+    },
+    {
+      "id": "true-treated-fake-group-refused",
+      "operation": "placebo_group",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "fake_treated_entities": [
+          "000-0",
+          "000-1"
+        ]
+      },
+      "expected_error": "genuine never-treated"
+    },
+    {
+      "id": "split-cluster-fake-group-refused",
+      "operation": "placebo_group",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "fake_treated_entities": [
+          "004-0",
+          "005-0"
+        ]
+      },
+      "expected_error": "splits an explicit assignment cluster"
+    },
+    {
+      "id": "undeclared-identification-refused",
+      "operation": "traditional_did",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {}
+      },
+      "expected_error": "research_design"
+    },
+    {
+      "id": "window-missing-refused",
+      "operation": "traditional_did",
+      "dataset": "missing",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        }
+      },
+      "expected_error": "incomplete or imputed outcome"
+    },
+    {
+      "id": "outcome-imputed-refused",
+      "operation": "traditional_did",
+      "dataset": "imputed",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        }
+      },
+      "expected_error": "incomplete or imputed outcome"
+    },
+    {
+      "id": "explicit-complete-case",
+      "operation": "traditional_did",
+      "dataset": "missing",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          3,
+          4
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        },
+        "missing_policy": "drop_entity"
+      },
+      "expected": {
+        "estimate": 2.857142857142857
+      }
+    },
+    {
+      "id": "outcome-independent-window-role-refused",
+      "operation": "traditional_did",
+      "dataset": "common",
+      "kwargs": {
+        "entity": "id",
+        "time": "period",
+        "outcome": "y",
+        "treatment": "exposed",
+        "treatment_time": 5,
+        "pre_periods": [
+          4,
+          5
+        ],
+        "post_periods": [
+          5,
+          6
+        ],
+        "cluster": "cluster",
+        "research_design": {
+          "event_source": "Synthetic DGP fixed common adoption period 5.",
+          "treatment_assignment": "Synthetic first four independent clusters adopted; last four never treated.",
+          "parallel_trends": "Synthetic untreated outcomes share an identical time slope; this is a code fixture."
+        }
+      },
+      "expected_error": "pre periods must precede treatment_time"
+    }
+  ]
+}

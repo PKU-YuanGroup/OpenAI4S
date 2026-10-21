@@ -1954,16 +1954,41 @@ class HostDispatcher:
         There is intentionally no ``_m_search_web`` sibling: the kernel wire
         exposes only the existing ``web_search`` control tool, so this provider
         selection cannot bypass its permission and audit envelope.
+
+        The backup engines and their order come from the user's search
+        settings. A spent Doubao quota falls back only when the user approves
+        it (or already did), starting at the engine they picked.
         """
 
-        from openai4s import webtools
+        from openai4s import search_settings, webtools
+        from openai4s.doubao_search import DoubaoSearchQuotaError
+        from openai4s.host.search import confirm_quota_fallback
 
-        return self._doubao_search_service.search_primary(
-            query,
-            num_results=num_results,
-            timeout=timeout,
-            fallback=webtools.web_search,
-        )
+        engines = search_settings.engine_chain(self.store)
+        try:
+            return self._doubao_search_service.search_primary(
+                query,
+                num_results=num_results,
+                timeout=timeout,
+                fallback=lambda q, **kw: webtools.web_search(q, engines=engines, **kw),
+            )
+        except DoubaoSearchQuotaError:
+            chosen = confirm_quota_fallback(
+                store=self.store,
+                frame_id=self.frame_id,
+                engines=engines,
+                query=str(query or ""),
+                delegated=self._child_execution_policy is not None,
+                action_context=self._current_action_context(),
+            )
+            if chosen is None:
+                raise
+            return webtools.web_search(
+                query,
+                num_results=num_results,
+                timeout=timeout,
+                engines=engines[engines.index(chosen) :],
+            )
 
     # dispatcher entrypoint ------------------------------------------------
     def __call__(self, method: str, args: list, *, _record: bool = True) -> Any:

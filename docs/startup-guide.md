@@ -1,6 +1,6 @@
 <a id="en"></a>
 
-# Startup guide — macOS
+# Startup guide — macOS 0.3.1
 
 **English** · [简体中文](#zh)
 
@@ -8,41 +8,53 @@ This walks a new macOS user to a first answer: install OpenAI4S, point it at a
 model, and (so the agent can read the live literature and databases) point it
 at web search.
 
-> **v0.3.0 ships a preview macOS image, not a notarized one.** It is Apple
-> Silicon only, ad-hoc signed and not notarized, so Gatekeeper blocks its first
-> launch (§2). It was built and attached outside the release workflow, which
-> uploads a `.dmg` only when it is Developer-ID-signed and notarized; the
-> credentials for that do not exist yet. On an Intel Mac, or if you would
-> rather not run an un-notarized app, install from PyPI (§1).
+> **Install [0.3.1 from PyPI](https://pypi.org/project/openai4s/0.3.1/) on
+> Apple Silicon and Intel.** The [0.3.1 release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1)
+> has no macOS DMG while Developer ID signing and notarization are deferred.
+> The older preview-image instructions below are historical; they install 0.3.0.
+
+For Linux and Windows downloads, see the [release download table](../README.md#-quickstart)
+and [Windows/WSL2 guide](windows-wsl.md#english). Containers use the
+[public GHCR image](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)
+as described in the [Docker guide](docker.md).
 
 ---
 
 ## 1. Install
 
-### From PyPI (Intel Macs, or your own Python)
+### From PyPI (Apple Silicon and Intel)
+
+Upgrading an existing installation? Stop the daemon and copy the whole data
+directory before installing 0.3.1. It migrates schema 32 to 35; follow the
+[upgrade guide](upgrading.md), including when upgrading from an older preview app.
 
 You need Python 3.10 or newer, for example from python.org or Homebrew. Install
 into a virtual environment of its own, then start the daemon:
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-pip install "openai4s[science]"
+python -m pip install --upgrade "openai4s[science]==0.3.1"
+openai4s --version
 openai4s serve
 ```
 
 The `science` extra adds numpy, pandas, matplotlib and scikit-learn to the
-environment the Python kernel runs in. Use `"openai4s[science,chemistry]"` if
+environment the Python kernel runs in. Use `"openai4s[science,chemistry]==0.3.1"` if
 you also want RDKit. `openai4s serve` starts the local daemon and opens the
 workbench in your browser with its access token. All data (SQLite database,
 artifacts, logs) lives under `~/.openai4s`. Next time, run
 `source ~/.venvs/openai4s/bin/activate && openai4s serve` again.
 
-### The v0.3.0 preview image (Apple Silicon)
+### Historical: the v0.3.0 preview image (Apple Silicon)
+
+This installs **0.3.0**, not 0.3.1. Do not open this older app against a data
+directory already upgraded by 0.3.1. Use the PyPI instructions above for the
+current release.
 
 1. Download `OpenAI4S-0.3.0-macos-arm64.dmg` from the
    [v0.3.0 release page](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0).
-   Use that pinned page rather than the newest release: a release the workflow
-   produces carries no macOS image. To check the download, fetch `SHA256SUMS`
+   This older preview remains on its own release page. To check the download,
+   fetch `SHA256SUMS`
    from the same page and run `shasum -a 256 --ignore-missing -c SHA256SUMS`.
 2. Double-click the `.dmg` to mount it.
 3. **Drag `OpenAI4S` onto the `Applications` folder** in the same window.
@@ -206,33 +218,40 @@ engines remain available as backups.
 
 <a id="zh"></a>
 
-# 上手指南 — macOS
+# 上手指南 — macOS 0.3.1
 
 [English](#en) · **简体中文**
 
 本指南带一位全新的 macOS 用户走到第一个结果：装好 OpenAI4S、配好模型，再配好联网搜索（让智能体能读实时文献与数据库）。
 
-> **v0.3.0 附带的是 macOS 预览镜像，不是经过公证的镜像。** 它仅支持 Apple Silicon，只做了 ad-hoc 签名、未经公证，所以第一次打开会被 Gatekeeper 拦下（第 2 节）。它是在发布流程之外构建并挂上去的：发布流程只在 `.dmg` 经过 Developer ID 签名并完成公证时才上传它，而这些凭据目前还不存在。Intel Mac，或不想运行未公证的应用时，请从 PyPI 安装（第 1 节）。
+> **Apple Silicon 与 Intel 请从 [PyPI 安装 0.3.1](https://pypi.org/project/openai4s/0.3.1/)。** [0.3.1 release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1) 暂不提供 macOS DMG，Developer ID 签名与公证暂缓。下方旧预览镜像的步骤仅作历史参考，安装的是 0.3.0。
+
+Linux 与 Windows 下载见 [release 下载表](../README_zh.md#-快速开始)和 [Windows/WSL2 指南](windows-wsl.md#中文)。容器请使用[公开 GHCR 镜像](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)，步骤见 [Docker 指南](docker.md#zh)。
 
 ---
 
 ## 1. 安装
 
-### 从 PyPI 安装（Intel Mac，或使用自己的 Python）
+### 从 PyPI 安装（Apple Silicon 与 Intel）
+
+升级已有安装时，请先停止守护进程并复制整个数据目录，再安装 0.3.1。它会把 schema 从 32 升到 35；请按[升级指南](upgrading_zh.md)操作，从旧预览应用升级时也一样。
 
 需要 Python 3.10 或更新版本，例如来自 python.org 或 Homebrew。请安装到一个单独的虚拟环境中，然后启动守护进程：
 
 ```bash
 python3 -m venv ~/.venvs/openai4s && source ~/.venvs/openai4s/bin/activate
-pip install "openai4s[science]"
+python -m pip install --upgrade "openai4s[science]==0.3.1"
+openai4s --version
 openai4s serve
 ```
 
-`science` extra 会把 numpy、pandas、matplotlib 和 scikit-learn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
+`science` extra 会把 numpy、pandas、matplotlib 和 scikit-learn 装进 Python 内核所用的环境；如果还需要 RDKit，请用 `"openai4s[science,chemistry]==0.3.1"`。`openai4s serve` 会启动本地守护进程，并用访问令牌在浏览器里打开工作台。所有数据（SQLite 数据库、Artifact、日志）都写在 `~/.openai4s`。下次使用时，再运行一次 `source ~/.venvs/openai4s/bin/activate && openai4s serve`。
 
-### v0.3.0 预览镜像（Apple Silicon）
+### 历史参考：v0.3.0 预览镜像（Apple Silicon）
 
-1. 从 [v0.3.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0)下载 `OpenAI4S-0.3.0-macos-arm64.dmg`。请使用这个固定页面，不要去最新 Release 里找：由发布流程产出的 release 不带 macOS 镜像。想校验下载，可从同一页面取 `SHA256SUMS`，然后运行 `shasum -a 256 --ignore-missing -c SHA256SUMS`。
+这里安装的是 **0.3.0**，不是 0.3.1。不要让这个旧应用打开已经由 0.3.1 升级过的数据目录。安装当前版本请使用上面的 PyPI 步骤。
+
+1. 从 [v0.3.0 release 页面](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.0)下载 `OpenAI4S-0.3.0-macos-arm64.dmg`。旧预览镜像保留在它自己的 release 页面。想校验下载，可从同一页面取 `SHA256SUMS`，然后运行 `shasum -a 256 --ignore-missing -c SHA256SUMS`。
 2. 双击 `.dmg` 挂载。
 3. 在弹出的窗口里，**把 `OpenAI4S` 拖到 `Applications`（应用程序）文件夹**。
 4. 推出磁盘镜像，从「应用程序」（或聚焦搜索 Spotlight）启动 **OpenAI4S**。

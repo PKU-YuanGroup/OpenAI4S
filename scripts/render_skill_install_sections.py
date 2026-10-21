@@ -42,8 +42,56 @@ INDEX_EXAMPLES = ("alphafold2", "boltz")
 #: One real member each collection page names, keyed by collection directory.
 COLLECTION_EXAMPLE_MEMBER = {"bioskills": "bio-differential-expression-deseq2-basics"}
 
-#: Recipes added after npm 0.2.0; do not advertise unavailable npm installs.
-NPM_020_UNAVAILABLE_SKILLS = frozenset({"single-cell-rna-analysis", "text-features"})
+#: Frozen curated names from the published npm 0.2.0 tarball, not the
+#: current checkout. Unknown/future recipes default to GitHub-only.
+#: Source: https://registry.npmjs.org/@pku-yuangroup/openai4s-skills/-/openai4s-skills-0.2.0.tgz
+#: SHA-256: c4c31b56e34e8d73c1fe73ee8a2c7246f7e9654c1e3ee0cec4138f449be94d47
+NPM_020_AVAILABLE_SKILLS = frozenset(
+    {
+        "admet_genetic",
+        "alphafold2",
+        "audit-dataset",
+        "bioprobench",
+        "boltz",
+        "borzoi",
+        "catalyst_sar_screening",
+        "chai1",
+        "diffdock",
+        "esmfold2",
+        "evaluate-model",
+        "evidence-walkthrough",
+        "evo2",
+        "example_stats",
+        "fair-esm2",
+        "figure-composer",
+        "figure-style",
+        "indication-dossier",
+        "ligandmpnn",
+        "literature-review",
+        "mineral_spectra_analysis",
+        "openfold3",
+        "paper-narrative",
+        "pdf-explore",
+        "plan-ml-experiment",
+        "protein-design-mcp",
+        "protein-mutation-enhancement",
+        "proteinmpnn",
+        "reaction-atom-mapping",
+        "reaction-condition-recommendation",
+        "reaction-forward-prediction",
+        "reaction-yield-estimation",
+        "remote-compute-nvidia",
+        "remote-compute-ssh",
+        "retrosynthesis_planning",
+        "rfdiffusion",
+        "scgpt",
+        "scvi-tools",
+        "single-step-retrosynthesis",
+        "solublempnn",
+        "using-model-endpoint",
+        "volcengine-datapro",
+    }
+)
 
 #: npm releases of `@pku-yuangroup/openai4s-skills` that are on the registry.
 #: Every `openai4s-skills@X.Y.Z` pin in the docs must name one of these, and
@@ -190,7 +238,7 @@ def render(
                 + (
                     " npm 0.2.0 does not include this recipe. Use the GitHub "
                     "installation command above."
-                    if name in NPM_020_UNAVAILABLE_SKILLS
+                    if name not in NPM_020_AVAILABLE_SKILLS
                     else " For a recipe included in the npm release, "
                     f"`npx @pku-yuangroup/openai4s-skills install {name} --target claude` "
                     "installs the published copy. The npm catalog can differ from this "
@@ -220,7 +268,7 @@ def render(
                 _targets_zh()
                 + (
                     "npm 0.2.0 不包含本配方，请使用上面的 GitHub 安装命令。"
-                    if name in NPM_020_UNAVAILABLE_SKILLS
+                    if name not in NPM_020_AVAILABLE_SKILLS
                     else "对于 npm 发布版中包含的配方，可用 "
                     f"`npx @pku-yuangroup/openai4s-skills install {name} --target claude` "
                     "安装发布版本。npm 目录可能与当前仓库不同。"

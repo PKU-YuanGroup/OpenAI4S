@@ -264,6 +264,8 @@ def test_cmd_init_json_stdout_is_a_secret_free_projection(
         non_interactive=True,
         api_key_stdin=True,
         clear_api_key=False,
+        search=None,
+        search_key_stdin=False,
         json=True,
     )
 

@@ -28,5 +28,7 @@ F-19 Customize domain logic. Tab state machine, timer lease (unmount clears ever
 | [`telemetry.ts`](telemetry.ts) | Consent drain loop; contract `telemetryRow(host)`. |
 | [`timers.ts`](timers.ts) | Per-mount timer lease. Dispose on unmount. |
 | [`timers.test.ts`](timers.test.ts) | Unmount leaves zero timers; Volcengine key poll; vendor helpers; window exports. |
+| [`search.ts`](search.ts) | Backup search-engine list: parse `/search/config`, the last-usable-engine rule, reordering, the save body, and the list's copy. |
+| [`search.test.ts`](search.test.ts) | Parsing drops unknown engines; the last usable engine cannot be switched off; moves stay in bounds. |
 | [`vendors.ts`](vendors.ts) | DataPro index-complete; Doubao dedicated-source check. |
 | [`volcengine.ts`](volcengine.ts) | Quota math; key-poll 2500/5000×24 bound to a lease. |

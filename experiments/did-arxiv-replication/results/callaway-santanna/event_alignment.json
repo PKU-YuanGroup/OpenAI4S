@@ -1,0 +1,16 @@
+[
+  {
+    "candidate_dates_exactly_matching_adoption": 6,
+    "interpretation": "Raw outcome can change for reasons other than treatment; date disagreement is not by itself a false positive.",
+    "numeric_candidates": 180,
+    "treated_units_with_full_windows_at_adoption": 40,
+    "window": 2
+  },
+  {
+    "candidate_dates_exactly_matching_adoption": 0,
+    "interpretation": "Raw outcome can change for reasons other than treatment; date disagreement is not by itself a false positive.",
+    "numeric_candidates": 0,
+    "treated_units_with_full_windows_at_adoption": 0,
+    "window": 3
+  }
+]

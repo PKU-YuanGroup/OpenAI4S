@@ -1384,6 +1384,7 @@ def test_the_signing_identity_reaches_the_build_that_can_use_it():
 
     build = (ROOT / "scripts" / "build_macos_dmg.sh").read_text("utf-8")
     assert '--sign "$SIGNING_IDENTITY"' in build
+    assert "scripts/sign_macos_bundle.py" in build
 
     # A signing *identity name* is not a signing *identity*: codesign looks it
     # up in a keychain a fresh runner does not have, so release mode could
@@ -2516,3 +2517,113 @@ def test_the_desktop_packages_are_built_and_verified_before_anything_publishes()
                 f"{job} must not run before {required!r}: a package that failed "
                 "to build or failed verification would only skip its own job"
             )
+
+
+def _macos_signing_fixture(tmp_path):
+    app = tmp_path / "OpenAI4S.app"
+    runtime = app / "Contents/Resources/runtime"
+    python = runtime / "bin/python3.13"
+    library = runtime / "lib/python3.13/site-packages/numpy/native.so"
+    for path in (python, library):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xcf\xfa\xed\xfe" + b"synthetic-macho")
+    (python.parent / "python3").symlink_to(python.name)
+    (runtime / "lib/not-code.py").write_text("print('not native code')\n")
+    return app, python, library
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("identity", ["Developer ID Application: Test (TEST)", "-"])
+def test_macos_signer_covers_resource_code_before_outer_seal(
+    tmp_path, monkeypatch, identity
+):
+    """An outer --deep verification alone does not prove Resources was signed."""
+    import plistlib
+
+    signer = _load_script("sign_macos_bundle")
+    app, python, library = _macos_signing_fixture(tmp_path)
+    calls = []
+    entitlements = {}
+
+    def codesign(*args):
+        calls.append(args)
+        if "--entitlements" in args:
+            entitlements[args[-1]] = plistlib.loads(
+                Path(args[args.index("--entitlements") + 1]).read_bytes()
+            )
+        return SimpleNamespace(
+            stderr="Authority=Developer ID Application: Test (TEST)\nTimestamp=test\n"
+        )
+
+    monkeypatch.setattr(signer, "_codesign", codesign)
+    assert signer.sign(app, identity) == 2
+    signing = [call for call in calls if "--sign" in call]
+    assert {call[-1] for call in signing[:-1]} == {str(python), str(library)}
+    assert signing[-1][-1] == str(app)
+    assert all("--deep" not in call for call in signing)
+    assert all("runtime" in call for call in signing)
+    stamp = "--timestamp=none" if identity == "-" else "--timestamp"
+    assert all(stamp in call for call in signing)
+    assert set(entitlements) == {str(python)}
+    assert entitlements[str(python)] == {
+        "com.apple.security.cs.allow-jit": True,
+        "com.apple.security.cs.allow-unsigned-executable-memory": True,
+        "com.apple.security.cs.disable-library-validation": True,
+    }
+    assert calls[-1] == ("--verify", "--deep", "--strict", str(app))
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "details",
+    [
+        "Signature=adhoc\n",
+        "Authority=Apple Development: Test\nTimestamp=test\n",
+        "Authority=Developer ID Application: Test (TEST)\n",
+    ],
+)
+def test_macos_distribution_signing_refuses_wrong_authority_or_no_timestamp(
+    tmp_path, monkeypatch, details
+):
+    signer = _load_script("sign_macos_bundle")
+    app, _, _ = _macos_signing_fixture(tmp_path)
+    calls = []
+
+    def codesign(*args):
+        calls.append(args)
+        return SimpleNamespace(stderr=details)
+
+    monkeypatch.setattr(signer, "_codesign", codesign)
+    with pytest.raises(ValueError, match="Developer ID or timestamp"):
+        signer.sign(app, "not-necessarily-a-distribution-identity")
+    assert not any(call[-1] == str(app) for call in calls)
+
+
+@pytest.mark.stubbed_backend
+def test_macos_signing_stops_before_sealing_when_nested_verification_fails(
+    tmp_path, monkeypatch
+):
+    signer = _load_script("sign_macos_bundle")
+    app, _, _ = _macos_signing_fixture(tmp_path)
+    calls = []
+
+    def codesign(*args):
+        calls.append(args)
+        if "--verify" in args:
+            raise subprocess.CalledProcessError(
+                1, ["codesign", *args], stderr="bad signature"
+            )
+        return SimpleNamespace(stderr="")
+
+    monkeypatch.setattr(signer, "_codesign", codesign)
+    with pytest.raises(subprocess.CalledProcessError):
+        signer.sign(app, "-")
+    assert not any(call[-1] == str(app) for call in calls)
+
+
+def test_macos_signing_rejects_external_symlinks(tmp_path):
+    signer = _load_script("sign_macos_bundle")
+    app, _, library = _macos_signing_fixture(tmp_path)
+    (library.parent / "external").symlink_to(tmp_path)
+    with pytest.raises(ValueError, match="escapes the application"):
+        signer.native_code(app)

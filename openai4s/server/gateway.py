@@ -20191,32 +20191,42 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
 
-            # ---- web-search API key (Tavily; endpoint is fixed) ----
+            # ---- web search: backup engine order, switches and keys ----
+            # `endpoint` / `api_key_configured` keep describing Tavily for
+            # older clients; `order` / `engines` describe the whole list.
             if sub == "/search/config":
-                import os as _os
+                from openai4s import search_settings
 
                 if method in ("PUT", "PATCH", "POST"):
                     b = self._body()
-                    if b.get("clear_api_key"):
-                        store.set_secret_setting("tavily_api_key", "", scope="search")
-                        _os.environ.pop("OPENAI4S_TAVILY_API_KEY", None)
-                    else:
-                        key = (b.get("api_key") or "").strip()
-                        if key:
-                            store.set_secret_setting(
-                                "tavily_api_key", key, scope="search"
+                    engine = str(b.get("engine") or "tavily")
+                    if engine not in search_settings.ENGINE_KEYS:
+                        raise GatewayError(
+                            400,
+                            "engine must be one that takes an API key "
+                            f"({', '.join(search_settings.ENGINE_KEYS)})",
+                            "invalid_search_engine",
+                        )
+                    try:
+                        if b.get("clear_api_key"):
+                            search_settings.set_key(store, engine, "")
+                        elif (b.get("api_key") or "").strip():
+                            search_settings.set_key(store, engine, b["api_key"])
+                        if b.get("primary") is not None:
+                            search_settings.choose_primary(store, str(b["primary"]))
+                        if "order" in b or "enabled" in b:
+                            search_settings.save(
+                                store, order=b.get("order"), enabled=b.get("enabled")
                             )
-                            _os.environ["OPENAI4S_TAVILY_API_KEY"] = key
-                configured = bool(
-                    (_os.environ.get("OPENAI4S_TAVILY_API_KEY") or "").strip()
-                    # A reference is truthy but is not a key; ask the broker
-                    # whether one is actually stored.
-                    or (store.get_secret_setting("tavily_api_key") or "").strip()
-                )
+                    except search_settings.SearchSettingsError as exc:
+                        raise GatewayError(
+                            400, str(exc), "invalid_search_engines"
+                        ) from None
                 self._json(
                     {
-                        "endpoint": "https://api.tavily.com/search",
-                        "api_key_configured": configured,
+                        "endpoint": search_settings.ENGINE_ENDPOINTS["tavily"],
+                        "api_key_configured": search_settings.has_key(store, "tavily"),
+                        **search_settings.project(store),
                     }
                 )
                 return
@@ -21369,9 +21379,9 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         traceback.print_exc()
 
     try:
-        _tav = get_store(cfg.db_path).get_secret_setting("tavily_api_key")
-        if _tav and not os.environ.get("OPENAI4S_TAVILY_API_KEY"):
-            os.environ["OPENAI4S_TAVILY_API_KEY"] = _tav
+        from openai4s import search_settings
+
+        search_settings.load_keys_into_env(get_store(cfg.db_path))
     except Exception:  # noqa: BLE001
         pass
     try:

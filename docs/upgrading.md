@@ -3,11 +3,11 @@
 [中文说明](upgrading_zh.md)
 
 An install that is already on 0.3.0 reads the next section before the first
-start of the next release. A database still on 0.2.x is migrated by the next
-release straight to schema 35 in one open: read the later section for the
+start of 0.3.1. A database still on 0.2.x is migrated by 0.3.1
+straight to schema 35 in one open: read the later section for the
 steps up to schema 32 and the next section for 33 through 35.
 
-## Upgrading to the next release (schema 32 → 35)
+## Upgrading to 0.3.1 (schema 32 → 35)
 
 Schema 33 rewrites judge audit rows that are already stored, and a successful
 migration then deletes its own pre-upgrade copy. That copy is not a way back
@@ -15,11 +15,11 @@ to the previous release. Copy the data directory yourself before you upgrade.
 
 ### Stop the daemon and copy the data directory
 
-Stop the daemon before you install or start the next release. Run
+Stop the daemon before you install or start 0.3.1. Run
 `openai4s stop`, or quit the app, and check with `openai4s status` that no
 daemon is still running. A process still running a build that has
 `host.judge` but not this release's audit projection, such as a source
-checkout of `main` after 0.3.0 (it still reports 0.3.0), can store a `judge`
+checkout made during 0.3.1 development that still reported 0.3.0, can store a `judge`
 row with the original arguments after this upgrade has committed, and step 33
 does not run again. The published 0.3.0 package has no `host.judge` and writes
 no `judge` rows. The committed `user_version` is 35.
@@ -29,7 +29,7 @@ artifacts, logs, and the access token, as well as the database. Include any
 `openai4s.db-wal` or `openai4s.db-journal` file beside `openai4s.db`:
 
 ```bash
-cp -a ~/.openai4s ~/.openai4s-before-next
+cp -a ~/.openai4s ~/.openai4s-before-0.3.1
 ```
 
 The data directory is `~/.openai4s` unless `OPENAI4S_DATA_DIR` names another
@@ -39,11 +39,43 @@ The container image keeps its data at `/data` (`OPENAI4S_DATA_DIR=/data`).
 That is the `openai4s-data` named volume in `compose.yaml`, or the
 `openai4s-data` PersistentVolumeClaim in `deploy/kubernetes.yaml`. Stop the
 container, or scale the Deployment to zero, and back up the volume or the PVC
-before you start the next image.
+before you start the 0.3.1 image.
+
+### Install 0.3.1 after the backup
+
+For an existing PyPI installation, activate its virtual environment and install
+the [0.3.1 package](https://pypi.org/project/openai4s/0.3.1/):
+
+```bash
+source ~/.venvs/openai4s/bin/activate   # use your existing environment's path
+python -m pip install --upgrade "openai4s[science]==0.3.1"
+openai4s --version
+```
+
+For a new environment or a move from an older macOS app, follow the
+[startup guide](startup-guide.md). The core-only package is `openai4s==0.3.1`;
+use `openai4s[science,chemistry]==0.3.1` if you also need RDKit.
+
+Linux and Windows/WSL2 packages, `SHA256SUMS`, and the evidence archive are on
+the [GitHub release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1).
+Follow the [Linux instructions](../README.md#linux-app-no-toolchain-required)
+or [Windows/WSL2 guide](windows-wsl.md#english) after stopping the old daemon.
+The release ZIP is complete; no split-file restoration is needed.
+macOS uses PyPI because 0.3.1 does not include a DMG.
+
+Containers use the public
+[`ghcr.io/pku-yuangroup/openai4s:0.3.1`](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s)
+image (`linux/amd64`). Recreate the stopped container with the same backed-up
+data volume; the [Docker guide](docker.md) covers the settings. Keep the tag
+pinned to `0.3.1` instead of `latest` when you need a fixed version.
+
+After installation, `openai4s --version` should report `0.3.1`. Start the new
+daemon only after completing the backup; the first database open performs
+the migration below.
 
 ### What schemas 33 through 35 change
 
-The first command of the next release that opens the database migrates
+The first command of 0.3.1 that opens the database migrates
 `<data_dir>/openai4s.db` from schema 32 to schema **35**. Starting the daemon
 or running `openai4s run` both do this. `openai4s doctor` and
 `openai4s diagnostics` still only read the schema version. The upgrade
@@ -105,15 +137,15 @@ Downgrade to the previous release is not supported.
 A 0.3.0 daemon pointed at the upgraded database stops before it writes and
 reports `future_schema` with both version numbers. That stop does not restore
 the previous rows. 0.2.0 does not check the schema version, so pointed at
-this database it opens it and writes. Stop the next release first. The way
+this database it opens it and writes. Stop 0.3.1 first. The way
 back to the previous data is the directory copy you made before upgrading:
 
 ```bash
-mv ~/.openai4s ~/.openai4s-next
-cp -a ~/.openai4s-before-next ~/.openai4s
+mv ~/.openai4s ~/.openai4s-0.3.1
+cp -a ~/.openai4s-before-0.3.1 ~/.openai4s
 ```
 
-Anything created under the next release is absent from that copy. A
+Anything created under 0.3.1 is absent from that copy. A
 `.v32.bak` kept after a failed migration is the pre-migration file for that
 failed attempt. It is the wrong file to keep as your rollback copy: a
 successful migration deletes it, and until then it holds the unredacted judge

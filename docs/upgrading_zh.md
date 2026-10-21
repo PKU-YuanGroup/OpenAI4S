@@ -2,29 +2,47 @@
 
 [English](upgrading.md)
 
-已经装了 0.3.0、要升到下一版本的，先读下一节。数据库仍在 0.2.x 的，下一版本会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读后面那一节，33 到 35 读下一节。
+已经装了 0.3.0、要升到 0.3.1 的，先读下一节。数据库仍在 0.2.x 的，0.3.1 会在一次打开里把它一直迁到 schema 35：到 schema 32 为止的步骤读后面那一节，33 到 35 读下一节。
 
-## 升级到下一版本（schema 32 → 35）
+## 升级到 0.3.1（schema 32 → 35）
 
 schema 33 会改写已经落盘的 judge 审计行，迁移成功之后还会删掉它自己的升级前副本。那份副本不是退回上一版本的办法。升级前请自己复制整个数据目录。
 
 ### 先停守护进程，并自己复制数据目录
 
-安装或首次启动下一版本之前，先停掉守护进程。运行 `openai4s stop`，或退出应用，再用 `openai4s status` 确认没有守护进程仍在运行。如果还有进程在跑带 `host.judge`、但没有本版审计投影的构建（例如 0.3.0 之后 `main` 的源码构建，版本号仍显示 0.3.0），它可能在这次升级提交之后才写入一条带着原始参数的 `judge` 行，而第 33 步不会再跑。已发布的 0.3.0 安装包没有 `host.judge`，不写 `judge` 行。提交后的 `user_version` 是 35。
+安装或首次启动 0.3.1 之前，先停掉守护进程。运行 `openai4s stop`，或退出应用，再用 `openai4s status` 确认没有守护进程仍在运行。如果还有进程在跑带 `host.judge`、但没有本版审计投影的构建（例如 0.3.1 开发期间版本号仍显示 0.3.0 的早期源码构建），它可能在这次升级提交之后才写入一条带着原始参数的 `judge` 行，而第 33 步不会再跑。已发布的 0.3.0 安装包没有 `host.judge`，不写 `judge` 行。提交后的 `user_version` 是 35。
 
 然后在没有任何进程运行时复制整个数据目录。里面有 Artifact、日志和访问令牌，不只有数据库。请把 `openai4s.db` 旁边的 `openai4s.db-wal` 或 `openai4s.db-journal`（如果存在）一起复制：
 
 ```bash
-cp -a ~/.openai4s ~/.openai4s-before-next
+cp -a ~/.openai4s ~/.openai4s-before-0.3.1
 ```
 
 数据目录默认是 `~/.openai4s`，除非 `OPENAI4S_DATA_DIR` 指定了别的位置。
 
-容器镜像把数据放在 `/data`（`OPENAI4S_DATA_DIR=/data`），也就是 `compose.yaml` 里名为 `openai4s-data` 的命名卷，或 `deploy/kubernetes.yaml` 里名为 `openai4s-data` 的 PersistentVolumeClaim。请先停止容器（或把 Deployment 缩容到 0），备份这个卷或 PVC，再启动下一版本的镜像。
+容器镜像把数据放在 `/data`（`OPENAI4S_DATA_DIR=/data`），也就是 `compose.yaml` 里名为 `openai4s-data` 的命名卷，或 `deploy/kubernetes.yaml` 里名为 `openai4s-data` 的 PersistentVolumeClaim。请先停止容器（或把 Deployment 缩容到 0），备份这个卷或 PVC，再启动 0.3.1 的镜像。
+
+### 备份后安装 0.3.1
+
+已有 PyPI 安装时，先激活其虚拟环境，再安装 [0.3.1 包](https://pypi.org/project/openai4s/0.3.1/)：
+
+```bash
+source ~/.venvs/openai4s/bin/activate   # 请使用已有环境的实际路径
+python -m pip install --upgrade "openai4s[science]==0.3.1"
+openai4s --version
+```
+
+新建环境或从旧 macOS 应用迁移时，请按[上手指南](startup-guide.md#zh)操作。仅安装核心时使用 `openai4s==0.3.1`；还需要 RDKit 时使用 `openai4s[science,chemistry]==0.3.1`。
+
+Linux 与 Windows/WSL2 安装包、`SHA256SUMS` 和验证资料归档均在 [GitHub release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/tag/v0.3.1)。停止旧守护进程后，按 [Linux 安装说明](../README_zh.md#linux-应用无需任何工具链)或 [Windows/WSL2 指南](windows-wsl.md#中文)操作。发布版 ZIP 已完整，无需合并分卷。macOS 请使用 PyPI，因为 0.3.1 不含 DMG。
+
+容器使用公开的 [`ghcr.io/pku-yuangroup/openai4s:0.3.1`](https://github.com/orgs/PKU-YuanGroup/packages/container/package/openai4s) 镜像（`linux/amd64`）。使用已备份的同一数据卷重新创建已停止的容器；配置见 [Docker 指南](docker.md#zh)。需要固定版本时，请使用 `0.3.1` 标签，而不是 `latest`。
+
+安装后，`openai4s --version` 应显示 `0.3.1`。完成备份后才启动新守护进程；第一次打开数据库时会执行下述迁移。
 
 ### schema 33 到 35 改了什么
 
-下一版本里第一个打开数据库的命令会把 `<data_dir>/openai4s.db` 从 schema 32 迁到 schema **35**。启动守护进程和运行 `openai4s run` 都会触发。`openai4s doctor` 和 `openai4s diagnostics` 仍然只读取 schema 版本。这次升级在一个事务里提交新 schema。失败时数据库回滚到升级前的 schema。
+0.3.1 里第一个打开数据库的命令会把 `<data_dir>/openai4s.db` 从 schema 32 迁到 schema **35**。启动守护进程和运行 `openai4s run` 都会触发。`openai4s doctor` 和 `openai4s diagnostics` 仍然只读取 schema 版本。这次升级在一个事务里提交新 schema。失败时数据库回滚到升级前的 schema。
 
 数据库旁边的副本，文件名是正在离开的那个 schema。schema 32 的库会被复制为 `openai4s.db.v32.bak`。迁移成功后会删除 `openai4s.db.v32.bak`。仍低于 schema 32 的库使用 0.2.x 那一节里的文件名（离开 schema 27 时仍是 `openai4s.db.v27.bak`），并在同一次打开里一直迁到新 schema。失败时数据库留在原来的 schema，副本保留，命令以一行 `error:` 停止，并给出副本位置。此时 `openai4s serve` 和 `openai4s run` 的退出码是 2。重新跑升级是安全的。
 
@@ -52,14 +70,14 @@ sqlite3 ~/.openai4s/openai4s.db 'VACUUM'
 
 不支持降级到上一版本。
 
-把 0.3.0 的守护进程指到已升级的数据库上时，它会在写入之前停下，并报告 `future_schema` 和两个版本号。这次停下不会恢复以前的行。0.2.0 不检查 schema 版本，所以指到这个数据库时它会打开并写入。先停掉下一版本。要回到升级前的数据，只能用你自己在升级前复制的那份数据目录：
+把 0.3.0 的守护进程指到已升级的数据库上时，它会在写入之前停下，并报告 `future_schema` 和两个版本号。这次停下不会恢复以前的行。0.2.0 不检查 schema 版本，所以指到这个数据库时它会打开并写入。先停掉 0.3.1。要回到升级前的数据，只能用你自己在升级前复制的那份数据目录：
 
 ```bash
-mv ~/.openai4s ~/.openai4s-next
-cp -a ~/.openai4s-before-next ~/.openai4s
+mv ~/.openai4s ~/.openai4s-0.3.1
+cp -a ~/.openai4s-before-0.3.1 ~/.openai4s
 ```
 
-在下一版本里创建的内容都不在那份副本里。迁移失败时留下来的 `.v32.bak` 只是那次失败尝试之前的文件。不要把它当作回滚副本：迁移成功后它会被删除，在那之前它装着未脱敏的 judge 原文。
+在 0.3.1 里创建的内容都不在那份副本里。迁移失败时留下来的 `.v32.bak` 只是那次失败尝试之前的文件。不要把它当作回滚副本：迁移成功后它会被删除，在那之前它装着未脱敏的 judge 原文。
 
 ### 本地项目源文件夹
 

@@ -77,7 +77,7 @@ def test_trusted_publication_spells_out_the_draft_first_dispatch():
     for needed in (
         "git tag -a vX.Y.Z",
         "gh release create vX.Y.Z --draft --verify-tag",
-        "gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z -f publish=true",
+        "gh workflow run release.yml --ref main -f tag=vX.Y.Z -f publish=true",
         "Never publish the GitHub Release by hand.",
         "`pypi_only` exists only to recover",
     ):
@@ -124,8 +124,7 @@ def test_concrete_version_examples_match_the_tree_or_are_placeholders():
 UPGRADING = ROOT / "docs" / "upgrading.md"
 UPGRADING_ZH = ROOT / "docs" / "upgrading_zh.md"
 #: The 0.2.x guide is now the second section. Its checks read only that
-#: section, so a phrase the next-release section also uses cannot keep them
-#: green.
+#: section, so a phrase the 0.3.1 section also uses cannot keep them green.
 FROM_020_EN = "## Upgrading from 0.2.x to 0.3.0"
 FROM_020_ZH = "## 从 0.2.x 升级到 0.3.0"
 MIGRATIONS = ROOT / "openai4s" / "storage" / "migrations.py"
@@ -233,13 +232,16 @@ def test_the_upgrade_guide_says_what_old_records_and_a_failed_upgrade_look_like(
     assert "包列表未知" in chinese
 
 
-# -- upgrading to the next release (schema 32 → 35) ---------------------------
+# -- upgrading to 0.3.1 (schema 32 → 35) --------------------------------------
 
-NEXT_RELEASE_EN = "## Upgrading to the next release (schema 32 → 35)"
-NEXT_RELEASE_ZH = "## 升级到下一版本（schema 32 → 35）"
+#: Written as "the next release" until v0.3.1 shipped, then renamed for it.
+#: Like the 0.2.x heading, it names a release that exists, so it stays put
+#: when a newer section is added above it.
+TO_031_EN = "## Upgrading to 0.3.1 (schema 32 → 35)"
+TO_031_ZH = "## 升级到 0.3.1（schema 32 → 35）"
 
 
-def test_the_next_release_upgrade_section_names_the_migration_the_backup_and_no_downgrade():
+def test_the_031_upgrade_section_names_the_migration_the_backup_and_no_downgrade():
     """The section a 0.3.0 operator reads names the schema this tree actually
     opens, says the migration's own schema-32 copy is removed after success,
     says downgrade is unsupported, points single-user sign-in at
@@ -249,11 +251,9 @@ def test_the_next_release_upgrade_section_names_the_migration_the_backup_and_no_
     current = int(
         re.search(r"^SCHEMA_VERSION = (\d+)$", MIGRATIONS.read_text("utf-8"), re.M)[1]
     )
-    assert (
-        current >= 35
-    ), "the next-release section names a schema this tree does not reach"
-    english = " ".join(_section(UPGRADING, NEXT_RELEASE_EN).split())
-    chinese = " ".join(_section(UPGRADING_ZH, NEXT_RELEASE_ZH).split())
+    assert current >= 35, "the 0.3.1 section names a schema this tree does not reach"
+    english = " ".join(_section(UPGRADING, TO_031_EN).split())
+    chinese = " ".join(_section(UPGRADING_ZH, TO_031_ZH).split())
     for text in (english, chinese):
         assert f"schema **{current}**" in text
     deletes = _migration_deletes_its_backup_on_success()
@@ -280,7 +280,7 @@ def _string_literals(path: Path) -> set[str]:
     }
 
 
-def test_the_next_release_section_quotes_the_strings_the_code_returns():
+def test_the_031_section_quotes_the_strings_the_code_returns():
     """A client matches these strings, so both halves quote them exactly as
     the code returns them: the three receipt-only `exec_interrupt` reasons,
     the Cell a disagreeing claim is recorded as, and the state-only judge
@@ -299,8 +299,8 @@ def test_the_next_release_section_quotes_the_strings_the_code_returns():
     assert "<redacted judge state>" in _string_literals(
         ROOT / "openai4s" / "storage" / "metadata.py"
     )
-    english = " ".join(_section(UPGRADING, NEXT_RELEASE_EN).split())
-    chinese = " ".join(_section(UPGRADING_ZH, NEXT_RELEASE_ZH).split())
+    english = " ".join(_section(UPGRADING, TO_031_EN).split())
+    chinese = " ".join(_section(UPGRADING_ZH, TO_031_ZH).split())
     for text in (english, chinese):
         for reason in reasons:
             assert f"`{reason}`" in text, reason
@@ -347,23 +347,69 @@ def test_no_install_doc_sends_a_mac_user_to_the_latest_release_for_a_dmg():
     assert not offenders, f"DMG download pointed at the latest release: {offenders}"
 
 
+#: The release the install docs present as current. v0.3.1 was published by
+#: `release.yml` with nothing attached by hand, so unlike v0.3.0 it has no
+#: macOS image. A fact about a release that exists, so it is a constant
+#: rather than the tree's version.
+CURRENT_RELEASE = "0.3.1"
+
+#: Per install doc, the words each of its language halves uses to say that
+#: release has no macOS image.
+_NO_DMG = {
+    "README.md": ("has no macOS DMG",),
+    "README_zh.md": ("暂不提供 macOS DMG",),
+    "docs/startup-guide.md": ("has no macOS DMG", "暂不提供 macOS DMG"),
+}
+
+
+def test_install_docs_send_a_mac_user_to_pypi_for_the_release_without_a_dmg():
+    """With no image on the current release, every install doc has to say so
+    in each language it carries and give the PyPI install pinned to that
+    release, or a Mac user goes looking for a download that is not there."""
+    if not _macos_asset_defaults_to_omit():
+        pytest.skip("release.yml publishes a DMG by default again")
+    assert set(_NO_DMG) == {p.relative_to(ROOT).as_posix() for p in USER_INSTALL_DOCS}
+    for name, phrases in _NO_DMG.items():
+        text = _normalised(ROOT / name)
+        for phrase in phrases:
+            assert phrase in text, f"{name} does not say {phrase!r}"
+        assert f"https://pypi.org/project/openai4s/{CURRENT_RELEASE}/" in text, name
+        assert f"openai4s[science]=={CURRENT_RELEASE}" in text, name
+
+
 def test_install_docs_pin_the_v030_preview_image_to_its_release_page():
     """The other half of the rule above: a doc that names the v0.3.0 image has
-    to say where it is, and that is the pinned release page."""
+    to say where it is, and that is the pinned release page. Since 0.3.1 the
+    READMEs no longer name it and send a Mac user to the startup guide's
+    historical notes, so that guide must still carry it, and must say it
+    installs 0.3.0 rather than the current release."""
+    guide = ROOT / "docs" / "startup-guide.md"
     for path in USER_INSTALL_DOCS:
         text = path.read_text(encoding="utf-8")
+        if path != guide and "macos-arm64.dmg" not in text:
+            continue
         assert "OpenAI4S-0.3.0-macos-arm64.dmg" in text, path.name
         assert "/releases/tag/v0.3.0" in text, path.name
         assert "ad-hoc" in text, path.name
+    text = _normalised(guide)
+    assert f"This installs **0.3.0**, not {CURRENT_RELEASE}." in text
+    assert f"这里安装的是 **0.3.0**，不是 {CURRENT_RELEASE}。" in text
 
 
 def test_platforms_does_not_claim_a_notarized_dmg_ships():
+    """Until 0.3.1 the macOS gate column said no release had met the
+    notarization gate and that v0.3.0's image was an ad-hoc-signed preview.
+    That row now states the current release's fact, and the other two live in
+    the tier rationale, so each is read where it now is."""
     if not _macos_asset_defaults_to_omit():
         pytest.skip("release.yml publishes a DMG by default again")
     text = _normalised(ROOT / "docs" / "platforms.md")
     assert "macOS ships as a signed, notarized" not in text
-    assert "No release has met this gate" in text
-    assert "v0.3.0's image is an ad-hoc-signed preview" in text
+    assert f"{CURRENT_RELEASE} uses PyPI; no DMG is included." in text
+    assert (
+        f"No release has met that gate yet, so {CURRENT_RELEASE} omits the DMG." in text
+    )
+    assert "v0.2.0 and v0.3.0 each carry an ad-hoc-signed preview image" in text
     assert "v0.3.0 publishes no DMG" not in text
 
 
