@@ -71,6 +71,7 @@ class ControlToolContext:
         invoke_control: Callable[..., Any] | None = None,
         dispatch_host: Callable[[str, list[Any]], Any] | None = None,
         search_web: Callable[..., dict[str, Any]] | None = None,
+        fetch_web: Callable[..., dict[str, Any]] | None = None,
         get_download_cancelled: Callable[[], Callable[[], bool] | None] | None = None,
         get_project_files: Callable[[], WorkspaceToolContext] | None = None,
     ) -> None:
@@ -83,6 +84,7 @@ class ControlToolContext:
         self._invoke_control = invoke_control
         self._dispatch_host = dispatch_host
         self._search_web = search_web
+        self._fetch_web = fetch_web
         self._get_download_cancelled = get_download_cancelled
         self._get_project_files = get_project_files
 
@@ -200,6 +202,12 @@ class ControlToolContext:
         from openai4s.host.stage10_science import write_search_artifact
 
         return write_search_artifact(self.workspace(), result)
+
+    def fetch_web(self, url: str, **options: Any) -> dict[str, Any]:
+        """Host-bound fetch selection inside the web_fetch permission envelope."""
+        from openai4s import webtools
+
+        return (self._fetch_web or webtools.web_fetch)(url, **options)
 
     def stage10_enabled(self) -> bool:
         """Expose only the feature decision, never the full daemon config."""

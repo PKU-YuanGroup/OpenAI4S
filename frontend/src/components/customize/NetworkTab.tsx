@@ -12,6 +12,7 @@ import { useOptimisticToggle, useTabRead } from "./hooks";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, Pill, Toggle } from "./ui";
 import { DoubaoSearchCard } from "./vendors/doubao";
+import { OllamaWebCard } from "./vendors/ollama";
 
 export function NetworkTab() {
   const alive = useAlive();
@@ -21,6 +22,10 @@ export function NetworkTab() {
     groups: Array<Record<string, unknown>>;
   }>({ enabled: null, groups: [] });
   const [doubao, setDoubao] = useState<{
+    config: Record<string, unknown> | null;
+    error: unknown;
+  }>({ config: null, error: null });
+  const [ollama, setOllama] = useState<{
     config: Record<string, unknown> | null;
     error: unknown;
   }>({ config: null, error: null });
@@ -48,9 +53,12 @@ export function NetworkTab() {
   useTabRead(
     "network",
     async (current) => {
-      const [d, db] = await Promise.all([
+      const [d, db, ol] = await Promise.all([
         api("/preferences/builtin-allowlist"),
         api("/doubao-search/config")
+          .then((config) => ({ config, error: null as unknown }))
+          .catch((error) => ({ config: {} as Record<string, unknown>, error })),
+        api("/ollama-web/config")
           .then((config) => ({ config, error: null as unknown }))
           .catch((error) => ({ config: {} as Record<string, unknown>, error })),
       ]);
@@ -60,6 +68,7 @@ export function NetworkTab() {
         groups: asList(d.groups) as Array<Record<string, unknown>>,
       });
       setDoubao(db);
+      setOllama(ol);
       markCustomizeLoaded();
       try {
         const sc = await api("/search/config");
@@ -76,6 +85,7 @@ export function NetworkTab() {
   return (
     <div>
       <Hdr title={t("cust.network.title")} sub={t("cust.network.desc")} />
+      <OllamaWebCard config={ollama.config} configError={ollama.error} />
       <DoubaoSearchCard config={doubao.config} configError={doubao.error} />
       <div class="cust-row">
         <div class="info">

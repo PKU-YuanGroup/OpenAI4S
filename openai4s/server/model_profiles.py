@@ -57,6 +57,7 @@ PROFILE_PROTOCOLS = (
     "ark",
     "gemini",
     "openai_responses",
+    "ollama",
 )
 
 #: Registry providers deliberately not offered as a profile choice, each with a
@@ -769,7 +770,9 @@ class ModelProfileService:
                     ],
                     max_tokens=32,
                     tools=[CAPABILITY_PROBE_TOOL],
-                    tool_choice=CAPABILITY_PROBE_TOOL["name"],
+                    tool_choice=(
+                        None if provider == "ollama" else CAPABILITY_PROBE_TOOL["name"]
+                    ),
                     parallel_tool_calls=False,
                 )
             reachable = True

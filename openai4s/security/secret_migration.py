@@ -78,6 +78,7 @@ SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
     ("llm_api_key", "llm"),
     ("tavily_api_key", "search"),
     ("agent_plan_key", "agent_plan"),
+    ("ollama_web_api_key", "ollama_web"),
 )
 
 

@@ -389,6 +389,7 @@ export function LocalEndpointRow({
 }: {
   endpoint: {
     label: string;
+    provider: "chatgpt" | "ollama";
     base_url: string;
     models: string[];
     default_model: string;
@@ -437,7 +438,7 @@ export function LocalEndpointRow({
               method: "POST",
               body: JSON.stringify({
                 name: endpoint.label + " · " + next,
-                provider: "chatgpt",
+                provider: endpoint.provider,
                 base_url: endpoint.base_url,
                 model: next,
               }),

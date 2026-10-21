@@ -44,7 +44,7 @@ export function loopbackModelBase(value: unknown): string {
 export type LocalEndpoint = {
   kind: string;
   label: string;
-  provider: "chatgpt";
+  provider: "chatgpt" | "ollama";
   base_url: string;
   models: string[];
   default_model: string;
@@ -66,12 +66,13 @@ export function sanitizeLocalModelDiscovery(payload: unknown): LocalDiscovery {
     if (!raw || typeof raw !== "object") return;
     const row = raw as Record<string, unknown>;
     const kind = publicText(row.kind, 32);
+    const provider = kind === "ollama" ? "ollama" : "chatgpt";
     const baseUrl = loopbackModelBase(row.base_url);
     if (
       !LOCAL_MODEL_KINDS.has(kind) ||
       !baseUrl ||
       row.local !== true ||
-      row.provider !== "chatgpt"
+      (row.provider !== provider && row.provider !== "chatgpt")
     ) {
       return;
     }
@@ -84,7 +85,7 @@ export function sanitizeLocalModelDiscovery(payload: unknown): LocalDiscovery {
     endpoints.push({
       kind,
       label: publicText(row.label, 80) || kind,
-      provider: "chatgpt",
+      provider,
       base_url: baseUrl,
       models,
       default_model: models.includes(String(row.default_model || ""))
@@ -119,7 +120,9 @@ export function modelProtocolOptions(served: unknown): ProtocolOption[] {
   const list = ids.length ? ids : ["chatgpt", "claude", "ark"];
   return list.map((id) => ({
     value: id,
-    label: tOptional(PROTOCOL_LABEL_KEYS[id] || "") || id,
+    label: id === "ollama"
+      ? modelT("model.ollama")
+      : tOptional(PROTOCOL_LABEL_KEYS[id] || "") || id,
   }));
 }
 
@@ -411,6 +414,7 @@ export function composerSelection(): ComposerSelection {
 
 const MODEL_COPY: CopyTable = {
   en: {
+    "model.ollama": "Ollama (cloud or local)",
     "model.session.unavailable": "Model no longer available",
     "model.session.earlier": "{0} (earlier configuration)",
     "model.session.switched": "This session now uses {0}",
@@ -421,6 +425,7 @@ const MODEL_COPY: CopyTable = {
     "model.default.adminOnly": "Only an admin can change the default model",
   },
   zh: {
+    "model.ollama": "Ollama（云端或本地）",
     "model.session.unavailable": "原模型已不可用",
     "model.session.earlier": "{0}（旧配置）",
     "model.session.switched": "该会话已切换到 {0}",

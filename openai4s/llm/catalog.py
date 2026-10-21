@@ -68,6 +68,7 @@ _BUILTIN_PRESETS = (
         "claude", "", "Anthropic Claude (official)", "Anthropic Claude (official)"
     ),
     ModelPreset("gemini", "", "Google Gemini (official)", "Google Gemini (official)"),
+    ModelPreset("ollama", "", "Ollama Cloud", "Ollama Cloud · Gemma 4"),
 )
 
 _LOCK = threading.RLock()

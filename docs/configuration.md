@@ -13,12 +13,91 @@ One `OPENAI4S_LLM_PROVIDER` selects a wire adapter; each ships a default `base_u
 | `openai_responses` | responses | `gpt-5` | — |
 | `claude` | anthropic | `claude-sonnet-4-5` | ✅ |
 | `gemini` | gemini | `gemini-2.5-flash` | ✅ |
+| `ollama` | openai | `gemma4:31b` (cloud) | ✅ |
 
 `ark` is Volcengine's plan/v3 gateway — one endpoint + key serving `doubao-seed-2.0-{pro,code,lite,mini}`, `glm-5.2`, `kimi-k2.7-code`, `kimi-k2.6`, `deepseek-v4-{pro,flash}`, `minimax-{m3,m2.7}` — all pre-registered as switchable model profiles. Without a key the daemon still starts; the UI shows a *"configure your API key"* banner until you set one.
 
 Each of api_key / base_url / model resolves **per-provider var → generic var → provider default** (e.g. `OPENAI4S_CLAUDE_API_KEY` → `OPENAI4S_LLM_API_KEY` → default). The `openai_responses` provider uses the stateless Responses API wire and preserves function-call/reasoning output items across turns; its current adapter is text/tool-only.
 
 The `openai` and `anthropic` wires stream token by token whenever the caller supplies a delta callback, and allow one blocking compatibility request only after HTTP 400/422 explicitly reports `streaming_not_supported`, or `unsupported_parameter` / `unknown_parameter` with structured `param: "stream"`. Authentication failures, empty streams, timeouts and uncertain read failures do not trigger compatibility requests. All transports share one send ceiling (`OPENAI4S_LLM_MAX_RETRIES` + 1, never below two, three by default) and one backoff budget per logical call; the compatibility POST itself is attempted only once, and because it is a fallback rather than a retry, `OPENAI4S_LLM_MAX_RETRIES=0` still leaves room for it. Cancellation before a send prevents it, and received text, reasoning, tool fragments or usage veto transparent replay. `responses` is always SSE; `gemini` is always blocking. `OPENAI4S_LLM_STREAM=0` (also `false`/`no`/`off`) forces the blocking path on the two that choose — worth reaching for behind a proxy that mishandles SSE, at the cost of the reply arriving as one blob per turn.
+
+### Ollama models and web tools / Ollama 模型与网页工具
+
+In **Customize → Models**, choose **Ollama (cloud or local)**. For cloud
+inference, leave Base URL and model empty to use `https://ollama.com/v1` and
+`gemma4:31b`, and enter your Ollama API key. Environment configuration uses
+`OPENAI4S_LLM_PROVIDER=ollama` and `OLLAMA_API_KEY` (or
+`OPENAI4S_OLLAMA_API_KEY`). The cloud model list is published at
+`https://ollama.com/api/tags`; direct API names differ from CLI names such as
+`gemma4:cloud`. No local Ollama installation or model download is needed for
+direct cloud inference.
+
+For a local model, start Ollama, download the model yourself, and set Base URL
+to `http://127.0.0.1:11434/v1` and the model to its installed name, for example
+`gemma4:e2b`. The existing local-model scan also discovers Ollama. Local model
+requests carry no cloud credential; unknown local tool capabilities remain
+conservative until a successful capability probe.
+
+To use Ollama web tools with **any main model**, open **Customize → Network →
+Ollama web tools**, enter the API key once and choose **Save key**. This
+independent credential enables `host.web_search` and `host.web_fetch`,
+including their native tool equivalents, without switching the main model or
+setting environment variables. It is saved through SecretBroker, survives
+restarts, and is read afresh by existing sessions. The UI can replace or remove
+it and never returns the saved value.
+
+Credential priority is the independent saved key, then the active Ollama cloud
+profile's key, then `OPENAI4S_OLLAMA_API_KEY` / `OLLAMA_API_KEY`. Removing the
+saved key restores those existing fallbacks; the UI reports their source.
+Credentials from local model servers and custom proxies are never reused for
+Ollama's cloud web APIs. In team mode, only admins may change this instance-wide
+credential. `GET`/`PUT /api/v1/ollama-web/config` return credential state only.
+Configured Ollama search takes precedence over Doubao and built-in engines,
+caps each request at 10 results, and reports authentication/quota/provider
+failures without silently switching sources.
+
+Ollama fetch handles GET requests for markdown/text. Requests for raw HTML,
+JSON, HEAD, or a custom User-Agent retain the direct fetch path. The requested
+target and Ollama API origin must pass network, egress and SSRF checks.
+Ollama performs the remote page retrieval; OpenAI4S cannot attest its internal
+redirect hops or original-page bytes. Results carry `source: "ollama"`, and
+`raw_sha256` / `raw_bytes` describe the Ollama API response. All returned
+page prose stays inside the existing untrusted-content screening boundary.
+The provider accepts automatic function calls but does not support forcing
+`tool_choice`; capability probes request a tool in the prompt and verify the
+actual response. No Ollama or OpenAI SDK dependency is added.
+
+在 **自定义 → 模型** 中选择 **Ollama（云端或本地）**。云端配置只需输入
+Ollama API key，Base URL 和模型留空时使用 `https://ollama.com/v1` 与
+`gemma4:31b`。环境变量配置为 `OPENAI4S_LLM_PROVIDER=ollama` 加
+`OLLAMA_API_KEY` 或 `OPENAI4S_OLLAMA_API_KEY`。直连云端使用
+`https://ollama.com/api/tags` 中的模型名，与 CLI 的 `gemma4:cloud` 写法不同；
+直连无需安装 Ollama 或下载权重。
+
+本地模型需先启动 Ollama 并自行下载，Base URL 使用
+`http://127.0.0.1:11434/v1`，模型填写实际安装名，例如 `gemma4:e2b`；
+也可使用现有的本地扫描。本地推理不发送云端密钥，未知工具能力在探测成功前
+保持保守处理。
+
+要让**任意主模型**使用 Ollama 网页工具，在 **自定义 → 网络 → Ollama 网页工具**
+输入一次 API key 并点击**保存密钥**即可。无需切换主模型或设置环境变量；
+独立密钥通过 SecretBroker 保存，重启后仍然有效，已有会话的下一次工具调用
+也会重新读取。支持替换和移除，界面不会返回已保存的密钥明文。
+优先级为：独立保存的密钥 → 当前 Ollama 云端模型的密钥 →
+`OPENAI4S_OLLAMA_API_KEY` / `OLLAMA_API_KEY`。移除独立密钥后恢复后两项，
+界面会显示实际来源；团队模式下只有管理员可以修改这项实例级配置。
+`GET`/`PUT /api/v1/ollama-web/config` 只返回配置状态。
+本地服务器及自定义代理的凭据不会转交给 Ollama。Ollama 搜索优先于豆包和
+内置引擎，每次最多返回 10 条；鉴权、额度或服务错误直接报告。
+Ollama 抓取负责 markdown/text 的 GET，HTML、JSON、HEAD 和自定义
+User-Agent 保留直接抓取。目标 URL 与 API 均遵守网络、egress 和 SSRF
+检查；服务商内部跳转及原站字节无法由本地确认。结果标记 `source: "ollama"`，
+哈希与字节数描述 API 响应，全部网页正文进入现有不可信内容筛查。
+支持自动函数调用，不支持强制 `tool_choice`；探测通过提示请求工具并校验
+实际返回。核心仍为纯标准库。
+
+See [Ollama API compatibility](https://docs.ollama.com/api/openai-compatibility)
+and [web search/fetch](https://docs.ollama.com/capabilities/web-search).
 
 ### Model resource limits / 模型资源边界
 

@@ -103,6 +103,7 @@ _NATIVE_KEY_ENV = {
     "openai_responses": ("OPENAI_API_KEY",),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "ollama": ("OLLAMA_API_KEY",),
 }
 
 
@@ -184,7 +185,7 @@ class LLMConfig:
     """Multi-provider base-model config.
 
     A single `provider` selects one of the wire adapters in ``llm.PROVIDERS``
-    (ark / chatgpt / openai_responses / claude / gemini). ``base_url``
+    (ark / chatgpt / openai_responses / claude / gemini / ollama). ``base_url``
     and ``model`` are left empty by default — ``llm.chat`` fills in the
     provider's built-in defaults — but can be overridden per provider.
 

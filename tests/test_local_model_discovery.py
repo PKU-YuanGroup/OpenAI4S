@@ -77,7 +77,7 @@ def test_discovery_normalizes_openai_and_ollama_models_and_never_mutates():
             {
                 "kind": "ollama",
                 "label": "Ollama",
-                "provider": "chatgpt",
+                "provider": "ollama",
                 "base_url": "http://127.0.0.1:11434/v1",
                 "models": ["qwen3:8b"],
                 "default_model": "qwen3:8b",
@@ -129,6 +129,7 @@ def test_catalog_does_not_open_sockets_or_refresh_in_the_background():
     assert payload["contacted"] is False
     assert payload["background_refresh"] is False
     assert payload["mutated_settings"] is False
+    assert [row["provider"] for row in payload["endpoints"]] == ["ollama", "chatgpt"]
     assert not hasattr(service, "_timer")
     assert not hasattr(service, "_thread")
 

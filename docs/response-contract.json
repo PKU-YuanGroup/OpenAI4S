@@ -1821,6 +1821,19 @@
         404
       ]
     },
+    "/ollama-web/config": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        405
+      ]
+    },
     "/onboarding": {
       "content_types": [
         "application/json"
