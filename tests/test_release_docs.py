@@ -233,10 +233,10 @@ def test_the_upgrade_guide_says_what_old_records_and_a_failed_upgrade_look_like(
     assert "包列表未知" in chinese
 
 
-# -- upgrading to the next release (schema 32 → 35) ---------------------------
+# -- upgrading to 0.3.1 (schema 32 → 35) --------------------------------------
 
-NEXT_RELEASE_EN = "## Upgrading to the next release (schema 32 → 35)"
-NEXT_RELEASE_ZH = "## 升级到下一版本（schema 32 → 35）"
+NEXT_RELEASE_EN = "## Upgrading to 0.3.1 (schema 32 → 35)"
+NEXT_RELEASE_ZH = "## 升级到 0.3.1（schema 32 → 35）"
 
 
 def test_the_next_release_upgrade_section_names_the_migration_the_backup_and_no_downgrade():
@@ -349,12 +349,18 @@ def test_no_install_doc_sends_a_mac_user_to_the_latest_release_for_a_dmg():
 
 def test_install_docs_pin_the_v030_preview_image_to_its_release_page():
     """The other half of the rule above: a doc that names the v0.3.0 image has
-    to say where it is, and that is the pinned release page."""
+    to say where it is, and that is the pinned release page. 0.3.1 ships no
+    DMG, so the READMEs send a Mac user to PyPI and only the startup guide's
+    historical section still names the image."""
+    naming = []
     for path in USER_INSTALL_DOCS:
         text = path.read_text(encoding="utf-8")
-        assert "OpenAI4S-0.3.0-macos-arm64.dmg" in text, path.name
+        if "OpenAI4S-0.3.0-macos-arm64.dmg" not in text:
+            continue
+        naming.append(path.name)
         assert "/releases/tag/v0.3.0" in text, path.name
         assert "ad-hoc" in text, path.name
+    assert naming, "no install doc names the v0.3.0 image; retire this test"
 
 
 def test_platforms_does_not_claim_a_notarized_dmg_ships():
@@ -362,8 +368,8 @@ def test_platforms_does_not_claim_a_notarized_dmg_ships():
         pytest.skip("release.yml publishes a DMG by default again")
     text = _normalised(ROOT / "docs" / "platforms.md")
     assert "macOS ships as a signed, notarized" not in text
-    assert "No release has met this gate" in text
-    assert "v0.3.0's image is an ad-hoc-signed preview" in text
+    assert "No release has met that gate" in text
+    assert "older v0.3.0/v0.2.0 DMGs are ad-hoc-signed previews" in text
     assert "v0.3.0 publishes no DMG" not in text
 
 
