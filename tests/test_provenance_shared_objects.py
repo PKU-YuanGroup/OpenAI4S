@@ -14,12 +14,20 @@ reported that file as its input. Indexing one missing cell of a tracked CSV did
 the same to `numpy.nan`. A fabricated edge: provenance that is wrong rather
 than absent, which is worse because it is the kind that gets believed.
 
+A string's identity cannot be judged at all. The interpreter interns
+identifier-like literals, equal constants of one Cell are one object, and a
+frame hands back the very object assigned into it -- so `df["kind"] =
+"control"; df["kind"][0]` on a tracked frame tagged the literal, and every
+later `write("control")` named the CSV. An exact `str` is now never tagged in
+place: a read that yields one hands back a `_TaggedStr` copy of its own.
+
 Each refusal test is paired with one showing the read's own value still carries
 its tag, because "tag nothing" would also pass the refusals.
 """
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -101,8 +109,10 @@ def _inputs(state):
 def test_a_shared_value_from_a_tracked_file_is_no_input_of_an_unrelated_write(
     lineage, document, shared
 ):
-    loaded = _read_tracked(lineage, document)
-    assert loaded is shared, "precondition: the parser handed back the shared object"
+    assert (
+        provenance._real_json_loads(document) is shared
+    ), "precondition: the parser hands out the shared object"
+    _read_tracked(lineage, document)
 
     _write(lineage, shared, "unrelated.out")
 
@@ -201,6 +211,106 @@ def test_a_library_constant_from_a_tracked_frame_is_no_input_of_an_unrelated_wri
             vars(constant).pop(provenance._PROV_ATTR, None)
 
 
+@pytest.fixture
+def tracked_frame(monkeypatch):
+    """A frame read from the tracked file, indexed through the worker's wrapper."""
+    pd = pytest.importorskip("pandas")
+    for cls in (pd.DataFrame, pd.Series):
+        # recorded so teardown restores pandas; the patch below is process-wide
+        monkeypatch.setattr(cls, "__getitem__", cls.__getitem__)
+    provenance._patch_dataframe_getitem(pd)
+    frame = pd.read_csv(io.StringIO("name,count\nscience,7\nbiology,8\n"))
+    # what the `read_csv` wrapper does for a tracked path
+    return provenance.set_tags(frame, frozenset({TRACKED}))
+
+
+def _cell(source):
+    """Evaluate source as its own compilation, the way the worker runs a Cell."""
+    return eval(compile(source, "<cell>", "eval"))
+
+
+def _held_by_the_user():
+    label = "-".join(["arm", "B"])
+    return label, label
+
+
+@pytest.mark.parametrize(
+    "shared",
+    [
+        # identifier-like literals are interned: a later Cell's is this one
+        pytest.param(lambda: ("control", _cell("'control'")), id="interned literal"),
+        # equal constants of one compilation are one object, interned or not
+        pytest.param(
+            lambda: _cell("('control group', 'control group')"),
+            id="constant of one cell",
+        ),
+        pytest.param(_held_by_the_user, id="string the user holds"),
+    ],
+)
+def test_a_string_assigned_into_a_tracked_frame_is_no_input_of_an_unrelated_write(
+    lineage, tracked_frame, shared
+):
+    pd = pytest.importorskip("pandas")
+    assigned, elsewhere = shared()
+    assert elsewhere is assigned, "precondition: other code holds this very object"
+    frame = tracked_frame
+    # Object dtype pins what pandas stores: pyarrow-backed strings would copy.
+    frame["kind"] = pd.Series([assigned] * len(frame), dtype=object)
+    assert frame["kind"].iloc[0] is assigned, "precondition: the frame holds it"
+
+    indexed = frame["kind"][0]
+    _write(lineage, elsewhere, "unrelated.out")
+    assert _inputs(lineage) == [], "a string written elsewhere named the CSV"
+
+    _write(lineage, indexed, "derived.out")
+    assert _inputs(lineage) == [[TRACKED]]
+
+
+def test_no_exact_string_is_tagged_in_place():
+    """Whichever caller passes one; `_tag_read` returns a tagged copy instead."""
+    provenance.set_tags("control", frozenset({TRACKED}))
+    provenance.set_tags(_held_by_the_user()[0], frozenset({TRACKED}))
+
+    assert provenance.get_tags(_cell("'control'")) == frozenset()
+    assert provenance._side_tags == {}
+
+
+def test_a_string_parsed_from_a_tracked_csv_keeps_its_lineage(lineage, tracked_frame):
+    """It comes back as a tagged copy, and string operations keep the tag."""
+    indexed = tracked_frame["name"][0]
+    assert indexed == "science"
+    assert (
+        provenance.get_tags(tracked_frame["name"].iloc[0]) == frozenset()
+    ), "the frame's own object was tagged in place"
+
+    _write(lineage, indexed, "name.out")
+    _write(lineage, indexed.upper(), "upper.out")
+
+    assert _inputs(lineage) == [[TRACKED], [TRACKED]]
+
+
+def test_a_string_a_tracked_reader_returns_keeps_its_lineage(lineage):
+    lineage.tracked.write_bytes(pickle.dumps("science"))
+    reader = provenance._prov_wrap_reader(lambda path: pickle.loads(path.read_bytes()))
+
+    _write(lineage, reader(lineage.tracked), "derived.out")
+
+    assert _inputs(lineage) == [[TRACKED]]
+
+
+@pytest.mark.parametrize("value", ["science", b"science"], ids=["str", "bytes"])
+def test_a_tagged_string_pickles_as_the_plain_value(value):
+    """A pickle names the class, and the tagged one is local to a function, so
+    pickling it raised -- which `df["name"][0]` on a tracked frame now returns."""
+    tagged = provenance._tag_scalar(value, frozenset({TRACKED}))
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        restored = pickle.loads(pickle.dumps(tagged, protocol))
+        assert type(restored) is type(value) and restored == value, protocol
+
+    for duplicate in (copy.copy(tagged), copy.deepcopy(tagged)):
+        assert provenance.get_tags(duplicate) == frozenset({TRACKED})
+
+
 def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
     """The same defect through the worker's installed wrappers, end to end."""
     pytest.importorskip("pandas")
@@ -212,7 +322,10 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
     frame_id = store.new_frame(kind="turn", project_id="default")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    sources = {"tracked.json": '"\\n"', "tracked.csv": "name,flag\nx,True\n,False\n"}
+    sources = {
+        "tracked.json": '"\\n"',
+        "tracked.csv": "name,flag\nscience,True\n,False\n",
+    }
     versions = {}
     for filename, text in sources.items():
         (workspace / filename).write_text(text)
@@ -242,7 +355,21 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
             "np.save('missing.npy', np.nan)\n",
             cell_id="cell-shared",
         )
-    assert result["error"] is None, result["error"]
+        assigned = kernel.execute(
+            "frame['kind'] = pd.Series(['control'] * len(frame), dtype=object)\n"
+            "kind, name = frame['kind'][0], frame['name'][0]\n",
+            cell_id="cell-assign",
+        )
+        # a later Cell's literal is the interned object the frame handed back
+        later = kernel.execute(
+            "with open('kind.txt', 'w') as handle:\n"
+            "    handle.write('control')\n"
+            "with open('name.txt', 'w') as handle:\n"
+            "    handle.write(name)\n",
+            cell_id="cell-later",
+        )
+    for outcome in (result, assigned, later):
+        assert outcome["error"] is None, outcome["error"]
 
     def inputs(filename):
         artifact = store.artifact_by_filename(filename, frame_id, strict=True)
@@ -254,7 +381,8 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
         ]
 
     assert inputs("derived.csv") == [versions["tracked.csv"]]
-    unrelated = ("note.txt", "flag.npy", "missing.npy")
+    assert inputs("name.txt") == [versions["tracked.csv"]]
+    unrelated = ("note.txt", "flag.npy", "missing.npy", "kind.txt")
     assert {name: inputs(name) for name in unrelated} == {
         name: [] for name in unrelated
     }, "a file named an input it never read"

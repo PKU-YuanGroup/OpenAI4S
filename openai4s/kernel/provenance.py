@@ -18,9 +18,10 @@ Mechanism:
  _PROV_JSON_LEAF_CAP = 10_000.... beyond this, side-table-only (no per-leaf
  wrapper) to avoid O(n) blowup.
 
-We can't set attributes on builtin scalars (int/str), so like openai4s we keep a
+We can't set attributes on builtin scalars (int/bytes), so like openai4s we keep a
 side WeakValueDictionary-ish id->tags table for those and only set _openai4s_src
-on rich objects (DataFrame/ndarray/dict/list) that accept attributes.
+on rich objects (DataFrame/ndarray/dict/list) that accept attributes. A str is
+never tagged in place: a read that yields one hands back a _TaggedStr copy.
 """
 
 from __future__ import annotations
@@ -127,9 +128,15 @@ def _shared_by_identity(obj: Any) -> bool:
         # The small-int cache, asked rather than restated: arithmetic draws its
         # results from it, so only a cached value comes back as itself.
         return obj + 0 is obj
-    if kind in (str, bytes):
-        # A fresh non-latin-1 character is refused too; one character carries
-        # no lineage worth the risk. `_TaggedStr` is a subclass and unaffected.
+    if kind is str:
+        # Whether one is cannot be told from the string: the interpreter
+        # interns identifier-like literals, equal constants of one Cell are one
+        # object, and a frame hands back the very object assigned into it.
+        # `_tag_read` carries a string's lineage on a `_TaggedStr` copy the
+        # read owns instead; that subclass is unaffected.
+        return True
+    if kind is bytes:
+        # The empty bytes and every single byte are one object each.
         return len(obj) <= 1
     if kind is tuple:
         return not obj
@@ -254,7 +261,7 @@ def _prov_wrap_reader(fn: Callable, path_kw: str | None = None) -> Callable:
         path = _first_path_arg(args, kwargs, path_kw)
         vid = _resolve_version(path)
         if vid:
-            set_tags(result, frozenset({vid}))
+            result = _tag_read(result, frozenset({vid}))
         return result
 
     wrapper._openai4s_wrapped = True  # type: ignore[attr-defined]
@@ -457,6 +464,18 @@ def _make_tagged_class(base: type) -> type:
                 return _tag_scalar(value, self._openai4s_src)
             return value
 
+        # A pickle names the class, and this one is local to a function, so
+        # pickling one raised. It pickles as the plain value instead -- the tag
+        # is dropped, which is the safe direction. A copy is this very value.
+        def __reduce__(self) -> tuple:
+            return base, (base(self),)
+
+        def __copy__(self) -> Any:
+            return self
+
+        def __deepcopy__(self, memo: Any) -> Any:
+            return self
+
     def _mk(name: str) -> Callable:
         orig = getattr(base, name)
 
@@ -495,6 +514,14 @@ def _tag_scalar(value: Any, tags: frozenset) -> Any:
     return set_tags(value, tags)
 
 
+def _tag_read(value: Any, tags: frozenset) -> Any:
+    """Tag what a read hands back. An exact `str` is never tagged in place --
+    `_shared_by_identity` says why -- so it comes back as a tagged copy."""
+    if type(value) is str:
+        return _tag_scalar(value, tags)
+    return set_tags(value, tags)
+
+
 def _prov_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
     fh = _real_open(file, mode, *args, **kwargs)
     if _off():
@@ -519,7 +546,7 @@ def _prov_json_loads(s: Any, *args: Any, **kwargs: Any) -> Any:
         return obj
     tags = get_tags(s)
     if tags:
-        set_tags(obj, tags)
+        obj = _tag_read(obj, tags)
     return obj
 
 
@@ -670,7 +697,7 @@ def _patch_dataframe_getitem(pd: Any) -> None:
             if not _off():
                 tags = get_tags(self)
                 if tags:
-                    set_tags(res, tags)
+                    res = _tag_read(res, tags)
             return res
 
         wrapper._openai4s_wrapped = True  # type: ignore[attr-defined]
