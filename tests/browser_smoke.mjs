@@ -207,6 +207,20 @@ async function computeStatusTruthScenes(projectId) {
     await page.locator(".rl-empty").waitFor();
     assert.equal(await page.locator(".rl-error").count(), 0);
     await page.locator("#modal-close").click();
+    // Ketcher reuses #modal without changing _modalMode. A dismissed status
+    // read must not overwrite the replacement iframe when its response lands.
+    mode = "hold";
+    await page.locator("#compute-badge").click();
+    await waitUntil("held dialog before Ketcher", async () => !!held);
+    await page.locator("#modal-close").click();
+    await page.evaluate(() => window.openKetcher());
+    await page.locator('#modal-body iframe[src*="/ketcher"]').waitFor();
+    const replacedDialog = held; held = null;
+    await json(replacedDialog, cluster);
+    await page.locator("#compute-badge.ready").waitFor();
+    assert.equal(await page.locator('#modal-body iframe[src*="/ketcher"]').count(), 1);
+    assert.equal(await page.locator("#modal-body .run-location").count(), 0);
+    await page.locator("#modal-close").click();
     // Reopening the same modal owns a distinct request, even for the same fid.
     mode = "hold";
     await page.locator("#compute-badge").click();
@@ -235,7 +249,7 @@ async function computeStatusTruthScenes(projectId) {
     await page.waitForTimeout(100);
     assert.equal(await page.locator("#compute-badge").count(), 0);
     assert.equal(await page.locator("#compute-lost").count(), 0);
-    console.log("Compute browser: stale evidence, initial unknown, Retry, catalog distinction, same-session reopen, and late-session response fixtures passed");
+    console.log("Compute browser: stale evidence, initial unknown, Retry, catalog distinction, replacement viewer, same-session reopen, and late-session response fixtures passed");
   } finally {
     if (held) await held.abort().catch(() => {});
     await page.unroute(statusRoute);

@@ -14,6 +14,9 @@ class FakeEl {
   title = "";
   type = "";
   disabled = false;
+  classList = {
+    contains: (name: string) => this.className.split(" ").includes(name),
+  };
   style: Record<string, string> = {};
   children: FakeEl[] = [];
   parentNode: FakeEl | null = null;
@@ -67,6 +70,7 @@ class FakeEl {
 let conv: FakeEl;
 let actions: FakeEl;
 let messages: FakeEl;
+let modal: FakeEl;
 let modalBody: FakeEl;
 const byId = (id: string) => conv.find((node) => node.id === id);
 
@@ -82,8 +86,8 @@ vi.mock("./dom", () => ({
     return null;
   },
   el: (tag: string, cls?: string | null, text?: string | null) => new FakeEl(tag, cls, text),
-  closeModalEl: vi.fn(),
-  openModalEl: vi.fn(),
+  closeModalEl: vi.fn((node: FakeEl) => { node.className = "hidden"; }),
+  openModalEl: vi.fn((node: FakeEl) => { node.className = ""; }),
 }));
 
 import { _openGen, currentId } from "../../stores/session";
@@ -91,6 +95,7 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { computeStatus } from "../../stores/timeline";
 import { _modalMode } from "../../stores/ui";
 import { api } from "./api";
+import { hint } from "./chrome";
 import { computeT as t, openRunLocationDialog, refreshComputeStatus } from "./compute";
 import { closeModalEl, openModalEl } from "./dom";
 
@@ -107,10 +112,13 @@ beforeEach(() => {
   vi.mocked(api).mockReset();
   vi.mocked(openModalEl).mockClear();
   vi.mocked(closeModalEl).mockClear();
+  vi.mocked(hint).mockClear();
   conv = new FakeEl("div");
   actions = conv.appendChild(new FakeEl("div", "conv-head-actions"));
   messages = conv.appendChild(new FakeEl("div"));
-  modalBody = new FakeEl("div");
+  modal = conv.appendChild(new FakeEl("div", "hidden"));
+  modal.id = "modal";
+  modalBody = modal.appendChild(new FakeEl("div"));
   currentId.value = "f";
 });
 
@@ -400,4 +408,53 @@ it.each(["error", "loading"] as const)("does not revive an earlier dialog status
   expect(modalBody.find((node) => node.className === "rl-retry")).not.toBeNull();
   newer.resolve({ location: "local" });
   await refresh;
+});
+
+describe("run-location modal ownership", () => {
+  it("does not render a read after the dialog was dismissed", async () => {
+    const pending = deferred<unknown>();
+    vi.mocked(api).mockReturnValue(pending.promise);
+    const reading = openRunLocationDialog("f");
+    modal.className = "hidden";
+    pending.resolve({ location: "local", profiles: [] });
+    await reading;
+    expect(modalBody.texts()).toEqual([t("compute.status.loading")]);
+  });
+
+  it("does not overwrite a viewer that replaces the body without setting modal mode", async () => {
+    const pending = deferred<unknown>();
+    vi.mocked(api).mockReturnValue(pending.promise);
+    const reading = openRunLocationDialog("f");
+    // Artifact preview and Ketcher share #modal without writing _modalMode.
+    modalBody.innerHTML = "";
+    modalBody.appendChild(new FakeEl("iframe"));
+    pending.resolve({ location: "local", profiles: [] });
+    await reading;
+    expect(modalBody.firstChild?.tag).toBe("iframe");
+  });
+
+  it("does not close a newer dialog when an earlier allocation finishes", async () => {
+    daemon({ location: "local" }, [{ name: "gpu" }]);
+    await openRunLocationDialog("f");
+    const pending = deferred<unknown>();
+    vi.mocked(api).mockReturnValueOnce(pending.promise);
+    modalBody.find((node) => node.text === "gpu")!.parentNode!.onclick!();
+    await openRunLocationDialog("f");
+    pending.resolve({ ok: true });
+    await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
+    expect(closeModalEl).not.toHaveBeenCalled();
+  });
+
+  it("does not show an earlier allocation error in a replacement viewer", async () => {
+    daemon({ location: "local" }, [{ name: "gpu" }]);
+    await openRunLocationDialog("f");
+    const pending = deferred<unknown>();
+    vi.mocked(api).mockImplementationOnce(async () => { await pending.promise; throw new Error("old allocation failure"); });
+    modalBody.find((node) => node.text === "gpu")!.parentNode!.onclick!();
+    modalBody.innerHTML = "";
+    modalBody.appendChild(new FakeEl("iframe"));
+    pending.resolve(null);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(hint).not.toHaveBeenCalled();
+  });
 });

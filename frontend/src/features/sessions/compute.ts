@@ -236,22 +236,28 @@ let dialogRead = 0;
 export async function openRunLocationDialog(fid: string | null | undefined): Promise<void> {
   const target = fid || currentId.value;
   if (!target) return;
+  const modal = $("#modal");
+  const body = $("#modal-body");
+  if (!modal || !body) return;
+  const wrap = el("div", "run-location");
   const mode = "run-location:" + target;
   _modalMode.value = mode;
   const request = ++dialogRead;
   const generation = _openGen.value;
   const activeSession = currentId.value;
+  // Artifact preview and Ketcher reuse this modal without setting its mode.
+  // The mounted content and visibility must still belong to this opening.
   const ownsDialog = () => _modalMode.value === mode && request === dialogRead
-    && generation === _openGen.value && activeSession === currentId.value;
-  const body = $("#modal-body");
-  if (!body) return;
+    && generation === _openGen.value && activeSession === currentId.value
+    && body.firstChild === wrap && !modal.classList.contains("hidden");
   const title = $("#modal-title");
   if (title) title.textContent = t("compute.dialog.title");
   const download = $("#modal-download");
   if (download) download.style.display = "none";
   body.innerHTML = "";
-  body.appendChild(el("div", "rl-hint", t("compute.status.loading")));
-  openModalEl($("#modal"));
+  wrap.appendChild(el("div", "rl-hint", t("compute.status.loading")));
+  body.appendChild(wrap);
+  openModalEl(modal);
 
   const [loaded, catalog] = await Promise.all([
     readComputeStatus(target),
@@ -270,7 +276,7 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
         ? { phase: "error", error: latest.error || t("compute.status.unavailable") }
         : { phase: "loading" };
   }
-  const wrap = el("div", "run-location");
+  wrap.innerHTML = "";
   const status = result.phase === "available" ? result.status : null;
   const current = status?.location;
   if (result.phase !== "available") {
@@ -287,10 +293,11 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
   if (result.phase !== "available" || catalog.phase === "error") {
     const retry = el("button", "rl-retry", t("compute.status.retry"));
     retry.type = "button";
-    retry.onclick = () => { void openRunLocationDialog(target); };
+    retry.onclick = () => { if (ownsDialog()) void openRunLocationDialog(target); };
     wrap.appendChild(retry);
   }
   const choose = async (profile: string | null) => {
+    if (!ownsDialog()) return;
     try {
       if (profile === null) {
         await api(`/sessions/${encodeURIComponent(target)}/compute/release`, { method: "POST", body: "{}" });
@@ -300,12 +307,12 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
           body: JSON.stringify({ profile }),
         });
       }
-      closeModalEl($("#modal"));
+      if (ownsDialog()) closeModalEl(modal);
       await refreshComputeStatus(target);
     } catch (error) {
       // The 409 that means "this daemon has no listener" is the one a user
       // will actually hit, and its body already explains itself.
-      hint(apiErrorText(error), true);
+      if (ownsDialog()) hint(apiErrorText(error), true);
     }
   };
 
@@ -315,7 +322,8 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
   local.appendChild(el("div", "rl-name", t("compute.location.local")));
   local.appendChild(el("div", "rl-hint", t("compute.location.localHint")));
   local.onclick = () => {
-    if (current === "local") closeModalEl($("#modal"));
+    if (!ownsDialog()) return;
+    if (current === "local") closeModalEl(modal);
     else void choose(null);
   };
   wrap.appendChild(local);
@@ -353,8 +361,6 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
     };
     wrap.appendChild(release);
   }
-  body.innerHTML = "";
-  body.appendChild(wrap);
 }
 
 async function loadProfiles(): Promise<
