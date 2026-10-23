@@ -23,6 +23,7 @@ running and billing.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import sqlite3
@@ -722,6 +723,7 @@ def test_the_old_response_keys_keep_their_meaning_and_the_new_ones_are_added(cli
     assert set(_page_ids(body)) == {"job-a", "job-b"}
 
 
+@pytest.mark.stubbed_backend
 def test_an_empty_page_is_a_success_and_a_failure_is_not_an_empty_page(client):
     """A session with no remote work and an unreadable record must not look the
     same. The first is "nothing is running"; the second cannot say that."""
@@ -743,9 +745,17 @@ def test_an_empty_page_is_a_success_and_a_failure_is_not_an_empty_page(client):
     assert status == 503
     assert body["code"] == "compute_record_unavailable"
     assert body["status"] == 503
+    assert body["error"] == "compute task records are temporarily unavailable"
     assert "tasks" not in body and "live_count" not in body
     rendered = json.dumps(body)
-    for leak in ("no such table", "/private/lab", "secret.db", "sqlite"):
+    for leak in (
+        "no such table",
+        "/private/lab",
+        "secret.db",
+        "sqlite",
+        "Traceback",
+        str(client.cfg.data_dir),
+    ):
         assert leak not in rendered
 
 
@@ -762,7 +772,9 @@ def test_an_unreadable_session_lookup_is_also_503_rather_than_404(client):
     status, body = client.get(f"/frames/{frame}/compute/tasks")
     assert status == 503
     assert body["code"] == "compute_record_unavailable"
+    assert body["error"] == "compute task records are temporarily unavailable"
     assert "/private/lab" not in json.dumps(body)
+    assert str(client.cfg.data_dir) not in json.dumps(body)
 
 
 def test_the_total_reaches_a_live_job_pushed_out_of_the_newest_page(client):
@@ -793,7 +805,7 @@ def test_the_limit_is_defaulted_capped_and_validated(client):
     frame = client.session()
     _seed_many(client, frame, 201, live_ids={"job-000"})
 
-    status, body = client.get(f"/frames/{frame}/compute/tasks?limit=999")
+    status, body = client.get(f"/frames/{frame}/compute/tasks?limit=500")
     assert status == 200
     assert (
         len(body["tasks"]) == 200
@@ -857,7 +869,9 @@ def test_a_cursor_is_opaque_and_carries_no_owner_path(client):
     assert "owner_key" not in raw
     assert "/" not in raw
     payload = json.loads(raw)
-    assert set(payload) == {"v", "j", "t", "s"}
+    assert set(payload) == {"fp", "id", "t"}
+    assert len(payload["fp"]) == 64
+    assert all(c in "0123456789abcdef" for c in payload["fp"])
 
 
 def test_a_malformed_or_cross_filter_cursor_is_refused(client):
@@ -940,3 +954,77 @@ def test_the_new_fields_survive_a_restart(client, tmp_path):
     assert body["total_live_count"] == 1
     assert body["has_more"] is True
     assert body["next_cursor"]
+
+
+def test_a_cursor_anchored_to_another_owners_job_is_refused(client):
+    """The frame/state fingerprint is computable by a client; owner binding is
+    the server-side anchor check, not secrecy. A cursor naming somebody else's
+    job is refused even with a correct-looking fingerprint."""
+    mine, theirs = client.session(), client.session()
+    _seed_many(client, mine, 2, prefix="mine")
+    _seed_many(client, theirs, 2, prefix="theirs")
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"frame_id": theirs, "state": "all"},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    forged = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {"fp": fingerprint, "id": "mine-000", "t": 5000},
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+    status, body = client.get(f"/frames/{theirs}/compute/tasks?cursor={forged}")
+    assert status == 400
+    assert body["code"] == "invalid_cursor"
+
+
+def test_a_cursor_whose_created_at_no_longer_matches_is_refused(client):
+    """The anchor has to carry the recorded creation time the cursor claims; a
+    tampered one would resume the ordering at a position the row does not
+    occupy."""
+    frame = client.session()
+    _seed_many(client, frame, 3)
+    _status, body = client.get(f"/frames/{frame}/compute/tasks?limit=1")
+    cursor = body["next_cursor"]
+    padded = cursor + "=" * (-len(cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    assert payload["t"] == 5000
+    payload["t"] = 4000
+    tampered = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
+    status, body = client.get(f"/frames/{frame}/compute/tasks?cursor={tampered}")
+    assert status == 400
+    assert body["code"] == "invalid_cursor"
+
+
+def test_reading_the_listing_cannot_reach_the_manager(client, monkeypatch):
+    """The read path holds a Store, never a manager. Making the manager's remote
+    calls raise proves that nothing on this path reaches them: a GET still
+    answers with the durable record."""
+    frame = client.session()
+    client.seed(frame, job_id="job-live", status="running")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the listing contacted a remote compute manager")
+
+    monkeypatch.setattr(ComputeManager, "result", boom, raising=True)
+    monkeypatch.setattr(ComputeManager, "cancel", boom, raising=True)
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?state=live")
+    assert status == 200
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1

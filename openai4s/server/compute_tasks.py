@@ -28,10 +28,12 @@ is doing.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from typing import Any, Mapping, Sequence
 
 from openai4s.compute.states import LIVE_STATES
-from openai4s.storage.compute_jobs import ComputeCursorError
 
 #: How many jobs one response may carry. Remote work accumulates over a long
 #: project and the panel is a summary, not an archive.
@@ -52,7 +54,7 @@ class InvalidTaskQuery(ValueError):
         self.code = code
 
 
-class ComputeRecordUnavailable(RuntimeError):
+class ComputeRecordsUnavailable(Exception):
     """The durable record could not be read.
 
     Distinct from "no jobs" on purpose: an unreadable store must never render
@@ -180,10 +182,65 @@ def parse_options(q: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: A page cursor names a position as ``(created_at, job_id)`` and carries a
+#: fingerprint of the frame and state filter it was minted for. It never carries
+#: ``owner_key``: that is the session's workspace path — a leak, and useless as
+#: authorization, because every query is scoped by the authenticated owner and
+#: the anchor row is checked against that scope before the page is read.
+def _cursor_fingerprint(frame_id: str, state: str) -> str:
+    canonical = json.dumps(
+        {"frame_id": str(frame_id), "state": str(state)},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _encode_cursor(*, frame_id: str, state: str, created_at: int, job_id: str) -> str:
+    """The opaque position of one row, in `artifact_index.encode_cursor`'s form."""
+    raw = json.dumps(
+        {
+            "fp": _cursor_fingerprint(frame_id, state),
+            "id": str(job_id),
+            "t": int(created_at),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(value: str, *, frame_id: str, state: str) -> tuple[int, str]:
+    """Return the ``(created_at, job_id)`` anchor, or raise ``invalid_cursor``.
+
+    A payload that cannot be decoded, was minted for another frame or state, or
+    names no row is one answer: start again from the first page. Continuing from
+    a position the server cannot vouch for would skip rows or walk a listing the
+    client is not looking at, and both read as a complete answer.
+    """
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - unreadable is 400, not page one
+        raise InvalidTaskQuery("invalid cursor", "invalid_cursor") from exc
+    if not isinstance(payload, dict):
+        raise InvalidTaskQuery("invalid cursor", "invalid_cursor")
+    if payload.get("fp") != _cursor_fingerprint(frame_id, state):
+        raise InvalidTaskQuery("invalid cursor", "invalid_cursor")
+    job_id = payload.get("id")
+    created_at = payload.get("t")
+    if not isinstance(job_id, str) or not job_id:
+        raise InvalidTaskQuery("invalid cursor", "invalid_cursor")
+    if isinstance(created_at, bool) or not isinstance(created_at, int):
+        raise InvalidTaskQuery("invalid cursor", "invalid_cursor")
+    return created_at, job_id
+
+
 def owner_tasks(
     store: Any,
     owner_key: str | None,
     *,
+    frame_id: str,
     limit: int = MAX_TASKS,
     state: str = STATE_ALL,
     cursor: str | None = None,
@@ -201,6 +258,11 @@ def owner_tasks(
     field that may be shown as a global "in progress" number; `has_more` and
     `next_cursor` let a client walk the record without claiming the page is all
     of it.
+
+    The cursor is decoded here, then the server checks that its anchor row is in
+    the caller's owner scope and carries the claimed ``created_at`` before page
+    two is read. A rejected cursor is a 400; an unreadable record is a 503 and
+    is never an empty page.
     """
     if state not in TASK_STATES:
         raise InvalidTaskQuery("state must be all or live", "invalid_state")
@@ -211,38 +273,57 @@ def owner_tasks(
     if limit < 1:
         raise InvalidTaskQuery("limit must be at least 1", "invalid_limit")
     limit = min(limit, MAX_TASKS)
+
+    after: tuple[int, str] | None = None
+    if cursor:
+        after = _decode_cursor(cursor, frame_id=frame_id, state=state)
+
+    anchored: Any = None
     try:
-        page = store.compute_jobs_page_for_owner(
-            owner_key, limit=limit, state=state, cursor=cursor
+        if after is not None:
+            anchored = store.compute_job_created_at_for_owner(owner_key, after[1])
+        rows, total_live_count, has_more = store.compute_jobs_page_for_owner(
+            owner_key, limit=limit, state=state, after=after
         )
-    except ComputeCursorError as exc:
-        raise InvalidTaskQuery(
-            "cursor does not name a position in this listing", "invalid_cursor"
-        ) from exc
     except Exception as exc:  # noqa: BLE001 - an unreadable record is not "no jobs"
-        raise ComputeRecordUnavailable("compute records could not be read") from exc
-    rows = page.get("tasks") if isinstance(page, Mapping) else None
-    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
-        raise ComputeRecordUnavailable("compute records could not be read")
+        raise ComputeRecordsUnavailable(
+            "compute task records could not be read"
+        ) from exc
+
+    if after is not None:
+        if anchored is None:
+            raise InvalidTaskQuery("invalid cursor", "invalid_cursor")
+        try:
+            anchored_at = int(anchored)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - repository bug
+            raise InvalidTaskQuery("invalid cursor", "invalid_cursor") from exc
+        if anchored_at != after[0]:
+            raise InvalidTaskQuery("invalid cursor", "invalid_cursor")
+
     tasks = [public_task(row) for row in rows if isinstance(row, Mapping)]
-    try:
-        total_live_count = int(page.get("total_live_count") or 0)
-    except (TypeError, ValueError) as exc:  # pragma: no cover - repository bug
-        raise ComputeRecordUnavailable("compute records could not be read") from exc
+    next_cursor = None
+    if has_more and tasks:
+        last = tasks[-1]
+        next_cursor = _encode_cursor(
+            frame_id=frame_id,
+            state=state,
+            created_at=int(last["created_at"]),
+            job_id=str(last["job_id"]),
+        )
     return {
         "tasks": tasks,
         "live_count": sum(1 for task in tasks if task.get("live")),
         # Said plainly, because the whole design rests on it: this response is
         # a read of what was last recorded, not a check of what is true now.
         "polled": False,
-        "total_live_count": max(0, total_live_count),
-        "has_more": bool(page.get("has_more")),
-        "next_cursor": page.get("next_cursor") or None,
+        "total_live_count": max(0, int(total_live_count)),
+        "has_more": bool(has_more),
+        "next_cursor": next_cursor,
     }
 
 
 __all__ = [
-    "ComputeRecordUnavailable",
+    "ComputeRecordsUnavailable",
     "InvalidTaskQuery",
     "MAX_TASKS",
     "MAX_TEXT_CHARS",

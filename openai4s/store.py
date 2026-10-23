@@ -5748,20 +5748,26 @@ class Store:
         self,
         owner_key: str | None,
         *,
-        limit: int = 200,
-        state: str = "all",
-        cursor: str | None = None,
-    ) -> dict:
-        """One keyset page plus the same-owner live total, from one read.
+        limit: int,
+        state: str,
+        after: tuple[int, str] | None = None,
+    ) -> tuple[list[dict], int, bool]:
+        """One page of one owner's remote jobs plus that owner's live total.
 
-        A thin pass-through on purpose: the stable sort, the cursor's ownership
-        and filter binding, and the aggregate all belong to the repository, and
-        the route above it must not be able to ask for a page and a count from
-        two different snapshots.
+        A thin pass-through on purpose: the stable sort, the keyset predicate and
+        the aggregate all belong to the repository, and the route above it must
+        not be able to ask for a page and a count from two different snapshots.
+        Returns ``(rows, total_live_count, has_more)``.
         """
         return self._compute_jobs.page_for_owner(
-            owner_key, limit=limit, state=state, cursor=cursor
+            owner_key, limit=limit, state=state, after=after
         )
+
+    def compute_job_created_at_for_owner(
+        self, owner_key: str | None, job_id: str
+    ) -> int | None:
+        """A cursor anchor check: this owner's ``created_at`` for one job."""
+        return self._compute_jobs.owner_job_created_at(owner_key, job_id)
 
     def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
         return self._compute_jobs.append_event(job_id, kind, payload)

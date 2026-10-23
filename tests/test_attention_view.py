@@ -526,6 +526,7 @@ def test_get_does_not_spawn_retry_approve_or_harvest(client, monkeypatch):
     listing = compute_tasks.owner_tasks(
         client.store,
         attention.workspace_key_for(client.runner, body["items"][0]["frame_id"]),
+        frame_id=body["items"][0]["frame_id"],
     )
     assert listing["polled"] is False
 
