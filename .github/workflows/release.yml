@@ -533,12 +533,24 @@ jobs:
       - name: Verify the bundle
         # Fails closed on a runtime that did not relocate, an incomplete science
         # stack, a missing Web UI / R worker, a desktop entry that launches
-        # nothing, or any credential material swept into the archive.
-        run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+        # nothing, any credential material swept into the archive -- and, on a
+        # matching Linux host, on a packaged runtime that cannot execute the
+        # two-Cell science chain, capture its Artifact version and read the same
+        # bytes back after a restart (`installed_runtime_smoke.py`, invoked by
+        # the verifier). The report is written where the receipt step binds it.
+        env:
+          SHA: ${{ needs.freeze.outputs.source_sha }}
+        run: |
+          python3 scripts/verify_linux_bundle.py \
+            --source-sha "$SHA" \
+            --smoke-report "$RUNNER_TEMP/runtime-smoke.json" \
+            dist/OpenAI4S-*-linux-x86_64.tar.gz
       # Same binding the wheel and the DMG get. Without it the tarball was
       # staged with no document tying its bytes to the frozen commit -- covered
       # only by the in-run `incoming` digests, which say "these are the bytes
       # `attach` downloaded", not "these are the bytes built from this source".
+      # Schema 3 also requires the executed-runtime probe report: a digest says
+      # the bytes did not change, not that they run.
       - name: Receipt the bundle against the frozen SHA
         env:
           SHA: ${{ needs.freeze.outputs.source_sha }}
@@ -547,6 +559,7 @@ jobs:
           uv run --locked python scripts/release_receipts.py \
             --kind linux --source-sha "$SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
+            --runtime-smoke-file "$RUNNER_TEMP/runtime-smoke.json" \
             dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the

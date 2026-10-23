@@ -16,15 +16,21 @@ developer's ``.env`` swept into the archive.
 Everything here runs on any host, because the archive can be inspected without
 being executed. On a Linux host of the matching architecture it does strictly
 more: it *runs* the embedded interpreter, which is the only way to prove the
-science stack imports rather than merely being present on disk. A cross-built
-image therefore gets a real verification, just a weaker one, and the report says
-which of the two it was rather than letting a skipped check read as a pass.
+science stack imports rather than merely being present on disk, and it runs
+``installed_runtime_smoke.py`` against the unpacked bundle — the two-Cell
+science chain, Artifact capture, daemon/worker shutdown and restart readback —
+because a science stack that imports is still not a package that executes a
+Cell. A cross-built image therefore gets a real verification, just a weaker one,
+and the report says which of the two it was rather than letting a skipped check
+read as a pass. The probe report can be written with ``--smoke-report`` so the
+release job can bind it into that bundle's build receipt.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import platform
 import re
@@ -286,6 +292,106 @@ def _check_cli_executes(runtime: Path, src: Path) -> None:
         )
 
 
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _run_runtime_smoke(
+    app: Path,
+    *,
+    source_sha: str = "",
+    package_sha256: str = "",
+    smoke_report: Path | None = None,
+    expect_run: bool = True,
+    probe_script: Path | None = None,
+) -> dict:
+    """Run the packaged science chain and make the verdict part of verification.
+
+    ``installed_runtime_smoke.py`` is the same probe the installed wheel and a
+    source venv are held to; here it is pointed at the unpacked bundle. On a
+    host that can execute the bundle its report must be ``passed``, because
+    "the interpreter starts" and "the science stack imports" still do not show
+    that a Cell runs, that its CSV becomes an Artifact version, or that a
+    restarted daemon serves the same bytes. On a host that cannot execute the
+    target the probe records ``not_run`` with the missing run named; that is
+    recorded, never promoted to a pass.
+    """
+    script = probe_script or Path(__file__).with_name("installed_runtime_smoke.py")
+    if not script.is_file():
+        raise BundleCheckError(f"the installed-runtime probe is missing: {script}")
+    with tempfile.TemporaryDirectory(prefix="openai4s-bundle-smoke-") as scratch:
+        report_path = Path(scratch) / "runtime-smoke.json"
+        argv = [
+            sys.executable,
+            str(script),
+            "--bundle",
+            str(app),
+            "--output",
+            str(report_path),
+        ]
+        if package_sha256:
+            argv.extend(["--package-sha256", package_sha256])
+        if source_sha:
+            argv.extend(["--source-sha", source_sha])
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=scratch,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                env={"PATH": "/usr/bin:/bin", "HOME": str(Path.home())},
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise BundleCheckError(
+                "the installed-runtime science probe could not run: "
+                f"{type(error).__name__}"
+            ) from None
+        if not report_path.is_file():
+            said = (completed.stderr or completed.stdout or "").strip()[-800:]
+            raise BundleCheckError(
+                "the installed-runtime science probe produced no report: " + said
+            )
+        try:
+            report = json.loads(report_path.read_text("utf-8"))
+        except (OSError, ValueError) as error:
+            raise BundleCheckError(
+                f"the installed-runtime science probe report is unreadable: {error}"
+            ) from None
+        if not isinstance(report, dict):
+            raise BundleCheckError(
+                "the installed-runtime science probe report is not an object"
+            )
+        status = str(report.get("status") or "")
+        if expect_run:
+            if completed.returncode != 0 or status != "passed":
+                detail = (report.get("diagnostics") or ["no diagnostic recorded"])[0]
+                raise BundleCheckError(
+                    "the packaged runtime did not pass the science chain: " f"{detail}"
+                )
+        elif status == "failed":
+            detail = (report.get("diagnostics") or ["no diagnostic recorded"])[0]
+            raise BundleCheckError(
+                "the installed-runtime science probe failed on this host: " + detail
+            )
+        elif status != "not_run":
+            raise BundleCheckError(
+                "the installed-runtime science probe reported "
+                f"{status!r} for a host that cannot execute the bundle"
+            )
+        if smoke_report is not None:
+            target = Path(smoke_report)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n", "utf-8"
+            )
+        return report
+
+
 def _png_size(path: Path) -> tuple[int, int]:
     header = path.read_bytes()[:24]
     if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
@@ -436,7 +542,12 @@ def _check_relocatable(app: Path, launcher: Path) -> None:
             )
 
 
-def verify(target: Path) -> None:
+def verify(
+    target: Path,
+    *,
+    source_sha: str = "",
+    smoke_report: Path | None = None,
+) -> None:
     with _unpacked(target) as (app, _archive):
         launcher, runtime, src = _check_layout(app)
         version = _check_version(app, src)
@@ -460,19 +571,44 @@ def verify(target: Path) -> None:
                 app / "uninstall.sh",
             ],
         )
+        package_sha = _sha256_file(target) if target.is_file() else ""
         if _can_execute(arch):
             python_version = _check_runtime_executes(runtime, app, imports)
             _check_cli_executes(runtime, src)
             _check_installer_runs(app)
+            smoke = _run_runtime_smoke(
+                app,
+                source_sha=source_sha,
+                package_sha256=package_sha,
+                smoke_report=smoke_report,
+                expect_run=True,
+            )
             runtime_note = (
                 f"embedded CPython {python_version}, {present} science packages "
-                "imported from inside the bundle; `python -m openai4s --help` runs"
+                "imported from inside the bundle; `python -m openai4s --help` runs; "
+                "the packaged daemon ran a two-Cell science chain, captured an "
+                "Artifact version and read the same bytes back after a restart"
+            )
+            smoke_note = (
+                "passed — two Cells shared one kernel, smoke.csv was captured as "
+                "an exact version, a restarted daemon served the same bytes, and "
+                "no daemon or worker was left behind"
             )
             depth = "executed"
         else:
+            smoke = _run_runtime_smoke(
+                app,
+                source_sha=source_sha,
+                package_sha256=package_sha,
+                smoke_report=smoke_report,
+                expect_run=False,
+            )
             runtime_note = (
                 f"{present} science packages present in the bundle's site-packages "
                 f"(not imported: this host cannot run linux-{arch} binaries)"
+            )
+            smoke_note = "not_run — " + str(
+                smoke.get("not_run_reason") or "the host cannot execute the bundle"
             )
             depth = f"static only — run this on a linux-{arch} host before releasing"
 
@@ -480,6 +616,7 @@ def verify(target: Path) -> None:
         print(f"runtime   : {runtime_note}")
         print(f"sources   : Web UI + R worker + compute templates + {skills} Skills")
         print(f"icons     : {icons}")
+        print(f"smoke     : {smoke_note}")
         print(
             f"bytecode  : {compiled} precompiled .pyc, hash-based (never rewritten in place)"
         )
@@ -500,9 +637,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "target", type=Path, help="path to the .tar.gz or the unpacked app directory"
     )
+    parser.add_argument(
+        "--source-sha",
+        default="",
+        help="the frozen source commit, bound into the science-probe report",
+    )
+    parser.add_argument(
+        "--smoke-report",
+        type=Path,
+        default=None,
+        help=(
+            "write the installed-runtime science probe report here so the build "
+            "job can bind it into that bundle's receipt"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
-        verify(args.target.resolve())
+        verify(
+            args.target.resolve(),
+            source_sha=str(args.source_sha or ""),
+            smoke_report=args.smoke_report,
+        )
     except (
         BundleCheckError,
         OSError,
