@@ -699,7 +699,9 @@ def test_cancel_during_workspace_copy_stops_before_writing_or_publishing(
 
 
 @contextlib.contextmanager
-def native_dataset_session(tmp_path, monkeypatch, *, stage1):
+def native_dataset_session(
+    tmp_path, monkeypatch, *, stage1, path="datasets/spectra.csv"
+):
     """Real publication, capture, kernel and Store; network/readiness injected."""
     from openai4s.server.gateway import SessionRunner, WSHub
     from openai4s.tools.registry import execute_tool_call
@@ -714,10 +716,11 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
     # workflow cases need no Python/R profile installation on the CI host; the
     # analysis still executes in the real persistent Python kernel below.
     monkeypatch.setattr(runner, "standard_profile_readiness", lambda: {"ready": True})
+    project = runner.store.create_project(name="Dataset import contract")
     frame = runner.store.new_frame(
-        kind="turn", project_id="dataset-contract", status="ready"
+        kind="turn", project_id=project["project_id"], status="ready"
     )
-    state = runner._state(frame, "dataset-contract")
+    state = runner._state(frame, project["project_id"])
     dispatcher = runner._ensure_runtime(state)
     runner.store.set_permission_rule(
         scope="global",
@@ -754,7 +757,7 @@ def native_dataset_session(tmp_path, monkeypatch, *, stage1):
         call = {
             "id": "import-input",
             "name": "science_import_dataset",
-            "arguments": spec() if arguments is None else arguments,
+            "arguments": {**spec(), "path": path} if arguments is None else arguments,
         }
         return runner._invoke_control_with_artifacts(
             state, call, emit, lambda: execute_tool_call(dispatcher, call)
@@ -992,6 +995,11 @@ def test_native_import_keeps_same_byte_sources_immutable_across_store_reopen(
         assert first is not None
         first_id = first["latest_version_id"]
         first_meta = runner.store.version_meta(first_id)
+        assert runner.store.dataset_input_is_verified(
+            runner.store.version_meta(first_id),
+            root_frame_id=state.root_frame_id,
+            project_id=state.project_id,
+        )
         first_source = json.loads(first_meta["source"])
         assert first["root_frame_id"] == state.root_frame_id
         assert first["project_id"] == state.project_id
@@ -1031,6 +1039,26 @@ def test_native_import_keeps_same_byte_sources_immutable_across_store_reopen(
         assert historical["source"] == first_meta["source"]
         assert Path(historical["snapshot_path"]).read_bytes() == BODY
         assert len(reopened.list_versions(first["artifact_id"])) == 2
+        reopened_runner = type(runner)(runner.cfg, runner.hub, start_idle_sweeper=False)
+        try:
+            from openai4s.server.gateway import make_handler
+
+            handler = object.__new__(
+                make_handler(runner.cfg, runner.hub, reopened_runner)
+            )
+            handler.headers = {}
+            handler.path = f"/api/v1/artifacts/{first['artifact_id']}/versions"
+            seen = []
+            handler._json = lambda obj, code=200: seen.append(obj)
+            handler._body = lambda: {}
+            handler._api("GET", f"/artifacts/{first['artifact_id']}/versions")
+            for version in seen[-1]["versions"]:
+                assert (
+                    version["retrieval_source"]["dataset"]["file_verification"]
+                    == "size_and_source_checksum_verified"
+                )
+        finally:
+            reopened_runner.close()
     finally:
         reopened.close()
 
@@ -1072,10 +1100,116 @@ def test_native_import_into_a_differently_spelled_directory_never_half_succeeds(
 
 @pytest.mark.skipif(
     os.name != "posix",
+    reason="full native Session package tests require POSIX Artifact capture",
+)
+@pytest.mark.parametrize("stage1", [False, True])
+def test_native_receipt_does_not_transfer_through_full_session_package(
+    tmp_path, monkeypatch, stage1
+):
+    import zipfile
+
+    from openai4s.server.gateway import SessionRunner, WSHub, make_handler
+
+    # Portable Artifact filenames are basenames; nested native destinations
+    # are covered separately and remain excluded by the existing exporter.
+    destination = "spectra.csv"
+    with native_dataset_session(
+        tmp_path, monkeypatch, stage1=stage1, path=destination
+    ) as (
+        runner,
+        state,
+        _document,
+        reads,
+        invoke,
+    ):
+        observation, ok = invoke(lambda _event: None)
+        assert ok is True, observation
+        original = runner.store.artifact_by_filename(
+            destination, state.root_frame_id, strict=True
+        )
+        original_id = original["latest_version_id"]
+        original_meta = runner.store.version_meta(original_id)
+        assert runner.store.dataset_input_is_verified(
+            original_meta,
+            root_frame_id=state.root_frame_id,
+            project_id=state.project_id,
+        )
+        exported = runner.session_domain.session_export(state.root_frame_id)
+        assert exported["sha256"] == hashlib.sha256(exported["data"]).hexdigest()
+        with zipfile.ZipFile(io.BytesIO(exported["data"])) as archive:
+            portable = json.loads(archive.read("artifacts.json"))
+            assert "dataset_verification_receipts" not in portable
+            assert any(
+                version.get("source") == original_meta["source"]
+                for artifact in portable["artifacts"]
+                for version in artifact["versions"]
+            )
+        # This public entry point validates the complete archive and restores
+        # its workspace, graph and quarantine, not just its artifact subroutine.
+        imported = runner.session_domain.session_import(exported["data"])
+        assert imported["view_only"] is True
+        assert imported["explicit_recovery_required"] is True
+        assert imported["trust_state"] == "quarantined"
+        imported_root = imported["root_frame_id"]
+        imported_project = imported["project_id"]
+        assert imported_root != state.root_frame_id
+        assert imported_project != state.project_id
+        imported_artifacts = runner.store.list_artifacts(
+            {"root_frame_id": imported_root}
+        )
+        imported_artifact = next(
+            artifact
+            for artifact in imported_artifacts
+            if artifact["filename"] == original["filename"]
+        )
+        imported_id = imported_artifact["latest_version_id"]
+        assert imported_id != original_id
+        imported_meta = runner.store.version_meta(imported_id)
+        assert imported_meta["source"] == original_meta["source"]
+        assert Path(imported_meta["snapshot_path"]).read_bytes() == BODY
+        assert not runner.store.dataset_input_is_verified(
+            imported_meta, root_frame_id=imported_root, project_id=imported_project
+        )
+        assert reads == [selection().metadata_url, selection().download_url]
+        cfg = runner.cfg
+    runner.store.close()
+    hub = WSHub()
+    reopened_runner = SessionRunner(cfg, hub, start_idle_sweeper=False)
+    try:
+        store = reopened_runner.store
+        restored = store.version_meta(imported_id)
+        assert restored["source"] == original_meta["source"]
+        assert Path(restored["snapshot_path"]).read_bytes() == BODY
+        assert not store.dataset_input_is_verified(
+            restored, root_frame_id=imported_root, project_id=imported_project
+        )
+        assert store.dataset_input_is_verified(
+            store.version_meta(original_id),
+            root_frame_id=state.root_frame_id,
+            project_id=state.project_id,
+        )
+        handler = object.__new__(make_handler(cfg, hub, reopened_runner))
+        handler.headers = {}
+        artifact_id = imported_artifact["artifact_id"]
+        handler.path = f"/api/v1/artifacts/{artifact_id}/versions"
+        seen = []
+        handler._json = lambda obj, code=200: seen.append(obj)
+        handler._body = lambda: {}
+        handler._api("GET", f"/artifacts/{artifact_id}/versions")
+        version = seen[-1]["versions"][0]
+        assert version["version_id"] == imported_id
+        assert version["retrieval_source"]["dataset"]["file_verification"] is None
+    finally:
+        reopened_runner.close()
+        reopened_runner.store.close()
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
     reason="native Artifact capture tests require POSIX file operations",
 )
 @pytest.mark.parametrize("stage1", [False, True])
-@pytest.mark.parametrize("fault", ["freeze", "emit_after_commit"])
+@pytest.mark.parametrize("fault", ["freeze", "receipt", "emit_after_commit"])
 def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
     tmp_path, monkeypatch, stage1, fault
 ):
@@ -1094,6 +1228,15 @@ def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
             monkeypatch.setattr(
                 runner.artifacts, "freeze_capture_snapshot", fail_freeze
             )
+        elif fault == "receipt":
+            # A real SQLite write refusal at the native committer, after
+            # workspace bytes and their immutable version were captured.
+            runner.store._conn.execute(
+                "CREATE TRIGGER refuse_dataset_receipt "
+                "BEFORE INSERT ON dataset_verification_receipts BEGIN "
+                "SELECT RAISE(ABORT, 'injected receipt persistence failure'); END"
+            )
+            runner.store._conn.commit()
 
         def emit(event):
             if fault == "emit_after_commit" and event.get("type") == "artifact_created":
@@ -1104,6 +1247,7 @@ def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
         ) as failure:
             invoke(emit)
         assert failure.value.output_committed is True
+        assert not runner.store._conn.in_transaction
         assert (state.workspace / spec()["path"]).read_bytes() == BODY
         assert reads == [selection().metadata_url, selection().download_url]
         artifact = runner.store.artifact_by_filename(
@@ -1121,3 +1265,32 @@ def test_native_capture_failure_reports_retry_veto_and_preserves_durable_truth(
                 json.loads(meta["source"])["dataset"]["local_sha256"]
                 == meta["checksum"]
             )
+            # artifact_created is emitted inside capture, before the native
+            # committer can issue its receipt. Every injected failure here
+            # therefore remains unverified, including a committed snapshot.
+            assert not runner.store.dataset_input_is_verified(
+                meta,
+                root_frame_id=state.root_frame_id,
+                project_id=state.project_id,
+            )
+            db_path = runner.cfg.db_path
+
+    if fault == "receipt":
+        from openai4s.store import get_store
+
+        runner.store.close()
+        reopened = get_store(db_path)
+        try:
+            assert (
+                reopened._conn.execute(
+                    "SELECT COUNT(*) FROM dataset_verification_receipts"
+                ).fetchone()[0]
+                == 0
+            )
+            assert not reopened.dataset_input_is_verified(
+                reopened.version_meta(meta["version_id"]),
+                root_frame_id=state.root_frame_id,
+                project_id=state.project_id,
+            )
+        finally:
+            reopened.close()

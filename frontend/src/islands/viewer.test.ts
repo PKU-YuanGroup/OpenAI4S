@@ -246,6 +246,20 @@ it("does not link to a truncated record URL or infer a successful download", () 
   expect(nodes.map((node) => node.textContent)).not.toContain(filesT("versions.datasetChecksMatched"));
 });
 
+it.each(["en", "zh"] as const)("distinguishes unknown verification from unreported metadata in %s", async (locale) => {
+  const previousLanguage = LANG;
+  await setLang(locale);
+  try {
+    const rows = sourcePanelNodes({ dataset: { declared_license: null, file_verification: null } })
+      .filter((node) => node.className === "ver-src-row");
+    const valueFor = (label: string) => rows.find((node) => node.children[0]?.textContent === label)?.children[1]?.textContent;
+    expect(valueFor(filesT("versions.datasetRecordedCheck")))
+      .toBe(locale === "en" ? "Verification status unknown" : "核验状态未知");
+    expect(valueFor(filesT("versions.datasetLicense")))
+      .toBe(locale === "en" ? "Not reported" : "未提供");
+  } finally { await setLang(previousLanguage); }
+});
+
 it.each(["en", "zh"] as const)("names a clipped dataset field by its %s row label", async (locale) => {
   const previousLanguage = LANG;
   await setLang(locale);

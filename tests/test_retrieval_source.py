@@ -274,6 +274,62 @@ def test_dataset_projection_clips_with_an_explicit_field_name():
     assert out["dataset"]["truncated_fields"] == ["title"]
 
 
+def test_historical_dataset_claim_requires_a_local_receipt_after_reopen(tmp_path):
+    """The real version route must not certify script-supplied historical JSON."""
+    import hashlib
+
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server.gateway import SessionRunner, WSHub, make_handler
+    from openai4s.store import get_store
+
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    store = get_store(cfg.db_path)
+    frame = store.new_frame(kind="turn", project_id="recorded-input")
+    path = tmp_path / "manual.csv"
+    body = b"value\n1\n"
+    path.write_bytes(body)
+    source = json.dumps(
+        {"dataset": {"file_verification": "size_and_source_checksum_verified"}}
+    )
+    artifact = store.save_artifact(
+        path=str(path),
+        filename="manual.csv",
+        size_bytes=len(body),
+        content_type="text/csv",
+        checksum=hashlib.sha256(body).hexdigest(),
+        frame_id=frame,
+        root_frame_id=frame,
+        project_id="recorded-input",
+        source=source,
+    )
+    store.close()
+
+    hub = WSHub()
+    runner = SessionRunner(cfg, hub, start_idle_sweeper=False)
+    try:
+        handler = object.__new__(make_handler(cfg, hub, runner))
+        handler.headers = {}
+        artifact_id = artifact["artifact_id"]
+        handler.path = f"/api/v1/artifacts/{artifact_id}/versions"
+        seen = []
+        handler._json = lambda obj, code=200: seen.append(obj)
+        handler._body = lambda: {}
+        handler._api("GET", f"/artifacts/{artifact_id}/versions")
+        assert runner.store.version_meta(artifact["version_id"])["source"] == source
+        row = seen[-1]["versions"][0]
+        assert row["version_id"] == artifact["version_id"]
+        dataset = row.get("retrieval_source", {}).get("dataset", {})
+        assert "file_verification" in dataset
+        assert dataset["file_verification"] is None
+        assert dataset.get("file_verification") != "size_and_source_checksum_verified"
+    finally:
+        runner.close()
+        runner.store.close()
+
+
 def test_dataset_sources_remain_version_and_session_bound_after_reopen(tmp_path):
     """A later input must not change an earlier version's recorded selection."""
     import hashlib
@@ -358,7 +414,8 @@ def test_dataset_sources_remain_version_and_session_bound_after_reopen(tmp_path)
             assert dataset["record_doi"] == f"10.5281/zenodo.{100 + index}"
             assert dataset["local_sha256"] == row["checksum"]
             assert dataset["declared_license"] is None
-            assert dataset["file_verification"] == "size_and_source_checksum_verified"
+            # These fixtures supply recorded JSON, not a native Host receipt.
+            assert dataset["file_verification"] is None
             stored = runner.store.version_meta(row["version_id"])
             assert stored["source"] == sources[index]
         assert SECRET not in json.dumps(seen)
@@ -368,6 +425,420 @@ def test_dataset_sources_remain_version_and_session_bound_after_reopen(tmp_path)
     finally:
         runner.close()
         runner.store.close()
+
+
+def _receipt_fixture(tmp_path, *, change=None):
+    """Unit fixture for trusted Host evidence, not a live/native import claim."""
+    import hashlib
+
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    store = get_store(Config(data_dir=tmp_path / "data").db_path)
+    frame = store.new_frame(kind="turn", project_id="receipt-test")
+    sibling = store.new_frame(kind="turn", project_id="receipt-test")
+    body = b"value\n1\n"
+    snapshot = tmp_path / "snapshot.csv"
+    snapshot.write_bytes(body)
+    checksum = hashlib.sha256(body).hexdigest()
+    source = {
+        "kind": "dataset_input",
+        "database": "zenodo",
+        "dataset": {
+            "provider": "zenodo",
+            "record_id": "1",
+            "file_key": "input.csv",
+            "access_right": "open",
+            "declared_size_bytes": len(body),
+            "declared_checksum": "md5:"
+            + hashlib.md5(body, usedforsecurity=False).hexdigest(),
+            "downloaded_bytes": len(body),
+            "local_sha256": checksum,
+            "file_verification": "size_and_source_checksum_verified",
+        },
+    }
+    if change is not None:
+        change(source)
+    artifact = store.save_artifact(
+        path=str(tmp_path / "input.csv"),
+        snapshot_path=str(snapshot),
+        filename="input.csv",
+        size_bytes=len(body),
+        content_type="text/csv",
+        checksum=checksum,
+        frame_id=frame,
+        root_frame_id=frame,
+        project_id="receipt-test",
+        source=source,
+    )
+    return store, frame, sibling, artifact, source
+
+
+def test_dataset_receipt_is_exact_scoped_durable_and_not_transferred_by_hash(tmp_path):
+    from openai4s.store import get_store
+
+    store, frame, sibling, artifact, source = _receipt_fixture(tmp_path)
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    first_id = artifact["version_id"]
+    db_path = store.db_path
+    try:
+        assert not store.dataset_input_is_verified(
+            store.version_meta(first_id), **scope
+        )
+        store.record_dataset_verification(first_id, source, **scope)
+        # An identical receipt is idempotent, not a rewrite of verification time.
+        store.record_dataset_verification(first_id, source, **scope)
+        assert store.dataset_input_is_verified(store.version_meta(first_id), **scope)
+        assert not store.dataset_input_is_verified(
+            store.version_meta(first_id),
+            root_frame_id=sibling,
+            project_id="receipt-test",
+        )
+        assert not store.dataset_input_is_verified(
+            store.version_meta(first_id), root_frame_id=frame, project_id="foreign"
+        )
+        later_source = {**source, "retrieved_at": 2}
+        metadata = store.version_meta(first_id)
+        later = store.save_artifact(
+            path=metadata["path"],
+            snapshot_path=metadata["snapshot_path"],
+            artifact_id=artifact["artifact_id"],
+            filename="input.csv",
+            size_bytes=metadata["size_bytes"],
+            content_type="text/csv",
+            checksum=metadata["checksum"],
+            frame_id=frame,
+            source=later_source,
+            **scope,
+        )
+        assert not store.dataset_input_is_verified(
+            store.version_meta(later["version_id"]), **scope
+        )
+        with pytest.raises(PermissionError):
+            store.query("SELECT * FROM dataset_verification_receipts")
+    finally:
+        store.close()
+    reopened = get_store(db_path)
+    try:
+        assert reopened.dataset_input_is_verified(
+            reopened.version_meta(first_id), **scope
+        )
+        first = reopened.version_meta(first_id)
+        projected = public_source(
+            first["source"],
+            artifact_sha256=first["checksum"],
+            dataset_verified=reopened.dataset_input_is_verified(
+                reopened.version_meta(first_id), **scope
+            ),
+        )
+        assert (
+            projected["dataset"]["file_verification"]
+            == "size_and_source_checksum_verified"
+        )
+        assert not reopened.dataset_input_is_verified(
+            reopened.version_meta(later["version_id"]), **scope
+        )
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("failure_at", ["insert", "commit"])
+def test_failed_receipt_cannot_be_committed_by_a_later_store_write(
+    tmp_path, monkeypatch, failure_at
+):
+    import sqlite3
+
+    store, frame, _sibling, artifact, source = _receipt_fixture(tmp_path)
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    connection = store._conn
+
+    class FailingConnection:
+        receipt_pending = False
+
+        def execute(self, sql, parameters=()):
+            if sql.startswith("INSERT INTO dataset_verification_receipts"):
+                if failure_at == "insert":
+                    raise sqlite3.OperationalError("injected receipt insert failure")
+                self.receipt_pending = True
+            return connection.execute(sql, parameters)
+
+        def commit(self):
+            if self.receipt_pending:
+                self.receipt_pending = False
+                raise sqlite3.OperationalError("injected receipt commit failure")
+            connection.commit()
+
+        def rollback(self):
+            connection.rollback()
+
+    monkeypatch.setattr(store._artifacts, "_connection", FailingConnection())
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="injected receipt"):
+            store.record_dataset_verification(artifact["version_id"], source, **scope)
+        assert not connection.in_transaction
+        assert not store.dataset_input_is_verified(
+            store.version_meta(artifact["version_id"]), **scope
+        )
+        # Ordinary audit/frame writes share this connection. They must not
+        # accidentally commit authority from a previously failed import.
+        store.new_frame(kind="turn", project_id="ordinary-write")
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM dataset_verification_receipts"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("field", ["source", "checksum", "size_bytes", "snapshot_path"])
+def test_dataset_receipt_refuses_changed_version_metadata(tmp_path, field):
+    store, frame, _sibling, artifact, source = _receipt_fixture(tmp_path)
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    try:
+        store.record_dataset_verification(artifact["version_id"], source, **scope)
+        replacement = {
+            "source": json.dumps({**source, "retrieved_at": 99}),
+            "checksum": "0" * 64,
+            "size_bytes": 99,
+            "snapshot_path": str(tmp_path / "another.csv"),
+        }[field]
+        # This controlled mutation models stale/corrupted persisted metadata.
+        store._conn.execute(
+            f"UPDATE artifact_versions SET {field}=? WHERE version_id=?",
+            (replacement, artifact["version_id"]),
+        )
+        store._conn.commit()
+        assert not store.dataset_input_is_verified(
+            store.version_meta(artifact["version_id"]), **scope
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("file_verification", "not_downloaded"),
+        ("local_sha256", "0" * 64),
+        ("downloaded_bytes", True),
+        ("declared_size_bytes", 99),
+        ("declared_checksum", "md5:invalid"),
+        ("access_right", "restricted"),
+        ("record_id", "concept-doi"),
+        ("file_key", ""),
+    ],
+)
+def test_dataset_receipt_rejects_incomplete_or_mismatched_evidence(
+    tmp_path, field, value
+):
+    store, frame, _sibling, artifact, source = _receipt_fixture(
+        tmp_path, change=lambda source: source["dataset"].update({field: value})
+    )
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    try:
+        with pytest.raises(ValueError, match="native dataset receipt"):
+            store.record_dataset_verification(artifact["version_id"], source, **scope)
+        assert not store.dataset_input_is_verified(
+            store.version_meta(artifact["version_id"]), **scope
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("field", ["root_frame_id", "project_id"])
+def test_dataset_receipt_does_not_follow_rescoped_ownership(tmp_path, field):
+    store, frame, sibling, artifact, source = _receipt_fixture(tmp_path)
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    try:
+        store.record_dataset_verification(artifact["version_id"], source, **scope)
+        changed_scope = {
+            **scope,
+            field: sibling if field == "root_frame_id" else "foreign",
+        }
+        store._conn.execute(
+            f"UPDATE artifacts SET {field}=? WHERE artifact_id=?",
+            (changed_scope[field], artifact["artifact_id"]),
+        )
+        store._conn.commit()
+        assert not store.dataset_input_is_verified(
+            store.version_meta(artifact["version_id"]), **changed_scope
+        )
+    finally:
+        store.close()
+
+
+def test_dataset_receipt_survives_real_version_route_and_store_reopen(tmp_path):
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server.gateway import SessionRunner, WSHub, make_handler
+
+    store, frame, _sibling, artifact, source = _receipt_fixture(tmp_path)
+    store.record_dataset_verification(
+        artifact["version_id"], source, root_frame_id=frame, project_id="receipt-test"
+    )
+    raw = store.version_meta(artifact["version_id"])["source"]
+    store.close()
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    hub = WSHub()
+    runner = SessionRunner(cfg, hub, start_idle_sweeper=False)
+    try:
+        handler = object.__new__(make_handler(cfg, hub, runner))
+        handler.headers = {}
+        handler.path = f"/api/v1/artifacts/{artifact['artifact_id']}/versions"
+        seen = []
+        handler._json = lambda obj, code=200: seen.append(obj)
+        handler._body = lambda: {}
+        handler._api("GET", f"/artifacts/{artifact['artifact_id']}/versions")
+        row = seen[-1]["versions"][0]
+        assert (
+            row["retrieval_source"]["dataset"]["file_verification"]
+            == "size_and_source_checksum_verified"
+        )
+        assert runner.store.version_meta(artifact["version_id"])["source"] == raw
+    finally:
+        runner.close()
+        runner.store.close()
+
+
+@pytest.mark.parametrize("field", ["source", "checksum", "size_bytes"])
+def test_version_route_does_not_verify_a_stale_projection(tmp_path, monkeypatch, field):
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server.gateway import SessionRunner, WSHub, make_handler
+
+    store, frame, _sibling, artifact, source = _receipt_fixture(tmp_path)
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    store.record_dataset_verification(artifact["version_id"], source, **scope)
+    original = store.version_meta(artifact["version_id"])
+    stale_source = {**source, "dataset": {**source["dataset"], "record_id": "999"}}
+    stale_value = {
+        "source": json.dumps(stale_source),
+        "checksum": "0" * 64,
+        "size_bytes": 999,
+    }[field]
+    store._conn.execute(
+        f"UPDATE artifact_versions SET {field}=? WHERE version_id=?",
+        (stale_value, artifact["version_id"]),
+    )
+    store._conn.commit()
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    hub = WSHub()
+    runner = SessionRunner(cfg, hub, start_idle_sweeper=False)
+    list_versions = store.list_versions
+
+    def read_then_restore(artifact_id):
+        rows = list_versions(artifact_id)
+        store._conn.execute(
+            f"UPDATE artifact_versions SET {field}=? WHERE version_id=?",
+            (original[field], artifact["version_id"]),
+        )
+        store._conn.commit()
+        return rows
+
+    monkeypatch.setattr(store, "list_versions", read_then_restore)
+    try:
+        handler = object.__new__(make_handler(cfg, hub, runner))
+        handler.headers = {}
+        handler.path = f"/api/v1/artifacts/{artifact['artifact_id']}/versions"
+        seen = []
+        handler._json = lambda obj, code=200: seen.append(obj)
+        handler._body = lambda: {}
+        handler._api("GET", f"/artifacts/{artifact['artifact_id']}/versions")
+        projected = seen[-1]["versions"][0]
+        dataset = projected["retrieval_source"]["dataset"]
+        assert dataset["file_verification"] is None
+        assert store.version_meta(artifact["version_id"])[field] == original[field]
+    finally:
+        runner.close()
+        runner.store.close()
+
+
+def test_package_artifact_import_cannot_inherit_local_verification(tmp_path):
+    import hashlib
+
+    from openai4s.server.session_package import SessionPackageService
+
+    store, frame, _sibling, artifact, source = _receipt_fixture(tmp_path)
+    scope = {"root_frame_id": frame, "project_id": "receipt-test"}
+    try:
+        store.record_dataset_verification(artifact["version_id"], source, **scope)
+        original = store.version_meta(artifact["version_id"])
+        body = b"value\n1\n"
+        digest = hashlib.sha256(body).hexdigest()
+        imported_root = store.new_frame(kind="turn", project_id="package-import")
+        service = object.__new__(SessionPackageService)
+        service.store = store
+        # A package may carry source declarations, but not this installation's
+        # authoritative receipt, even when its bytes genuinely match.
+        manifest = {
+            "dataset_verification_receipts": [
+                {"version_id": artifact["version_id"], "verified": True}
+            ],
+            "artifacts": [
+                {
+                    "artifact_id": artifact["artifact_id"],
+                    "filename": "input.csv",
+                    "latest_version_id": artifact["version_id"],
+                    "versions": [
+                        {
+                            "version_id": artifact["version_id"],
+                            "available": True,
+                            "snapshot_sha256": digest,
+                            "source": original["source"],
+                        }
+                    ],
+                }
+            ],
+        }
+        _artifacts, versions, _live = service._import_artifacts(
+            imported_root,
+            "package-import",
+            manifest,
+            {f"artifact-data/{digest}": body},
+            import_root=tmp_path / "import-data",
+            active_workspace=tmp_path / "import-workspace",
+            cell_map={},
+            env_map={},
+        )
+        imported_id = versions[artifact["version_id"]]
+        assert imported_id != artifact["version_id"]
+        assert store.version_meta(imported_id)["source"] == original["source"]
+        assert not store.dataset_input_is_verified(
+            store.version_meta(imported_id),
+            root_frame_id=imported_root,
+            project_id="package-import",
+        )
+        assert store.dataset_input_is_verified(
+            store.version_meta(artifact["version_id"]), **scope
+        )
+    finally:
+        store.close()
+
+
+def test_source_json_cannot_supply_verification_authority():
+    out = public_source(
+        {
+            "database": "zenodo",
+            "dataset_verified": True,
+            "dataset": {
+                "dataset_verified": True,
+                "file_verification": "size_and_source_checksum_verified",
+            },
+        }
+    )
+    assert out["dataset"]["file_verification"] is None
+
+
+def test_unattested_dataset_reports_an_explicit_unknown_check():
+    out = public_source({"database": "zenodo", "dataset": {"record_id": "123"}})
+    assert "file_verification" in out["dataset"]
+    assert out["dataset"]["file_verification"] is None
 
 
 def test_the_route_sends_provenance_and_never_the_credential(tmp_path):
