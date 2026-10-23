@@ -30,7 +30,8 @@ Cell, capture the resulting Artifact and read it back after a restart. The Linux
 receipt therefore carries the report of `scripts/installed_runtime_smoke.py`,
 which ran exactly that chain inside the packaged runtime, bound to the tarball's
 digest and the frozen source SHA; `bundle_smoke` carries the Linux browser
-acceptance the R6 browser harness writes. `verify_build_receipts` refuses a
+acceptance the R6 browser harness writes, and is equally required: the packaged
+workbench has to have been opened in a real browser against those exact bytes. `verify_build_receipts` refuses a
 Linux receipt whose evidence is missing, was recorded as `not_run`, failed,
 timed out, describes other bytes, or comes from an older scenario. Without this
 a release could publish a package nothing ever executed.
@@ -389,6 +390,12 @@ def normalize_bundle_smoke(
         raise ReceiptError(
             "bundle browser acceptance did not pass: " + ", ".join(missing)
         )
+    if str(raw.get("figure_tool") or "") != "matplotlib":
+        raise ReceiptError(
+            "bundle browser acceptance did not produce its figure with the packaged "
+            f"matplotlib (figure_tool={raw.get('figure_tool')!r}); a stand-in figure "
+            "does not prove the shipped science stack draws one"
+        )
     artifact = raw.get("artifact")
     if not isinstance(artifact, Mapping):
         raise ReceiptError("bundle browser evidence records no Artifact version")
@@ -491,13 +498,18 @@ def build_build_receipt(
             source_sha=str(source_sha),
             platform=platform,
         )
-        if bundle_smoke is not None:
-            document["bundle_smoke"] = normalize_bundle_smoke(
-                bundle_smoke,
-                artifact_sha256=_digest(linux_artifact),
-                source_sha=str(source_sha),
-                platform=platform,
+        if bundle_smoke is None:
+            raise ReceiptError(
+                f"a linux build receipt for {linux_artifact.name} must carry the "
+                "browser acceptance result (bundle_smoke); the packaged workbench was "
+                "never opened in a browser"
             )
+        document["bundle_smoke"] = normalize_bundle_smoke(
+            bundle_smoke,
+            artifact_sha256=_digest(linux_artifact),
+            source_sha=str(source_sha),
+            platform=platform,
+        )
     elif runtime_smoke is not None or bundle_smoke is not None:
         raise ReceiptError(
             f"a {kind} build receipt cannot carry platform smoke evidence; it "
@@ -547,15 +559,20 @@ def _verify_linux_smoke(
         platform=platform,
     )
     bundle_smoke = document.get("bundle_smoke")
-    if isinstance(bundle_smoke, Mapping) or bundle_smoke is not None:
-        # R6's producer writes this report from the Linux browser harness. When
-        # a receipt carries it, it must bind to the same tarball and commit.
-        normalize_bundle_smoke(
-            bundle_smoke,
-            artifact_sha256=digest,
-            source_sha=expected_sha,
-            platform=platform,
+    if not isinstance(bundle_smoke, Mapping):
+        raise ReceiptError(
+            f"build receipt {receipt_path.name} is for {name} but carries no browser "
+            "acceptance (bundle_smoke); nobody opened this package's workbench in a "
+            "browser before it was staged"
         )
+    # The browser harness writes this report and binds it to the same tarball
+    # and commit, so a report from another build cannot be borrowed.
+    normalize_bundle_smoke(
+        bundle_smoke,
+        artifact_sha256=digest,
+        source_sha=expected_sha,
+        platform=platform,
+    )
 
 
 def verify_build_receipts(

@@ -545,12 +545,40 @@ jobs:
             --source-sha "$SHA" \
             --smoke-report "$RUNNER_TEMP/runtime-smoke.json" \
             dist/OpenAI4S-*-linux-x86_64.tar.gz
+      # The verifier proves the package's interpreter, science stack, installer
+      # and installed-runtime science chain. This is the last layer up: the real
+      # workbench in a real browser, with the packaged runtime executing Cells,
+      # capturing CSV and matplotlib artifacts, serving an exact version after a
+      # same-name overwrite, and reading the same bytes back after a daemon
+      # restart. Notebook REPL is enabled for this process only; the shipped
+      # default is untouched and no model is called.
+      - name: Set up Node for the browser acceptance
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the browser driver
+        # Same bound as the PR browser job: `playwright install --with-deps`
+        # runs apt-get with no timeout of its own, and a stalled runner mirror
+        # once held an older job until its limit.
+        timeout-minutes: 20
+        run: |
+          npm ci --ignore-scripts
+          ./node_modules/.bin/playwright install --with-deps chromium
+      - name: Run the Linux bundle in a real browser
+        env:
+          SHA: ${{ needs.freeze.outputs.source_sha }}
+        run: |
+          node tests/browser_bundle_smoke.mjs \
+            --bundle dist/OpenAI4S-*-linux-x86_64.tar.gz \
+            --source-sha "$SHA" \
+            --output "$RUNNER_TEMP/bundle-smoke.json"
       # Same binding the wheel and the DMG get. Without it the tarball was
       # staged with no document tying its bytes to the frozen commit -- covered
       # only by the in-run `incoming` digests, which say "these are the bytes
       # `attach` downloaded", not "these are the bytes built from this source".
-      # Schema 3 also requires the executed-runtime probe report: a digest says
-      # the bytes did not change, not that they run.
+      # Schema 3 also requires the executed-runtime probe report and the browser
+      # acceptance: a digest says the bytes did not change, not that they run or
+      # that the workbench can open them.
       - name: Receipt the bundle against the frozen SHA
         env:
           SHA: ${{ needs.freeze.outputs.source_sha }}
@@ -560,6 +588,7 @@ jobs:
             --kind linux --source-sha "$SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --runtime-smoke-file "$RUNNER_TEMP/runtime-smoke.json" \
+            --bundle-smoke-file "$RUNNER_TEMP/bundle-smoke.json" \
             dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the

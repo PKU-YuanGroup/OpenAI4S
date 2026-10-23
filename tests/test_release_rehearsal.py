@@ -484,3 +484,17 @@ def test_a_browser_acceptance_for_another_tarball_is_refused():
             source_sha=SHA,
             platform=("linux", "x86_64"),
         )
+
+
+def test_a_browser_acceptance_without_the_packaged_matplotlib_is_refused():
+    from tests._runtime_smoke import bundle_report
+
+    report = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    report["figure_tool"] = "stdlib-png"
+    with pytest.raises(ReceiptError, match="packaged matplotlib"):
+        release_receipts.normalize_bundle_smoke(
+            report,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )

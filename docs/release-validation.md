@@ -244,6 +244,23 @@ it into the tarball's build receipt; a cross-built bundle gets a report with
 credential, and the probe never imports `openai4s` itself, so the host
 interpreter cannot be mistaken for the runtime under test.
 
+One layer above the probe, the same Linux job opens the packaged workbench in a
+real browser with
+[`tests/browser_bundle_smoke.mjs`](../tests/browser_bundle_smoke.mjs): it starts
+the bundle's own daemon in an isolated data directory (Notebook REPL enabled
+for that process only — the shipped default stays read-only), authenticates
+through the loopback-token flow, runs a Python Cell that writes a fixed CSV and
+a second that produces a matplotlib figure, opens both captured Artifact
+versions in the viewer, records the version id and SHA-256 of the exact bytes,
+writes the same filename again and reopens the first version by its exact id,
+then stops the daemon, reopens the data directory, reads the same bytes and
+execution history back in a fresh browser, and confirms no daemon or kernel
+worker survives. It calls no model and reaches nothing but loopback. Its report
+is `bundle_smoke` in the receipt; the run is bounded by R6's budgets (90 s per
+service start, 60 s per Cell, 120 s per browser scene, 30 s cleanup, 420 s
+total), and a host that cannot execute the bundle records `not_run` rather than
+claiming a pass.
+
 ## Windows package
 
 Not a native Windows build. `openai4s/platform_support.py` refuses to start a
@@ -326,13 +343,13 @@ dispatch. Schema-3 build receipts record the candidate commit, the workflow
 run id, the dispatch inputs, the builder platform and artifact checksums (the
 macOS receipt also the notary/staple result). The Linux receipt additionally
 carries `runtime_smoke`, the installed-runtime probe report bound to that
-tarball's digest, the frozen source SHA and `linux/<arch>`, and — once the
-browser acceptance has run — `bundle_smoke`, the Linux browser scenario bound
-to the same bytes. A digest says the bytes did not change; neither of those
-reports may be inferred from it. Staging refuses a Linux receipt whose
-`runtime_smoke` is missing, `not_run`, failed, timed out, describes other
-bytes or another commit, comes from an older probe scenario, or leaves a
-daemon or worker behind. Check-run ids are recorded on the stage attestation
+tarball's digest, the frozen source SHA and `linux/<arch>`, and `bundle_smoke`,
+the Linux browser scenario bound to the same bytes (including that its figure
+came from the packaged matplotlib). A digest says the bytes did not change;
+neither of those reports may be inferred from it. Staging refuses a Linux
+receipt whose `runtime_smoke` or `bundle_smoke` is missing, `not_run`, failed,
+timed out, describes other bytes or another commit, comes from an older
+scenario, or leaves a daemon or worker behind. Check-run ids are recorded on the stage attestation
 only: they come from the quality receipt, and the `--check-runs-json` slot on
 a build receipt exists but the workflow does not fill it, so a build receipt's
 `check_runs` is `[]`. `publish=false` is a rehearsal: PyPI and the public
