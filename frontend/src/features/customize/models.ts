@@ -153,8 +153,26 @@ export type EffectiveCapability = {
   source: CapabilitySource;
 };
 
+/**
+ * The boolean fields the server's effective-capability projection reports
+ * (M1 `EFFECTIVE_BOOLEAN_FIELDS`), in contract order. Probe evidence in this
+ * version exists only for `tool_calling` and `streaming`; the other five come
+ * from the catalogue or an explicit override.
+ */
+export const EFFECTIVE_CAPABILITY_FIELDS = [
+  "tool_calling",
+  "parallel_tool_calls",
+  "strict_tool_schema",
+  "vision",
+  "audio",
+  "reasoning",
+  "streaming",
+] as const;
+export type EffectiveCapabilityField =
+  (typeof EFFECTIVE_CAPABILITY_FIELDS)[number];
+
 export type EffectiveCapabilities = Partial<
-  Record<"native_tool_call" | "streaming", EffectiveCapability>
+  Record<EffectiveCapabilityField, EffectiveCapability>
 >;
 
 function capabilityProjectionOf(raw: unknown): unknown {
@@ -184,15 +202,20 @@ export function readEffectiveCapabilities(
   const row = projection as Record<string, unknown>;
   const out: EffectiveCapabilities = {};
   let any = false;
-  (["native_tool_call", "streaming"] as const).forEach((cap) => {
-    const entry = row[cap];
+  EFFECTIVE_CAPABILITY_FIELDS.forEach((field) => {
+    // `native_tool_call` is the receipt-era spelling of `tool_calling`; accept
+    // it as an alias so a transitional producer cannot half-populate the row.
+    const entry =
+      field === "tool_calling" && row[field] == null
+        ? row.native_tool_call
+        : row[field];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
     const record = entry as Record<string, unknown>;
     const value = record.value !== undefined ? record.value : record.effective;
     const source = typeof record.source === "string" ? record.source : "";
     if (typeof value !== "boolean") return;
     if (!(CAPABILITY_SOURCES as readonly string[]).includes(source)) return;
-    out[cap] = { value, source: source as CapabilitySource };
+    out[field] = { value, source: source as CapabilitySource };
     any = true;
   });
   return any ? out : null;

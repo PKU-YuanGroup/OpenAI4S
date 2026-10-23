@@ -33,7 +33,8 @@ export function CapabilityBadges({
           key={row.cap}
           class="pill prof-cap"
           data-cap={row.cap}
-          data-state={row.state}
+          data-effective-field={row.field}
+          data-state={row.observed ? row.state : undefined}
           data-stale={row.stale ? "true" : "false"}
           data-observed={row.observed ? "true" : "false"}
           data-observed-at={row.observedAt ? String(row.observedAt) : undefined}

@@ -194,12 +194,12 @@ describe("effective capability projection", () => {
   it("reads each field's effective boolean with its provenance", () => {
     const effective = readEffectiveCapabilities({
       effective_capabilities: {
-        native_tool_call: { value: true, source: "probe" },
+        tool_calling: { value: true, source: "probe" },
         streaming: { effective: false, source: "catalog" },
       },
     });
     expect(effective).toEqual({
-      native_tool_call: { value: true, source: "probe" },
+      tool_calling: { value: true, source: "probe" },
       streaming: { value: false, source: "catalog" },
     });
   });
@@ -210,15 +210,41 @@ describe("effective capability projection", () => {
         native_tool_call: "true",
         streaming: "unknown",
         effective_capabilities: {
+          // The receipt-era spelling of `tool_calling` is accepted as an alias.
           native_tool_call: { value: true, source: "explicit_override" },
         },
       },
     });
-    expect(effective?.native_tool_call).toEqual({
+    expect(effective?.tool_calling).toEqual({
       value: true,
       source: "explicit_override",
     });
     expect(effective?.streaming).toBeUndefined();
+  });
+
+  it("reads the full seven-field projection", () => {
+    const effective = readEffectiveCapabilities({
+      effective_capabilities: {
+        tool_calling: { value: true, source: "probe" },
+        parallel_tool_calls: { value: false, source: "catalog" },
+        strict_tool_schema: { value: true, source: "explicit_override" },
+        vision: { value: false, source: "catalog" },
+        audio: { value: true, source: "catalog" },
+        reasoning: { value: true, source: "catalog" },
+        streaming: { value: false, source: "probe" },
+      },
+    });
+    expect(Object.keys(effective ?? {})).toEqual([
+      "tool_calling",
+      "parallel_tool_calls",
+      "strict_tool_schema",
+      "vision",
+      "audio",
+      "reasoning",
+      "streaming",
+    ]);
+    expect(effective?.audio).toEqual({ value: true, source: "catalog" });
+    expect(effective?.streaming).toEqual({ value: false, source: "probe" });
   });
 
   it("returns null without the field, so an old service keeps its display", () => {

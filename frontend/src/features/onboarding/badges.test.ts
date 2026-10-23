@@ -102,12 +102,14 @@ describe("M2 observation vs next-request badge", () => {
     observed_at: 1761177600000,
   };
   const CATALOG: EffectiveCapabilities = {
-    native_tool_call: { value: true, source: "catalog" },
+    tool_calling: { value: true, source: "catalog" },
   };
 
   it("states the next request separately and never presents a catalogue default as measured", () => {
     const rows = capabilityBadgeRows(RECEIPT, "", CATALOG);
     const native = rows[0]!;
+    expect(native.cap).toBe("native_tool_call");
+    expect(native.field).toBe("tool_calling");
     expect(native.effective).toEqual({ value: true, source: "catalog" });
     expect(native.observedAt).toBe(1761177600000);
     const text = capabilityBadgeText(native);
@@ -130,7 +132,7 @@ describe("M2 observation vs next-request badge", () => {
 
     const explicit = capabilityBadgeText(
       capabilityBadgeRows(RECEIPT, "", {
-        native_tool_call: { value: true, source: "explicit_override" },
+        tool_calling: { value: true, source: "explicit_override" },
       })[0]!,
     );
     expect(explicit).toContain("explicit config");
@@ -141,11 +143,62 @@ describe("M2 observation vs next-request badge", () => {
     const rows = capabilityBadgeRows(null, "", CATALOG);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.cap).toBe("native_tool_call");
+    expect(rows[0]!.field).toBe("tool_calling");
     expect(rows[0]!.state).toBe("unknown");
     expect(rows[0]!.observed).toBe(false);
     const text = capabilityBadgeText(rows[0]!);
     expect(text).toContain("catalogue default");
     expect(text).not.toContain("tested");
+  });
+
+  it("renders all seven contract fields in order, observing only what the receipt saw", () => {
+    const FULL: EffectiveCapabilities = {
+      tool_calling: { value: true, source: "probe" },
+      parallel_tool_calls: { value: false, source: "catalog" },
+      strict_tool_schema: { value: true, source: "explicit_override" },
+      vision: { value: false, source: "catalog" },
+      audio: { value: false, source: "catalog" },
+      reasoning: { value: true, source: "catalog" },
+      streaming: { value: true, source: "catalog" },
+    };
+    const rows = capabilityBadgeRows(RECEIPT, "", FULL);
+    expect(rows.map((row) => row.field)).toEqual([
+      "tool_calling",
+      "parallel_tool_calls",
+      "strict_tool_schema",
+      "vision",
+      "audio",
+      "reasoning",
+      "streaming",
+    ]);
+    expect(rows.map((row) => row.observed)).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+    ]);
+    // The receipt only observes tool_calling and streaming; the other five
+    // show the next-request decision and no "unknown" observation at all.
+    expect(rows.map((row) => row.cap)).toEqual([
+      "native_tool_call",
+      "parallel_tool_calls",
+      "strict_tool_schema",
+      "vision",
+      "audio",
+      "reasoning",
+      "streaming",
+    ]);
+    expect(capabilityBadgeText(rows[3]!)).toBe(
+      "vision · next request: off (catalogue default)",
+    );
+    expect(capabilityBadgeText(rows[2]!)).toBe(
+      "strict tool schema · next request: on (explicit config)",
+    );
+    expect(capabilityBadgeText(rows[0]!)).toContain("native tool call · unknown");
+    expect(capabilityBadgeText(rows[0]!)).toContain("next request: on (tested)");
   });
 
   it("keeps the old display when the service sends no projection", () => {

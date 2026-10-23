@@ -359,7 +359,7 @@ describe("M2 model capability provenance", () => {
           observed_at: 1761177600000,
         },
         effective_capabilities: {
-          native_tool_call: { value: true, source: "catalog" },
+          tool_calling: { value: true, source: "catalog" },
           streaming: { value: true, source: "probe" },
         },
       }),
@@ -426,6 +426,42 @@ describe("M2 model capability provenance", () => {
     expect(text).toContain("next request: off (catalogue default)");
   });
 
+  it("renders all seven contract fields returned with a profile", () => {
+    hookState.length = 0;
+    const tree = renderProfile(
+      savedProfile({
+        effective_capabilities: {
+          tool_calling: { value: true, source: "catalog" },
+          parallel_tool_calls: { value: false, source: "catalog" },
+          strict_tool_schema: { value: true, source: "explicit_override" },
+          vision: { value: false, source: "catalog" },
+          audio: { value: false, source: "catalog" },
+          reasoning: { value: true, source: "catalog" },
+          streaming: { value: true, source: "catalog" },
+        },
+      }),
+    );
+    const text = badgeText(tree);
+    expect(text).toContain("native tool call · next request: on (catalogue default)");
+    expect(text).toContain("parallel tool calls · next request: off (catalogue default)");
+    expect(text).toContain("strict tool schema · next request: on (explicit config)");
+    expect(text).toContain("vision · next request: off (catalogue default)");
+    expect(text).toContain("reasoning · next request: on (catalogue default)");
+    const pills = tagged(badgeTree(tree), "data-effective-field");
+    expect(pills.map((pill) => pill.props!["data-effective-field"])).toEqual([
+      "tool_calling",
+      "parallel_tool_calls",
+      "strict_tool_schema",
+      "vision",
+      "audio",
+      "reasoning",
+      "streaming",
+    ]);
+    // No receipt: nothing may look measured, so no pill claims an observation.
+    expect(pills.every((pill) => pill.props!["data-observed"] === "false")).toBe(true);
+    expect(pills.every((pill) => pill.props!["data-state"] === undefined)).toBe(true);
+  });
+
   it("keeps the old observation and projection when the probe fails", async () => {
     // Lead reminder: a persistence/transport failure must not turn the failed
     // probe into a new observation or a new next-request decision.
@@ -440,7 +476,7 @@ describe("M2 model capability provenance", () => {
         observed_at: 1761177600000,
       },
       effective_capabilities: {
-        native_tool_call: { value: true, source: "explicit_override" },
+        tool_calling: { value: true, source: "explicit_override" },
         streaming: { value: false, source: "catalog" },
       },
     });
