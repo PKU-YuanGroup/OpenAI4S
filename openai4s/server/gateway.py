@@ -19875,14 +19875,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # -- `result()` pulls files back and closes the job -- so a
                 # self-refreshing page would harvest into a session nobody was
                 # watching, on a schedule nobody chose.
+                #
+                # `limit`/`cursor`/`state` walk the record a page at a time;
+                # the response carries the same-owner live total and whether
+                # another page exists. An unreadable record answers 503 with a
+                # stable code: a blank 200 would read as "nothing is running"
+                # for a session whose GPU job may still be billing.
                 fid = m.group(1)
-                if store.get_frame(fid) is None:
+                try:
+                    frame_row = store.get_frame(fid)
+                except (
+                    Exception
+                ) as error:  # noqa: BLE001 - the same record is unreadable
+                    raise GatewayError(
+                        503,
+                        "compute records are unavailable right now",
+                        "compute_record_unavailable",
+                    ) from error
+                if frame_row is None:
                     raise GatewayError(404, "session not found")
-                self._json(
-                    compute_tasks.owner_tasks(
-                        store, str(runner.active_workspace_for(fid))
+                try:
+                    options = compute_tasks.parse_options(q)
+                    payload = compute_tasks.owner_tasks(
+                        store, str(runner.active_workspace_for(fid)), **options
                     )
-                )
+                except compute_tasks.InvalidTaskQuery as error:
+                    raise GatewayError(400, str(error), error.code) from error
+                except compute_tasks.ComputeRecordUnavailable as error:
+                    raise GatewayError(
+                        503,
+                        "compute records are unavailable right now",
+                        "compute_record_unavailable",
+                    ) from error
+                self._json(payload)
                 return
             m = re.fullmatch(r"/frames/([^/]+)/compute/tasks/([^/]+)/refresh", sub)
             if m and method == "POST":

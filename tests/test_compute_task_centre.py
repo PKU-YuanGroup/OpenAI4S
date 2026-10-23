@@ -22,8 +22,10 @@ running and billing.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -650,3 +652,283 @@ def test_a_confirmed_cancel_clears_the_earlier_unconfirmed_note(client, monkeypa
     assert row["status"] == CANCELLED
     assert not row.get("reason"), row.get("reason")
     assert "billing" not in str(body["task"].get("reason") or "")
+
+
+# --------------------------------------------------------------------------
+# paging: the live job the newest-200 view could not reach
+# --------------------------------------------------------------------------
+
+
+def _seed_many(client, frame, count, *, live_ids=frozenset(), prefix="job"):
+    """Create ``count`` jobs owned by ``frame``, optionally pinning the order.
+
+    Seeded through the repository's state machine (``create`` then ``update``),
+    because a row that jumped straight to a terminal state is one the system
+    never produces and a test that used one would prove nothing about the real
+    listing.
+    """
+    owner = client.owner_key(frame)
+    for index in range(count):
+        job_id = f"{prefix}-{index:03d}"
+        client.store.create_compute_job(
+            job_id=job_id, provider="byoc-test", status="queued", owner_key=owner
+        )
+        client.store.update_compute_job(job_id, status="staging")
+        if job_id in live_ids:
+            client.store.update_compute_job(job_id, status="running")
+        else:
+            client.store.update_compute_job(job_id, status="succeeded", terminal_at=1)
+        # Pin the ordering key so the tie-break is exercised deterministically:
+        # all 201 rows land in the same millisecond, which is exactly the case
+        # the old `ORDER BY created_at DESC` left undefined.
+        client.store.update_compute_job(job_id, created_at=5000)
+
+
+def _tasks_path(frame, **query):
+    path = f"/frames/{frame}/compute/tasks"
+    if query:
+        from urllib.parse import urlencode
+
+        path += "?" + urlencode(query)
+    return path
+
+
+def _page_ids(body):
+    return [task["job_id"] for task in body["tasks"]]
+
+
+def test_the_old_response_keys_keep_their_meaning_and_the_new_ones_are_added(client):
+    """`live_count` still counts live jobs on *this page*, `polled` is still
+    false, and the three new fields are always present — a client that only
+    knows the old shape reads what it always did."""
+    frame = client.session()
+    client.seed(frame, job_id="job-a", status="running")
+    client.seed(frame, job_id="job-b", status="succeeded", terminal_at=1)
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["polled"] is False
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1
+    assert body["has_more"] is False
+    assert body["next_cursor"] is None
+    assert set(_page_ids(body)) == {"job-a", "job-b"}
+
+
+def test_an_empty_page_is_a_success_and_a_failure_is_not_an_empty_page(client):
+    """A session with no remote work and an unreadable record must not look the
+    same. The first is "nothing is running"; the second cannot say that."""
+    frame = client.session()
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["tasks"] == []
+    assert body["live_count"] == 0
+    assert body["total_live_count"] == 0
+    assert body["has_more"] is False
+
+    def unreadable(*_args, **_kwargs):
+        raise sqlite3.OperationalError(
+            "no such table: compute_jobs at /private/lab/secret.db"
+        )
+
+    client.store.compute_jobs_page_for_owner = unreadable
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 503
+    assert body["code"] == "compute_record_unavailable"
+    assert body["status"] == 503
+    assert "tasks" not in body and "live_count" not in body
+    rendered = json.dumps(body)
+    for leak in ("no such table", "/private/lab", "secret.db", "sqlite"):
+        assert leak not in rendered
+
+
+def test_an_unreadable_session_lookup_is_also_503_rather_than_404(client):
+    """The frame read comes from the same database. It cannot answer "unknown
+    session" when it cannot read at all — and a 404 would tell the client the
+    session is gone."""
+    frame = client.session()
+
+    def unreadable(_frame_id):
+        raise sqlite3.OperationalError("database is locked: /private/lab/secret.db")
+
+    client.store.get_frame = unreadable
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 503
+    assert body["code"] == "compute_record_unavailable"
+    assert "/private/lab" not in json.dumps(body)
+
+
+def test_the_total_reaches_a_live_job_pushed_out_of_the_newest_page(client):
+    """The failure the paging exists for: 201 jobs, only the oldest still
+    running. The newest-200 view cannot contain it, and `live_count` over that
+    page is 0. `total_live_count` is 1, and the "live" filter locates it."""
+    frame = client.session()
+    _seed_many(client, frame, 201, live_ids={"job-000"})
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert len(body["tasks"]) == 200
+    assert body["total_live_count"] == 1
+    assert body["live_count"] == 0, "the legacy field counts this page only"
+    assert body["has_more"] is True
+    assert body["next_cursor"]
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?state=live")
+    assert status == 200
+    assert _page_ids(body) == ["job-000"]
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1
+    assert body["has_more"] is False
+    assert body["next_cursor"] is None
+
+
+def test_the_limit_is_defaulted_capped_and_validated(client):
+    frame = client.session()
+    _seed_many(client, frame, 201, live_ids={"job-000"})
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?limit=999")
+    assert status == 200
+    assert (
+        len(body["tasks"]) == 200
+    ), "a limit above the ceiling is clamped, not honoured"
+    assert body["has_more"] is True
+
+    for bad in ("0", "-1", "many"):
+        status, body = client.get(f"/frames/{frame}/compute/tasks?limit={bad}")
+        assert status == 400
+        assert body["code"] == "invalid_limit"
+
+    status, body = client.get(f"/frames/{frame}/compute/tasks?state=done")
+    assert status == 400
+    assert body["code"] == "invalid_state"
+
+
+def test_paging_is_stable_and_never_repeats_or_skips_a_job(client):
+    """All 201 rows share a `created_at`. A keyset ordering without a tiebreak
+    had no defined position between them, so a page boundary could repeat one
+    and skip another while both pages looked complete."""
+    frame = client.session()
+    _seed_many(client, frame, 201, live_ids={"job-000"})
+    seen: list[str] = []
+    cursor = None
+    pages = 0
+    while True:
+        query = {"limit": 7}
+        if cursor:
+            query["cursor"] = cursor
+        status, body = client.get(_tasks_path(frame, **query))
+        assert status == 200
+        ids = _page_ids(body)
+        assert ids == sorted(ids, reverse=True), "a page is not a stable slice"
+        assert not (set(ids) & set(seen)), f"repeated across pages: {ids}"
+        seen.extend(ids)
+        assert body["total_live_count"] == 1
+        pages += 1
+        if not body["has_more"]:
+            assert body["next_cursor"] is None
+            break
+        cursor = body["next_cursor"]
+        assert cursor
+    assert pages == 29, (pages, len(seen))
+    assert len(seen) == 201
+    assert len(set(seen)) == 201
+    assert seen == sorted(seen, reverse=True)
+
+
+def test_a_cursor_is_opaque_and_carries_no_owner_path(client):
+    """The cursor carries the sort key and the filter. It must not carry
+    `owner_key`: that is the session's workspace path, which is a leak and,
+    worse, would tempt a server to trust it as authorization."""
+    frame = client.session()
+    _seed_many(client, frame, 3)
+    _status, body = client.get(f"/frames/{frame}/compute/tasks?limit=1")
+    cursor = body["next_cursor"]
+    assert cursor
+    padded = cursor + "=" * (-len(cursor) % 4)
+    raw = base64.urlsafe_b64decode(padded).decode("utf-8")
+    assert client.owner_key(frame) not in raw
+    assert "owner_key" not in raw
+    assert "/" not in raw
+    payload = json.loads(raw)
+    assert set(payload) == {"v", "j", "t", "s"}
+
+
+def test_a_malformed_or_cross_filter_cursor_is_refused(client):
+    frame = client.session()
+    _seed_many(client, frame, 3)
+
+    for bad in ("not-a-cursor", "e30", base64.urlsafe_b64encode(b"[1,2]").decode()):
+        status, body = client.get(f"/frames/{frame}/compute/tasks?cursor={bad}")
+        assert status == 400
+        assert body["code"] == "invalid_cursor"
+
+    _status, body = client.get(f"/frames/{frame}/compute/tasks?limit=1")
+    cursor = body["next_cursor"]
+    status, body = client.get(
+        f"/frames/{frame}/compute/tasks?limit=1&state=live&cursor={cursor}"
+    )
+    assert status == 400
+    assert body["code"] == "invalid_cursor", "a page cursor is bound to its filter"
+
+
+def test_another_owners_cursor_is_refused_and_their_jobs_are_never_counted(client):
+    mine, theirs = client.session(), client.session()
+    _seed_many(client, mine, 3, prefix="mine")
+    _seed_many(client, theirs, 2, live_ids={"theirs-000"}, prefix="theirs")
+    _status, body = client.get(f"/frames/{mine}/compute/tasks?limit=1")
+    foreign_cursor = body["next_cursor"]
+
+    status, body = client.get(
+        f"/frames/{theirs}/compute/tasks?limit=1&cursor={foreign_cursor}"
+    )
+    assert status == 400
+    assert body["code"] == "invalid_cursor"
+
+    status, body = client.get(f"/frames/{mine}/compute/tasks")
+    assert status == 200
+    assert body["total_live_count"] == 0, "their live job is not my total"
+    assert all(job_id.startswith("mine-") for job_id in _page_ids(body))
+    assert "hidden" not in json.dumps(body)
+
+
+def test_unknown_is_counted_as_live_in_the_same_owner_total(client):
+    """`unknown` means the remote could not be reached, and the job may still
+    be billing. It is live for the total exactly as it is for the row."""
+    frame = client.session()
+    client.seed(frame, job_id="job-maybe", status="unknown")
+    status, body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+    assert body["tasks"][0]["status"] == "unknown"
+    assert body["tasks"][0]["live"] is True
+    assert body["live_count"] == 1
+    assert body["total_live_count"] == 1
+
+
+def test_reading_a_page_does_not_advance_or_rewrite_a_job(client):
+    """The page reads the durable record. It does not reconcile it, stamp it,
+    or append an event — that is the explicit refresh/cancel POST."""
+    frame = client.session()
+    client.seed(frame, job_id="job-live", status="running")
+    before = client.store.get_compute_job("job-live")
+    events_before = client.store.compute_job_events("job-live")
+
+    status, _body = client.get(f"/frames/{frame}/compute/tasks?limit=1&state=live")
+    assert status == 200
+    status, _body = client.get(f"/frames/{frame}/compute/tasks")
+    assert status == 200
+
+    assert client.store.get_compute_job("job-live") == before
+    assert client.store.compute_job_events("job-live") == events_before
+
+
+def test_the_new_fields_survive_a_restart(client, tmp_path):
+    frame = client.session()
+    _seed_many(client, frame, 3, live_ids={"job-000"})
+    client.store.close()
+
+    revived = _Client.__new__(_Client)
+    revived.__init__(tmp_path)
+    status, body = revived.get(f"/frames/{frame}/compute/tasks?limit=1")
+    assert status == 200
+    assert body["total_live_count"] == 1
+    assert body["has_more"] is True
+    assert body["next_cursor"]
