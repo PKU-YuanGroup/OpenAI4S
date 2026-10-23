@@ -119,6 +119,19 @@ def test_a_shared_value_from_a_tracked_file_is_no_input_of_an_unrelated_write(
     assert _inputs(lineage) == [], "a write that never read the file named it"
 
 
+@pytest.mark.parametrize("document", ["NaN", "Infinity", "-Infinity"])
+def test_json_nonfinite_constants_do_not_contaminate_an_independent_parse(
+    lineage, document
+):
+    loaded = _read_tracked(lineage, document)
+    unrelated = json.loads(document)
+    assert loaded is unrelated, "precondition: the decoder reused its constant"
+
+    _write(lineage, unrelated, "unrelated.out")
+
+    assert _inputs(lineage) == [], "an independent parse inherited the tracked source"
+
+
 @pytest.mark.parametrize("shared", [(), b""], ids=["empty tuple", "empty bytes"])
 def test_a_shared_value_from_a_tracked_pickle_is_no_input_of_an_unrelated_write(
     lineage, shared
@@ -298,6 +311,53 @@ def test_a_string_a_tracked_reader_returns_keeps_its_lineage(lineage):
     assert _inputs(lineage) == [[TRACKED]]
 
 
+@pytest.mark.parametrize(
+    "convert",
+    [
+        str,
+        lambda value: f"{value}",
+        lambda value: f"{value!s}",
+        format,
+        lambda value: format(value, ">10"),
+        "{}".format,
+        "{:>10}".format,
+        lambda value: "%s" % value,
+        lambda value: "%10s" % value,
+    ],
+    ids=[
+        "str",
+        "f-string",
+        "f-string-s",
+        "format",
+        "format-width",
+        "template",
+        "template-width",
+        "percent",
+        "percent-width",
+    ],
+)
+def test_string_output_conversions_keep_the_read_lineage(
+    lineage, tracked_frame, convert
+):
+    value = tracked_frame["name"][0]
+    converted = convert(value)
+    assert converted == convert("science")
+
+    _write(lineage, converted, "converted.txt")
+
+    assert _inputs(lineage) == [[TRACKED]]
+    assert provenance.get_tags("science") == frozenset()
+
+
+def test_plain_separator_join_is_an_explicit_untracked_boundary(lineage, tracked_frame):
+    # str.join does not dispatch to its elements' methods; do not regain a tag
+    # by tagging the plain result (which may itself be a shared constant).
+    joined = ",".join([tracked_frame["name"][0]])
+    assert type(joined) is str and joined == "science"
+    _write(lineage, joined, "joined.txt")
+    assert _inputs(lineage) == []
+
+
 @pytest.mark.parametrize("value", ["science", b"science"], ids=["str", "bytes"])
 def test_a_tagged_string_pickles_as_the_plain_value(value):
     """A pickle names the class, and the tagged one is local to a function, so
@@ -322,9 +382,11 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
     frame_id = store.new_frame(kind="turn", project_id="default")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    constants = {"nan": "NaN", "inf": "Infinity", "neg-inf": "-Infinity"}
     sources = {
         "tracked.json": '"\\n"',
         "tracked.csv": "name,flag\nscience,True\n,False\n",
+        **{f"{name}.json": token for name, token in constants.items()},
     }
     versions = {}
     for filename, text in sources.items():
@@ -346,6 +408,8 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
             "import numpy as np\n"
             "import pandas as pd\n"
             "newline = json.loads(open('tracked.json').read())\n"
+            "for name in ('nan', 'inf', 'neg-inf'):\n"
+            "    value = json.loads(open(name + '.json').read())\n"
             "frame = pd.read_csv('tracked.csv')\n"
             "missing, flag = frame['name'][1], frame['flag'][0]\n"
             "frame.to_csv('derived.csv')\n"
@@ -355,6 +419,14 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
             "np.save('missing.npy', np.nan)\n",
             cell_id="cell-shared",
         )
+        assert result["error"] is None, result["error"]
+        result = kernel.execute(
+            "for name, token in [('nan', 'NaN'), ('inf', 'Infinity'), "
+            "('neg-inf', '-Infinity')]:\n"
+            "    np.save('unrelated-' + name + '.npy', json.loads(token))\n",
+            cell_id="cell-unrelated",
+        )
+        assert result["error"] is None, result["error"]
         assigned = kernel.execute(
             "frame['kind'] = pd.Series(['control'] * len(frame), dtype=object)\n"
             "kind, name = frame['kind'][0], frame['name'][0]\n",
@@ -365,7 +437,11 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
             "with open('kind.txt', 'w') as handle:\n"
             "    handle.write('control')\n"
             "with open('name.txt', 'w') as handle:\n"
-            "    handle.write(name)\n",
+            "    handle.write(name)\n"
+            "with open('printed.txt', 'w') as handle:\n"
+            "    print(name, file=handle)\n"
+            "with open('formatted.txt', 'w') as handle:\n"
+            "    handle.write(f'{name}')\n",
             cell_id="cell-later",
         )
     for outcome in (result, assigned, later):
@@ -382,7 +458,17 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
 
     assert inputs("derived.csv") == [versions["tracked.csv"]]
     assert inputs("name.txt") == [versions["tracked.csv"]]
-    unrelated = ("note.txt", "flag.npy", "missing.npy", "kind.txt")
+    for filename in ("printed.txt", "formatted.txt"):
+        assert (workspace / filename).read_text().strip() == "science"
+        assert inputs(filename) == [versions["tracked.csv"]]
+    unrelated = (
+        "note.txt",
+        "flag.npy",
+        "missing.npy",
+        "kind.txt",
+        *(f"unrelated-{name}.npy" for name in constants),
+    )
+    assert all((workspace / name).is_file() for name in unrelated)
     assert {name: inputs(name) for name in unrelated} == {
         name: [] for name in unrelated
     }, "a file named an input it never read"

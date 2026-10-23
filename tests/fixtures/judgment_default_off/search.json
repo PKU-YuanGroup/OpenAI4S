@@ -20,7 +20,7 @@
       "import": null,
       "name": "bio-data-visualization-volcano-and-ma-plots",
       "origin": "openai4s",
-      "score": 13.89,
+      "score": 13.9,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -74,7 +74,7 @@
       "import": "import importlib; k = importlib.import_module(\"literature-review.kernel\") # 'literature-review' isn't a valid identifier; import * won't work",
       "name": "literature-review",
       "origin": "openai4s",
-      "score": 11.55,
+      "score": 11.54,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -141,7 +141,7 @@
       "import": null,
       "name": "diffdock",
       "origin": "openai4s",
-      "score": 19.33,
+      "score": 19.26,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -154,7 +154,7 @@
       "import": null,
       "name": "bio-ml-docking-rescoring",
       "origin": "openai4s",
-      "score": 18.59,
+      "score": 18.53,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -167,7 +167,7 @@
       "import": null,
       "name": "bio-structural-biology-binding-site-detection",
       "origin": "openai4s",
-      "score": 16.03,
+      "score": 15.95,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -180,7 +180,7 @@
       "import": null,
       "name": "bio-virtual-screening",
       "origin": "openai4s",
-      "score": 14.48,
+      "score": 14.45,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -193,7 +193,7 @@
       "import": null,
       "name": "bio-structural-biology-structure-preparation",
       "origin": "openai4s",
-      "score": 14.34,
+      "score": 14.32,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -208,7 +208,7 @@
       "import": null,
       "name": "boltz",
       "origin": "openai4s",
-      "score": 9.11,
+      "score": 9.1,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -221,7 +221,7 @@
       "import": null,
       "name": "chai1",
       "origin": "openai4s",
-      "score": 9.11,
+      "score": 9.1,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -234,7 +234,7 @@
       "import": null,
       "name": "bio-structural-biology-modern-structure-prediction",
       "origin": "openai4s",
-      "score": 8.82,
+      "score": 8.81,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -260,7 +260,7 @@
       "import": null,
       "name": "openfold3",
       "origin": "openai4s",
-      "score": 8.22,
+      "score": 8.21,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -275,7 +275,7 @@
       "import": "import importlib; k = importlib.import_module(\"single-cell-rna-analysis.kernel\") # 'single-cell-rna-analysis' isn't a valid identifier; import * won't work",
       "name": "single-cell-rna-analysis",
       "origin": "openai4s",
-      "score": 10.42,
+      "score": 10.43,
       "sidecar_gate": {
         "error": null,
         "ok": true
@@ -327,7 +327,7 @@
       "import": null,
       "name": "bio-expression-matrix-normalization",
       "origin": "openai4s",
-      "score": 6.85,
+      "score": 6.84,
       "sidecar_gate": {
         "error": null,
         "ok": true

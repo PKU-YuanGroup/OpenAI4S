@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 611 bundled Skills: 50 curated OpenAI4S recipes plus the 561
+This tree exposes 612 bundled Skills: 51 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
@@ -82,6 +82,7 @@ refuses to do:
 | [`ligandmpnn/`](ligandmpnn/) | Inverse folding when the design surface is not protein alone. Small molecules, nucleic acids, and metals are atoms the network can see, and `proteinmpnn` would simply ignore them. Its runner is also the one that threads designed sequences back onto the structure and writes PDBs. |
 | [`literature-review/`](literature-review/) | From "what is the seminal paper for X" to a full multi-source review. The discipline is the content: retrieve before writing, resolve every DOI instead of recalling it, check CrossRef for retractions, and produce paragraphs that open on your synthetic claim rather than on an author's name. |
 | [`mineral_spectra_analysis/`](mineral_spectra_analysis/) | Unmixing the Raman spectrum of an unknown mineral mixture. Preprocess once, then loop: detect residual peaks, match the library, refit all components with NNLS, subtract. The blind loop must not read `truth.json`; ground-truth evaluation is a separate step that only runs once the answer is fixed. |
+| [`molecular-dynamics/`](molecular-dynamics/) | OpenMM simulation and MDAnalysis trajectory analysis for protein/small-molecule systems: preparation, minimization, staged NVT/NPT, RMSD/RMSF, contacts, and relative free-energy surfaces. Imported from K-Dense-AI/scientific-agent-skills; force fields, sampling limits, periodic geometry, and provenance stay explicit. |
 | [`openfold3/`](openfold3/) | An Apache-2.0 reproduction of AlphaFold3, so this is the co-folder to reach for when AF3-faithful behaviour is the point. Weights are gated on HuggingFace and need an accepted access form. The MSA server is on by default, so the sequence leaves the machine unless you opt out. |
 | [`paper-narrative/`](paper-narrative/) | The outermost figure tier, and it starts a step earlier than expected: it reads the manuscript and the whole deck, then a handling-editor reviewer answers whether Figure 1 would get the paper sent out. Out comes the arc, panels sitting in the wrong figure, analyses that are missing, and what to kill. The brief it derives from your manuscript is model-generated, so review it before acting. |
 | [`pdf-explore/`](pdf-explore/) | Parse a PDF once in the kernel and keep the page text, then work from an outline, relevance search, per-page extraction, and figure crops. Built for answers that draw on several places at once, or on every page. For a single lookup of one to four pages you will quote immediately, skip it and read the pages directly. |

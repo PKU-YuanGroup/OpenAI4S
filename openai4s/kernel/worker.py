@@ -1234,7 +1234,9 @@ def _untagged(value: object) -> object:
     value_type = type(value)
     for tagged, plain in _PROVENANCE_TAGGED:
         if value_type is tagged:
-            return plain(value)
+            # Bypass overridable conversions (tagged str.__str__ retains its
+            # carrier); inspection must not execute user hooks.
+            return plain.__getitem__(value, slice(None))
     return value
 
 

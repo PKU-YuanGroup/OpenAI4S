@@ -247,6 +247,32 @@ def test_variable_inspector_shows_a_value_read_from_a_tracked_artifact_plainly()
     assert variables["mine"] == {"name": "mine", "type": "Mine"}
 
 
+@pytest.mark.parametrize("value", ["protein", b"ACGT"])
+def test_provenance_unwrap_never_calls_user_conversion_hooks(monkeypatch, value):
+    from openai4s.kernel import provenance
+
+    tagged = provenance._tag_scalar(value, frozenset({"v-source"}))
+    calls = []
+
+    def forbidden(*args):
+        calls.append(args)
+        raise AssertionError("inspection executed user code")
+
+    monkeypatch.setattr(worker_mod, "_PROVENANCE_TAGGED", list(provenance.TAGGED_TYPES))
+    monkeypatch.setattr(type(tagged), "__str__", forbidden)
+    monkeypatch.setattr(type(tagged), "__bytes__", forbidden, raising=False)
+    monkeypatch.setattr(type(tagged), "__getitem__", forbidden)
+
+    assert worker_mod._untagged(tagged) == value
+    assert type(worker_mod._untagged(tagged)) is type(value)
+    assert worker_mod._inspect_one("value", tagged) == worker_mod._inspect_one(
+        "value", value
+    )
+    assert worker_mod._primitive_token(tagged) == worker_mod._primitive_token(value)
+    assert worker_mod._primitive_preview(tagged) == worker_mod._primitive_preview(value)
+    assert calls == []
+
+
 def test_variable_inspector_hides_the_skill_bootstrap_it_did_not_author(tmp_path):
     """The Variable Inspector lists the user's bindings, not the session's glue.
 

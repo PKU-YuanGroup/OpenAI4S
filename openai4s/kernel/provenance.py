@@ -101,16 +101,18 @@ def get_tags(obj: Any) -> frozenset:
 
 #: Values a library hands out as one object: every missing string a CSV parses
 #: is `numpy.nan`, every element of a boolean column `numpy.True_` or
-#: `numpy.False_`, every missing timestamp `pandas.NaT`. Looked up in
-#: `sys.modules`, never imported.
+#: `numpy.False_`, every missing timestamp `pandas.NaT`. The stdlib JSON
+#: decoder also reuses its non-finite floats across independent parses.
+#: Looked up in `sys.modules`, never imported.
 _LIBRARY_CONSTANTS = (
+    ("json.decoder", ("NaN", "PosInf", "NegInf")),
     ("numpy", ("True_", "False_", "nan")),
     ("pandas", ("NaT", "NA")),
 )
 
 
 def _shared_by_identity(obj: Any) -> bool:
-    """Whether this very object also reaches code that never read the source.
+    """Whether this object is one of the known shared constants.
 
     A tag lives on an object's identity -- attribute or side-table entry alike
     -- so it is a claim about this read only while the object is this read's
@@ -120,6 +122,11 @@ def _shared_by_identity(obj: Any) -> bool:
     `false`, `null`, `1` or `"\\n"` tag every such value in the process, and a
     later write of one reported that file as its input. Refusing loses a tag,
     which is the safe direction: absent, never wrong.
+
+    Every exact str is refused as well: even a long string may be interned or
+    held by user code. Readers carry its tag on a fresh _TaggedStr instead.
+    This is not a general alias detector for other user-shared values (see
+    docs/TODO.md).
     """
     if any(obj is single for single in (None, True, False, Ellipsis, NotImplemented)):
         return True
@@ -150,7 +157,7 @@ def _shared_by_identity(obj: Any) -> bool:
 def set_tags(obj: Any, tags: frozenset) -> Any:
     """Attach tags to obj; fall back to the side table for atomic objects.
 
-    An object other code also holds by identity is left untagged."""
+    Known shared constants are left untagged."""
     if not tags or _shared_by_identity(obj):
         return obj
     try:
@@ -449,6 +456,7 @@ _STR_PROPAGATING = frozenset(
         "__rmul__",
         "__getitem__",
         "__mod__",
+        "__format__",
     }
 )
 
@@ -459,6 +467,17 @@ def _make_tagged_class(base: type) -> type:
     class _Tagged(base):  # type: ignore[misc, valid-type]
         _openai4s_src: frozenset = frozenset()
 
+        if base is str:
+
+            def __str__(self) -> str:
+                # print() and !s conversions must retain the read's carrier.
+                return self
+
+            def __rmod__(self, template: Any) -> Any:
+                if not isinstance(template, str):
+                    return NotImplemented
+                return self._wrap(str.__mod__(template, self))
+
         def _wrap(self, value: Any) -> Any:
             if isinstance(value, (str, bytes)) and not isinstance(value, _Tagged):
                 return _tag_scalar(value, self._openai4s_src)
@@ -468,7 +487,7 @@ def _make_tagged_class(base: type) -> type:
         # pickling one raised. It pickles as the plain value instead -- the tag
         # is dropped, which is the safe direction. A copy is this very value.
         def __reduce__(self) -> tuple:
-            return base, (base(self),)
+            return base, (base.__getitem__(self, slice(None)),)
 
         def __copy__(self) -> Any:
             return self
@@ -584,6 +603,7 @@ def install(host_call: Callable[[str, list], Any]) -> None:
             for wname in ("to_csv", "to_parquet", "to_json", "to_pickle"):
                 _prov_wrap_method_writer(cls, wname, path_argno=0)
         _patch_dataframe_getitem(pd)
+        _patch_pandas_groupby(pd)
     except ImportError:
         pass
 
@@ -709,6 +729,63 @@ def _patch_dataframe_getitem(pd: Any) -> None:
             cls.__getitem__ = wrapper  # type: ignore[assignment]
         except (AttributeError, TypeError):
             pass
+
+
+#: Immutable atoms CPython shares by identity -- None, the bools, small ints,
+#: one-character strings. A side-table tag on one is not this call's input:
+#: `json.loads("false")` from a tracked file would otherwise attribute that file
+#: to every `as_index=False` grouping. A `_TaggedStr` is a subclass and counts.
+_SHARED_ATOM_TYPES = (type(None), bool, int, float, complex, str, bytes)
+
+
+def _prov_wrap_grouped_result(fn: Callable, *, is_groupby: bool = False) -> Callable:
+    """Forward native pandas behavior, then retain only known operand tags."""
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = fn(self, *args, **kwargs)
+        if _off():
+            return result
+        try:
+            operands = [
+                value
+                for value in (*args, *kwargs.values())
+                if type(value) not in _SHARED_ATOM_TYPES
+            ]
+            tags = merge_tags(self, result, *operands)
+            if tags:
+                set_tags(result, tags)
+            if is_groupby:
+                _patch_groupby_methods(type(result))
+        except Exception:  # noqa: BLE001 - tracing must never interrupt pandas
+            pass
+        return result
+
+    wrapper._openai4s_wrapped = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def _patch_grouped_method(cls: type, name: str, *, is_groupby: bool = False) -> None:
+    original = getattr(cls, name, None)
+    if original is None or getattr(original, "_openai4s_wrapped", False):
+        return
+    try:
+        setattr(cls, name, _prov_wrap_grouped_result(original, is_groupby=is_groupby))
+    except (AttributeError, TypeError):
+        pass
+
+
+def _patch_groupby_methods(cls: type) -> None:
+    # The public groupby/selection calls supply their real runtime types. Avoid
+    # importing pandas internals or requiring the newer api.typing namespace.
+    _patch_grouped_method(cls, "__getitem__", is_groupby=True)
+    for name in ("agg", "aggregate", "count", "size", "sum", "mean", "min", "max"):
+        _patch_grouped_method(cls, name)
+
+
+def _patch_pandas_groupby(pd: Any) -> None:
+    for cls in (pd.DataFrame, pd.Series):
+        _patch_grouped_method(cls, "groupby", is_groupby=True)
 
 
 def uninstall() -> None:

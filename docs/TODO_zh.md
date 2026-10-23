@@ -10,6 +10,24 @@
 [`docs/next-version-progress.md`](next-version-progress.md)；那份文档是
 v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本文件收的是线头。
 
+## 溯源
+
+- [x] **避免共享字符串污染按对象身份记录的血缘。** 精确 `str` 不再被
+      就地打标签；读取和索引边界返回本次读取独有的 `_TaggedStr`。常驻内核
+      回归测试同时覆盖无关字面量写出，以及派生值的直接、`print` 和单字段
+      格式化写出。`str`、`format` 和直接 `%s` 转换保留标签；pickle 有意丢弃
+      标签，检查器解包时不调用用户转换钩子。
+- [ ] **明确普通字符串组装边界的传播策略。** 普通分隔符的 `join`、多字段
+      或带字面量前缀的格式化、以元组为参数的 `%` 格式化，可能丢失参数的
+      血缘。这些内建操作可能绕过子类方法，不能按身份给普通结果打标签。
+      跨越这些边界时，可用 `host.save_artifact(input_version_ids=...)` 显式
+      声明输入。*完成标准：* 有界的策略和常驻内核测试证明真实输入得以保留，
+      同时不污染无关字符串、不改变 Python 值与异常。
+- [ ] **处理已追踪对象列返回的其他共享值。** 较长的 `bytes` 和用户持有的
+      可变对象，在从已追踪 frame 索引出来时仍可能被就地打标签；它们不在此次
+      字符串修复范围内。*完成标准：* 无关写出不带标签，派生值保留受支持的
+      血缘，并由常驻内核测试明确覆盖身份和修改语义。
+
 ## 发布
 
 - [x] **把 `@pku-yuangroup/openai4s-skills` 发布到 npm。**
@@ -22,7 +40,7 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
       在仓库外空目录使用全新 npm 缓存运行
       `npx @pku-yuangroup/openai4s-skills@0.2.0 list --offline` 成功：42 个精选
       加 561 个 bioSkills，包内共 2,212 个文件 / 6.4 MiB。组织包安装说明已同步。
-      当前源码树有 611 个 Skill；`single-cell-rna-analysis` 不在 npm 0.2.0 中，
+      当前源码树有 612 个 Skill；`single-cell-rna-analysis` 不在 npm 0.2.0 中，
       其文档保留 GitHub 安装入口。
 
 - [ ] **冻结六个 retrosynthesis 生产数据集。**

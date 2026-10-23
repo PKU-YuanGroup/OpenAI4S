@@ -13,6 +13,30 @@ Work that is *planned* rather than pending lives in
 is a factual record of the v0.3 plan and is validated by
 `tests/test_progress_document.py`. This file is for loose ends.
 
+## Provenance
+
+- [x] **Keep shared strings out of identity-based lineage.** Exact `str`
+      values are never tagged in place; reader/indexing boundaries return an
+      owned `_TaggedStr`. Persistent-kernel regressions cover unrelated literal
+      writes alongside derived direct, `print`, and single-field formatted
+      writes. `str`, `format`, and direct `%s` conversions preserve the carrier;
+      pickle deliberately drops it, and the inspector unwraps it without
+      invoking user conversion hooks.
+- [ ] **Define propagation across plain-string assembly.** A plain separator's
+      `join`, multi-field or literal-prefixed formatting, and tuple-based `%`
+      formatting can discard a tagged argument's lineage. These built-in
+      operations can bypass subclass methods; the plain results must not be
+      tagged by identity. Use `host.save_artifact(input_version_ids=...)` for
+      explicit inputs across these boundaries. *Done when:* a bounded policy
+      and persistent-kernel tests preserve real inputs without contaminating
+      unrelated strings or changing Python values and exceptions.
+- [ ] **Handle other aliased values returned from tracked object columns.**
+      Longer `bytes` and user-held mutable objects can still be tagged in
+      place when indexed from a tracked frame. This is outside the string
+      carrier fix. *Done when:* unrelated writes remain untagged, derived
+      values retain supported lineage, and identity/mutation semantics are
+      covered explicitly in persistent-kernel tests.
+
 ## Publishing
 
 - [x] **Publish `@pku-yuangroup/openai4s-skills` to npm.**
@@ -26,7 +50,7 @@ is a factual record of the v0.3 plan and is validated by
       A fresh npm cache in an empty directory outside any checkout ran
       `npx @pku-yuangroup/openai4s-skills@0.2.0 list --offline` successfully:
       42 curated + 561 bioSkills, 2,212 packaged files / 6.4 MiB. Organization
-      installation docs are synchronized. The current source tree has 611
+      installation docs are synchronized. The current source tree has 612
       Skills; `single-cell-rna-analysis` is not part of npm 0.2.0 and its
       documentation retains the GitHub installation path.
 

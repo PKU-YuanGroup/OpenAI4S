@@ -32,6 +32,7 @@ README；单次替换是原子的，但整批替换不是全部成功或全部�
 | `Weifeng2Wu.png` | 贡献者 `Weifeng2Wu` 的可直接渲染头像。 |
 | `WenyuLiang.png` | 贡献者 `WenyuLiang` 的可直接渲染头像。 |
 | `YuyangSunshine.png` | 贡献者 `YuyangSunshine` 的可直接渲染头像。 |
+| `brainsparker.png` | 贡献者 `brainsparker` 的可直接渲染头像。 |
 | `cursoragent.png` | 贡献者 `cursoragent` 的可直接渲染头像。 |
 | `difficulttopickaname.png` | 贡献者 `difficulttopickaname` 的可直接渲染头像。 |
 | `dvd233.png` | 贡献者 `dvd233` 的可直接渲染头像。 |
