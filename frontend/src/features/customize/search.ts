@@ -11,10 +11,10 @@ const COPY: CopyTable = {
   zh: {
     "search.title": "搜索引擎顺序",
     "search.desc":
-      "豆包已配置时总是最先使用；否则、或豆包配额用尽且你同意回退时，按下面的顺序依次尝试已开启的引擎。",
+      "已配置的 Ollama 网页工具优先使用。未配置 Ollama 时先使用豆包；豆包未配置、或配额用尽且你同意回退时，按下面的顺序尝试已开启的引擎。",
     "search.doubao": "豆包搜索（Agent Plan）",
-    "search.doubao.on": "已配置 · 总是最先使用",
-    "search.doubao.off": "未配置 · 在上方保存 Agent Plan Key 后最先使用",
+    "search.doubao.on": "已配置 · 未配置 Ollama 网页工具时使用",
+    "search.doubao.off": "未配置 · 保存 Agent Plan Key 后，在未配置 Ollama 网页工具时使用",
     "search.engine.tavily": "Tavily",
     "search.engine.you": "You.com",
     "search.engine.builtin": "内置免 key 引擎",
@@ -34,7 +34,7 @@ const COPY: CopyTable = {
     "search.lastUsable": "至少要保留一个可用的搜索引擎",
     "search.saved": "搜索引擎顺序已保存",
     "search.setup.title": "网页搜索",
-    "search.setup.desc": "选一种主要的搜索方式；之后可以在「设置 → 网络」里调整顺序。可跳过。",
+    "search.setup.desc": "Ollama 网页工具已配置时会自动优先使用。这里选择其他搜索方式，可在「设置 → 网络」里调整。可跳过。",
     "search.setup.doubao": "豆包搜索（Agent Plan Key）",
     "search.setup.tavily": "Tavily（需要 API Key）",
     "search.setup.you": "You.com（免费，API Key 可选）",
@@ -48,10 +48,10 @@ const COPY: CopyTable = {
   en: {
     "search.title": "Search engine order",
     "search.desc":
-      "Doubao always answers first when configured. Otherwise — or when its quota is spent and you agree to fall back — the switched-on engines below are tried in this order.",
+      "Configured Ollama web tools take priority. Without Ollama, Doubao is used first; when Doubao is unconfigured or its quota is spent and you approve fallback, the enabled engines below are tried in this order.",
     "search.doubao": "Doubao Search (Agent Plan)",
-    "search.doubao.on": "Configured · always tried first",
-    "search.doubao.off": "Not configured · tried first once an Agent Plan Key is saved above",
+    "search.doubao.on": "Configured · used when Ollama web tools are unconfigured",
+    "search.doubao.off": "Not configured · save an Agent Plan Key to use it when Ollama web tools are unconfigured",
     "search.engine.tavily": "Tavily",
     "search.engine.you": "You.com",
     "search.engine.builtin": "Built-in keyless engines",
@@ -73,7 +73,7 @@ const COPY: CopyTable = {
     "search.saved": "Search engine order saved",
     "search.setup.title": "Web search",
     "search.setup.desc":
-      "Pick your main search option; the order can be changed later in Settings → Network. Optional.",
+      "Configured Ollama web tools are used automatically. Choose other search options here or later in Settings → Network. Optional.",
     "search.setup.doubao": "Doubao Search (Agent Plan Key)",
     "search.setup.tavily": "Tavily (API key required)",
     "search.setup.you": "You.com (free; API key optional)",

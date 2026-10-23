@@ -4478,6 +4478,31 @@
         "type": "object"
       }
     },
+    "DELETE /ollama-web/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /onboarding [error]": {
       "schema": {
         "properties": {
@@ -17461,6 +17486,27 @@
         "type": "object"
       }
     },
+    "GET /ollama-web/config [ok]": {
+      "schema": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available",
+          "key_configured",
+          "source"
+        ],
+        "type": "object"
+      }
+    },
     "GET /onboarding [ok]": {
       "schema": {
         "properties": {
@@ -27220,6 +27266,31 @@
           "error",
           "method",
           "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /ollama-web/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
           "request_id",
           "status"
         ],
@@ -39666,6 +39737,31 @@
         "type": "object"
       }
     },
+    "POST /ollama-web/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /onboarding [error]": {
       "schema": {
         "properties": {
@@ -48286,6 +48382,52 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /ollama-web/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /ollama-web/config [ok]": {
+      "schema": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available",
+          "key_configured",
+          "source"
         ],
         "type": "object"
       }

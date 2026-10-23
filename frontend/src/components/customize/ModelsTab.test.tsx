@@ -200,6 +200,7 @@ describe("local endpoint add", () => {
     const posts = () => mocks.fetch.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "POST");
     const endpoint = {
       label: "Ollama",
+      provider: "ollama" as const,
       base_url: "http://127.0.0.1:11434/v1",
       models: ["llama3"],
       default_model: "llama3",
@@ -214,6 +215,7 @@ describe("local endpoint add", () => {
     expect(add().props!.disabled).toBe(true);
     void (add().props!.onClick as () => Promise<void>)();
     expect(posts()).toHaveLength(1);
+    expect(JSON.parse(String((posts()[0]![1] as RequestInit).body)).provider).toBe("ollama");
 
     finish(response({ id: "mp-local" }));
     await vi.waitFor(() => expect(add().props!.disabled).toBe(false));
@@ -267,7 +269,7 @@ describe("composer model list after a profile change", () => {
     mocks.fetch.mockImplementation(() => Promise.resolve(response({ id: "mp-local" })));
     hookCursor = 0;
     const row = LocalEndpointRow({
-      endpoint: { label: "Ollama", base_url: "http://127.0.0.1:11434/v1", models: ["llama3"], default_model: "llama3" },
+      endpoint: { label: "Ollama", provider: "ollama", base_url: "http://127.0.0.1:11434/v1", models: ["llama3"], default_model: "llama3" },
       profiles: [],
     }) as Node;
     const add = (row.props!.children as Node[]).find((node) => node?.type === "button")!;

@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-Vendor cards isolated from the nine Customize tabs. DataPro lives on Connectors; Doubao on Network; Volcengine on Models. Key polling is bound to the tab's timer lease.
+Vendor cards isolated from the nine Customize tabs. DataPro lives on Connectors; Doubao and Ollama web tools on Network; Volcengine on Models. Key polling is bound to the tab's timer lease.
 
 ## Files
 
@@ -10,6 +10,7 @@ Vendor cards isolated from the nine Customize tabs. DataPro lives on Connectors;
 | --- | --- |
 | [`datapro.tsx`](datapro.tsx) | DataPro credential + search card (`volcengine-datapro`). |
 | [`doubao.tsx`](doubao.tsx) | Doubao search card. Dedicated source; no Tavily fallback. |
+| [`ollama.tsx`](ollama.tsx) | Independent Ollama web credential: read status, save/replace/clear through the secret broker without changing the model, with English/Chinese copy. |
 | [`use-vendor-key.ts`](use-vendor-key.ts) | `useVendorKey`: the Agent Plan key state of the DataPro and Doubao cards, derived from the `config` prop on every render (`null` until read, nothing to save until then); a save's answer is kept only for the config it answered. |
 | [`vendors.test.tsx`](vendors.test.tsx) | A card first rendered before its config read answers shows the key, connector and skill state that read brings once it lands; nothing can be toggled or saved before it does. |
 | [`volcengine.tsx`](volcengine.tsx) | Volcengine SSO / plan / key-poll panel: `VolcenginePanel` holds the state and picks a step (`NotInstalled`, `Connecting`, `AwaitingCode`, `FailedLogin`, `SignedOut`, `Connected`); `accessActions` says what a signed-in account can do next. State written after an await is an update of the state as it then is, never a spread of an earlier copy. One sign-in start at a time; a tab opened for it is closed when no authorize URL comes back. |

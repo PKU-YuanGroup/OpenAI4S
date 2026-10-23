@@ -1322,6 +1322,11 @@ class HostDispatcher:
             workspace=lambda: self._files.workspace(),
         )
         self._doubao_search_service = DoubaoSearchService(self.store)
+        from openai4s.ollama_web import OllamaWebService, resolve_web_key
+
+        self._ollama_web_service = OllamaWebService(
+            lambda: resolve_web_key(self.cfg.llm, self.store)
+        )
         self._remote_capability_service = RemoteCapabilityService(
             registry_factory=self._compute_registry,
             normalize_probe=lambda spec: _normalize_remote_capability_probe(spec),
@@ -1416,6 +1421,7 @@ class HostDispatcher:
             invoke_control=self._invoke_control_behavior,
             dispatch_host=lambda method, args: self(method, args, _record=False),
             search_web=self._search_web,
+            fetch_web=self._fetch_web,
             get_download_cancelled=self._current_download_cancellation,
             get_project_files=self._project_files,
         )
@@ -1964,6 +1970,10 @@ class HostDispatcher:
         from openai4s.doubao_search import DoubaoSearchQuotaError
         from openai4s.host.search import confirm_quota_fallback
 
+        if self._ollama_web_service.configured():
+            return self._ollama_web_service.search(
+                query, num_results=num_results, timeout=timeout
+            )
         engines = search_settings.engine_chain(self.store)
         try:
             return self._doubao_search_service.search_primary(
@@ -1989,6 +1999,23 @@ class HostDispatcher:
                 timeout=timeout,
                 engines=engines[engines.index(chosen) :],
             )
+
+    def _fetch_web(self, url: str, **options: Any) -> dict[str, Any]:
+        from openai4s import webtools
+
+        if (
+            self._ollama_web_service.configured()
+            and options.get("fmt", "markdown") in ("markdown", "text")
+            and str(options.get("method", "GET")).upper() == "GET"
+            and not options.get("user_agent")
+        ):
+            return self._ollama_web_service.fetch(
+                url,
+                fmt=options.get("fmt", "markdown"),
+                timeout=options.get("timeout", 30.0),
+                max_chars=options.get("max_chars", 20000),
+            )
+        return webtools.web_fetch(url, **options)
 
     # dispatcher entrypoint ------------------------------------------------
     def __call__(self, method: str, args: list, *, _record: bool = True) -> Any:

@@ -569,6 +569,7 @@ def test_empty_settings_are_skipped(store, broker):
         "tavily_api_key",
         "you_api_key",
         "agent_plan_key",
+        "ollama_web_api_key",
     }
     assert report.migrated == []
 

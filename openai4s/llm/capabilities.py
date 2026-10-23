@@ -328,6 +328,23 @@ _BUILTIN_PROVIDERS: dict[str, ProviderCapabilities] = {
         streaming=False,
         usage_mapping=_GEMINI_USAGE,
     ),
+    "ollama": ProviderCapabilities(
+        provider="ollama",
+        wire="openai",
+        default_base_url="https://ollama.com/v1",
+        default_model="gemma4:31b",
+        # Limits depend on the selected model and local server configuration.
+        context_window_tokens=None,
+        max_output_tokens=None,
+        tool_calling=True,
+        parallel_tool_calls=True,
+        strict_tool_schema=False,
+        vision=True,
+        audio=False,
+        reasoning=True,
+        streaming=True,
+        usage_mapping=_OPENAI_USAGE,
+    ),
 }
 
 

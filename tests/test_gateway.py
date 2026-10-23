@@ -3636,6 +3636,7 @@ def test_model_profile_mask_and_empty_defaults_ignore_placeholder_keys(tmp_path)
         "ark",
         "gemini",
         "openai_responses",
+        "ollama",
     ]
     assert store.list_model_profiles() == []
 

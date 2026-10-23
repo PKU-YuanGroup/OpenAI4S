@@ -167,14 +167,14 @@ describe("F-19 vendor helpers (app.js:11394-11415, 11798-11887)", () => {
     expect(doubaoSearchResultText({ results })).toBe("1. t\nhttps://n\ns");
   });
 
-  it("local discovery only accepts loopback chatgpt endpoints", () => {
+  it.each(["ollama", "chatgpt"])("local discovery routes %s Ollama entries through its adapter", (provider) => {
     const cleaned = sanitizeLocalModelDiscovery({
       probed: 4,
       endpoints: [
         {
           kind: "ollama",
           local: true,
-          provider: "chatgpt",
+          provider,
           base_url: "http://127.0.0.1:11434",
           label: "Ollama",
           models: ["llama3"],
@@ -191,6 +191,7 @@ describe("F-19 vendor helpers (app.js:11394-11415, 11798-11887)", () => {
     });
     expect(cleaned.endpoints).toHaveLength(1);
     expect(cleaned.endpoints[0]?.base_url).toBe("http://127.0.0.1:11434");
+    expect(cleaned.endpoints[0]?.provider).toBe("ollama");
     expect(loopbackModelBase("http://evil.example")).toBe("");
   });
 });
