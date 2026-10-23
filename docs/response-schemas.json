@@ -22019,20 +22019,28 @@
             "properties": {
               "id": {
                 "type": "string"
+              },
+              "refusal_command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "refusal_text_key": {
+                "type": "string"
               }
             },
             "required": [
-              "id"
+              "id",
+              "refusal_command",
+              "refusal_text_key"
             ],
             "type": "object"
           },
           "check": {
             "properties": {
               "age_s": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
               "cached": {
                 "type": "boolean"
@@ -22044,17 +22052,7 @@
                 "type": "string"
               },
               "previous": {
-                "properties": {
-                  "checked_at_ms": {
-                    "type": "integer"
-                  },
-                  "latest": {
-                    "type": "string"
-                  },
-                  "status": {
-                    "type": "string"
-                  }
-                },
+                "properties": {},
                 "required": [],
                 "type": "object"
               },
@@ -22064,7 +22062,7 @@
               "retry_after_at": {
                 "type": "integer"
               },
-              "running": {
+              "source": {
                 "type": "string"
               },
               "status": {
@@ -22075,14 +22073,14 @@
                   "authorship": {
                     "type": "string"
                   },
-                  "authorship_detail": {
-                    "type": "string"
-                  },
                   "integrity": {
                     "type": "string"
                   }
                 },
-                "required": [],
+                "required": [
+                  "authorship",
+                  "integrity"
+                ],
                 "type": "object"
               }
             },
@@ -22094,13 +22092,16 @@
               "previous",
               "reason",
               "retry_after_at",
-              "running",
+              "source",
               "status",
               "trust"
             ],
-            "type": "object"
+            "type": [
+              "null",
+              "object"
+            ]
           },
-          "request_id": {
+          "running": {
             "type": "string"
           }
         },
@@ -22108,7 +22109,7 @@
           "apply_available",
           "channel",
           "check",
-          "request_id"
+          "running"
         ],
         "type": "object"
       }
@@ -43851,9 +43852,6 @@
           "error": {
             "type": "string"
           },
-          "reason": {
-            "type": "string"
-          },
           "request_id": {
             "type": "string"
           },
@@ -43883,10 +43881,21 @@
             "properties": {
               "id": {
                 "type": "string"
+              },
+              "refusal_command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "refusal_text_key": {
+                "type": "string"
               }
             },
             "required": [
-              "id"
+              "id",
+              "refusal_command",
+              "refusal_text_key"
             ],
             "type": "object"
           },
@@ -43915,15 +43924,25 @@
               "retry_after_at": {
                 "type": "integer"
               },
-              "running": {
+              "source": {
                 "type": "string"
               },
               "status": {
                 "type": "string"
               },
               "trust": {
-                "properties": {},
-                "required": [],
+                "properties": {
+                  "authorship": {
+                    "type": "string"
+                  },
+                  "integrity": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "authorship",
+                  "integrity"
+                ],
                 "type": "object"
               }
             },
@@ -43935,13 +43954,13 @@
               "previous",
               "reason",
               "retry_after_at",
-              "running",
+              "source",
               "status",
               "trust"
             ],
             "type": "object"
           },
-          "request_id": {
+          "running": {
             "type": "string"
           }
         },
@@ -43949,7 +43968,7 @@
           "apply_available",
           "channel",
           "check",
-          "request_id"
+          "running"
         ],
         "type": "object"
       }

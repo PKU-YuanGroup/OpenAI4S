@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本阶段提供安装渠道识别、版本发现和载荷校验。apply 事务、CLI 与 HTTP 路由属于后续工作，当前尚未提供。
+本阶段提供安装渠道识别、版本发现和载荷校验，以及设置页使用的两条只读 Web 路由：`GET /api/v1/updates/status`（只读缓存，不联网、不写盘）与 `POST /api/v1/updates/check`（显式检查），位于 [`../server/update_routes.py`](../server/update_routes.py)。apply 事务与 CLI 仍属于后续工作，当前尚未提供。
 
 `openai4s update` 负责替换这个 daemon 正在跑的代码，同时不丢它攒下来的历史与配置。后半句才是难的，而难在哪里这个仓库早就写下来过：[`../storage/migrations.py`](../storage/migrations.py) 里的 migration 只能向前、没有反向步骤，旧的二进制在每一个入口都会拒绝更新过的数据库，而 migration runner 在升级提交的那一刻就删掉了自己的升级前副本。这个包里的一切，都是围着一个原语做的管道：一份由更新器自己拿、并且自己留着的、独立的升级前快照。
 
@@ -13,7 +13,8 @@
 1. [`channel.py`](channel.py) 回答「这是哪一种安装」。它是纯的：只读环境变量和文件系统，不联网、不起子进程、不碰 Store。识别不出来的安装就是 `unknown`——那是一次拒绝，不是一次猜测。
 2. [`discovery.py`](discovery.py) 回答「有没有更新的版本」。一个版本判据（pypi.org 的 project 文档）加两个摘要证人（按版本的文档，以及 release 的 `SHA256SUMS`）。每一种失败都归到 `unknown`；没有任何一种会归到「已是最新」。
 3. [`verify.py`](verify.py) 回答「在停任何东西、换任何东西之前，这份载荷必须满足什么」。摘要文法、双证人一致、压缩包成员校验、wheel 结构门，以及把新代码放到进程外真的跑一遍——全部发生在 daemon 被静默之前，因为一次坏构建绝不该换来一次重启。
-4. 之后才是 apply 事务：停 daemon、快照、提交、重启、写 journal。它落在 `store.py`、`preserve.py`、`apply.py`、`commit.py` 和 `applier.py` 里。
+4. [`../server/update_routes.py`](../server/update_routes.py) 是设置页调用到的 Web 入口。`GET /api/v1/updates/status` 读取本地版本、检测到的渠道与缓存中的检查结果——它从不调用 `check()`、从不写缓存、不开 socket，没有记录时返回 `"check": null`。`POST /api/v1/updates/check` 是显式动作：接受 `{}` 或 `{"refresh": boolean}`，索引由服务端固定，全进程同时只有一个检查在途，强制刷新有 60 秒冷却，所有响应带 `Cache-Control: no-store`，并按附录 B.2 白名单投影——绝不含 `detail`、`assets`、`index`、原始 `witnesses`、`Channel.evidence`、`install_root`、`interpreter` 或下载地址。它只报告并指向手工升级路径，不安装任何东西。
+5. 之后才是 apply 事务：停 daemon、快照、提交、重启、写 journal。它落在 `store.py`、`preserve.py`、`apply.py`、`commit.py` 和 `applier.py` 里。
 
 出站面是**靠机制**冻住的：这个包里没有任何模块写出 `urlopen`、`Request`、`build_opener` 或 `create_connection`。每一个字节都走 [`../webtools.py`](../webtools.py)——它是全树唯一手工跟随重定向、并在每一跳都重新套用出站白名单与 SSRF 保护的代码。两个来源都会重定向，所以一个在内部自动跟随重定向的客户端，检查的是第一跳，信任的是其余各跳。
 

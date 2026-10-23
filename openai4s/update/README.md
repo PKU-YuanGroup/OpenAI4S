@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This slice provides channel detection, release discovery and payload verification. The apply transaction, CLI and HTTP routes are planned follow-ups; they are not shipped here.
+This slice provides channel detection, release discovery and payload verification, plus the two read-only Web routes the settings page uses: `GET /api/v1/updates/status` (read the cache, never the network or a write) and `POST /api/v1/updates/check` (the explicit check) in [`../server/update_routes.py`](../server/update_routes.py). The apply transaction and the CLI are still planned follow-ups; they are not shipped here.
 
 `openai4s update` replaces the code this daemon runs without losing the history and configuration it accumulated. The second half is the hard one, and it is hard for a reason this repository already wrote down: migrations in [`../storage/migrations.py`](../storage/migrations.py) are forward-only with no reverse step, an older binary refuses a newer database at every entry point, and the migration runner deletes its own pre-upgrade copy the moment the upgrade commits. Everything in this package is plumbing around one primitive — an independent pre-update snapshot the updater takes and keeps.
 
@@ -13,7 +13,8 @@ Nothing here is reachable from a turn. No `Tool` subclass, no `host.*` capabilit
 1. [`channel.py`](channel.py) answers what kind of install this is. It is pure: environment variables and the filesystem, no network, no subprocess, no Store. An install it cannot identify is `unknown`, which is a refusal rather than a guess.
 2. [`discovery.py`](discovery.py) answers whether a newer release exists. One version oracle (pypi.org's project document) and two digest witnesses (the per-version document and the release `SHA256SUMS`). Every failure resolves to `unknown`; none of them resolves to "up to date".
 3. [`verify.py`](verify.py) answers what has to be true about a payload before anything is stopped or replaced. Digest grammar, two-witness agreement, archive member validation, the wheel structure gate, and an out-of-process execution probe of the new code — all of it before the daemon is quiesced, because a bad build must never cost a restart.
-4. The apply transaction then stops the daemon, snapshots, commits, relaunches and journals. It lands in `store.py`, `preserve.py`, `apply.py`, `commit.py` and `applier.py`.
+4. [`../server/update_routes.py`](../server/update_routes.py) is the Web entry the settings page calls. `GET /api/v1/updates/status` reads the local version, the detected channel and the cached check — it never calls `check()`, never writes the cache and opens no socket, and answers `"check": null` when there is no record. `POST /api/v1/updates/check` is the explicit action: `{}` or `{"refresh": boolean}`, the server-side index fixed, one check in flight per process, a 60 s forced-refresh cooldown, `Cache-Control: no-store`, and an appendix-B.2 whitelist that never includes `detail`, `assets`, `index`, raw `witnesses`, `Channel.evidence`, `install_root`, `interpreter` or a download URL. It reports and points at the manual upgrade path; it installs nothing.
+5. The apply transaction then stops the daemon, snapshots, commits, relaunches and journals. It lands in `store.py`, `preserve.py`, `apply.py`, `commit.py` and `applier.py`.
 
 The egress surface stays frozen **by mechanism**: no module in this package names `urlopen`, `Request`, `build_opener` or `create_connection`. Every byte moves through [`../webtools.py`](../webtools.py), which is the only code in the tree that follows a redirect manually and re-applies the egress allowlist and the SSRF guard on every hop. Both sources redirect, so a client that follows redirects internally checks the first hop and trusts the rest.
 

@@ -369,16 +369,25 @@ All three are admin-only in team mode on every verb (`403 admin_only`, never
 
 ### Update check
 
-Both routes are admin-only in team mode (`403 admin_only`, decided before the
-cache is read or a socket is opened), carry `Cache-Control: no-store`, and only
-report. This version has no install/stop/rollback action, no automatic polling,
-and no Agent Tool, Host method or Skill entry: the UI shows the check result and
-the documented manual upgrade path.
+Two routes, one feature (F14/F15; the response shape is appendix B.2). Both are
+admin-only in team mode (`403 admin_only`, decided before the cache is read or a
+socket is opened), carry `Cache-Control: no-store` on every status, and only
+report: this version has no install/stop/rollback action, no automatic polling,
+and no Agent Tool, Host method or Skill entry.
+
+Both 200 responses share one shape:
+`{"running": "<version>", "channel": {"id": "<channel.CHANNEL_IDS member>", "refusal_text_key": "<static i18n key>", "refusal_command": ["<static command text>", …]}, "check": null | {…}, "apply_available": false}`.
+`refusal_command` is text to copy for the manual upgrade path, never executed;
+the channel's `evidence`, `install_root` and `interpreter` are not published.
+When a record exists, `check` is
+`{"status": "unknown"|"update_available"|"up_to_date", "reason": "<discovery.REASONS member>", "latest": "<version, empty when unknown>", "source": "pypi"|"offline"|"none", "checked_at_ms": 0, "retry_after_at": 0, "cached": true|false, "age_s": 0, "previous": {} | {"status","latest","checked_at_ms"}, "trust": {"integrity": "two_witnesses"|"single_witness"|"none", "authorship": "not_established"}}`.
+`detail`, `assets`, `index`, raw `witnesses`, download URLs, absolute paths and
+any credential are never part of it; `apply_available` is always `false`.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /updates/status` | Read-only view of this install and the last recorded check: `{"request_id","channel":{"id"},"check":{…},"apply_available":false}`. It never calls the discovery check, never writes the cache and opens no socket; when no record exists the check is `{"status":"unknown","reason":"not_checked","cached":false,"age_s":null,"checked_at_ms":0,…}` rather than an empty success. A cached answer recorded against a different running version or release index is not this install's answer and reads as `not_checked`. |
-| `POST /updates/check` | Body must be exactly `{"refresh": boolean}` (any other shape, including a missing key, is `400 invalid_request`; the server chooses the index — a client cannot name one). Calls the existing discovery check and returns the same DTO; `check` carries `status` (`unknown|update_available|up_to_date`), `reason` (the discovery reason code), `running`, `latest`, `checked_at_ms`, `cached`, `age_s`, `retry_after_at`, `previous` (the last answer that *was* an answer, with its own timestamp), and a whitelisted `trust` summary — never a download URL, install path or upstream prose. One check runs instance-wide at a time, and one forced refresh per authenticated principal per 60 s: a duplicate in-flight or cooled-down request is `429 rate_limited` with `reason` (`check_in_progress` / `refresh_cooldown`), a bounded `retry_after_s` and a matching `Retry-After` header. `OPENAI4S_UPDATE_SOURCE=offline` short-circuits before the cache or the network. A failure is `unknown` with a reason — never `up_to_date` — and `previous` never masquerades as this check. `apply_available` is always `false`. |
+| `GET /updates/status` | Read-only: the running version, the detected channel and the cached check, if any. It never calls the discovery check, never writes the cache and opens no socket. `OPENAI4S_UPDATE_SOURCE=offline` returns the offline state (`status:"unknown"`, `reason:"offline_pin"`, `source:"offline"`) without reading the cache; otherwise only `read_cache()` is consulted and a missing or invalid record answers `"check": null`. |
+| `POST /updates/check` | Body may be `{}` or `{"refresh": boolean}`; any other body — non-object, unknown key, non-boolean `refresh` — is `400 bad_request`. Calls the existing discovery check with the server-side index fixed (a client cannot name an index, host or version) and returns the same shape with a non-null `check`. One check runs instance-wide at a time, and one forced refresh (`refresh: true`) per authenticated principal per 60 s: a duplicate in-flight or cooled-down request is `429 rate_limited` with a bounded `retry_after_s` and a matching `Retry-After` header. `OPENAI4S_UPDATE_SOURCE=offline` short-circuits before the cache or the network. A failure is `unknown` with a reason — never `up_to_date` — and `previous` carries its own timestamp rather than masquerading as this check. |
 
 ### Models and model profiles
 
