@@ -24,6 +24,8 @@ import {
   liveCells,
 } from "../../stores/notebook";
 import { currentId } from "../../stores/session";
+import { bytes, PREVIEW_READ_MAX_BYTES } from "../artifacts/api";
+import { filesT } from "../artifacts/copy";
 import { resetStoreFields } from "../../stores/signal-field";
 import { running } from "../../stores/stream";
 import { branchState, securityState } from "../../stores/timeline";
@@ -926,20 +928,31 @@ describe("Notebook immutable output selection", () => {
     expect(notebookArtifactState({}, "one/plot.png").state).toBe("unconfirmed");
     expect(notebookArtifactState({ output_artifacts: [binding, { ...binding, version_id: "v2" }] }, binding.filename).state).toBe("unconfirmed");
   });
-  it("keeps a failed exact table visible and retries only its version URL", async () => {
-    class Node {
-      children: Node[] = [];
-      textContent = "";
-      className = "";
-      parent: Node | null = null;
-      onclick: (() => void) | null = null;
-      constructor(public tag: string) {}
-      appendChild(child: Node) { this.children.push(child); child.parent = this; return child; }
-      remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); }
-    }
-    const holder = new Node("div");
+  class ArtifactNode {
+    children: ArtifactNode[] = [];
+    textContent = "";
+    className = "";
+    href = "";
+    parent: ArtifactNode | null = null;
+    onclick: (() => void) | null = null;
+    attrs: Record<string, string> = {};
+    constructor(public tag: string) {}
+    appendChild(child: ArtifactNode) { this.children.push(child); child.parent = this; return child; }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); }
+    setAttribute(name: string, value: string) { this.attrs[name] = value; }
+  }
+  const errorCard = (holder: ArtifactNode) => holder.children[0];
+  const retryButton = (holder: ArtifactNode) =>
+    errorCard(holder)?.children.find(
+      (node) => node.tag === "button" && node.textContent === filesT("viewer.read.retry"),
+    );
+  const downloadLink = (holder: ArtifactNode) =>
+    errorCard(holder)?.children.find((node) => node.tag === "a");
+
+  it("keeps a failed exact table visible with its reason, download and retry", async () => {
+    const holder = new ArtifactNode("div");
     const reads: string[] = [];
-    vi.stubGlobal("document", { createElement: (tag: string) => new Node(tag) });
+    vi.stubGlobal("document", { createElement: (tag: string) => new ArtifactNode(tag) });
     vi.stubGlobal("fetch", async (url: string) => {
       reads.push(url);
       return new Response(reads.length === 1 ? "missing" : "a,b\n1,2", { status: reads.length === 1 ? 404 : 200 });
@@ -947,10 +960,51 @@ describe("Notebook immutable output selection", () => {
     try {
       const dispose = renderTableInto(holder as unknown as HTMLElement, "table.csv", "/api/v1/artifacts/versions/table-v1");
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(holder.children[0]?.className).toBe("nbc-artifact-error");
-      holder.children[0]?.children[0]?.onclick?.();
+      expect(errorCard(holder)?.className).toBe("nbc-artifact-error");
+      expect(errorCard(holder)?.children[0]?.textContent).toBe(
+        filesT("viewer.read.failedStatus", 404),
+      );
+      expect(downloadLink(holder)?.href).toBe("/api/v1/artifacts/versions/table-v1");
+      retryButton(holder)!.onclick?.();
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(reads).toEqual(["/api/v1/artifacts/versions/table-v1", "/api/v1/artifacts/versions/table-v1"]);
+      expect(holder.children[0]?.className).toBe("nbc-table-scroll");
+      dispose();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("shows the read limit and retries when the table preview is over budget", async () => {
+    const holder = new ArtifactNode("div");
+    let missing = true;
+    vi.stubGlobal("document", { createElement: (tag: string) => new ArtifactNode(tag) });
+    vi.stubGlobal("fetch", async () => {
+      if (missing) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-length": String(9 * 1024 * 1024) }),
+          body: {
+            cancel: async () => {},
+            getReader: () => {
+              throw new Error("the body must not be read");
+            },
+          },
+        } as unknown as Response;
+      }
+      return new Response("a,b\n1,2\n");
+    });
+    try {
+      const url = "/api/v1/artifacts/versions/table-limit";
+      const dispose = renderTableInto(holder as unknown as HTMLElement, "table.csv", url);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(errorCard(holder)?.children[0]?.textContent).toBe(
+        filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES)),
+      );
+      expect(retryButton(holder)).toBeDefined();
+      expect(downloadLink(holder)?.href).toBe(url);
+      missing = false;
+      retryButton(holder)!.onclick?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(holder.children[0]?.className).toBe("nbc-table-scroll");
       dispose();
     } finally { vi.unstubAllGlobals(); }

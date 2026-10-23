@@ -5,7 +5,7 @@ import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { applyArtifactIframeSandbox } from "../../islands/frames";
 import {
-  beginPreviewScope,
+  beginPreviewRead,
   callWindow,
   CHEMISTRY_SOURCE_PREVIEW_CHARACTERS,
   controlDense,
@@ -13,11 +13,11 @@ import {
   fetchArtifactText,
   hostWindow,
   iconEl,
-  isArtifactReadCancelled,
+  isArtifactReadAborted,
   LATEX_SOURCE_PREVIEW_CHARACTERS,
   looksBinary,
   MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
-  previewReadOptions,
+  previewReadSignal,
   svgElement,
   translate,
   TEXT_SOURCE_PREVIEW_CHARACTERS,
@@ -122,7 +122,7 @@ function readFailure(
   retry: () => void,
 ): (error: unknown) => void {
   return (error: unknown) => {
-    if (isArtifactReadCancelled(error)) return;
+    if (isArtifactReadAborted(error)) return;
     if (!container.isConnected) return;
     rendererFailure(container, a, url, error, retry);
   };
@@ -148,7 +148,7 @@ function appendResidues(
 
 export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
   const target = artifactMetadataTarget(a);
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const shown = truncateMarkdown(text);
@@ -213,7 +213,7 @@ export function renderStructuredText(
 }
 
 export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const ct = String(a.content_type || "").toLowerCase();
@@ -240,7 +240,7 @@ export function renderTableArtifact(
 }
 
 export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -303,7 +303,7 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
 }
 
 export function renderAlignmentArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -348,7 +348,7 @@ export function renderAlignmentArtifact(container: HTMLElement, a: ArtifactRow, 
 }
 
 export function renderGenomeTrack(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -527,7 +527,7 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
     bar.appendChild(open);
     container.appendChild(bar);
   }
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -577,7 +577,7 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
 
 export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
   const target = artifactMetadataTarget(a);
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -684,7 +684,7 @@ function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string,
   // Degraded path when the 3Dmol island is not mounted: the coordinates as
   // text, still under the main preview budget and cancellable.
   const target = artifactMetadataTarget(a);
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!content.isConnected) return;
       const pre = el("pre");
@@ -769,9 +769,10 @@ export function renderArtifactDescriptor(
 export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   // A new artifact (or a repaint) owns the viewer: anything the previous view
   // was still reading is no longer needed, and a notebook releases the image
-  // URLs it created.
+  // URLs it created. The new read is bound to this body, so replacing the body
+  // (or closing the viewer) aborts exactly that read.
   closeNotebookPreview();
-  beginPreviewScope();
+  beginPreviewRead(body);
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");
   loading.appendChild(iconEl("loader", 16, "spin"));

@@ -4,8 +4,8 @@
  * assigned in install.ts.
  */
 
-import { fetchArtifactText } from "../artifacts/api";
-import { filesT } from "../artifacts/copy";
+import { fetchArtifactText, isArtifactReadAborted } from "../artifacts/api";
+import { filesT, readFailureText } from "../artifacts/copy";
 import { paintIcon } from "../icons/paths";
 import { isReady } from "../../compat/stub";
 import { _tbl } from "../../stores/artifacts";
@@ -216,13 +216,22 @@ export function renderTableInto(holder: HTMLElement, fname: string, url: string)
       cache[url] = rows;
       build(rows);
     })
-    .catch(() => {
-      if (disposed) return;
-      const error = el("div", "nbc-artifact-error", filesT("nb.artifact.failed"));
-      const retry = el("button", "nbc-action", filesT("nb.artifact.retry"));
-      retry.onclick = () => { error.remove(); void read(); };
-      error.appendChild(retry);
-      holder.appendChild(error);
+    .catch((error: unknown) => {
+      // A cancelled read (the cell was disposed) says nothing to the user.
+      if (disposed || isArtifactReadAborted(error)) return;
+      holder.innerHTML = "";
+      const card = el("div", "nbc-artifact-error");
+      card.setAttribute("role", "alert");
+      card.appendChild(el("span", null, readFailureText(error)));
+      const retry = el("button", "nbc-action", filesT("viewer.read.retry"));
+      retry.onclick = () => { card.remove(); void read(); };
+      card.appendChild(retry);
+      const download = el("a", "nbc-action") as HTMLAnchorElement;
+      download.textContent = t("common.download");
+      download.href = url;
+      download.setAttribute("download", fname || "artifact");
+      card.appendChild(download);
+      holder.appendChild(card);
     });
   void read();
   return () => { disposed = true; };

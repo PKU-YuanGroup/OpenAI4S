@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { _molView } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
+import { filesT, readFailureText } from "../features/artifacts/copy";
 import { MOL_VENDOR_SRC, molTeardown, molecule } from "./mol";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -75,6 +76,7 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     src = "";
     style: Record<string, string> = {};
     classList = { add() {}, remove() {} };
+    attrs: Record<string, string> = {};
     onclick: (() => void) | null = null;
     onload: (() => void) | null = null;
     onerror: (() => void) | null = null;
@@ -90,6 +92,9 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
       child.parent = this;
       this.children.push(child);
       return child;
+    }
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
     }
     remove(): void {
       if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
@@ -187,6 +192,74 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     await vi.waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1));
     molTeardown();
     await vi.waitFor(() => expect(aborted).toBe(1));
+  });
+
+  it("shows the read failure instead of feeding an error page to the viewer", async () => {
+    const { page, runtime, host } = setup();
+    const createViewer = vi.fn(runtime.createViewer);
+    vi.stubGlobal("$3Dmol", { ...runtime, createViewer });
+    let missing = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        missing
+          ? new Response("missing", { status: 404 })
+          : new Response("ATOM      1  CA  ALA A   1       1.000   2.000   3.000\n"),
+      ),
+    );
+    const first = page.appendChild(new FakeEl());
+    molecule(host(first), "/missing.pdb", "missing.pdb");
+    await vi.waitFor(() =>
+      expect(walk(first).some((node) => node.className === "renderer-fallback")).toBe(true),
+    );
+    // The error body is never parsed as structure data.
+    expect(createViewer).not.toHaveBeenCalled();
+    const card = walk(first).find((node) => node.className === "renderer-fallback")!;
+    expect(walk(card).map((node) => node.textContent)).toContain(
+      filesT("viewer.read.failedStatus", 404),
+    );
+    expect(readFailureText(new Error("x"))).toBe(filesT("viewer.read.failed"));
+    const retry = walk(card).find(
+      (node) => node.tagName === "button" && node.textContent === filesT("viewer.read.retry"),
+    );
+    expect(retry).toBeTruthy();
+    missing = false;
+    retry!.onclick?.();
+    await vi.waitFor(() => expect(createViewer).toHaveBeenCalledTimes(1));
+  });
+
+  it("aborts the previous structure's read when a new structure opens", async () => {
+    const { page, runtime, host } = setup();
+    vi.stubGlobal("$3Dmol", runtime);
+    let aborted = 0;
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) {
+              reject(new Error("no abort signal"));
+              return;
+            }
+            signals.push(signal);
+            signal.addEventListener("abort", () => {
+              aborted += 1;
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      ),
+    );
+    const first = page.appendChild(new FakeEl());
+    const second = page.appendChild(new FakeEl());
+    molecule(host(first), "/a.pdb", "a.pdb");
+    await vi.waitFor(() => expect(signals.length).toBe(1));
+    molecule(host(second), "/b.pdb", "b.pdb");
+    await vi.waitFor(() => expect(signals.length).toBe(2));
+    expect(aborted).toBe(1);
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(false);
   });
 
   it("injects the vendored script once for structures opened before it loads", async () => {

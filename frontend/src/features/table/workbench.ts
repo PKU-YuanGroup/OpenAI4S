@@ -4,10 +4,10 @@ import {
   apiErrorText,
   el,
   fetchArtifactText,
-  isArtifactReadCancelled,
+  isArtifactReadAborted,
   LEGACY_TABLE_PREVIEW_CHARACTERS,
   looksBinary,
-  previewReadOptions,
+  previewReadSignal,
   translate,
   unicodeSafeSlice,
 } from "../artifacts/api";
@@ -110,7 +110,7 @@ function legacySourceStatus(
 
 /** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */
 export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, previewReadOptions(a))
+  fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
       if (looksBinary(text)) {
@@ -140,7 +140,7 @@ export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: s
       }
     })
     .catch((error: unknown) => {
-      if (isArtifactReadCancelled(error) || !container.isConnected) return;
+      if (isArtifactReadAborted(error) || !container.isConnected) return;
       renderLegacyFailure(container, a, url, error);
     });
 }

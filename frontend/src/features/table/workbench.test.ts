@@ -606,7 +606,9 @@ describe("legacy table completeness and failure recovery (A2)", () => {
       { workbenchOn: false, capabilities: WORKBENCH_CAPS },
     );
     await vi.waitFor(() => expect(host.querySelector(".renderer-fallback")).toBeTruthy(), { timeout: 3000 });
-    expect(host.querySelector(".renderer-fallback")!.textContent).toContain(filesT("viewer.read.failed"));
+    expect(host.querySelector(".renderer-fallback")!.textContent).toContain(
+      filesT("viewer.read.failedStatus", 500),
+    );
     const retry = host.querySelectorAll("button").find((node) => node.textContent === filesT("viewer.read.retry"));
     expect(retry).toBeDefined();
     retry!.onclick?.();

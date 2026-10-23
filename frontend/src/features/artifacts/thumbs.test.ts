@@ -1,23 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _thumbCache } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
-import { bytes, setArtifactsFetch, THUMB_MAX_BYTES, THUMB_MAX_CONCURRENCY, THUMB_READ_TIMEOUT_MS } from "./api";
-import { filesT } from "./copy";
 import {
-  beginThumbPaint,
-  endThumbPaint,
-  releaseThumbReads,
-  THUMB_CACHE_LIMIT,
-  tileThumb,
-} from "./thumbs";
+  setArtifactsFetch,
+  THUMB_READ_CONCURRENCY,
+  THUMB_READ_MAX_BYTES,
+} from "./api";
+import { filesT } from "./copy";
+import { pruneThumbReads, THUMB_CACHE_LIMIT, tileThumb } from "./thumbs";
 import type { ArtifactRow } from "./types";
 
 class Node {
   children: Node[] = [];
   className = "";
   textContent = "";
+  title = "";
   src = "";
   html = "";
+  isConnected = true;
   get innerHTML(): string {
     return this.html;
   }
@@ -32,10 +32,14 @@ class Node {
 }
 
 const walk = (node: Node): Node[] => [node, ...node.children.flatMap(walk)];
-const texts = (tile: HTMLElement) => walk(tile as unknown as Node).map((node) => node.textContent).filter(Boolean);
-const settle = async () => {
-  for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+const texts = (tile: HTMLElement) =>
+  walk(tile as unknown as Node)
+    .map((node) => node.textContent)
+    .filter(Boolean);
+const settle = async (rounds = 6) => {
+  for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
 };
+const firstChild = (tile: HTMLElement): Node => (tile as unknown as Node).children[0]!;
 
 describe("Files tile previews (AUDIT P06)", () => {
   let reads: string[];
@@ -52,12 +56,19 @@ describe("Files tile previews (AUDIT P06)", () => {
     });
   });
   afterEach(() => {
+    pruneThumbReads();
     setArtifactsFetch(null);
     vi.unstubAllGlobals();
     resetStoreFields();
   });
 
-  const table: ArtifactRow = { id: "t", filename: "de.csv", content_type: "text/csv", version_id: "v1", size_bytes: 33 };
+  const table: ArtifactRow = {
+    id: "t",
+    filename: "de.csv",
+    content_type: "text/csv",
+    version_id: "v1",
+    size_bytes: 33,
+  };
 
   it("reads a data tile once per version, however often the grid repaints", async () => {
     const first = tileThumb(table);
@@ -75,7 +86,12 @@ describe("Files tile previews (AUDIT P06)", () => {
   });
 
   it("neither shows nor keeps an error page or a failed read", async () => {
-    const notes: ArtifactRow = { id: "n", filename: "notes.txt", content_type: "text/plain", version_id: "v1" };
+    const notes: ArtifactRow = {
+      id: "n",
+      filename: "notes.txt",
+      content_type: "text/plain",
+      version_id: "v1",
+    };
     reply = () => new Response("Internal Server Error", { status: 500 });
     const failed = tileThumb(notes);
     await settle();
@@ -101,32 +117,7 @@ describe("Files tile previews (AUDIT P06)", () => {
   });
 });
 
-
-describe("thumbnail read budget and lifecycle (R1)", () => {
-  class Node2 {
-    children: Node2[] = [];
-    className = "";
-    textContent = "";
-    title = "";
-    src = "";
-    html = "";
-    get innerHTML(): string {
-      return this.html;
-    }
-    set innerHTML(value: string) {
-      this.children = [];
-      this.html = value;
-    }
-    appendChild(child: Node2): Node2 {
-      this.children.push(child);
-      return child;
-    }
-  }
-
-  const settle = async (rounds = 6): Promise<void> => {
-    for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  };
-  const firstChild = (tile: HTMLElement): Node2 => (tile as unknown as Node2).children[0]!;
+describe("thumbnail read budget, concurrency and consumers (A1)", () => {
   const row = (id: string, filename = "log.txt"): ArtifactRow => ({
     id,
     filename,
@@ -136,10 +127,10 @@ describe("thumbnail read budget and lifecycle (R1)", () => {
 
   beforeEach(() => {
     resetStoreFields();
-    vi.stubGlobal("document", { createElement: () => new Node2() });
+    vi.stubGlobal("document", { createElement: () => new Node() });
   });
   afterEach(() => {
-    releaseThumbReads();
+    pruneThumbReads();
     setArtifactsFetch(null);
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -160,61 +151,88 @@ describe("thumbnail read budget and lifecycle (R1)", () => {
     });
     const tiles = Array.from({ length: 50 }, (_, i) => tileThumb(row(`t${i}`)));
     await vi.waitFor(() => expect(reads).toBe(50), { timeout: 5000 });
-    expect(peak).toBeLessThanOrEqual(THUMB_MAX_CONCURRENCY);
+    expect(peak).toBeLessThanOrEqual(THUMB_READ_CONCURRENCY);
     expect(tiles.length).toBe(50);
   });
 
-  it("cancels reads that leave the Files paint and no other view owns", async () => {
-    let aborted = 0;
+  it("drops a queued read that nobody shows any more without issuing a request", async () => {
     let started = 0;
     setArtifactsFetch((_url, init) => {
       started += 1;
-      const signal = init?.signal;
       return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    });
+    const tiles = Array.from({ length: THUMB_READ_CONCURRENCY + 2 }, (_, i) =>
+      tileThumb(row(`q${i}`)),
+    );
+    await settle(2);
+    expect(started).toBe(THUMB_READ_CONCURRENCY);
+    for (const tile of tiles) firstChild(tile).isConnected = false;
+    pruneThumbReads();
+    await settle();
+    // The two queued reads never reached the network.
+    expect(started).toBe(THUMB_READ_CONCURRENCY);
+  });
+
+  it("aborts an in-flight read whose only consumer left, and retries on the next paint", async () => {
+    let aborted = 0;
+    let reads = 0;
+    let reply: "pending" | "ok" = "pending";
+    setArtifactsFetch((_url, init) => {
+      reads += 1;
+      if (reply === "ok") return Promise.resolve(new Response("first line\nsecond line\n"));
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
         signal?.addEventListener("abort", () => {
           aborted += 1;
           reject(new DOMException("aborted", "AbortError"));
         });
-        if (signal?.aborted) {
-          aborted += 1;
-          reject(new DOMException("aborted", "AbortError"));
-        }
       });
     });
-    const paint = beginThumbPaint();
-    for (let i = 0; i < 8; i++) tileThumb(row(`c${i}`));
-    releaseThumbReads();
+    const first = tileThumb(row("pruned"));
+    const consumer = firstChild(first);
+    await settle(2);
+    expect(reads).toBe(1);
+    consumer.isConnected = false;
+    pruneThumbReads();
     await settle();
-    expect(started).toBeGreaterThan(0);
-    expect(aborted).toBeGreaterThanOrEqual(4);
-    expect(paint).toBeGreaterThan(0);
+    expect(aborted).toBe(1);
+    // A cancelled read is evicted, and the detached tile was never written.
+    expect(consumer.textContent).toBe("");
+    reply = "ok";
+    const retried = tileThumb(row("pruned"));
+    await settle();
+    expect(reads).toBe(2);
+    expect(texts(retried)).toContain("first line\nsecond line");
   });
 
-  it("does not cancel a shared read that another view still shows", async () => {
-    let cancelled = 0;
-    setArtifactsFetch(async (_url, init) => {
-      const signal = init?.signal;
-      return new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("alpha\nbeta\n"));
-            controller.close();
-          },
-          cancel() {
-            cancelled += 1;
-          },
-        }),
-      );
-      void signal;
+  it("keeps a shared read alive while one consumer is still mounted", async () => {
+    let aborted = 0;
+    setArtifactsFetch((_url, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          aborted += 1;
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
     });
-    const live = tileThumb(row("shared"));
-    const paint = beginThumbPaint();
-    const inFiles = tileThumb(row("shared"));
-    endThumbPaint(paint);
+    const first = tileThumb(row("shared"));
+    const second = tileThumb(row("shared"));
+    const firstConsumer = firstChild(first);
+    const secondConsumer = firstChild(second);
+    await settle(2);
+    firstConsumer.isConnected = false;
+    pruneThumbReads();
     await settle();
-    expect(texts(live)).toContain("alpha\nbeta");
-    expect(texts(inFiles)).toContain("alpha\nbeta");
-    expect(cancelled).toBe(0);
+    expect(aborted).toBe(0);
+    secondConsumer.isConnected = false;
+    pruneThumbReads();
+    await settle();
+    expect(aborted).toBe(1);
   });
 
   it("marks a prefix-only text tile as a partial preview", async () => {
@@ -227,43 +245,40 @@ describe("thumbnail read budget and lifecycle (R1)", () => {
       { timeout: 2000 },
     );
     expect(d.className).toBe("txt");
-    expect(d.textContent.length).toBeLessThan(THUMB_MAX_BYTES);
+    expect(d.textContent.length).toBeLessThan(THUMB_READ_MAX_BYTES);
   });
 
-  it("explains why a structured tile fell back instead of hiding the reason", async () => {
+  it("shows only columns and a partial mark for a truncated data tile, never a row count", async () => {
     const body = "gene,logFC\n" + "TP53,1.0\n".repeat(40000);
     setArtifactsFetch(async () => new Response(body));
-    const tile = tileThumb({ id: "csv2", filename: "big.csv", content_type: "text/csv", version_id: "v1" });
-    await vi.waitFor(() => expect(texts(tile)).toContain("data"), { timeout: 2000 });
-    expect(firstChild(tile).title).toBe(filesT("viewer.read.limit", bytes(THUMB_MAX_BYTES)));
+    const tile = tileThumb({
+      id: "csv",
+      filename: "big.csv",
+      content_type: "text/csv",
+      version_id: "v1",
+    });
+    await vi.waitFor(() => expect(texts(tile)).toContain(filesT("files.thumb.partial")), {
+      timeout: 2000,
+    });
+    expect(texts(tile)).toContain("gene");
+    expect(texts(tile)).toContain("logFC");
+    expect(texts(tile).some((text) => / row|rows/.test(text))).toBe(false);
   });
 
-  it("keeps a structured tile whole-or-fallback rather than drawing half a table", async () => {
-    const body = "gene,logFC\n" + "TP53,1.0\n".repeat(40000);
-    setArtifactsFetch(async () => new Response(body));
-    const tile = tileThumb({ id: "csv", filename: "big.csv", content_type: "text/csv", version_id: "v1" });
-    // A structured tile that could not be read whole falls back to a generic
-    // data tile; it must never show a row count derived from a prefix.
-    await vi.waitFor(() => expect(texts(tile)).toContain("data"), { timeout: 2000 });
-    expect(texts(tile).some((text) => text.includes(" row"))).toBe(false);
-  });
-
-  it("stops a tile read that outlives the fifteen-second deadline", async () => {
-    vi.useFakeTimers();
-    setArtifactsFetch(
-      async () =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            pull() {
-              /* never delivers */
-            },
-          }),
-        ),
+  it("marks a truncated molecule tile as a partial preview", async () => {
+    const atoms = Array.from({ length: 12000 }, (_, i) =>
+      `ATOM  ${String(i).padStart(5)}  CA  ALA A${String(i).padStart(4)}      ${(i * 0.1).toFixed(3)}   1.000   2.000  1.00  0.00           C`,
+    ).join("\n");
+    setArtifactsFetch(async () => new Response(atoms));
+    const tile = tileThumb({
+      id: "mol",
+      filename: "big.pdb",
+      content_type: "chemical/x-pdb",
+      version_id: "v1",
+    });
+    await vi.waitFor(
+      () => expect(texts(tile)).toContain(filesT("files.thumb.partial")),
+      { timeout: 2000 },
     );
-    const tile = tileThumb(row("slow"));
-    await vi.advanceTimersByTimeAsync(THUMB_READ_TIMEOUT_MS + 100);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(THUMB_READ_TIMEOUT_MS).toBe(15_000);
-    expect(firstChild(tile).className).toBe("big");
   });
 });

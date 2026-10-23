@@ -523,10 +523,7 @@ export function renderNotebookArtifact(
     closeNotebookPreview();
     renderNotebookArtifact(container, a, url, onFailure);
   };
-  fetchArtifactText(url, {
-    signal: session.controller.signal,
-    declaredBytes: a.size_bytes,
-  })
+  fetchArtifactText(url, { signal: session.controller.signal })
     .then((text) => {
       if (!container.isConnected || activeSession !== session) return;
       const parsed = parseNotebook(text);

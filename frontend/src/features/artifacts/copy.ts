@@ -1,5 +1,5 @@
 import { copyLookup, type CopyTable } from "../../i18n/copy";
-import { ArtifactReadError, bytes } from "./api";
+import { ApiError, ArtifactReadError, bytes } from "./api";
 
 /**
  * M-03 copy. Existing Files/viewer keys stay in the F-07 dictionaries.
@@ -98,6 +98,7 @@ const COPY: CopyTable = {
     "viewer.read.unbounded": "无法确认这次读取的大小上限，已停止自动预览。可下载原文件。",
     "viewer.read.timeout": "读取超时，已停止自动预览。可重试或下载原文件。",
     "viewer.read.failed": "读取失败。可重试或下载原文件。",
+    "viewer.read.failedStatus": "读取失败（HTTP {0}）。可重试或下载原文件。",
     "viewer.read.retry": "重试读取",
     "viewer.preview.complete": "完整预览：已读取全部 {0} 个字符。",
     "viewer.preview.partial": "部分预览：仅显示前 {0} 个字符（共 {1} 个），其余内容未读取。",
@@ -228,6 +229,7 @@ const COPY: CopyTable = {
     "viewer.read.unbounded": "The size of this read could not be bounded, so automatic preview stopped. The original file can still be downloaded.",
     "viewer.read.timeout": "The read timed out and automatic preview stopped. Retry, or download the original file.",
     "viewer.read.failed": "The read failed. Retry, or download the original file.",
+    "viewer.read.failedStatus": "The read failed (HTTP {0}). Retry, or download the original file.",
     "viewer.read.retry": "Retry reading",
     "viewer.preview.complete": "Complete preview: all {0} characters were read.",
     "viewer.preview.partial": "Partial preview: showing the first {0} of {1} characters; the rest was not read.",
@@ -278,9 +280,11 @@ export const filesT = copyLookup(COPY);
  */
 export function readFailureText(error: unknown): string {
   if (error instanceof ArtifactReadError) {
-    if (error.code === "too-large") return filesT("viewer.read.limit", bytes(error.maxBytes));
-    if (error.code === "unbounded") return filesT("viewer.read.unbounded");
-    if (error.code === "timeout") return filesT("viewer.read.timeout");
+    if (error.kind === "too_large") return filesT("viewer.read.limit", bytes(error.maxBytes));
+    if (error.kind === "timeout") return filesT("viewer.read.timeout");
   }
+  // HTTP failures keep their status: "read failed" alone hides whether the
+  // version is gone (404), forbidden (403) or transient (5xx).
+  if (error instanceof ApiError) return filesT("viewer.read.failedStatus", error.status);
   return filesT("viewer.read.failed");
 }

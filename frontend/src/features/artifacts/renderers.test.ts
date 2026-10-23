@@ -6,7 +6,9 @@ import {
   LATEX_SOURCE_PREVIEW_CHARACTERS,
   MARKDOWN_PREVIEW_CHARACTERS,
   MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
-  PREVIEW_MAX_BYTES,
+  PREVIEW_READ_MAX_BYTES,
+  PREVIEW_READ_TIMEOUT_MS,
+  abortPreviewReads,
   setArtifactsFetch,
   truncateMarkdown,
   unicodeSafeSlice,
@@ -256,14 +258,28 @@ describe("preview read budget in the real preview paths (R1)", () => {
     resetStoreFields();
   });
 
-  it("rejects an over-budget structure file from trusted metadata without parsing it", async () => {
+  it("rejects an over-budget structure file from its Content-Length without parsing it", async () => {
     const parseSequence = vi.fn();
     vi.stubGlobal("OpenAI4SScientificRenderers", { parseSequence });
-    let reads = 0;
-    setArtifactsFetch(async () => {
-      reads += 1;
-      return new Response(">spike\nACDEFGHIK\n");
-    });
+    let readers = 0;
+    let cancelled = false;
+    setArtifactsFetch(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-length": String(9 * 1024 * 1024) }),
+          body: {
+            cancel: async () => {
+              cancelled = true;
+            },
+            getReader: () => {
+              readers += 1;
+              throw new Error("the body must not be read");
+            },
+          },
+        }) as unknown as Response,
+    );
     const container = new Dom("div");
     container.page = true;
     const a: ArtifactRow = {
@@ -274,11 +290,12 @@ describe("preview read budget in the real preview paths (R1)", () => {
     };
     renderSequenceArtifact(host(container), a, "/api/v1/artifacts/big");
     await vi.waitFor(() => expect(fallbackCards(container)).toHaveLength(1), { timeout: 2000 });
-    expect(reads).toBe(0);
+    expect(readers).toBe(0);
+    expect(cancelled).toBe(true);
     expect(parseSequence).not.toHaveBeenCalled();
     const card = fallbackCards(container)[0]!;
     expect(
-      walk(card).some((node) => node.textContent === filesT("viewer.read.limit", bytes(PREVIEW_MAX_BYTES))),
+      walk(card).some((node) => node.textContent === filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES))),
     ).toBe(true);
     // The exact-version download is always offered, and retry is one click.
     expect(walk(card).filter((node) => node.tagName === "a").map((node) => node.href)).toContain(
@@ -287,7 +304,7 @@ describe("preview read budget in the real preview paths (R1)", () => {
     expect(walk(card).some((node) => node.tagName === "button" && node.textContent === filesT("viewer.read.retry"))).toBe(true);
   });
 
-  it("stops a forged small metadata size while streaming and never parses the prefix", async () => {
+  it("stops a forged small Content-Length while streaming and never parses the prefix", async () => {
     const parseSequence = vi.fn();
     vi.stubGlobal("OpenAI4SScientificRenderers", { parseSequence });
     const chunk = new TextEncoder().encode("A".repeat(1024 * 1024));
@@ -300,6 +317,7 @@ describe("preview read budget in the real preview paths (R1)", () => {
             controller.enqueue(chunk);
           },
         }),
+        { headers: { "content-length": "16" } },
       );
     });
     const container = new Dom("div");
@@ -330,7 +348,9 @@ describe("preview read budget in the real preview paths (R1)", () => {
     renderTextArtifact(host(container), a, "/api/v1/artifacts/flaky");
     await vi.waitFor(() => expect(fallbackCards(container)).toHaveLength(1), { timeout: 2000 });
     const card = fallbackCards(container)[0]!;
-    expect(walk(card).some((node) => node.textContent === filesT("viewer.read.failed"))).toBe(true);
+    expect(
+      walk(card).some((node) => node.textContent === filesT("viewer.read.failedStatus", 500)),
+    ).toBe(true);
     const retry = walk(card).find(
       (node) => node.tagName === "button" && node.textContent === filesT("viewer.read.retry"),
     )!;
@@ -831,5 +851,201 @@ describe("saved science-search rendering (A4)", () => {
       { timeout: 3000 },
     );
     expect(walk4(container).some((node) => node.className === "science-results")).toBe(false);
+  });
+});
+
+describe("every preview entry fails visibly and retries (A1)", () => {
+  class PreviewNode {
+    children: PreviewNode[] = [];
+    parent: PreviewNode | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    html = "";
+    href = "";
+    disabled = false;
+    style: Record<string, string> = {};
+    attrs: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    classList = { add() {}, remove() {}, toggle() {}, contains: () => false };
+    onclick: (() => void) | null = null;
+    tagName: string;
+    constructor(tag = "div") {
+      this.tagName = tag.toUpperCase();
+    }
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    get innerHTML(): string {
+      return this.html;
+    }
+    set innerHTML(value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+      this.html = value;
+    }
+    appendChild(child: PreviewNode): PreviewNode {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
+    }
+  }
+  const walk = (node: PreviewNode): PreviewNode[] => [node, ...node.children.flatMap(walk)];
+  const texts = (root: PreviewNode): string[] =>
+    walk(root).map((node) => node.textContent).filter(Boolean);
+  const host = (node: PreviewNode) => node as unknown as HTMLElement;
+  const row: ArtifactRow = { id: "a", filename: "artifact.dat", version_id: "v1" };
+  const descriptor = (rendererId: string) => ({
+    artifact_id: "a",
+    version_id: "v1",
+    matched_by: "extension",
+    trusted_html: false,
+    renderer: { renderer_id: rendererId, label: rendererId },
+  });
+  const flush = async (rounds = 12): Promise<void> => {
+    for (let i = 0; i < rounds; i++) await Promise.resolve();
+  };
+  const successNode = (root: PreviewNode, predicate: (node: PreviewNode) => boolean): boolean =>
+    walk(root).some(predicate);
+  const cases: Array<{
+    id: string;
+    body: string;
+    success: (node: PreviewNode) => boolean;
+  }> = [
+    { id: "markdown", body: "# hello\n", success: (n) => (n.className || "").includes("renderer-markdown") },
+    { id: "text", body: "hello\n", success: (n) => (n.className || "").includes("renderer-source") },
+    { id: "sequence", body: ">a\nACD\n", success: (n) => (n.className || "").includes("bio-summary") },
+    { id: "msa", body: ">a\nACD\n", success: (n) => (n.className || "").includes("msa-viewport") },
+    { id: "genome-track", body: "chr1\t0\t10\n", success: (n) => (n.className || "").includes("genome-tracks") },
+    { id: "chemistry-2d", body: "C\n", success: (n) => (n.className || "").includes("chemistry-view") },
+    { id: "latex", body: "\\section{x}\n", success: (n) => (n.className || "").includes("latex-view") },
+    { id: "molecule-3d", body: "ATOM      1  CA  ALA A   1      1.000   2.000   3.000", success: (n) => n.tagName === "PRE" },
+    { id: "table", body: "a,b\n1,2\n", success: (n) => n.tagName === "TABLE" },
+  ];
+
+  beforeEach(() => {
+    resetStoreFields();
+    // Direct renderer calls bypass renderArtifactBody; drop any View-era read
+    // controller a previous test left behind so its aborted signal is not reused.
+    abortPreviewReads();
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new PreviewNode(tag),
+      createElementNS: (_ns: string, tag: string) => new PreviewNode(tag),
+      createDocumentFragment: () => new PreviewNode("#fragment"),
+      createTextNode: (text: string) => {
+        const node = new PreviewNode("#text");
+        node.textContent = text;
+        return node;
+      },
+    });
+    vi.stubGlobal("OpenAI4SScientificRenderers", {
+      parseSequence: (text: string) => ({
+        format: "fasta",
+        alphabet: "protein",
+        total_length: text.length,
+        records: [{ name: "a", sequence: "ACD" }],
+      }),
+      parseAlignment: () => ({
+        format: "a3m",
+        columns: 3,
+        alphabet: "protein",
+        records: [{ name: "a", sequence: "ACD" }],
+      }),
+      parseGenome: () => ({
+        format: "bed",
+        invalid: 0,
+        features: [{ chrom: "chr1", start: 0, end: 10, label: "g", type: "gene" }],
+        chromosomes: [{ chrom: "chr1", start: 0, end: 10, count: 1 }],
+      }),
+      parseMolfile: () => null,
+      smilesLines: () => [],
+      latexPreview: () => [{ kind: "paragraph", text: "x" }],
+      residueClass: () => "other",
+      rendererIdFromDescriptor: () => "download",
+    });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    abortPreviewReads();
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  const mount = (rendererId: string): PreviewNode => {
+    const root = new PreviewNode("div");
+    root.page = true;
+    renderArtifactDescriptor(host(root), row, descriptor(rendererId));
+    return root;
+  };
+  const card = (root: PreviewNode): PreviewNode | undefined | null =>
+    walk(root).find((node) => node.className === "renderer-fallback");
+  const retryButton = (root: PreviewNode): PreviewNode | undefined =>
+    walk(root).find((node) => node.tagName === "BUTTON" && node.textContent === filesT("viewer.read.retry"));
+  const downloadHref = (root: PreviewNode): string | undefined => {
+    const link = walk(root).find(
+      (node) => node.tagName === "A" && (node.href || node.attrs.href),
+    );
+    return link ? link.href || link.attrs.href : undefined;
+  };
+
+  it.each(cases)("$id reports a timeout with retry and the exact-version download", async ({ id, body, success }) => {
+    vi.useFakeTimers();
+    setArtifactsFetch(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+    const root = mount(id);
+    await flush();
+    await vi.advanceTimersByTimeAsync(PREVIEW_READ_TIMEOUT_MS + 50);
+    await flush();
+    const failure = card(root);
+    expect(failure, `${id} has no failure card`).toBeTruthy();
+    expect(texts(failure!)).toContain(filesT("viewer.read.timeout"));
+    expect(downloadHref(root)).toBe("/api/v1/artifacts/versions/v1");
+    const retry = retryButton(root);
+    expect(retry, `${id} has no retry`).toBeTruthy();
+    setArtifactsFetch(async () => new Response(body));
+    retry!.onclick?.();
+    await flush();
+    expect(successNode(root, success), `${id} did not recover`).toBe(true);
+  });
+
+  it.each(cases)("$id reports the read limit with retry and the exact-version download", async ({ id, body, success }) => {
+    setArtifactsFetch(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-length": String(9 * 1024 * 1024) }),
+          body: {
+            cancel: async () => {},
+            getReader: () => {
+              throw new Error("the body must not be read");
+            },
+          },
+        }) as unknown as Response,
+    );
+    const root = mount(id);
+    await flush();
+    const failure = card(root);
+    expect(failure, `${id} has no failure card`).toBeTruthy();
+    expect(texts(failure!)).toContain(
+      filesT("viewer.read.limit", bytes(PREVIEW_READ_MAX_BYTES)),
+    );
+    expect(downloadHref(root)).toBe("/api/v1/artifacts/versions/v1");
+    const retry = retryButton(root);
+    expect(retry, `${id} has no retry`).toBeTruthy();
+    setArtifactsFetch(async () => new Response(body));
+    retry!.onclick?.();
+    await flush();
+    expect(successNode(root, success), `${id} did not recover`).toBe(true);
   });
 });

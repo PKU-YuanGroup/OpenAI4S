@@ -8,8 +8,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 
 | 文件 | 职责 |
 | --- | --- |
-| [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary` / `controlDense`、`el`/`icon`（`el` 与 islands 共用）、用 `isReady` 调 window。有界 `readArtifactText()`/`fetchArtifactText()`（主预览 8 MiB、流式累计、超时/取消分类、`ArtifactReadError`）与冻结显示上限、`unicodeSafeSlice` / `truncateMarkdown`。 |
-| [`read-budget.test.ts`](read-budget.test.ts) | 流式字节预算：缺失/伪造长度、跨 chunk 超额即取消 reader、超时、取消、先查 HTTP 状态、无流式 body 拒绝预览、仅在允许时保留部分前缀。 |
+| [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary` / `controlDense`、`el`/`icon`（`el` 与 islands 共用）、用 `isReady` 调 window。两个有界读取入口：严格 `fetchArtifactText(url, opts?)`（完整文件或拒绝）与前缀 `readArtifactPrefix(url, {maxBytes, …})`（仅缩略图，尊重 UTF-8 边界）；F1 常量、`ArtifactReadError.kind`（`too_large`/`timeout`/`aborted`）、HTTP 状态抛 `ApiError`、每渲染一次的预览 AbortController（`beginPreviewRead`/`abortPreviewReads`/`abortDetachedPreviews`），以及冻结显示上限与 `unicodeSafeSlice` / `truncateMarkdown`。 |
+| [`read-budget.test.ts`](read-budget.test.ts) | F1/F2 读取契约：恰好等于上限时严格模式返回完整文件、伪造/超额/缺失 Content-Length、跨 chunk 越限即 cancel reader、HTTP 状态抛 ApiError、超时、外部中止、无 body 回退规则、前缀模式在 UTF-8 边界截断且不产生替换字符。 |
 | [`api.test.ts`](api.test.ts) | `looksBinary`：单行序列仍是文本；base64 块、控制字符与转义转储仍判为二进制；只对前 1 MiB 做一次线性扫描。 |
 | [`artifacts.css`](artifacts.css) | Files 工具条 / 过滤 / Load more / 过期 version 横幅。 |
 | [`boot.test.ts`](boot.test.ts) | DOM 挂载顺序及初始路由先于深链的回归覆盖。 |
@@ -39,7 +39,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
-| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。4 并发 256 KiB 读取、15 秒期限、共享读取引用计数，离开 Files 时取消无人使用的读取。 |
+| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。 |
 | [`thumbs.test.ts`](thumbs.test.ts) | 每个产物版本只读一次；错误页和失败的读取不缓存；LRU 上限。 |
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
 | [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。 |
