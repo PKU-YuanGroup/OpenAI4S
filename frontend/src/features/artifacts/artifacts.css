@@ -118,3 +118,57 @@
 .editor-draft { border-top: 1px solid var(--line-soft, var(--border)); padding: 10px 0; }
 .editor-draft p { overflow-wrap: anywhere; }
 .editor-draft textarea { display: block; width: 100%; min-height: 80px; box-sizing: border-box; }
+
+
+/* Read-only notebook preview (A3). No interactive chrome: the file's saved
+   outputs are displayed, nothing here executes or fetches. */
+.notebook-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 16px;
+}
+.notebook-readonly {
+  border-left: 3px solid var(--border, #e6dfd8);
+  padding-left: 10px;
+  color: var(--text-400, #6c6a64);
+}
+.notebook-meta {
+  font-size: 12px;
+  color: var(--text-400, #6c6a64);
+}
+.notebook-cell {
+  border: 1px solid var(--border, #e6dfd8);
+  border-radius: var(--radius, 8px);
+  padding: 10px 12px;
+  background: var(--bg-000, #faf9f5);
+}
+.notebook-cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-400, #6c6a64);
+}
+.notebook-cell-index {
+  font-weight: 600;
+}
+.notebook-cell-type {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.notebook-output {
+  margin-top: 8px;
+}
+.notebook-output-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-400, #6c6a64);
+}
+.notebook-png {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius, 8px);
+}

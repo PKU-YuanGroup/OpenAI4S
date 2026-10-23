@@ -130,6 +130,9 @@ export function compatibilityRendererDescriptor(a: ArtifactRow): RendererDescrip
   else if (/\.(md|markdown|rst)$/i.test(nm)) id = "markdown";
   else if (/\.tex$/i.test(nm)) id = "latex";
   else if (/csv|tab-separated/.test(ct) || /\.(csv|tsv)$/i.test(nm)) id = "table";
+  // A saved notebook is its own container: the extension/MIME identifies it
+  // before the generic text branch could show a JSON source dump instead.
+  else if (/\.ipynb$/i.test(nm) || /x-ipynb\+json/.test(ct)) id = "notebook";
   else if (ct.startsWith("text/") || /json/.test(ct) || TEXT_EXT.test(nm)) id = "text";
   return {
     artifact_id: a.id,

@@ -37,6 +37,7 @@ describe("compatibilityRendererDescriptor (app.js:8593-8609)", () => {
       ["paper.tex", "latex"],
       ["table.csv", "table"],
       ["log.txt", "text"],
+      ["report.python.ipynb", "notebook"],
       ["blob.bin", "download"],
     ];
     for (const [filename, id] of cases) {

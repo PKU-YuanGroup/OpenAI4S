@@ -35,6 +35,7 @@ import {
 } from "./catalog";
 import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
+import { closeNotebookPreview, renderNotebookArtifact } from "./notebook";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
@@ -717,6 +718,7 @@ export function renderArtifactDescriptor(
   else if (rendererId === "msa") renderAlignmentArtifact(content, target, url);
   else if (rendererId === "latex") renderLatexArtifact(content, target, url);
   else if (rendererId === "markdown") renderMarkdownArtifact(content, target, url);
+  else if (rendererId === "notebook") renderNotebookArtifact(content, target, url, rendererFailure);
   else if (rendererId === "table") renderTableArtifact(content, target, url, renderer);
   else if (rendererId === "text") renderTextArtifact(content, target, url);
   else renderDownloadArtifact(content, target, url);
@@ -735,7 +737,9 @@ export function renderArtifactDescriptor(
  */
 export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   // A new artifact (or a repaint) owns the viewer: anything the previous view
-  // was still reading is no longer needed.
+  // was still reading is no longer needed, and a notebook releases the image
+  // URLs it created.
+  closeNotebookPreview();
   beginPreviewScope();
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");

@@ -16,6 +16,7 @@ import {
 import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
+import { closeNotebookPreview } from "./notebook";
 import { beginThumbPaint, endThumbPaint, releaseThumbReads, tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
@@ -120,6 +121,9 @@ export function dockOpen(): void {
 }
 
 export function dockClose(): void {
+  // Closing the dock leaves the notebook preview: cancel its read and release
+  // the image object URLs it created.
+  closeNotebookPreview();
   const d = dock.value as { open: boolean; tab: string };
   dock.value = { ...d, open: false, tab: d.tab };
   dockEl()?.classList.add("collapsed");
@@ -145,6 +149,7 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   renderDockTabs();
   const pane =
     tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
+  if (pane !== "viewer") closeNotebookPreview();
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
   else if (tab === "timeline") {
