@@ -96,6 +96,28 @@ export function artifactMetadataTarget(a: ArtifactRow): ArtifactRow {
   return version ? { ...a, version_id: version, _exactVersion: true } : { ...a };
 }
 
+/**
+ * The frozen read target of one preview paint (A2). When this artifact knows
+ * its version — an exact tab, a listed row, or the descriptor's own version —
+ * the preview, source and download all address that immutable version. A row
+ * with no version identity can only read latest; the viewer labels that
+ * instead of implying a fixed-version guarantee.
+ *
+ * Reuses `artifactMetadataTarget` for the row itself and `artUrl` for the byte
+ * URL, so the exact-version address cannot drift between the two.
+ */
+export function artifactPreviewTarget(a: ArtifactRow, versionId?: string | null): ArtifactRow {
+  if (a._exactVersion) return artifactMetadataTarget(a);
+  const known = String(versionId || a.version_id || a.latest_version_id || "").trim();
+  if (!known) return { ...a };
+  return { ...a, version_id: known, latest_version_id: undefined, _exactVersion: true };
+}
+
+/** The preview/original URL for this paint: exact when the version is known. */
+export function artifactPreviewUrl(a: ArtifactRow, versionId?: string | null): string {
+  return artUrl(artifactPreviewTarget(a, versionId));
+}
+
 export function artifactMetadataCacheKey(a: ArtifactRow | null | undefined): string {
   if (!a || !a.id) return "_live";
   const target = artifactMetadataTarget(a);

@@ -89,6 +89,10 @@ function loadMolScript(): Promise<boolean> {
 /* Free the previous 3Dmol WebGL context before creating a new one (browsers cap
    live contexts at ~16; leaking one per structure viewed eventually blanks them). */
 export function molTeardown(): void {
+  // Closing/replacing the viewer also cancels the structure bytes it was
+  // still reading; `stale()` alone would only hide the result.
+  molAbort?.abort();
+  molAbort = null;
   try {
     const viewer = _molViewer.value as MolViewer | null;
     if (viewer && viewer.clear) viewer.clear();

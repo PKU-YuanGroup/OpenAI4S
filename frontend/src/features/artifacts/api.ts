@@ -320,6 +320,13 @@ export function translate(key: string, ...args: unknown[]): string {
 
 /** Frozen preview budgets (PLAN §2.4). */
 export const PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+
+/** Frozen display limits (PLAN §2.4) — display budgets, never read budgets. */
+export const MARKDOWN_PREVIEW_CHARACTERS = 1_000_000;
+export const CHEMISTRY_SOURCE_PREVIEW_CHARACTERS = 300_000;
+export const LATEX_SOURCE_PREVIEW_CHARACTERS = 500_000;
+export const MOLECULE_FALLBACK_PREVIEW_CHARACTERS = 8_000;
+export const LEGACY_TABLE_PREVIEW_CHARACTERS = 300_000;
 export const THUMB_MAX_BYTES = 256 * 1024;
 export const THUMB_MAX_CONCURRENCY = 4;
 export const THUMB_READ_TIMEOUT_MS = 15_000;
@@ -543,6 +550,52 @@ export async function readArtifactText(
 /** True when a read stopped only because its view went away (never shown as an error). */
 export function isArtifactReadCancelled(error: unknown): boolean {
   return error instanceof ArtifactReadError && error.code === "cancelled";
+}
+
+/**
+ * The read scope of the artifact currently open in the viewer. A newer paint
+ * aborts it, so replacing a preview cancels its transport instead of only
+ * ignoring the late result.
+ */
+let previewScope: AbortController | null = null;
+
+export function beginPreviewScope(): AbortSignal {
+  previewScope?.abort();
+  previewScope = new AbortController();
+  return previewScope.signal;
+}
+
+/** Options for one preview read in the current scope; metadata may only reject early. */
+export function previewReadOptions(a?: { size_bytes?: number | null } | null): ArtifactReadOptions {
+  return { signal: previewScope?.signal, declaredBytes: a ? a.size_bytes : null };
+}
+
+/**
+ * Slice for display without splitting a surrogate pair. Returning half of an
+ * astral character (emoji, some CJK extensions) would render a replacement
+ * glyph that looks like corrupted content rather than a labelled prefix.
+ */
+export function unicodeSafeSlice(text: string, limit: number): string {
+  if (limit <= 0 || !text) return "";
+  if (text.length <= limit) return text;
+  const last = text.charCodeAt(limit - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
+  return text.slice(0, Math.max(0, end));
+}
+
+/**
+ * Markdown shown only up to the character limit. A fenced code block cut open
+ * by the limit is closed so the retained prefix renders as the partial report
+ * it is instead of swallowing the completeness note into a code block.
+ */
+export function truncateMarkdown(
+  text: string,
+  limit: number = MARKDOWN_PREVIEW_CHARACTERS,
+): { text: string; truncated: boolean } {
+  if (text.length <= limit) return { text, truncated: false };
+  const sliced = unicodeSafeSlice(text, limit);
+  const fences = (sliced.match(/^```/gm) || []).length;
+  return { text: fences % 2 === 1 ? sliced + "\n```\n" : sliced, truncated: true };
 }
 
 /**

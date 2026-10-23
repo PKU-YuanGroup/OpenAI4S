@@ -1,9 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { bytes, PREVIEW_MAX_BYTES, setArtifactsFetch } from "./api";
+import {
+  bytes,
+  CHEMISTRY_SOURCE_PREVIEW_CHARACTERS,
+  LATEX_SOURCE_PREVIEW_CHARACTERS,
+  MARKDOWN_PREVIEW_CHARACTERS,
+  MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
+  PREVIEW_MAX_BYTES,
+  setArtifactsFetch,
+  truncateMarkdown,
+  unicodeSafeSlice,
+} from "./api";
 import { artUrl } from "./cache";
 import { filesT } from "./copy";
-import { renderArtifactBody, renderDownloadArtifact, renderSequenceArtifact, renderTextArtifact } from "./renderers";
+import {
+  renderArtifactBody,
+  renderArtifactDescriptor,
+  renderDownloadArtifact,
+  renderSequenceArtifact,
+  renderTextArtifact,
+} from "./renderers";
 import type { ArtifactRow } from "./types";
 
 class FakeNode {
@@ -391,3 +407,224 @@ describe("preview read budget in the real preview paths (R1)", () => {
 function attrs(node: { attrs: Record<string, string> }, name: string): string {
   return node.attrs[name] || "";
 }
+
+
+describe("preview completeness states and exact-version binding (A2)", () => {
+  class Dom2 {
+    children: Dom2[] = [];
+    parent: Dom2 | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    href = "";
+    attrs: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    classList = { add() {}, remove() {}, toggle() {}, contains: () => false };
+    onclick: (() => void) | null = null;
+    constructor(readonly tagName = "div") {}
+    remove(): void {
+      if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
+      this.parent = null;
+    }
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    set innerHTML(_value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+    }
+    appendChild(child: Dom2): Dom2 {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
+    }
+  }
+  const walk = (node: Dom2): Dom2[] => [node, ...node.children.flatMap(walk)];
+  const host = (node: Dom2) => node as unknown as HTMLElement;
+  const status = (root: Dom2): Dom2 | undefined =>
+    walk(root).find((node) => (node.className || "").includes("renderer-completeness"));
+  const links = (root: Dom2): Dom2[] => walk(root).filter((node) => node.tagName === "a");
+  const descriptor = (rendererId: string, versionId?: string) => ({
+    artifact_id: "a",
+    version_id: versionId,
+    matched_by: "extension",
+    renderer: { renderer_id: rendererId, label: rendererId },
+  });
+
+  beforeEach(() => {
+    resetStoreFields();
+    vi.stubGlobal("document", { createElement: (tag: string) => new Dom2(tag) });
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("slices without splitting a surrogate pair", () => {
+    const emoji = "🙂"; // two UTF-16 code units
+    const text = "a".repeat(9) + emoji + "tail";
+    expect(unicodeSafeSlice(text, 10)).toBe("a".repeat(9));
+    expect(unicodeSafeSlice(text, 11)).toBe("a".repeat(9) + emoji);
+    expect(unicodeSafeSlice("中文报告", 2)).toBe("中文");
+    expect(unicodeSafeSlice("short", 100)).toBe("short");
+    expect(unicodeSafeSlice("", 10)).toBe("");
+  });
+
+  it("truncates markdown at the frozen limit and closes a cut-open code fence", () => {
+    const exact = "a".repeat(MARKDOWN_PREVIEW_CHARACTERS);
+    expect(truncateMarkdown(exact)).toEqual({ text: exact, truncated: false });
+    const over = truncateMarkdown(exact + "b");
+    expect(over.truncated).toBe(true);
+    expect(over.text.startsWith(exact)).toBe(true);
+    // An odd number of fences in the retained prefix means the cut opened a
+    // block; the partial rendering closes it instead of swallowing the note.
+    const fenced = truncateMarkdown("```\ncode\n" + "x".repeat(MARKDOWN_PREVIEW_CHARACTERS));
+    expect(fenced.truncated).toBe(true);
+    expect(fenced.text.endsWith("```\n")).toBe(true);
+  });
+
+  it("marks a markdown preview complete at the limit and partial above it", async () => {
+    const atLimit = "a".repeat(MARKDOWN_PREVIEW_CHARACTERS);
+    const atHost = new Dom2("div");
+    atHost.page = true;
+    setArtifactsFetch(async () => new Response(atLimit));
+    renderArtifactDescriptor(host(atHost), { id: "a", filename: "r.md", version_id: "v1" }, descriptor("markdown", "v1"));
+    await vi.waitFor(() => expect(status(atHost)).toBeDefined(), { timeout: 3000 });
+    expect(status(atHost)!.attrs["data-state"]).toBe("complete");
+    expect(links(atHost)).toHaveLength(0);
+
+    const overHost = new Dom2("div");
+    overHost.page = true;
+    setArtifactsFetch(async () => new Response(atLimit + "b"));
+    renderArtifactDescriptor(host(overHost), { id: "a", filename: "r.md", version_id: "v1" }, descriptor("markdown", "v1"));
+    await vi.waitFor(() => expect(status(overHost)).toBeDefined(), { timeout: 3000 });
+    expect(status(overHost)!.attrs["data-state"]).toBe("partial");
+    expect(links(overHost).map((node) => node.href)).toEqual(["/api/v1/artifacts/versions/v1"]);
+  });
+
+  it("marks a chemistry source preview partial above 300,000 code units", async () => {
+    vi.stubGlobal("OpenAI4SScientificRenderers", {
+      parseMolfile: () => null,
+      smilesLines: () => [],
+    });
+    const text = "C".repeat(CHEMISTRY_SOURCE_PREVIEW_CHARACTERS + 1);
+    setArtifactsFetch(async () => new Response(text));
+    const atOver = new Dom2("div");
+    atOver.page = true;
+    renderArtifactDescriptor(
+      host(atOver),
+      { id: "a", filename: "m.mol", version_id: "v1" },
+      descriptor("chemistry-2d", "v1"),
+    );
+    await vi.waitFor(() => expect(status(atOver)).toBeDefined(), { timeout: 3000 });
+    expect(status(atOver)!.attrs["data-state"]).toBe("partial");
+    expect(links(atOver).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
+  });
+
+  it("marks a LaTeX source preview complete at exactly 500,000 code units", async () => {
+    vi.stubGlobal("OpenAI4SScientificRenderers", { latexPreview: () => [] });
+    const text = "x".repeat(LATEX_SOURCE_PREVIEW_CHARACTERS);
+    setArtifactsFetch(async () => new Response(text));
+    const atHost = new Dom2("div");
+    atHost.page = true;
+    renderArtifactDescriptor(
+      host(atHost),
+      { id: "a", filename: "p.tex", version_id: "v1" },
+      descriptor("latex", "v1"),
+    );
+    await vi.waitFor(() => expect(status(atHost)).toBeDefined(), { timeout: 3000 });
+    expect(status(atHost)!.attrs["data-state"]).toBe("complete");
+    expect(links(atHost)).toHaveLength(0);
+  });
+
+  it("labels the 3D fallback when it truncates at 8,000 code units", async () => {
+    const text = "ATOM ".repeat(MOLECULE_FALLBACK_PREVIEW_CHARACTERS / 5 + 2);
+    setArtifactsFetch(async () => new Response(text));
+    const root = new Dom2("div");
+    root.page = true;
+    renderArtifactDescriptor(
+      host(root),
+      { id: "a", filename: "s.pdb", version_id: "v1" },
+      descriptor("molecule-3d", "v1"),
+    );
+    await vi.waitFor(() => expect(status(root)).toBeDefined(), { timeout: 3000 });
+    expect(status(root)!.attrs["data-state"]).toBe("partial");
+    expect(links(root).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
+  });
+
+  it("binds preview, source and download to the same version and says so for latest", async () => {
+    const atLimit = "a".repeat(MARKDOWN_PREVIEW_CHARACTERS + 1);
+    const root = new Dom2("div");
+    root.page = true;
+    setArtifactsFetch(async () => new Response(atLimit));
+    renderArtifactDescriptor(
+      host(root),
+      { id: "a", filename: "r.md", version_id: "v1" },
+      descriptor("markdown", "v1"),
+    );
+    await vi.waitFor(() => expect(links(root)).toHaveLength(1), { timeout: 3000 });
+    const firstDownload = links(root)[0]!;
+    expect(firstDownload.href).toBe("/api/v1/artifacts/versions/v1");
+    // A new version published later does not move this paint's download.
+    renderArtifactDescriptor(
+      host(root),
+      { id: "a", filename: "r.md", version_id: "v2" },
+      descriptor("markdown", "v2"),
+    );
+    await vi.waitFor(() => expect(links(root)).toHaveLength(1), { timeout: 3000 });
+    expect(links(root)[0]!.href).toBe("/api/v1/artifacts/versions/v2");
+    expect(firstDownload.href).toBe("/api/v1/artifacts/versions/v1");
+  });
+
+  it("labels a row with no version identity as reading latest", () => {
+    const root = new Dom2("div");
+    root.page = true;
+    renderArtifactDescriptor(host(root), { id: "a", filename: "r.md" }, descriptor("markdown"));
+    const version = walk(root).find((node) => (node.className || "") === "renderer-version");
+    expect(version?.textContent).toBe(filesT("viewer.preview.latest"));
+  });
+
+  it("does not paint a late markdown result into the replaced preview", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    setArtifactsFetch(async (url) => {
+      if (url.endsWith("/artifacts/A")) {
+        await held;
+        return new Response("# artifact A\n");
+      }
+      return new Response("# artifact B\n");
+    });
+    const viewer = new Dom2("div");
+    viewer.page = true;
+    const body = viewer.appendChild(new Dom2("div"));
+    // Use the compatibility descriptor path directly: no catalog request.
+    renderArtifactDescriptor(
+      host(body),
+      { id: "A", filename: "a.md", version_id: "v1" },
+      descriptor("markdown", "v1"),
+    );
+    // renderViewer replaces the body: the old paint no longer owns a mounted node.
+    body.remove();
+    const bodyB = viewer.appendChild(new Dom2("div"));
+    renderArtifactDescriptor(
+      host(bodyB),
+      { id: "B", filename: "b.md", version_id: "v1" },
+      descriptor("markdown", "v1"),
+    );
+    await vi.waitFor(
+      () => expect(walk(bodyB).some((node) => node.className === "md renderer-markdown")).toBe(true),
+      { timeout: 3000 },
+    );
+    release();
+    for (let i = 0; i < 8; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // Body B is still what the viewer shows; body A was detached and never
+    // receives the late markdown.
+    expect(walk(body).some((node) => node.className === "md renderer-markdown")).toBe(false);
+    expect(walk(bodyB).some((node) => node.className === "md renderer-markdown")).toBe(true);
+  });
+});

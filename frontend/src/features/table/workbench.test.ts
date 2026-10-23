@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setArtifactsFetch, translate } from "../artifacts/api";
+import {
+  LEGACY_TABLE_PREVIEW_CHARACTERS,
+  setArtifactsFetch,
+  translate,
+} from "../artifacts/api";
+import { filesT } from "../artifacts/copy";
 import { jsonResponse } from "../artifacts/http-stub";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
 import { clampHistogram, MAX_TABLE_PROFILE_BINS, readApproximate } from "./histogram";
@@ -554,5 +559,67 @@ describe("workbench paging (AUDIT A65)", () => {
     await flush();
     expect(profiles).toHaveLength(3);
     expect(host.querySelector(".wb-table-schema")).toBeTruthy();
+  });
+});
+
+
+describe("legacy table completeness and failure recovery (A2)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setArtifactsFetch(null);
+  });
+
+  it("labels a source fallback above the 300k display limit and keeps the exact download", async () => {
+    const host = installDom();
+    const text = "x".repeat(LEGACY_TABLE_PREVIEW_CHARACTERS + 1);
+    setArtifactsFetch(async () => new Response(text));
+    renderTableArtifact(
+      host as unknown as HTMLElement,
+      { id: "art-1", filename: "t.csv", version_id: "v1" },
+      "/api/v1/artifacts/versions/v1",
+      { workbenchOn: false, capabilities: WORKBENCH_CAPS },
+    );
+    await vi.waitFor(() => expect(host.querySelector(".renderer-completeness")).toBeTruthy(), { timeout: 3000 });
+    expect(host.querySelector(".renderer-completeness")!.dataset.state).toBe("partial");
+    expect(host.querySelector("a")?.href).toBe("/api/v1/artifacts/versions/v1");
+    const pre = host.querySelector("pre");
+    expect(pre?.textContent.length).toBe(LEGACY_TABLE_PREVIEW_CHARACTERS);
+  });
+
+  it("labels a complete source fallback at exactly the limit", async () => {
+    const host = installDom();
+    const text = "x".repeat(LEGACY_TABLE_PREVIEW_CHARACTERS);
+    setArtifactsFetch(async () => new Response(text));
+    renderTableArtifact(
+      host as unknown as HTMLElement,
+      { id: "art-1", filename: "t.csv", version_id: "v1" },
+      "/api/v1/artifacts/versions/v1",
+      { workbenchOn: false, capabilities: WORKBENCH_CAPS },
+    );
+    await vi.waitFor(() => expect(host.querySelector(".renderer-completeness")).toBeTruthy(), { timeout: 3000 });
+    expect(host.querySelector(".renderer-completeness")!.dataset.state).toBe("complete");
+  });
+
+  it("shows a classified failure with retry instead of a blank success", async () => {
+    const host = installDom();
+    let attempts = 0;
+    setArtifactsFetch(async () => {
+      attempts += 1;
+      if (attempts === 1) return new Response("boom", { status: 500 });
+      return new Response("a,b\n1,2");
+    });
+    renderTableArtifact(
+      host as unknown as HTMLElement,
+      { id: "art-1", filename: "t.csv", version_id: "v1" },
+      "/api/v1/artifacts/versions/v1",
+      { workbenchOn: false, capabilities: WORKBENCH_CAPS },
+    );
+    await vi.waitFor(() => expect(host.querySelector(".renderer-fallback")).toBeTruthy(), { timeout: 3000 });
+    expect(host.querySelector(".renderer-fallback")!.textContent).toContain(filesT("viewer.read.failed"));
+    const retry = host.querySelectorAll("button").find((node) => node.textContent === filesT("viewer.read.retry"));
+    expect(retry).toBeDefined();
+    retry!.onclick?.();
+    await vi.waitFor(() => expect(host.querySelector("table.sheet")).toBeTruthy(), { timeout: 3000 });
+    expect(attempts).toBe(2);
   });
 });

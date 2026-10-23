@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _thumbCache } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
-import { setArtifactsFetch, THUMB_MAX_BYTES, THUMB_MAX_CONCURRENCY, THUMB_READ_TIMEOUT_MS } from "./api";
+import { bytes, setArtifactsFetch, THUMB_MAX_BYTES, THUMB_MAX_CONCURRENCY, THUMB_READ_TIMEOUT_MS } from "./api";
 import { filesT } from "./copy";
 import {
   beginThumbPaint,
@@ -107,6 +107,7 @@ describe("thumbnail read budget and lifecycle (R1)", () => {
     children: Node2[] = [];
     className = "";
     textContent = "";
+    title = "";
     src = "";
     html = "";
     get innerHTML(): string {
@@ -227,6 +228,14 @@ describe("thumbnail read budget and lifecycle (R1)", () => {
     );
     expect(d.className).toBe("txt");
     expect(d.textContent.length).toBeLessThan(THUMB_MAX_BYTES);
+  });
+
+  it("explains why a structured tile fell back instead of hiding the reason", async () => {
+    const body = "gene,logFC\n" + "TP53,1.0\n".repeat(40000);
+    setArtifactsFetch(async () => new Response(body));
+    const tile = tileThumb({ id: "csv2", filename: "big.csv", content_type: "text/csv", version_id: "v1" });
+    await vi.waitFor(() => expect(texts(tile)).toContain("data"), { timeout: 2000 });
+    expect(firstChild(tile).title).toBe(filesT("viewer.read.limit", bytes(THUMB_MAX_BYTES)));
   });
 
   it("keeps a structured tile whole-or-fallback rather than drawing half a table", async () => {
