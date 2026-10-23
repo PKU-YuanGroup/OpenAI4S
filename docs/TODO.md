@@ -15,16 +15,27 @@ is a factual record of the v0.3 plan and is validated by
 
 ## Provenance
 
-- [ ] **Keep interned strings out of identity-based lineage.** PR #235
-      excludes known interpreter and library constants, but does not detect
-      arbitrary shared values. For example, broadcasting `"control"` into a
-      tracked DataFrame and indexing that cell still tags the interned literal;
-      an unrelated later write of `"control"` then incorrectly names the CSV.
-      Choose a cross-version string propagation policy, such as refusing exact
-      strings in the side table and returning `_TaggedStr` at reader/indexing
-      boundaries. *Done when:* unrelated writes of interned strings have no
-      source edge on every supported Python version, while genuinely derived
-      strings retain their lineage through real persistent-kernel tests.
+- [x] **Keep shared strings out of identity-based lineage.** Exact `str`
+      values are never tagged in place; reader/indexing boundaries return an
+      owned `_TaggedStr`. Persistent-kernel regressions cover unrelated literal
+      writes alongside derived direct, `print`, and single-field formatted
+      writes. `str`, `format`, and direct `%s` conversions preserve the carrier;
+      pickle deliberately drops it, and the inspector unwraps it without
+      invoking user conversion hooks.
+- [ ] **Define propagation across plain-string assembly.** A plain separator's
+      `join`, multi-field or literal-prefixed formatting, and tuple-based `%`
+      formatting can discard a tagged argument's lineage. These built-in
+      operations can bypass subclass methods; the plain results must not be
+      tagged by identity. Use `host.save_artifact(input_version_ids=...)` for
+      explicit inputs across these boundaries. *Done when:* a bounded policy
+      and persistent-kernel tests preserve real inputs without contaminating
+      unrelated strings or changing Python values and exceptions.
+- [ ] **Handle other aliased values returned from tracked object columns.**
+      Longer `bytes` and user-held mutable objects can still be tagged in
+      place when indexed from a tracked frame. This is outside the string
+      carrier fix. *Done when:* unrelated writes remain untagged, derived
+      values retain supported lineage, and identity/mutation semantics are
+      covered explicitly in persistent-kernel tests.
 
 ## Publishing
 

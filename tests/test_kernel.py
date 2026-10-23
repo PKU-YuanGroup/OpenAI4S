@@ -134,6 +134,29 @@ def test_files_read_normalize_workspace_paths_and_exclude_external_reads(tmp_pat
     assert result["files_read"] == ["nested/input.bin"]
 
 
+def test_files_read_observe_a_path_read_from_a_tracked_artifact(tmp_path):
+    """A sample sheet's path comes back as provenance's tagged string; it names
+    the same file. Any other `str` subclass is still not trusted as a path."""
+    (tmp_path / "sample.txt").write_text("observed", encoding="utf-8")
+    (tmp_path / "raw.bin").write_bytes(b"data")
+    (tmp_path / "other.txt").write_text("not observed", encoding="utf-8")
+
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as kernel:
+        result = kernel.execute(
+            "from openai4s.kernel import provenance\n"
+            "def read(value):\n"
+            "    return provenance._tag_scalar(value, frozenset({'v-sheet'}))\n"
+            "class Mine(str):\n"
+            "    pass\n"
+            "open(read('sample.txt')).read()\n"
+            "open(read(b'raw.bin'), 'rb').read()\n"
+            "open(Mine('other.txt')).read()"
+        )
+
+    assert result["error"] is None
+    assert result["files_read"] == ["sample.txt", "raw.bin"]
+
+
 def test_file_read_path_normalization_uses_windows_rules_without_posix_imports():
     def relative(raw_path, *, cwd=r"C:\Workspace\analysis"):
         return worker_mod._workspace_relative_read_path(
@@ -196,6 +219,58 @@ def test_variable_inspector_reads_only_safe_builtins_without_repr_hooks():
         assert variables["trap"] == {"name": "trap", "type": "TrapList"}
         assert "host" not in variables and "openai4s" not in variables
         assert kernel.execute("print(events)")["stdout"].strip() == "[]"
+
+
+def test_variable_inspector_shows_a_value_read_from_a_tracked_artifact_plainly():
+    """Provenance hands such a value back as its tagged `str`/`bytes` subclass,
+    which is still the plain value; any other subclass stays opaque."""
+    with Kernel(dispatcher=_echo_dispatcher) as kernel:
+        setup = kernel.execute(
+            "from openai4s.kernel import provenance\n"
+            "def read(value):\n"
+            "    return provenance._tag_scalar(value, frozenset({'v-source'}))\n"
+            "class Mine(str):\n"
+            "    pass\n"
+            "title, plain_title = read('protein'), 'protein'\n"
+            "raw, plain_raw = read(b'ACGT'), b'ACGT'\n"
+            "lines, plain_lines = [read('a'), read('b')], ['a', 'b']\n"
+            "mine = Mine('protein')"
+        )
+        assert setup["error"] is None
+
+        response = kernel.inspect_variables()
+        variables = {item["name"]: item for item in response["variables"]}
+
+    for name in ("title", "raw", "lines"):
+        assert variables[name] == {**variables[f"plain_{name}"], "name": name}
+    assert variables["title"]["preview"] == "protein"
+    assert variables["mine"] == {"name": "mine", "type": "Mine"}
+
+
+@pytest.mark.parametrize("value", ["protein", b"ACGT"])
+def test_provenance_unwrap_never_calls_user_conversion_hooks(monkeypatch, value):
+    from openai4s.kernel import provenance
+
+    tagged = provenance._tag_scalar(value, frozenset({"v-source"}))
+    calls = []
+
+    def forbidden(*args):
+        calls.append(args)
+        raise AssertionError("inspection executed user code")
+
+    monkeypatch.setattr(worker_mod, "_PROVENANCE_TAGGED", list(provenance.TAGGED_TYPES))
+    monkeypatch.setattr(type(tagged), "__str__", forbidden)
+    monkeypatch.setattr(type(tagged), "__bytes__", forbidden, raising=False)
+    monkeypatch.setattr(type(tagged), "__getitem__", forbidden)
+
+    assert worker_mod._untagged(tagged) == value
+    assert type(worker_mod._untagged(tagged)) is type(value)
+    assert worker_mod._inspect_one("value", tagged) == worker_mod._inspect_one(
+        "value", value
+    )
+    assert worker_mod._primitive_token(tagged) == worker_mod._primitive_token(value)
+    assert worker_mod._primitive_preview(tagged) == worker_mod._primitive_preview(value)
+    assert calls == []
 
 
 def test_variable_inspector_hides_the_skill_bootstrap_it_did_not_author(tmp_path):
