@@ -7,17 +7,18 @@ plus the browser-acceptance summary the R6 harness writes, so every receipt
 refusal is exercised against the real document shapes rather than a hand-typed
 guess at them.
 
-Both builders are derived from the production constants (the probe's
-`build_report`, the receipt module's `BUNDLE_SMOKE_*` names), so a schema bump
-fails the fixtures instead of letting them keep passing against a shape nothing
-produces any more.
+`passing_report` describes the *previous* round's report shape on purpose: it
+is what the transitional schema-3 receipt in this tree still validates, and R3
+replaces both with the appendix-B.4 document. Keeping the fixture literal means
+R1's rewrite of the probe cannot leave the receipt tests validating a shape no
+producer writes. `bundle_report` stays derived from the receipt module's
+`BUNDLE_SMOKE_*` constants, so a schema bump fails the fixture.
 """
 
 from __future__ import annotations
 
 import hashlib
 
-from scripts import installed_runtime_smoke as smoke
 from scripts import release_receipts
 
 #: Matches `tests/test_release_pipeline.py::FAKE_HEAD`, the SHA the fake
@@ -25,51 +26,42 @@ from scripts import release_receipts
 FAKE_SOURCE_SHA = "a" * 40
 
 
+CSV_BYTES = b"shared,value\nanswer,43\n"
+
+
+def _previous_cell(
+    label: str, stdout: str, *, generation: str = "generation-1"
+) -> dict:
+    return {
+        "status": "ok",
+        "label": label,
+        "execution_id": f"repl-{label}",
+        "cell_status": "ok",
+        "error": "",
+        "stdout": stdout,
+        "generation_id": generation,
+        "cell_index": 1 if label == "cell-one" else 2,
+        "files_written": [] if label == "cell-one" else ["smoke.csv"],
+    }
+
+
 def passing_report(
     *, package_sha256: str, arch: str = "x86_64", source_sha: str = FAKE_SOURCE_SHA
 ) -> dict:
-    """A probe report that says the two-Cell science chain really ran."""
-    cells = [
-        smoke.cell_facts(
-            {
-                "status": "completed",
-                "execution_id": "repl-one",
-                "cell": {
-                    "status": "ok",
-                    "error": None,
-                    "stdout": "cell-one shared_value=42\n",
-                    "cell_index": 1,
-                    "generation_id": "generation-1",
-                    "files_written": [],
-                },
-            },
-            label="cell-one",
-        ),
-        smoke.cell_facts(
-            {
-                "status": "completed",
-                "execution_id": "repl-two",
-                "cell": {
-                    "status": "ok",
-                    "error": None,
-                    "stdout": "cell-two shared_value=43\n",
-                    "cell_index": 2,
-                    "generation_id": "generation-1",
-                    "files_written": ["smoke.csv"],
-                },
-            },
-            label="cell-two",
-        ),
-    ]
-    csv_sha = hashlib.sha256(smoke.EXPECTED_CSV_BYTES).hexdigest()
-    return smoke.build_report(
-        package={
+    """The previous round's probe report shape, still validated by the receipt."""
+    csv_sha = hashlib.sha256(CSV_BYTES).hexdigest()
+    return {
+        "format": "openai4s-installed-runtime-smoke",
+        "schema_version": 1,
+        "scenario_version": 1,
+        "status": "passed",
+        "package": {
             "kind": "bundle",
             "name": f"OpenAI4S-0.2.0-linux-{arch}.tar.gz",
             "sha256": package_sha256,
             "source_sha": source_sha,
         },
-        platform_facts={
+        "platform": {
             "os": "linux",
             "arch": arch,
             "host_os": "linux",
@@ -77,7 +69,7 @@ def passing_report(
             "executable_here": True,
             "python": "3.13.0",
         },
-        runtime_facts={
+        "runtime": {
             "interpreter": "/tmp/bundle/runtime/bin/python3",
             "prefix": "/tmp/bundle/runtime",
             "interpreter_version": "3.13.0",
@@ -86,11 +78,14 @@ def passing_report(
             "inside_package": True,
             "isolation": "-P",
         },
-        steps={
+        "steps": {
             "boot": {"status": "ok"},
             "execution": {
                 "status": "ok",
-                "cells": cells,
+                "cells": [
+                    _previous_cell("cell-one", "cell-one shared_value=42\n"),
+                    _previous_cell("cell-two", "cell-two shared_value=43\n"),
+                ],
                 "shared_state": True,
                 "same_kernel_generation": True,
             },
@@ -100,7 +95,7 @@ def passing_report(
                 "version_id": "v-smoke",
                 "filename": "smoke.csv",
                 "sha256": csv_sha,
-                "size_bytes": len(smoke.EXPECTED_CSV_BYTES),
+                "size_bytes": len(CSV_BYTES),
                 "version_url": "/api/v1/artifacts/versions/v-smoke",
                 "bytes_match_metadata": True,
             },
@@ -126,10 +121,9 @@ def passing_report(
                 },
             },
         },
-        diagnostics=[],
-        elapsed_s=11.0,
-        budgets={"total": 420.0},
-    )
+        "diagnostics": [],
+        "timing": {"elapsed_s": 11.0, "budgets_s": {"total": 420.0}},
+    }
 
 
 def bundle_report(

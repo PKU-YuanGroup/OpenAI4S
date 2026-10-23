@@ -816,19 +816,19 @@ def test_the_finalize_job_refuses_when_its_attestation_is_absent(tmp_path):
 # without a timeout.
 
 
-def test_the_linux_job_proves_the_package_executes_before_it_receipts_and_uploads():
-    """A digest binds bytes; only an executed run binds behaviour.
+def test_the_linux_job_runs_the_installed_runtime_smoke_before_the_receipt():
+    """A digest binds bytes; only an executed scenario binds behaviour.
 
-    The workflow is read as data, not as text: the probe that runs the two-Cell
-    science chain against the unpacked bundle must be part of the *same* job
-    step that verifies the bundle, its report must be handed to the receipt
-    step, and both must happen before the artifact is uploaded and becomes
-    available to staging.
+    The workflow is read as data, not as text: the installed-runtime smoke must
+    run against the same built tarball after the static/import verification and
+    before the build receipt is written, so the receipt the job produces can be
+    bound to a run that actually happened. R2 adds the browser layer to this
+    same step; R3 makes the receipt consume its report.
     """
     job = _workflow("release.yml")["jobs"]["linux-app"]
     names = [str(step.get("name") or "") for step in job["steps"]]
     verify_index = names.index("Verify the bundle")
-    browser_index = names.index("Run the Linux bundle in a real browser")
+    smoke_index = names.index("Run the installed-runtime smoke")
     receipt_index = next(
         index
         for index, name in enumerate(names)
@@ -839,35 +839,29 @@ def test_the_linux_job_proves_the_package_executes_before_it_receipts_and_upload
         for index, name in enumerate(names)
         if name.startswith("Upload the verified bundle")
     )
-    assert verify_index < browser_index < receipt_index < upload_index, (
-        "the packaged science chain and the browser acceptance must both pass "
-        "before the bytes are receipted and uploaded"
-    )
+    assert (
+        verify_index < smoke_index < receipt_index < upload_index
+    ), "the runtime smoke must pass before the tarball is receipted and uploaded"
 
     verify_run = str(job["steps"][verify_index].get("run") or "")
     assert "scripts/verify_linux_bundle.py" in verify_run
-    assert "--source-sha" in verify_run
-    assert "--smoke-report" in verify_run
-    assert "$RUNNER_TEMP/runtime-smoke.json" in verify_run
 
-    browser_run = str(job["steps"][browser_index].get("run") or "")
-    assert "tests/browser_bundle_smoke.mjs" in browser_run
-    assert "--bundle" in browser_run
-    assert "--source-sha" in browser_run
-    assert "$RUNNER_TEMP/bundle-smoke.json" in browser_run
+    smoke_run = str(job["steps"][smoke_index].get("run") or "")
+    assert "scripts/installed_runtime_smoke.py" in smoke_run
+    assert "--bundle" in smoke_run
+    assert "--report dist/runtime-smoke-linux.json" in smoke_run
 
     receipt_run = str(job["steps"][receipt_index].get("run") or "")
     assert "--kind linux" in receipt_run
-    assert "--runtime-smoke-file" in receipt_run
-    assert "$RUNNER_TEMP/runtime-smoke.json" in receipt_run
-    assert "--bundle-smoke-file" in receipt_run
-    assert "$RUNNER_TEMP/bundle-smoke.json" in receipt_run
 
-    # The browser needs its own driver in this job; the workflow must say so
-    # rather than assuming the quality job's Python environment provides one.
-    earlier = job["steps"][:browser_index]
-    assert any("actions/setup-node" in str(step.get("uses") or "") for step in earlier)
-    assert any("playwright install" in str(step.get("run") or "") for step in earlier)
+
+def test_the_nightly_bundle_job_runs_the_same_installed_runtime_smoke():
+    """Nightly is where a packaging regression shows up before release day."""
+    job = _workflow("ci.yml")["jobs"]["linux-bundle-smoke"]
+    runs = "\n".join(str(step.get("run") or "") for step in job["steps"])
+    assert "scripts/installed_runtime_smoke.py" in runs
+    assert "--bundle dist/OpenAI4S-*-linux-x86_64.tar.gz" in runs
+    assert "--report dist/runtime-smoke-linux.json" in runs
 
 
 def _workflow(name):

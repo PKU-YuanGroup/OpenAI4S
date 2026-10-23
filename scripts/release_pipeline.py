@@ -102,27 +102,6 @@ from scripts.release_consistency import (  # noqa: E402
 from scripts.release_gates import GateManifestError  # noqa: E402
 
 
-def _smoke_evidence_summary(raw: Any) -> dict[str, Any] | None:
-    """A bounded projection of one smoke report for the sealed evidence facts.
-
-    The full report stays in the build receipt (which staging verified); the
-    evidence bundle records only what a reader needs to see that the executed
-    chain was bound to these bytes, without copying a whole diagnostic log.
-    """
-    if not isinstance(raw, Mapping):
-        return None
-    package = raw.get("package") if isinstance(raw.get("package"), Mapping) else {}
-    artifact = raw.get("artifact") if isinstance(raw.get("artifact"), Mapping) else {}
-    return {
-        "status": raw.get("status"),
-        "schema_version": raw.get("schema_version"),
-        "scenario_version": raw.get("scenario_version"),
-        "package_sha256": package.get("sha256") or raw.get("artifact_sha256"),
-        "source_sha": package.get("source_sha") or raw.get("source_sha"),
-        "version_id": artifact.get("version_id"),
-    }
-
-
 def _sandbox_posture(
     *, linux_boundary: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -1190,7 +1169,16 @@ class Pipeline:
             "smoke",
             True,
             f"{wheel.name} installs and runs from a clean environment",
-            {"wheel": wheel.name, "daemon": daemon},
+            {
+                "wheel": wheel.name,
+                "daemon": daemon,
+                # The installed-runtime scenario, run from inside the clean venv
+                # after the existing import and daemon smokes. A wheel has no
+                # science extras, so its figure check is `not_applicable`; every
+                # other step (Cells, capture, exact version, restart readback,
+                # clean exit) runs here exactly as on the Linux bundle.
+                "runtime_smoke": getattr(self, "_runtime_smoke", None),
+            },
         )
 
     def _install_and_exercise(self, wheel: Path) -> str:
@@ -1240,7 +1228,59 @@ class Pipeline:
                     f"{(smoke.stdout or b'').decode('utf-8', 'replace')[-1500:]}"
                     f"{(smoke.stderr or b'').decode('utf-8', 'replace')[-1500:]}"
                 )
-            return self._smoke_daemon(python, root, env)
+            daemon = self._smoke_daemon(python, root, env)
+            self._runtime_smoke = self._installed_runtime_smoke(
+                python, wheel, root, env
+            )
+            return daemon
+
+    def _installed_runtime_smoke(
+        self, python: Path, wheel: Path, root: Path, env: dict[str, str]
+    ) -> dict:
+        """Run the installed-runtime scenario inside the wheel's own venv.
+
+        The import smoke proves the wheel imports; this executes Cells in its
+        kernel, captures an Artifact version, rewrites it, restarts the daemon
+        and reads both versions back. The report is the same appendix-B.4
+        document the Linux bundle receipt carries, so the two modes cannot drift
+        apart; the wheel's figure step is `not_applicable` because the venv has
+        no science extras.
+        """
+        report_path = root / "runtime-smoke.json"
+        completed = self._run(
+            [
+                sys.executable,
+                str(self.source_root / "scripts" / "installed_runtime_smoke.py"),
+                "--python",
+                str(python),
+                "--artifact",
+                str(wheel),
+                "--report",
+                str(report_path),
+            ],
+            cwd=root,
+        )
+        if completed.returncode != 0 or not report_path.is_file():
+            detail = (completed.stderr or b"").decode("utf-8", "replace").strip() or (
+                completed.stdout or b""
+            ).decode("utf-8", "replace").strip()
+            raise ReleaseError(
+                "the installed wheel failed the installed-runtime smoke: "
+                + detail[-1500:]
+            )
+        try:
+            report = json.loads(report_path.read_text("utf-8"))
+        except (OSError, ValueError) as error:
+            raise ReleaseError(
+                f"the installed-runtime smoke report is unreadable: {error}"
+            ) from error
+        if report.get("status") != "passed":
+            failure = report.get("failure") or {}
+            raise ReleaseError(
+                "the installed wheel's installed-runtime smoke did not pass: "
+                f"{failure.get('check', 'scenario')}: {failure.get('detail', '')}"
+            )
+        return report
 
     def _smoke_daemon(self, python: Path, root: Path, env: dict[str, str]) -> str:
         """Start the installed daemon, authenticate, load its UI, and stop it."""
@@ -1858,24 +1898,6 @@ class Pipeline:
                         ],
                     }
                     for kind, document in build_receipts.items()
-                },
-                # Executed-runtime evidence, as verified: schema 3 requires a
-                # Linux receipt to carry the installed-runtime probe and (when
-                # the R6 browser acceptance has written it) the bundle browser
-                # report. Recorded here so the evidence bundle names the run
-                # that proved the bytes execute, not only that they were built.
-                "build_smoke": {
-                    kind: {
-                        "runtime_smoke": _smoke_evidence_summary(
-                            document.get("runtime_smoke")
-                        ),
-                        "bundle_smoke": _smoke_evidence_summary(
-                            document.get("bundle_smoke")
-                        ),
-                    }
-                    for kind, document in build_receipts.items()
-                    if document.get("runtime_smoke") is not None
-                    or document.get("bundle_smoke") is not None
                 },
             },
         )

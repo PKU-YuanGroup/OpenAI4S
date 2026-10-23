@@ -1,866 +1,534 @@
-"""Refusals for the installed-runtime science probe.
+"""The installed-runtime smoke's self-test, report and decision contracts.
 
-The probe itself launches a real daemon, so its happy path is proven by an
-actual run on a machine that can execute the runtime — that run is recorded in
-the release evidence, not manufactured here. What this module locks down is
-the half of the probe that must never pass by accident: every way a report can
-look like evidence while missing the chain. A second Cell that lost the kernel
-state, a CSV that was never captured, bytes that disagree with their digest,
-a reopen that serves something else, a shutdown that left a process, an old
-schema, or a runtime that imported the host source checkout are each refused.
+The probe's happy path is a real daemon run — a wheel venv here, the Linux
+bundle on the release/nightly runner — recorded in release evidence rather than
+manufactured by a fixture. What this module locks down is everything that can
+be decided without a daemon:
 
-The last group drives the pieces that touch real process state — the shutdown
-escalation and the process-group witness — with real child processes this file
-owns, so the cleanup rule is exercised rather than described.
+  * ``--self-test`` drives every decision check with synthetic responses and
+    exits non-zero if any wrong shape is accepted (that is also this file's
+    INV-13 lever: undo a check and the self-test names it);
+  * the appendix-B.4 report keeps its exact shape, its verdict is derived from
+    the checks, and a failure is one named check with a bounded, redacted
+    detail — never a log quote;
+  * the child environment drops the variables that could steer the runtime
+    (``PYTHONPATH``, ``PYTHONHOME``, ``VIRTUAL_ENV``, ``OPENAI4S_WEBUI``, API
+    keys, ``OPENAI4S_LLM_*``) and sets the isolated ones the scenario needs;
+  * F16's budgets fail closed, and the process-group witness is exercised with
+    a real child process this file owns.
 """
 
 from __future__ import annotations
 
-import copy
-import hashlib
+import io
 import json
-import socket
+import os
+import shutil
 import subprocess
 import sys
-import time
+import tarfile
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from scripts import installed_runtime_smoke as smoke
-from scripts.installed_runtime_smoke import SmokeError
+from scripts.installed_runtime_smoke import SmokeFailure
 
-SHA = "a" * 40
-PACKAGE_SHA = "b" * 64
-CSV_SHA = hashlib.sha256(smoke.EXPECTED_CSV_BYTES).hexdigest()
-
-
-# --------------------------------------------------------------------------- #
-# Fixtures
-# --------------------------------------------------------------------------- #
-def _cells() -> list[dict]:
-    """The two Cell facts exactly as the production response would produce them."""
-    return [
-        smoke.cell_facts(
-            {
-                "status": "completed",
-                "execution_id": "repl-one",
-                "cell": {
-                    "status": "ok",
-                    "error": None,
-                    "stdout": "cell-one shared_value=42\n",
-                    "cell_index": 1,
-                    "generation_id": "generation-1",
-                    "files_written": [],
-                },
-            },
-            label="cell-one",
-        ),
-        smoke.cell_facts(
-            {
-                "status": "completed",
-                "execution_id": "repl-two",
-                "cell": {
-                    "status": "ok",
-                    "error": None,
-                    "stdout": "cell-two shared_value=43\n",
-                    "cell_index": 2,
-                    "generation_id": "generation-1",
-                    "files_written": ["smoke.csv"],
-                },
-            },
-            label="cell-two",
-        ),
-    ]
+SHA = "c" * 64
+TOKEN = "tok-" + "z" * 24
 
 
-def _good_report() -> dict:
-    steps = {
-        "boot": {"status": "ok", "frame_id": "f-1", "notebook_repl": True},
-        "execution": {
-            "status": "ok",
-            "cells": _cells(),
-            "shared_state": True,
-            "same_kernel_generation": True,
-        },
-        "capture": {
-            "status": "ok",
-            "artifact_id": "a-1",
-            "version_id": "v-1",
-            "filename": "smoke.csv",
-            "sha256": CSV_SHA,
-            "size_bytes": len(smoke.EXPECTED_CSV_BYTES),
-            "version_url": "/api/v1/artifacts/versions/v-1",
-            "bytes_match_metadata": True,
-            "cell_ids": ["c-1", "c-2"],
-        },
-        "reopen": {
-            "status": "ok",
-            "version_id": "v-1",
-            "bytes_identical": True,
-            "digest_identical": True,
-            "history_entries": 2,
-            "version_still_latest": True,
-        },
-        "cleanup": {
-            "status": "ok",
-            "first": {
-                "attempted": True,
-                "daemon_exited": True,
-                "workers_exited": True,
-                "cli_returncode": 0,
-                "note": "",
-            },
-            "final": {
-                "attempted": True,
-                "daemon_exited": True,
-                "workers_exited": True,
-                "cli_returncode": 0,
-                "note": "",
-            },
-        },
+def _checks(**overrides: str) -> dict[str, str]:
+    checks = {name: smoke.PASSED for name in smoke.CHECKS}
+    checks["browser_open"] = smoke.NOT_RUN
+    checks.update(overrides)
+    return checks
+
+
+def _report(**overrides) -> dict:
+    fields = {
+        "target": "bundle",
+        "artifact_sha256": SHA,
+        "platform_name": "linux",
+        "arch": "x86_64",
+        "python_version": "3.13.0",
+        "checks": _checks(),
+        "duration_s": 12.5,
     }
-    return smoke.build_report(
-        package={
-            "kind": "bundle",
-            "name": "OpenAI4S-0.3.1-linux-x86_64",
-            "sha256": PACKAGE_SHA,
-            "source_sha": SHA,
-        },
-        platform_facts={
-            "os": "linux",
-            "arch": "x86_64",
-            "host_os": "linux",
-            "host_arch": "x86_64",
-            "executable_here": True,
-            "python": "3.13.0",
-        },
-        runtime_facts={
-            "interpreter": "/tmp/bundle/runtime/bin/python3",
-            "prefix": "/tmp/bundle/runtime",
-            "interpreter_version": "3.13.0",
-            "version": "0.3.1",
-            "module_file": "/tmp/bundle/src/openai4s/__init__.py",
-            "inside_package": True,
-            "isolation": "-P",
-        },
-        steps=steps,
-        diagnostics=[],
-        elapsed_s=12.5,
-        budgets={"startup": 90.0, "cell": 60.0, "stop": 30.0, "total": 420.0},
-    )
+    fields.update(overrides)
+    return smoke.build_report(**fields)
 
 
-def _mutated(mutate) -> dict:
-    document = copy.deepcopy(_good_report())
-    mutate(document)
-    return document
-
-
-def _set(document: dict, *path: str, value):
-    target = document
-    for part in path[:-1]:
-        target = target[part]
-    target[path[-1]] = value
+def _write_fake_bundle(path: Path, *, arch: str = "x86_64") -> Path:
+    """A tarball shaped like a bundle, enough for preparation and metadata."""
+    top = f"OpenAI4S-0.3.1-linux-{arch}"
+    with tarfile.open(path, "w:gz") as archive:
+        for relative, executable in (
+            ("bin/openai4s", True),
+            ("runtime/bin/python3", True),
+            ("src/openai4s/__init__.py", False),
+        ):
+            payload = b"#!/bin/sh\nexit 0\n" if executable else b""
+            info = tarfile.TarInfo(f"{top}/{relative}")
+            info.size = len(payload)
+            info.mode = 0o755 if executable else 0o644
+            archive.addfile(info, io.BytesIO(payload))
+    return path
 
 
 # --------------------------------------------------------------------------- #
-# The verdict, and its baseline
+# --self-test: every decision check, and its wrong shape
 # --------------------------------------------------------------------------- #
-def test_a_complete_runtime_smoke_report_is_accepted():
-    document = _good_report()
-    assert document["status"] == smoke.PASSED
-    assert document["scenario_version"] == smoke.SMOKE_SCENARIO_VERSION
-    smoke.validate_smoke_report(
-        document,
-        expected_package_sha256=PACKAGE_SHA,
-        expected_source_sha=SHA,
-        expected_kind="bundle",
-        expected_platform=("linux", "x86_64"),
-    )
+def test_self_test_passes_and_covers_every_check():
+    output = io.StringIO()
+    assert smoke.run_self_test(output) == 0
+    text = output.getvalue()
+    assert "self-test: passed" in text
+    # Every frozen check must have at least one negative case proving it refuses
+    # the wrong shape; a check with no refusal case is not a gate.
+    for name in smoke.CHECKS:
+        assert "self-test: ok" in text
+    assert text.count("self-test: ok") >= 40
 
 
-def test_the_verdict_is_derived_from_the_steps_not_asserted():
-    document = _mutated(lambda d: d["steps"].pop("reopen"))
-    rebuilt = smoke.build_report(
-        package=document["package"],
-        platform_facts=document["platform"],
-        runtime_facts=document["runtime"],
-        steps=document["steps"],
-        diagnostics=[],
-        elapsed_s=1.0,
-        budgets={},
-    )
-    assert rebuilt["status"] == smoke.FAILED
+def test_self_test_fails_when_a_decision_check_is_disabled(monkeypatch, capsys):
+    """INV-13: undo a check's refusal and the self-test names it."""
+    monkeypatch.setattr(smoke, "check_auth", lambda *args: None)
+    assert smoke.run_self_test(sys.stdout) != 0
+    captured = capsys.readouterr().out
+    assert "auth refuses an open API" in captured
+    assert "self-test: FAILED" in captured
 
 
-def test_a_not_run_report_names_the_missing_run_and_is_not_evidence():
-    document = smoke.build_not_run_report(
-        package={"kind": "bundle", "name": "OpenAI4S-0.3.1-linux-x86_64", "sha256": ""},
-        platform_facts={
-            "os": "linux",
-            "arch": "x86_64",
-            "host_os": "darwin",
-            "host_arch": "aarch64",
+# --------------------------------------------------------------------------- #
+# The appendix-B.4 report
+# --------------------------------------------------------------------------- #
+def test_a_passing_report_has_the_frozen_shape():
+    report = _report()
+    assert set(report) == {
+        "scenario_version",
+        "target",
+        "artifact_sha256",
+        "platform",
+        "arch",
+        "python",
+        "checks",
+        "status",
+        "duration_s",
+        "failure",
+    }
+    assert report["scenario_version"] == smoke.SCENARIO_VERSION == 1
+    assert list(report["checks"]) == list(smoke.CHECKS)
+    assert report["status"] == smoke.PASSED
+    assert report["failure"] is None
+    assert report["duration_s"] == 12.5
+
+
+def test_the_verdict_is_derived_from_the_checks_not_asserted():
+    report = _report(checks=_checks(state_shared=smoke.FAILED))
+    assert report["status"] == smoke.FAILED
+    assert report["failure"]["check"] == "scenario"
+    # A skip is not a pass: a check left at not_run fails the report even
+    # though nobody recorded an explicit failure.
+    report = _report(checks=_checks(artifact_capture=smoke.NOT_RUN))
+    assert report["status"] == smoke.FAILED
+
+
+def test_a_wheel_report_allows_figure_not_applicable_but_a_bundle_does_not():
+    wheel = _report(target="wheel", checks=_checks(figure=smoke.NOT_APPLICABLE))
+    assert wheel["status"] == smoke.PASSED
+    bundle = _report(checks=_checks(figure=smoke.NOT_APPLICABLE))
+    assert bundle["status"] == smoke.FAILED
+
+
+def test_a_report_without_a_bound_artifact_digest_is_a_failure():
+    report = _report(artifact_sha256="")
+    assert report["status"] == smoke.FAILED
+    assert report["failure"]["detail"]
+    invalid = _report(artifact_sha256="not-a-digest")
+    assert invalid["status"] == smoke.FAILED
+
+
+def test_an_unknown_check_result_is_refused_rather_than_ignored():
+    with pytest.raises(ValueError):
+        _report(checks=_checks(serve="maybe"))
+    with pytest.raises(ValueError):
+        _report(target="container")
+
+
+def test_a_failure_detail_is_bounded_and_redacted():
+    report = smoke.build_report(
+        target="bundle",
+        artifact_sha256=SHA,
+        platform_name="linux",
+        arch="x86_64",
+        python_version="3.13.0",
+        checks=_checks(serve=smoke.FAILED),
+        duration_s=1.0,
+        failure={
+            "check": "serve",
+            "detail": (
+                f"failed http://127.0.0.1:1/?token={TOKEN} "
+                + "x" * (smoke.DETAIL_LIMIT + 100)
+            ),
         },
-        reason="a linux-x86_64 bundle cannot be executed on darwin/aarch64",
     )
-    assert document["status"] == smoke.NOT_RUN
-    with pytest.raises(SmokeError, match="not_run.*linux-x86_64"):
-        smoke.validate_smoke_report(document)
+    detail = report["failure"]["detail"]
+    assert report["status"] == smoke.FAILED
+    assert report["failure"]["check"] == "serve"
+    assert TOKEN not in detail
+    assert "<redacted-token>" in detail
+    assert len(detail) <= smoke.DETAIL_LIMIT + 40
+
+
+# --------------------------------------------------------------------------- #
+# Isolation and redaction
+# --------------------------------------------------------------------------- #
+def test_the_daemon_environment_cannot_be_steered_by_the_caller():
+    base = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/home/caller",
+        "PYTHONPATH": "/some/source/checkout",
+        "PYTHONHOME": "/opt/python",
+        "VIRTUAL_ENV": "/tmp/other-venv",
+        "OPENAI4S_WEBUI": "legacy",
+        "OPENAI4S_LLM_API_KEY": "sk-not-a-real-key",
+        "OPENAI4S_CLAUDE_API_KEY": "sk-not-a-real-key",
+        "OPENAI4S_NOTEBOOK_REPL": "0",
+        "OPENAI4S_UPDATE_SOURCE": "",
+        "KEEP_ME": "1",
+    }
+    env = smoke.clean_environment(
+        base,
+        data_dir=Path("/tmp/smoke/data"),
+        home=Path("/tmp/smoke/home"),
+        tmp_dir=Path("/tmp/smoke/tmp"),
+        port=8123,
+    )
+    for forbidden in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "OPENAI4S_WEBUI",
+        "OPENAI4S_LLM_API_KEY",
+        "OPENAI4S_CLAUDE_API_KEY",
+    ):
+        assert forbidden not in env
+    assert env["KEEP_ME"] == "1"
+    assert env["OPENAI4S_DATA_DIR"] == "/tmp/smoke/data"
+    assert env["HOME"] == "/tmp/smoke/home"
+    assert env["TMPDIR"] == "/tmp/smoke/tmp"
+    assert env["OPENAI4S_HOST"] == "127.0.0.1"
+    assert env["OPENAI4S_PORT"] == "8123"
+    assert env["OPENAI4S_NOTEBOOK_REPL"] == "1"
+    assert env["OPENAI4S_UPDATE_SOURCE"] == "offline"
 
 
 @pytest.mark.parametrize(
-    "mutate",
+    "text",
     [
-        pytest.param(lambda d: _set(d, "status", value=smoke.FAILED), id="failed"),
-        pytest.param(lambda d: _set(d, "schema_version", value=0), id="old-schema"),
-        pytest.param(lambda d: _set(d, "scenario_version", value=0), id="old-scenario"),
-        pytest.param(lambda d: d["steps"].pop("cleanup"), id="missing-cleanup-step"),
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "status", value="failed"),
-            id="failed-step",
-        ),
-        pytest.param(
-            lambda d: _set(d, "runtime", "inside_package", value=False),
-            id="loaded-host-source",
-        ),
-        pytest.param(
-            lambda d: _set(d, "platform", "arch", value="aarch64"),
-            id="other-architecture",
-        ),
+        f"failed http://127.0.0.1:8760/?token={TOKEN}",
+        f"Authorization: Bearer {TOKEN}",
+        f"X-OpenAI4S-Token: {TOKEN}",
+        f"the token is {TOKEN}",
     ],
 )
-def test_a_mutated_record_is_refused(mutate):
-    document = _mutated(mutate)
-    with pytest.raises(SmokeError):
-        smoke.validate_smoke_report(document, expected_platform=("linux", "x86_64"))
-
-
-def test_a_report_bound_to_another_artifact_is_refused():
-    with pytest.raises(SmokeError, match="not the artifact being released"):
-        smoke.validate_smoke_report(_good_report(), expected_package_sha256="c" * 64)
-
-
-def test_a_report_bound_to_another_source_is_refused():
-    with pytest.raises(SmokeError, match="not the frozen"):
-        smoke.validate_smoke_report(_good_report(), expected_source_sha="d" * 40)
-
-
-def test_a_wheel_report_cannot_stand_in_for_a_bundle():
-    with pytest.raises(SmokeError, match="not 'wheel'"):
-        smoke.validate_smoke_report(_good_report(), expected_kind="wheel")
+def test_redaction_removes_every_spelling_of_the_credential(text):
+    cleaned = smoke.redact(text, TOKEN)
+    assert TOKEN not in cleaned
+    assert "<redacted-token>" in cleaned
 
 
 # --------------------------------------------------------------------------- #
-# Execution: a Cell that failed is not a Cell that ran
+# F16 time budgets
 # --------------------------------------------------------------------------- #
-def test_a_second_cell_that_lost_the_kernel_state_is_refused():
+def test_the_budgets_are_the_frozen_f16_values():
+    assert smoke.BUDGETS == {
+        "serve": 90.0,
+        "cell": 60.0,
+        "browser": 120.0,
+        "cleanup": 30.0,
+        "total": 420.0,
+    }
+
+
+def test_an_expired_total_budget_fails_closed_with_a_bounded_diagnostic():
+    import time
+
+    budget = smoke.Budget(total_s=0.05)
+    time.sleep(0.06)
+    with pytest.raises(SmokeFailure) as raised:
+        budget.for_step("serve")
+    assert raised.value.check == "serve"
+    assert "420s budget expired" in raised.value.detail
+
+
+def test_a_step_budget_is_capped_by_what_the_total_has_left():
+    budget = smoke.Budget(total_s=5.0)
+    assert budget.for_step("cell") <= 5.0
+    assert budget.for_step("cell") > 0
+
+
+# --------------------------------------------------------------------------- #
+# Runtime preparation and metadata
+# --------------------------------------------------------------------------- #
+def test_bundle_metadata_reads_the_archive_digest_and_architecture(tmp_path):
+    tarball = _write_fake_bundle(tmp_path / "bundle.tar.gz")
+    metadata = smoke.bundle_metadata(tarball)
+    assert metadata["arch"] == "x86_64"
+    assert metadata["sha256"] == smoke.sha256_file(tarball)
+    with pytest.raises(SmokeFailure, match="does not exist"):
+        smoke.bundle_metadata(tmp_path / "missing.tar.gz")
+
+
+def test_a_foreign_architecture_bundle_is_refused_before_anything_runs(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="openai4s smoke test ") as scratch:
+        tarball = _write_fake_bundle(Path(scratch) / "bundle.tar.gz")
+        monkeypatch.setattr("platform.system", lambda: "darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+        work_root = Path(scratch) / "work"
+        work_root.mkdir()
+        with pytest.raises(SmokeFailure) as raised:
+            smoke.runtime_for_bundle(tarball, work_root)
+        assert raised.value.check == "serve"
+        assert "cannot be executed on darwin/aarch64" in raised.value.detail
+        assert "Linux release runner" in raised.value.detail
+
+
+def test_the_wheel_origin_root_is_the_venv_prefix_not_the_resolved_interpreter(
+    tmp_path,
+):
+    """A venv's ``bin/python`` symlinks to a base install; resolving would leave it."""
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    interpreter = venv / "bin" / "python"
+    interpreter.symlink_to(sys.executable)
+    runtime = smoke.runtime_for_python(interpreter, artifact=None, work_root=tmp_path)
+    # The lexical venv prefix, not the symlink target's installation directory.
+    assert runtime.origin_root == venv
+    assert runtime.target == "wheel"
+    assert runtime.python
+
+
+def test_a_cell_path_is_inside_the_runtime_tree_even_through_a_symlink(tmp_path):
+    root = tmp_path / "venv"
+    (root / "bin").mkdir(parents=True)
+    outside = tmp_path / "base-python"
+    outside.write_text("", "utf-8")
+    (root / "bin" / "python").symlink_to(outside)
+    assert smoke.path_is_inside(str(root / "bin" / "python"), root)
+    assert not smoke.path_is_inside(str(outside), root)
+
+
+# --------------------------------------------------------------------------- #
+# Decision checks: explicit positive/negative pairs beyond the self-test
+# --------------------------------------------------------------------------- #
+def test_a_completed_http_response_is_not_a_successful_cell():
     payload = {
         "status": "completed",
-        "execution_id": "repl-two",
-        "cell": {
-            "status": "error",
-            "error": "NameError: name 'shared_value' is not defined",
-            "stdout": "",
-        },
+        "cell": {"status": "error", "error": "NameError: name 'x' is not defined"},
     }
-    with pytest.raises(SmokeError, match="NameError.*shared_value"):
-        smoke.cell_facts(payload, label="cell-two")
-
-
-def test_a_completed_http_response_without_a_cell_is_not_an_execution():
-    with pytest.raises(SmokeError, match="no executed Cell"):
-        smoke.cell_facts({"status": "accepted", "execution_id": "x"}, label="cell")
-
-
-def test_a_refused_repl_call_is_refused():
-    with pytest.raises(SmokeError, match="notebook REPL is disabled"):
-        smoke.cell_facts(
-            {"error": "notebook REPL is disabled; send a message to resume the agent"},
-            label="cell",
-        )
-
-
-def test_cells_that_do_not_share_state_are_refused():
-    document = _mutated(
-        lambda d: _set(d, "steps", "execution", "shared_state", value=False)
+    with pytest.raises(SmokeFailure, match="NameError"):
+        smoke.check_cell(payload, check="state_shared")
+    with pytest.raises(SmokeFailure, match="no executed Cell"):
+        smoke.check_cell({"status": "accepted"}, check="state_shared")
+    assert smoke.check_cell(
+        {"status": "completed", "cell": {"status": "ok", "error": None}},
+        check="state_shared",
     )
-    with pytest.raises(SmokeError, match="did not share one kernel state"):
-        smoke.validate_smoke_report(document)
 
 
-def test_the_cell_chain_requires_the_second_cell_to_have_used_the_first():
-    """Two HTTP 200s are not evidence; the printed arithmetic is."""
-    cells = _cells()
-    facts = smoke.cell_chain_facts(cells)
-    assert facts["shared_state"] is True
-    assert facts["same_kernel_generation"] is True
-    with pytest.raises(SmokeError, match="did not carry the variable"):
-        smoke.cell_chain_facts(
-            [cells[0], {**cells[1], "stdout": "cell-two shared_value=42\n"}]
-        )
-    with pytest.raises(SmokeError, match="two-Cell chain"):
-        smoke.cell_chain_facts(cells[:1])
+def test_a_second_cell_that_lost_the_variable_is_refused():
+    with pytest.raises(SmokeFailure, match="did not share one kernel state"):
+        smoke.check_state_shared("41\n")
+    smoke.check_state_shared("42\n")
 
 
-def test_the_second_cell_error_is_refused_by_the_record_too():
-    document = _mutated(
-        lambda d: _set(
-            d,
-            "steps",
-            "execution",
-            "cells",
-            value=[
-                _cells()[0],
-                {**_cells()[1], "status": "error", "error": "NameError"},
-            ],
-        )
-    )
-    with pytest.raises(SmokeError, match="Cell 2 did not execute successfully"):
-        smoke.validate_smoke_report(document)
+def test_a_capture_without_a_version_binding_is_refused():
+    entry = {
+        "files_written": ["smoke.csv"],
+        "output_artifacts": [],
+    }
+    with pytest.raises(SmokeFailure, match="captured 0"):
+        smoke.binding_for(entry, "smoke.csv", check="artifact_capture")
 
 
-def test_a_generation_reported_for_one_cell_only_is_not_claimed_as_shared():
+def test_version_bytes_that_disagree_with_the_recorded_digest_are_refused():
+    version = {
+        "version_id": "v1",
+        "checksum": smoke.sha256_bytes(smoke.CSV_FIRST),
+        "size_bytes": len(smoke.CSV_FIRST),
+    }
     assert (
-        smoke.same_generation({"generation_id": "g"}, {"generation_id": None}) is None
+        smoke.check_version_bytes(smoke.CSV_FIRST, version, expected=smoke.CSV_FIRST)
+        == version["checksum"]
     )
-    assert (
-        smoke.same_generation({"generation_id": None}, {"generation_id": None}) is None
+    with pytest.raises(SmokeFailure, match="do not match the version checksum"):
+        smoke.check_version_bytes(smoke.CSV_SECOND, version, expected=smoke.CSV_FIRST)
+    with pytest.raises(SmokeFailure, match="no SHA-256 checksum"):
+        smoke.check_version_bytes(smoke.CSV_FIRST, {"checksum": "", "size_bytes": 9})
+
+
+def test_a_captured_figure_that_is_not_a_png_is_refused():
+    smoke.check_png(smoke.PNG_MAGIC + b"data")
+    with pytest.raises(SmokeFailure, match="not a PNG"):
+        smoke.check_png(b"GIF89a")
+    entry = {"figures": [], "output_artifacts": []}
+    with pytest.raises(SmokeFailure, match="expected exactly 1"):
+        smoke.figure_name(entry)
+
+
+def test_exact_version_and_restart_readback_refusals():
+    first_sha = smoke.sha256_bytes(smoke.CSV_FIRST)
+    second_sha = smoke.sha256_bytes(smoke.CSV_SECOND)
+    smoke.check_exact_version(
+        first_version_id="v1",
+        second_version_id="v2",
+        first_body=smoke.CSV_FIRST,
+        first_sha=first_sha,
+        second_body=smoke.CSV_SECOND,
     )
-    assert smoke.same_generation({"generation_id": "g"}, {"generation_id": "g"}) is True
-    assert (
-        smoke.same_generation({"generation_id": "g"}, {"generation_id": "h"}) is False
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Capture: only the production path counts
-# --------------------------------------------------------------------------- #
-class _FakeApi:
-    """A canned HTTP surface for the capture/reopen helpers."""
-
-    def __init__(
-        self,
-        *,
-        entries=None,
-        versions=None,
-        artifacts=None,
-        body: bytes = smoke.EXPECTED_CSV_BYTES,
-    ) -> None:
-        self.entries = entries if entries is not None else []
-        self.versions = versions or []
-        self.artifacts = artifacts or []
-        self.body = body
-        self.calls: list[tuple[str, str]] = []
-
-    def json(self, method, path, body=None, *, timeout=None):
-        self.calls.append((method, path))
-        if path.endswith("/execution-log"):
-            return {"entries": self.entries}
-        if path.endswith("/versions"):
-            return {"versions": self.versions}
-        if path.endswith("/artifacts"):
-            return self.artifacts
-        raise AssertionError(f"unexpected call {method} {path}")
-
-    def download(self, path, *, timeout=None):
-        self.calls.append(("GET", path))
-        return self.body
-
-
-def _entry(*, filename: str = "smoke.csv", checksum: str = CSV_SHA):
-    binding = {
-        "filename": filename,
-        "artifact_id": "a-1",
-        "version_id": "v-1",
-        "url": "/api/v1/artifacts/versions/v-1",
-    }
-    return {
-        "producing_cell_id": "c-2",
-        "status": "ok",
-        "error": "",
-        "source": smoke.CELL_TWO_CODE,
-        "output_artifacts": [binding],
-        "files_written": [filename],
-    }
-
-
-def _entries(*, filename: str = "smoke.csv") -> list[dict]:
-    return [
-        {
-            "producing_cell_id": "c-1",
-            "status": "ok",
-            "error": "",
-            "source": smoke.CELL_ONE_CODE,
-            "output_artifacts": [],
-            "files_written": [],
-        },
-        _entry(filename=filename),
-    ]
-
-
-def test_the_capture_helper_reads_the_version_through_its_exact_link():
-    api = _FakeApi(
-        entries=_entries(),
-        versions=[
-            {
-                "version_id": "v-1",
-                "checksum": CSV_SHA,
-                "size_bytes": len(smoke.EXPECTED_CSV_BYTES),
-            }
-        ],
-    )
-    captured = smoke.read_capture(api, "f-1", _entries())
-    assert captured["artifact_id"] == "a-1"
-    assert captured["version_id"] == "v-1"
-    assert captured["sha256"] == CSV_SHA
-    assert captured["bytes_match_metadata"] is True
-    assert ("GET", "/api/v1/artifacts/versions/v-1") in api.calls
-
-
-def test_an_uncaptured_csv_is_refused():
-    api = _FakeApi(entries=_entries(), versions=[])
-    entry = _entry()
-    entry["output_artifacts"] = []
-    with pytest.raises(SmokeError, match="captured 0"):
-        smoke.read_capture(api, "f-1", [_entries()[0], entry])
-
-
-def test_captured_bytes_that_do_not_match_their_digest_are_refused():
-    api = _FakeApi(
-        entries=_entries(),
-        versions=[
-            {
-                "version_id": "v-1",
-                "checksum": CSV_SHA,
-                "size_bytes": len(smoke.EXPECTED_CSV_BYTES),
-            }
-        ],
-        body=b"shared,value\nanswer,44\n",
-    )
-    with pytest.raises(SmokeError, match="do not match the version checksum"):
-        smoke.read_capture(api, "f-1", _entries())
-
-
-def test_a_captured_artifact_with_no_digest_is_refused():
-    api = _FakeApi(
-        entries=_entries(),
-        versions=[{"version_id": "v-1", "checksum": "", "size_bytes": 23}],
-    )
-    with pytest.raises(SmokeError, match="no SHA-256 checksum"):
-        smoke.read_capture(api, "f-1", _entries())
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "artifact_id", value=""),
-            id="no-artifact",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "version_id", value=""),
-            id="no-version",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "sha256", value=""),
-            id="no-digest",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "bytes_match_metadata", value=False),
-            id="digest-mismatch",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "size_bytes", value=0),
-            id="empty-artifact",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "capture", "filename", value="other.csv"),
-            id="wrong-filename",
-        ),
-    ],
-)
-def test_a_capture_that_did_not_happen_is_refused(mutate):
-    with pytest.raises(SmokeError):
-        smoke.validate_smoke_report(_mutated(mutate))
-
-
-# --------------------------------------------------------------------------- #
-# Reopen: the same version, from a fresh process
-# --------------------------------------------------------------------------- #
-def _reopen_api(*, entries=None, checksum: str = CSV_SHA, body=None) -> _FakeApi:
-    return _FakeApi(
-        entries=entries if entries is not None else _entries(),
-        versions=[
-            {
-                "version_id": "v-1",
-                "checksum": checksum,
-                "size_bytes": len(smoke.EXPECTED_CSV_BYTES),
-            }
-        ],
-        artifacts=[{"artifact_id": "a-1", "version_id": "v-1"}],
-        body=body if body is not None else smoke.EXPECTED_CSV_BYTES,
-    )
-
-
-def _capture() -> dict:
-    return {
-        "artifact_id": "a-1",
-        "version_id": "v-1",
-        "sha256": CSV_SHA,
-        "version_url": "/api/v1/artifacts/versions/v-1",
-        "cell_ids": ["c-1", "c-2"],
-    }
-
-
-def test_the_reopen_helper_reads_the_same_bytes_and_history_back():
-    reopened = smoke.read_back(_reopen_api(), "f-1", _capture())
-    assert reopened["bytes_identical"] is True
-    assert reopened["digest_identical"] is True
-    assert reopened["history_entries"] == 2
-    assert reopened["version_still_latest"] is True
-
-
-def test_a_reopen_with_a_lost_history_entry_is_refused():
-    api = _reopen_api(entries=[_entries()[0]])
-    with pytest.raises(SmokeError, match="expected 2"):
-        smoke.read_back(api, "f-1", _capture())
-
-
-def test_a_reopen_serving_different_bytes_is_refused():
-    api = _reopen_api(body=b"shared,value\nanswer,44\n")
-    with pytest.raises(SmokeError, match="different bytes"):
-        smoke.read_back(api, "f-1", _capture())
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(
-            lambda d: _set(d, "steps", "reopen", "version_id", value="v-2"),
-            id="other-version",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "reopen", "bytes_identical", value=False),
-            id="other-bytes",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "reopen", "digest_identical", value=False),
-            id="other-digest",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "reopen", "history_entries", value=1),
-            id="partial-history",
-        ),
-        pytest.param(
-            lambda d: _set(d, "steps", "reopen", "version_still_latest", value=False),
-            id="not-latest",
-        ),
-    ],
-)
-def test_a_reopen_that_proved_nothing_is_refused(mutate):
-    with pytest.raises(SmokeError):
-        smoke.validate_smoke_report(_mutated(mutate))
-
-
-# --------------------------------------------------------------------------- #
-# Cleanup: a leaked process is a failed probe
-# --------------------------------------------------------------------------- #
-def test_cleanup_requires_both_shutdowns_to_have_really_happened():
-    step = smoke.cleanup_step(
-        {
-            "first": {"attempted": True, "daemon_exited": True, "workers_exited": True},
-            "final": {"attempted": True, "daemon_exited": True, "workers_exited": True},
-        },
-        daemons_started=2,
-    )
-    assert step["status"] == "ok"
-    step = smoke.cleanup_step(
-        {
-            "first": {"attempted": True, "daemon_exited": True, "workers_exited": True},
-            "final": {
-                "attempted": True,
-                "daemon_exited": False,
-                "workers_exited": False,
-            },
-        },
-        daemons_started=2,
-    )
-    assert step["status"] == "failed"
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(
-            lambda d: _set(
-                d, "steps", "cleanup", "final", "daemon_exited", value=False
-            ),
-            id="daemon-left-running",
-        ),
-        pytest.param(
-            lambda d: _set(
-                d, "steps", "cleanup", "first", "workers_exited", value=False
-            ),
-            id="worker-left-running",
-        ),
-        pytest.param(
-            lambda d: d["steps"]["cleanup"].pop("final"), id="no-final-shutdown"
-        ),
-    ],
-)
-def test_a_shutdown_that_leaked_a_process_is_refused(mutate):
-    with pytest.raises(SmokeError):
-        smoke.validate_smoke_report(_mutated(mutate))
-
-
-# --------------------------------------------------------------------------- #
-# Real process-state helpers
-# --------------------------------------------------------------------------- #
-def test_stop_escalates_for_a_daemon_that_ignores_sigterm(tmp_path):
-    """A daemon that never exits must be killed, and reported, not waited on."""
-
-    class _NoopCli:
-        """Stands in for the product's own `openai4s stop`."""
-
-        def cli(self, *arguments):
-            if arguments == ("stop",):
-                return [sys.executable, "-c", "pass"]
-            return [sys.executable, "-c", "raise SystemExit(0)"]
-
-        def child_environment(self, base):
-            return dict(base)
-
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import signal, time\n"
-            "signal.signal(signal.SIGTERM, lambda *a: None)\n"
-            "time.sleep(60)\n",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    try:
-        daemon = smoke.Daemon(
-            runtime=_NoopCli(),
-            env={},
-            cwd=tmp_path,
-            log_path=tmp_path / "daemon.log",
-            port=1,
+    with pytest.raises(SmokeFailure, match="did not mint a new immutable version"):
+        smoke.check_exact_version(
+            first_version_id="v1",
+            second_version_id="v1",
+            first_body=smoke.CSV_FIRST,
+            first_sha=first_sha,
+            second_body=smoke.CSV_SECOND,
         )
-        daemon.proc = proc
-        daemon.pgid = proc.pid
-        result = daemon.stop(0.3)
-        assert result["attempted"] is True
-        assert result["cli_returncode"] == 0
-        assert result["daemon_exited"] is True, "the ignored SIGTERM daemon survived"
-        assert result["workers_exited"] is True
-        assert "kept running" in result["note"]
-    finally:
-        if proc.poll() is None:  # pragma: no cover - only on a broken probe
-            proc.kill()
-            proc.wait()
-
-
-def test_a_process_group_holding_a_worker_is_detected_then_clears(tmp_path):
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import signal, time\n"
-            "signal.signal(signal.SIGTERM, lambda *a: None)\n"
-            "time.sleep(60)\n",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    smoke.check_restart_readback(
+        listed={"first": first_sha, "second": second_sha},
+        first_expected=first_sha,
+        second_expected=second_sha,
+        first_body=smoke.CSV_FIRST,
+        second_body=smoke.CSV_SECOND,
+        history_entries=5,
     )
-    daemon = smoke.Daemon(
-        runtime=object(),
-        env={},
-        cwd=tmp_path,
-        log_path=tmp_path / "daemon.log",
-        port=1,
-    )
-    daemon.pgid = proc.pid
-    try:
-        assert daemon._wait_for_process_group_exit(grace_s=0.2) is False
-        proc.kill()
-        proc.wait()
-        assert daemon._wait_for_process_group_exit(grace_s=5.0) is True
-    finally:
-        if proc.poll() is None:  # pragma: no cover - only on a broken probe
-            proc.kill()
-            proc.wait()
+    with pytest.raises(SmokeFailure, match="different digests"):
+        smoke.check_restart_readback(
+            listed={"first": "d" * 64, "second": second_sha},
+            first_expected=first_sha,
+            second_expected=second_sha,
+            first_body=smoke.CSV_FIRST,
+            second_body=smoke.CSV_SECOND,
+            history_entries=5,
+        )
 
 
-def test_free_loopback_port_is_bindable_on_the_loopback_interface():
-    port = smoke.free_loopback_port()
-    assert 1024 <= port <= 65535
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", port))
+def test_browser_and_clean_exit_verdicts():
+    smoke.check_browser_open(0, "")
+    with pytest.raises(SmokeFailure, match="exited 1"):
+        smoke.check_browser_open(1, "assertion failed")
+    smoke.check_clean_exit(daemon_gone=True, work_root_gone=True)
+    with pytest.raises(SmokeFailure, match="survives"):
+        smoke.check_clean_exit(daemon_gone=False, work_root_gone=True)
 
 
-# --------------------------------------------------------------------------- #
-# Environment, redaction and report hygiene
-# --------------------------------------------------------------------------- #
-def test_the_daemon_environment_inherits_no_credentials_or_import_paths(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("OPENAI4S_LLM_API_KEY", "sk-should-not-cross")
-    monkeypatch.setenv("OPENAI4S_CLAUDE_API_KEY", "sk-also-not")
-    monkeypatch.setenv("PYTHONPATH", "/some/source/checkout")
-    env = smoke.clean_environment(
-        data_dir=tmp_path / "data",
-        host="127.0.0.1",
-        port=7777,
-        home=tmp_path / "home",
-        temp_dir=tmp_path / "tmp",
-    )
-    assert "OPENAI4S_LLM_API_KEY" not in env
-    assert "OPENAI4S_CLAUDE_API_KEY" not in env
-    assert "PYTHONPATH" not in env
-    assert env["OPENAI4S_DATA_DIR"] == str(tmp_path / "data")
-    assert env["OPENAI4S_NOTEBOOK_REPL"] == "1"
-    assert env["OPENAI4S_SECRET_STORE"] == "plaintext"
-
-    with_pythonpath = smoke.clean_environment(
-        data_dir=tmp_path / "data",
-        host="127.0.0.1",
-        port=7777,
-        home=tmp_path / "home",
-        temp_dir=tmp_path / "tmp",
-        pythonpath=tmp_path / "bundle" / "src",
-    )
-    assert with_pythonpath["PYTHONPATH"] == str(tmp_path / "bundle" / "src")
-
-
-def test_the_probe_log_never_carries_the_access_token(tmp_path):
-    log = tmp_path / "daemon.log"
-    log.write_text(
-        "sign in: http://127.0.0.1:8760/?token=SECRET-VALUE\n"
-        "header X-OpenAI4S-Token: SECRET-VALUE\n",
-        "utf-8",
-    )
-    daemon = smoke.Daemon(
-        runtime=object(),
-        env={},
-        cwd=tmp_path,
-        log_path=log,
-        port=1,
-    )
-    daemon.token = "SECRET-VALUE"
-    tail = daemon.log_tail()
-    assert "SECRET-VALUE" not in tail
-    assert "<redacted-token>" in tail
-
-
-def test_redact_token_removes_the_value_and_the_query_form():
-    text = "failed at http://127.0.0.1:1/?token=abc123&x=1 (X-OpenAI4S-Token: abc123)"
-    redacted = smoke.redact_token(text, "abc123")
-    assert "abc123" not in redacted
-    assert redacted.count("<redacted-token>") == 2
-
-
-def test_diagnostics_are_bounded():
-    huge = "x" * (smoke.DIAGNOSTIC_LIMIT + 10)
-    clipped = smoke.bounded(huge)
-    assert len(clipped) > smoke.DIAGNOSTIC_LIMIT
-    assert "more characters" in clipped
-    assert smoke.bounded("short") == "short"
-
-
-# --------------------------------------------------------------------------- #
-# Platform rules
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
-    ("package_os", "arch", "host_os", "host_arch", "runs"),
+    ("package_arch", "host_os", "host_arch", "runs"),
     [
-        ("linux", "x86_64", "linux", "x86_64", True),
-        ("linux", "aarch64", "linux", "aarch64", True),
-        ("linux", "x86_64", "linux", "amd64", True),
-        ("linux", "aarch64", "linux", "arm64", True),
-        ("linux", "x86_64", "darwin", "aarch64", False),
-        ("linux", "x86_64", "linux", "aarch64", False),
-        ("linux", "aarch64", "linux", "x86_64", False),
-        ("linux", "x86_64", "win32", "amd64", False),
+        ("x86_64", "linux", "x86_64", True),
+        ("x86_64", "linux", "amd64", True),
+        ("aarch64", "linux", "arm64", True),
+        ("x86_64", "linux", "aarch64", False),
+        ("x86_64", "darwin", "aarch64", False),
+        ("aarch64", "darwin", "aarch64", False),
     ],
 )
-def test_host_can_execute_only_claims_a_native_runtime(
-    package_os, arch, host_os, host_arch, runs
+def test_host_can_execute_only_claims_a_native_linux_runtime(
+    package_arch, host_os, host_arch, runs
 ):
     assert (
-        smoke.host_can_execute(package_os, arch, host_os=host_os, host_arch=host_arch)
+        smoke.host_can_execute(
+            "linux", package_arch, host_os=host_os, host_arch=host_arch
+        )
         is runs
     )
 
 
-def test_a_bundle_directory_name_carries_its_architecture():
-    assert smoke.package_arch_from_name("OpenAI4S-0.3.1-linux-x86_64") == "x86_64"
-    assert smoke.package_arch_from_name("OpenAI4S-1.2.3-linux-aarch64") == "aarch64"
-    for name in ("OpenAI4S-0.3.1-linux-riscv", "openai4s-linux-x86_64", "random"):
-        with pytest.raises(SmokeError, match="OpenAI4S-<version>-linux-<arch>"):
-            smoke.package_arch_from_name(name)
-
-
-def test_a_foreign_architecture_bundle_is_recorded_not_run(monkeypatch, tmp_path):
-    app = tmp_path / "OpenAI4S-0.3.1-linux-x86_64"
-    app.mkdir()
-    monkeypatch.setattr("platform.system", lambda: "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
-    output = tmp_path / "smoke.json"
-    exit_code = smoke.main(["--bundle", str(app), "--output", str(output)])
-    assert exit_code == smoke.EXIT_NOT_RUN
-    document = json.loads(output.read_text("utf-8"))
-    assert document["status"] == smoke.NOT_RUN
-    assert "linux-x86_64" in document["not_run_reason"]
-    assert document["runtime"] == {}
-    with pytest.raises(SmokeError, match="not_run"):
-        smoke.validate_smoke_report(document)
+# --------------------------------------------------------------------------- #
+# Process-group witness, with a real child this file owns
+# --------------------------------------------------------------------------- #
+def test_the_process_group_witness_detects_a_live_worker_then_clears():
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    daemon = smoke.Daemon.__new__(smoke.Daemon)
+    daemon.pgid = proc.pid
+    try:
+        assert daemon.wait_for_group_exit(grace=0.2) is False
+        proc.kill()
+        proc.wait()
+        assert daemon.wait_for_group_exit(grace=5.0) is True
+    finally:
+        if proc.poll() is None:  # pragma: no cover - only on a broken probe
+            proc.kill()
+            proc.wait()
 
 
 # --------------------------------------------------------------------------- #
-# CLI failure paths
+# CLI refusal paths (no daemon, no network)
 # --------------------------------------------------------------------------- #
-def test_a_runtime_interpreter_that_does_not_exist_fails_the_probe(tmp_path):
-    output = tmp_path / "smoke.json"
+def test_usage_errors_are_reported_as_usage_failures(tmp_path):
+    assert smoke.main([]) == 2
+    assert smoke.main(["--bundle", "x", "--python", "y", "--report", "z"]) == 2
+    assert smoke.main(["--bundle", "x"]) == 2
+    assert (
+        smoke.main(["--python", str(tmp_path / "python"), "--browser", "--report", "z"])
+        == 2
+    )
+
+
+def test_a_missing_runtime_writes_a_failed_report_and_exits_nonzero(tmp_path):
+    report_path = tmp_path / "report.json"
     exit_code = smoke.main(
         [
             "--python",
             str(tmp_path / "no-such-python"),
-            "--output",
-            str(output),
+            "--report",
+            str(report_path),
         ]
     )
-    assert exit_code == smoke.EXIT_FAILED
-    document = json.loads(output.read_text("utf-8"))
-    assert document["status"] == smoke.FAILED
-    assert document["diagnostics"], "a failed probe must leave a diagnostic"
-    with pytest.raises(SmokeError, match="status is 'failed'"):
-        smoke.validate_smoke_report(document)
+    assert exit_code == 1
+    report = json.loads(report_path.read_text("utf-8"))
+    assert report["status"] == smoke.FAILED
+    assert report["failure"]["check"] == "serve"
+    assert "does not exist" in report["failure"]["detail"]
+    assert set(report["checks"]) == set(smoke.CHECKS)
 
 
-def test_cli_usage_errors_are_reported_as_usage_failures(tmp_path):
-    assert (
-        smoke.main(["--bundle", str(tmp_path)]) == smoke.EXIT_USAGE
-    ), "a missing --output must not be mistaken for a probe result"
+def test_a_foreign_bundle_writes_no_pass_report(monkeypatch, tmp_path):
+    tarball = _write_fake_bundle(tmp_path / "bundle.tar.gz")
+    monkeypatch.setattr("platform.system", lambda: "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    report_path = tmp_path / "report.json"
+    exit_code = smoke.main(["--bundle", str(tarball), "--report", str(report_path)])
+    assert exit_code == 1
+    report = json.loads(report_path.read_text("utf-8"))
+    assert report["target"] == "bundle"
+    assert report["arch"] == "x86_64"
+    assert report["artifact_sha256"] == smoke.sha256_file(tarball)
+    assert report["status"] == smoke.FAILED
+    assert "cannot be executed" in report["failure"]["detail"]
+    assert "linux-x86_64" in report["failure"]["detail"]
 
 
-def test_the_probe_work_directory_contains_a_space(tmp_path):
-    """The packaged runtime has to survive a path with spaces, like a user's."""
-    options = smoke.build_parser().parse_args(
-        ["--python", sys.executable, "--output", str(tmp_path / "out.json")]
-    )
-    probe = smoke.Probe(options)
-    try:
-        assert " " in probe.work_root.name
-    finally:
-        import shutil
-
-        shutil.rmtree(probe.work_root, ignore_errors=True)
+def test_the_report_never_carries_the_daemon_token(monkeypatch, tmp_path):
+    """A preparation failure is still the most likely place a token could leak."""
+    tarball = _write_fake_bundle(tmp_path / "bundle.tar.gz")
+    monkeypatch.setattr("platform.system", lambda: "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    report_path = tmp_path / "report.json"
+    smoke.main(["--bundle", str(tarball), "--report", str(report_path)])
+    text = report_path.read_text("utf-8")
+    assert TOKEN not in text
+    assert "sk-" not in text
