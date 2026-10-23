@@ -12,7 +12,7 @@ import {
   THUMB_READ_TIMEOUT_MS,
   type ArtifactTextRead,
 } from "./api";
-import { filesT } from "./copy";
+import { filesT, readFailureText } from "./copy";
 import type { ArtifactRow } from "./types";
 import { MOL_EXT, TEXT_EXT } from "./types";
 
@@ -312,10 +312,13 @@ function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
       );
       cols.slice(0, 3).forEach((cn) => d.appendChild(dataCol("type", cn)));
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       if (d.isConnected === false) return;
       d.innerHTML = "";
       d.appendChild(dataCol("table", "data"));
+      // A structured tile cannot show a reason inline, but it must not hide
+      // why it fell back: keep the classified reason as the tile's tooltip.
+      if (!isArtifactReadCancelled(error)) d.title = readFailureText(error);
     });
 }
 
@@ -332,6 +335,7 @@ function fillTextPreview(d: HTMLElement, a: ArtifactRow): void {
     .catch((error: unknown) => {
       if (d.isConnected === false || isArtifactReadCancelled(error)) return;
       thumbFallback(d, "file-text");
+      d.title = readFailureText(error);
     });
 }
 
@@ -342,9 +346,10 @@ function fillMolPreview(d: HTMLElement, a: ArtifactRow): void {
       if (pts.length < 3) return thumbFallback(d, "atom");
       d.innerHTML = molSvg(pts);
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       if (d.isConnected === false) return;
       thumbFallback(d, "atom");
+      if (!isArtifactReadCancelled(error)) d.title = readFailureText(error);
     });
 }
 

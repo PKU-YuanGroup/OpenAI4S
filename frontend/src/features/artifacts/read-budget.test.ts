@@ -207,4 +207,14 @@ describe("readArtifactText budget (R1)", () => {
     setArtifactsFetch(async () => responseOf([encoded(text)]));
     await expect(fetchArtifactText("/api/v1/artifacts/s")).resolves.toBe(text);
   });
+
+  it("stops the default 8 MiB read when the body is larger", async () => {
+    const megabyte = new Uint8Array(1024 * 1024).fill(65);
+    setArtifactsFetch(async () => responseOf([megabyte, megabyte, megabyte, megabyte, megabyte, megabyte, megabyte, megabyte, megabyte]));
+    const error = await fetchArtifactText("/api/v1/artifacts/huge").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ArtifactReadError);
+    expect((error as ArtifactReadError).code).toBe("too-large");
+    expect((error as ArtifactReadError).maxBytes).toBe(PREVIEW_MAX_BYTES);
+    expect((error as ArtifactReadError).bytes).toBe(PREVIEW_MAX_BYTES);
+  });
 });
