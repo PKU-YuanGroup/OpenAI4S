@@ -576,6 +576,7 @@ jobs:
           uv run --locked python scripts/release_receipts.py \
             --kind linux --source-sha "$SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
+            --runtime-smoke dist/runtime-smoke-linux.json \
             dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the
@@ -588,6 +589,7 @@ jobs:
           path: |
             dist/OpenAI4S-*-linux-x86_64.tar.gz
             dist/OpenAI4S-*-linux-x86_64.tar.gz.sha256
+            dist/runtime-smoke-linux.json
             dist/build-receipt-*.json
           if-no-files-found: error
           retention-days: 90
