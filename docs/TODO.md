@@ -13,6 +13,19 @@ Work that is *planned* rather than pending lives in
 is a factual record of the v0.3 plan and is validated by
 `tests/test_progress_document.py`. This file is for loose ends.
 
+## Provenance
+
+- [ ] **Keep interned strings out of identity-based lineage.** PR #235
+      excludes known interpreter and library constants, but does not detect
+      arbitrary shared values. For example, broadcasting `"control"` into a
+      tracked DataFrame and indexing that cell still tags the interned literal;
+      an unrelated later write of `"control"` then incorrectly names the CSV.
+      Choose a cross-version string propagation policy, such as refusing exact
+      strings in the side table and returning `_TaggedStr` at reader/indexing
+      boundaries. *Done when:* unrelated writes of interned strings have no
+      source edge on every supported Python version, while genuinely derived
+      strings retain their lineage through real persistent-kernel tests.
+
 ## Publishing
 
 - [x] **Publish `@pku-yuangroup/openai4s-skills` to npm.**
