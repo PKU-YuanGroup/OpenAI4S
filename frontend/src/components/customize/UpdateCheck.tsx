@@ -4,8 +4,10 @@ import {
   apiErrorText,
   readUpdateStatus,
   requestUpdateCheck,
-  updateRetryAfterAt,
+  updateNotChecked,
+  updateRetryHint,
   type UpdateCheck as UpdateCheckData,
+  type UpdateRetryHint,
   type UpdateStatus,
   type UpdateCheckStatus,
 } from "../../features/customize/api";
@@ -202,6 +204,18 @@ function ageText(seconds: number | null): string {
   return `${Math.floor(s / 3600)}h`;
 }
 
+function durationText(seconds: number): string {
+  const s = Math.max(1, Math.floor(seconds));
+  return LANG === "zh" ? `${s} 秒` : `${s}s`;
+}
+
+function retryHintText(hint: UpdateRetryHint | null, unknown: string): string {
+  if (!hint) return unknown;
+  if (hint.at) return clockText(hint.at);
+  if (hint.seconds != null) return durationText(hint.seconds);
+  return unknown;
+}
+
 function channelText(copy: Copy, id: string): string {
   const key = CHANNEL_COPY[id];
   return key ? copy[key] : id || copy.channelUnknown;
@@ -220,7 +234,7 @@ export function UpdateCheck() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [error, setError] = useState("");
   const [failure, setFailure] = useState<Failure>("none");
-  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const [retryHint, setRetryHint] = useState<UpdateRetryHint | null>(null);
   const [busy, setBusy] = useState(false);
   const run = useRef(0);
   const abort = useRef<AbortController | null>(null);
@@ -235,8 +249,15 @@ export function UpdateCheck() {
         setStatus(next);
       } catch (cause) {
         if (!alive() || run.current !== mine) return;
-        setError(apiErrorText(cause));
-        setFailure("read");
+        if (Number((cause as { status?: unknown } | null)?.status) === 403) {
+          // Members are refused before the cache is read; say that, not
+          // "could not read the local update state".
+          setFailure("admin");
+          setError(apiErrorText(cause));
+        } else {
+          setError(apiErrorText(cause));
+          setFailure("read");
+        }
       }
     })();
     return () => {
@@ -250,7 +271,7 @@ export function UpdateCheck() {
     setBusy(true);
     setError("");
     setFailure("none");
-    setRetryAt(null);
+    setRetryHint(null);
     const mine = ++run.current;
     const controller =
       typeof AbortController === "undefined" ? null : new AbortController();
@@ -272,7 +293,7 @@ export function UpdateCheck() {
         setError(apiErrorText(cause));
       } else if (httpStatus === 429) {
         setFailure("rate");
-        setRetryAt(updateRetryAfterAt(cause));
+        setRetryHint(updateRetryHint(cause));
       } else if (timedOut) {
         setFailure("timeout");
       } else {
@@ -287,16 +308,21 @@ export function UpdateCheck() {
 
   const check: UpdateCheckData | null = status?.check ?? null;
   const failed = failure !== "none";
+  // U1's no-record projection is a full check with reason `not_checked`; it is
+  // "not checked yet", not a failed read and not an unknown answer.
+  const never = updateNotChecked(check);
   // A failed check may not leave a claim standing: the "current" line becomes
   // "could not confirm", and the previous answer is shown separately below.
   const currentStatus: UpdateCheckStatus | null = failed
     ? "unknown"
-    : check
-      ? check.status
-      : null;
+    : never
+      ? null
+      : check
+        ? check.status
+        : null;
   const previous = failed
     ? check?.previous ??
-      (check
+      (check && !never
         ? {
             status: check.status,
             latest: check.latest || check.running,
@@ -307,14 +333,16 @@ export function UpdateCheck() {
 
   const currentVersion = check?.running || copy.unknown;
   const channel = channelText(copy, status?.channelId || "");
-  const cacheLine = check
-    ? check.cached
-      ? fill(copy.cachedAgo, ageText(check.age_s))
-      : copy.fresh
-    : copy.notChecked;
+  const cacheLine = never
+    ? copy.notChecked
+    : check
+      ? check.cached
+        ? fill(copy.cachedAgo, ageText(check.age_s))
+        : copy.fresh
+      : copy.notChecked;
   const checkedLine = check?.checked_at_ms ? clockText(check.checked_at_ms) : copy.never;
 
-  const resultLine = !check
+  const resultLine = never || !check
     ? copy.notChecked
     : currentStatus === "update_available"
       ? fill(copy.available, check.latest || copy.unknown)
@@ -324,14 +352,14 @@ export function UpdateCheck() {
   // Only the *current* answer's reason. After a failed check the old check's
   // reason would describe a different attempt.
   const reasonLine =
-    !failed && check && currentStatus === "unknown" && check.reason
+    !failed && !never && check && currentStatus === "unknown" && check.reason
       ? fill(copy.reason, reasonText(copy, check.reason))
       : "";
   const failureLine =
     failure === "admin"
       ? copy.adminOnly
       : failure === "rate"
-        ? fill(copy.rateLimited, retryAt ? clockText(retryAt) : copy.unknown)
+        ? fill(copy.rateLimited, retryHintText(retryHint, copy.unknown))
         : failure === "timeout"
           ? copy.timedOut
           : failure === "read"
@@ -356,13 +384,13 @@ export function UpdateCheck() {
       : "";
   const state = failed
     ? "unknown"
-    : currentStatus === "update_available"
-      ? "available"
-      : currentStatus === "up_to_date"
-        ? "up_to_date"
-        : check
-          ? "unknown"
-          : "never";
+    : never || !check
+      ? "never"
+      : currentStatus === "update_available"
+        ? "available"
+        : currentStatus === "up_to_date"
+          ? "up_to_date"
+          : "unknown";
 
   return (
     <div

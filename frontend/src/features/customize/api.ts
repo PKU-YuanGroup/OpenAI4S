@@ -500,8 +500,36 @@ export async function requestUpdateCheck(
   );
 }
 
-/** The bounded retry hint a 429 carries, for display only — never auto-retried. */
-export function updateRetryAfterAt(error: unknown): number | null {
-  const body = (error as { body?: unknown } | null)?.body;
-  return updateMs(updateRecord(body).retry_after_at);
+/**
+ * U1's "no cached answer" projection is a full check object with
+ * `status: "unknown"`, `reason: "not_checked"`, `checked_at_ms: 0`,
+ * `cached: false` and no `latest` — not a missing `check`. Treat it (and a
+ * missing check) as "not checked yet", never as "could not confirm".
+ */
+export function updateNotChecked(check: UpdateCheck | null): boolean {
+  if (!check) return true;
+  if (check.status !== "unknown") return false;
+  if (check.reason === "not_checked") return true;
+  return (
+    !check.checked_at_ms &&
+    !check.cached &&
+    !check.latest &&
+    check.previous == null
+  );
+}
+
+/**
+ * The bounded retry hint a 429 carries, for display only — never
+ * auto-retried. U1 sends `retry_after_s` (seconds) plus a `Retry-After`
+ * header; an older/frozen shape used an absolute `retry_after_at` (ms). Both
+ * are accepted, and neither is turned into a check.
+ */
+export type UpdateRetryHint = { at: number | null; seconds: number | null };
+
+export function updateRetryHint(error: unknown): UpdateRetryHint {
+  const body = updateRecord((error as { body?: unknown } | null)?.body);
+  return {
+    at: updateMs(body.retry_after_at),
+    seconds: updateMs(body.retry_after_s),
+  };
 }

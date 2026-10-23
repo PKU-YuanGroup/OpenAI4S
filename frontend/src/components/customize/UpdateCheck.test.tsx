@@ -195,14 +195,43 @@ describe("update check card: local state", () => {
     expect(contentText).toContain("does not download");
   });
 
-  it("says it has not checked yet when the daemon has no cached answer", async () => {
+  it("says it has not checked yet from U1's no-record projection", async () => {
+    // Real GET /updates/status shape with no cache: a full check object with
+    // status unknown, reason not_checked, checked_at_ms 0 and cached false.
+    route({
+      "/updates/status": () =>
+        response({
+          request_id: "r1",
+          channel: { id: "venv" },
+          check: {
+            status: "unknown",
+            reason: "not_checked",
+            running: "0.3.1",
+            latest: "",
+            checked_at_ms: 0,
+            cached: false,
+            age_s: null,
+            retry_after_at: 0,
+            previous: {},
+            trust: {},
+          },
+          apply_available: false,
+        }),
+    });
+    const tree = await mounted();
+    expect(text(tree)).toContain("Not checked yet");
+    expect(text(tree)).toContain("0.3.1"); // current version still known
+    expect(text(tree)).not.toContain("Could not confirm");
+    expect(calls().some((call) => call.method === "POST")).toBe(false);
+  });
+
+  it("also treats a missing check object as not checked yet", async () => {
     route({
       "/updates/status": () =>
         response({ request_id: "r1", channel: { id: "venv" }, check: null, apply_available: false }),
     });
     const tree = await mounted();
     expect(text(tree)).toContain("Not checked yet");
-    expect(calls().some((call) => call.method === "POST")).toBe(false);
   });
 
   it("does not offer download, install, restart or one-click upgrade actions", async () => {
@@ -324,15 +353,16 @@ describe("update check card: explicit check", () => {
     expect(text(tree)).not.toContain("This is the latest version");
   });
 
-  it("reports a 429 cooldown with its retry time and does not retry by itself", async () => {
+  it("reports U1's 429 cooldown in seconds and does not retry by itself", async () => {
     route({
       "/updates/status": () => response(STATUS_BODY),
       "/updates/check": () =>
         response(
           {
-            error: "too many checks",
+            error: "wait before forcing another update check",
             code: "rate_limited",
-            retry_after_at: 1761177900000,
+            reason: "refresh_cooldown",
+            retry_after_s: 45,
           },
           429,
         ),
@@ -344,10 +374,21 @@ describe("update check card: explicit check", () => {
     tree = render();
     const contentText = text(tree);
     expect(contentText).toContain("Too many checks");
-    expect(contentText).toContain(clock(1761177900000));
+    expect(contentText).toContain("45s");
     expect(calls().filter((call) => call.method === "POST")).toHaveLength(1);
     // The button is usable again for a later, explicit retry.
     expect(buttonByText(tree, "Check for updates")).not.toBeNull();
+  });
+
+  it("names the admin-only refusal when even the local status read is refused", async () => {
+    route({
+      "/updates/status": () =>
+        response({ error: "admin only", code: "admin_only" }, 403),
+    });
+    const tree = await mounted();
+    expect(text(tree)).toContain("limited to administrators");
+    expect(text(tree)).not.toContain("Could not read the local update state");
+    expect(text(tree)).not.toContain("This is the latest version");
   });
 
   it("times out as unknown, not as up to date", async () => {
