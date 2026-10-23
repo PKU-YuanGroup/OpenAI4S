@@ -13,6 +13,7 @@ import {
   activateModelProfile,
   completeOnboarding,
   fetchOnboarding,
+  mergeReadinessRefresh,
   probeModelProfile,
   saveModelProfile,
   updateModelProfile,
@@ -40,6 +41,9 @@ import { SearchSetupCard } from "./SearchSetupCard";
 import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
+
+/** Readiness re-check state: separate from `busy` so Skip stays usable. */
+type ReadinessRefreshState = { busy: boolean; error: string; lastReadAt: number | null };
 
 // One mapping from a saved profile row to the path it selects. The reducer keys
 // receipt invalidation on these identity fields, so two hand-written copies that
@@ -333,6 +337,21 @@ export function WizardHost() {
   // coming back to the step left duplicates, and the one activated last could
   // be a copy without the key (the key field starts empty on a second visit).
   const savedProfiles = useRef<Partial<Record<PathKind, string>>>({});
+  // Readiness re-check: its own pending/error state (not the wizard's `busy`,
+  // which disables Skip), its own request generation, and the visit it was
+  // started in.
+  const [refresh, setRefresh] = useState<ReadinessRefreshState>({
+    busy: false,
+    error: "",
+    lastReadAt: null,
+  });
+  const refreshRun = useRef(0);
+  const refreshPending = useRef(false);
+  const readinessEpoch = useRef(0);
+  const wasReadinessShown = useRef(false);
+  const readinessShown = state.surface === "wizard" && state.step === "readiness";
+  if (wasReadinessShown.current && !readinessShown) readinessEpoch.current += 1;
+  wasReadinessShown.current = readinessShown;
 
   useEffect(() => {
     alive.current = true;
@@ -347,6 +366,9 @@ export function WizardHost() {
       const next = await fetchOnboarding();
       if (!alive.current) return;
       setStatus(next);
+      // The initial (or post-error) load is a read too: it is the timestamp a
+      // later failed refresh points at instead of pretending it just checked.
+      setRefresh((prev) => ({ ...prev, lastReadAt: Date.now() }));
       dispatch({ type: "hydrate", complete: next.complete });
     } catch (error) {
       if (!alive.current) return;
@@ -377,6 +399,49 @@ export function WizardHost() {
   const leaveTest = () => {
     probeRun.current += 1;
     setTesting(false);
+  };
+
+  /**
+   * Re-read the local onboarding snapshot without re-initialising the wizard.
+   *
+   * `load()` calls `hydrate`, which resets the step and evidence; a refresh
+   * touches only environment/network/platform. The answer is dropped after
+   * unmount, after the readiness step was left (the visit changed), or when a
+   * newer run has taken over. A failed read keeps the old snapshot on screen
+   * and reports itself; the action stays available, so it is the retry.
+   */
+  const onRefreshReadiness = async () => {
+    if (refreshPending.current) return; // a double click is one read
+    refreshPending.current = true;
+    const run = (refreshRun.current += 1);
+    const epoch = readinessEpoch.current;
+    setRefresh((prev) => ({ ...prev, busy: true, error: "" }));
+    try {
+      const next = await fetchOnboarding();
+      if (!alive.current) return;
+      if (refreshRun.current !== run) return; // a newer refresh owns the state
+      if (readinessEpoch.current !== epoch) {
+        setRefresh((prev) => ({ ...prev, busy: false }));
+        return;
+      }
+      setStatus((prev) => (prev ? mergeReadinessRefresh(prev, next) : next));
+      setRefresh({ busy: false, error: "", lastReadAt: Date.now() });
+    } catch (error) {
+      if (!alive.current) return;
+      if (refreshRun.current !== run) return;
+      if (readinessEpoch.current !== epoch) {
+        setRefresh((prev) => ({ ...prev, busy: false }));
+        return;
+      }
+      const fail = wizardErrorFromUnknown(error);
+      setRefresh((prev) => ({
+        busy: false,
+        error: formatWizardError({ message: fail.message, requestId: fail.requestId }),
+        lastReadAt: prev.lastReadAt,
+      }));
+    } finally {
+      refreshPending.current = false;
+    }
   };
 
   const choosePath = (path: PathChoice) => {
@@ -656,7 +721,10 @@ export function WizardHost() {
             ) : null}
             {state.step === "readiness" && status ? (
               <>
-                <ReadinessPanel status={status} />
+                <ReadinessPanel
+                  status={status}
+                  refresh={{ ...refresh, onRefresh: () => { void onRefreshReadiness(); } }}
+                />
                 <SearchSetupCard />
               </>
             ) : null}

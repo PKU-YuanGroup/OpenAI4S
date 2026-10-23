@@ -123,10 +123,75 @@ function NetworkCard({
   );
 }
 
-export function ReadinessPanel({ status }: { status: OnboardingStatus }) {
+/**
+ * The first-run readiness step's own re-read of `GET /api/v1/onboarding`.
+ *
+ * `busy` and `error` are deliberately separate from the wizard's `busy`: this
+ * is a local read, and Skip/Continue must stay usable while it waits. The
+ * action doubles as the retry — a failed read keeps the previous snapshot on
+ * screen and only a new click issues another request.
+ */
+export type ReadinessRefresh = {
+  busy: boolean;
+  error: string;
+  lastReadAt: number | null;
+  onRefresh: () => void;
+};
+
+/** Local clock, fixed-width: the read time is a fact, not a locale string. */
+function clockText(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+export function ReadinessPanel({
+  status,
+  refresh,
+}: {
+  status: OnboardingStatus;
+  refresh?: ReadinessRefresh;
+}) {
+  const control = refresh ? (
+    <button
+      type="button"
+      class="outline-btn small"
+      disabled={refresh.busy}
+      onClick={refresh.onRefresh}
+    >
+      {refresh.busy ? ot("onboarding.readiness.refreshing") : ot("onboarding.readiness.refresh")}
+    </button>
+  ) : undefined;
+  let readState: ComponentChildren = null;
+  if (refresh?.busy) {
+    readState = <div class="onb-refresh-state">{ot("onboarding.readiness.refreshing")}</div>;
+  } else if (refresh?.error) {
+    const last =
+      refresh.lastReadAt != null
+        ? clockText(refresh.lastReadAt)
+        : ot("onboarding.readiness.neverRead");
+    readState = (
+      <div class="onb-refresh-state error" role="alert">
+        {ot("onboarding.readiness.refreshFailed", last, refresh.error)}
+      </div>
+    );
+  } else if (refresh?.lastReadAt != null) {
+    readState = (
+      <div class="onb-refresh-state">
+        {ot("onboarding.readiness.lastRead", clockText(refresh.lastReadAt))}
+      </div>
+    );
+  }
   return (
     <div class="onb-readiness">
-      {status.environment ? <EnvironmentCard readiness={status.environment} /> : null}
+      {status.environment ? (
+        <EnvironmentCard readiness={status.environment} action={control} />
+      ) : refresh ? (
+        // The daemon reported no environment projection at all. The refresh
+        // action must still exist: re-reading is how it can come back.
+        <div class="onb-refresh-row">{control}</div>
+      ) : null}
+      {readState}
       <NetworkCard
         network={status.network}
         platform={status.platform}
