@@ -135,7 +135,91 @@ export type CapabilityReceipt = {
   native_completion: boolean;
   reachable: boolean;
   detail?: string;
+  /** When the probe behind this receipt ran, ms since epoch; 0/absent when unknown. */
+  observed_at?: number;
 };
+
+/** Where the next request's effective decision comes from (M1 additive field). */
+export const CAPABILITY_SOURCES = [
+  "catalog",
+  "explicit_override",
+  "probe",
+] as const;
+export type CapabilitySource = (typeof CAPABILITY_SOURCES)[number];
+
+export type EffectiveCapability = {
+  /** What the next request will actually use. */
+  value: boolean;
+  source: CapabilitySource;
+};
+
+/**
+ * The boolean fields the server's effective-capability projection reports
+ * (M1 `EFFECTIVE_BOOLEAN_FIELDS`), in contract order. Probe evidence in this
+ * version exists only for `tool_calling` and `streaming`; the other five come
+ * from the catalogue or an explicit override.
+ */
+export const EFFECTIVE_CAPABILITY_FIELDS = [
+  "tool_calling",
+  "parallel_tool_calls",
+  "strict_tool_schema",
+  "vision",
+  "audio",
+  "reasoning",
+  "streaming",
+] as const;
+export type EffectiveCapabilityField =
+  (typeof EFFECTIVE_CAPABILITY_FIELDS)[number];
+
+export type EffectiveCapabilities = Partial<
+  Record<EffectiveCapabilityField, EffectiveCapability>
+>;
+
+function capabilityProjectionOf(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const top = row.effective_capabilities;
+  if (top && typeof top === "object" && !Array.isArray(top)) return top;
+  const receipt = row.capability_receipt;
+  if (receipt && typeof receipt === "object" && !Array.isArray(receipt)) {
+    const nested = (receipt as Record<string, unknown>).effective_capabilities;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested;
+  }
+  return null;
+}
+
+/**
+ * The server's read-only next-request projection, or `null` when the service
+ * does not send it. An entry is only accepted when both the boolean and the
+ * allowlisted provenance are present: an unknown source is not a claim, and
+ * the caller keeps its legacy display instead.
+ */
+export function readEffectiveCapabilities(
+  raw: unknown,
+): EffectiveCapabilities | null {
+  const projection = capabilityProjectionOf(raw);
+  if (!projection) return null;
+  const row = projection as Record<string, unknown>;
+  const out: EffectiveCapabilities = {};
+  let any = false;
+  EFFECTIVE_CAPABILITY_FIELDS.forEach((field) => {
+    // `native_tool_call` is the receipt-era spelling of `tool_calling`; accept
+    // it as an alias so a transitional producer cannot half-populate the row.
+    const entry =
+      field === "tool_calling" && row[field] == null
+        ? row.native_tool_call
+        : row[field];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const record = entry as Record<string, unknown>;
+    const value = record.value !== undefined ? record.value : record.effective;
+    const source = typeof record.source === "string" ? record.source : "";
+    if (typeof value !== "boolean") return;
+    if (!(CAPABILITY_SOURCES as readonly string[]).includes(source)) return;
+    out[field] = { value, source: source as CapabilitySource };
+    any = true;
+  });
+  return any ? out : null;
+}
 
 function asEvidence(value: unknown): Evidence {
   if (value === true || value === "true") return "true";
@@ -147,12 +231,14 @@ export function readCapabilityReceipt(raw: unknown): CapabilityReceipt | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
   if (row.native_tool_call == null && row.streaming == null) return null;
+  const observedAt = Math.max(0, Math.floor(Number(row.observed_at) || 0));
   return {
     native_tool_call: asEvidence(row.native_tool_call),
     streaming: asEvidence(row.streaming),
     stale: row.stale === true,
     native_completion: row.native_completion === true,
     reachable: row.reachable === true,
+    observed_at: observedAt || undefined,
   };
 }
 

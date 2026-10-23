@@ -15,6 +15,8 @@ F-19 Customize 模态。九个 tab 组件、嵌套编辑层，以及 `vendors/` 
 | [`Customize.test.tsx`](Customize.test.tsx) | 在输入框里拖选文字、到 Customize 或嵌套编辑器的遮罩上才松开，弹窗保持打开；在遮罩上按下仍会关闭。加载状态变化或嵌套编辑器开关不会让模态重新渲染；Skills 与 Memory tab 只在项目变化时重新渲染，不随每次会话列表更新重新渲染。 |
 | [`GeneralTab.tsx`](GeneralTab.tsx) | 主题、布局、语言、API key 快捷入口。选主题、布局或语言只在原处更新对应的分段控件；语言控件还提供「跟随系统」（按浏览器语言顺序），在用户选定语言之前显示的就是它。 |
 | [`GeneralTab.test.tsx`](GeneralTab.test.tsx) | 选主题或布局只移动它自己的分段控件，不重新挂载，也不重新读取整个 tab；语言控件提供「跟随系统」，未保存选择时显示它，并把每次选择交给 `setLang`。 |
+| [`UpdateCheck.tsx`](UpdateCheck.tsx) | U2「检查更新」卡片：挂载时只读本地 `GET /updates/status`（零外联），仅在点击时以 `POST /updates/check` 联系发布索引；显示当前/最新版本、安装渠道、缓存状态、检查时间、信任摘要与失败原因。检查失败显示「无法确认」并保留上次答案及其时间；不下载、不安装、不重启、无一键升级、无轮询。 |
+| [`UpdateCheck.test.tsx`](UpdateCheck.test.tsx) | Vitest：挂载只发本地 GET；双击只发一次 POST；失败/403/429/超时绝不显示为已是最新；上次答案保留自己的时间；卸载后到达的答复被丢弃；不提供安装/升级动作。 |
 | [`DiagnosticsTab.tsx`](DiagnosticsTab.tsx) | 被动安全姿态、显式检查、脱敏支持包下载。挂在 General 下。 |
 | [`DiagnosticsTab.test.tsx`](DiagnosticsTab.test.tsx) | 页面加载只发一次 status GET；检查与下载包要等点击；请求 id 在纯 http 下也能复制，没复制成功时如实提示。 |
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory 开关 / 添加 / 编辑 / 删除，作用域显式发送。 |
