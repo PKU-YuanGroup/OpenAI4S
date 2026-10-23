@@ -17272,67 +17272,7 @@
                 },
                 "effective_capabilities": {
                   "properties": {
-                    "audio": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
-                    "parallel_tool_calls": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
-                    "reasoning": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
                     "streaming": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
-                    "strict_tool_schema": {
                       "properties": {
                         "source": {
                           "type": "string"
@@ -17361,31 +17301,11 @@
                         "value"
                       ],
                       "type": "object"
-                    },
-                    "vision": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
                     }
                   },
                   "required": [
-                    "audio",
-                    "parallel_tool_calls",
-                    "reasoning",
                     "streaming",
-                    "strict_tool_schema",
-                    "tool_calling",
-                    "vision"
+                    "tool_calling"
                   ],
                   "type": "object"
                 },
@@ -18015,67 +17935,7 @@
                 },
                 "effective_capabilities": {
                   "properties": {
-                    "audio": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
-                    "parallel_tool_calls": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
-                    "reasoning": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
                     "streaming": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
-                    },
-                    "strict_tool_schema": {
                       "properties": {
                         "source": {
                           "type": "string"
@@ -18104,31 +17964,11 @@
                         "value"
                       ],
                       "type": "object"
-                    },
-                    "vision": {
-                      "properties": {
-                        "source": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "boolean"
-                        }
-                      },
-                      "required": [
-                        "source",
-                        "value"
-                      ],
-                      "type": "object"
                     }
                   },
                   "required": [
-                    "audio",
-                    "parallel_tool_calls",
-                    "reasoning",
                     "streaming",
-                    "strict_tool_schema",
-                    "tool_calling",
-                    "vision"
+                    "tool_calling"
                   ],
                   "type": "object"
                 },
@@ -27652,67 +27492,7 @@
           },
           "effective_capabilities": {
             "properties": {
-              "audio": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "parallel_tool_calls": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "reasoning": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
               "streaming": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "strict_tool_schema": {
                 "properties": {
                   "source": {
                     "type": "string"
@@ -27741,31 +27521,11 @@
                   "value"
                 ],
                 "type": "object"
-              },
-              "vision": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
               }
             },
             "required": [
-              "audio",
-              "parallel_tool_calls",
-              "reasoning",
               "streaming",
-              "strict_tool_schema",
-              "tool_calling",
-              "vision"
+              "tool_calling"
             ],
             "type": "object"
           },
@@ -40151,67 +39911,7 @@
           },
           "effective_capabilities": {
             "properties": {
-              "audio": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "parallel_tool_calls": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "reasoning": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
               "streaming": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "strict_tool_schema": {
                 "properties": {
                   "source": {
                     "type": "string"
@@ -40240,31 +39940,11 @@
                   "value"
                 ],
                 "type": "object"
-              },
-              "vision": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
               }
             },
             "required": [
-              "audio",
-              "parallel_tool_calls",
-              "reasoning",
               "streaming",
-              "strict_tool_schema",
-              "tool_calling",
-              "vision"
+              "tool_calling"
             ],
             "type": "object"
           },
@@ -40514,67 +40194,7 @@
           },
           "effective_capabilities": {
             "properties": {
-              "audio": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "parallel_tool_calls": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "reasoning": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
               "streaming": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
-              },
-              "strict_tool_schema": {
                 "properties": {
                   "source": {
                     "type": "string"
@@ -40603,31 +40223,11 @@
                   "value"
                 ],
                 "type": "object"
-              },
-              "vision": {
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
               }
             },
             "required": [
-              "audio",
-              "parallel_tool_calls",
-              "reasoning",
               "streaming",
-              "strict_tool_schema",
-              "tool_calling",
-              "vision"
+              "tool_calling"
             ],
             "type": "object"
           },

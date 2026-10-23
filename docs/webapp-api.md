@@ -410,27 +410,38 @@ A profile carries both, and they answer different questions. `capability_receipt
 is the latest probe observation (three-state `true`/`false`/`unknown`, plus
 `stale` when it no longer describes the current configuration).
 `effective_capabilities` is the read-only projection of what the *next request*
-will decide, resolved through the same function the LLM client uses: one entry
-per boolean field (`tool_calling`, `parallel_tool_calls`, `strict_tool_schema`,
-`vision`, `audio`, `reasoning`, `streaming`), each `{value, source}` with
-`source` one of `catalog` (the adapter/registry default — not a measurement),
-`explicit_override` (a configured value, which evidence never silently rewrites)
-or `probe` (positive evidence for this exact endpoint/model/protocol). It is
-`null` for a protocol this build cannot dispatch.
+will decide, resolved through the same function the LLM client uses. Appendix
+B.3 fixes its shape: exactly two entries, `tool_calling` and `streaming`, each
+`{value, source}` with `source` one of `catalog` (the provider catalogue default
+or built-in model table — never a measurement), `explicit_override` (a configured
+value, which evidence never silently rewrites) or `probe` (the effective value
+exists because of positive evidence for this exact endpoint/model/wire). It is
+`null` for a protocol this build cannot dispatch, and computing it never
+contacts a provider.
 
-Evidence is keyed by `(endpoint, model, protocol)`, so two saved profiles that
-share an endpoint share one evidence slot, and the latest observation wins. A
-new probe that observes `unknown` or `false` **withdraws** the older positive
-promotion for that exact identity, so the next request stops declaring tools the
-model just failed to use. `unknown` is not "unsupported": the field falls back to
-its catalogue or override value rather than becoming permanently false, and an
-explicit override is preserved and labelled as its source. An observation is
-stamped when it *starts*, so a delayed probe cannot replace newer evidence; a
-probe that finishes after its configuration was edited or deleted is still
-stored for display but changes nothing effective; a storage failure leaves the
-previous decision untouched; and editing or deleting a profile re-derives the
-decision from the durable rows a restart would read, so the process and a restart
-cannot disagree.
+Evidence follows the frozen rule: the overlay key is
+`(endpoint_sha256, model, wire)`. A key's effective evidence is the receipt whose
+profile is not deleted, whose `revision` is that profile's current revision, and
+whose `probe_version` is current, with the largest `observed_at` (ties broken by
+the larger `receipt_id`). That receipt is adopted only if `native_tool_call` or
+`streaming` is `true`; otherwise it is **not** adopted and any older adopted
+promotion for the key is removed. So two saved profiles that share an endpoint
+share one evidence slot and the latest observation wins, and a second probe that
+observes `unknown` or `false` withdraws the earlier positive promotion — the
+next request stops declaring tools the model just failed to use. `unknown` is
+not "unsupported": the field falls back to its catalogue or override value
+rather than becoming permanently false, and F11 keeps an explicit
+`set_capability_override(...)` above probe evidence, labelled as its source.
+
+An observation is stamped when it *starts*, so a delayed probe cannot replace
+newer evidence. A probe that finishes after its configuration was edited is
+still stored for display but changes nothing effective (its revision is no
+longer current). A storage failure leaves the previous decision untouched. The
+process and a restart use the same rule and the same replacement function:
+reopening the Store walks the still-valid receipts in ascending `observed_at`
+order, and deleting or reconfiguring a profile re-selects each affected key from
+the repository, so an older receipt from a still-current configuration can take
+the key back exactly as a restart would read it.
 
 
 **A session binds `profile_id + revision`.** A frame used to store a model

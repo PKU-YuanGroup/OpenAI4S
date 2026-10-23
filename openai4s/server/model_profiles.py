@@ -20,14 +20,19 @@ from openai4s.endpoint_identity import normalize_endpoint
 from openai4s.llm.capabilities import (
     CAPABILITY_PROBE_TOOL,
     PROBE_VERSION,
-    apply_receipt_evidence,
     capability_probe_window,
     classify_probe_error,
     drop_receipt_overlays,
 )
-from openai4s.llm.capabilities import effective_capabilities as _effective_capabilities
+from openai4s.llm.capabilities import (
+    explain_model_capabilities as _explain_model_capabilities,
+)
 from openai4s.llm.capabilities import (
     profile_receipt_identity,
+    receipt_evidence_key,
+    receipt_evidence_rank,
+    replace_receipt_overlay,
+    reset_receipt_overlay,
     streaming_evidence,
     tool_call_matches_schema,
 )
@@ -582,43 +587,87 @@ class ModelProfileService:
                 return item
         return None
 
-    def _receipt_still_describes_current_configuration(
-        self, identity: Mapping[str, Any]
-    ) -> bool:
-        """Attribution check before a receipt changes the effective decision.
+    def _receipt_matches_current_revision(self, identity: Mapping[str, Any]) -> bool:
+        """F10 validity: the profile is current (not deleted) at this revision.
 
         A probe can outlive the configuration it started on: the user edits the
-        profile, deletes it, or another configuration shares the endpoint.  A
-        receipt may only replace effective evidence while its exact identity --
-        profile still present and not tombstoned, same revision, endpoint, model
-        and protocol -- is the profile's current one.  Otherwise the row is
-        still persisted for display, but a delayed observation cannot rewrite
-        what the next request will send.
+        profile while the request is in flight.  The receipt is still persisted
+        for display, but it may only change the effective evidence when its
+        revision is the profile's current revision; otherwise the next request
+        must keep deciding from the configuration the profile names now.
         """
         profile = self._current_profile(str(identity.get("profile_id") or ""))
         if profile is None or profile.get("deleted_at"):
             return False
-        current = self._receipt_identity(profile)
-        return (
-            int(current["revision"]) == int(identity["revision"])
-            and str(current["endpoint_sha256"]) == str(identity["endpoint_sha256"])
-            and str(current["model"]) == str(identity["model"])
-            and str(current["wire"]) == str(identity["wire"])
-        )
+        return int(profile.get("revision") or 0) == int(identity.get("revision") or 0)
 
-    def _reload_receipt_evidence(self) -> int:
-        """Re-derive adopted evidence from durable rows (restart parity).
+    def _valid_receipts(self) -> list[dict[str, Any]]:
+        """Every receipt that may be effective evidence right now (F10).
 
-        Called after a configuration mutation.  Editing or deleting a profile
-        can invalidate *its* receipts while another configuration sharing the
-        same endpoint still has newer valid evidence; re-deriving from storage
-        gives the same answer a restart would, instead of a profile-scoped
-        clear that could drop the survivor's evidence.
+        A receipt is valid when its profile is not deleted, its revision is
+        that profile's current revision, and its probe version is current.
         """
-        reloader = getattr(self.store, "reload_model_capability_evidence", None)
-        if not callable(reloader):
-            return 0
-        return int(reloader())
+        repo = self._receipts()
+        if repo is None:
+            return []
+        current = {
+            str(item.get("id") or ""): int(item.get("revision") or 0)
+            for item in self.store.list_model_profiles()
+            if not item.get("deleted_at")
+        }
+        valid: list[dict[str, Any]] = []
+        for row in repo.list_all():
+            if int(row.get("probe_version") or 0) != PROBE_VERSION:
+                continue
+            if current.get(str(row.get("profile_id") or "")) != int(
+                row.get("revision") or 0
+            ):
+                continue
+            valid.append(row)
+        return valid
+
+    def _receipt_keys_for_profile(self, profile_id: str) -> set[tuple[str, str, str]]:
+        """Every overlay key this profile ever observed evidence for."""
+        repo = self._receipts()
+        if repo is None:
+            return set()
+        wanted = str(profile_id or "")
+        keys: set[tuple[str, str, str]] = set()
+        for row in repo.list_all():
+            if str(row.get("profile_id") or "") != wanted:
+                continue
+            key = receipt_evidence_key(row)
+            if key is not None:
+                keys.add(key)
+        return keys
+
+    def _recompute_receipt_evidence(self, keys: set[tuple[str, str, str]]) -> None:
+        """Re-select each affected key's effective evidence after a change.
+
+        F10: the effective receipt for a key is the valid one (profile not
+        deleted, revision current, probe version current) with the largest
+        ``observed_at``, ties broken by the larger ``receipt_id``.  Deleting a
+        profile -- or moving its configuration -- can invalidate the receipt
+        that was adopted for a key while an older receipt from another current
+        profile is still valid; re-selecting from the repository is what lets
+        that survivor take over, exactly as a restart would read it.  With no
+        survivor the key's overlay is removed rather than left promoted.
+        """
+        if not keys:
+            return
+        chosen: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in self._valid_receipts():
+            key = receipt_evidence_key(row)
+            if key is None or key not in keys:
+                continue
+            best = chosen.get(key)
+            if best is None or receipt_evidence_rank(row) > receipt_evidence_rank(best):
+                chosen[key] = row
+        for key in keys:
+            reset_receipt_overlay(key)
+            survivor = chosen.get(key)
+            if survivor is not None:
+                replace_receipt_overlay(survivor)
 
     def capability_receipt(self, profile: Mapping[str, Any]) -> dict[str, Any] | None:
         """The profile's exact probe receipt, or its stale predecessor.
@@ -652,15 +701,17 @@ class ModelProfileService:
     def effective_capabilities(
         self, profile: Mapping[str, Any]
     ) -> dict[str, dict[str, Any]] | None:
-        """Read-only projection of what the next request would decide.
+        """Read-only projection of what the next request would decide (B.3).
 
-        Never contacts anything.  ``None`` when the protocol is not one this
-        build dispatches: such a profile has no effective capability to
-        describe, and inventing one would be the guess this field exists to
+        ``explain_model_capabilities`` reports exactly ``tool_calling`` and
+        ``streaming`` with a ``catalog`` / ``explicit_override`` / ``probe``
+        source.  Never contacts anything.  ``None`` when the protocol is not
+        one this build dispatches: such a profile has no effective capability
+        to describe, and inventing one would be the guess this field exists to
         avoid.
         """
         try:
-            return _effective_capabilities(
+            return _explain_model_capabilities(
                 str(profile.get("provider") or ""),
                 self.effective_model_id(profile.get("provider"), profile.get("model")),
                 base_url=str(profile.get("base_url") or "") or None,
@@ -679,12 +730,14 @@ class ModelProfileService:
     ) -> dict[str, Any] | None:
         """Persist one probe observation, then -- only then -- make it effective.
 
-        The order is load-bearing: a storage failure must leave the previous
-        effective capability untouched, so the durable write comes first and the
-        in-process replacement second.  ``apply_receipt_evidence`` replaces the
-        evidence of this exact (endpoint, model, protocol) identity; a
-        non-positive observation withdraws an older positive promotion instead
-        of leaving it adopted (the P0-01 defect).
+        The order is load-bearing: the durable write happens first, so a
+        ``put`` failure leaves the previous effective capability untouched and
+        the exception propagates to the caller.  After a successful write the
+        profile's *current* revision is re-read: a receipt whose revision is no
+        longer current is stored for display only, and only a current one goes
+        through ``replace_receipt_overlay`` -- which adopts positive evidence and
+        withdraws an older promotion when the new observation is non-positive
+        (the P0-01 defect).
         """
         repo = self._receipts()
         identity = self._receipt_identity(profile)
@@ -703,10 +756,10 @@ class ModelProfileService:
             observed_at=observed_at,
         )
         row["endpoint"] = identity["endpoint"]
-        adoptable = self._receipt_still_describes_current_configuration(identity)
-        if adoptable:
-            apply_receipt_evidence(row)
-        return public_receipt(row, stale=not adoptable, probe_version=PROBE_VERSION)
+        current = self._receipt_matches_current_revision(identity)
+        if current:
+            replace_receipt_overlay(row)
+        return public_receipt(row, stale=not current, probe_version=PROBE_VERSION)
 
     def probe(
         self, profile_id: str, *, actor_user_id: str | None = None
@@ -1348,11 +1401,12 @@ class ModelProfileService:
         profile = self.store.mutate_model_profiles(mutate)
         if profile is None:
             raise ModelProfileError("profile not found", 404)
-        # A configuration change can invalidate this profile's receipts while
-        # another configuration sharing its endpoint still owns newer valid
-        # evidence.  Re-derive from storage so the in-process decision equals
-        # what a restart would adopt from the same rows.
-        self._reload_receipt_evidence()
+        # A configuration change invalidates this profile's earlier receipts;
+        # another configuration sharing the endpoint may still own valid
+        # evidence for the same key.  Re-select each affected key from the
+        # repository with F10's rule so the in-process decision equals what a
+        # restart would adopt from the same rows.
+        self._recompute_receipt_evidence(self._receipt_keys_for_profile(profile_id))
         selected_model: str | None = None
         if self.store.get_setting("active_model_profile") == profile["id"]:
             for field, setting in (
@@ -1407,9 +1461,12 @@ class ModelProfileService:
             self._forget_key(profile)
         if tombstoned:
             # Its receipts stay for audit, but a deleted configuration's probe
-            # must not keep promoting capability.  Rebuild from the surviving
-            # current configurations (restart parity for shared endpoints).
-            self._reload_receipt_evidence()
+            # must not keep promoting capability.  Re-select each key it had
+            # observed from the surviving current configurations with F10's
+            # rule; that is how an older receipt from a profile still sharing
+            # the endpoint becomes effective again, exactly as a restart reads
+            # it.
+            self._recompute_receipt_evidence(self._receipt_keys_for_profile(profile_id))
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
             # The live value is a provider credential copied by activate().
@@ -1505,11 +1562,11 @@ def migrate_provider_alias(
                 ModelProfileService._seal_revision(profile, now_ms=now_ms)
 
     store.mutate_model_profiles(migrate)
-    reloader = getattr(store, "reload_model_capability_evidence", None)
-    if callable(reloader):
+    loader = getattr(store, "_load_capability_receipt_overlays", None)
+    if callable(loader):
         # The alias rewrite seals a new revision for every touched profile, so
-        # the receipts adopted at Store open now describe retired identities.
-        reloader()
+        # the receipts adopted at Store open now describe retired revisions.
+        loader()
 
 
 __all__ = [
