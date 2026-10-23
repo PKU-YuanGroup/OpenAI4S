@@ -344,19 +344,27 @@ async function main() {
     await runCase(page, "markdown states complete vs partial with the full-file entry", async () => {
       await open(markdown, "report.md");
       await page.locator("#dock-viewer .md.renderer-markdown").waitFor({ timeout: 30000 });
-      const complete = page.locator('#dock-viewer .renderer-completeness[data-state="complete"]');
-      await complete.waitFor({ timeout: 30000 });
+      // A complete preview renders as before: no truncation notice is added.
+      assertion(
+        (await page.locator("#dock-viewer .renderer-completeness").count()) === 0,
+        "a complete markdown preview claimed to be truncated",
+      );
       assertion(
         (await page.locator("#dock-viewer h1").innerText()).includes("Short report"),
         "markdown heading missing",
       );
       await open(largeMarkdown, "large-report.md");
       const partial = page.locator('#dock-viewer .renderer-completeness[data-state="partial"]');
-      await partial.waitFor({ timeout: 30000 });
-      const note = await partial.innerText();
+      await partial.first().waitFor({ timeout: 30000 });
+      // One notice above and one below the rendered body (F3/A3).
+      assertion(
+        (await partial.count()) === 2,
+        `expected two partial notices, saw ${await partial.count()}`,
+      );
+      const note = await partial.first().innerText();
       assertion(/Partial preview|部分预览/i.test(note), `partial state not announced: ${note}`);
       const href = await page
-        .locator("#dock-viewer .renderer-completeness + a, #dock-viewer a.outline-btn")
+        .locator("#dock-viewer a.outline-btn")
         .last()
         .getAttribute("href");
       assertion(

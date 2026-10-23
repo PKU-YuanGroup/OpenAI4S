@@ -17,9 +17,8 @@ import {
   artifactMetadataCacheKey,
   artifactMetadataTarget,
   artifactMetadataUrl,
-  artifactPreviewTarget,
-  artifactPreviewUrl,
   artUrl,
+  previewSlice,
   syncArtifactVersion,
 } from "./cache";
 import { jsonResponse } from "./http-stub";
@@ -207,33 +206,28 @@ it("legacy metadata without a known version cannot share an exact cache entry", 
 });
 
 
-describe("frozen preview target and exact-version download (A2)", () => {
+describe("shared preview slice (F3)", () => {
   afterEach(() => {
     setArtifactsFetch(null);
     resetStoreFields();
   });
 
-  it("pins a known version so preview and download address the same bytes", () => {
-    const row: ArtifactRow = { id: "a1", version_id: "v4" };
-    const target = artifactPreviewTarget(row);
-    expect(target._exactVersion).toBe(true);
-    expect(target.version_id).toBe("v4");
-    expect(artifactPreviewUrl(row)).toBe("/api/v1/artifacts/versions/v4");
-    expect(artifactPreviewTarget(row, "v5").version_id).toBe("v5");
+  it("returns a complete slice at and below the limit without marking it truncated", () => {
+    expect(previewSlice("abcd", 4)).toEqual({ shown: "abcd", truncated: false });
+    expect(previewSlice("abc", 4)).toEqual({ shown: "abc", truncated: false });
+    expect(previewSlice("", 4)).toEqual({ shown: "", truncated: false });
+    expect(previewSlice(null, 4)).toEqual({ shown: "", truncated: false });
   });
 
-  it("prefers the version the renderer descriptor reported for this paint", () => {
-    const row: ArtifactRow = { id: "a1", version_id: "v4", latest_version_id: "v4" };
-    expect(artifactPreviewUrl(row, "v3")).toBe("/api/v1/artifacts/versions/v3");
+  it("marks an over-limit slice truncated and keeps exactly the limit", () => {
+    expect(previewSlice("abcdef", 4)).toEqual({ shown: "abcd", truncated: true });
+    expect(previewSlice("中文报告", 2)).toEqual({ shown: "中文", truncated: true });
   });
 
-  it("reads latest only when the row has no version identity", () => {
-    const row: ArtifactRow = { id: "a1" };
-    expect(artifactPreviewTarget(row)._exactVersion).toBeFalsy();
-    expect(artifactPreviewUrl(row)).toBe("/api/v1/artifacts/a1");
-  });
-
-  it("refuses an exact target that has no version", () => {
-    expect(() => artifactPreviewTarget({ id: "a1", _exactVersion: true })).toThrow();
+  it("never splits a surrogate pair at the cut", () => {
+    const text = "a".repeat(3) + "🙂" + "tail";
+    // The high surrogate sits at index 3, i.e. at limit-1: take one fewer unit.
+    expect(previewSlice(text, 4)).toEqual({ shown: "aaa", truncated: true });
+    expect(previewSlice(text, 5)).toEqual({ shown: "aaa🙂", truncated: true });
   });
 });

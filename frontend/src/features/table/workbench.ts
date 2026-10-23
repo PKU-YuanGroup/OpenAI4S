@@ -9,9 +9,9 @@ import {
   looksBinary,
   previewReadSignal,
   translate,
-  unicodeSafeSlice,
 } from "../artifacts/api";
 import { filesT, readFailureText } from "../artifacts/copy";
+import { previewSlice } from "../artifacts/cache";
 import { parseTable } from "../csv/csv";
 import { renderSheet } from "../artifacts/sheet";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
@@ -78,30 +78,24 @@ function renderLegacyFailure(
 }
 
 /**
- * The completeness state of a display-limited legacy table (A2): a parse
- * failure that falls back to source shows a labelled prefix, never an
- * unexplained cut or a row count derived from partial content.
+ * The partial-preview notice for the legacy (flag-off) table fallback (F3): the
+ * shown prefix is named, the full exact version stays one click away, and a
+ * complete source fallback adds nothing to the baseline rendering.
  */
 function legacySourceStatus(
   container: HTMLElement,
   a: ArtifactRow,
   url: string,
-  truncated: boolean,
   shown: number,
-  total: number,
 ): void {
-  const partial = truncated;
   const note = el(
     "div",
     "renderer-note renderer-completeness",
-    partial
-      ? filesT("viewer.preview.partial", shown.toLocaleString(), total.toLocaleString())
-      : filesT("viewer.preview.complete", total.toLocaleString()),
+    filesT("viewer.preview.partial", shown.toLocaleString()),
   );
-  note.setAttribute("data-state", partial ? "partial" : "complete");
+  note.setAttribute("data-state", "partial");
   note.setAttribute("role", "status");
   container.appendChild(note);
-  if (!partial) return;
   const download = el("a", "outline-btn small", translate("common.download"));
   download.setAttribute("href", url);
   download.setAttribute("download", a.filename || "artifact");
@@ -126,17 +120,11 @@ export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: s
       const rows = parseTable(text, a);
       if (rows && rows.length) renderSheet(container, rows);
       else {
+        const slice = previewSlice(text, LEGACY_TABLE_PREVIEW_CHARACTERS);
         const pre = el("pre", "renderer-source");
-        pre.textContent = unicodeSafeSlice(text, LEGACY_TABLE_PREVIEW_CHARACTERS);
+        pre.textContent = slice.shown;
         container.appendChild(pre);
-        legacySourceStatus(
-          container,
-          a,
-          url,
-          text.length > LEGACY_TABLE_PREVIEW_CHARACTERS,
-          pre.textContent.length,
-          text.length,
-        );
+        if (slice.truncated) legacySourceStatus(container, a, url, slice.shown.length);
       }
     })
     .catch((error: unknown) => {
