@@ -133,12 +133,18 @@ LEGACY_SEARCH_ALIASES: dict[str, str] = {
     "source_checksum": "response_sha256",
 }
 
-#: Optional projection keys. Named rather than implied: a client that shows a
-#: canonical value without knowing it came from an alias, or shows the
-#: canonical value while the alias disagreed, is describing a record it did not
-#: read.
+#: The plan's frozen compatibility field (F13): the canonical field names whose
+#: historical alias disagreed, sorted. The canonical value is shown and the alias
+#: value is never rendered, so no value is picked silently.
+ALIAS_CONFLICTS_KEY = "alias_conflicts"
+
+#: Optional projection keys beyond the plan's frozen field. Additive and
+#: documented rather than implied: a client that shows a canonical value without
+#: knowing it came from an alias, or shows the canonical value while the alias
+#: disagreed, is describing a record it did not read. `alias_conflicts` is the
+#: contract; these two only make the same facts legible in the panel and never
+#: change which values are released.
 LEGACY_FIELDS_KEY = "legacy_normalized"
-CONFLICT_FIELDS_KEY = "source_conflicts"
 
 #: The response digest's public state, spelled separately from the artifact's
 #: own file checksum: hiding one must not read as "the retrieval was verified".
@@ -158,9 +164,9 @@ def _normalize_legacy_search(
     """Merge the historical ``science_search`` names into the canonical ones.
 
     The canonical field always wins a disagreement; the alias value is not
-    rendered, and the conflict is named, because silently picking one of two
-    recorded request URLs would make the panel describe a request that may not
-    be the one that produced the data. An alias that agrees is simply merged —
+    rendered, and the conflict is named in `alias_conflicts` (F13), because
+    silently picking one of two recorded request URLs would make the panel
+    describe a request that may not be the one that produced the data. An alias that agrees is simply merged —
     one fact under two names, so it is neither a conflict nor an unknown field.
     Both the canonical value and a promoted alias value then go through the same
     redaction, clipping and unknown-field counting as everything else; nothing
@@ -337,7 +343,7 @@ def public_source(
     if legacy:
         out[LEGACY_FIELDS_KEY] = legacy
     if conflicts:
-        out[CONFLICT_FIELDS_KEY] = conflicts
+        out[ALIAS_CONFLICTS_KEY] = conflicts
     # Named, not implied. A field silently cut at 2000 characters reads as the
     # whole value, and a provenance panel that shows a shortened URL as if it
     # were the request is worse than showing nothing.
@@ -352,8 +358,8 @@ def public_source(
 
 
 __all__ = [
+    "ALIAS_CONFLICTS_KEY",
     "ALLOWED_FIELDS",
-    "CONFLICT_FIELDS_KEY",
     "CREDENTIAL_PARAMS",
     "LEGACY_FIELDS_KEY",
     "LEGACY_SEARCH_ALIASES",

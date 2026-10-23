@@ -8184,6 +8184,12 @@
                 },
                 "retrieval_source": {
                   "properties": {
+                    "alias_conflicts": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "database": {
                       "type": "string"
                     },
@@ -8266,12 +8272,6 @@
                         "integer",
                         "string"
                       ]
-                    },
-                    "source_conflicts": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
                     },
                     "undisclosed_field_count": {
                       "type": "integer"

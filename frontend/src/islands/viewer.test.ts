@@ -287,11 +287,64 @@ it("reads the S1 projection keys for hidden digests, aliases and conflicts", () 
     response_sha256: "a".repeat(64),
     response_sha256_state: "shown",
     legacy_normalized: ["request_url"],
-    source_conflicts: ["request_url"],
+    alias_conflicts: ["request_url"],
   }).map((node) => node.textContent);
   expect(shown).toContain("a".repeat(64));
   expect(shown).toContain(filesT("science.aliasNote", "request_url"));
   expect(shown).toContain(filesT("science.conflictNote", "request_url"));
+
+  // The pre-S1 spelling is still understood by an upgraded client.
+  const legacy = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    source_conflicts: ["request_url"],
+  }).map((node) => node.textContent);
+  expect(legacy).toContain(filesT("science.conflictNote", "request_url"));
+});
+
+it.each(["en", "zh"] as const)(
+  "labels the retrieval response digest and names a conflict, in %s",
+  async (locale) => {
+    const previousLanguage = LANG;
+    await setLang(locale);
+    try {
+      const values = sourcePanelNodes({
+        kind: "science_search",
+        database: "clinvar",
+        request_url: "https://eutils.ncbi.nlm.nih.gov/example",
+        response_sha256: "a".repeat(64),
+        alias_conflicts: ["request_url"],
+      }).map((node) => node.textContent);
+      // The label says which digest this is: the recorded retrieval response,
+      // separate from the Artifact file's own checksum.
+      expect(values).toContain(filesT("science.field.responseSha256"));
+      expect(filesT("science.field.responseSha256")).not.toBe(
+        filesT("versions.datasetRecordedHash"),
+      );
+      if (locale === "zh") {
+        expect(values).toContain("检索响应摘要（来源记录）");
+        expect(values).toContain("来源字段冲突，已显示规范字段（request_url）。");
+      } else {
+        expect(values).toContain("Retrieval response digest (source record)");
+        expect(values).toContain(
+          "Source fields conflict; the canonical fields are shown (request_url).",
+        );
+      }
+    } finally {
+      await setLang(previousLanguage);
+    }
+  },
+);
+
+it("shows a hidden response digest as the explicit 已隐藏 state, not a verified value", () => {
+  const values = sourcePanelNodes({
+    kind: "science_search",
+    database: "clinvar",
+    response_sha256: "<redacted:credential>",
+    response_sha256_state: "hidden",
+  }).map((node) => node.textContent);
+  expect(values).toContain(filesT("science.responseHidden"));
+  expect(values).not.toContain("<redacted:credential>");
 });
 
 it.each(["en", "zh"] as const)("names a clipped dataset field by its %s row label", async (locale) => {

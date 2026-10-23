@@ -469,15 +469,15 @@ def write_search_artifact(workspace: Path, result: Mapping[str, Any]) -> dict[st
         )
     ).hexdigest()
     filename = f"science-{database}-{digest[:12]}.json"
+    # The Artifact file's JSON layout is frozen: these names are what every
+    # historical search artifact carries, and a reader of the file (including the
+    # raw-JSON view) must keep seeing it the way it was written. The canonical
+    # names are added to the version `source` below, not to these bytes.
     payload = {
         "query": result.get("query"),
-        # The canonical names the public provenance projection reads. The
-        # artifact written by earlier versions used `endpoint` /
-        # `source_checksum`; those are still understood on *read* by
-        # `retrieval_source.public_source`, but new bytes never carry them.
-        "request_url": result.get("request_url"),
+        "endpoint": result.get("request_url"),
         "retrieved_at": (result.get("provenance") or {}).get("retrieved_at"),
-        "response_sha256": (result.get("provenance") or {}).get("response_sha256"),
+        "source_checksum": (result.get("provenance") or {}).get("response_sha256"),
         "accessions": [item.get("id") for item in result.get("results") or []],
         "result": result,
     }
@@ -585,13 +585,19 @@ def write_search_artifact(workspace: Path, result: Mapping[str, Any]) -> dict[st
             raise
         finally:
             os.close(descriptor)
+    # Dual write. The historical names stay so readers written against them (and
+    # their existing assertions) continue to work; the canonical names are what
+    # the public provenance projection reads. One fact, two spellings, and the
+    # recorded `source` remains immutable once written.
     source = {
         "kind": "science_search",
         "database": database,
         "query": result.get("query"),
-        "request_url": result.get("request_url"),
+        "endpoint": payload["endpoint"],
         "retrieved_at": payload["retrieved_at"],
-        "response_sha256": payload["response_sha256"],
+        "source_checksum": payload["source_checksum"],
+        "request_url": result.get("request_url"),
+        "response_sha256": payload["source_checksum"],
         "accessions": payload["accessions"],
     }
     return {

@@ -15,8 +15,8 @@ import json
 import pytest
 
 from openai4s.server.retrieval_source import (
+    ALIAS_CONFLICTS_KEY,
     ALLOWED_FIELDS,
-    CONFLICT_FIELDS_KEY,
     LEGACY_FIELDS_KEY,
     MAX_VALUE_CHARS,
     RESPONSE_HASH_SHOWN,
@@ -551,7 +551,7 @@ def test_alias_and_canonical_names_that_agree_merge_without_a_conflict():
     assert out["request_url"] == url
     assert out["response_sha256"] == "ab" * 32
     assert LEGACY_FIELDS_KEY not in out
-    assert CONFLICT_FIELDS_KEY not in out
+    assert ALIAS_CONFLICTS_KEY not in out
     assert out["undisclosed_field_count"] == 1
 
 
@@ -569,7 +569,9 @@ def test_conflicting_alias_and_canonical_names_keep_the_canonical_value():
     )
     assert out["request_url"] == canonical
     assert out["response_sha256"] == "ab" * 32
-    assert out[CONFLICT_FIELDS_KEY] == ["request_url", "response_sha256"]
+    # F13's frozen field name; the pre-S1 `source_conflicts` spelling is gone.
+    assert out[ALIAS_CONFLICTS_KEY] == ["request_url", "response_sha256"]
+    assert "alias_conflicts" in out and "source_conflicts" not in out
     assert LEGACY_FIELDS_KEY not in out
     rendered = json.dumps(out)
     assert alias not in rendered
@@ -584,7 +586,7 @@ def test_a_conflicting_alias_value_is_not_rendered_even_if_it_carries_a_credenti
             "endpoint": f"https://legacy.example.org/search?api_key={SECRET}",
         }
     )
-    assert out[CONFLICT_FIELDS_KEY] == ["request_url"]
+    assert out[ALIAS_CONFLICTS_KEY] == ["request_url"]
     assert SECRET not in json.dumps(out)
 
 
