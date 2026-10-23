@@ -21,7 +21,6 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | [`machine.ts`](machine.ts) | 四步 reducer。模型身份改变时清除旧能力回执和测试决定；仅展示字段变化时保留。`testResult` 带上它实际测的配置档，若不是当前所选路径则忽略。凭据不进入向导状态。 |
 | [`mount.ts`](mount.ts) | `mountOnboarding()`：把 `WizardHost` 渲染到 `#onboarding-root`。它是唯一导入向导 UI 的模块，构建时因此被拆出首屏包。 |
 | [`status.ts`](status.ts) | 清洗 GET 载荷；丢掉凭据形状的键。 |
-| [`wizard-integration.test.ts`](wizard-integration.test.ts) | 现有配置档的 Continue 会等待激活完成，并刷新已编辑配置的模型身份后再进入下一步。 |
-| [`wizard-refresh.test.ts`](wizard-refresh.test.ts) | 原位复查环境：只更新环境/网络/平台，步骤/路径/回执不变；迟到或重复响应被丢弃；Skip 保持可用。 |
+| [`wizard-integration.test.ts`](wizard-integration.test.ts) | 现有配置档的 Continue 会等待激活完成，并刷新已编辑配置的模型身份后再进入下一步。就绪状态原位刷新保留步骤/路径/回执/providerRequests，双击产生的两次本地读取只有最新响应会写入四个状态字段。 |
 | [`wizard-save.test.ts`](wizard-save.test.ts) | 保存新配置档或激活已有配置档后，重新读取输入框旁的模型列表。已保存过的路径再点「继续」会更新那个配置档（key 输入框为空时保留原 key）；已有完全相同的配置档时直接复用；期间被删除的则重新保存。 |
-| [`wizard-skip.test.ts`](wizard-skip.test.ts) | Test 还在等待时 Skip 仍然可用，并且能在 probe 返回前完成跳过；Skip 或 Continue 之后才到达的 probe 结果会被丢弃；用户等待期间 probe 失败，仍然会报告出来。旧模型迟到的结果/错误不能覆盖新选模型的测试（属刻画性测试：离开 test 步骤的各出口本就已作废该 probe）。Test 只探测所选路径，绝不以当前激活的配置档顶替：未保存的选择会提示先选配置档；完全没有路径时，先选中激活配置档再探测。已保存的 local 模型一旦改了模型名就重新变回未保存，Test 不会拿旧模型的结果挂在新名字下。 |
+| [`wizard-skip.test.ts`](wizard-skip.test.ts) | Test 或就绪状态刷新还在等待时 Skip 仍然可用，并且能在 probe 返回前完成跳过；Skip 或 Continue 之后才到达的 probe 结果会被丢弃；用户等待期间 probe 失败，仍然会报告出来。旧模型迟到的结果/错误不能覆盖新选模型的测试（属刻画性测试：离开 test 步骤的各出口本就已作废该 probe）。Test 只探测所选路径，绝不以当前激活的配置档顶替：未保存的选择会提示先选配置档；完全没有路径时，先选中激活配置档再探测。已保存的 local 模型一旦改了模型名就重新变回未保存，Test 不会拿旧模型的结果挂在新名字下。 |

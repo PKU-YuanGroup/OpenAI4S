@@ -434,3 +434,45 @@ def test_readiness_refresh_is_an_in_place_reread(tmp_path, monkeypatch):
     assert second["body"]["outbound"] == 0
     assert second["body"]["contacted"] is False
     assert second["body"]["network"]["contacted"] is False
+
+
+def test_get_onboarding_spawns_no_process_and_writes_nothing(tmp_path, monkeypatch):
+    """O1: the readiness re-read is a pure local projection.
+
+    The wizard refreshes by calling ``GET /onboarding`` again. That read must
+    not start an interpreter (the standard-profile card compares manifests and
+    already-installed package metadata, it never runs the environments) and it
+    must not write instance state: the refresh only replaces the client's
+    environment/network/platform snapshot.
+    """
+    monkeypatch.setattr(
+        "subprocess.Popen",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("GET /onboarding spawned a process")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "openai4s.llm.chat",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("GET contacted LLM")),
+    )
+    runner, call = _api(tmp_path)
+    project = runner.store.create_project(name="Work", description="", context="")
+    if isinstance(project, dict):
+        project = project["project_id"]
+    frame = runner.store.new_frame(kind="turn", project_id=project, status="done")
+    before_complete = runner.store.get_setting("onboarding_complete")
+    before_projects = len(runner.store.list_projects())
+    before_frame = runner.store.get_frame(frame)
+
+    for _ in range(2):
+        result = call("GET", "/onboarding")
+        assert result["code"] == 200, result
+
+    # Same rows, same settings: a refresh is a read.
+    assert runner.store.get_setting("onboarding_complete") == before_complete
+    for key in OnboardingService._CONFIGURATION_SETTINGS:
+        assert runner.store.get_setting(key) in (None, ""), key
+    assert len(runner.store.list_projects()) == before_projects
+    assert runner.store.get_frame(frame) == before_frame
+    assert runner.store.has_message_history() is False
