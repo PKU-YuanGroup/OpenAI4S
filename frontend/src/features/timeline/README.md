@@ -9,9 +9,8 @@ F-15 Action Timeline kernel. `sanitize*` / `mergeActionTimelines` are pure. The 
 | File | Responsibility |
 | --- | --- |
 | [`api.ts`](api.ts) | Same-origin `/api/v1` fetch, `optionalApi`, `hint` / later-lane `isReady` calls. |
-| [`compute-copy.ts`](compute-copy.ts) | C2 zh/en copy for the remote-task panel (lane-local: the generated `i18n` dictionaries come from frozen `app.js`). |
-| [`compute-records.ts`](compute-records.ts) | C2 remote-task read ownership: session + filter + monotonic request token, stale snapshot on failure, cursor paging; the GET builder adds `state=live` / `cursor`. |
-| [`compute-records.test.ts`](compute-records.test.ts) | Vitest: failure keeps the last page as explicitly stale; another session/filter or a late page never lands; paging appends from the cursor. |
+| [`copy.ts`](copy.ts) | C2 zh/en copy for the remote-task panel (lane-local: the generated `i18n` dictionaries come from frozen `app.js`). |
+| [`compute-records.test.ts`](compute-records.test.ts) | C2 behaviour tests over an HTTP stand-in: 503 is "records unavailable" (not "no tasks") with retry, same-session failure keeps the page as stale, session/filter changes clear it, a successful empty page is the only "no tasks", absent `total_live_count` stays page-scoped, load-more appends by cursor and de-duplicates, and rows show the record's own update time. |
 | [`dom.ts`](dom.ts) | `el` / `iconEl` / `ghostIconBtn` / `svgElement` / `$` / `bytes`. |
 | [`execution-request.ts`](execution-request.ts) | `exactExecutionIdentity` / `scopedExecutionRequest` (app.js:3021-3041): an interrupt names the exact execution it stops. |
 | [`execution-request.test.ts`](execution-request.test.ts) | Vitest: the interrupt names an exact execution, and refuses when it cannot. |

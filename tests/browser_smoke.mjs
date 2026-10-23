@@ -328,6 +328,68 @@ async function computeStatusTruthScenes(projectId) {
   }
 }
 
+// C2: the remote-task panel reads its listing through a dedicated request.
+// A 503 there must render "records unavailable" (with a retry), never the
+// successful-empty sentence — a session whose GPU job may still be billing is
+// not a session with nothing running. Removing the fault and pressing Retry
+// must recover without a reload.
+async function computeTaskRecordsScene(projectId) {
+  const made = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const fid = made.id || made.frame_id;
+  if (!fid) throw new Error("compute-records scene: frame creation did not return an id");
+  const recordsRoute = "**/api/v1/frames/*/compute/tasks*";
+  const failRoute = (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "compute records are temporarily unavailable",
+        code: "compute_record_unavailable",
+      }),
+    });
+  const unavailable = /Task records are temporarily unavailable|任务记录暂不可用/;
+  const noTasks = /No remote compute tasks in this session|本会话没有远程任务/;
+  await page.route(recordsRoute, (route) => {
+    assert.equal(route.request().method(), "GET", "the listing must never be a mutation");
+    return failRoute(route);
+  });
+  try {
+    await page.evaluate(
+      async ({ fid, projectId }) => window.openConversation(fid, projectId),
+      { fid, projectId },
+    );
+    await ensureDockOpen();
+    await page.evaluate(() => window.setActiveTab("timeline"));
+    await page.locator(".compute-panel").waitFor({ state: "visible" });
+    await waitUntil("compute records unavailable", async () =>
+      unavailable.test(await page.locator(".compute-panel").innerText()));
+    const failed = await page.locator(".compute-panel").innerText();
+    if (noTasks.test(failed)) {
+      throw new Error(`a failed listing rendered as "no tasks": ${JSON.stringify(failed)}`);
+    }
+    const retry = page.locator('.compute-panel [data-action="compute-retry"]');
+    assert.equal(await retry.count(), 1, "a failed listing offers exactly one retry");
+    await page.unroute(recordsRoute);
+    await retry.click();
+    await waitUntil("compute records recovered after retry", async () => {
+      const text = await page.locator(".compute-panel").innerText();
+      return !unavailable.test(text) && noTasks.test(text);
+    });
+    const recovered = await page.locator(".compute-panel").innerText();
+    if (unavailable.test(recovered)) {
+      throw new Error(`the failed listing survived the retry: ${JSON.stringify(recovered)}`);
+    }
+    assert.equal(
+      await page.locator('.compute-panel [data-action="compute-retry"]').count(),
+      0,
+      "a successful listing offers no retry",
+    );
+    console.log("Compute task records browser: 503 -> unavailable + retry -> successful empty passed");
+  } finally {
+    await page.unroute(recordsRoute).catch(() => {});
+  }
+}
+
 // C1/C3/C7 correctness cases use real persisted Cells/Artifacts. REST faults
 // and anonymous event interleavings are explicitly injected UI fault fixtures.
 async function correctnessScenes(projectId) {
@@ -946,6 +1008,7 @@ try {
   const projectId = project.project_id || project.id;
   if (!projectId) throw new Error("project creation did not return an id");
   await computeStatusTruthScenes(projectId);
+  await computeTaskRecordsScene(projectId);
   await correctnessScenes(projectId);
   await newSessionNotebookScene(projectId);
   const frame = await api("/frames", {

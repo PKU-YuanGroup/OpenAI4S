@@ -734,7 +734,7 @@ describe("sanitizeArtifactEvidence", () => {
 describe("sanitizeComputeTasks paging", () => {
   it("keeps absent paging fields unknown rather than zero", () => {
     const page = sanitizeComputeTasks({ tasks: [], live_count: 0, polled: false });
-    expect(page.total_live_count).toBeNull();
+    expect(page.total_live_count).toBeUndefined();
     expect(page.has_more).toBe(false);
     expect(page.next_cursor).toBeNull();
   });
@@ -762,7 +762,7 @@ describe("sanitizeComputeTasks paging", () => {
       tasks: [],
     });
     expect(page.live_count).toBe(0);
-    expect(page.total_live_count).toBeNull();
+    expect(page.total_live_count).toBeUndefined();
     expect(page.has_more).toBe(false);
     expect(page.next_cursor).toBeNull();
   });
@@ -805,7 +805,7 @@ describe("sanitizeComputeTasks paging", () => {
       sanitizeComputeTasks({ tasks: [{ job_id: "a", live: true }], live_count: 1 }),
     );
     expect(merged.tasks).toHaveLength(1);
-    expect(merged.total_live_count).toBeNull();
+    expect(merged.total_live_count).toBeUndefined();
     expect(merged.next_cursor).toBeNull();
   });
 });

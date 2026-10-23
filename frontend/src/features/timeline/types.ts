@@ -368,37 +368,37 @@ export type ComputeTasks = {
   live_count: number;
   /**
    * Live tasks for the whole owner scope in the same read-only snapshot.
-   * `null` when the service predates the field: unknown is not zero, and the
-   * UI may then only speak about this page.
+   * `undefined` when the service predates the field: unknown is not zero, and
+   * the UI may then only speak about this page ("in flight on this page").
    */
-  total_live_count: number | null;
+  total_live_count?: number;
   has_more: boolean;
-  /** Opaque, owner/filter-bound page cursor; never an absolute path. */
+  /** Opaque, owner/filter-bound page cursor; `null` when there is no next page. */
   next_cursor: string | null;
   tasks: ComputeTask[];
 };
 
 /**
- * The Timeline's own state for the remote-task panel. It is deliberately not
- * derived from the generic workbench fan-out: a failed read is an error state
- * with the previous successful page kept aside, not "no tasks".
+ * `S.computeTasks` (PLAN §6 C2 item 1): the panel's own read state.
+ * `null` means unknown/not loaded; a successful page is `ok`; a failed read is
+ * `error`, carrying the previous successful page as `stale` when there was one
+ * for the same session and filter. A view only renders for `fid === S.currentId`.
  */
-export type ComputeRecordsState = {
-  /** The session this view belongs to; another session's page must not render. */
-  fid: string;
-  filter: ComputeTaskFilter;
-  phase: "loading" | "ready" | "error";
-  /** Last successful page (the load-more base); null means nothing is known. */
-  page: ComputeTasks | null;
-  /** A page existed and the latest read failed. */
-  stale: boolean;
-  error: string;
-  /** Local clock of the last successful read; 0 before the first one. */
-  updatedAt: number;
-  loadingMore: boolean;
-  /** Monotonic request token; only the newest settles into the view. */
-  request: number;
-};
+export type ComputeTasksView =
+  | {
+      status: "ok";
+      fid: string;
+      state: ComputeTaskFilter;
+      data: ComputeTasks;
+      nextCursor: string | null;
+    }
+  | {
+      status: "error";
+      fid: string;
+      state: ComputeTaskFilter;
+      error: string;
+      stale?: { data: ComputeTasks; at: number };
+    };
 
 export type TimelineSpanSegment = {
   phase: string;
