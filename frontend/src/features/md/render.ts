@@ -67,15 +67,13 @@ const mdCodeRestore = new RegExp(MDC0 + "(\\d+)" + MDC1, "g");
 /** Rendering options. Defaults keep every other markdown surface unchanged. */
 export type MdRenderOptions = {
   /**
-   * Notebook-only mode (A3): the rendered markdown belongs to a file that must
-   * not make the preview load or execute anything. Every image — including an
-   * inline `data:` image — is replaced by plain text, and every link keeps its
-   * text but loses its href. Raw HTML was already escaped by `esc()`, so no
-   * markup node can be produced from file content either way.
+   * `"none"` is the notebook-only mode (F7): the rendered markdown belongs to a
+   * file that must not make the preview load or execute anything. No `<img>`
+   * and no `<a>` is produced anywhere (including nested quotes/lists/tables):
+   * an image becomes its escaped alt text only, and a link becomes plain
+   * `text (url)`. `"default"` / omitted keeps today's behaviour byte for byte.
    */
-  plainResources?: boolean;
-  /** Text substituted for a refused image when `plainResources` is on. */
-  omittedResourceText?: string;
+  resources?: "default" | "none";
 };
 
 export function mdInline(t: string | null | undefined, options: MdRenderOptions = {}): string {
@@ -92,14 +90,14 @@ export function mdInline(t: string | null | undefined, options: MdRenderOptions 
   // Bracket text excludes `[` as well as `]`: with `[^\]]` every `[` of a
   // long run rescanned the rest of it looking for a `]` (quadratic: 20,000
   // `[` took ~170ms per render). An unbalanced `[` is not link text anyway.
-  if (options.plainResources) {
-    const omitted = esc(options.omittedResourceText || "");
-    t = t.replace(/!\[([^[\]]*)\]\([^)]*\)/g, (_m, alt: string) =>
-      alt ? alt + (omitted ? " " + omitted : "") : omitted,
+  if (options.resources === "none") {
+    // F7: an image is only its escaped alt text; a link is plain text plus the
+    // URL in parentheses. Nothing here can become an element or an attribute.
+    t = t.replace(/!\[([^[\]]*)\]\([^)]*\)/g, (_m, alt: string) => alt);
+    t = t.replace(
+      /\[([^[\]]+)\]\(([^)]*)\)/g,
+      (_m, text: string, href: string) => (href ? text + " (" + href + ")" : text),
     );
-    // A link keeps its text and loses its href, so a crafted `javascript:`
-    // or credentialed URL cannot become a navigable attribute.
-    t = t.replace(/\[([^[\]]+)\]\([^)]*\)/g, (_m, text: string) => text);
   } else {
     t = t.replace(
       /!\[([^[\]]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)\)/g,

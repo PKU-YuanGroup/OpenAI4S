@@ -131,29 +131,29 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         capabilities=("view", "copy"),
     ),
     Renderer(
-        "notebook",
-        "Jupyter notebook (read-only)",
-        # A saved `.ipynb` is a container whose extension/MIME is authoritative:
-        # the capturing tool may have stamped a generic ``code``/``text`` kind or
-        # an ``application/json`` content type, and ``_match`` lets ``kind`` beat
-        # ``content_type`` and ``extension``.  ``_match`` checks the notebook
-        # identity first for that reason (R4).
-        kinds=("notebook", "jupyter_notebook"),
-        content_types=("application/x-ipynb+json", "application/x-notebook+json"),
-        extensions=(".ipynb",),
-        # Read-only by construction: the viewer renders saved sources/outputs
-        # and never executes a cell, loads a widget/HTML/SVG output or requests
-        # another resource.
-        interactive=False,
-        capabilities=("view", "copy"),
-    ),
-    Renderer(
         "markdown",
         "Markdown",
         kinds=("markdown", "report", "note"),
         content_types=("text/markdown",),
         extensions=(".md", ".markdown", ".rst"),
         capabilities=("view", "search", "copy"),
+    ),
+    Renderer(
+        "notebook",
+        "Jupyter notebook (read-only)",
+        # A saved `.ipynb` is a container whose extension is authoritative.
+        # ``_match`` checks that extension before the generic ``kind`` loop,
+        # because a saved notebook captured by a tool that stamped kind
+        # ``text``/``code`` (or content type ``application/json``) would
+        # otherwise render as a source dump and never reach this preview.
+        # Read-only by construction: the viewer renders saved sources/outputs
+        # and never executes a cell, loads a widget/HTML/SVG output or requests
+        # another resource; ``copy`` is the code-cell copy button.
+        kinds=("notebook", "jupyter_notebook"),
+        content_types=("application/x-ipynb+json",),
+        extensions=(".ipynb",),
+        interactive=False,
+        capabilities=("view", "copy"),
     ),
     Renderer(
         "text",
@@ -304,22 +304,18 @@ class RendererRegistry:
         ).lower()
         content_type = str(artifact.get("content_type") or "").lower().split(";", 1)[0]
         extension = PurePosixPath(str(artifact.get("filename") or "")).suffix.lower()
-        # A notebook is a container format identified by its own MIME type or
-        # extension, and that identity must win before the generic ``kind``
-        # loop: a saved `.ipynb` captured by a tool that stamped kind
-        # ``text``/``code`` (or content type ``application/json``) would
-        # otherwise render as a source dump and never reach the notebook
-        # preview.  No other renderer declares these tokens, so this narrow
-        # pre-pass cannot capture a non-notebook artifact.
+        # A saved `.ipynb` is identified by its extension before the generic
+        # ``kind`` loop: a capturing tool may have stamped kind ``text``/``code``
+        # (or content type ``application/json``), which would otherwise route
+        # the file to the plain-text renderer and never reach the notebook
+        # preview. Only the notebook renderer declares ``.ipynb``, so this
+        # narrow pre-pass cannot capture a non-notebook artifact.
         notebook = next(
             (item for item in self._renderers if item.renderer_id == "notebook"),
             None,
         )
-        if notebook is not None:
-            if content_type and content_type in notebook.content_types:
-                return notebook, "content_type"
-            if extension and extension in notebook.extensions:
-                return notebook, "extension"
+        if notebook is not None and extension and extension in notebook.extensions:
+            return notebook, "extension"
         for renderer in self._renderers:
             if kind and kind in renderer.kinds:
                 return renderer, "kind"

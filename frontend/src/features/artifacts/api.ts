@@ -580,14 +580,6 @@ export function isArtifactReadAborted(error: unknown): boolean {
   return error instanceof ArtifactReadError && error.kind === "aborted";
 }
 
-/**
- * Temporary alias for the read-only Notebook preview, which A4 migrates to
- * `isArtifactReadAborted`; new call sites use the explicit name.
- */
-export function isArtifactReadCancelled(error: unknown): boolean {
-  return isArtifactReadAborted(error);
-}
-
 type PreviewRead = { container: Element; controller: AbortController };
 
 /**
@@ -635,21 +627,6 @@ export function unicodeSafeSlice(text: string, limit: number): string {
   const last = text.charCodeAt(limit - 1);
   const end = last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
   return text.slice(0, Math.max(0, end));
-}
-
-/**
- * Markdown shown only up to the character limit. A fenced code block cut open
- * by the limit is closed so the retained prefix renders as the partial report
- * it is instead of swallowing the completeness note into a code block.
- */
-export function truncateMarkdown(
-  text: string,
-  limit: number = MARKDOWN_PREVIEW_CHARACTERS,
-): { text: string; truncated: boolean } {
-  if (text.length <= limit) return { text, truncated: false };
-  const sliced = unicodeSafeSlice(text, limit);
-  const fences = (sliced.match(/^```/gm) || []).length;
-  return { text: fences % 2 === 1 ? sliced + "\n```\n" : sliced, truncated: true };
 }
 
 export function isApiStatus(e: unknown, status: number, code?: string): boolean {

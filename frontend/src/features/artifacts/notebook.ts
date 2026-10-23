@@ -1,5 +1,5 @@
 /**
- * Read-only `.ipynb` Artifact preview (A3, report R4).
+ * Read-only `.ipynb` Artifact preview (A4, F5–F7).
  *
  * Opening a saved notebook renders only what the file already contains: cell
  * sources, saved text streams/errors and validated PNG outputs. It never
@@ -10,46 +10,41 @@
  *
  * The parser is a whitelist over the nbformat-4 envelope, not a convenience
  * wrapper: the document version, `cells` array, cell and output field types are
- * checked, and every limit below is enforced with a visible omission note.
+ * checked, and a structural violation fails the whole preview instead of
+ * showing a half document.
  *
- * Frozen limits (PLAN §2.4): 200 cells, 20 outputs per cell, one text display
- * 64 KiB, PNG 2 MiB each, 16 million decoded pixels for the whole preview, at
- * most 2 PNG decodes in flight. The whole file was already read under the
- * 8 MiB main preview budget.
+ * Frozen limits (F6): 200 cells rendered 50 per batch, 20 outputs per cell,
+ * 65536 code units per text block, PNG 2 MiB each, 16 million decoded pixels for
+ * the whole preview, at most 2 PNG decodes in flight. The whole file was already
+ * read under the 8 MiB main preview budget (F1).
  */
 
-import {
-  el,
-  fetchArtifactText,
-  iconEl,
-  isArtifactReadCancelled,
-  translate,
-  unicodeSafeSlice,
-} from "./api";
+import { el, fetchArtifactText, iconEl, isArtifactReadAborted, translate } from "./api";
+import { previewSlice } from "./cache";
 import { filesT, readFailureText } from "./copy";
 import type { ArtifactRow } from "./types";
-import { renderMd } from "../md/render";
+import { mdCodeBlock, renderMd } from "../md";
 
 export const NOTEBOOK_MAX_CELLS = 200;
+export const NOTEBOOK_CELL_BATCH = 50;
 export const NOTEBOOK_MAX_OUTPUTS_PER_CELL = 20;
-export const NOTEBOOK_TEXT_LIMIT_BYTES = 64 * 1024;
-export const NOTEBOOK_PNG_MAX_BYTES = 2 * 1024 * 1024;
+export const NOTEBOOK_TEXT_LIMIT_UNITS = 65_536;
+export const NOTEBOOK_PNG_MAX_BYTES = 2_097_152;
 export const NOTEBOOK_MAX_PNG_PIXELS = 16_000_000;
 export const NOTEBOOK_PNG_CONCURRENCY = 2;
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-export type NotebookText = { text: string; truncated: boolean };
-
 export type ParsedOutput =
-  | { kind: "text"; label: "stdout" | "stderr" | "error" | "text"; value: NotebookText }
+  | { kind: "text"; label: "stdout" | "stderr" | "error" | "text"; text: string; truncated: boolean }
   | { kind: "png"; base64: string }
   | { kind: "unsupported"; mime: string };
 
 export type ParsedCell = {
-  cellType: "code" | "markdown" | "raw" | "unknown";
+  cellType: "code" | "markdown" | "raw";
+  source: string;
+  sourceTruncated: boolean;
   language: string;
-  source: NotebookText;
   outputs: ParsedOutput[];
   omittedOutputs: number;
 };
@@ -57,6 +52,7 @@ export type ParsedCell = {
 export type ParsedNotebook = {
   language: string;
   cells: ParsedCell[];
+  /** Cells past the 200-cell limit; they are not parsed. */
   omittedCells: number;
 };
 
@@ -70,27 +66,12 @@ export type PngInspection =
   | { ok: true; width: number; height: number; bytes: Uint8Array }
   | { ok: false; reason: "invalid-base64" | "too-large" | "not-png" | "bad-header" | "bad-dimensions" };
 
-function utf8Length(text: string): number {
-  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(text).length;
-  // No encoder in this environment: a UTF-16 length is an upper bound for the
-  // limit below, so truncation stays within the byte budget either way.
-  return text.length * 3;
+function record(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
-/** Keep a single text display inside its UTF-8 byte budget without splitting a surrogate pair. */
-export function truncateTextBytes(text: string, limit: number = NOTEBOOK_TEXT_LIMIT_BYTES): NotebookText {
-  if (utf8Length(text) <= limit) return { text, truncated: false };
-  let low = 0;
-  let high = text.length;
-  while (low < high) {
-    const mid = (low + high + 1) >> 1;
-    if (utf8Length(text.slice(0, mid)) <= limit) low = mid;
-    else high = mid - 1;
-  }
-  return { text: unicodeSafeSlice(text, low), truncated: true };
-}
-
-/** nbformat string-or-string-array fields; anything else is a shape error. */
+/** nbformat string-or-string-array fields; anything else is a shape violation. */
 export function textField(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
@@ -99,9 +80,30 @@ export function textField(value: unknown): string | null {
   return null;
 }
 
+function textBlock(text: string): { text: string; truncated: boolean } {
+  const slice = previewSlice(text, NOTEBOOK_TEXT_LIMIT_UNITS);
+  return { text: slice.shown, truncated: slice.truncated };
+}
+
+function languageOf(metadata: unknown): string {
+  const rec = record(metadata);
+  if (!rec) return "";
+  const info = record(rec.language_info);
+  if (info) {
+    const name = info.name;
+    if (typeof name === "string" && name) return name;
+  }
+  const kernelspec = record(rec.kernelspec);
+  if (kernelspec) {
+    const language = kernelspec.language;
+    if (typeof language === "string" && language) return language;
+  }
+  return "";
+}
+
 function parseOutput(value: unknown): ParsedOutput | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const output = value as Record<string, unknown>;
+  const output = record(value);
+  if (!output) return null;
   const outputType = output.output_type;
   if (typeof outputType !== "string") return null;
   if (outputType === "stream") {
@@ -110,53 +112,37 @@ function parseOutput(value: unknown): ParsedOutput | null {
     return {
       kind: "text",
       label: output.name === "stderr" ? "stderr" : "stdout",
-      value: truncateTextBytes(text),
+      ...textBlock(text),
     };
   }
   if (outputType === "error") {
     const ename = textField(output.ename);
     const evalue = textField(output.evalue);
+    if (ename === null || evalue === null) return null;
     const traceback = textField(output.traceback);
-    if (ename === null || evalue === null || traceback === null) return null;
+    if (traceback === null && output.traceback !== undefined) return null;
     const head = ename + (evalue ? ": " + evalue : "");
-    return { kind: "text", label: "error", value: truncateTextBytes(head + (traceback ? "\n" + traceback : "")) };
+    return { kind: "text", label: "error", ...textBlock(head + (traceback ? "\n" + traceback : "")) };
   }
   if (outputType === "execute_result" || outputType === "display_data") {
-    const data = output.data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-    const bundle = data as Record<string, unknown>;
-    const png = textField(bundle["image/png"]);
+    const data = record(output.data);
+    if (!data) return null;
+    const png = textField(data["image/png"]);
     if (png !== null) return { kind: "png", base64: png };
-    const plain = textField(bundle["text/plain"]);
-    if (plain !== null) return { kind: "text", label: "text", value: truncateTextBytes(plain) };
+    const plain = textField(data["text/plain"]);
+    if (plain !== null) return { kind: "text", label: "text", ...textBlock(plain) };
     // HTML, SVG, widgets, JavaScript and every other rich MIME only get a
     // notice: rendering them would execute or fetch what the file chose.
-    const mime = Object.keys(bundle)[0] || "unknown";
+    const mime = Object.keys(data)[0] || "unknown";
     return { kind: "unsupported", mime };
   }
-  return { kind: "unsupported", mime: outputType };
-}
-
-function languageOf(metadata: unknown): string {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return "";
-  const rec = metadata as Record<string, unknown>;
-  const kernelspec = rec.kernelspec;
-  if (kernelspec && typeof kernelspec === "object" && !Array.isArray(kernelspec)) {
-    const language = (kernelspec as Record<string, unknown>).language;
-    if (typeof language === "string" && language) return language;
-  }
-  const info = rec.language_info;
-  if (info && typeof info === "object" && !Array.isArray(info)) {
-    const name = (info as Record<string, unknown>).name;
-    if (typeof name === "string" && name) return name;
-  }
-  return "";
+  return null;
 }
 
 /**
  * Validate one nbformat-4 notebook. A structural/type violation fails the whole
- * preview (the file is damaged, so no part of it can be called complete); a
- * limit only omits the part over it and reports how much.
+ * preview (the file is damaged, so no part of it can be called complete); the
+ * cell/output limits only omit their over-limit part and report how much.
  */
 export function parseNotebook(text: string): NotebookParse {
   let root: unknown;
@@ -165,10 +151,8 @@ export function parseNotebook(text: string): NotebookParse {
   } catch {
     return { ok: false, reason: "invalid-json", version: "" };
   }
-  if (!root || typeof root !== "object" || Array.isArray(root)) {
-    return { ok: false, reason: "invalid-shape", version: "" };
-  }
-  const rec = root as Record<string, unknown>;
+  const rec = record(root);
+  if (!rec) return { ok: false, reason: "invalid-shape", version: "" };
   const version = rec.nbformat;
   if (version !== 4) {
     return {
@@ -183,20 +167,18 @@ export function parseNotebook(text: string): NotebookParse {
   const shownCells = Math.min(cellsIn.length, NOTEBOOK_MAX_CELLS);
   const cells: ParsedCell[] = [];
   for (let index = 0; index < shownCells; index++) {
-    const raw = cellsIn[index];
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    const cell = record(cellsIn[index]);
+    if (!cell) return { ok: false, reason: "invalid-shape", version: "4" };
+    const cellType = cell.cell_type;
+    if (cellType !== "code" && cellType !== "markdown" && cellType !== "raw") {
       return { ok: false, reason: "invalid-shape", version: "4" };
     }
-    const cell = raw as Record<string, unknown>;
-    const cellType = cell.cell_type;
-    if (typeof cellType !== "string") return { ok: false, reason: "invalid-shape", version: "4" };
     const source = textField(cell.source);
     if (source === null) return { ok: false, reason: "invalid-shape", version: "4" };
-    const parsedType: ParsedCell["cellType"] =
-      cellType === "code" || cellType === "markdown" || cellType === "raw" ? cellType : "unknown";
+    const sourceBlock = textBlock(source);
     const outputs: ParsedOutput[] = [];
     let omittedOutputs = 0;
-    if (parsedType === "code" && cell.outputs !== undefined) {
+    if (cellType === "code" && cell.outputs !== undefined) {
       if (!Array.isArray(cell.outputs)) return { ok: false, reason: "invalid-shape", version: "4" };
       const shownOutputs = Math.min(cell.outputs.length, NOTEBOOK_MAX_OUTPUTS_PER_CELL);
       omittedOutputs = Math.max(0, cell.outputs.length - shownOutputs);
@@ -207,16 +189,21 @@ export function parseNotebook(text: string): NotebookParse {
       }
     }
     cells.push({
-      cellType: parsedType,
+      cellType,
+      source: sourceBlock.text,
+      sourceTruncated: sourceBlock.truncated,
       language,
-      source: truncateTextBytes(source),
       outputs,
       omittedOutputs,
     });
   }
   return {
     ok: true,
-    notebook: { language, cells, omittedCells: Math.max(0, cellsIn.length - shownCells) },
+    notebook: {
+      language,
+      cells,
+      omittedCells: Math.max(0, cellsIn.length - shownCells),
+    },
   };
 }
 
@@ -232,7 +219,7 @@ function readUint32(bytes: Uint8Array, offset: number): number {
 
 /**
  * Check a saved PNG before any image or decoding context is created: the
- * Base64 text must be well-formed, the decoded bytes must stay inside the
+ * Base64 text must be well-formed, its estimated decoded size must fit the
  * per-image budget, and the PNG signature plus the IHDR chunk must name a
  * positive width/height. A file-size limit is not a decoded-memory limit, so
  * the caller also tracks cumulative pixels.
@@ -245,8 +232,8 @@ export function inspectPng(base64: string): PngInspection {
   let estimated = Math.floor(padded.length / 4) * 3;
   if (padded.endsWith("==")) estimated -= 2;
   else if (padded.endsWith("=")) estimated -= 1;
-  // Reject before decoding: a 100 MB image must not become a 100 MB allocation
-  // just to learn it is too large.
+  // Reject before decoding: the estimate is the only way to keep a huge Base64
+  // payload from becoming a huge allocation just to learn it is too large.
   if (estimated > NOTEBOOK_PNG_MAX_BYTES) return { ok: false, reason: "too-large" };
   let raw: string;
   try {
@@ -280,7 +267,8 @@ let activeSession: NotebookSession | null = null;
 
 /**
  * Leaving the notebook (closing the dock, opening another artifact, or a new
- * render) cancels its read and releases every image URL it created.
+ * render) cancels its read, releases every image object URL it created and
+ * clears the rendered cells.
  */
 export function closeNotebookPreview(): void {
   const session = activeSession;
@@ -295,16 +283,9 @@ export function closeNotebookPreview(): void {
     }
   }
   session.urls.clear();
+  if (session.container) session.container.innerHTML = "";
   session.container = null;
 }
-
-export type NotebookFailureRenderer = (
-  container: HTMLElement,
-  a: ArtifactRow,
-  url: string,
-  error?: unknown,
-  retry?: () => void,
-) => void;
 
 function note(text: string): HTMLElement {
   const node = el("div", "renderer-note", text);
@@ -319,55 +300,95 @@ function downloadLink(url: string, a: ArtifactRow): HTMLAnchorElement {
   return link;
 }
 
-function problemMessage(reason: NotebookProblem, version: string): string {
-  if (reason === "invalid-json") return filesT("notebook.problem.invalidJson");
-  if (reason === "unsupported-version") return filesT("notebook.problem.version", version || "?");
-  return filesT("notebook.problem.shape");
-}
-
-function renderNotebookProblem(
-  container: HTMLElement,
-  a: ArtifactRow,
-  url: string,
-  message: string,
-  retry: () => void,
-): void {
+function problemCard(container: HTMLElement, message: string, text: string, url: string, a: ArtifactRow): void {
   container.innerHTML = "";
   const card = el("div", "renderer-fallback");
   card.appendChild(iconEl("alert-triangle", 18));
-  const text = el("div", "renderer-fallback-text", message);
-  text.setAttribute("role", "alert");
-  card.appendChild(text);
-  const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
-  again.onclick = () => {
-    container.innerHTML = "";
-    retry();
-  };
-  card.appendChild(again);
+  const body = el("div", "renderer-fallback-text", message);
+  body.setAttribute("role", "alert");
+  card.appendChild(body);
   card.appendChild(downloadLink(url, a));
   container.appendChild(card);
+  // "Provide the original text and the download": the saved bytes are shown,
+  // bounded, and never interpreted once the schema check failed. The download
+  // above still serves the untouched file.
+  const details = el("details", "notebook-original");
+  details.appendChild(el("summary", null, filesT("notebook.originalText")));
+  const pre = el("pre", "renderer-source");
+  pre.textContent = previewSlice(text, 300_000).shown;
+  details.appendChild(pre);
+  container.appendChild(details);
 }
 
 type PngQueue = {
   session: NotebookSession;
   pixels: number;
   active: number;
-  queue: Array<() => void>;
+  queue: Array<() => Promise<void>>;
 };
 
+/**
+ * F6 decode queue: a job owns a slot until its image has decoded, so at most
+ * two saved images are decoding at once. A structural failure inside a job is
+ * contained (one omitted image) instead of rejecting the queue.
+ */
 function pumpPng(queue: PngQueue): void {
   while (queue.active < NOTEBOOK_PNG_CONCURRENCY && queue.queue.length) {
     const job = queue.queue.shift();
     if (!job) return;
     queue.active += 1;
-    Promise.resolve().then(() => {
-      try {
-        job();
-      } finally {
+    Promise.resolve()
+      .then(job)
+      .catch(() => {
+        /* the job reports its own omission */
+      })
+      .finally(() => {
         queue.active -= 1;
         pumpPng(queue);
-      }
-    });
+      });
+  }
+}
+
+async function decodeImage(img: HTMLImageElement): Promise<void> {
+  if (typeof img.decode !== "function") return;
+  try {
+    await img.decode();
+  } catch {
+    /* a corrupt body already passed the header check; the download remains */
+  }
+}
+
+function omittedImage(holder: HTMLElement, a: ArtifactRow, url: string): void {
+  holder.appendChild(note(filesT("notebook.imageOmitted")));
+  holder.appendChild(downloadLink(url, a));
+}
+
+async function materializePng(
+  queue: PngQueue,
+  holder: HTMLElement,
+  checked: Extract<PngInspection, { ok: true }>,
+  a: ArtifactRow,
+  url: string,
+): Promise<void> {
+  const canCreate =
+    typeof URL !== "undefined" &&
+    typeof URL.createObjectURL === "function" &&
+    typeof Blob !== "undefined";
+  if (!canCreate) {
+    omittedImage(holder, a, url);
+    return;
+  }
+  try {
+    const blob = new Blob([checked.bytes], { type: "image/png" });
+    const objectUrl = URL.createObjectURL(blob);
+    queue.session.urls.add(objectUrl);
+    const img = el("img", "notebook-png");
+    img.alt = filesT("notebook.pngAlt");
+    img.src = objectUrl;
+    holder.appendChild(img);
+    await decodeImage(img);
+  } catch {
+    omittedImage(holder, a, url);
   }
 }
 
@@ -378,53 +399,25 @@ function schedulePng(
   a: ArtifactRow,
   url: string,
 ): void {
-  queue.queue.push(() => {
+  queue.queue.push(async () => {
     // The preview may have been closed between scheduling and this microtask
-    // (dock closed, another artifact opened). Creating an object URL then
-    // would leak an image the session no longer tracks.
+    // (dock closed, another artifact opened). Creating an object URL then would
+    // leak an image the session no longer tracks.
     if (activeSession !== queue.session) return;
     const checked = inspectPng(base64);
     if (!checked.ok) {
-      const reason =
-        checked.reason === "too-large"
-          ? filesT("notebook.imageLimitBytes")
-          : filesT("notebook.imageInvalid");
-      holder.appendChild(note(reason));
-      holder.appendChild(downloadLink(url, a));
+      omittedImage(holder, a, url);
       return;
     }
     const pixels = checked.width * checked.height;
     // The file-byte limit is not the decoded-memory limit: the whole preview
-    // may only materialize 16 million pixels, however many small files.
+    // may only materialize 16 million pixels, however many small images.
     if (queue.pixels + pixels > NOTEBOOK_MAX_PNG_PIXELS) {
-      holder.appendChild(note(filesT("notebook.imageLimitPixels")));
-      holder.appendChild(downloadLink(url, a));
+      omittedImage(holder, a, url);
       return;
     }
     queue.pixels += pixels;
-    const canCreate =
-      typeof URL !== "undefined" &&
-      typeof URL.createObjectURL === "function" &&
-      typeof Blob !== "undefined";
-    if (!canCreate) {
-      holder.appendChild(note(filesT("notebook.imageUnavailable")));
-      holder.appendChild(downloadLink(url, a));
-      return;
-    }
-    try {
-      const blob = new Blob([checked.bytes], { type: "image/png" });
-      const objectUrl = URL.createObjectURL(blob);
-      queue.session.urls.add(objectUrl);
-      const img = el("img", "notebook-png");
-      img.alt = filesT("notebook.pngAlt");
-      img.src = objectUrl;
-      holder.appendChild(img);
-    } catch {
-      // A DOM/storage failure while materializing one image must not reject the
-      // queue microtask (an unhandled rejection) or blank the rest of the file.
-      holder.appendChild(note(filesT("notebook.imageUnavailable")));
-      holder.appendChild(downloadLink(url, a));
-    }
+    await materializePng(queue, holder, checked, a, url);
   });
   pumpPng(queue);
 }
@@ -441,9 +434,11 @@ function renderCellOutputs(
       const holder = el("div", "notebook-output notebook-output-text");
       holder.appendChild(el("div", "notebook-output-label", output.label));
       const pre = el("pre", "renderer-source notebook-output-pre");
-      pre.textContent = output.value.text;
+      // Saved streams/errors are plain text; `[OpenAI4S artifacts] …` lines in
+      // exported notebooks therefore never request the file they name.
+      pre.textContent = output.text;
       holder.appendChild(pre);
-      if (output.value.truncated) holder.appendChild(note(filesT("notebook.textTruncated")));
+      if (output.truncated) holder.appendChild(note(filesT("notebook.textTruncated")));
       cellNode.appendChild(holder);
       continue;
     }
@@ -454,9 +449,7 @@ function renderCellOutputs(
       continue;
     }
     const holder = el("div", "notebook-output notebook-output-unsupported");
-    holder.appendChild(
-      note(filesT("notebook.mimeUnsupported", unicodeSafeSlice(String(output.mime), 80))),
-    );
+    holder.appendChild(note(filesT("notebook.mimeUnsupported", previewSlice(String(output.mime), 80).shown)));
     holder.appendChild(downloadLink(url, a));
     cellNode.appendChild(holder);
   }
@@ -481,64 +474,24 @@ function renderCell(
   section.appendChild(head);
   if (cell.cellType === "markdown") {
     const md = el("div", "md notebook-markdown");
-    // The file's markdown is rendered with resources disabled: no image node
-    // (including an inline data: image) and no navigable link is produced.
-    md.innerHTML = renderMd(cell.source.text, {
-      plainResources: true,
-      omittedResourceText: filesT("notebook.imageOmitted"),
-    });
+    // F7: no image node (including an inline data: image) and no navigable
+    // link can be produced from the saved markdown.
+    md.innerHTML = renderMd(cell.source, { resources: "none" });
     section.appendChild(md);
+  } else if (cell.cellType === "code") {
+    // F5: the escaped/highlighted code block carries the Copy button, so the
+    // renderer's `copy` capability is implemented rather than claimed.
+    const code = el("div", "notebook-code");
+    code.innerHTML = mdCodeBlock(cell.source, cell.language || "text");
+    section.appendChild(code);
   } else {
     const pre = el("pre", "renderer-source notebook-source");
-    pre.textContent = cell.source.text;
+    pre.textContent = cell.source;
     section.appendChild(pre);
   }
-  if (cell.source.truncated) section.appendChild(note(filesT("notebook.textTruncated")));
+  if (cell.sourceTruncated) section.appendChild(note(filesT("notebook.textTruncated")));
   if (cell.cellType === "code") renderCellOutputs(cell, section, queue, a, url);
-  if (cell.cellType === "unknown") {
-    section.appendChild(note(filesT("notebook.unknownCell")));
-  }
   return section;
-}
-
-/**
- * Render one exact notebook version into `container`. `onFailure` lets the
- * caller reuse the viewer's classified failure card; without it a local card
- * with the same information is rendered.
- */
-export function renderNotebookArtifact(
-  container: HTMLElement,
-  a: ArtifactRow,
-  url: string,
-  onFailure?: NotebookFailureRenderer,
-): void {
-  closeNotebookPreview();
-  const session: NotebookSession = {
-    controller: new AbortController(),
-    urls: new Set<string>(),
-    container,
-  };
-  activeSession = session;
-  const retry = (): void => {
-    closeNotebookPreview();
-    renderNotebookArtifact(container, a, url, onFailure);
-  };
-  fetchArtifactText(url, { signal: session.controller.signal })
-    .then((text) => {
-      if (!container.isConnected || activeSession !== session) return;
-      const parsed = parseNotebook(text);
-      if (!parsed.ok) {
-        renderNotebookProblem(container, a, url, problemMessage(parsed.reason, parsed.version), retry);
-        return;
-      }
-      renderParsedNotebook(container, a, url, parsed.notebook, session, retry, onFailure);
-    })
-    .catch((error: unknown) => {
-      if (isArtifactReadCancelled(error) || activeSession !== session) return;
-      if (!container.isConnected) return;
-      if (onFailure) onFailure(container, a, url, error, retry);
-      else renderNotebookProblem(container, a, url, readFailureText(error), retry);
-    });
 }
 
 function renderParsedNotebook(
@@ -547,8 +500,6 @@ function renderParsedNotebook(
   url: string,
   notebook: ParsedNotebook,
   session: NotebookSession,
-  retry: () => void,
-  onFailure?: NotebookFailureRenderer,
 ): void {
   const shell = el("div", "notebook-preview");
   const banner = el("div", "renderer-note notebook-readonly", filesT("notebook.readonly"));
@@ -560,20 +511,85 @@ function renderParsedNotebook(
       "notebook-meta",
       filesT(
         "notebook.meta",
-        notebook.cells.length.toLocaleString(),
+        Math.min(notebook.cells.length, NOTEBOOK_MAX_CELLS).toLocaleString(),
         notebook.language || filesT("notebook.languageUnknown"),
       ),
     ),
   );
+  if (!notebook.cells.length) shell.appendChild(note(filesT("notebook.empty")));
+  const cellsHost = el("div", "notebook-cells");
+  shell.appendChild(cellsHost);
+  const more = el("button", "outline-btn small notebook-more", "");
+  more.hidden = true;
+  shell.appendChild(more);
+  const queue: PngQueue = { session, pixels: 0, active: 0, queue: [] };
+  let rendered = 0;
+  const paintBatch = (): void => {
+    const end = Math.min(rendered + NOTEBOOK_CELL_BATCH, notebook.cells.length);
+    for (let index = rendered; index < end; index++) {
+      cellsHost.appendChild(renderCell(notebook.cells[index]!, index, queue, a, url));
+    }
+    rendered = end;
+    const remaining = notebook.cells.length - rendered;
+    more.hidden = remaining === 0;
+    if (remaining > 0) more.textContent = filesT("notebook.showMore", remaining.toLocaleString());
+  };
+  more.onclick = () => {
+    paintBatch();
+  };
+  paintBatch();
   if (notebook.omittedCells) {
     shell.appendChild(note(filesT("notebook.cellsOmitted", notebook.omittedCells)));
+    shell.appendChild(downloadLink(url, a));
   }
-  if (!notebook.cells.length) shell.appendChild(note(filesT("notebook.empty")));
-  const queue: PngQueue = { session, pixels: 0, active: 0, queue: [] };
-  notebook.cells.forEach((cell, index) => {
-    shell.appendChild(renderCell(cell, index, queue, a, url));
-  });
   container.appendChild(shell);
-  void retry;
-  void onFailure;
+}
+
+/**
+ * Render one exact notebook version into `container`. The read is strict (A1),
+ * cancelled when the preview is replaced or closed; a structural failure shows
+ * "cannot preview (not nbformat 4)" with the original text and download.
+ */
+export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
+  closeNotebookPreview();
+  const session: NotebookSession = {
+    controller: new AbortController(),
+    urls: new Set<string>(),
+    container,
+  };
+  activeSession = session;
+  const retry = (): void => {
+    closeNotebookPreview();
+    renderNotebookArtifact(container, a, url);
+  };
+  fetchArtifactText(url, { signal: session.controller.signal })
+    .then((text) => {
+      if (!container.isConnected || activeSession !== session) return;
+      const parsed = parseNotebook(text);
+      if (!parsed.ok) {
+        container.innerHTML = "";
+        problemCard(container, filesT("notebook.problem.invalid"), text, url, a);
+        void retry;
+        return;
+      }
+      renderParsedNotebook(container, a, url, parsed.notebook, session);
+    })
+    .catch((error: unknown) => {
+      if (isArtifactReadAborted(error) || activeSession !== session) return;
+      if (!container.isConnected) return;
+      container.innerHTML = "";
+      const card = el("div", "renderer-fallback");
+      card.appendChild(iconEl("alert-triangle", 18));
+      const body = el("div", "renderer-fallback-text", readFailureText(error));
+      body.setAttribute("role", "alert");
+      card.appendChild(body);
+      const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
+      again.onclick = () => {
+        container.innerHTML = "";
+        retry();
+      };
+      card.appendChild(again);
+      card.appendChild(downloadLink(url, a));
+      container.appendChild(card);
+    });
 }

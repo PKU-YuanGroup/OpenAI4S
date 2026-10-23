@@ -15,5 +15,5 @@ Markdown + 高亮内核。先整体 `esc` 再标记替换；链接 scheme 白名
 | [`esc.test.ts`](esc.test.ts) | 引号转义顺序；旧的 `&<>` 断言不破。 |
 | [`highlight.ts`](highlight.ts) | mdHighlight 扫描器；`_OC_KW ∪ MD_KEYWORDS`；EDKW 从同表派生。 |
 | [`highlight.test.ts`](highlight.test.ts) | `.tok-*` 类名、关键词并集、EDKW 派生。 |
-| [`render.ts`](render.ts) | `renderMd` / `mdInline` / `mdCodeBlock`（复制按钮文字与提示走 `t()`）。F-21 把表格包进 `.md-table-wrap`。0.2.0 存下的单段 `/api/artifacts/<id>` 链接（契约 v1 网关一律 404）改写到 `/api/v1/artifacts/<id>`，其它 href 原样保留。引用块与列表嵌套到 32 层为止（更深的按平铺渲染），任何回答都不会让调用栈溢出；方括号内文字不含 `[`，因此一长串 `[` 是线性的。`plainResources` 是只供 Notebook 的模式：不产生图片节点（含内嵌 `data:` 图片，改为纯文本），也不产生可跳转链接，嵌套的列表/引用/表格路径同样生效；其他调用方保持默认行为。 |
-| [`render.test.ts`](render.test.ts) | `tests/browser_smoke.mjs` 的 5 个 XSS 样本；scheme 白名单；旧产物链接改写；表格容器；12000 层嵌套引用或列表不会栈溢出；60000 个 `[` 线性完成；不成对的 `[` 保持为文字；Notebook 专用禁资源模式在所有嵌套路径都拒绝图片（含 data 图片）与链接，默认渲染不变。 |
+| [`render.ts`](render.ts) | `renderMd` / `mdInline` / `mdCodeBlock`（复制按钮文字与提示走 `t()`）。F-21 把表格包进 `.md-table-wrap`。0.2.0 存下的单段 `/api/artifacts/<id>` 链接（契约 v1 网关一律 404）改写到 `/api/v1/artifacts/<id>`，其它 href 原样保留。引用块与列表嵌套到 32 层为止（更深的按平铺渲染），任何回答都不会让调用栈溢出；方括号内文字不含 `[`，因此一长串 `[` 是线性的。`resources: "none"` 是只供 Notebook 的模式（F7）：不产生图片节点（图片只输出转义后的 alt 文本），也不产生可跳转链接（链接输出纯文本 `文本 (url)`），嵌套的列表/引用/表格路径同样生效；`"default"`/省略时输出与此前逐字一致。 |
+| [`render.test.ts`](render.test.ts) | `tests/browser_smoke.mjs` 的 5 个 XSS 样本；scheme 白名单；旧产物链接改写；表格容器；12000 层嵌套引用或列表不会栈溢出；60000 个 `[` 线性完成；不成对的 `[` 保持为文字；Notebook 专用 `resources:"none"` 模式在所有嵌套路径把图片变为转义 alt 文本、链接变为纯文本 `文本 (url)`，默认渲染不变。 |

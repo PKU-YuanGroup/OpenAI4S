@@ -8,7 +8,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 
 | 文件 | 职责 |
 | --- | --- |
-| [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary` / `controlDense`、`el`/`icon`（`el` 与 islands 共用）、用 `isReady` 调 window。两个有界读取入口：严格 `fetchArtifactText(url, opts?)`（完整文件或拒绝）与前缀 `readArtifactPrefix(url, {maxBytes, …})`（仅缩略图，尊重 UTF-8 边界）；F1 常量、`ArtifactReadError.kind`（`too_large`/`timeout`/`aborted`）、HTTP 状态抛 `ApiError`、每渲染一次的预览 AbortController（`beginPreviewRead`/`abortPreviewReads`/`abortDetachedPreviews`），以及冻结显示上限与 `unicodeSafeSlice` / `truncateMarkdown`。 |
+| [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary` / `controlDense`、`el`/`icon`（`el` 与 islands 共用）、用 `isReady` 调 window。两个有界读取入口：严格 `fetchArtifactText(url, opts?)`（完整文件或拒绝）与前缀 `readArtifactPrefix(url, {maxBytes, …})`（仅缩略图，尊重 UTF-8 边界）；F1 常量、`ArtifactReadError.kind`（`too_large`/`timeout`/`aborted`）、HTTP 状态抛 `ApiError`、每渲染一次的预览 AbortController（`beginPreviewRead`/`abortPreviewReads`/`abortDetachedPreviews`），以及冻结显示上限常量（共享截取 `previewSlice` 在 `cache.ts`）。 |
 | [`read-budget.test.ts`](read-budget.test.ts) | F1/F2 读取契约：恰好等于上限时严格模式返回完整文件、伪造/超额/缺失 Content-Length、跨 chunk 越限即 cancel reader、HTTP 状态抛 ApiError、超时、外部中止、无 body 回退规则、前缀模式在 UTF-8 边界截断且不产生替换字符。 |
 | [`api.test.ts`](api.test.ts) | `looksBinary`：单行序列仍是文本；base64 块、控制字符与转义转储仍判为二进制；只对前 1 MiB 做一次线性扫描。 |
 | [`artifacts.css`](artifacts.css) | Files 工具条 / 过滤 / Load more / 过期 version 横幅。 |
@@ -32,8 +32,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`preview.test.ts`](preview.test.ts) | 生产渲染器 grant 生命周期、grant 复用与过期、源与路径拒绝、精确版本回退、非回环源保持惰性及已移除 iframe 回归测试。 |
 | [`science-results.ts`](science-results.ts) | 已保存检索 envelope 的严格校验与有界只读视图：新旧来源字段、响应摘要隐藏/冲突标记、每页 50 最多 500 条且不拉取远端、记录外链仅安全 http(s) 且脱敏、同一确切版本的原始 JSON 切换。 |
 | [`science-results.test.ts`](science-results.test.ts) | envelope 拒绝（任意带 `result` 属性的 JSON）、规范/旧键与冲突、隐藏摘要、外链脱敏、分页上限、JSON 页与零网络读取。 |
-| [`notebook.ts`](notebook.ts) | 只读 nbformat-4 `.ipynb` 预览：严格 envelope/字段类型校验、200 Cell / 每 Cell 20 输出 / 单文本 64 KiB / 整文件 8 MiB、PNG 签名与 IHDR 检查 + 单张 2 MiB / 累计 1600 万像素 + 最多 2 张并发解码、Markdown 禁资源模式、HTML/SVG/widget 等只提示、零执行零 Host 零外联。 |
-| [`notebook.test.ts`](notebook.test.ts) | envelope/类型拒绝、Cell 与输出上限、64 KiB UTF-8 截断、PNG 校验与字节/像素上限、不支持富输出、关闭取消读取并释放图像 URL。 |
+| [`notebook.ts`](notebook.ts) | 只读 nbformat-4 `.ipynb` 预览（F5–F7）：严格 envelope/字段类型校验（cells 数组、Cell 与输出字段类型）；最多 200 个 Cell、每批 50 个（“显示更多”）、每 Cell 20 输出、单文本块 65536 码元（`previewSlice`）；代码 Cell 用 `mdCodeBlock`（复制按钮即 `copy` 能力），Markdown 用 `renderMd(..., {resources:"none"})`，Raw 纯文本；PNG 在创建图像前逐项校验（Base64 估算→签名/IHDR/正尺寸→单张 2 MiB、累计 1600 万像素），最多 2 张并发解码；其他 MIME 只显示不支持提示；导出的 `[OpenAI4S artifacts]` 行保持纯文本；关闭时中止读取、revoke 全部 object URL 并清空容器。零执行、零 Host、零其他源请求。 |
+| [`notebook.test.ts`](notebook.test.ts) | envelope/类型拒绝（坏 JSON、nbformat 3、错误字段类型、未知 cell/output 枚举）、Cell/输出/文本上限与分批“显示更多”、string 与 string-array 字段、代码复制块、Markdown 禁资源（data 与外链图片）、文本/错误输出、不支持富 MIME、PNG 校验与字节/像素上限及两并发解码队列、损坏文件原文、分类读取失败与重试、关闭中止/释放/清空。 |
 | [`renderers.ts`](renderers.ts) | 兼容模式的信息行带“重试”，就地重新请求目录与描述符（无需整页刷新；仍失败则再次降级）。十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。有界可取消读取；冻结显示上限统一经 `previewSlice` 截取；`partial` 预览带持续可见的 `role="status"` 提示（说明只显示了前 N 个字符）与确切版本下载（Markdown 在 `.md` 正文上下各一条提示；原始文本保留“展开完整原文”）；读取失败是第三态，显示分类失败卡。版本冻结（F4）：descriptor 入口一次性计算 `target = artifactMetadataTarget(a)` 与 `url = artUrl(target)`，所有渲染器与下载只用这两个值；没有版本标识的行显示“最新版本（无固定版本标识）”。 |
 | [`renderers.test.ts`](renderers.test.ts) | 文本渲染器：每次渲染只读一次（无下载/文本循环）；序列按源码显示；JSON 只按控制字符判定二进制；body 已被替换时晚到的描述符不再执行渲染胶水。 |
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |

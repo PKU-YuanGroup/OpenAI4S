@@ -154,10 +154,14 @@ describe("renderer catalog failure recovery (R1)", () => {
     expect(catalogCalls).toBe(2);
   });
 
-  it("keeps the capability whitelist when the retried catalog does not declare a renderer", async () => {
+  it("keeps the capability whitelist after a failed catalog and an undeclared renderer", async () => {
     resetStoreFields();
+    let catalogDown = true;
     setArtifactsFetch(async (url) => {
-      if (url === "/api/v1/renderers") return new Response(JSON.stringify({ renderers: [] }));
+      if (url === "/api/v1/renderers") {
+        if (catalogDown) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+        return new Response(JSON.stringify({ renderers: [] }));
+      }
       if (url === "/api/v1/artifacts/B/renderer") {
         return new Response(JSON.stringify({ artifact_id: "B", matched_by: "extension", renderer: { renderer_id: "notebook" } }));
       }
@@ -166,9 +170,14 @@ describe("renderer catalog failure recovery (R1)", () => {
     (globalThis as { OpenAI4SScientificRenderers?: unknown }).OpenAI4SScientificRenderers = {
       rendererIdFromDescriptor: () => "notebook",
     };
+    // First attempt: the catalog read fails, so the descriptor rejects and the
+    // viewer falls back to the compatibility descriptor.
+    await expect(artifactRendererDescriptor({ id: "B", filename: "report.ipynb" })).rejects.toBeTruthy();
+    expect(Object.keys(rendererDescriptors.value)).toEqual([]);
+    catalogDown = false;
     const descriptor = await artifactRendererDescriptor({ id: "B", filename: "report.ipynb" });
-    // Catalog absence may only degrade to the conservative view capability; a
-    // retry must never invent copy/edit rights the server did not declare.
+    // A retry whose catalog does not declare the renderer id may only degrade to
+    // the conservative view capability; it must never invent copy/edit rights.
     expect(descriptor.renderer?.capabilities).toEqual(["view"]);
   });
 });

@@ -177,24 +177,25 @@ describe("renderMd on pathological input", () => {
 });
 
 
-describe("notebook-only resource-free rendering (A3)", () => {
-  it("refuses every image including inline data images and keeps links as text", () => {
+describe("notebook-only resource-free rendering (F7)", () => {
+  it("turns every image into its escaped alt text and every link into text (url)", () => {
     const md = [
       "![plot](https://example.com/x.png)",
       "![data](data:image/png;base64,QUJDREVGRw==)",
       "[paper](https://example.com/paper)",
       "[bad](javascript:alert(1))",
+      "![unsafe <img src=x>](https://example.com/y.png)",
     ].join("\n\n");
-    const html = renderMd(md, {
-      plainResources: true,
-      omittedResourceText: "[image omitted]",
-    });
+    const html = renderMd(md, { resources: "none" });
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<a ");
     expect(html).not.toContain("base64");
-    expect(html).not.toContain("javascript:");
-    expect(html).toContain("[image omitted]");
-    expect(html).toContain("paper");
+    expect(html).toContain("plot");
+    expect(html).toContain("paper (https://example.com/paper)");
+    expect(html).toContain("bad (javascript:alert(1))");
+    // The alt text is escaped, not emitted as markup.
+    expect(html).not.toContain("<img src=x>");
+    expect(html).toContain("&lt;img src=x&gt;");
   });
 
   it("applies inside every nested markdown path", () => {
@@ -209,16 +210,21 @@ describe("notebook-only resource-free rendering (A3)", () => {
       "|---|",
       "| [cell](https://example.com) |",
     ].join("\n");
-    const html = renderMd(md, { plainResources: true, omittedResourceText: "[image omitted]" });
+    const html = renderMd(md, { resources: "none" });
     expect(html).not.toContain("<a ");
     expect(html).not.toContain("<img");
-    expect(html).not.toContain("example.com");
-    expect(html).toContain("title");
-    expect(html).toContain("item");
+    expect(html).toContain("title (https://example.com)");
+    expect(html).toContain("item (https://example.com)");
+    expect(html).toContain("cell (https://example.com)");
   });
 
   it("leaves default rendering for every other surface unchanged", () => {
-    expect(renderMd("![a](https://x/y.png)")).toContain("<img");
+    expect(renderMd("![a](https://x/y.png)")).toBe(
+      '<p><img alt="a" src="https://x/y.png"></p>',
+    );
     expect(renderMd("[x](https://ex.com)")).toContain('href="https://ex.com"');
+    expect(renderMd("[x](https://ex.com)", { resources: "default" })).toBe(
+      renderMd("[x](https://ex.com)"),
+    );
   });
 });
