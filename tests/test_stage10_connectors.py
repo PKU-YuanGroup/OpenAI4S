@@ -129,17 +129,27 @@ def test_clinvar_search_records_accession_url_time_and_file_receipt(tmp_path):
     assert receipt["checksum"] == hashlib.sha256(path.read_bytes()).hexdigest()
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["result"] == result
-    # New writes carry the canonical provenance names; the historical
-    # `endpoint` / `source_checksum` spellings are read-compatible only.
-    assert payload["request_url"]
-    assert payload["response_sha256"]
-    assert "endpoint" not in payload and "source_checksum" not in payload
+    # The Artifact file's JSON layout is frozen: the historical names stay, and
+    # the canonical names live in the version `source` only.
+    assert set(payload) == {
+        "query",
+        "endpoint",
+        "retrieved_at",
+        "source_checksum",
+        "accessions",
+        "result",
+    }
+    assert payload["endpoint"] == result["request_url"]
+    assert payload["source_checksum"] == result["provenance"]["response_sha256"]
     source = receipt["source"]
     assert source["query"] == "VCV000012345"
-    assert urlparse(source["request_url"]).hostname == "eutils.ncbi.nlm.nih.gov"
+    # Dual write: the historical names keep working for existing readers...
+    assert urlparse(source["endpoint"]).hostname == "eutils.ncbi.nlm.nih.gov"
     assert source["retrieved_at"]
-    assert source["response_sha256"]
-    assert "endpoint" not in source and "source_checksum" not in source
+    assert source["source_checksum"] == result["provenance"]["response_sha256"]
+    # ...and the canonical names are recorded alongside them.
+    assert source["request_url"] == result["request_url"]
+    assert source["response_sha256"] == result["provenance"]["response_sha256"]
     assert "VCV000012345" in source["accessions"]
     assert not list(workspace.glob(".openai4s-*"))
 
@@ -677,16 +687,28 @@ def test_real_native_stage10_tool_is_captured_as_a_trusted_artifact(
         "kind": "science_search",
         "database": "clinvar",
         "query": "VCV000012345",
-        "request_url": "https://eutils.ncbi.nlm.nih.gov/example",
+        # Dual write: historical and canonical names, same facts.
+        "endpoint": "https://eutils.ncbi.nlm.nih.gov/example",
         "retrieved_at": 123456789,
+        "source_checksum": "ab" * 32,
+        "request_url": "https://eutils.ncbi.nlm.nih.gov/example",
         "response_sha256": "ab" * 32,
         "accessions": ["VCV000012345"],
     }
-    # New bytes carry the canonical names only.
+    # The Artifact file's JSON layout did not move: the top-level keys are the
+    # historical ones (the nested `result` is the connector payload, untouched).
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    assert set(payload) == {
+        "query",
+        "endpoint",
+        "retrieved_at",
+        "source_checksum",
+        "accessions",
+        "result",
+    }
+    assert payload["endpoint"] == "https://eutils.ncbi.nlm.nih.gov/example"
+    assert payload["source_checksum"] == "ab" * 32
     payload_bytes = files[0].read_bytes()
-    assert b'"request_url"' in payload_bytes
-    assert b'"endpoint"' not in payload_bytes
-    assert b'"source_checksum"' not in payload_bytes
     # ...and reach a client through the public version interface.
     served = _versions_payload(runner, cfg, artifact["artifact_id"])
     assert served["code"] == 200
@@ -695,8 +717,10 @@ def test_real_native_stage10_tool_is_captured_as_a_trusted_artifact(
     assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/example"
     assert projected["response_sha256"] == "ab" * 32
     assert projected["response_sha256_state"] == "shown"
+    # Both spellings agree, so they merge into one shown item: no alias notice,
+    # no conflict, and the alias is not counted as an undisclosed field.
     assert "legacy_normalized" not in projected
-    assert "source_conflicts" not in projected
+    assert "alias_conflicts" not in projected
     assert (
         files[0].read_bytes() == payload_bytes
     ), "viewing provenance rewrote the artifact"
@@ -749,8 +773,9 @@ def test_host_rpc_stage10_receipt_is_bound_by_enclosing_cell_capture(
     if isinstance(source, str):
         source = json.loads(source)
     assert source["kind"] == "science_search"
+    assert source["source_checksum"] == "ab" * 32
     assert source["response_sha256"] == "ab" * 32
-    assert "endpoint" not in source and "source_checksum" not in source
+    assert source["endpoint"] == source["request_url"]
     served = _versions_payload(runner, cfg, captured.artifacts[0]["artifact_id"])
     projected = {row["version_id"]: row for row in served["body"]["versions"]}[
         version_id
@@ -877,12 +902,15 @@ def _record_science_version_with_source(tmp_path, source: dict) -> tuple[Config,
 
 def test_a_historical_legacy_source_reads_through_the_public_version_route(tmp_path):
     """Artifacts written before the canonical names existed still have to be
-    readable — without rewriting their bytes or their recorded source."""
+    readable — without rewriting their bytes or their recorded source. The
+    promoted request URL goes through the same URL redaction as a canonical one:
+    plenty of scientific APIs take the key as a query parameter."""
+    credential = "Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm"
     source = {
         "kind": "science_search",
         "database": "clinvar",
         "query": "VCV000012345",
-        "endpoint": "https://eutils.ncbi.nlm.nih.gov/example",
+        "endpoint": f"https://eutils.ncbi.nlm.nih.gov/example?api_key={credential}",
         "retrieved_at": 123456789,
         "source_checksum": "ab" * 32,
         "accessions": ["VCV000012345"],
@@ -894,7 +922,11 @@ def test_a_historical_legacy_source_reads_through_the_public_version_route(tmp_p
         before = json.loads(meta["source"]) if isinstance(meta["source"], str) else None
         served = _versions_payload(runner, cfg, row["artifact_id"])
         projected = served["body"]["versions"][0]["retrieval_source"]
-        assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/example"
+        assert projected["request_url"].startswith(
+            "https://eutils.ncbi.nlm.nih.gov/example"
+        )
+        assert "api_key" in projected["request_url"]
+        assert credential not in json.dumps(served["body"])
         assert projected["response_sha256"] == "ab" * 32
         assert projected["response_sha256_state"] == "shown"
         assert projected["legacy_normalized"] == [
@@ -941,7 +973,8 @@ def test_conflicting_legacy_and_canonical_names_keep_the_canonical_value(tmp_pat
         projected = served["body"]["versions"][0]["retrieval_source"]
         assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/canonical"
         assert projected["response_sha256"] == "ab" * 32
-        assert projected["source_conflicts"] == ["request_url", "response_sha256"]
+        assert projected["alias_conflicts"] == ["request_url", "response_sha256"]
+        assert "source_conflicts" not in projected
         assert "legacy_normalized" not in projected
         rendered = json.dumps(served["body"])
         assert "legacy.example.org" not in rendered

@@ -64,9 +64,22 @@ export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement 
   // interpret; conflicts and normalized legacy aliases are named explicitly
   // rather than silently resolved.
   const status = scienceSourceStatus(src);
+  // F13/S1: the projection names a disagreement in `alias_conflicts` (sorted
+  // canonical field names). The shared projection helper still reads the
+  // pre-S1 spelling, so merge the contract field here — this panel keeps
+  // showing the conflict row without editing that module's contract.
+  const contractConflicts = Array.isArray(src.alias_conflicts)
+    ? src.alias_conflicts.filter((field): field is string => typeof field === "string")
+    : [];
+  const conflicts = [...new Set([...contractConflicts, ...status.conflicts])].slice(0, 8);
   RETRIEVAL_FIELD_ORDER.forEach((field) => {
     if (field === "response_sha256") {
-      const label = src.dataset ? filesT("versions.datasetMetadataFingerprint") : field;
+      // Say which digest this is: the retrieval response recorded in the
+      // source, not the Artifact file's own checksum. For a dataset source the
+      // digest is of the metadata response, which has its own longer label.
+      const label = src.dataset
+        ? filesT("versions.datasetMetadataFingerprint")
+        : filesT("science.field.responseSha256");
       if (status.digestHidden) {
         const row = el("div", "ver-src-row");
         row.appendChild(el("span", "ver-src-k", label));
@@ -92,8 +105,8 @@ export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement 
   if (status.aliases.length) {
     box.appendChild(el("div", "ver-src-note", filesT("science.aliasNote", status.aliases.join(", "))));
   }
-  if (status.conflicts.length) {
-    box.appendChild(el("div", "ver-src-note", filesT("science.conflictNote", status.conflicts.join(", "))));
+  if (conflicts.length) {
+    box.appendChild(el("div", "ver-src-note", filesT("science.conflictNote", conflicts.join(", "))));
   }
   if (src.dataset && typeof src.dataset === "object" && !Array.isArray(src.dataset)) {
     const dataset = src.dataset as Record<string, unknown>;
