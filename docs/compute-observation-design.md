@@ -1,14 +1,15 @@
-# Remote job observation — separation design and acceptance preparation
+# Compute job observation — read-only contract and acceptance preparation
 
-[中文](remote-observation-design_zh.md)
+[中文](compute-observation-design_zh.md)
 
-Status: **P2-02 preparation only**. This document separates, as a future
-contract, a read-only remote job observation from the explicit result retrieval
-that exists today. It adds no route, no field, no poller, no persisted column
-and no production code, and it changes neither `ComputeManager.result()` nor any
-default switch. The cases below are requirements for a later implementation, not
-test results; today's listing, refresh, cancel and result behavior keeps its
-meaning.
+Status: **D2 preparation only — not implemented in this version**. This document
+separates, as a future contract, a single-task read-only observation of a
+`host.compute` job from the explicit result retrieval that exists today. It adds
+no route, response field, poller, persisted column, provider operation or
+production code, and it changes neither `ComputeManager.result()` nor any
+default switch. **This version does not implement any part of it.** The cases
+below are requirements for a later implementation, not test results; today's
+listing, refresh, cancel and result behavior keeps its meaning.
 
 ## Current boundary
 
@@ -117,6 +118,25 @@ job B wipes `/work`, so a sandbox id alone is not a job identity.
 | Observation time | `observed_at` belongs to this observation only; it never rewrites `updated_at`, `terminal_at` or a stored digest. |
 | Recorded outcome | Replaying stored evidence is allowed only with an explicit cached/recorded marker, bound to the same identity and digest. |
 
+## Provider contract for a single-task observation (future)
+
+If observation is ever added, it is one provider operation with its own contract,
+not a `result()` variant and not a new method registered by this version. The
+requirements below describe what such an operation must guarantee. The SSH
+transport can satisfy them with a bounded read-only probe; a BYOC provider may
+satisfy them only if its resident helper can answer without streaming the
+archive — otherwise it answers `unsupported`.
+
+| Proposed element | Requirement |
+| --- | --- |
+| Scope | Exactly one job identity per call, for the calling owner. No batch, no list, no "observe every live job" fan-out. |
+| Input identity | The durable record's own facts — `owner_key`/root frame, `job_id`, `provider`, remote handle. A caller-supplied remote path, command or process id is never accepted. |
+| Output | A normalized answer: observation `state`, `observed_at`, a bounded reason and at most the wrapper's status evidence. No file bytes, no manifest, no digest, no job-row write. |
+| Read-only transport | The probe may run one bounded remote read (for example `kill -0`, reading `.rc` or `.phase`) but must never stream `out.tar.gz`, unpack an archive or write the workspace/data directory. |
+| No resubmission | Observation cannot submit, retry, cancel or terminate; those remain separate explicit actions with their own permissions. |
+| Capability declaration | A provider or transport either declares observation support with a read-only probe or answers `unsupported`. An undeclared or unverifiable capability is `unsupported`, never a best-effort harvest. |
+| Bound and timeout | One bounded timeout per observation (the value is a later implementation decision). Expiry is `unknown`; there is no background retry, and repeated observations are independent bounded calls. |
+
 ## Observation state, time and timeout (future)
 
 The response is additive: an observation `state`, an `observed_at` time and a
@@ -139,6 +159,25 @@ or retried in the background. A late answer after the caller left updates no
 cached state — an observation is not a subscription. Repeated observations are
 allowed, bounded and side-effect free; there is no daemon poller, no auto-refresh
 and no scheduler.
+
+## Relationship with the C1 task listing (future)
+
+C1 (plan §6 and appendix B.1) gives the task listing its own durable-record
+contract. The C1 compliance pass may still adjust internals around this
+document, so the relationship below is stated against the plan's contract —
+`limit`/`state`/`cursor`, `tasks`/`live_count`/`polled`, and the additive
+`total_live_count`/`has_more`/`next_cursor` — rather than against one
+implementation detail.
+
+| C1 listing fact | Relationship to observation |
+| --- | --- |
+| `GET …/compute/tasks` stays a durable-record read with `polled: false` and no remote action. | Observation never changes that response. It is a separate explicit action and cannot be reached from the GET path. |
+| `live_count` is live jobs *on the page*; `total_live_count` is the same-owner total across all states. | Both remain durable-record counts. They are never computed from observations and never presented as remote truth. |
+| Ordering is `created_at DESC, job_id DESC`; `has_more` and `next_cursor` walk that order. | Observation does not reorder, insert, remove or consume a cursor; pagination is unaffected. |
+| `public_task.updated_at` is when the state was last established. | Observation's `observed_at` is a separate task-scoped time and is never written into `updated_at` in this version. |
+| The record may already hold `unknown` as a live state. | The listing keeps showing the recorded `unknown` as live and not as failure; an observation returning `unknown` does not change the record. |
+| A record read failure is 503 `compute_record_unavailable` (C1). | An observation failure is `unknown`/`unsupported`/timeout for the remote read. A client must not collapse "record unreadable" into "remote unknown" or the reverse. |
+| C1's new fields are additive and optional for old clients. | Observation adds its own separate result when implemented; it does not replace, extend or reinterpret the C1 response shape. |
 
 ## Side-effect contract
 
@@ -164,11 +203,11 @@ and no scheduler.
 `POST …/refresh` keeps its current chain: owner-scoped manager, `result()`,
 Artifact capture, Stage 11 receipt binding, `polled: true`, and the existing
 `no_provider`, `refresh_failed` and `harvest_provenance_invalid` failures. The
-native `compute_result` tool and the SDK's `.result()` stay write-capable
-(harvest, terminal commit, `writes_files = True`), and the SDK's documented
-contract — poll from a later cell until terminal, nothing harvests on its own —
-is unchanged. Authentication, session visibility and owner scoping remain on
-every path; observation introduces no new permission bypass and no new approval
+native `compute_result` tool (`writes_files = True`) and the SDK's `.result()`
+stay write-capable (harvest and terminal commit). The SDK's documented contract
+— poll from a later cell until terminal, nothing harvests on its own — is
+unchanged. Authentication, session visibility and owner scoping remain on every
+path; observation introduces no new permission bypass and no new approval
 surface. Closing the future observation capability must leave all of these
 untouched.
 
@@ -183,6 +222,24 @@ untouched.
   an explicit user action.
 - A provider that gains observation support only later must not require the old
   paths to change.
+
+## Compatibility and non-goals
+
+- **This version does not implement the contract.** No route, response field,
+  poller, persisted column, provider operation, configuration switch or
+  migration ships here; this document is a preparation record only.
+- `result()` keeps its present semantics: it is still the probe-plus-harvest
+  write path, `_stored_terminal_result` still replays recorded evidence, and
+  nothing harvests without an explicit action.
+- No background polling, no timer-driven network request, no auto-refresh and no
+  subscription: observation would be a user-triggered, bounded call (INV-4).
+- No new approval or permission surface. A future observation must reuse the
+  existing session authentication, session visibility and owner scoping, and
+  must not widen the provider's authority.
+- Absence or disablement of the future capability leaves the listing, refresh,
+  cancel, `result()` and `job_history()` untouched; old clients keep reading the
+  old shapes, and the separate `openai4s/orchestration/` observation is not
+  extended into this contract.
 
 ## Future local acceptance matrix
 
@@ -201,18 +258,19 @@ is never inferred from a stub.
 | R03 | Observation for another session's job id | The owner-scoped not-found refusal; zero remote calls for the foreign id; no existence confirmation and no data leak. |
 | R04 | Observation concurrent with cancel or submit; cancel returning indeterminate | Observation changes no state and overrides no outcome; the confirmed/indeterminate/already-terminal cancel semantics are preserved. |
 | R05 | Daemon restart around an observation | Rehydrate binds this owner's live rows; nothing is resubmitted; a lost remote handle yields `unsupported`/`unknown`; a stored terminal result replays as `recorded`. |
-| R06 | Side-effect scan around one observation | Workspace, data directory, Artifact versions, job rows and job events are unchanged; the provider received at most the one bounded probe, with no harvest and no terminal write. |
+| R06 | Side-effect scan around one single-task observation | Workspace, data directory, Artifact versions, job rows and job events are unchanged; the provider received at most one bounded probe for exactly the requested job, with no harvest and no terminal write. |
 | R07 | Provider without an observation capability, and the feature disabled | `unsupported`/`disabled` with a stable reason; explicit refresh and `result()` still work; no implicit harvest occurs. |
 | R08 | Identity drift — a reused BYOC sandbox, a stale receipt, a mismatched provider | The answer is refused or `unknown`; it is never attributed to the earlier job, and no manifest or digest is written. |
-| R09 | Listing after observations | `GET …/compute/tasks` still reports `polled: false`, keeps `updated_at` as record time, and never presents an observation time as a stored update. |
+| R09 | C1 listing before and after observations | `GET …/compute/tasks` still reports `polled: false`, unchanged `updated_at`, `live_count`/`total_live_count`/`has_more`/`next_cursor`; no observation time appears as a stored update and no cursor changes. |
 | R10 | Explicit retrieval after observations | The refresh still harvests and captures Artifact versions; `result()` returns the same recorded terminal evidence with `cached: true`; observation created no Artifact. |
 | R11 | Observation deadline expiry, with a remote that keeps answering slowly | Bounded `unknown` with a reason; no stranded handler/worker and no cancellation of the job; a second observation is a new bounded call. |
 | R12 | Capability disabled and old-client compatibility | Old fields keep their shape and meaning; new fields are optional; with observation off, listing, refresh, cancel and result are unchanged and no migration is required. |
 
 Completion of this preparation means the observable/unsupported split, the
-identity binding, the observation-state vocabulary, the side-effect contract and
-the cases above are agreed, and current compute tests still pass with no
-behavior change. Runtime completion requires executing R01–R12 on the real
-implementation, with real SSH/BYOC observation where that environment exists;
-runs that cannot be performed are recorded as `not_run`, never as passed. This
-document alone does not satisfy that later gate.
+identity binding, the provider contract, the observation-state vocabulary, the
+C1 relationship, the side-effect contract and the cases above are agreed, and
+current compute tests still pass with no behavior change. Runtime completion
+requires executing R01–R12 on the real implementation, with real SSH/BYOC
+observation where that environment exists; runs that cannot be performed are
+recorded as `not_run`, never as passed. This document alone does not satisfy
+that later gate.
