@@ -66,6 +66,8 @@ export type ScienceSearch = {
   responseSha256: string;
   /** Non-empty when the file records that the search has later pages. */
   nextCursor: string;
+  /** Canonical/legacy field pairs whose recorded values disagree. */
+  conflicts: string[];
   records: ScienceRecord[];
 };
 
@@ -187,6 +189,23 @@ export function readScienceSearchEnvelope(text: string): ScienceSearch | null {
       attributes: record(row.attributes) || {},
     });
   }
+  // A saved file can carry both spellings (an old writer upgraded by a newer
+  // one, or a hand-built fixture). The canonical value is what the view uses;
+  // a disagreement is named instead of silently picking one, matching S1's
+  // `alias_conflicts` contract for the source projection.
+  const canonicalUrl = textField(top.request_url) || textField(result.request_url);
+  const aliasUrl = textField(top.endpoint) || textField(result.endpoint);
+  const canonicalDigest =
+    textField(top.response_sha256) || textField(result.response_sha256);
+  const aliasDigest = textField(top.source_checksum) || textField(result.source_checksum);
+  const conflicts = [
+    ...(canonicalUrl && aliasUrl && canonicalUrl !== aliasUrl
+      ? ["request_url ↔ endpoint"]
+      : []),
+    ...(canonicalDigest && aliasDigest && canonicalDigest !== aliasDigest
+      ? ["response_sha256 ↔ source_checksum"]
+      : []),
+  ];
   return {
     query: textField(top.query) || textField(result.query),
     requestUrl:
@@ -197,6 +216,7 @@ export function readScienceSearchEnvelope(text: string): ScienceSearch | null {
     retrievedAt: textField(top.retrieved_at) || textField(result.retrieved_at),
     responseSha256: textField(top.response_sha256) || textField(result.response_sha256),
     nextCursor: typeof result.next_cursor === "string" ? result.next_cursor.trim() : "",
+    conflicts,
     records,
   };
 }
@@ -250,7 +270,10 @@ export function scienceSourceStatus(src: Record<string, unknown>): ScienceSource
   // "verified", and the redacted marker text must not be rendered as one.
   const digestState = textField(src.response_sha256_state);
   const conflicts = unique([
-    // S1 projection: canonical field names whose legacy alias disagreed.
+    // S1 projection: canonical field names whose legacy alias disagreed
+    // (`alias_conflicts` is the current key; `source_conflicts` was the
+    // earlier spelling and stays readable for projections in flight).
+    ...stringList(src.alias_conflicts),
     ...stringList(src.source_conflicts),
     ...stringList(src.conflict_fields),
     ...stringList(src.conflicts),
@@ -363,6 +386,11 @@ export function renderScienceResults(
   container.appendChild(shell);
 
   recordsPane.appendChild(noteBox(filesT("science.records.saved", search.records.length.toLocaleString())));
+  if (search.conflicts.length) {
+    recordsPane.appendChild(
+      noteBox(filesT("science.conflictNote", search.conflicts.join(", "))),
+    );
+  }
   if (search.nextCursor) recordsPane.appendChild(noteBox(filesT("science.records.nextPage")));
   if (!search.records.length) recordsPane.appendChild(noteBox(filesT("science.records.empty")));
 
