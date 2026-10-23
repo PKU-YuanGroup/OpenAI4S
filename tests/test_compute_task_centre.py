@@ -577,13 +577,21 @@ def test_page_load_and_ordinary_stop_never_post_cancel():
         encoding="utf-8"
     )
     deletion = Path("openai4s/server/session_deletion.py").read_text(encoding="utf-8")
-    # Page load fetches the listing. The cancel POST lives only in the
-    # confirm-gated helper, which the load path never calls.
+    # Page load fetches the listing. C2 moved that read into the
+    # `compute-records` controller (one path builder, one ownership rule), so
+    # the endpoint string lives there while the load still triggers the read.
+    # The cancel POST lives only in the confirm-gated helper, which neither the
+    # load path nor the listing module calls.
     load_fn = island.split("export async function loadWorkbenchState", 1)[1].split(
         "export function scheduleWorkbenchRefresh", 1
     )[0]
-    assert "/compute/tasks" in load_fn
+    records = Path("frontend/src/features/timeline/compute-records.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "computeRecords.read" in load_fn
+    assert "/compute/tasks" in records
     assert "/cancel" not in load_fn
+    assert "/cancel" not in records
     assert "confirm: true" not in load_fn
     # The cancel helper itself is the only POST, and it is behind confirm().
     assert "function cancelComputeTask" in island
