@@ -471,9 +471,13 @@ def write_search_artifact(workspace: Path, result: Mapping[str, Any]) -> dict[st
     filename = f"science-{database}-{digest[:12]}.json"
     payload = {
         "query": result.get("query"),
-        "endpoint": result.get("request_url"),
+        # The canonical names the public provenance projection reads. The
+        # artifact written by earlier versions used `endpoint` /
+        # `source_checksum`; those are still understood on *read* by
+        # `retrieval_source.public_source`, but new bytes never carry them.
+        "request_url": result.get("request_url"),
         "retrieved_at": (result.get("provenance") or {}).get("retrieved_at"),
-        "source_checksum": (result.get("provenance") or {}).get("response_sha256"),
+        "response_sha256": (result.get("provenance") or {}).get("response_sha256"),
         "accessions": [item.get("id") for item in result.get("results") or []],
         "result": result,
     }
@@ -585,9 +589,9 @@ def write_search_artifact(workspace: Path, result: Mapping[str, Any]) -> dict[st
         "kind": "science_search",
         "database": database,
         "query": result.get("query"),
-        "endpoint": result.get("request_url"),
+        "request_url": result.get("request_url"),
         "retrieved_at": payload["retrieved_at"],
-        "source_checksum": payload["source_checksum"],
+        "response_sha256": payload["response_sha256"],
         "accessions": payload["accessions"],
     }
     return {

@@ -8174,14 +8174,38 @@
                       ],
                       "type": "object"
                     },
+                    "legacy_normalized": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "query": {
+                      "type": "string"
+                    },
                     "record_count": {
                       "type": "integer"
                     },
                     "request_url": {
                       "type": "string"
                     },
-                    "retrieved_at": {
+                    "response_sha256": {
                       "type": "string"
+                    },
+                    "response_sha256_state": {
+                      "type": "string"
+                    },
+                    "retrieved_at": {
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "source_conflicts": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "undisclosed_field_count": {
                       "type": "integer"
