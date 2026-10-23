@@ -17,7 +17,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`cache.test.ts`](cache.test.ts) | 版本缓存、dock 原位 mutate、过期 `loadArtifacts`。 |
 | [`cache.ts`](cache.ts) | `artifactCacheKey` / `syncArtifactVersion` / `artUrl`（精确 version 不走 latest）；`artifactPreviewTarget` / `artifactPreviewUrl` 把一次预览与它的下载冻结到同一版本。 |
 | [`catalog.test.ts`](catalog.test.ts) | UMD 空值防御、兼容渲染器 id、PDB CA 点。 |
-| [`catalog.ts`](catalog.ts) | `scientificRenderers()` 空值防御、catalog 与 descriptor 拉取；目录失败不缓存为空成功、清在途 promise 与描述符缓存，可重试恢复。兼容映射让 `.ipynb` 走 notebook 渲染器而不是通用文本路径。 |
+| [`catalog.ts`](catalog.ts) | `scientificRenderers()` 空值防御、catalog 与 descriptor 拉取；目录失败不缓存为空成功、`rendererCatalog.value` 保持 null、清在途 promise 并以原错误拒绝，由该目录算出的描述符一并失效；并发调用共享一次 `/renderers` 请求，成功目录保持缓存。兼容映射让 `.ipynb` 走 notebook 渲染器而不是通用文本路径。 |
 | [`copy.ts`](copy.ts) | M-03 搜索/过滤/深链文案、provenance Environment 面板的无快照与包数量未知/不适用文案、读取失败/完整性状态文案，以及只读 Notebook 标签与省略提示（不改生成的 i18n 字典）。 |
 | [`deeplink.test.ts`](deeplink.test.ts) | 查询串解析；精确 version；禁止静默降级 latest。 |
 | [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。空 versions → not-found。 |
@@ -34,7 +34,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`science-results.test.ts`](science-results.test.ts) | envelope 拒绝（任意带 `result` 属性的 JSON）、规范/旧键与冲突、隐藏摘要、外链脱敏、分页上限、JSON 页与零网络读取。 |
 | [`notebook.ts`](notebook.ts) | 只读 nbformat-4 `.ipynb` 预览：严格 envelope/字段类型校验、200 Cell / 每 Cell 20 输出 / 单文本 64 KiB / 整文件 8 MiB、PNG 签名与 IHDR 检查 + 单张 2 MiB / 累计 1600 万像素 + 最多 2 张并发解码、Markdown 禁资源模式、HTML/SVG/widget 等只提示、零执行零 Host 零外联。 |
 | [`notebook.test.ts`](notebook.test.ts) | envelope/类型拒绝、Cell 与输出上限、64 KiB UTF-8 截断、PNG 校验与字节/像素上限、不支持富输出、关闭取消读取并释放图像 URL。 |
-| [`renderers.ts`](renderers.ts) | 十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。有界可取消读取；显示上限保持冻结数值；每个受限预览明确“完整／部分预览（附精确版本下载）／无法预览”。 |
+| [`renderers.ts`](renderers.ts) | 兼容模式的信息行带“重试”，就地重新请求目录与描述符（无需整页刷新；仍失败则再次降级）。十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。有界可取消读取；显示上限保持冻结数值；每个受限预览明确“完整／部分预览（附精确版本下载）／无法预览”。 |
 | [`renderers.test.ts`](renderers.test.ts) | 文本渲染器：每次渲染只读一次（无下载/文本循环）；序列按源码显示；JSON 只按控制字符判定二进制；body 已被替换时晚到的描述符不再执行渲染胶水。 |
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |

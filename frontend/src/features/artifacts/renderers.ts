@@ -721,6 +721,17 @@ export function renderArtifactDescriptor(
       ? translate("viewer.renderer.compat")
       : translate("viewer.renderer.matched", publicText(descriptor.matched_by || "metadata", 30));
   meta.appendChild(el("span", "renderer-detail", match));
+  if (descriptor.matched_by === "compatibility") {
+    // The compatibility descriptor is what a failed catalog read degrades to.
+    // Retrying re-requests the catalog and the server descriptor in place, so
+    // a recovered catalog (and its declared capabilities) applies without a
+    // page reload; a still-failing read just degrades again.
+    const retry = el("button", "outline-btn small", filesT("viewer.renderer.retry"));
+    retry.onclick = () => {
+      renderArtifactBody(body, a);
+    };
+    meta.appendChild(retry);
+  }
   if (target._exactVersion) {
     meta.appendChild(
       el(

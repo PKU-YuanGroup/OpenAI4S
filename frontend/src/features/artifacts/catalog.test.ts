@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { _rendererCatalogPromise, rendererCatalog, rendererDescriptors } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
-import { setArtifactsFetch } from "./api";
+import { ApiError, setArtifactsFetch } from "./api";
 import { artifactRendererDescriptor, compatibilityRendererDescriptor, loadRendererCatalog, scientificRenderers } from "./catalog";
 import { parseMolPoints } from "./thumbs";
 
@@ -80,13 +80,37 @@ describe("renderer catalog failure recovery (R1)", () => {
       if (requests === 1) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
       return new Response(JSON.stringify({ renderers: [{ renderer_id: "sequence", label: "Sequence" }] }));
     });
-    await expect(loadRendererCatalog()).rejects.toBeTruthy();
+    const failure = await loadRendererCatalog().catch((error: unknown) => error);
+    // The original error is rethrown, not swallowed into an empty directory.
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(503);
     // A failure is not a successful empty directory, and no in-flight promise
     // is kept that would answer every retry with the same failure.
     expect(rendererCatalog.value).toBeNull();
     expect(_rendererCatalogPromise.value).toBeNull();
     await expect(loadRendererCatalog()).resolves.toEqual([{ renderer_id: "sequence", label: "Sequence" }]);
     expect(requests).toBe(2);
+  });
+
+  it("shares one /renderers request between concurrent callers and caches a success", async () => {
+    resetStoreFields();
+    let requests = 0;
+    setArtifactsFetch(async (url) => {
+      requests += 1;
+      expect(url).toBe("/api/v1/renderers");
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      return new Response(
+        JSON.stringify({ renderers: [{ renderer_id: "sequence", label: "Sequence" }] }),
+      );
+    });
+    const [first, second] = await Promise.all([loadRendererCatalog(), loadRendererCatalog()]);
+    expect(requests).toBe(1);
+    expect(first).toEqual([{ renderer_id: "sequence", label: "Sequence" }]);
+    expect(second).toEqual(first);
+    // A successful catalog stays cached: later callers issue no request.
+    await expect(loadRendererCatalog()).resolves.toEqual(first);
+    expect(requests).toBe(1);
+    expect(_rendererCatalogPromise.value).toBeNull();
   });
 
   it("re-resolves an artifact descriptor after a catalog failure without a page reload", async () => {

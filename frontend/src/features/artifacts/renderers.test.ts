@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { artifactWorkbench } from "../../stores/notebook";
+import { rendererDescriptors } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   bytes,
@@ -10,6 +12,7 @@ import {
   PREVIEW_READ_TIMEOUT_MS,
   abortPreviewReads,
   setArtifactsFetch,
+  translate,
   truncateMarkdown,
   unicodeSafeSlice,
 } from "./api";
@@ -1047,5 +1050,239 @@ describe("every preview entry fails visibly and retries (A1)", () => {
     retry!.onclick?.();
     await flush();
     expect(successNode(root, success), `${id} did not recover`).toBe(true);
+  });
+});
+
+describe("renderer catalog recovery in the viewer (A2)", () => {
+  class CatNode {
+    children: CatNode[] = [];
+    parent: CatNode | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    html = "";
+    href = "";
+    disabled = false;
+    title = "";
+    style: Record<string, string> = {};
+    attrs: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    onclick: (() => void) | null = null;
+    onchange: (() => void) | null = null;
+    tagName: string;
+    constructor(tag = "div") {
+      this.tagName = tag.toUpperCase();
+    }
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    get innerHTML(): string {
+      return this.html;
+    }
+    set innerHTML(value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+      this.html = value;
+    }
+    appendChild(child: CatNode): CatNode {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
+    }
+  }
+  const walk = (node: CatNode): CatNode[] => [node, ...node.children.flatMap(walk)];
+  const host = (node: CatNode) => node as unknown as HTMLElement;
+  const compatText = translate("viewer.renderer.compat");
+
+  const runtime = {
+    rendererIdFromDescriptor: (descriptor: { renderer?: { renderer_id?: string } }) =>
+      descriptor.renderer?.renderer_id || "download",
+    parseSequence: () => ({
+      format: "fasta",
+      alphabet: "protein",
+      total_length: 3,
+      records: [{ name: "a", sequence: "ACD" }],
+    }),
+    residueClass: () => "other",
+  };
+
+  beforeEach(() => {
+    resetStoreFields();
+    abortPreviewReads();
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => new CatNode(tag),
+      createElementNS: (_ns: string, tag: string) => new CatNode(tag),
+      createDocumentFragment: () => new CatNode("#fragment"),
+      createTextNode: (text: string) => {
+        const node = new CatNode("#text");
+        node.textContent = text;
+        return node;
+      },
+    });
+    vi.stubGlobal("OpenAI4SScientificRenderers", runtime);
+  });
+  afterEach(() => {
+    abortPreviewReads();
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  const retryButton = (root: CatNode) =>
+    walk(root).find(
+      (node) => node.tagName === "BUTTON" && node.textContent === filesT("viewer.renderer.retry"),
+    );
+  const detailText = (root: CatNode) =>
+    walk(root).find((node) => node.className === "renderer-detail")?.textContent;
+
+  it("retries the catalog and descriptor from the compatibility info row without a reload", async () => {
+    let catalogCalls = 0;
+    let descriptorCalls = 0;
+    let catalogDown = true;
+    setArtifactsFetch(async (url) => {
+      if (url === "/api/v1/renderers") {
+        catalogCalls += 1;
+        if (catalogDown) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+        return new Response(
+          JSON.stringify({
+            renderers: [{ renderer_id: "sequence", label: "Sequence", capabilities: ["view", "copy"] }],
+          }),
+        );
+      }
+      if (url === "/api/v1/artifacts/A/renderer?version=v1") {
+        descriptorCalls += 1;
+        return new Response(
+          JSON.stringify({
+            artifact_id: "A",
+            version_id: "v1",
+            matched_by: "extension",
+            renderer: { renderer_id: "sequence", label: "Sequence" },
+          }),
+        );
+      }
+      if (url === "/api/v1/artifacts/versions/v1") {
+        return new Response(">a\nACD\n");
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    const root = new CatNode("div");
+    root.page = true;
+    const artifact: ArtifactRow = { id: "A", filename: "pep.fasta", version_id: "v1" };
+    renderArtifactBody(host(root), artifact);
+    await vi.waitFor(() => expect(detailText(root)).toBe(compatText), { timeout: 3000 });
+    // The failed catalog is not cached and the degraded descriptor is not kept.
+    expect(catalogCalls).toBe(1);
+    expect(Object.keys(rendererDescriptors.value)).toEqual([]);
+    expect(retryButton(root), "compatibility row has no Retry").toBeTruthy();
+    catalogDown = false;
+    retryButton(root)!.onclick?.();
+    await vi.waitFor(() => expect(detailText(root)).not.toBe(compatText), { timeout: 3000 });
+    expect(catalogCalls).toBe(2);
+    expect(descriptorCalls).toBe(2);
+    // The retried server descriptor (and its declared capabilities) is cached.
+    expect(Object.keys(rendererDescriptors.value)).toContain("A:v1");
+    await vi.waitFor(
+      () => expect(walk(root).some((node) => (node.className || "").includes("bio-summary"))).toBe(true),
+      { timeout: 3000 },
+    );
+  });
+
+  it("restores the table workbench Schema, Distribution and Export after a catalog retry", async () => {
+    artifactWorkbench.value = true;
+    let catalogDown = true;
+    const profile = {
+      artifact_id: "T",
+      version_id: "v1",
+      filtered_rows: 2,
+      approximate: false,
+      schema_version: 1,
+      columns: [
+        {
+          name: "a",
+          type: "integer",
+          missing: 0,
+          unique: 2,
+          min: 0,
+          max: 1,
+          mean: 0.5,
+          histogram: [
+            { start: 0, end: 1, count: 1 },
+            { start: 1, end: 2, count: 1 },
+          ],
+        },
+        {
+          name: "b",
+          type: "integer",
+          missing: 0,
+          unique: 2,
+          min: 0,
+          max: 1,
+          mean: 0.5,
+          histogram: [
+            { start: 0, end: 1, count: 1 },
+            { start: 1, end: 2, count: 1 },
+          ],
+        },
+      ],
+    };
+    setArtifactsFetch(async (url) => {
+      if (url === "/api/v1/renderers") {
+        if (catalogDown) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+        return new Response(
+          JSON.stringify({
+            renderers: [
+              {
+                renderer_id: "table",
+                label: "Data table",
+                capabilities: ["view", "sort", "filter", "profile", "export"],
+              },
+            ],
+          }),
+        );
+      }
+      if (url === "/api/v1/artifacts/T/renderer?version=v1") {
+        return new Response(
+          JSON.stringify({
+            artifact_id: "T",
+            version_id: "v1",
+            matched_by: "extension",
+            renderer: { renderer_id: "table", label: "Data table" },
+          }),
+        );
+      }
+      if (url.includes("/artifacts/T/table/profile?")) {
+        return new Response(JSON.stringify(profile));
+      }
+      if (new URL(url, "http://localhost").pathname === "/api/v1/artifacts/T/table") {
+        return new Response(
+          JSON.stringify({
+            artifact_id: "T",
+            version_id: "v1",
+            columns: ["a", "b"],
+            rows: [["1", "2"]],
+            total_rows: 1,
+            offset: 0,
+          }),
+        );
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    const root = new CatNode("div");
+    root.page = true;
+    renderArtifactBody(host(root), { id: "T", filename: "counts.csv", version_id: "v1" });
+    await vi.waitFor(() => expect(detailText(root)).toBe(compatText), { timeout: 3000 });
+    expect(walk(root).some((node) => node.className === "wb-table-schema")).toBe(false);
+    catalogDown = false;
+    retryButton(root)!.onclick?.();
+    await vi.waitFor(
+      () => expect(walk(root).some((node) => node.className === "wb-table-schema")).toBe(true),
+      { timeout: 3000 },
+    );
+    const classes = walk(root).map((node) => node.className);
+    expect(classes).toContain("wb-table-distribution");
+    expect(classes).toContain("wb-table-export-zone");
   });
 });
