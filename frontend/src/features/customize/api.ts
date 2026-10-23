@@ -358,3 +358,150 @@ export async function testJudgmentConnection(): Promise<JudgmentProbe> {
     model: typeof body.model === "string" ? body.model : null,
   };
 }
+
+/* --- U2 / §1 U1: explicit update checking ------------------------------------
+ *
+ * Two routes, one feature. GET /updates/status is a *local* read (the daemon's
+ * own version, redacted channel and cached answer; zero outbound). POST
+ * /updates/check is the only call that may contact the release index, and only
+ * the user's explicit click issues it. This client never downloads, installs,
+ * restarts or polls; it only renders what those two routes report.
+ */
+
+export type UpdateCheckStatus = "update_available" | "up_to_date" | "unknown";
+
+export const UPDATE_CHECK_STATUSES: readonly UpdateCheckStatus[] = [
+  "update_available",
+  "up_to_date",
+  "unknown",
+];
+
+export type UpdatePreviousKnown = {
+  status: UpdateCheckStatus;
+  latest: string;
+  checked_at_ms: number | null;
+};
+
+export type UpdateTrust = {
+  /** Whitelisted witness summary; never a claim of release authorship. */
+  integrity: string;
+  authorship: string;
+  authorshipDetail: string;
+};
+
+export type UpdateCheck = {
+  status: UpdateCheckStatus;
+  reason: string;
+  /** The version this daemon is running (the discovery document's `running`). */
+  running: string;
+  latest: string;
+  checked_at_ms: number | null;
+  cached: boolean;
+  age_s: number | null;
+  retry_after_at: number | null;
+  previous: UpdatePreviousKnown | null;
+  trust: UpdateTrust | null;
+};
+
+export type UpdateStatus = {
+  requestId: string;
+  /** Redacted channel id (`venv`, `linux-bundle`, …, empty when unreported). */
+  channelId: string;
+  /** `null` means the daemon has no cached answer: "not checked yet". */
+  check: UpdateCheck | null;
+};
+
+function updateRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function updateText(value: unknown, limit: number): string {
+  return typeof value === "string" ? value.trim().slice(0, limit) : "";
+}
+
+function updateMs(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : null;
+}
+
+function updateStatusOf(value: unknown): UpdateCheckStatus {
+  return (UPDATE_CHECK_STATUSES as readonly string[]).includes(String(value))
+    ? (value as UpdateCheckStatus)
+    : "unknown";
+}
+
+function updatePreviousOf(raw: unknown): UpdatePreviousKnown | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  if (row.status == null && row.latest == null) return null;
+  return {
+    status: updateStatusOf(row.status),
+    latest: updateText(row.latest, 64),
+    checked_at_ms: updateMs(row.checked_at_ms),
+  };
+}
+
+function updateTrustOf(raw: unknown): UpdateTrust | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const trust = {
+    integrity: updateText(row.integrity, 240),
+    authorship: updateText(row.authorship, 120),
+    authorshipDetail: updateText(row.authorship_detail, 240),
+  };
+  return trust.integrity || trust.authorship ? trust : null;
+}
+
+function updateCheckOf(raw: unknown): UpdateCheck | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  return {
+    status: updateStatusOf(row.status),
+    reason: updateText(row.reason, 64),
+    running: updateText(row.running, 64),
+    latest: updateText(row.latest, 64),
+    checked_at_ms: updateMs(row.checked_at_ms),
+    cached: row.cached === true,
+    age_s: updateMs(row.age_s),
+    retry_after_at: updateMs(row.retry_after_at),
+    previous: updatePreviousOf(row.previous),
+    trust: updateTrustOf(row.trust),
+  };
+}
+
+/** Allowlist projection of the update routes; malformed members become unknown. */
+export function sanitizeUpdateStatus(raw: unknown): UpdateStatus {
+  const row = updateRecord(raw);
+  const channel = updateRecord(row.channel);
+  return {
+    requestId: updateText(row.request_id, 128),
+    channelId: updateText(channel.id, 64),
+    check: updateCheckOf(row.check),
+  };
+}
+
+/** Read the daemon's local update state. Never contacts the release index. */
+export async function readUpdateStatus(): Promise<UpdateStatus> {
+  return sanitizeUpdateStatus(await api("/updates/status"));
+}
+
+/** The one call that may go out. Only an explicit click reaches it. */
+export async function requestUpdateCheck(
+  signal?: AbortSignal,
+): Promise<UpdateStatus> {
+  return sanitizeUpdateStatus(
+    await api("/updates/check", {
+      method: "POST",
+      body: JSON.stringify({ refresh: true }),
+      signal,
+    }),
+  );
+}
+
+/** The bounded retry hint a 429 carries, for display only — never auto-retried. */
+export function updateRetryAfterAt(error: unknown): number | null {
+  const body = (error as { body?: unknown } | null)?.body;
+  return updateMs(updateRecord(body).retry_after_at);
+}

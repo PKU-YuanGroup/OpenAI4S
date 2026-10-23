@@ -8,6 +8,7 @@ import { useAlive } from "./use-timer-lease";
 import { markCustomizeLoaded } from "../../features/customize/load";
 import { DiagnosticsTab } from "./DiagnosticsTab";
 import { ExperimentsTab } from "./ExperimentsTab";
+import { UpdateCheck } from "./UpdateCheck";
 import { CustRow, Hdr, Seg } from "./ui";
 
 /**
@@ -105,6 +106,7 @@ export function GeneralTab() {
           {t("cust.general.configureBtn")}
         </button>
       </CustRow>
+      <UpdateCheck />
       <ExperimentsTab />
       <DiagnosticsTab />
     </div>
