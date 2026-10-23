@@ -18,7 +18,7 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 | [`install.test.ts`](install.test.ts) | Contract names pass `isReady` after install. |
 | [`ketcher.ts`](ketcher.ts) | `openKetcher` iframe onto `/ketcher` (app.js:10834). |
 | [`locator.ts`](locator.ts) | PDF / HTML locator comments (app.js:10835-10897). |
-| [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` lazy inject (app.js:9610-9673). |
+| [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` lazy inject (app.js:9610-9673). Both real molecule reads go through the bounded preview read with a per-structure AbortSignal; tearing down the viewer cancels the in-flight read, and a read failure shows the reason, a retry and the exact-version download. |
 | [`mol.test.ts`](mol.test.ts) | No static 3Dmol import; no live CDN URL; vendored src; only the latest attached structure creates a viewer, and the script is injected once. |
-| [`viewer.ts`](viewer.ts) | Dock Viewer chrome, editor, versions (app.js:9430-9609). |
+| [`viewer.ts`](viewer.ts) | Dock Viewer chrome, editor, versions (app.js:9430-9609). The retrieval-source panel now renders a withheld response digest as "hidden" (with the reason it is not the verifiable file digest) and names conflicting fields and normalized legacy aliases instead of silently resolving them. |
 | [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` extension / content-type gate. |

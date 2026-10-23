@@ -30,6 +30,8 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`。 |
 | [`preview.ts`](preview.ts) | 精确版本的 scoped grant 升级（按版本缓存 grant、改写说明文字），以及 grant 被拒后回退到惰性的 `/preview/<id-or-version>`。 |
 | [`preview.test.ts`](preview.test.ts) | 生产渲染器 grant 生命周期、grant 复用与过期、源与路径拒绝、精确版本回退、非回环源保持惰性及已移除 iframe 回归测试。 |
+| [`science-results.ts`](science-results.ts) | 已保存检索 envelope 的严格校验与有界只读视图：新旧来源字段、响应摘要隐藏/冲突标记、每页 50 最多 500 条且不拉取远端、记录外链仅安全 http(s) 且脱敏、同一确切版本的原始 JSON 切换。 |
+| [`science-results.test.ts`](science-results.test.ts) | envelope 拒绝（任意带 `result` 属性的 JSON）、规范/旧键与冲突、隐藏摘要、外链脱敏、分页上限、JSON 页与零网络读取。 |
 | [`notebook.ts`](notebook.ts) | 只读 nbformat-4 `.ipynb` 预览：严格 envelope/字段类型校验、200 Cell / 每 Cell 20 输出 / 单文本 64 KiB / 整文件 8 MiB、PNG 签名与 IHDR 检查 + 单张 2 MiB / 累计 1600 万像素 + 最多 2 张并发解码、Markdown 禁资源模式、HTML/SVG/widget 等只提示、零执行零 Host 零外联。 |
 | [`notebook.test.ts`](notebook.test.ts) | envelope/类型拒绝、Cell 与输出上限、64 KiB UTF-8 截断、PNG 校验与字节/像素上限、不支持富输出、关闭取消读取并释放图像 URL。 |
 | [`renderers.ts`](renderers.ts) | 十一个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol/notebook 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。有界可取消读取；显示上限保持冻结数值；每个受限预览明确“完整／部分预览（附精确版本下载）／无法预览”。 |

@@ -82,8 +82,15 @@ function renderLegacyFailure(
  * failure that falls back to source shows a labelled prefix, never an
  * unexplained cut or a row count derived from partial content.
  */
-function legacySourceStatus(container: HTMLElement, a: ArtifactRow, url: string, shown: number, total: number): void {
-  const partial = shown < total;
+function legacySourceStatus(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  truncated: boolean,
+  shown: number,
+  total: number,
+): void {
+  const partial = truncated;
   const note = el(
     "div",
     "renderer-note renderer-completeness",
@@ -122,7 +129,14 @@ export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: s
         const pre = el("pre", "renderer-source");
         pre.textContent = unicodeSafeSlice(text, LEGACY_TABLE_PREVIEW_CHARACTERS);
         container.appendChild(pre);
-        legacySourceStatus(container, a, url, pre.textContent.length, text.length);
+        legacySourceStatus(
+          container,
+          a,
+          url,
+          text.length > LEGACY_TABLE_PREVIEW_CHARACTERS,
+          pre.textContent.length,
+          text.length,
+        );
       }
     })
     .catch((error: unknown) => {

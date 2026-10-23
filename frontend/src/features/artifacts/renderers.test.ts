@@ -490,73 +490,81 @@ describe("preview completeness states and exact-version binding (A2)", () => {
     expect(fenced.text.endsWith("```\n")).toBe(true);
   });
 
-  it("marks a markdown preview complete at the limit and partial above it", async () => {
-    const atLimit = "a".repeat(MARKDOWN_PREVIEW_CHARACTERS);
-    const atHost = new Dom2("div");
-    atHost.page = true;
-    setArtifactsFetch(async () => new Response(atLimit));
-    renderArtifactDescriptor(host(atHost), { id: "a", filename: "r.md", version_id: "v1" }, descriptor("markdown", "v1"));
-    await vi.waitFor(() => expect(status(atHost)).toBeDefined(), { timeout: 3000 });
-    expect(status(atHost)!.attrs["data-state"]).toBe("complete");
-    expect(links(atHost)).toHaveLength(0);
-
-    const overHost = new Dom2("div");
-    overHost.page = true;
-    setArtifactsFetch(async () => new Response(atLimit + "b"));
-    renderArtifactDescriptor(host(overHost), { id: "a", filename: "r.md", version_id: "v1" }, descriptor("markdown", "v1"));
-    await vi.waitFor(() => expect(status(overHost)).toBeDefined(), { timeout: 3000 });
-    expect(status(overHost)!.attrs["data-state"]).toBe("partial");
-    expect(links(overHost).map((node) => node.href)).toEqual(["/api/v1/artifacts/versions/v1"]);
-  });
-
-  it("marks a chemistry source preview partial above 300,000 code units", async () => {
-    vi.stubGlobal("OpenAI4SScientificRenderers", {
-      parseMolfile: () => null,
-      smilesLines: () => [],
-    });
-    const text = "C".repeat(CHEMISTRY_SOURCE_PREVIEW_CHARACTERS + 1);
-    setArtifactsFetch(async () => new Response(text));
-    const atOver = new Dom2("div");
-    atOver.page = true;
-    renderArtifactDescriptor(
-      host(atOver),
-      { id: "a", filename: "m.mol", version_id: "v1" },
-      descriptor("chemistry-2d", "v1"),
-    );
-    await vi.waitFor(() => expect(status(atOver)).toBeDefined(), { timeout: 3000 });
-    expect(status(atOver)!.attrs["data-state"]).toBe("partial");
-    expect(links(atOver).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
-  });
-
-  it("marks a LaTeX source preview complete at exactly 500,000 code units", async () => {
-    vi.stubGlobal("OpenAI4SScientificRenderers", { latexPreview: () => [] });
-    const text = "x".repeat(LATEX_SOURCE_PREVIEW_CHARACTERS);
-    setArtifactsFetch(async () => new Response(text));
-    const atHost = new Dom2("div");
-    atHost.page = true;
-    renderArtifactDescriptor(
-      host(atHost),
-      { id: "a", filename: "p.tex", version_id: "v1" },
-      descriptor("latex", "v1"),
-    );
-    await vi.waitFor(() => expect(status(atHost)).toBeDefined(), { timeout: 3000 });
-    expect(status(atHost)!.attrs["data-state"]).toBe("complete");
-    expect(links(atHost)).toHaveLength(0);
-  });
-
-  it("labels the 3D fallback when it truncates at 8,000 code units", async () => {
-    const text = "ATOM ".repeat(MOLECULE_FALLBACK_PREVIEW_CHARACTERS / 5 + 2);
-    setArtifactsFetch(async () => new Response(text));
+  async function renderBodyState(
+    rendererId: string,
+    filename: string,
+    body: string,
+    extras: Record<string, unknown> = {},
+  ): Promise<{ root: Dom2; state: string; links: string[] }> {
+    setArtifactsFetch(async () => new Response(body));
     const root = new Dom2("div");
     root.page = true;
     renderArtifactDescriptor(
       host(root),
-      { id: "a", filename: "s.pdb", version_id: "v1" },
-      descriptor("molecule-3d", "v1"),
+      { id: "a", filename, version_id: "v1", ...extras },
+      descriptor(rendererId, "v1"),
     );
     await vi.waitFor(() => expect(status(root)).toBeDefined(), { timeout: 3000 });
-    expect(status(root)!.attrs["data-state"]).toBe("partial");
-    expect(links(root).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
+    return {
+      root,
+      state: status(root)!.attrs["data-state"]!,
+      links: links(root).map((node) => node.href),
+    };
+  }
+
+  it.each([
+    ["below", MARKDOWN_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", MARKDOWN_PREVIEW_CHARACTERS, "complete"],
+    ["above", MARKDOWN_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("marks a markdown preview %s the 1,000,000 code-unit limit", async (_label, length, expected) => {
+    const rendered = await renderBodyState("markdown", "r.md", "a".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links).toEqual(expected === "partial" ? ["/api/v1/artifacts/versions/v1"] : []);
+  });
+
+  it("does not report a fence-closing partial markdown as complete at the narrow boundary", async () => {
+    // total = limit + 1 with an odd fence; closing it appends 5 characters, so a
+    // length comparison would call this partial render "complete".
+    const prefix = "```\n";
+    const body = prefix + "a".repeat(MARKDOWN_PREVIEW_CHARACTERS + 1 - prefix.length);
+    const rendered = await renderBodyState("markdown", "r.md", body);
+    expect(rendered.state).toBe("partial");
+    expect(rendered.links).toEqual(["/api/v1/artifacts/versions/v1"]);
+  });
+
+  it.each([
+    ["below", CHEMISTRY_SOURCE_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", CHEMISTRY_SOURCE_PREVIEW_CHARACTERS, "complete"],
+    ["above", CHEMISTRY_SOURCE_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("marks a chemistry source preview %s the 300,000 code-unit limit", async (_label, length, expected) => {
+    vi.stubGlobal("OpenAI4SScientificRenderers", {
+      parseMolfile: () => null,
+      smilesLines: () => [],
+    });
+    const rendered = await renderBodyState("chemistry-2d", "m.mol", "C".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links.includes("/api/v1/artifacts/versions/v1")).toBe(expected === "partial");
+  });
+
+  it.each([
+    ["below", LATEX_SOURCE_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", LATEX_SOURCE_PREVIEW_CHARACTERS, "complete"],
+    ["above", LATEX_SOURCE_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("marks a LaTeX source preview %s the 500,000 code-unit limit", async (_label, length, expected) => {
+    vi.stubGlobal("OpenAI4SScientificRenderers", { latexPreview: () => [] });
+    const rendered = await renderBodyState("latex", "p.tex", "x".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links.includes("/api/v1/artifacts/versions/v1")).toBe(expected === "partial");
+  });
+
+  it.each([
+    ["below", MOLECULE_FALLBACK_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", MOLECULE_FALLBACK_PREVIEW_CHARACTERS, "complete"],
+    ["above", MOLECULE_FALLBACK_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("labels the 3D fallback state %s the 8,000 code-unit limit", async (_label, length, expected) => {
+    const rendered = await renderBodyState("molecule-3d", "s.pdb", "A".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links.includes("/api/v1/artifacts/versions/v1")).toBe(expected === "partial");
   });
 
   it("binds preview, source and download to the same version and says so for latest", async () => {
@@ -712,5 +720,116 @@ describe("notebook artifact routing (A3)", () => {
   it("falls back to the notebook renderer for an .ipynb compatibility descriptor", () => {
     const descriptor = compatibilityRendererDescriptor({ id: "nb", filename: "a.ipynb" });
     expect(descriptor.renderer?.renderer_id).toBe("notebook");
+  });
+});
+
+
+describe("saved science-search rendering (A4)", () => {
+  class Dom4 {
+    children: Dom4[] = [];
+    parent: Dom4 | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    html = "";
+    href = "";
+    hidden = false;
+    alt = "";
+    target = "";
+    rel = "";
+    attrs: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    classList = (() => {
+      const tokens = new Set<string>();
+      return {
+        add: (...names: string[]) => names.forEach((name) => tokens.add(name)),
+        remove: (...names: string[]) => names.forEach((name) => tokens.delete(name)),
+        toggle: (name: string, force?: boolean) => {
+          const next = force === undefined ? !tokens.has(name) : force;
+          if (next) tokens.add(name);
+          else tokens.delete(name);
+          return next;
+        },
+        contains: (name: string) => tokens.has(name),
+      };
+    })();
+    onclick: (() => void) | null = null;
+    constructor(readonly tagName = "div") {}
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    get innerHTML(): string { return this.html; }
+    set innerHTML(value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+      this.html = value;
+    }
+    appendChild(child: Dom4): Dom4 {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(name: string, value: string): void { this.attrs[name] = value; }
+  }
+  const walk4 = (node: Dom4): Dom4[] => [node, ...node.children.flatMap(walk4)];
+  const host4 = (node: Dom4) => node as unknown as HTMLElement;
+  const envelope = JSON.stringify({
+    query: "tp53",
+    endpoint: "https://api.example.org/search?q=tp53&key=SECRET",
+    retrieved_at: "2026-10-20T10:00:00Z",
+    source_checksum: "a".repeat(64),
+    result: {
+      database: "uniprot",
+      results: [{ id: "P04637", title: "p53", url: "https://www.uniprot.org/uniprotkb/P04637" }],
+    },
+  });
+
+  beforeEach(() => {
+    resetStoreFields();
+    vi.stubGlobal("document", { createElement: (tag: string) => new Dom4(tag) });
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("routes a saved search to the read-only result view on the exact version", async () => {
+    setArtifactsFetch(async () => new Response(envelope));
+    const container = new Dom4();
+    container.page = true;
+    renderTextArtifact(
+      host4(container),
+      { id: "search", filename: "science-uniprot.json", version_id: "v1", _exactVersion: true },
+      "/api/v1/artifacts/versions/v1",
+    );
+    await vi.waitFor(
+      () => expect(walk4(container).some((node) => node.className === "science-results")).toBe(true),
+      { timeout: 3000 },
+    );
+    expect(walk4(container).some((node) => node.className.includes("science-json"))).toBe(false);
+    const jsonTab = walk4(container).find((node) => node.textContent === filesT("science.tab.json"))!;
+    jsonTab.onclick?.();
+    expect(walk4(container).some((node) => node.className.includes("science-json"))).toBe(true);
+    expect(walk4(container).filter((node) => node.tagName === "a").map((node) => node.href)).toContain(
+      "/api/v1/artifacts/versions/v1",
+    );
+  });
+
+  it("keeps unrelated JSON with a result property on the generic source path", async () => {
+    setArtifactsFetch(async () => new Response(JSON.stringify({ result: { a: 1 } })));
+    const container = new Dom4();
+    container.page = true;
+    renderTextArtifact(
+      host4(container),
+      { id: "other", filename: "other.json", version_id: "v1", _exactVersion: true },
+      "/api/v1/artifacts/versions/v1",
+    );
+    await vi.waitFor(
+      () => expect(walk4(container).some((node) => node.className === "renderer-source")).toBe(true),
+      { timeout: 3000 },
+    );
+    expect(walk4(container).some((node) => node.className === "science-results")).toBe(false);
   });
 });
