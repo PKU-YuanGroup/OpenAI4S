@@ -2,7 +2,7 @@
 
 [English](CONTENTS.md)
 
-面向 GitHub 的政策与自动化都放在这里：哪些路径由谁评审、依赖更新怎么进来、一个
+面向 GitHub 的政策与自动化都放在这里：负责人评审政策、依赖更新怎么进来、一个
 PR 需要交代清楚哪些事，以及 GitHub 展示的社区健康文件（贡献指南、行为准则、
 安全政策）。这些东西都不在 OpenAI4S daemon、Agent Engine 或内核里运行，
 它们的作用是在变更进入这些运行时之前先把一道关。
@@ -11,7 +11,6 @@ PR 需要交代清楚哪些事，以及 GitHub 展示的社区健康文件（贡
 
 | 文件 | 职责 |
 | --- | --- |
-| `CODEOWNERS` | 把路径映射到评审人：先是兜底的默认负责人，再按运行时核心、安全敏感路径、Web 应用、compute、科学 Skill、测试和治理分别指定。匹配到的最后一条规则生效，因此具体规则会覆盖默认规则。 |
 | `CODE_OF_CONDUCT.md` | 社区行为准则，GitHub 会从仓库的社区概况页链接到它。 |
 | `CONTRIBUTING.md` | 治理文档：分支命名、PR/评审/发布政策、离线测试政策，以及带编号的 harness invariant。技术约定在根目录的 `CLAUDE.md` / `AGENTS.md` 里；这份文件负责流程侧。 |
 | `SECURITY.md` | 私密漏洞报告流程，GitHub 会从 Security 标签页链接到它。疑似漏洞一律走这个流程，绝不通过公开 issue。 |

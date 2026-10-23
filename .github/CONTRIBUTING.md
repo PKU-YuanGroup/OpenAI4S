@@ -147,12 +147,17 @@ for each of these):
 
 ## Review policy
 
-- Every PR needs at least **one approving review from a code owner** of the
-  touched paths (see [`.github/CODEOWNERS`](CODEOWNERS)) before merge.
+- **Nobody-Zhang is the current lead reviewer and decides when to merge.**
+  Other contributors may leave voluntary reviews, but their approval is not a
+  merge requirement. Do not automatically assign or request other reviewers.
+- GitHub's required approval count is zero, with Code Owner review and
+  additional-review requirements disabled. GitHub does not let authors approve
+  their own PRs; the lead's review and merge decision also covers lead-authored
+  PRs. Required CI checks and review-thread resolution still apply.
 - Changes to security-sensitive paths (`openai4s/security/`,
   `openai4s/permissions.py`, `openai4s/egress.py`, `openai4s/store.py`,
   `openai4s/host_dispatch.py`, `openai4s_compute_provider/`) additionally
-  require review by a security-focused owner and synthetic-secret tests where
+  require a security-focused review by the lead and synthetic-secret tests where
   applicable.
 - Kernel / host-RPC / gateway-streaming changes require focused contract tests
   in the same PR and an explicit re-run of `tests/test_kernel.py` /
@@ -174,17 +179,14 @@ access. We especially welcome recurring reviewers in four areas:
 
 Start by reproducing the reported behavior and leaving one evidence-backed,
 read-only review on a small PR. State the invariant you checked, the command or
-browser flow you ran, and any path you did not assess. After several substantive
-reviews in one area, ask a maintainer to list you as a recurring reviewer in the
-relevant issue/PR templates. CODEOWNERS membership is a later trust decision:
-it requires sustained review activity, familiarity with the path's threat and
-compatibility boundaries, and repository write access. It is never granted only
-to make a branch-protection check pass.
+browser flow you ran, and any path you did not assess. Participation is voluntary;
+there is no automatic reviewer roster or `CODEOWNERS` file.
 
-Maintainers should route review rather than defaulting every change to the lead:
-request the narrowest relevant area reviewer first, keep security ownership
-separate for sensitive paths, and record an unowned area as a contributor need
-instead of silently weakening the review rule.
+Contributors can fork this public repository and open PRs without write access.
+Direct write, maintain, admin, and triage grants are not needed for ordinary
+contributions. Keep direct repository administration with the lead; organization
+owners retain their inherited GitHub administrator access. Any future grant of
+additional repository permissions requires an explicit decision by the lead.
 
 ## Release policy
 
@@ -213,12 +215,16 @@ instead of silently weakening the review rule.
 Some governance pieces cannot be expressed in-repo and must be enabled in
 GitHub settings by an admin:
 
-- Branch protection on `main`: require PR review, require status checks,
-  forbid force pushes and deletions.
+- The `protect-main` ruleset must require a PR, status checks, and resolved review
+  threads, and forbid force pushes and deletions.
 - Mark the CI workflow ([`.github/workflows/ci.yml`](workflows/ci.yml))
   as a required status check.
-- Keep `.github/CODEOWNERS` usernames current (owners need write access) and
-  enable "Require review from Code Owners".
+- Keep required approvals at zero, "Require review from Code Owners" disabled,
+  and additional or last-push approval requirements disabled. Do not add
+  `CODEOWNERS`, automatic reviewer assignments, or required reviewer lists.
+- Limit direct repository permissions to the lead. Ordinary contributors use
+  forks and PRs; organization membership and inherited owner access are managed
+  separately at the organization level.
 - Ensure repository/organization secrets are **not** exposed to workflows
   triggered by external PRs.
 - Protect the `pypi` and `ghcr` environments with required reviewers, and

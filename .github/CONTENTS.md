@@ -2,7 +2,7 @@
 
 [中文说明](CONTENTS_zh.md)
 
-GitHub's own policy and automation live here: who reviews which paths, how
+GitHub's own policy and automation live here: the lead's review policy, how
 dependency updates arrive, what a pull request has to account for, and the
 community health files GitHub surfaces (the contributing guide, the code of
 conduct, the security policy). None of it runs inside the OpenAI4S daemon, the
@@ -13,7 +13,6 @@ surfaces.
 
 | File | Purpose |
 | --- | --- |
-| `CODEOWNERS` | Maps paths to reviewers: a catch-all default, then rules for the runtime core, security-sensitive paths, the web app, compute, science skills, tests, and governance. The last matching rule wins, so the specific entries override the default. |
 | `CODE_OF_CONDUCT.md` | The community code of conduct GitHub links from the repository's community profile. |
 | `CONTRIBUTING.md` | Governance: branch naming, the PR/review/release policy, the offline-test policy, and the numbered harness invariants. The technical conventions live in the root `CLAUDE.md` / `AGENTS.md`; this file is the process side. |
 | `SECURITY.md` | The private vulnerability-reporting process GitHub links from the Security tab. Suspected vulnerabilities go through it, never through a public issue. |
