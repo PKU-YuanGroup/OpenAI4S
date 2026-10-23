@@ -1507,7 +1507,7 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
-        self._load_capability_receipt_overlays()
+        self.reload_model_capability_evidence()
 
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
@@ -2760,27 +2760,47 @@ class Store:
             cache_scope=datapro.runtime_cache_scope(self),
         )
 
-    def _load_capability_receipt_overlays(self) -> None:
-        """Re-adopt current-revision positive receipts after a restart."""
+    def reload_model_capability_evidence(self) -> int:
+        """Re-derive in-process probe evidence from the durable receipts.
+
+        Called when this Store opens and again after a profile's configuration
+        moves (edit/delete/provider migration).  Only receipts that still
+        describe a current, non-deleted profile's exact identity -- revision,
+        endpoint, model, wire and probe version -- are eligible, and the latest
+        observation per identity is adopted.  That is precisely what a restart
+        would read from the same rows, so the process cannot hold a promotion a
+        restart would drop (or vice versa).  Returns the number of identities
+        holding adopted positive evidence.
+        """
         from openai4s.llm.capabilities import (
             PROBE_VERSION,
-            drop_receipt_overlays,
-            install_receipt_overlay,
+            profile_receipt_identity,
+            reload_receipt_evidence,
         )
 
-        drop_receipt_overlays()
-        current = {
-            str(profile.get("id") or ""): int(profile.get("revision") or 0)
-            for profile in self.list_model_profiles()
-            if not profile.get("deleted_at")
-        }
-        for receipt in self._model_capability_receipts.list_all():
-            profile_id = str(receipt.get("profile_id") or "")
-            if current.get(profile_id) != int(receipt.get("revision") or 0):
+        receipts: list[dict[str, Any]] = []
+        for profile in self.list_model_profiles():
+            if profile.get("deleted_at"):
                 continue
-            if int(receipt.get("probe_version") or 0) != PROBE_VERSION:
+            identity = profile_receipt_identity(profile)
+            if not identity["profile_id"] or not identity["wire"]:
                 continue
-            install_receipt_overlay(receipt)
+            if int(identity["revision"] or 0) <= 0:
+                # A profile written before revisions existed has no exact
+                # identity to attribute an old receipt to; `_seal_revision`
+                # backfills one on the first edit.
+                continue
+            exact = self._model_capability_receipts.get_exact(
+                profile_id=identity["profile_id"],
+                revision=identity["revision"],
+                endpoint_sha256=identity["endpoint_sha256"],
+                model=identity["model"],
+                wire=identity["wire"],
+                probe_version=PROBE_VERSION,
+            )
+            if exact is not None:
+                receipts.append(exact)
+        return reload_receipt_evidence(receipts)
 
     # --- frames ----------------------------------------------------------
     def new_frame(

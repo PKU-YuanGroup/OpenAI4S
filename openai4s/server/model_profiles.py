@@ -16,15 +16,18 @@ from openai4s.config import (
     is_placeholder_api_key,
     provider_env_api_key,
 )
-from openai4s.endpoint_identity import endpoint_sha256, normalize_endpoint
+from openai4s.endpoint_identity import normalize_endpoint
 from openai4s.llm.capabilities import (
     CAPABILITY_PROBE_TOOL,
     PROBE_VERSION,
+    apply_receipt_evidence,
     capability_probe_window,
     classify_probe_error,
     drop_receipt_overlays,
-    get_provider_capabilities,
-    install_receipt_overlay,
+)
+from openai4s.llm.capabilities import effective_capabilities as _effective_capabilities
+from openai4s.llm.capabilities import (
+    profile_receipt_identity,
     streaming_evidence,
     tool_call_matches_schema,
 )
@@ -569,30 +572,53 @@ class ModelProfileService:
         return getattr(self.store, "model_capability_receipts", None)
 
     def _receipt_identity(self, profile: Mapping[str, Any]) -> dict[str, Any]:
-        provider = str(profile.get("provider") or "")
-        model = self.effective_model_id(provider, profile.get("model"))
-        base_url = str(profile.get("base_url") or "")
-        try:
-            adapter = get_provider_capabilities(provider, base_url=base_url or None)
-            wire = adapter.wire
-            endpoint = normalize_endpoint(base_url) or normalize_endpoint(
-                adapter.default_base_url
-            )
-            adapter_streaming = bool(adapter.streaming)
-        except Exception:  # noqa: BLE001 - unsupported protocol has no wire
-            wire = ""
-            endpoint = normalize_endpoint(base_url)
-            adapter_streaming = False
-        return {
-            "profile_id": str(profile.get("id") or ""),
-            "revision": int(profile.get("revision") or 0),
-            "model": model,
-            "wire": wire,
-            "endpoint": endpoint,
-            "endpoint_sha256": endpoint_sha256(endpoint),
-            "provider": provider,
-            "adapter_streaming": adapter_streaming,
-        }
+        """See :func:`openai4s.llm.capabilities.profile_receipt_identity`."""
+        return profile_receipt_identity(profile, default_model=self.cfg.llm.model)
+
+    def _current_profile(self, profile_id: str) -> Mapping[str, Any] | None:
+        wanted = str(profile_id or "")
+        for item in self.store.list_model_profiles():
+            if str(item.get("id") or "") == wanted:
+                return item
+        return None
+
+    def _receipt_still_describes_current_configuration(
+        self, identity: Mapping[str, Any]
+    ) -> bool:
+        """Attribution check before a receipt changes the effective decision.
+
+        A probe can outlive the configuration it started on: the user edits the
+        profile, deletes it, or another configuration shares the endpoint.  A
+        receipt may only replace effective evidence while its exact identity --
+        profile still present and not tombstoned, same revision, endpoint, model
+        and protocol -- is the profile's current one.  Otherwise the row is
+        still persisted for display, but a delayed observation cannot rewrite
+        what the next request will send.
+        """
+        profile = self._current_profile(str(identity.get("profile_id") or ""))
+        if profile is None or profile.get("deleted_at"):
+            return False
+        current = self._receipt_identity(profile)
+        return (
+            int(current["revision"]) == int(identity["revision"])
+            and str(current["endpoint_sha256"]) == str(identity["endpoint_sha256"])
+            and str(current["model"]) == str(identity["model"])
+            and str(current["wire"]) == str(identity["wire"])
+        )
+
+    def _reload_receipt_evidence(self) -> int:
+        """Re-derive adopted evidence from durable rows (restart parity).
+
+        Called after a configuration mutation.  Editing or deleting a profile
+        can invalidate *its* receipts while another configuration sharing the
+        same endpoint still has newer valid evidence; re-deriving from storage
+        gives the same answer a restart would, instead of a profile-scoped
+        clear that could drop the survivor's evidence.
+        """
+        reloader = getattr(self.store, "reload_model_capability_evidence", None)
+        if not callable(reloader):
+            return 0
+        return int(reloader())
 
     def capability_receipt(self, profile: Mapping[str, Any]) -> dict[str, Any] | None:
         """The profile's exact probe receipt, or its stale predecessor.
@@ -623,6 +649,25 @@ class ModelProfileService:
         latest = repo.latest_for_profile(identity["profile_id"])
         return public_receipt(latest, stale=True, probe_version=PROBE_VERSION)
 
+    def effective_capabilities(
+        self, profile: Mapping[str, Any]
+    ) -> dict[str, dict[str, Any]] | None:
+        """Read-only projection of what the next request would decide.
+
+        Never contacts anything.  ``None`` when the protocol is not one this
+        build dispatches: such a profile has no effective capability to
+        describe, and inventing one would be the guess this field exists to
+        avoid.
+        """
+        try:
+            return _effective_capabilities(
+                str(profile.get("provider") or ""),
+                self.effective_model_id(profile.get("provider"), profile.get("model")),
+                base_url=str(profile.get("base_url") or "") or None,
+            )
+        except Exception:  # noqa: BLE001 - unsupported protocol has no decision
+            return None
+
     def _persist_receipt(
         self,
         profile: Mapping[str, Any],
@@ -630,7 +675,17 @@ class ModelProfileService:
         reachable: bool,
         native_tool_call: str,
         streaming: str,
+        observed_at: int | None = None,
     ) -> dict[str, Any] | None:
+        """Persist one probe observation, then -- only then -- make it effective.
+
+        The order is load-bearing: a storage failure must leave the previous
+        effective capability untouched, so the durable write comes first and the
+        in-process replacement second.  ``apply_receipt_evidence`` replaces the
+        evidence of this exact (endpoint, model, protocol) identity; a
+        non-positive observation withdraws an older positive promotion instead
+        of leaving it adopted (the P0-01 defect).
+        """
         repo = self._receipts()
         identity = self._receipt_identity(profile)
         if repo is None or not identity["wire"] or not identity["profile_id"]:
@@ -645,11 +700,13 @@ class ModelProfileService:
             reachable=reachable,
             native_tool_call=native_tool_call,
             streaming=streaming,
+            observed_at=observed_at,
         )
         row["endpoint"] = identity["endpoint"]
-        if native_tool_call == EVIDENCE_TRUE or streaming == EVIDENCE_TRUE:
-            install_receipt_overlay(row)
-        return public_receipt(row, stale=False, probe_version=PROBE_VERSION)
+        adoptable = self._receipt_still_describes_current_configuration(identity)
+        if adoptable:
+            apply_receipt_evidence(row)
+        return public_receipt(row, stale=not adoptable, probe_version=PROBE_VERSION)
 
     def probe(
         self, profile_id: str, *, actor_user_id: str | None = None
@@ -690,6 +747,7 @@ class ModelProfileService:
                 "outbound": 0,
                 "tool_execution": 0,
                 "capability_receipt": None,
+                "effective_capabilities": self.effective_capabilities(profile),
             }
 
         provider = str(profile.get("provider") or "")
@@ -747,6 +805,10 @@ class ModelProfileService:
             _meter(reply.get("usage"))
             return reply
 
+        # The observation is stamped when it *starts*, not when it finishes: a
+        # delayed probe (a slow or retried endpoint) must not be able to
+        # overwrite evidence a newer probe adopted while it was in flight.
+        observed_at = self._clock_ms()
         identity = self._receipt_identity(profile)
         adapter_streaming = bool(identity["adapter_streaming"])
         if not adapter_streaming:
@@ -835,6 +897,11 @@ class ModelProfileService:
             reachable=reachable,
             native_tool_call=native,
             streaming=streaming,
+            observed_at=observed_at,
+        )
+        current = self._current_profile(str(profile.get("id") or ""))
+        projection = (
+            self.effective_capabilities(current) if current is not None else None
         )
         if last_error is not None and not reachable:
             return {
@@ -847,6 +914,7 @@ class ModelProfileService:
                 "outbound": outbound,
                 "tool_execution": 0,
                 "capability_receipt": receipt,
+                "effective_capabilities": projection,
             }
         return {
             "reachable": True,
@@ -856,6 +924,7 @@ class ModelProfileService:
             "outbound": outbound,
             "tool_execution": 0,
             "capability_receipt": receipt,
+            "effective_capabilities": projection,
         }
 
     def readiness(self, profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -953,8 +1022,15 @@ class ModelProfileService:
             # current one" from "this profile has moved on since".
             "revision": int(profile.get("revision") or 0) or None,
             # Exact probe receipt, or a stale prior one.  Never contacts the
-            # endpoint: SQLite only.
+            # endpoint: SQLite only.  This is the *observation*: it is not the
+            # request decision.
             "capability_receipt": self._public_receipt(profile),
+            # The request decision, per field, with the layer that supplied it
+            # (`catalog` / `explicit_override` / `probe`).  Read-only and
+            # resolved through the same function `client.chat` uses, so a badge
+            # built from this cannot disagree with the next request.  Absent
+            # detail here is honest: an undispatchable protocol has no decision.
+            "effective_capabilities": self.effective_capabilities(profile),
         }
 
     def models_payload(self, default_model_id: str) -> dict[str, Any]:
@@ -1272,6 +1348,11 @@ class ModelProfileService:
         profile = self.store.mutate_model_profiles(mutate)
         if profile is None:
             raise ModelProfileError("profile not found", 404)
+        # A configuration change can invalidate this profile's receipts while
+        # another configuration sharing its endpoint still owns newer valid
+        # evidence.  Re-derive from storage so the in-process decision equals
+        # what a restart would adopt from the same rows.
+        self._reload_receipt_evidence()
         selected_model: str | None = None
         if self.store.get_setting("active_model_profile") == profile["id"]:
             for field, setting in (
@@ -1324,6 +1405,11 @@ class ModelProfileService:
         self.store.mutate_model_profiles(mark)
         for profile in tombstoned:
             self._forget_key(profile)
+        if tombstoned:
+            # Its receipts stay for audit, but a deleted configuration's probe
+            # must not keep promoting capability.  Rebuild from the surviving
+            # current configurations (restart parity for shared endpoints).
+            self._reload_receipt_evidence()
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
             # The live value is a provider credential copied by activate().
@@ -1419,6 +1505,11 @@ def migrate_provider_alias(
                 ModelProfileService._seal_revision(profile, now_ms=now_ms)
 
     store.mutate_model_profiles(migrate)
+    reloader = getattr(store, "reload_model_capability_evidence", None)
+    if callable(reloader):
+        # The alias rewrite seals a new revision for every touched profile, so
+        # the receipts adopted at Store open now describe retired identities.
+        reloader()
 
 
 __all__ = [
