@@ -1,4 +1,5 @@
 import { copyLookup, type CopyTable } from "../../i18n/copy";
+import { ArtifactReadError, bytes } from "./api";
 
 /**
  * M-03 copy. Existing Files/viewer keys stay in the F-07 dictionaries.
@@ -52,6 +53,11 @@ const COPY: CopyTable = {
     "editor.observedMatch": "读取到版本 {0}，内容与草稿相同。这不能确认是哪一次请求写入的。",
     "editor.observedDifferent": "读取到版本 {0}，内容与草稿不同。",
     "editor.copyManually": "自动复制失败，已选中草稿；请使用系统复制快捷键。",
+    "viewer.read.limit": "文件超出预览读取上限（{0}），已停止自动预览。可下载确切版本的原文件。",
+    "viewer.read.unbounded": "无法确认这次读取的大小上限，已停止自动预览。可下载原文件。",
+    "viewer.read.timeout": "读取超时，已停止自动预览。可重试或下载原文件。",
+    "viewer.read.failed": "读取失败。可重试或下载原文件。",
+    "viewer.read.retry": "重试读取",
     "viewer.text.truncated": "预览已截断。可展开已读取的完整原文，或下载文件。",
     "viewer.text.expand": "展开完整原文",
     "viewer.text.complete": "已展示完整原文。",
@@ -78,6 +84,7 @@ const COPY: CopyTable = {
     "files.index.unavailable": "无法加载文件索引。",
     "files.read.failed": "无法读取此会话的文件。",
     "files.read.stale": "无法刷新此会话的文件，下面是上次确认的列表。",
+    "files.thumb.partial": "部分预览",
     "artifact.editPinned": "当前标签页显示的是固定版本；请打开最新版本后再编辑",
     "prov.env.noSnapshot": "此版本未记录生产时环境（上传文件，或早于环境捕获功能生成）；不会用守护进程的实时环境替代。",
     "prov.env.packagesUnknown": "未知",
@@ -132,6 +139,11 @@ const COPY: CopyTable = {
     "editor.observedMatch": "Read version {0}; its content matches the draft. This does not identify which request wrote it.",
     "editor.observedDifferent": "Read version {0}; its content differs from the draft.",
     "editor.copyManually": "Automatic copying failed. The draft is selected; use your system copy shortcut.",
+    "viewer.read.limit": "The file is over the preview read limit ({0}); automatic preview stopped. The exact version can still be downloaded.",
+    "viewer.read.unbounded": "The size of this read could not be bounded, so automatic preview stopped. The original file can still be downloaded.",
+    "viewer.read.timeout": "The read timed out and automatic preview stopped. Retry, or download the original file.",
+    "viewer.read.failed": "The read failed. Retry, or download the original file.",
+    "viewer.read.retry": "Retry reading",
     "viewer.text.truncated": "Preview truncated. Expand the complete text already loaded, or download the file.",
     "viewer.text.expand": "Show complete text",
     "viewer.text.complete": "Showing complete text.",
@@ -158,6 +170,7 @@ const COPY: CopyTable = {
     "files.index.unavailable": "Could not load the file index.",
     "files.read.failed": "Could not read this session's files.",
     "files.read.stale": "Could not refresh this session's files; showing the last confirmed list.",
+    "files.thumb.partial": "Partial preview",
     "artifact.editPinned": "This tab shows a fixed version; open the latest version to edit the file",
     "prov.env.noSnapshot": "No environment was recorded for this version (uploaded file, or produced before environment capture existed); the live daemon environment is not substituted.",
     "prov.env.packagesUnknown": "unknown",
@@ -169,3 +182,17 @@ const COPY: CopyTable = {
 };
 
 export const filesT = copyLookup(COPY);
+
+/**
+ * The honest one-line reason a bounded preview read stopped: over the limit,
+ * unprovable size, timeout, or a plain read failure. Cancellation is not an
+ * error and is filtered by the caller.
+ */
+export function readFailureText(error: unknown): string {
+  if (error instanceof ArtifactReadError) {
+    if (error.code === "too-large") return filesT("viewer.read.limit", bytes(error.maxBytes));
+    if (error.code === "unbounded") return filesT("viewer.read.unbounded");
+    if (error.code === "timeout") return filesT("viewer.read.timeout");
+  }
+  return filesT("viewer.read.failed");
+}

@@ -13,6 +13,8 @@
  */
 
 import { _molView, _molViewer } from "../stores/artifacts";
+import { fetchArtifactText, isArtifactReadCancelled } from "../features/artifacts/api";
+import { filesT, readFailureText } from "../features/artifacts/copy";
 import { esc } from "../features/md/esc";
 import { themeIsDark } from "../features/theme/theme";
 import { el } from "./dom";
@@ -56,6 +58,8 @@ function preFallback(view: HTMLElement, text: string): void {
  * nothing would free.
  */
 let molRequest = 0;
+/** Cancels the previous structure's byte read; a newer molecule() owns the view. */
+let molAbort: AbortController | null = null;
 /** The one in-flight load of the vendored script, shared by every caller. */
 let molScript: Promise<boolean> | null = null;
 
@@ -111,6 +115,9 @@ export function molTeardown(): void {
 /** app.js:9622-9673 — container-agnostic, style selector, atom count, download, label. */
 export function molecule(container: HTMLElement, url: string, nm: string): void {
   molTeardown();
+  molAbort?.abort();
+  molAbort = new AbortController();
+  const signal = molAbort.signal;
   const request = ++molRequest;
   container.innerHTML = "";
   const wrap = el("div", "mol-wrap");
@@ -183,10 +190,29 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   };
   // Superseded by a later structure, or its view was replaced meanwhile.
   const stale = (): boolean => request !== molRequest || !view.isConnected;
+  /** The bounded read failed (over limit / timeout / HTTP): say so, keep download. */
+  const showFailure = (error: unknown): void => {
+    if (stale() || isArtifactReadCancelled(error)) return;
+    view.innerHTML = "";
+    const card = el("div", "renderer-fallback");
+    const text = el("div", "renderer-fallback-text", readFailureText(error));
+    text.setAttribute("role", "alert");
+    card.appendChild(text);
+    const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
+    again.onclick = () => {
+      molAbort?.abort();
+      molecule(container, url, nm);
+    };
+    card.appendChild(again);
+    const download = el("a", "outline-btn small", translate("common.download"));
+    download.href = url;
+    download.setAttribute("download", nm || "artifact");
+    card.appendChild(download);
+    view.appendChild(card);
+  };
   const boot = (): Promise<void> => {
     if (stale()) return Promise.resolve();
-    return fetch(url)
-      .then((r) => r.text())
+    return fetchArtifactText(url, { signal })
       .then((data) => {
         if (stale()) return;
         try {
@@ -223,19 +249,15 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
           preFallback(view, data);
         }
       })
-      .catch(() => {
-        /* fetch failed; chrome still offers download */
-      });
+      .catch(showFailure);
   };
   const fb = (): Promise<void> =>
-    fetch(url)
-      .then((r) => r.text())
+    fetchArtifactText(url, { signal })
       .then((text) => {
+        if (stale()) return;
         preFallback(view, text);
       })
-      .catch(() => {
-        /* nothing to show */
-      });
+      .catch(showFailure);
   if (molApi()) {
     void boot();
     return;
