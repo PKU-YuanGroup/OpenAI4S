@@ -535,17 +535,35 @@ jobs:
         # stack, a missing Web UI / R worker, a desktop entry that launches
         # nothing, or any credential material swept into the archive.
         run: python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+      # The scenario's last step opens the packaged workbench in a real browser
+      # against the artifacts the previous steps captured, so the browser driver
+      # is installed here. Same setup-node pin and same install commands as the
+      # PR browser job (ci.yml); no new action is introduced.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the browser driver
+        # `playwright install --with-deps` runs apt-get with no timeout of its
+        # own; the bound is the PR browser job's, so a stalled mirror fails this
+        # step rather than the job.
+        timeout-minutes: 20
+        run: |
+          npm ci --ignore-scripts
+          ./node_modules/.bin/playwright install --with-deps chromium
       - name: Run the installed-runtime smoke
         # Verification proves the bytes are well-formed; this proves they
-        # execute. The packaged daemon serves and authenticates, the packaged
-        # kernel runs Cells that share state, an Artifact version is captured
-        # and read back after a same-name rewrite, the daemon restarts and the
-        # same bytes and history come back, and no process is left behind. The
-        # report is what the receipt step binds to this tarball's digest.
+        # execute and that a browser can read the captured versions. The
+        # packaged daemon serves and authenticates, the packaged kernel runs
+        # Cells that share state, an Artifact version is captured and read back
+        # after a same-name rewrite, the daemon restarts and the same bytes and
+        # history come back, the exact CSV/PNG versions open in a real browser,
+        # and no process is left behind. The report is what the receipt step
+        # binds to this tarball's digest.
         run: |
           python3 scripts/installed_runtime_smoke.py \
             --bundle dist/OpenAI4S-*-linux-x86_64.tar.gz \
-            --report dist/runtime-smoke-linux.json
+            --report dist/runtime-smoke-linux.json \
+            --browser
       # Same binding the wheel and the DMG get. Without it the tarball was
       # staged with no document tying its bytes to the frozen commit -- covered
       # only by the in-run `incoming` digests, which say "these are the bytes

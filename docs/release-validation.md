@@ -277,9 +277,30 @@ daemon smokes, then runs this script with `--python <venv interpreter> --artifac
 extras, so its `figure` check is `not_applicable`; every other step — the Cells,
 capture, exact version and restart readback — still runs.
 
-R2 adds the browser layer on top of this (`--browser` plus
-[`tests/browser_bundle_smoke.mjs`](../tests/browser_bundle_smoke.mjs)) and wires
-it into the release job together with that script.
+With `--browser`, the scenario's last step is a browser layer
+([`tests/browser_bundle_smoke.mjs`](../tests/browser_bundle_smoke.mjs)) run
+against the daemon it just restarted. The caller owns the lifecycle, so the
+script reads everything from the environment: `OPENAI4S_BROWSER_URL` (the
+loopback origin), `OPENAI4S_DATA_DIR` (for the access token) and
+`OPENAI4S_SMOKE_EXPECT` (the session, its project, and for the CSV and PNG
+artifacts the artifact id, exact version id, SHA-256 and filename). Inside a
+120 s budget it authenticates through the same loopback-token hand-off as the
+other browser harnesses and skips the first-run wizard, opens the session in
+the workbench, opens the CSV's **first** version by its exact id and requires
+the rendered table to contain 42 and not the second revision's 84, checks the
+exact CSV bytes against the captured checksum, opens the PNG and requires the
+image to decode with a non-zero size, and requires every HTTP request the page
+made to be loopback. A failure prints a bounded, credential-redacted diagnostic
+and exits non-zero, which the scenario records as `browser_open: failed`; a host
+without a browser records `not_run`, never a pass.
+
+The release job installs the driver for this layer by copying the PR browser
+job's `actions/setup-node` pin and its `npm ci --ignore-scripts` plus
+`playwright install --with-deps chromium` commands — no new action is
+introduced, because `release.yml` is a privileged workflow whose action majors
+are an explicit decision (`tests/test_governance.py`). The layer runs only in
+the release job (the nightly bundle smoke exercises the HTTP scenario without
+it), and `browser_open` is part of the same report the receipt binds.
 
 ## Windows package
 

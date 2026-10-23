@@ -532,3 +532,69 @@ def test_the_report_never_carries_the_daemon_token(monkeypatch, tmp_path):
     text = report_path.read_text("utf-8")
     assert TOKEN not in text
     assert "sk-" not in text
+
+
+# --------------------------------------------------------------------------- #
+# R2 contract: what R1 hands the browser layer
+# --------------------------------------------------------------------------- #
+def _scenario(tmp_path, *, browser: bool = True):
+    runtime = smoke.Runtime(
+        target="bundle",
+        artifact_sha256=SHA,
+        platform_name="linux",
+        arch="x86_64",
+        python_version="3.13.0",
+        origin_root=tmp_path,
+        serve_argv=["bundle", "serve", "--no-open"],
+        stop_argv=["bundle", "stop"],
+        cwd=tmp_path,
+    )
+    scenario = smoke.Scenario(
+        runtime=runtime, work_root=tmp_path / "work", browser=browser, env_base={}
+    )
+    scenario.frame_id = "f-session"
+    scenario.project_id = "p-project"
+    scenario.csv_artifact_id = "a-csv"
+    scenario.csv_version_first = "v-csv-first"
+    scenario.csv_sha_first = "d" * 64
+    scenario.figure = {
+        "artifact_id": "a-png",
+        "version_id": "v-png",
+        "checksum": "e" * 64,
+        "filename": "figure-1.png",
+    }
+    return scenario
+
+
+def test_the_browser_expectation_names_the_session_and_both_exact_versions(tmp_path):
+    """R2 opens these exact versions; the document must carry no credential."""
+    document = _scenario(tmp_path).browser_expectation()
+    assert document["frame_id"] == "f-session"
+    assert document["project_id"] == "p-project"
+    assert document["csv"] == {
+        "artifact_id": "a-csv",
+        "version_id": "v-csv-first",
+        "checksum": "d" * 64,
+        "filename": "smoke.csv",
+    }
+    assert document["png"]["version_id"] == "v-png"
+    assert document["png"]["filename"] == "figure-1.png"
+    assert "token" not in json.dumps(document).lower()
+
+
+def test_a_bundle_runtime_launches_and_stops_through_the_bundled_cli(
+    monkeypatch, tmp_path
+):
+    """The scenario must use the package's own entry point, not the host CLI."""
+    tarball = _write_fake_bundle(tmp_path / "bundle.tar.gz")
+    monkeypatch.setattr("platform.system", lambda: "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    runtime = smoke.runtime_for_bundle(tarball, work_root)
+    assert runtime.target == "bundle"
+    assert runtime.serve_argv[0].endswith("/bin/openai4s")
+    assert runtime.serve_argv[-2:] == ["serve", "--no-open"]
+    assert runtime.stop_argv[0] == runtime.serve_argv[0]
+    assert runtime.stop_argv[-1] == "stop"
+    assert str(runtime.origin_root).endswith("OpenAI4S-0.3.1-linux-x86_64")
