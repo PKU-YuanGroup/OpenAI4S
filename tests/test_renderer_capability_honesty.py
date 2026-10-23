@@ -110,3 +110,12 @@ def test_delimited_text_still_selects_the_table_renderer(filename: str) -> None:
     selected = RendererRegistry().select({"filename": filename})
     assert selected["renderer"]["renderer_id"] == "table"
     assert selected["matched_by"] == "extension"
+
+
+def test_notebook_renderer_claims_only_static_reading() -> None:
+    notebook = _catalog_by_id()["notebook"]
+    # The notebook preview renders saved sources and saved outputs.  It does not
+    # execute, search across cells or edit, so it must not borrow the text
+    # renderer's verbs.
+    assert list(notebook["capabilities"]) == ["view", "copy"]
+    assert notebook["interactive"] is False

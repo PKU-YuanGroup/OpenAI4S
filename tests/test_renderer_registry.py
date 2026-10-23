@@ -14,6 +14,23 @@ from openai4s.server.renderers import Renderer, RendererRegistry
         ({"content_type": "text/html; charset=utf-8"}, "html-preview", "content_type"),
         ({"content_type": "text/csv; charset=utf-8"}, "table", "content_type"),
         ({"metadata": {"kind": "protein_sequence"}}, "sequence", "kind"),
+        (
+            {
+                "filename": "session.python.ipynb",
+                "content_type": "application/x-ipynb+json",
+            },
+            "notebook",
+            "content_type",
+        ),
+        ({"filename": "analysis.ipynb"}, "notebook", "extension"),
+        # A generic kind from the capturing tool must not hand a saved .ipynb
+        # to the plain-text renderer before the notebook renderer is reached.
+        ({"filename": "analysis.ipynb", "kind": "code"}, "notebook", "extension"),
+        (
+            {"filename": "analysis.ipynb", "content_type": "application/json"},
+            "notebook",
+            "extension",
+        ),
         ({"filename": "weights.unknown"}, "download", "fallback"),
     ],
 )
@@ -47,3 +64,15 @@ def test_duplicate_renderer_ids_are_rejected():
     duplicate = Renderer("same", "one")
     with pytest.raises(ValueError, match="unique"):
         RendererRegistry((duplicate, Renderer("same", "two")))
+
+
+def test_notebook_renderer_is_read_only_and_declares_view_copy_only():
+    from openai4s.server.renderers import DEFAULT_RENDERERS
+
+    notebook = next(
+        item for item in DEFAULT_RENDERERS if item.renderer_id == "notebook"
+    )
+    assert notebook.capabilities == ("view", "copy")
+    assert notebook.interactive is False
+    assert ".ipynb" in notebook.extensions
+    assert "application/x-ipynb+json" in notebook.content_types

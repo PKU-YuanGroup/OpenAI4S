@@ -12,7 +12,9 @@ import {
   unicodeSafeSlice,
 } from "./api";
 import { artUrl } from "./cache";
+import { compatibilityRendererDescriptor } from "./catalog";
 import { filesT } from "./copy";
+import { closeNotebookPreview } from "./notebook";
 import {
   renderArtifactBody,
   renderArtifactDescriptor,
@@ -626,5 +628,89 @@ describe("preview completeness states and exact-version binding (A2)", () => {
     // receives the late markdown.
     expect(walk(body).some((node) => node.className === "md renderer-markdown")).toBe(false);
     expect(walk(bodyB).some((node) => node.className === "md renderer-markdown")).toBe(true);
+  });
+});
+
+
+describe("notebook artifact routing (A3)", () => {
+  class Dom3 {
+    children: Dom3[] = [];
+    parent: Dom3 | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    href = ""; html = ""; src = ""; alt = "";
+    attrs: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    classList = { add() {}, remove() {}, toggle() {}, contains: () => false };
+    onclick: (() => void) | null = null;
+    constructor(readonly tagName = "div") {}
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    get innerHTML(): string { return this.html; }
+    set innerHTML(value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+      this.html = value;
+    }
+    appendChild(child: Dom3): Dom3 {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(name: string, value: string): void { this.attrs[name] = value; }
+  }
+  const walk3 = (node: Dom3): Dom3[] => [node, ...node.children.flatMap(walk3)];
+  const host3 = (node: Dom3) => node as unknown as HTMLElement;
+
+  beforeEach(() => {
+    resetStoreFields();
+    vi.stubGlobal("document", { createElement: (tag: string) => new Dom3(tag) });
+  });
+  afterEach(() => {
+    closeNotebookPreview();
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("routes a notebook descriptor to the read-only preview with one exact-version read", async () => {
+    const calls: string[] = [];
+    setArtifactsFetch(async (url) => {
+      calls.push(String(url));
+      return new Response(
+        JSON.stringify({
+          nbformat: 4,
+          metadata: { kernelspec: { language: "python" } },
+          cells: [
+            { cell_type: "markdown", source: "# Saved report" },
+            { cell_type: "code", source: "1 + 1", outputs: [{ output_type: "stream", name: "stdout", text: "2\n" }] },
+          ],
+        }),
+      );
+    });
+    const body = new Dom3();
+    body.page = true;
+    renderArtifactDescriptor(
+      host3(body),
+      { id: "nb", filename: "session.python.ipynb", version_id: "v1" },
+      { artifact_id: "nb", version_id: "v1", matched_by: "extension", renderer: { renderer_id: "notebook" } },
+    );
+    await vi.waitFor(
+      () => expect(walk3(body).some((node) => (node.className || "").includes("notebook-preview"))).toBe(true),
+      { timeout: 3000 },
+    );
+    expect(calls).toEqual(["/api/v1/artifacts/versions/v1"]);
+    expect(calls.some((url) => /kernel|execute|\/host|\.ipynb\?/.test(url))).toBe(false);
+    const markdown = walk3(body).find((node) => (node.className || "").includes("notebook-markdown"));
+    expect(markdown?.innerHTML).toContain("<h1>Saved report</h1>");
+    expect(filesT("notebook.readonly")).toBeTruthy();
+  });
+
+  it("falls back to the notebook renderer for an .ipynb compatibility descriptor", () => {
+    const descriptor = compatibilityRendererDescriptor({ id: "nb", filename: "a.ipynb" });
+    expect(descriptor.renderer?.renderer_id).toBe("notebook");
   });
 });
