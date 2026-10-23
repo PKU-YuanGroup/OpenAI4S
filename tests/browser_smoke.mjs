@@ -131,6 +131,203 @@ async function dumpBranchForkState(frameId) {
   return { snapshot, apiBranches };
 }
 
+// The entries are real persisted Cells; only their response ordering is fault-injected.
+async function executionHistoryRaceScene(fid, projectId) {
+  await page.evaluate(async ({ fid, projectId }) => window.openConversation(fid, projectId), { fid, projectId });
+  await ensureDockOpen();
+  await page.evaluate(() => window.setActiveTab("notebook"));
+  const before = await api(`/frames/${fid}/execution-log`);
+  assert.ok(before.entries.length >= 2, "race fixture has real execution history");
+  await page.evaluate(() => { if (!window.execSourcesState().open) window.toggleExecutedCode(); });
+  await waitUntil("execution history initial snapshot", () => page.evaluate((fid) => {
+    const st = window.execSourcesState();
+    return !st.loading && st.cells[fid]?.length >= 2;
+  }, fid));
+  const url = `**/api/v1/frames/${fid}/execution-log`;
+  let held;
+  let reads = 0;
+  let failNext = false;
+  let writes = 0;
+  const recordWrite = (request) => {
+    if (new URL(request.url()).pathname.startsWith(`/api/v1/frames/${fid}/`) && request.method() !== "GET") writes++;
+  };
+  page.on("request", recordWrite);
+  await page.route(url, async (route) => {
+    reads++;
+    if (failNext) {
+      failNext = false;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "execution history temporarily unavailable" }) });
+    } else if (reads === 1) held = route;
+    else await route.continue();
+  });
+  try {
+    await page.evaluate((fid) => { window.__executionRaceRead = window.selectExecFrame(fid, true); }, fid);
+    await waitUntil("held older execution response", () => Boolean(held));
+    await page.evaluate((fid) => window.selectExecFrame(fid, true), fid);
+    // Model an older snapshot using a prefix of the real stored history.
+    await held.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...before, entries: before.entries.slice(0, -1) }) });
+    await page.evaluate(() => window.__executionRaceRead);
+    assert.deepEqual(await page.evaluate((fid) => window.execSourcesState().cells[fid], fid), before.entries);
+    failNext = true;
+    await page.evaluate((fid) => window.selectExecFrame(fid, true), fid);
+    assert.ok(await page.locator(".nb-exec .timeline-error").count(), "failed refresh is visible");
+    assert.deepEqual(await page.evaluate((fid) => window.execSourcesState().cells[fid], fid), before.entries, "failed refresh retains the last successful cells");
+    const beforeRetry = reads;
+    const retryLog = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/v1/frames/${fid}/execution-log`);
+    await page.locator(`.nb-exec-frame[data-frame="${fid}"]`).click();
+    const retried = await retryLog;
+    assert.ok(retried.ok(), "selecting the frame retries its failed refresh");
+    await retried.finished();
+    assert.ok(reads > beforeRetry);
+    await waitUntil("execution history retry succeeded", () => page.evaluate(() => !window.execSourcesState().error));
+    assert.deepEqual(await page.evaluate((fid) => window.execSourcesState().cells[fid], fid), before.entries);
+    const reopenedLog = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === `/api/v1/frames/${fid}/execution-log`);
+    await page.evaluate(() => { window.toggleExecutedCode(); window.toggleExecutedCode(); });
+    const refreshed = await reopenedLog;
+    assert.ok(refreshed.ok(), "reopening successfully re-reads execution history");
+    await refreshed.finished();
+    await waitUntil("reopened execution history", () => page.evaluate(({ fid, length }) => {
+      const st = window.execSourcesState();
+      return st.open && !st.loading && st.cells[fid]?.length === length;
+    }, { fid, length: before.entries.length }));
+    assert.deepEqual((await api(`/frames/${fid}/execution-log`)).entries, before.entries, "reads and reopening preserve source and never replay cells");
+    assert.equal(writes, 0, "execution-history navigation is read-only");
+  } finally {
+    await page.unroute(url);
+    page.off("request", recordWrite);
+    await page.evaluate(() => { delete window.__executionRaceRead; if (window.execSourcesState().open) window.toggleExecutedCode(); });
+  }
+  console.log("Execution history: reverse-order reads, failed-refresh retry, close/reopen, original source preserved, zero cell replay passed");
+}
+
+// A real gateway and persisted sessions exercise the bundled frontend. Only
+// the two compute GET routes are controlled fixtures: this does not allocate
+// a cluster or claim live provider coverage (Local/Slurm are ineligible here).
+async function computeStatusTruthScenes(projectId) {
+  const first = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const second = await api("/frames", { method: "POST", data: { project_id: projectId } });
+  const fid = first.id || first.frame_id;
+  const other = second.id || second.frame_id;
+  const cluster = {
+    location: "cluster", readiness: { ready: true },
+    allocation: { allocation_id: "browser-fixture-only", phase: "ready" },
+    workload: { profile: "Browser fixture cluster" }, state_lost_epochs: [1],
+  };
+  let mode = "cluster";
+  let profiles = "ok";
+  let held = null;
+  const statusRoute = `**/api/v1/sessions/*/compute`;
+  const profileRoute = "**/api/v1/orchestration/profiles";
+  const json = (route, body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  const reopen = (id) => page.evaluate(async ({ id, projectId }) => window.openConversation(id, projectId), { id, projectId });
+  const unavailable = () => waitUntil("unavailable run-location badge", async () => /Run location unavailable/.test(await page.locator("#compute-badge").innerText()));
+  await page.route(statusRoute, async (route) => {
+    assert.equal(route.request().method(), "GET", "fixture must never allocate or release real compute");
+    if (mode === "hold") { held = route; return; }
+    if (mode === "disconnect") return route.abort("connectionfailed");
+    if (mode === "fail") return json(route, { error: "injected status failure" }, 500);
+    return json(route, mode === "local" ? { location: "local", state_lost_epochs: [] } : cluster);
+  });
+  await page.route(profileRoute, (route) => profiles === "fail"
+    ? json(route, { error: "injected catalog failure" }, 500)
+    : json(route, { profiles: profiles === "empty" ? [] : [{ name: "Browser fixture cluster", cpus: 4, memory_mb: 8192, walltime_s: 3600 }] }));
+  try {
+    await reopen(fid);
+    await page.locator("#compute-badge.ready").waitFor();
+    await page.locator("#compute-lost").waitFor();
+    mode = "fail";
+    await page.locator("#compute-badge").click();
+    await page.locator(".rl-retry").waitFor();
+    await unavailable();
+    assert.match(await page.locator("#compute-badge").innerText(), /last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 1);
+    assert.equal(await page.locator(".rl-option.current").count(), 0);
+    assert.equal(await page.locator(".rl-option:not([disabled])").count(), 0);
+    mode = "disconnect";
+    await page.locator(".rl-retry").click();
+    await page.locator(".rl-retry").waitFor();
+    await unavailable();
+    assert.match(await page.locator("#compute-badge").innerText(), /last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 1);
+    mode = "cluster";
+    await page.locator(".rl-retry").click();
+    await page.locator("#compute-badge.ready").waitFor();
+    await page.locator(".rl-option.current").waitFor();
+    assert.equal(await page.locator(".rl-retry").count(), 0);
+    await page.locator("#modal-close").click();
+    mode = "fail";
+    await reopen(fid); // same-session navigation changes its request generation
+    await unavailable();
+    assert.match(await page.locator("#compute-badge").innerText(), /last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 1);
+    await reopen(other);
+    await unavailable();
+    assert.doesNotMatch(await page.locator("#compute-badge").innerText(), /Local|Browser fixture cluster|last confirmed/);
+    assert.equal(await page.locator("#compute-lost").count(), 0);
+    await page.locator("#compute-badge").click();
+    await page.locator(".rl-retry").waitFor();
+    assert.equal(await page.locator(".rl-option.current").count(), 0);
+    profiles = "fail"; mode = "cluster";
+    await page.locator(".rl-retry").click();
+    await page.getByText("Could not load cluster profiles", { exact: true }).waitFor();
+    assert.equal(await page.locator(".rl-empty").count(), 0);
+    profiles = "empty";
+    await page.locator(".rl-retry").click();
+    await page.locator(".rl-empty").waitFor();
+    assert.equal(await page.locator(".rl-error").count(), 0);
+    await page.locator("#modal-close").click();
+    // Ketcher reuses #modal without changing _modalMode. A dismissed status
+    // read must not overwrite the replacement iframe when its response lands.
+    mode = "hold";
+    await page.locator("#compute-badge").click();
+    await waitUntil("held dialog before Ketcher", async () => !!held);
+    await page.locator("#modal-close").click();
+    await page.evaluate(() => window.openKetcher());
+    await page.locator('#modal-body iframe[src*="/ketcher"]').waitFor();
+    const replacedDialog = held; held = null;
+    await json(replacedDialog, cluster);
+    await page.locator("#compute-badge.ready").waitFor();
+    assert.equal(await page.locator('#modal-body iframe[src*="/ketcher"]').count(), 1);
+    assert.equal(await page.locator("#modal-body .run-location").count(), 0);
+    await page.locator("#modal-close").click();
+    // Reopening the same modal owns a distinct request, even for the same fid.
+    mode = "hold";
+    await page.locator("#compute-badge").click();
+    await waitUntil("held first dialog", async () => !!held);
+    await page.locator("#modal-close").click();
+    mode = "local";
+    await page.locator("#compute-badge").click();
+    await page.locator(".rl-option.current").waitFor();
+    assert.match(await page.locator(".rl-option.current").innerText(), /This machine/);
+    const oldDialog = held; held = null;
+    await json(oldDialog, cluster);
+    await page.waitForTimeout(100);
+    assert.match(await page.locator(".rl-option.current").innerText(), /This machine/);
+    assert.equal(await page.locator("#compute-badge").count(), 0);
+    await page.locator("#modal-close").click();
+    // A late old-session response cannot repaint a newer session's local state.
+    mode = "hold";
+    await reopen(fid);
+    await waitUntil("held compute response", async () => !!held);
+    mode = "local";
+    await reopen(other);
+    await page.locator("#compute-badge").waitFor({ state: "detached" });
+    const old = held; held = null;
+    await json(old, cluster);
+    // The page's response listener is not enough: drain the normal microtasks.
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator("#compute-badge").count(), 0);
+    assert.equal(await page.locator("#compute-lost").count(), 0);
+    console.log("Compute browser: stale evidence, initial unknown, Retry, catalog distinction, replacement viewer, same-session reopen, and late-session response fixtures passed");
+  } finally {
+    if (held) await held.abort().catch(() => {});
+    await page.unroute(statusRoute);
+    await page.unroute(profileRoute);
+  }
+}
+
 // C1/C3/C7 correctness cases use real persisted Cells/Artifacts. REST faults
 // and anonymous event interleavings are explicitly injected UI fault fixtures.
 async function correctnessScenes(projectId) {
@@ -437,6 +634,7 @@ async function correctnessScenes(projectId) {
     await api("/network/status", { method: "PUT", data: { enabled: false } });
   }
   console.log("C5 browser: passive open, keyboard checks, remedy/settings, facts limits, safe text, retained results, config invalidation and 403 passed");
+  await executionHistoryRaceScene(fid, projectId);
 
 }
 
@@ -747,6 +945,7 @@ try {
   });
   const projectId = project.project_id || project.id;
   if (!projectId) throw new Error("project creation did not return an id");
+  await computeStatusTruthScenes(projectId);
   await correctnessScenes(projectId);
   await newSessionNotebookScene(projectId);
   const frame = await api("/frames", {

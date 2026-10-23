@@ -102,7 +102,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 611 bundled Skills** — 50 curated OpenAI4S recipes for GPU/model science, research workflows, and platform operations, plus all 561 recipes from the pinned MIT-licensed GPTomics/bioSkills collection. Skills are **recipes of code**, not JSON schemas; the large third-party collection is searched on demand and occupies only one always-on prompt line. User-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **🔬 612 bundled Skills** — 51 curated OpenAI4S recipes for GPU/model science, research workflows, and platform operations, plus all 561 recipes from the pinned MIT-licensed GPTomics/bioSkills collection. Skills are **recipes of code**, not JSON schemas; the large third-party collection is searched on demand and occupies only one always-on prompt line. User-authored Skills stay under the data directory and cannot shadow bundled trust.
 - **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 - **🔗 Read-only session sharing** — publish a session as a snapshot anyone with the link can view and import, through a relay **you** run. The daemon never binds a public port; it dials out. Memories, permission state, and keys never leave, and residual secrets fail the publish closed. → [Web sharing](docs/webshare.md)
 - **🔎 Source-attributed retrieval** — seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex). Retrieved records carry where they came from and when, without the API key that fetched them.
@@ -117,7 +117,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 | plane | what's implemented |
 |---|---|
 | **Control & orchestration** | class-based native `Tool`s · append-only Action Ledger · plan/review with a durable state machine · context compaction that archives the raw slices it summarizes · concurrent sub-agent delegation (fanout 48, depth 4) a user can stop mid-flight · enforced Specialist allowlists a child cannot widen · MCP connectors · cross-session memory |
-| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 611 Skills (50 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
+| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 612 Skills (51 curated + 561 pinned bioSkills) · a FIFO execution coordinator with ABA-safe watchdog recovery |
 | **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
@@ -248,7 +248,7 @@ Release images pass `container_smoke.sh` before publication. Binding `0.0.0.0` i
 
 ### 🧩 Take the Skills anywhere (`npx`)
 
-The 611 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
+The 612 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. The npm release **`@pku-yuangroup/openai4s-skills@0.2.0`** contains **603 Skills: 42 curated + 561 pinned bioSkills**. Install that fixed release with:
 
 ```bash
 npx @pku-yuangroup/openai4s-skills@0.2.0 install --all                  # v0.2.0: 42 curated Skills
@@ -258,16 +258,16 @@ npx @pku-yuangroup/openai4s-skills@0.2.0 list
 npx @pku-yuangroup/openai4s-skills@0.2.0 uninstall --all
 ```
 
-`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (611 Skills: 50 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
+`npx @pku-yuangroup/openai4s-skills <command>` selects the latest npm release. To use the current repository catalog instead (612 Skills: 51 curated + 561 bioSkills), run directly from GitHub; this form follows the default branch:
 
 ```bash
-npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 50 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 51 curated Skills
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned bioinformatics recipes
 ```
 
 Both sources use the same target and overwrite rules. `--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written there, and `--dry-run` stops at that plan. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited or one it did not install, and an uninstall removes only files it wrote. Every curated Skill page and the collection root under [`skills/`](skills/) carry an **Install** section with their own name already filled in, so you can install from whichever page you landed on.
 
-If you already run OpenAI4S from this checkout, you already have all 611 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
+If you already run OpenAI4S from this checkout, you already have all 612 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
 
 ---
 
@@ -282,7 +282,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
 | [**Model backend bring-up**](docs/model-backend-bringup.md) | local/remote GPU selection, checkpoint staging, real-inference canary admission, and connector portability |
-| [**Skills**](docs/skills.md) | 50 curated Skills + 561 pinned bioSkills + how to write your own |
+| [**Skills**](docs/skills.md) | 51 curated Skills + 561 pinned bioSkills + how to write your own |
 | [**Skill development record**](docs/skill-development.md) | the empirical-analysis Skills developed here, their method choices, implementation and validation |
 | [**Research experiments**](experiments/README.md) | Separate data and results for bounded DiD worked-example replications using the panel preprocessing Skill |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
@@ -414,26 +414,27 @@ Released under the **MIT License** — see [`LICENSE`](LICENSE).
 <a href="https://github.com/Nobody-Zhang" title="Nobody-Zhang"><img src=".github/contributors/Nobody-Zhang.png" width="64" height="64" alt="Nobody-Zhang" /></a>
 <a href="https://github.com/wangyu-sd" title="wangyu-sd"><img src=".github/contributors/wangyu-sd.png" width="64" height="64" alt="wangyu-sd" /></a>
 <a href="https://github.com/HowardLi1984" title="HowardLi1984"><img src=".github/contributors/HowardLi1984.png" width="64" height="64" alt="HowardLi1984" /></a>
+<a href="https://github.com/dvd233" title="dvd233"><img src=".github/contributors/dvd233.png" width="64" height="64" alt="dvd233" /></a>
 <a href="https://github.com/Linmj-Judy" title="Linmj-Judy"><img src=".github/contributors/Linmj-Judy.png" width="64" height="64" alt="Linmj-Judy" /></a>
 <a href="https://github.com/YuyangSunshine" title="YuyangSunshine"><img src=".github/contributors/YuyangSunshine.png" width="64" height="64" alt="YuyangSunshine" /></a>
-<a href="https://github.com/Weifeng2Wu" title="Weifeng2Wu"><img src=".github/contributors/Weifeng2Wu.png" width="64" height="64" alt="Weifeng2Wu" /></a>
-<a href="https://github.com/CyrusAuyeung" title="CyrusAuyeung"><img src=".github/contributors/CyrusAuyeung.png" width="64" height="64" alt="CyrusAuyeung" /></a>
-<a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
-<a href="https://github.com/ClarenceYC" title="ClarenceYC"><img src=".github/contributors/ClarenceYC.png" width="64" height="64" alt="ClarenceYC" /></a>
-<a href="https://github.com/muzimu217" title="muzimu217"><img src=".github/contributors/muzimu217.png" width="64" height="64" alt="muzimu217" /></a>
-<a href="https://github.com/WenyuLiang" title="WenyuLiang"><img src=".github/contributors/WenyuLiang.png" width="64" height="64" alt="WenyuLiang" /></a>
 <a href="https://github.com/Grace-xyx" title="Grace-xyx"><img src=".github/contributors/Grace-xyx.png" width="64" height="64" alt="Grace-xyx" /></a>
-<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
-<a href="https://github.com/ChampionZhong" title="ChampionZhong"><img src=".github/contributors/ChampionZhong.png" width="64" height="64" alt="ChampionZhong" /></a>
+<a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
+<a href="https://github.com/Weifeng2Wu" title="Weifeng2Wu"><img src=".github/contributors/Weifeng2Wu.png" width="64" height="64" alt="Weifeng2Wu" /></a>
 <a href="https://github.com/cursoragent" title="cursoragent"><img src=".github/contributors/cursoragent.png" width="64" height="64" alt="cursoragent" /></a>
+<a href="https://github.com/Lyu6PosHao" title="Lyu6PosHao"><img src=".github/contributors/Lyu6PosHao.png" width="64" height="64" alt="Lyu6PosHao" /></a>
+<a href="https://github.com/CyrusAuyeung" title="CyrusAuyeung"><img src=".github/contributors/CyrusAuyeung.png" width="64" height="64" alt="CyrusAuyeung" /></a>
+<a href="https://github.com/Devin-jun" title="Devin-jun"><img src=".github/contributors/Devin-jun.png" width="64" height="64" alt="Devin-jun" /></a>
+<a href="https://github.com/WenyuLiang" title="WenyuLiang"><img src=".github/contributors/WenyuLiang.png" width="64" height="64" alt="WenyuLiang" /></a>
+<a href="https://github.com/muzimu217" title="muzimu217"><img src=".github/contributors/muzimu217.png" width="64" height="64" alt="muzimu217" /></a>
+<a href="https://github.com/ClarenceYC" title="ClarenceYC"><img src=".github/contributors/ClarenceYC.png" width="64" height="64" alt="ClarenceYC" /></a>
+<a href="https://github.com/brainsparker" title="brainsparker"><img src=".github/contributors/brainsparker.png" width="64" height="64" alt="brainsparker" /></a>
+<a href="https://github.com/ChampionZhong" title="ChampionZhong"><img src=".github/contributors/ChampionZhong.png" width="64" height="64" alt="ChampionZhong" /></a>
 <a href="https://github.com/yusowa0716" title="yusowa0716"><img src=".github/contributors/yusowa0716.png" width="64" height="64" alt="yusowa0716" /></a>
 <a href="https://github.com/riiiiiiin" title="riiiiiiin"><img src=".github/contributors/riiiiiiin.png" width="64" height="64" alt="riiiiiiin" /></a>
 <a href="https://github.com/jiangzx25" title="jiangzx25"><img src=".github/contributors/jiangzx25.png" width="64" height="64" alt="jiangzx25" /></a>
 <a href="https://github.com/stau-7001" title="stau-7001"><img src=".github/contributors/stau-7001.png" width="64" height="64" alt="stau-7001" /></a>
 <a href="https://github.com/EQSTLab" title="EQSTLab"><img src=".github/contributors/EQSTLab.png" width="64" height="64" alt="EQSTLab" /></a>
-<a href="https://github.com/difficulttopickaname" title="difficulttopickaname"><img src=".github/contributors/difficulttopickaname.png" width="64" height="64" alt="difficulttopickaname" /></a>
 <a href="https://github.com/Pandasama2025" title="Pandasama2025"><img src=".github/contributors/Pandasama2025.png" width="64" height="64" alt="Pandasama2025" /></a>
-<a href="https://github.com/dvd233" title="dvd233"><img src=".github/contributors/dvd233.png" width="64" height="64" alt="dvd233" /></a>
 <!-- CONTRIBUTORS:END -->
 
 <sub>Auto-generated daily from the GitHub <a href="https://github.com/PKU-YuanGroup/OpenAI4S/graphs/contributors">contributors graph</a> and a maintained public-recognition list by <code>scripts/update_contributors.py</code>.</sub>

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本目录树共暴露 611 个内置 Skill：50 份由 OpenAI4S 筛选维护的配方，加上固定版本的
+本目录树共暴露 612 个内置 Skill：51 份由 OpenAI4S 筛选维护的配方，加上固定版本的
 GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，加上把它跑起来所需的
 运维知识——而不是 provider 的 JSON Tool。披露是渐进的：精选 Skill 各占一行摘要，大型
 第三方集合合计只占一行，再通过搜索或精确名称展开。只有被选中的 `SKILL.md` 和可选
@@ -60,6 +60,7 @@ curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/mai
 | [`ligandmpnn/`](ligandmpnn/) | 当设计面不只有蛋白时用它做反向折叠：小分子、核酸和金属对网络是可见的原子，而 `proteinmpnn` 会直接忽略它们。它的 runner 也是唯一会把设计序列穿回结构并写出 PDB 的那个。 |
 | [`literature-review/`](literature-review/) | 从「X 的奠基论文是哪篇」一直到完整的多源综述。它的内容其实就是纪律：先检索再动笔，每一个 DOI 都要解析核实而不是凭记忆写出，用 CrossRef 查撤稿，写出的段落要以你自己的综合判断开头，而不是以某位作者的名字开头。 |
 | [`mineral_spectra_analysis/`](mineral_spectra_analysis/) | 对未知混合矿物的 Raman 光谱做解混。预处理只做一次，然后进入循环：检测残余峰、匹配参考谱库、对所有已选组分做 NNLS 重拟合、扣除。盲分析循环内不得读取 `truth.json`；对照真值的评估是单独一步，只在答案定稿之后才跑。 |
+| [`molecular-dynamics/`](molecular-dynamics/) | 用 OpenMM 模拟蛋白质/小分子体系，并用 MDAnalysis 分析轨迹：体系准备、最小化、分阶段 NVT/NPT、RMSD/RMSF、接触和相对自由能面。来源为 K-Dense-AI/scientific-agent-skills；力场、采样局限、周期性几何和 provenance 都保持明确。 |
 | [`openfold3/`](openfold3/) | AlphaFold3 的 Apache-2.0 复现，所以当你要的就是与 AF3 一致的行为时，选它。权重在 HuggingFace 上是 gated 的，需要先通过访问申请。MSA 服务器默认开启，也就是说除非你显式关掉，序列会离开本机。 |
 | [`paper-narrative/`](paper-narrative/) | 配图三层里的最外层，而且它的起点比你以为的更靠前：它读整篇 manuscript 和整套配图，然后由一位「责任编辑」式的评审回答一个问题——就凭 Figure 1，这篇稿子会不会被送外审。产出包括叙事主线、放错了图的 panel、还缺哪些分析、哪些该砍掉。它从你的 manuscript 里推导出的 brief 是模型生成的，动手之前先自己过一遍。 |
 | [`pdf-explore/`](pdf-explore/) | 在内核里把 PDF 解析一次并留住每页文本，之后靠大纲、相关性检索、逐页抽取和图片裁剪来干活。它是为那种要同时用到文档多处、甚至要扫遍每一页的问题准备的。如果只是查一到四页、并且下一条回复就要引用，那就跳过它，直接读页面。 |
