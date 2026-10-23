@@ -86,6 +86,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | `test_sidecar_replay.py` | 面板／DiD 共享重放的浮点容差、非有限值拒绝和预期拒绝计分。 |
 | [`test_did_analysis_skill.py`](test_did_analysis_skill.py) | 传统 DiD、事件研究联合协方差、安全安慰剂、分批／DDD 估计目标、独立聚类推断核对、输入拒绝与确定性审计导出。 |
 | [`test_is_research_skills.py`](test_is_research_skills.py) | IS 研究请求检索、包内参考资源读取、Python 配方语法及固定版本第三方许可证来源检查。 |
+| [`test_molecular_dynamics_skill.py`](test_molecular_dynamics_skill.py) | 在离线合成数据上执行 OpenMM/MDAnalysis 文档配方，覆盖分阶段模拟、轨迹时间、RMSF 和周期接触几何；可选依赖缺失时跳过执行。 |
 | [`test_is_survey_measurement.py`](test_is_survey_measurement.py) | 直接执行问卷计分配方，验证反向计分、原始数据保留、显式缺失策略、样本损失审计与非法输入拒绝。 |
 | [`test_is_qualitative_analysis.py`](test_is_qualitative_analysis.py) | 质性分析辅助函数的可手算名义编码一致性、缺失值和退化输入行为。 |
 | [`test_panel_data_preprocessing_skill.py`](test_panel_data_preprocessing_skill.py) | 面板转换、显式聚合、缺失与来源行映射、日历缺口、样本构成变化、突变与尖峰/趋势区分、处理状态删失、可校验导出和真实 sidecar 的 harness 拒绝评分。 |
