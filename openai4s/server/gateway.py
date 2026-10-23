@@ -119,6 +119,7 @@ from openai4s.server import (
     sandbox_grants,
     team_policy,
     team_routes,
+    update_routes,
     ws_frames,
 )
 from openai4s.server.action_timeline import ActionTimelineService
@@ -16502,6 +16503,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ):
                 return
             if diagnostics_routes.handle(self, method, sub, cfg=cfg):
+                return
+            # Explicit update check: a read-only status and an operator-pressed
+            # check. Admin-only on both verbs (team_policy), no-store, and the
+            # GET never reaches the network or writes the cache.
+            if update_routes.handle(self, method, sub, cfg=cfg):
                 return
             if artifact_index_routes.handle(self, method, sub, q, store):
                 return

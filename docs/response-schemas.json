@@ -6623,6 +6623,72 @@
         "type": "object"
       }
     },
+    "DELETE /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /uploads [error]": {
       "schema": {
         "properties": {
@@ -21723,6 +21789,143 @@
         "type": "object"
       }
     },
+    "GET /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /updates/status [ok]": {
+      "schema": {
+        "properties": {
+          "apply_available": {
+            "type": "boolean"
+          },
+          "channel": {
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "check": {
+            "properties": {
+              "age_s": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached": {
+                "type": "boolean"
+              },
+              "checked_at_ms": {
+                "type": "integer"
+              },
+              "latest": {
+                "type": "string"
+              },
+              "previous": {
+                "properties": {
+                  "checked_at_ms": {
+                    "type": "integer"
+                  },
+                  "latest": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "retry_after_at": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "trust": {
+                "properties": {
+                  "authorship": {
+                    "type": "string"
+                  },
+                  "authorship_detail": {
+                    "type": "string"
+                  },
+                  "integrity": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            },
+            "required": [
+              "age_s",
+              "cached",
+              "checked_at_ms",
+              "latest",
+              "previous",
+              "reason",
+              "retry_after_at",
+              "running",
+              "status",
+              "trust"
+            ],
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apply_available",
+          "channel",
+          "check",
+          "request_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /uploads [error]": {
       "schema": {
         "properties": {
@@ -29361,6 +29564,72 @@
           "code",
           "error",
           "received_type",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -43266,6 +43535,151 @@
         "type": "object"
       }
     },
+    "POST /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "retry_after_s": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /updates/check [ok]": {
+      "schema": {
+        "properties": {
+          "apply_available": {
+            "type": "boolean"
+          },
+          "channel": {
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "check": {
+            "properties": {
+              "age_s": {
+                "type": "integer"
+              },
+              "cached": {
+                "type": "boolean"
+              },
+              "checked_at_ms": {
+                "type": "integer"
+              },
+              "latest": {
+                "type": "string"
+              },
+              "previous": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "retry_after_at": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "trust": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            },
+            "required": [
+              "age_s",
+              "cached",
+              "checked_at_ms",
+              "latest",
+              "previous",
+              "reason",
+              "retry_after_at",
+              "running",
+              "status",
+              "trust"
+            ],
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "apply_available",
+          "channel",
+          "check",
+          "request_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /uploads [ok]": {
       "schema": {
         "properties": {
@@ -50517,6 +50931,72 @@
         "required": [
           "enabled",
           "env_locked"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /updates/check [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /updates/status [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }

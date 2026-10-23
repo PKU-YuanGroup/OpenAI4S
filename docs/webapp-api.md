@@ -367,6 +367,19 @@ All three are admin-only in team mode on every verb (`403 admin_only`, never
 | `POST /diagnostics/checks` | The full `doctor.report()` — the same probes the CLI `doctor` runs, side effects included (a temp sandbox self-test, environment root walks). `{"status","checks":[…],"request_id"}`. |
 | `POST /diagnostics/bundle` | Streams the redacted support zip (`application/zip`, `Content-Disposition: attachment`). The body is ignored — the client cannot name the output path. One generation in flight per process and one per principal per 60 s (`429 rate_limited`; a 413 or a failed generation does not spend the cooldown); `413 payload_too_large` above 32 MiB. |
 
+### Update check
+
+Both routes are admin-only in team mode (`403 admin_only`, decided before the
+cache is read or a socket is opened), carry `Cache-Control: no-store`, and only
+report. This version has no install/stop/rollback action, no automatic polling,
+and no Agent Tool, Host method or Skill entry: the UI shows the check result and
+the documented manual upgrade path.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /updates/status` | Read-only view of this install and the last recorded check: `{"request_id","channel":{"id"},"check":{…},"apply_available":false}`. It never calls the discovery check, never writes the cache and opens no socket; when no record exists the check is `{"status":"unknown","reason":"not_checked","cached":false,"age_s":null,"checked_at_ms":0,…}` rather than an empty success. A cached answer recorded against a different running version or release index is not this install's answer and reads as `not_checked`. |
+| `POST /updates/check` | Body must be exactly `{"refresh": boolean}` (any other shape, including a missing key, is `400 invalid_request`; the server chooses the index — a client cannot name one). Calls the existing discovery check and returns the same DTO; `check` carries `status` (`unknown|update_available|up_to_date`), `reason` (the discovery reason code), `running`, `latest`, `checked_at_ms`, `cached`, `age_s`, `retry_after_at`, `previous` (the last answer that *was* an answer, with its own timestamp), and a whitelisted `trust` summary — never a download URL, install path or upstream prose. One check runs instance-wide at a time, and one forced refresh per authenticated principal per 60 s: a duplicate in-flight or cooled-down request is `429 rate_limited` with `reason` (`check_in_progress` / `refresh_cooldown`), a bounded `retry_after_s` and a matching `Retry-After` header. `OPENAI4S_UPDATE_SOURCE=offline` short-circuits before the cache or the network. A failure is `unknown` with a reason — never `up_to_date` — and `previous` never masquerades as this check. `apply_available` is always `false`. |
+
 ### Models and model profiles
 
 **Readiness is local; reachability is asked for.** Every profile carries a

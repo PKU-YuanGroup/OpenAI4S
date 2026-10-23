@@ -274,6 +274,14 @@ DAEMON_OPERATION_PREFIXES = (
     "/diagnostics/",
 )
 
+#: Update checks are instance-global in both directions: the POST dials the
+#: release index *as the daemon* and writes the one shared check cache, and the
+#: GET exposes this machine's install channel and last known version. There is
+#: no per-user variant of either answer, so both are admin-only on every verb and
+#: the refusal comes before the cache is read or a socket is opened. Classified
+#: here rather than at the route so the gateway guard refuses ahead of dispatch.
+UPDATE_PATHS = frozenset({"/updates/status", "/updates/check"})
+
 #: Instance-global mutations beyond configuration: registering a remote
 #: compute provider (credentials, code on another host), installing
 #: packages into the venv every kernel shares, configuring a connector that
@@ -334,7 +342,7 @@ def is_instance_config(method: str, path: str) -> bool:
 
 def is_daemon_operation(method: str, path: str) -> bool:
     """Every verb: the surface has no owner to scope a read to."""
-    if path in DAEMON_OPERATION_PATHS:
+    if path in DAEMON_OPERATION_PATHS or path in UPDATE_PATHS:
         return True
     return any(path.startswith(prefix) for prefix in DAEMON_OPERATION_PREFIXES)
 
@@ -457,6 +465,7 @@ __all__ = [
     "INSTANCE_CONFIG_PREFIXES",
     "INSTANCE_MUTATION_PATHS",
     "INSTANCE_MUTATION_PREFIXES",
+    "UPDATE_PATHS",
     "enabled",
     "is_admin",
     "is_admin_only_surface",
