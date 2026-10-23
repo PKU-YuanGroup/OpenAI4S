@@ -20,6 +20,7 @@ import {
   previewReadOptions,
   svgElement,
   translate,
+  TEXT_SOURCE_PREVIEW_CHARACTERS,
   truncateMarkdown,
   unicodeSafeSlice,
 } from "./api";
@@ -36,6 +37,7 @@ import {
 import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
 import { closeNotebookPreview, renderNotebookArtifact } from "./notebook";
+import { renderScienceResults } from "./science-results";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
@@ -48,10 +50,15 @@ function previewStatus(
   container: HTMLElement,
   a: ArtifactRow,
   url: string,
+  truncated: boolean,
   shown: number,
   total: number,
 ): void {
-  const partial = shown < total;
+  // The state comes from the slice that was actually taken, not from comparing
+  // a possibly-rewritten prefix length with the source length: closing a cut
+  // Markdown code fence appends characters, which could make a partial render
+  // look longer than the file for totals within a few characters of the limit.
+  const partial = truncated;
   const note = el(
     "div",
     "renderer-note renderer-completeness",
@@ -148,19 +155,19 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
       const markdown = el("div", "md renderer-markdown");
       markdown.innerHTML = renderMd(shown.text);
       container.appendChild(markdown);
-      previewStatus(container, target, url, shown.text.length, text.length);
+      previewStatus(container, target, url, shown.truncated, shown.text.length, text.length);
     })
     .catch(readFailure(container, a, url, () => renderMarkdownArtifact(container, a, url)));
 }
 
-const SOURCE_PREVIEW_CHARACTERS = CHEMISTRY_SOURCE_PREVIEW_CHARACTERS;
+const SOURCE_PREVIEW_CHARACTERS = TEXT_SOURCE_PREVIEW_CHARACTERS;
 
 function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
   const pre = el("pre", "renderer-source");
   pre.textContent = unicodeSafeSlice(text, SOURCE_PREVIEW_CHARACTERS);
   container.appendChild(pre);
   if (text.length <= SOURCE_PREVIEW_CHARACTERS) {
-    previewStatus(container, a, url, text.length, text.length);
+    previewStatus(container, a, url, false, text.length, text.length);
     return;
   }
   const note = el("div", "renderer-note renderer-completeness", filesT("viewer.text.truncated"));
@@ -196,6 +203,9 @@ export function renderStructuredText(
     // The tile is built directly: `renderDownloadArtifact` would route a
     // `.json` name back into the text renderer and fetch forever.
     if (controlDense(text)) return renderDownloadCard(container, a, url);
+    // A saved science-search envelope gets its own read-only result list; any
+    // other JSON keeps the source view below.
+    if (renderScienceResults(container, a, url, text)) return;
     renderRawSource(container, a, text, url);
     return;
   }
@@ -553,7 +563,14 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
       details.appendChild(pre);
       wrap.appendChild(details);
       container.appendChild(wrap);
-      previewStatus(container, target, url, Math.min(text.length, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS), text.length);
+      previewStatus(
+        container,
+        target,
+        url,
+        text.length > CHEMISTRY_SOURCE_PREVIEW_CHARACTERS,
+        Math.min(text.length, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS),
+        text.length,
+      );
     })
     .catch(readFailure(container, a, url, () => renderChemistry2D(container, a, url)));
 }
@@ -598,7 +615,14 @@ export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url:
       previewButton.onclick = () => show("preview");
       sourceButton.onclick = () => show("source");
       container.appendChild(wrap);
-      previewStatus(container, target, url, Math.min(text.length, LATEX_SOURCE_PREVIEW_CHARACTERS), text.length);
+      previewStatus(
+        container,
+        target,
+        url,
+        text.length > LATEX_SOURCE_PREVIEW_CHARACTERS,
+        Math.min(text.length, LATEX_SOURCE_PREVIEW_CHARACTERS),
+        text.length,
+      );
     })
     .catch(readFailure(container, a, url, () => renderLatexArtifact(container, a, url)));
 }
@@ -667,7 +691,14 @@ function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string,
       pre.style.padding = "16px";
       pre.textContent = unicodeSafeSlice(text, MOLECULE_FALLBACK_PREVIEW_CHARACTERS);
       content.appendChild(pre);
-      previewStatus(content, target, url, pre.textContent.length, text.length);
+      previewStatus(
+        content,
+        target,
+        url,
+        text.length > MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
+        pre.textContent.length,
+        text.length,
+      );
     })
     .catch(readFailure(content, a, url, () => renderMolecule3dGlue(content, a, url, nm)));
 }

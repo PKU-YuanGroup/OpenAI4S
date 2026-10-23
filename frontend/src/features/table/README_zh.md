@@ -18,6 +18,6 @@ M-04 表格 artifact 的结构 / 分布 / 导出。对接 B-07 `GET /artifacts/{
 | [`query.ts`](query.ts) | profile/export 查询串；`version_id` 必填。 |
 | [`table.css`](table.css) | 结构 / 分布 / 导出 的样式。 |
 | [`types.ts`](types.ts) | Profile DTO、catalog 姿态、查看器计划。 |
-| [`workbench.ts`](workbench.ts) | flag 关闭的 sheet + workbench 分页 + 三区挂载。 |
+| [`workbench.ts`](workbench.ts) | flag 关闭的 sheet + workbench 分页 + 三区挂载。旧（flag-off）解析路径在有界预览预算内读取，并明确“完整／部分预览（Unicode 安全的 30 万字符前缀 + 确切版本下载）／无法预览（分类读取失败 + 重试）”；不会用前缀内容声称总行数。 |
 | [`workbench.test.ts`](workbench.test.ts) | 三区、近似横幅、histogram 边界、flag=0。 |
 | [`zones.ts`](zones.ts) | 结构 / 分布 / 导出 DOM。 |

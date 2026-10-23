@@ -246,6 +246,54 @@ it("does not link to a truncated record URL or infer a successful download", () 
   expect(nodes.map((node) => node.textContent)).not.toContain(filesT("versions.datasetChecksMatched"));
 });
 
+it("shows a withheld response digest as hidden instead of the marker text", () => {
+  const digest = "a".repeat(64);
+  const hidden = sourcePanelNodes({ database: "uniprot", response_sha256: "<redacted:credential>" });
+  const hiddenValues = hidden.map((node) => node.textContent);
+  expect(hiddenValues).toContain(filesT("science.responseHidden"));
+  expect(hiddenValues).toContain(filesT("science.responseHiddenNote"));
+  expect(hiddenValues.some((value) => value.includes("<redacted"))).toBe(false);
+
+  const marked = sourcePanelNodes({ database: "uniprot", hidden_fields: ["response_sha256"] });
+  expect(marked.map((node) => node.textContent)).toContain(filesT("science.responseHidden"));
+
+  // A published digest is still shown verbatim.
+  const shown = sourcePanelNodes({ database: "uniprot", response_sha256: digest });
+  expect(shown.map((node) => node.textContent)).toContain(digest);
+});
+
+it("names conflicting source fields and normalized legacy aliases", () => {
+  const values = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    conflict_fields: ["request_url"],
+    normalized_fields: ["endpoint"],
+  }).map((node) => node.textContent);
+  expect(values).toContain(filesT("science.conflictNote", "request_url"));
+  expect(values).toContain(filesT("science.aliasNote", "endpoint"));
+});
+
+it("reads the S1 projection keys for hidden digests, aliases and conflicts", () => {
+  const hidden = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "<redacted:credential>",
+    response_sha256_state: "hidden",
+  }).map((node) => node.textContent);
+  expect(hidden).toContain(filesT("science.responseHidden"));
+  expect(hidden.some((value) => value.includes("<redacted"))).toBe(false);
+
+  const shown = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    response_sha256_state: "shown",
+    legacy_normalized: ["request_url"],
+    source_conflicts: ["request_url"],
+  }).map((node) => node.textContent);
+  expect(shown).toContain("a".repeat(64));
+  expect(shown).toContain(filesT("science.aliasNote", "request_url"));
+  expect(shown).toContain(filesT("science.conflictNote", "request_url"));
+});
+
 it.each(["en", "zh"] as const)("names a clipped dataset field by its %s row label", async (locale) => {
   const previousLanguage = LANG;
   await setLang(locale);

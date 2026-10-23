@@ -379,6 +379,10 @@ function schedulePng(
   url: string,
 ): void {
   queue.queue.push(() => {
+    // The preview may have been closed between scheduling and this microtask
+    // (dock closed, another artifact opened). Creating an object URL then
+    // would leak an image the session no longer tracks.
+    if (activeSession !== queue.session) return;
     const checked = inspectPng(base64);
     if (!checked.ok) {
       const reason =
@@ -407,13 +411,20 @@ function schedulePng(
       holder.appendChild(downloadLink(url, a));
       return;
     }
-    const blob = new Blob([checked.bytes], { type: "image/png" });
-    const objectUrl = URL.createObjectURL(blob);
-    queue.session.urls.add(objectUrl);
-    const img = el("img", "notebook-png");
-    img.alt = filesT("notebook.pngAlt");
-    img.src = objectUrl;
-    holder.appendChild(img);
+    try {
+      const blob = new Blob([checked.bytes], { type: "image/png" });
+      const objectUrl = URL.createObjectURL(blob);
+      queue.session.urls.add(objectUrl);
+      const img = el("img", "notebook-png");
+      img.alt = filesT("notebook.pngAlt");
+      img.src = objectUrl;
+      holder.appendChild(img);
+    } catch {
+      // A DOM/storage failure while materializing one image must not reject the
+      // queue microtask (an unhandled rejection) or blank the rest of the file.
+      holder.appendChild(note(filesT("notebook.imageUnavailable")));
+      holder.appendChild(downloadLink(url, a));
+    }
   });
   pumpPng(queue);
 }
