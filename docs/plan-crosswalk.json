@@ -81,7 +81,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
+      "evidence_digest": "df71ccfcaf088d9888b6888e40eb5787111d5aeee178aa0e5caf90939ce94c9f"
     },
     {
       "source": "R1",
@@ -231,7 +231,7 @@
       "tests": "tests/test_retrieval_source.py,tests/test_retrieval_provenance.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c9b04e56f9c936b5a3ef85e9579469e771f94d39cceab90f599c696879f63b78"
+      "evidence_digest": "7e562083866ff94c86ed246b9beab43dd16ff679b5ff1fb5e80c599b9a0a93b2"
     },
     {
       "source": "R3",
@@ -314,7 +314,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "83a05fdfe088278a205a5c6b0ef425e65f5002c6de3ca598ec4ee5203e0b7e47"
+      "evidence_digest": "a2e145a68332075c9dad20014adb4773390d82d32be29087a801933d19da7a7a"
     },
     {
       "source": "R3",
@@ -453,7 +453,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
+      "evidence_digest": "df71ccfcaf088d9888b6888e40eb5787111d5aeee178aa0e5caf90939ce94c9f"
     },
     {
       "source": "R5",
@@ -564,7 +564,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "84073d6671ba7a7a5e0b8f109e99604935b8f4b4d4b3426c46461dc9fe2c1e55"
+      "evidence_digest": "df71ccfcaf088d9888b6888e40eb5787111d5aeee178aa0e5caf90939ce94c9f"
     },
     {
       "source": "R6",
@@ -662,7 +662,7 @@
       "tests": "tests/test_renderer_capability_honesty.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4bf2944794c004eecda3f9c5a690cb0f867baa87c178a7fc775701f45b6e6e09"
+      "evidence_digest": "37a51252d0b3309e5622a9676935f6d2be8c07d26b843047389bd60a35c494b7"
     },
     {
       "source": "R6",
