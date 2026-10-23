@@ -102,6 +102,27 @@ from scripts.release_consistency import (  # noqa: E402
 from scripts.release_gates import GateManifestError  # noqa: E402
 
 
+def _smoke_evidence_summary(raw: Any) -> dict[str, Any] | None:
+    """A bounded projection of one smoke report for the sealed evidence facts.
+
+    The full report stays in the build receipt (which staging verified); the
+    evidence bundle records only what a reader needs to see that the executed
+    chain was bound to these bytes, without copying a whole diagnostic log.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    package = raw.get("package") if isinstance(raw.get("package"), Mapping) else {}
+    artifact = raw.get("artifact") if isinstance(raw.get("artifact"), Mapping) else {}
+    return {
+        "status": raw.get("status"),
+        "schema_version": raw.get("schema_version"),
+        "scenario_version": raw.get("scenario_version"),
+        "package_sha256": package.get("sha256") or raw.get("artifact_sha256"),
+        "source_sha": package.get("source_sha") or raw.get("source_sha"),
+        "version_id": artifact.get("version_id"),
+    }
+
+
 def _sandbox_posture(
     *, linux_boundary: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -1837,6 +1858,24 @@ class Pipeline:
                         ],
                     }
                     for kind, document in build_receipts.items()
+                },
+                # Executed-runtime evidence, as verified: schema 3 requires a
+                # Linux receipt to carry the installed-runtime probe and (when
+                # the R6 browser acceptance has written it) the bundle browser
+                # report. Recorded here so the evidence bundle names the run
+                # that proved the bytes execute, not only that they were built.
+                "build_smoke": {
+                    kind: {
+                        "runtime_smoke": _smoke_evidence_summary(
+                            document.get("runtime_smoke")
+                        ),
+                        "bundle_smoke": _smoke_evidence_summary(
+                            document.get("bundle_smoke")
+                        ),
+                    }
+                    for kind, document in build_receipts.items()
+                    if document.get("runtime_smoke") is not None
+                    or document.get("bundle_smoke") is not None
                 },
             },
         )

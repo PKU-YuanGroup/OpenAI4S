@@ -364,3 +364,123 @@ def test_stage_attestation_without_a_workflow_run_id_is_refused(tmp_path, monkey
     target.write_text(json.dumps(document), "utf-8")
     with pytest.raises(release_receipts.ReceiptError, match="workflow run id"):
         release_receipts.verify_stage_attestation(target, version="0.2.0")
+
+
+# --------------------------------------------------------------------------
+# executed-runtime evidence is a receipt-level claim too
+#
+# A rehearsal may publish nothing, but the documents it leaves must still say
+# the truth. These cases cover the two reports a Linux build receipt carries:
+# the installed-runtime probe (`runtime_smoke`) and the browser acceptance
+# (`bundle_smoke`). Each is bound to one package digest, one frozen source SHA
+# and one platform; a report from another build cannot be borrowed.
+# --------------------------------------------------------------------------
+
+_TARBALL_SHA = "c" * 64
+_OTHER_SHA = "d" * 40
+
+
+def _probe_report(**overrides):
+    from tests._runtime_smoke import passing_report
+
+    return passing_report(
+        package_sha256=_TARBALL_SHA,
+        source_sha=SHA,
+        **overrides,
+    )
+
+
+def test_a_passing_probe_report_binds_to_one_tarball_and_commit():
+    document = release_receipts.normalize_runtime_smoke(
+        _probe_report(),
+        package_sha256=_TARBALL_SHA,
+        source_sha=SHA,
+        platform=("linux", "x86_64"),
+    )
+    assert document["status"] == "passed"
+    assert document["steps"]["execution"]["shared_state"] is True
+
+
+def test_a_probe_report_for_another_commit_cannot_be_borrowed():
+    with pytest.raises(ReceiptError, match="not the frozen"):
+        release_receipts.normalize_runtime_smoke(
+            _probe_report(),
+            package_sha256=_TARBALL_SHA,
+            source_sha=_OTHER_SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_probe_report_from_an_older_scenario_cannot_be_borrowed():
+    report = _probe_report()
+    report["scenario_version"] = 0
+    with pytest.raises(ReceiptError, match="scenario_version"):
+        release_receipts.normalize_runtime_smoke(
+            report,
+            package_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_probe_report_for_another_architecture_cannot_be_borrowed():
+    report = _probe_report(arch="aarch64")
+    with pytest.raises(ReceiptError, match="ran on linux/aarch64"):
+        release_receipts.normalize_runtime_smoke(
+            report,
+            package_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_the_browser_acceptance_must_record_every_scene_as_passed():
+    from tests._runtime_smoke import bundle_report
+
+    good = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    assert (
+        release_receipts.normalize_bundle_smoke(
+            good,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )["status"]
+        == "passed"
+    )
+    skipped = json.loads(json.dumps(good))
+    skipped["checks"]["restart"] = False
+    with pytest.raises(ReceiptError, match="restart"):
+        release_receipts.normalize_bundle_smoke(
+            skipped,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_browser_acceptance_that_did_not_run_is_refused():
+    from tests._runtime_smoke import bundle_report
+
+    not_run = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    not_run["status"] = "not_run"
+    not_run["not_run_reason"] = "no browser on this runner"
+    with pytest.raises(ReceiptError, match="not_run"):
+        release_receipts.normalize_bundle_smoke(
+            not_run,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_browser_acceptance_for_another_tarball_is_refused():
+    from tests._runtime_smoke import bundle_report
+
+    other = bundle_report(artifact_sha256="e" * 64, source_sha=SHA)
+    with pytest.raises(ReceiptError, match="not the tarball being released"):
+        release_receipts.normalize_bundle_smoke(
+            other,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
