@@ -46,11 +46,6 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-try:  # imported as `scripts.release_receipts` from tests and the pipeline
-    from scripts import installed_runtime_smoke as runtime_smoke
-except ImportError:  # executed as `python scripts/release_receipts.py`
-    import installed_runtime_smoke as runtime_smoke  # type: ignore[no-redef]
-
 BUILD_RECEIPT_FORMAT = "openai4s-build-receipt"
 #: Schema 3 adds the executed-runtime evidence (`runtime_smoke`, `bundle_smoke`).
 #: An older receipt stays readable JSON but cannot satisfy this pipeline: it
@@ -315,6 +310,208 @@ def _require_platform_facts(raw: Any, *, kind: str) -> Mapping[str, Any]:
     return platform_facts
 
 
+# --------------------------------------------------------------------------- #
+# Transitional runtime-smoke validation (removed by R3)
+# --------------------------------------------------------------------------- #
+# The previous round's schema-3 receipt validated the previous probe report
+# shape (`steps` boot/execution/capture/reopen/cleanup). R1 replaces the probe
+# with the plan's appendix-B.4 scenario, and R3 replaces this receipt field with
+# the single `runtime_smoke` document. Until that lands the receipt keeps
+# enforcing the shape its own producer writes, so the gate does not silently
+# weaken; the validator lives here rather than importing a probe whose CLI it no
+# longer consumes. Delete it with `normalize_runtime_smoke` in R3.
+
+_LEGACY_SMOKE_FORMAT = "openai4s-installed-runtime-smoke"
+_LEGACY_SMOKE_SCHEMA_VERSION = 1
+_LEGACY_SMOKE_SCENARIO_VERSION = 1
+_LEGACY_SMOKE_STEPS = ("boot", "execution", "capture", "reopen", "cleanup")
+_LEGACY_CSV_FILENAME = "smoke.csv"
+
+
+def _validate_transitional_runtime_smoke(
+    document: Any,
+    *,
+    expected_package_sha256: str = "",
+    expected_source_sha: str = "",
+    expected_kind: str = "",
+    expected_platform: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """Refuse a runtime-smoke record that does not prove the real chain.
+
+    Consumed by the release receipts: a receipt may quote the probe, but only
+    this function decides whether the quote is evidence. Every required fact is
+    checked explicitly — missing step, skipped step, timeout, a non-executed
+    Cell, an uncaptured or mis-digested Artifact, a reopened run that serves
+    different bytes, a shutdown that left a daemon or worker, an older schema
+    or scenario, and a report from another platform are each a refusal with a
+    message an operator can act on.
+    """
+    if not isinstance(document, Mapping):
+        raise ReceiptError("runtime smoke report is not an object")
+    if document.get("format") != _LEGACY_SMOKE_FORMAT:
+        raise ReceiptError("runtime smoke report has an unrecognised format")
+    if document.get("schema_version") != _LEGACY_SMOKE_SCHEMA_VERSION:
+        raise ReceiptError(
+            "runtime smoke report has schema_version "
+            f"{document.get('schema_version')!r}, this gate requires {_LEGACY_SMOKE_SCHEMA_VERSION}"
+        )
+    if document.get("scenario_version") != _LEGACY_SMOKE_SCENARIO_VERSION:
+        raise ReceiptError(
+            "runtime smoke report has scenario_version "
+            f"{document.get('scenario_version')!r}, this gate requires "
+            f"{_LEGACY_SMOKE_SCENARIO_VERSION}; rebuild the package and rerun the probe"
+        )
+    status = str(document.get("status") or "")
+    if status == "not_run":
+        raise ReceiptError(
+            "runtime smoke is not_run: "
+            + str(document.get("not_run_reason") or "no reason was recorded")
+        )
+    if status != "passed":
+        raise ReceiptError(f"runtime smoke status is {status!r}, not 'passed'")
+
+    package = document.get("package")
+    if not isinstance(package, Mapping):
+        raise ReceiptError("runtime smoke report records no package identity")
+    if expected_kind and str(package.get("kind") or "") != expected_kind:
+        raise ReceiptError(
+            f"runtime smoke was run against a {package.get('kind')!r} runtime, not "
+            f"{expected_kind!r}"
+        )
+    recorded_package_sha = str(package.get("sha256") or "").lower()
+    if expected_package_sha256:
+        if not _SHA256.match(recorded_package_sha):
+            raise ReceiptError("runtime smoke report records no package SHA-256")
+        if recorded_package_sha != str(expected_package_sha256).lower():
+            raise ReceiptError(
+                "runtime smoke is bound to package "
+                f"{recorded_package_sha[:12]}, not the artifact being released "
+                f"({str(expected_package_sha256).lower()[:12]})"
+            )
+    recorded_source_sha = str(package.get("source_sha") or "")
+    if expected_source_sha and recorded_source_sha != expected_source_sha:
+        raise ReceiptError(
+            "runtime smoke is bound to source "
+            f"{recorded_source_sha[:12] or '<none>'}, not the frozen "
+            f"{str(expected_source_sha)[:12]}"
+        )
+
+    platform_facts = document.get("platform")
+    if not isinstance(platform_facts, Mapping):
+        raise ReceiptError("runtime smoke report records no platform")
+    recorded_platform = (
+        str(platform_facts.get("os") or "").lower(),
+        str(platform_facts.get("arch") or "").lower(),
+    )
+    if not all(recorded_platform):
+        raise ReceiptError("runtime smoke report records no OS/architecture")
+    if expected_platform is not None:
+        expected = (
+            str(expected_platform[0]).lower(),
+            str(expected_platform[1]).lower(),
+        )
+        if recorded_platform != expected:
+            raise ReceiptError(
+                f"runtime smoke ran on {recorded_platform[0]}/{recorded_platform[1]}, "
+                f"not {expected[0]}/{expected[1]}"
+            )
+
+    runtime = document.get("runtime")
+    if not isinstance(runtime, Mapping):
+        raise ReceiptError("runtime smoke report records no runtime origin")
+    if runtime.get("inside_package") is not True:
+        raise ReceiptError(
+            "runtime smoke did not prove that openai4s imported from the tree under "
+            f"test (module_file={runtime.get('module_file')!r})"
+        )
+    if not str(runtime.get("interpreter") or "") or not str(
+        runtime.get("module_file") or ""
+    ):
+        raise ReceiptError("runtime smoke report records no interpreter or module path")
+
+    steps = document.get("steps")
+    if not isinstance(steps, Mapping):
+        raise ReceiptError("runtime smoke report records no steps")
+    for name in _LEGACY_SMOKE_STEPS:
+        step = steps.get(name)
+        if not isinstance(step, Mapping):
+            raise ReceiptError(f"runtime smoke report is missing its {name} step")
+        if str(step.get("status") or "") != "ok":
+            raise ReceiptError(
+                f"runtime smoke step {name} is {step.get('status')!r}, not a pass"
+            )
+
+    execution = steps["execution"]
+    cells = execution.get("cells")
+    if not isinstance(cells, list) or len(cells) != 2:
+        raise ReceiptError(
+            f"runtime smoke ran {len(cells or [])} Cell(s), expected the two-Cell chain"
+        )
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, Mapping):
+            raise ReceiptError("runtime smoke report has a malformed Cell row")
+        if str(cell.get("status") or "") != "ok" or cell.get("error"):
+            raise ReceiptError(
+                f"runtime smoke Cell {index + 1} did not execute successfully"
+            )
+    if execution.get("shared_state") is not True:
+        raise ReceiptError(
+            "the runtime smoke Cells did not share one kernel state; the second Cell "
+            "could not have used the first Cell's variable"
+        )
+
+    capture = steps["capture"]
+    for field in ("artifact_id", "version_id", "filename"):
+        if not str(capture.get(field) or ""):
+            raise ReceiptError(f"runtime smoke captured no {field}")
+    if not _SHA256.match(str(capture.get("sha256") or "").lower()):
+        raise ReceiptError("runtime smoke records no captured Artifact SHA-256")
+    if capture.get("bytes_match_metadata") is not True:
+        raise ReceiptError(
+            "runtime smoke's captured bytes do not match the version metadata"
+        )
+    if int(capture.get("size_bytes") or 0) <= 0:
+        raise ReceiptError("runtime smoke captured an empty Artifact")
+    if str(capture.get("filename") or "") != _LEGACY_CSV_FILENAME:
+        raise ReceiptError(
+            f"runtime smoke captured {capture.get('filename')!r}, not {_LEGACY_CSV_FILENAME!r}"
+        )
+
+    reopen = steps["reopen"]
+    if str(reopen.get("version_id") or "") != str(capture.get("version_id") or ""):
+        raise ReceiptError(
+            "the reopened runtime served a different Artifact version than the one captured"
+        )
+    for field in ("bytes_identical", "digest_identical", "version_still_latest"):
+        if reopen.get(field) is not True:
+            raise ReceiptError(
+                f"runtime smoke reopen did not prove {field.replace('_', ' ')}"
+            )
+    if int(reopen.get("history_entries") or 0) != 2:
+        raise ReceiptError(
+            "the reopened runtime did not return both persisted execution-history entries"
+        )
+
+    cleanup = steps["cleanup"]
+    for key in ("first", "final"):
+        shutdown = cleanup.get(key)
+        if not isinstance(shutdown, Mapping):
+            raise ReceiptError(f"runtime smoke cleanup records no {key} shutdown")
+        if shutdown.get("daemon_exited") is not True:
+            raise ReceiptError(
+                f"the runtime smoke daemon from the {key} run did not exit; the probe "
+                "leaked a process"
+            )
+        if shutdown.get("workers_exited") is not True:
+            raise ReceiptError(
+                f"a kernel worker from the {key} run outlived its daemon"
+            )
+    return dict(document)
+
+
+# --------------------------------------------------------------------------- #
+
+
 def normalize_runtime_smoke(
     raw: Any,
     *,
@@ -324,24 +521,25 @@ def normalize_runtime_smoke(
 ) -> dict[str, Any]:
     """The installed-runtime probe report, bound to the bytes being released.
 
-    `scripts/installed_runtime_smoke.validate_smoke_report` is the one place
-    that decides what the probe's own report proves — that a second Cell saw
-    the first Cell's variable, that the CSV was captured as a version, that a
-    reopened daemon served the same bytes, and that no daemon or worker was
-    left behind. This wrapper only makes the *binding* concrete: the report
+    The transitional validator below is the one place that decides what the
+    previous probe's report proves — that a second Cell saw the first Cell's
+    variable, that the CSV was captured as a version, that a reopened daemon
+    served the same bytes, and that no daemon or worker was left behind. It
+    is replaced by the appendix-B.4 validator in R3. This wrapper makes the
+    *binding* concrete: the report
     must describe this package digest, this frozen source SHA and this
     platform, so a green report from a different build cannot be pasted into
     this receipt.
     """
     try:
-        return runtime_smoke.validate_smoke_report(
+        return _validate_transitional_runtime_smoke(
             raw,
             expected_package_sha256=package_sha256,
             expected_source_sha=source_sha,
             expected_kind="bundle",
             expected_platform=platform,
         )
-    except runtime_smoke.SmokeError as error:
+    except ReceiptError as error:
         raise ReceiptError(
             f"installed-runtime science evidence cannot serve this release: {error}"
         ) from error

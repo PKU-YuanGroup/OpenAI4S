@@ -228,42 +228,58 @@ a matching Linux host the import probe that proves the science stack imports
 rather than merely being present on disk. The release job therefore runs on a
 Linux runner, and a cross-build says out loud that it has not been run.
 
-On that matching host the verifier does strictly more than import: it runs
+On that matching host the verifier also runs the shipped `install.sh`, and the
+same release job then runs
 [`scripts/installed_runtime_smoke.py`](../scripts/installed_runtime_smoke.py)
-against the unpacked bundle, which starts the packaged daemon in an isolated
-data directory on a random loopback port and proves the science chain end to
-end — two Python Cells sharing one persistent kernel (the second uses the
-first's variable), a CSV captured through the production path as an immutable
-Artifact version, a stop that waits for the daemon *and* its kernel worker to
-exit, a reopen of the same data directory, and the same version bytes, digest
-and execution history read back. A science stack that imports is still not a
-package that executes a Cell, and this is the check that can tell the
-difference. The `--smoke-report` path receives that report so the job can bind
-it into the tarball's build receipt; a cross-built bundle gets a report with
-`status: not_run` naming the missing run, never a pass. The report carries no
-credential, and the probe never imports `openai4s` itself, so the host
-interpreter cannot be mistaken for the runtime under test.
+against the tarball it is about to publish. Verification proves the bytes are
+well-formed; the smoke proves they execute. It unpacks the archive into a
+temporary directory whose name contains a space and starts the bundle's own
+daemon on an isolated data directory and a random loopback port, with the
+caller's `PYTHONPATH`, `PYTHONHOME`, `VIRTUAL_ENV`, `OPENAI4S_WEBUI`, model keys
+and `OPENAI4S_LLM_*` settings removed from the child environment; the Notebook
+REPL is enabled for that process only and the updater is kept offline. It then
+runs the frozen scenario version 1:
 
-One layer above the probe, the same Linux job opens the packaged workbench in a
-real browser with
-[`tests/browser_bundle_smoke.mjs`](../tests/browser_bundle_smoke.mjs): it starts
-the bundle's own daemon in an isolated data directory (Notebook REPL enabled
-for that process only — the shipped default stays read-only), authenticates
-through the loopback-token flow, runs a Python Cell that writes a fixed CSV and
-a second that produces a matplotlib figure, opens both captured Artifact
-versions in the viewer, records the version id and SHA-256 of the exact bytes,
-writes the same filename again and reopens the first version by its exact id,
-then stops the daemon, reopens the data directory, reads the same bytes and
-execution history back in a fresh browser, and confirms no daemon or kernel
-worker survives. It calls no model and reaches nothing but loopback. Its report
-is `bundle_smoke` in the receipt; the run is bounded by R6's budgets (90 s per
-service start, 60 s per Cell, 120 s per browser scene, 30 s cleanup, 420 s
-total), and the report echoes those budgets, the total it actually took and the
-variable names it handed the daemon. The receipt gate refuses an acceptance
-whose budgets were relaxed, whose total exceeded the limit, that omitted a
-required environment knob, or whose diagnostics carry an unredacted credential;
-a host that cannot execute the bundle records `not_run` rather than claiming a
-pass.
+* `serve` — `/health` answers `ok` within 90 s;
+* `auth` — the daemon's access token is required (2xx with it, 401 without it);
+* `kernel_origin` — the executing interpreter and the imported `openai4s` both
+  resolve inside the unpacked bundle;
+* `state_shared` — two Cells share one persistent kernel and the second reads
+  the first's variable (42); both `cell.status` are `ok` with an empty
+  `cell.error`, because HTTP success alone is not execution;
+* `artifact_capture` — a Cell writes `smoke.csv` through the production capture
+  path as an immutable version, and the bytes read back match their SHA-256;
+* `figure` — a Cell draws with the packaged matplotlib without calling
+  `savefig`; exactly one figure is captured and its bytes are a PNG;
+* `exact_version` — a same-name rewrite mints a new version while the first
+  version still returns its original bytes and remains listed;
+* `restart_readback` — the daemon is stopped, its process group is confirmed
+  gone, the same data directory is reopened, and both versions' bytes and
+  digests are unchanged. This proves durable records, not memory variables;
+* `clean_exit` — the final stop leaves no process in this run's process group
+  and removes the temporary data directory.
+
+Time budgets are F16's 90 s per service start, 60 s per Cell, 120 s for the
+browser layer, 30 s to clean up and 420 s overall; a timeout fails the run with
+a bounded diagnostic. The JSON report — scenario version, target, the input
+tarball's SHA-256, platform, arch, interpreter version, the ten check results,
+status, duration and at most one redacted failure — is written to
+`dist/runtime-smoke-linux.json` by the release job between "Verify the bundle"
+and the receipt step, and the nightly `linux-bundle-smoke` job runs the same
+command so a packaging regression shows up before release day. A host that
+cannot execute a linux-x86_64 bundle fails the check with the missing runner
+named rather than reporting a pass.
+
+The installed wheel is held to the same scenario. `release_pipeline.py`'s
+`smoke` step installs the wheel into a clean venv, runs the existing import and
+daemon smokes, then runs this script with `--python <venv interpreter> --artifact
+<wheel>`, recording the report in that step's facts. The wheel has no science
+extras, so its `figure` check is `not_applicable`; every other step — the Cells,
+capture, exact version and restart readback — still runs.
+
+R2 adds the browser layer on top of this (`--browser` plus
+[`tests/browser_bundle_smoke.mjs`](../tests/browser_bundle_smoke.mjs)) and wires
+it into the release job together with that script.
 
 ## Windows package
 
