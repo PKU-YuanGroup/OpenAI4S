@@ -362,6 +362,9 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
           : { phase: "loading" };
   }
   wrap.innerHTML = "";
+  // Busy is announced on the region whose actions change, not on the shared
+  // modal: a viewer that reuses #modal must not inherit this dialog's state.
+  wrap.setAttribute("aria-busy", "false");
   const status = result.phase === "available" ? result.status : null;
   const current = status?.location;
   if (result.phase !== "available") {
@@ -425,6 +428,7 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
     submitting = true;
     pendingSubmits.add(key);
     setActionsDisabled(true);
+    wrap.setAttribute("aria-busy", "true");
     try {
       if (profile === null) {
         await api(`/sessions/${encodeURIComponent(target)}/compute/release`, { method: "POST", body: "{}" });
@@ -451,6 +455,10 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
     } finally {
       pendingSubmits.delete(key);
       submitting = false;
+      // Failure restores clickability above; success has closed this window,
+      // where a detached flag is harmless. Either way the region stops being
+      // busy exactly when the request settles.
+      wrap.setAttribute("aria-busy", "false");
     }
   };
 
