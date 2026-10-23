@@ -1,28 +1,30 @@
 /**
- * Read-only view over a saved science-search Artifact (A4, report P1-02).
+ * Read-only view over a saved science-search Artifact (A5, report P1-02).
  *
  * A Stage 10 search writes a JSON envelope into the workspace and the Gateway
  * captures it as a versioned Artifact:
  *
  *   { query, endpoint|request_url, retrieved_at, source_checksum|response_sha256,
- *     accessions, result: { database, request_url, provenance{...},
- *                           results: [{ id, title, url, type, ... }] } }
+ *     accessions, result: { database, request_url, provenance{...}, next_cursor,
+ *                           results: [{ id, title, url, type, attributes }] } }
  *
- * Reading that as a nested JSON dump is the problem this module fixes. The
- * envelope is validated against that exact shape — a JSON document that merely
- * happens to carry a `result` property is not this view — and the records are
- * then listed with bounded pages. Only bytes already saved in the file are
- * shown: nothing here fetches a remote next page, and the original JSON stays
- * one click away on the same exact version.
+ * `readScienceSearchEnvelope` accepts exactly that shape: the top-level key set
+ * is closed, `result.results` must be an array of objects, and the record fields
+ * that the view renders have checked types. Anything else — including an
+ * unrelated JSON document that merely carries a `result` property — returns
+ * null, so the generic JSON path stays in charge.
  *
- * Everything the file supplies is untrusted: titles render as text, external
- * links must parse as http(s) without credentials and lose credential-shaped
- * query parameters, and unknown values say "unknown" rather than being filled
- * in.
+ * Only bytes already saved in the file are shown: nothing here fetches a remote
+ * next page, the record list never claims to be a database total, and the raw
+ * JSON stays one click away on the same exact version.
+ *
+ * Everything the file supplies is untrusted: titles/attributes render as text,
+ * external links must parse as http(s) without credentials and lose
+ * credential-shaped query parameters, and their display text is scrubbed.
  */
 
 import { publicText as scrubbedText } from "../scrub/scrub";
-import { el, TEXT_SOURCE_PREVIEW_CHARACTERS, translate, unicodeSafeSlice } from "./api";
+import { el, translate } from "./api";
 import { filesT } from "./copy";
 import type { ArtifactRow } from "./types";
 
@@ -31,41 +33,46 @@ export const SCIENCE_RECORD_PAGE = 50;
 /** The list shows at most this many saved records; the rest stay in the file. */
 export const SCIENCE_RECORD_MAX = 500;
 
+/**
+ * The complete top-level key set this envelope may carry (F13-era saved files,
+ * plus the canonical names the projection now writes).
+ */
+export const SCIENCE_ENVELOPE_KEYS: ReadonlySet<string> = new Set([
+  "query",
+  "endpoint",
+  "request_url",
+  "retrieved_at",
+  "source_checksum",
+  "response_sha256",
+  "accessions",
+  "result",
+]);
+
 export type ScienceRecord = {
-  /** Identifier the response already carried; "" when the record had none. */
+  /** Identifier the response already carried; "" when absent. */
   id: string;
   title: string;
-  /** Sanitized http(s) URL, or "" when missing/refused. */
+  /** Recorded URL as written; only http(s) may become a link. */
   url: string;
   type: string;
-  /** A few already-present scalar attributes, label → text. */
-  attributes: Array<[string, string]>;
+  /** The saved attributes object; scalar values may be expanded. */
+  attributes: Record<string, unknown>;
 };
 
 export type ScienceSearch = {
-  database: string;
   query: string;
-  /** Sanitized request URL for display (server already redacted it once). */
   requestUrl: string;
   retrievedAt: string;
-  /** Public response digest when the file recorded one; "" otherwise. */
   responseSha256: string;
-  responseSha256Hidden: boolean;
-  /** Legacy field names the envelope used instead of the canonical ones. */
-  aliasesUsed: string[];
-  /** Field pairs whose canonical and legacy values disagree. */
-  conflicts: string[];
+  /** Non-empty when the file records that the search has later pages. */
+  nextCursor: string;
   records: ScienceRecord[];
-  /** Saved entries that did not pass the record shape check. */
-  malformedRecords: number;
 };
-
-export type ScienceSearchParse = { ok: true; search: ScienceSearch } | { ok: false };
 
 const CREDENTIAL_QUERY_KEY =
   /^(?:key|api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|signature|sig|password|passwd|auth)$/i;
 const HIDDEN_DIGEST = /<redacted|\[redacted\]|^hidden$/i;
-const ATTRIBUTE_KEYS = ["organism", "method", "date", "database", "length", "description"] as const;
+const ATTRIBUTE_SCALAR_LIMIT = 8;
 
 function record(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -97,8 +104,7 @@ function publicText(value: unknown, limit: number): string {
 /**
  * A link the preview may navigate to: absolute http(s), no embedded
  * credentials, and credential-shaped query parameters removed rather than
- * merely hidden. Display and href are separate concerns — the caller renders
- * the sanitized URL as its own text.
+ * merely hidden. Returns "" when the value may not become a navigable link.
  */
 export function sanitizeExternalUrl(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -119,116 +125,79 @@ export function sanitizeExternalUrl(value: unknown): string {
   return url.href;
 }
 
-function parseRecord(value: unknown): ScienceRecord | null {
-  const source = record(value);
-  if (!source) return null;
-  const id = publicText(textField(source.id) || textField(source.accession) || textField(source.identifier), 120);
-  const title = publicText(textField(source.title) || textField(source.name), 300);
-  const url = sanitizeExternalUrl(source.url || source.source_url || source.link);
-  const type = publicText(textField(source.type) || textField(source.kind) || textField(source.format), 60);
-  const attributes: Array<[string, string]> = [];
-  for (const key of ATTRIBUTE_KEYS) {
-    if (attributes.length >= 3) break;
-    const value = textField(source[key]);
-    if (value) attributes.push([key, publicText(value, 160)]);
-  }
-  if (!id && !title && !url && !type && !attributes.length) return null;
-  return { id, title, url, type, attributes };
+function hasValue(value: unknown): boolean {
+  if (value == null || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as object).length > 0;
+  return true;
 }
 
 /**
- * Validate the saved-envelope shape and project it for display.
- *
- * A document is this envelope only when it has `result.results` as an array
- * *and* a retrieval identity — a database name, a request URL, or a provenance
- * object. That second condition is what keeps `{"result": {...}}` from some
- * unrelated JSON from being rendered as a search result list.
+ * Validate one saved-search envelope. Returns null unless the document is
+ * exactly this shape, so an unrelated JSON with a `result` key cannot be
+ * mistaken for a retrieval result list.
  */
-export function parseScienceSearch(text: string): ScienceSearchParse {
+export function readScienceSearchEnvelope(text: string): ScienceSearch | null {
   let root: unknown;
   try {
     root = JSON.parse(text);
   } catch {
-    return { ok: false };
+    return null;
   }
   const top = record(root);
-  if (!top) return { ok: false };
+  if (!top) return null;
+  if (!Object.keys(top).every((key) => SCIENCE_ENVELOPE_KEYS.has(key))) return null;
   const result = record(top.result);
-  if (!result) return { ok: false };
+  if (!result) return null;
   const rawResults = result.results;
-  if (!Array.isArray(rawResults)) return { ok: false };
-
-  const innerProvenance = record(result.provenance);
-  const outerProvenance = record(top.provenance);
-  const provenance = innerProvenance || outerProvenance;
-  const database = textField(result.database) || textField(top.database);
-  const canonicalUrl = textField(result.request_url) || textField(top.request_url);
-  const aliasUrl = textField(result.endpoint) || textField(top.endpoint);
-  // Identity requirement (see above). Kept deliberately conservative: only a
-  // genuinely search-shaped record passes, not any object with `result`.
-  if (!database && !canonicalUrl && !aliasUrl && !provenance) return { ok: false };
-
-  const canonicalDigest =
-    textField(result.response_sha256) ||
-    textField(top.response_sha256) ||
-    textField(provenance?.response_sha256);
-  const aliasDigest = textField(result.source_checksum) || textField(top.source_checksum);
-  const hiddenFields = unique([
-    ...stringList(top.hidden_fields),
-    ...stringList(result.hidden_fields),
-  ]);
-  const digestLooksHidden = HIDDEN_DIGEST.test(canonicalDigest) || HIDDEN_DIGEST.test(aliasDigest);
-  const responseSha256Hidden =
-    top.response_sha256_hidden === true ||
-    result.response_sha256_hidden === true ||
-    hiddenFields.includes("response_sha256") ||
-    hiddenFields.includes("source_checksum") ||
-    digestLooksHidden;
-  const digest = responseSha256Hidden ? "" : canonicalDigest || aliasDigest;
-
-  const aliasesUsed = unique([
-    ...(canonicalUrl ? [] : aliasUrl ? ["endpoint"] : []),
-    ...(canonicalDigest ? [] : aliasDigest ? ["source_checksum"] : []),
-    ...stringList(top.alias_fields),
-    ...stringList(result.alias_fields),
-    ...stringList(top.normalized_fields),
-    ...stringList(result.normalized_fields),
-  ]).slice(0, 8);
-  const conflicts = unique([
-    ...(canonicalUrl && aliasUrl && canonicalUrl !== aliasUrl ? ["request_url ↔ endpoint"] : []),
-    ...(canonicalDigest && aliasDigest && canonicalDigest !== aliasDigest
-      ? ["response_sha256 ↔ source_checksum"]
-      : []),
-    ...stringList(top.conflict_fields),
-    ...stringList(result.conflict_fields),
-    ...stringList(top.conflicts),
-    ...stringList(result.conflicts),
-  ]).slice(0, 8);
+  if (!Array.isArray(rawResults)) return null;
+  // A retrieval identity distinguishes this envelope from arbitrary JSON that
+  // happens to contain `{"result": {"results": [...]}}`.
+  const identity =
+    hasValue(top.query) ||
+    hasValue(top.request_url) ||
+    hasValue(top.endpoint) ||
+    hasValue(top.retrieved_at) ||
+    hasValue(top.source_checksum) ||
+    hasValue(top.response_sha256) ||
+    hasValue(top.accessions) ||
+    hasValue(result.query) ||
+    hasValue(result.database) ||
+    hasValue(result.request_url) ||
+    hasValue(result.endpoint) ||
+    hasValue(result.retrieved_at) ||
+    hasValue(result.response_sha256) ||
+    hasValue(result.source_checksum) ||
+    hasValue(result.provenance);
+  if (!identity) return null;
 
   const records: ScienceRecord[] = [];
-  let malformedRecords = 0;
   for (const item of rawResults) {
-    const parsed = parseRecord(item);
-    if (parsed) records.push(parsed);
-    else malformedRecords += 1;
+    const row = record(item);
+    if (!row) return null;
+    for (const field of ["id", "title", "url", "type"] as const) {
+      if (row[field] !== undefined && typeof row[field] !== "string") return null;
+    }
+    if (row.attributes !== undefined && record(row.attributes) === null) return null;
+    records.push({
+      id: typeof row.id === "string" ? row.id : "",
+      title: typeof row.title === "string" ? row.title : "",
+      url: typeof row.url === "string" ? row.url : "",
+      type: typeof row.type === "string" ? row.type : "",
+      attributes: record(row.attributes) || {},
+    });
   }
-  const requestUrl = sanitizeExternalUrl(canonicalUrl || aliasUrl);
   return {
-    ok: true,
-    search: {
-      database: publicText(database, 200),
-      query: publicText(textField(top.query) || textField(result.query), 500),
-      // Not every request URL is navigable (POST endpoints, credentials); the
-      // panel shows the redacted URL as text and only links when it is safe.
-      requestUrl: requestUrl || publicText(canonicalUrl || aliasUrl, 500),
-      retrievedAt: publicText(textField(top.retrieved_at) || textField(provenance?.retrieved_at), 120),
-      responseSha256: digest,
-      responseSha256Hidden,
-      aliasesUsed,
-      conflicts,
-      records,
-      malformedRecords,
-    },
+    query: textField(top.query) || textField(result.query),
+    requestUrl:
+      textField(top.request_url) ||
+      textField(result.request_url) ||
+      textField(top.endpoint) ||
+      textField(result.endpoint),
+    retrievedAt: textField(top.retrieved_at) || textField(result.retrieved_at),
+    responseSha256: textField(top.response_sha256) || textField(result.response_sha256),
+    nextCursor: typeof result.next_cursor === "string" ? result.next_cursor.trim() : "",
+    records,
   };
 }
 
@@ -248,11 +217,10 @@ export function scienceRecordPage(
 ): ScienceRecordPage {
   const size = Math.max(1, Math.min(Math.floor(pageSize) || SCIENCE_RECORD_PAGE, SCIENCE_RECORD_PAGE));
   const current = Math.max(0, Math.floor(page) || 0);
-  const start = current * size;
-  const cappedStart = Math.min(start, SCIENCE_RECORD_MAX);
+  const start = Math.min(current * size, SCIENCE_RECORD_MAX);
   const end = Math.min(start + size, search.records.length, SCIENCE_RECORD_MAX);
   return {
-    records: cappedStart < end ? search.records.slice(cappedStart, end) : [],
+    records: start < end ? search.records.slice(start, end) : [],
     page: current,
     hasMore: end < search.records.length && end < SCIENCE_RECORD_MAX,
     capped: search.records.length > SCIENCE_RECORD_MAX,
@@ -303,6 +271,7 @@ export function scienceSourceStatus(src: Record<string, unknown>): ScienceSource
   return { digest: digestHidden ? "" : rawDigest, digestHidden, conflicts, aliases };
 }
 
+
 function noteBox(message: string): HTMLElement {
   const node = el("div", "renderer-note science-note", message);
   node.setAttribute("role", "status");
@@ -316,148 +285,70 @@ function downloadLink(url: string, a: ArtifactRow): HTMLAnchorElement {
   return link;
 }
 
-function sourceRow(label: string, value: string): HTMLElement {
-  const row = el("div", "science-source-row");
-  row.appendChild(el("span", "science-source-k", label));
-  row.appendChild(el("span", "science-source-v", value));
+function scalarAttributes(attributes: Record<string, unknown>): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const [key, value] of Object.entries(attributes)) {
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue;
+    out.push([key, String(value)]);
+    if (out.length >= ATTRIBUTE_SCALAR_LIMIT) break;
+  }
+  return out;
+}
+
+function recordLinkCell(record: ScienceRecord): HTMLElement {
+  const cell = el("span", "science-record-link");
+  if (!record.url) return cell;
+  const display = publicText(record.url, 300);
+  const href = sanitizeExternalUrl(record.url);
+  if (href) {
+    const link = el("a", null, display) as HTMLAnchorElement;
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    cell.appendChild(link);
+  } else {
+    // Other protocols (javascript:, data:) and unparsable URLs stay plain text.
+    cell.textContent = display;
+  }
+  return cell;
+}
+
+function renderRecord(record: ScienceRecord): HTMLElement {
+  const row = el("div", "science-record");
+  row.appendChild(el("span", "science-record-id", record.id));
+  row.appendChild(el("span", "science-record-title", record.title));
+  row.appendChild(el("span", "science-record-type", record.type));
+  row.appendChild(recordLinkCell(record));
+  const attributes = scalarAttributes(record.attributes);
+  if (attributes.length) {
+    const details = el("details", "science-record-attributes");
+    details.appendChild(el("summary", null, filesT("science.record.attributes", attributes.length)));
+    for (const [key, value] of attributes) {
+      const line = el("div", "science-record-attribute");
+      line.appendChild(el("span", "science-record-attribute-key", key));
+      line.appendChild(el("span", "science-record-attribute-value", value));
+      details.appendChild(line);
+    }
+    row.appendChild(details);
+  }
   return row;
 }
 
-function renderScienceSource(
-  pane: HTMLElement,
-  search: ScienceSearch,
-  a: ArtifactRow,
-  url: string,
-): void {
-  const section = el("section", "science-source");
-  section.appendChild(el("div", "science-source-head", filesT("science.source.heading")));
-  if (search.database) section.appendChild(sourceRow(filesT("science.field.database"), search.database));
-  if (search.query) section.appendChild(sourceRow(filesT("science.field.query"), search.query));
-  if (search.requestUrl) {
-    // Shown as text: a recorded request URL is provenance, not navigation, and
-    // the server's redaction already ran on it.
-    section.appendChild(sourceRow(filesT("science.field.requestUrl"), search.requestUrl));
-  }
-  if (search.retrievedAt) section.appendChild(sourceRow(filesT("science.field.retrievedAt"), search.retrievedAt));
-  if (search.responseSha256Hidden) {
-    section.appendChild(sourceRow(filesT("science.field.responseSha256"), filesT("science.responseHidden")));
-    section.appendChild(noteBox(filesT("science.responseHiddenNote")));
-  } else if (search.responseSha256) {
-    section.appendChild(sourceRow(filesT("science.field.responseSha256"), search.responseSha256));
-  } else {
-    section.appendChild(noteBox(filesT("science.digestNotRecorded")));
-  }
-  if (search.aliasesUsed.length) {
-    section.appendChild(noteBox(filesT("science.aliasNote", search.aliasesUsed.join(", "))));
-  }
-  if (search.conflicts.length) {
-    section.appendChild(noteBox(filesT("science.conflictNote", search.conflicts.join(", "))));
-  }
-  if (search.malformedRecords) {
-    section.appendChild(noteBox(filesT("science.records.malformed", search.malformedRecords)));
-  }
-  pane.appendChild(section);
-  if (!search.records.length) {
-    pane.appendChild(noteBox(filesT("science.records.empty")));
-    pane.appendChild(downloadLink(url, a));
-    return;
-  }
-  pane.appendChild(noteBox(filesT("science.records.note")));
-  const list = el("div", "science-records");
-  pane.appendChild(list);
-  const shown = el("div", "science-records-shown");
-  pane.appendChild(shown);
-  const more = el("button", "outline-btn small", filesT("science.records.loadMore"));
-  pane.appendChild(more);
-  const capped = el("div", "science-records-cap");
-  pane.appendChild(capped);
-  let page = 0;
-  let cappedShown = false;
-  const paint = (result: ScienceRecordPage): void => {
-    for (const item of result.records) {
-      const row = el("div", "science-record");
-      const head = el("div", "science-record-head");
-      // Titles and identifiers are always text nodes, never markup.
-      head.appendChild(el("span", "science-record-title", item.title || filesT("science.record.unknownTitle")));
-      if (item.type) head.appendChild(el("span", "science-record-type", item.type));
-      row.appendChild(head);
-      const meta = el("div", "science-record-meta");
-      meta.appendChild(
-        el("span", "science-record-id", filesT("science.record.id") + ": " + (item.id || filesT("science.record.unknown"))),
-      );
-      if (item.url) {
-        const link = el("a", "science-record-link", publicText(item.url, 300)) as HTMLAnchorElement;
-        link.href = item.url;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        meta.appendChild(link);
-      }
-      row.appendChild(meta);
-      item.attributes.forEach(([label, value]) => {
-        const attr = el("div", "science-record-attr");
-        attr.appendChild(el("span", "science-record-attr-k", label));
-        attr.appendChild(el("span", "science-record-attr-v", value));
-        row.appendChild(attr);
-      });
-      list.appendChild(row);
-    }
-    const total = Math.min(search.records.length, SCIENCE_RECORD_MAX);
-    shown.textContent = filesT(
-      "science.records.shown",
-      Math.min((result.page + 1) * SCIENCE_RECORD_PAGE, total).toLocaleString(),
-      total.toLocaleString(),
-    );
-    more.hidden = !result.hasMore;
-    if (result.capped && !cappedShown) {
-      cappedShown = true;
-      capped.appendChild(noteBox(filesT("science.records.limit")));
-      capped.appendChild(downloadLink(url, a));
-    }
-  };
-  paint(scienceRecordPage(search, page));
-  more.onclick = () => {
-    page += 1;
-    paint(scienceRecordPage(search, page));
-  };
-}
-
-function renderScienceJson(
-  pane: HTMLElement,
-  a: ArtifactRow,
-  url: string,
-  text: string,
-): void {
-  const shown = unicodeSafeSlice(text, TEXT_SOURCE_PREVIEW_CHARACTERS);
-  const pre = el("pre", "renderer-source science-json");
-  pre.textContent = shown;
-  pane.appendChild(pre);
-  if (shown.length < text.length) {
-    const note = el(
-      "div",
-      "renderer-note renderer-completeness",
-      filesT("science.json.truncated", shown.length.toLocaleString()),
-    );
-    note.setAttribute("data-state", "partial");
-    note.setAttribute("role", "status");
-    pane.appendChild(note);
-  }
-  // The exact-version original is always reachable from the raw-JSON tab.
-  pane.appendChild(downloadLink(url, a));
-}
-
 /**
- * Paint the saved-search view. Returns false when the bytes are not this
- * envelope, so the caller can keep its generic text/JSON path.
+ * Render the saved-search view. `readScienceSearchEnvelope` decides whether the
+ * bytes are this envelope; the caller only calls this after a non-null read.
+ * `renderRaw` is the shared raw-source renderer (`renderRawSource`) so the "raw
+ * JSON" tab keeps the original bytes display/expand/download behaviour; a
+ * direct caller may omit it and gets the same bounded source view.
  */
 export function renderScienceResults(
   container: HTMLElement,
   a: ArtifactRow,
   url: string,
   text: string,
-): boolean {
-  const parsed = parseScienceSearch(text);
-  if (!parsed.ok) return false;
-  const search = parsed.search;
+  search: ScienceSearch,
+  renderRaw?: (target: HTMLElement) => void,
+): void {
   const shell = el("div", "science-results");
   const tabs = el("div", "science-tabs");
   const recordsTab = el("button", "science-tab active", filesT("science.tab.records")) as HTMLButtonElement;
@@ -470,12 +361,52 @@ export function renderScienceResults(
   shell.appendChild(recordsPane);
   shell.appendChild(jsonPane);
   container.appendChild(shell);
-  renderScienceSource(recordsPane, search, a, url);
-  // The raw JSON tab is built lazily; the toggle is the only way in.
+
+  recordsPane.appendChild(noteBox(filesT("science.records.saved", search.records.length.toLocaleString())));
+  if (search.nextCursor) recordsPane.appendChild(noteBox(filesT("science.records.nextPage")));
+  if (!search.records.length) recordsPane.appendChild(noteBox(filesT("science.records.empty")));
+
+  const list = el("div", "science-records");
+  const columns = el("div", "science-record science-record-head");
+  columns.appendChild(el("span", "science-record-id", filesT("science.column.id")));
+  columns.appendChild(el("span", "science-record-title", filesT("science.column.title")));
+  columns.appendChild(el("span", "science-record-type", filesT("science.column.type")));
+  columns.appendChild(el("span", "science-record-link", filesT("science.column.link")));
+  list.appendChild(columns);
+  recordsPane.appendChild(list);
+  const more = el("button", "outline-btn small", filesT("science.records.loadMore"));
+  more.hidden = true;
+  recordsPane.appendChild(more);
+  const cap = el("div", "science-records-cap");
+  recordsPane.appendChild(cap);
+  let page = 0;
+  let capShown = false;
+  const paint = (): void => {
+    const result = scienceRecordPage(search, page);
+    for (const record of result.records) list.appendChild(renderRecord(record));
+    more.hidden = !result.hasMore;
+    if (result.capped && !capShown) {
+      capShown = true;
+      cap.appendChild(noteBox(filesT("science.records.limit")));
+      cap.appendChild(downloadLink(url, a));
+    }
+  };
+  paint();
+  more.onclick = () => {
+    page += 1;
+    paint();
+  };
+
   let jsonReady = false;
   const show = (records: boolean): void => {
     if (!records && !jsonReady) {
-      renderScienceJson(jsonPane, a, url, text);
+      if (renderRaw) renderRaw(jsonPane);
+      else {
+        const pre = el("pre", "renderer-source");
+        pre.textContent = text.slice(0, 300_000);
+        jsonPane.appendChild(pre);
+        jsonPane.appendChild(downloadLink(url, a));
+      }
       jsonReady = true;
     }
     recordsPane.classList.toggle("hidden", !records);
@@ -485,5 +416,4 @@ export function renderScienceResults(
   };
   recordsTab.onclick = () => show(true);
   jsonTab.onclick = () => show(false);
-  return true;
 }

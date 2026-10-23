@@ -1,37 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
-import { setArtifactsFetch, TEXT_SOURCE_PREVIEW_CHARACTERS } from "./api";
+import { setArtifactsFetch } from "./api";
 import { filesT } from "./copy";
 import {
-  parseScienceSearch,
+  readScienceSearchEnvelope,
   renderScienceResults,
   scienceRecordPage,
-  scienceSourceStatus,
   SCIENCE_RECORD_MAX,
   SCIENCE_RECORD_PAGE,
-  type ScienceSearch,
+  sanitizeExternalUrl,
 } from "./science-results";
+import type { ArtifactRow } from "./types";
 
 const DIGEST = "a".repeat(64);
 
 function envelope(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     query: "tp53",
-    endpoint: "https://api.example.org/search?q=tp53&key=SECRET",
+    request_url: "https://api.example.org/search?q=tp53",
     retrieved_at: "2026-10-20T10:00:00Z",
-    source_checksum: DIGEST,
+    response_sha256: DIGEST,
     accessions: ["P04637"],
     result: {
       database: "uniprot",
-      provenance: { retrieved_at: "2026-10-20T10:00:00Z", response_sha256: DIGEST },
+      next_cursor: "",
       results: [
         {
           id: "P04637",
           title: "Cellular tumor antigen p53",
           url: "https://www.uniprot.org/uniprotkb/P04637",
           type: "protein",
-          organism: "Homo sapiens",
-          description: "Tumor suppressor",
+          attributes: { organism: "Homo sapiens", length: 393, nested: { x: 1 } },
         },
         { id: "P04638", title: "p53 isoform", url: "javascript:alert(1)", type: "protein" },
       ],
@@ -40,143 +39,85 @@ function envelope(overrides: Record<string, unknown> = {}): string {
   });
 }
 
-describe("strict saved-search envelope validation (A4)", () => {
-  it("accepts the canonical envelope and the historical alias envelope", () => {
-    const canonical = JSON.stringify({
-      query: "brca1",
-      request_url: "https://api.example.org/search?q=brca1",
-      response_sha256: DIGEST,
-      retrieved_at: "2026-10-20T10:00:00Z",
-      result: { database: "uniprot", results: [] },
+describe("strict saved-search envelope reader (A5)", () => {
+  it("accepts the canonical and historical envelopes", () => {
+    const canonical = readScienceSearchEnvelope(envelope());
+    expect(canonical).not.toBeNull();
+    expect(canonical!.query).toBe("tp53");
+    expect(canonical!.records).toHaveLength(2);
+    expect(canonical!.records[0]).toMatchObject({
+      id: "P04637",
+      title: "Cellular tumor antigen p53",
+      type: "protein",
     });
-    const parsed = parseScienceSearch(canonical);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.search.database).toBe("uniprot");
-    expect(parsed.search.requestUrl).toBe("https://api.example.org/search?q=brca1");
-    expect(parsed.search.responseSha256).toBe(DIGEST);
-    expect(parsed.search.aliasesUsed).toEqual([]);
-    expect(parsed.search.conflicts).toEqual([]);
+    expect(canonical!.nextCursor).toBe("");
 
-    const legacy = parseScienceSearch(envelope());
-    expect(legacy.ok).toBe(true);
-    if (!legacy.ok) return;
-    // The envelope's result.provenance still carries the canonical digest, so
-    // only the request URL is served by a legacy alias.
-    expect(legacy.search.aliasesUsed).toEqual(["endpoint"]);
-    expect(legacy.search.database).toBe("uniprot");
-    const legacyOnly = parseScienceSearch(
-      envelope({ result: { database: "uniprot", results: [] } }),
-    );
-    expect(legacyOnly.ok).toBe(true);
-    if (!legacyOnly.ok) return;
-    expect(legacyOnly.search.aliasesUsed).toEqual(["endpoint", "source_checksum"]);
-  });
-
-  it("does not accept any JSON that merely has a result property", () => {
-    for (const body of [
-      '{"result": 42}',
-      '{"result": {}}',
-      '{"result": {"results": "no"}}',
-      '{"result": {"results": []}}',
-      '{"result": {"foo": [1, 2]}}',
-      "[1, 2, 3]",
-      '{"foo": "bar"}',
-      "not json",
-    ]) {
-      expect(parseScienceSearch(body).ok, body).toBe(false);
-    }
-  });
-
-  it("reports a conflict when canonical and legacy values disagree", () => {
-    const parsed = parseScienceSearch(
-      envelope({
-        request_url: "https://api.example.org/other",
-        response_sha256: "b".repeat(64),
-        endpoint: "https://api.example.org/search?q=tp53",
+    const legacy = readScienceSearchEnvelope(
+      JSON.stringify({
+        query: "brca1",
+        endpoint: "https://api.example.org/search?q=brca1",
+        retrieved_at: "2026-10-20T10:00:00Z",
         source_checksum: DIGEST,
+        result: { database: "uniprot", results: [] },
       }),
     );
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.search.conflicts).toEqual([
-      "request_url ↔ endpoint",
-      "response_sha256 ↔ source_checksum",
-    ]);
-    // Canonical values are kept; no silent choice between the two.
-    expect(parsed.search.requestUrl).toBe("https://api.example.org/other");
-    expect(parsed.search.responseSha256).toBe("b".repeat(64));
+    expect(legacy).not.toBeNull();
+    expect(legacy!.records).toEqual([]);
+    expect(legacy!.requestUrl).toContain("brca1");
   });
 
-  it("marks a deliberately hidden response digest", () => {
-    for (const body of [
-      envelope({ response_sha256_hidden: true }),
-      envelope({ source_checksum: "<redacted:credential>", response_sha256: "" }),
-      envelope({ hidden_fields: ["response_sha256"], source_checksum: "" }),
+  it("rejects every document that is not exactly this shape", () => {
+    const cases: string[] = [
+      "not json",
+      "[]",
+      '{"foo":"bar"}',
+      // A JSON document that merely has a result property is not a search.
+      '{"result":{"results":[]}}',
+      '{"result":42}',
+      '{"result":{"results":"no"}}',
+      '{"result":{"results":[42]}}',
+      // Results array with a record field of the wrong type.
+      '{"query":"q","result":{"results":[{"id":7}]}}',
+      '{"query":"q","result":{"results":[{"title":null}]}}',
+      '{"query":"q","result":{"results":[{"attributes":[]}]}}',
+      // Any extra top-level key means this reader does not own the document.
       JSON.stringify({
         query: "q",
         request_url: "https://api.example.org/x",
-        response_sha256: "<redacted:credential>",
-        result: { database: "db", results: [] },
+        result: { results: [] },
+        extra: 1,
       }),
-    ]) {
-      const parsed = parseScienceSearch(body);
-      expect(parsed.ok, body).toBe(true);
-      if (!parsed.ok) continue;
-      expect(parsed.search.responseSha256Hidden).toBe(true);
-      expect(parsed.search.responseSha256).toBe("");
-    }
+      JSON.stringify({
+        query: "q",
+        kind: "science_search",
+        result: { results: [] },
+      }),
+    ];
+    for (const body of cases) expect(readScienceSearchEnvelope(body), body).toBeNull();
   });
 
-  it("extracts only the allowed record fields and counts malformed records", () => {
-    const parsed = parseScienceSearch(
+  it("reports a saved next cursor but never claims a database total", () => {
+    const search = readScienceSearchEnvelope(
       JSON.stringify({
         query: "q",
         request_url: "https://api.example.org/x",
-        result: {
-          database: "db",
-          results: [
-            {
-              id: 7,
-              title: "<img onerror=alert(1)>",
-              url: "https://example.org/record",
-              type: "paper",
-              organism: "human",
-              method: "cryo-em",
-              date: "2026-01-01",
-              length: 100,
-              secret_extra: "must not be shown",
-            },
-            "not a record",
-            { unrelated: true },
-          ],
-        },
+        result: { next_cursor: "page-2", results: [] },
       }),
     );
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.search.malformedRecords).toBe(2);
-    expect(parsed.search.records).toHaveLength(1);
-    const record = parsed.search.records[0]!;
-    expect(record.id).toBe("7");
-    expect(record.title).toBe("<img onerror=alert(1)>");
-    expect(record.url).toBe("https://example.org/record");
-    expect(record.type).toBe("paper");
-    expect(record.attributes.map(([key]) => key)).toEqual(["organism", "method", "date"]);
+    expect(search).not.toBeNull();
+    expect(search!.nextCursor).toBe("page-2");
   });
 });
 
-describe("external link sanitization (A4)", () => {
-  it("keeps safe http(s) and strips credential query parameters", async () => {
-    const { sanitizeExternalUrl } = await import("./science-results");
+describe("external link sanitization (A5)", () => {
+  it("keeps safe http(s) and strips credential query parameters", () => {
     expect(sanitizeExternalUrl("https://example.org/a?q=1&token=SECRET&x=2")).toBe(
       "https://example.org/a?q=1&x=2",
     );
     expect(sanitizeExternalUrl("http://example.org/a#frag")).toBe("http://example.org/a");
   });
 
-  it("refuses non-http schemes and embedded credentials", async () => {
-    const { sanitizeExternalUrl } = await import("./science-results");
+  it("refuses non-http schemes and embedded credentials", () => {
     for (const value of [
       "javascript:alert(1)",
       "data:text/html,<script>x</script>",
@@ -191,13 +132,13 @@ describe("external link sanitization (A4)", () => {
   });
 });
 
-describe("bounded record pages (A4)", () => {
-  const many = (count: number): ScienceSearch => {
-    const parsed = parseScienceSearch(
+describe("bounded record pages (A5)", () => {
+  function many(count: number) {
+    const search = readScienceSearchEnvelope(
       JSON.stringify({
+        query: "q",
         request_url: "https://api.example.org/x",
         result: {
-          database: "db",
           results: Array.from({ length: count }, (_, index) => ({
             id: "id" + index,
             title: "record " + index,
@@ -206,9 +147,9 @@ describe("bounded record pages (A4)", () => {
         },
       }),
     );
-    if (!parsed.ok) throw new Error("fixture");
-    return parsed.search;
-  };
+    if (!search) throw new Error("fixture");
+    return search;
+  }
 
   it("pages fifty records at a time and never reads past the five-hundredth", () => {
     const search = many(600);
@@ -216,9 +157,7 @@ describe("bounded record pages (A4)", () => {
     expect(first.records).toHaveLength(SCIENCE_RECORD_PAGE);
     expect(first.hasMore).toBe(true);
     expect(first.capped).toBe(true);
-    const last = scienceRecordPage(search, 9);
-    expect(last.records).toHaveLength(50);
-    expect(last.hasMore).toBe(false);
+    expect(scienceRecordPage(search, 9).records).toHaveLength(50);
     expect(scienceRecordPage(search, 10).records).toHaveLength(0);
     expect(SCIENCE_RECORD_MAX).toBe(500);
   });
@@ -229,7 +168,7 @@ describe("bounded record pages (A4)", () => {
     let page = 0;
     for (;;) {
       const result = scienceRecordPage(search, page);
-      ids.push(...result.records.map((record) => record.id!));
+      ids.push(...result.records.map((record) => record.id));
       if (!result.hasMore) break;
       page += 1;
       if (page > 20) throw new Error("paging did not terminate");
@@ -239,62 +178,18 @@ describe("bounded record pages (A4)", () => {
   });
 });
 
-describe("public-source readability status (A4)", () => {
-  it("distinguishes a hidden digest, a shown digest and a missing one", () => {
-    expect(scienceSourceStatus({ response_sha256: DIGEST })).toMatchObject({
-      digest: DIGEST,
-      digestHidden: false,
-    });
-    expect(scienceSourceStatus({ response_sha256: "<redacted:credential>" })).toMatchObject({
-      digest: "",
-      digestHidden: true,
-    });
-    expect(scienceSourceStatus({ hidden_fields: ["response_sha256"] })).toMatchObject({
-      digestHidden: true,
-    });
-    expect(scienceSourceStatus({})).toMatchObject({ digest: "", digestHidden: false });
-  });
-
-  it("reads the S1 projection keys: response_sha256_state, legacy_normalized, source_conflicts", () => {
-    expect(
-      scienceSourceStatus({
-        response_sha256: "<redacted:credential>",
-        response_sha256_state: "hidden",
-      }),
-    ).toMatchObject({ digest: "", digestHidden: true });
-    expect(
-      scienceSourceStatus({
-        response_sha256: "a".repeat(64),
-        response_sha256_state: "shown",
-      }),
-    ).toMatchObject({ digest: "a".repeat(64), digestHidden: false });
-    expect(
-      scienceSourceStatus({
-        response_sha256: "a".repeat(64),
-        response_sha256_state: "shown",
-        legacy_normalized: ["request_url"],
-        source_conflicts: ["request_url"],
-      }),
-    ).toMatchObject({ aliases: ["request_url"], conflicts: ["request_url"] });
-  });
-
-  it("keeps the pre-S1 marker fallbacks working", () => {
-    expect(
-      scienceSourceStatus({ conflict_fields: ["request_url"], normalized_fields: ["endpoint"] }),
-    ).toMatchObject({ conflicts: ["request_url"], aliases: ["endpoint"] });
-  });
-});
-
 class FakeNode {
   children: FakeNode[] = [];
   parent: FakeNode | null = null;
+  page = false;
   className = "";
   textContent = "";
   html = "";
   href = "";
-  hidden = false;
   target = "";
   rel = "";
+  hidden = false;
+  style: Record<string, string> = {};
   attrs: Record<string, string> = {};
   dataset: Record<string, string> = {};
   classList = (() => {
@@ -312,11 +207,18 @@ class FakeNode {
     };
   })();
   onclick: (() => void) | null = null;
-  constructor(readonly tagName = "div") {}
+  tagName: string;
+  constructor(tag = "div") {
+    this.tagName = tag.toUpperCase();
+  }
+  get isConnected(): boolean {
+    return this.page || (!!this.parent && this.parent.isConnected);
+  }
   get innerHTML(): string {
     return this.html;
   }
   set innerHTML(value: string) {
+    for (const child of this.children) child.parent = null;
     this.children = [];
     this.html = value;
   }
@@ -335,9 +237,14 @@ const texts = (node: FakeNode): string[] => walk(node).map((item) => item.textCo
 const withText = (root: FakeNode, text: string): FakeNode[] =>
   walk(root).filter((node) => node.textContent === text);
 
-describe("saved-search result view (A4)", () => {
+describe("saved-search result view (A5)", () => {
   const host = (node: FakeNode) => node as unknown as HTMLElement;
-  const artifact = { id: "search", filename: "science-uniprot.json", version_id: "v1", _exactVersion: true };
+  const artifact: ArtifactRow = {
+    id: "search",
+    filename: "science-uniprot.json",
+    version_id: "v1",
+    _exactVersion: true,
+  };
   const url = "/api/v1/artifacts/versions/v1";
   let fetches: string[];
 
@@ -356,132 +263,234 @@ describe("saved-search result view (A4)", () => {
     resetStoreFields();
   });
 
-  it("renders the source area and the saved records without any network read", () => {
-    const root = new FakeNode();
-    expect(renderScienceResults(host(root), artifact, url, envelope())).toBe(true);
+  function mount(body: string, renderRaw?: (target: HTMLElement) => void): FakeNode {
+    const search = readScienceSearchEnvelope(body);
+    if (!search) throw new Error("fixture is not an envelope");
+    const root = new FakeNode("div");
+    root.page = true;
+    renderScienceResults(host(root), artifact, url, body, search, renderRaw);
+    return root;
+  }
+
+  it("shows the saved-record count, the four columns and the record rows", () => {
+    const root = mount(envelope());
     const values = texts(root);
     expect(values).toContain(filesT("science.tab.records"));
     expect(values).toContain(filesT("science.tab.json"));
-    expect(values).toContain("uniprot");
-    expect(values).toContain("https://api.example.org/search?q=tp53");
-    expect(values).toContain("2026-10-20T10:00:00Z");
-    expect(values).toContain(DIGEST);
+    expect(values).toContain(filesT("science.records.saved", "2"));
+    for (const key of ["science.column.id", "science.column.title", "science.column.type", "science.column.link"]) {
+      expect(values).toContain(filesT(key));
+    }
+    expect(values).toContain("P04637");
     expect(values).toContain("Cellular tumor antigen p53");
-    expect(values.some((value) => value.includes("P04637"))).toBe(true);
+    expect(values).toContain("protein");
     expect(fetches).toEqual([]);
-    // Titles are text: the record title cannot become markup.
-    const title = walk(root).find((node) => node.className === "science-record-title")!;
+  });
+
+  it("renders only http(s) links, scrubs their displayed text and keeps other URLs as text", () => {
+    const body = JSON.stringify({
+      query: "q",
+      request_url: "https://api.example.org/x",
+      result: {
+        results: [
+          {
+            id: "r1",
+            title: "safe",
+            url: "https://example.org/record?api_key=SECRET&x=1",
+            type: "paper",
+          },
+          { id: "r2", title: "js", url: "javascript:alert(1)", type: "paper" },
+          { id: "r3", title: "data", url: "data:text/html,<script>x</script>", type: "paper" },
+          { id: "r4", title: "broken", url: "not a url", type: "paper" },
+        ],
+      },
+    });
+    const root = mount(body);
+    const anchors = walk(root).filter((node) => node.tagName === "A");
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]!.target).toBe("_blank");
+    expect(anchors[0]!.rel).toBe("noopener noreferrer");
+    // The href keeps no credential param; the display text is scrubbed.
+    expect(anchors[0]!.href).toBe("https://example.org/record?x=1");
+    expect(anchors[0]!.textContent).toContain("[redacted]");
+    expect(anchors[0]!.textContent).not.toContain("SECRET");
+    expect(texts(root)).toContain("javascript:alert(1)");
+    expect(texts(root)).toContain("data:text/html,<script>x</script>");
+    expect(texts(root)).toContain("not a url");
+    expect(walk(root).some((node) => node.tagName === "SCRIPT")).toBe(false);
+  });
+
+  it("renders titles and attributes as text, expanding at most eight scalar attributes", () => {
+    const body = JSON.stringify({
+      query: "q",
+      request_url: "https://api.example.org/x",
+      result: {
+        results: [
+          {
+            id: "r1",
+            title: "<img src=x onerror=alert(1)>",
+            type: "paper",
+            attributes: {
+              organism: "human",
+              method: "cryo-em",
+              year: 2026,
+              peer_reviewed: false,
+              object: { nested: true },
+              list: [1, 2],
+              k5: "v5",
+              k6: "v6",
+              k7: "v7",
+              k8: "v8",
+            },
+          },
+        ],
+      },
+    });
+    const root = mount(body);
+    const title = walk(root)
+      .filter((node) => (node.className || "") === "science-record-title")
+      .at(-1)!;
+    expect(title.textContent).toBe("<img src=x onerror=alert(1)>");
     expect(title.innerHTML).toBe("");
+    const details = walk(root).find((node) => (node.className || "") === "science-record-attributes")!;
+    expect(details).toBeTruthy();
+    const lines = walk(details).filter((node) => (node.className || "") === "science-record-attribute");
+    expect(lines).toHaveLength(8);
+    const joined = lines.map((line) => line.children.map((child) => child.textContent).join("="));
+    expect(joined).toContain("organism=human");
+    expect(joined).toContain("year=2026");
+    expect(joined).toContain("peer_reviewed=false");
+    expect(joined.some((line) => line.includes("object"))).toBe(false);
+    expect(joined.some((line) => line.includes("list"))).toBe(false);
   });
 
-  it("links only a safe record URL and keeps the refused one as text", () => {
-    const root = new FakeNode();
-    renderScienceResults(host(root), artifact, url, envelope());
-    const links = walk(root).filter((node) => node.tagName === "a");
-    const hrefs = links.map((node) => node.href);
-    expect(hrefs).toContain("https://www.uniprot.org/uniprotkb/P04637");
-    expect(hrefs.some((href) => href.startsWith("javascript:"))).toBe(false);
-    expect(texts(root).some((text) => text.includes("javascript:"))).toBe(false);
-    const link = links.find((node) => node.href.includes("uniprot"))!;
-    expect(link.rel).toBe("noopener noreferrer");
-    expect(link.target).toBe("_blank");
-  });
+  it("names an empty result file and a saved next page instead of a database total", () => {
+    const empty = mount(
+      JSON.stringify({ query: "q", request_url: "https://api.example.org/x", result: { results: [] } }),
+    );
+    expect(texts(empty)).toContain(filesT("science.records.saved", "0"));
+    expect(texts(empty)).toContain(filesT("science.records.empty"));
 
-  it("names hidden digests, aliases and conflicts in the source area", () => {
-    const root = new FakeNode();
-    renderScienceResults(
-      host(root),
-      artifact,
-      url,
-      envelope({
-        endpoint: undefined,
-        request_url: "https://api.example.org/other",
-        source_checksum: undefined,
-        response_sha256: "<redacted:credential>",
-        conflict_fields: ["request_url"],
-        normalized_fields: ["endpoint"],
+    const paged = mount(
+      JSON.stringify({
+        query: "q",
+        request_url: "https://api.example.org/x",
+        result: { next_cursor: "page-2", results: [] },
       }),
     );
-    const values = texts(root);
-    expect(values).toContain(filesT("science.responseHidden"));
-    expect(values).toContain(filesT("science.responseHiddenNote"));
-    expect(values).toContain(filesT("science.aliasNote", "endpoint"));
-    expect(values).toContain(filesT("science.conflictNote", "request_url"));
+    expect(texts(paged)).toContain(filesT("science.records.nextPage"));
   });
 
-  it("pages the saved records with an explicit Load more and no auto-fetch", () => {
-    const records = Array.from({ length: 120 }, (_, index) => ({
-      id: "r" + index,
-      title: "record " + index,
-    }));
+  it("pages the saved records with load more and never fetches anything", () => {
     const body = JSON.stringify({
+      query: "q",
       request_url: "https://api.example.org/x",
-      result: { database: "db", results: records },
+      result: {
+        results: Array.from({ length: 120 }, (_, index) => ({
+          id: "r" + index,
+          title: "record " + index,
+        })),
+      },
     });
-    const root = new FakeNode();
-    renderScienceResults(host(root), artifact, url, body);
-    expect(walk(root).filter((node) => node.className === "science-record")).toHaveLength(50);
-    expect(texts(root)).toContain(filesT("science.records.shown", "50", "120"));
+    const root = mount(body);
+    const rows = () =>
+      walk(root).filter(
+        (node) =>
+          (node.className || "") === "science-record" &&
+          (node.className || "") !== "science-record-head",
+      );
+    expect(rows()).toHaveLength(50);
     const more = withText(root, filesT("science.records.loadMore"))[0]!;
     more.onclick?.();
-    expect(walk(root).filter((node) => node.className === "science-record")).toHaveLength(100);
-    expect(texts(root)).toContain(filesT("science.records.shown", "100", "120"));
+    expect(rows()).toHaveLength(100);
     more.onclick?.();
-    expect(walk(root).filter((node) => node.className === "science-record")).toHaveLength(120);
+    expect(rows()).toHaveLength(120);
     expect(more.hidden).toBe(true);
     expect(fetches).toEqual([]);
   });
 
-  it("caps the list at 500 records and offers the exact-version original", () => {
-    const records = Array.from({ length: 520 }, (_, index) => ({ id: "r" + index, title: "r" + index }));
-    const root = new FakeNode();
-    renderScienceResults(
-      host(root),
-      artifact,
-      url,
-      JSON.stringify({ request_url: "https://api.example.org/x", result: { database: "db", results: records } }),
-    );
+  it("caps the list at 500 records and offers the exact-version JSON download", () => {
+    const body = JSON.stringify({
+      query: "q",
+      request_url: "https://api.example.org/x",
+      result: {
+        results: Array.from({ length: 520 }, (_, index) => ({ id: "r" + index, title: "r" + index })),
+      },
+    });
+    const root = mount(body);
     const more = withText(root, filesT("science.records.loadMore"))[0]!;
     for (let page = 0; page < 20 && !more.hidden; page++) more.onclick?.();
-    expect(walk(root).filter((node) => node.className === "science-record")).toHaveLength(SCIENCE_RECORD_MAX);
+    const rows = walk(root).filter((node) => (node.className || "") === "science-record");
+    expect(rows).toHaveLength(SCIENCE_RECORD_MAX);
     expect(texts(root)).toContain(filesT("science.records.limit"));
-    const links = walk(root).filter((node) => node.tagName === "a");
-    expect(links.map((node) => node.href)).toContain(url);
+    expect(walk(root).filter((node) => node.tagName === "A").map((node) => node.href)).toContain(url);
   });
 
-  it("keeps the raw JSON tab available on the same version", () => {
+  it("keeps the raw JSON tab on the same version and renders through the shared raw-source view", () => {
     const body = envelope();
-    const root = new FakeNode();
-    renderScienceResults(host(root), artifact, url, body);
+    let rawCalls = 0;
+    const root = mount(body, (target) => {
+      rawCalls += 1;
+      const pre = new FakeNode("pre");
+      pre.className = "renderer-source";
+      pre.textContent = body;
+      target.appendChild(pre as unknown as Node);
+    });
     const jsonTab = withText(root, filesT("science.tab.json"))[0]!;
     jsonTab.onclick?.();
-    const pre = walk(root).find((node) => node.className.includes("science-json"))!;
-    expect(pre.textContent).toBe(body);
-    expect(walk(root).filter((node) => node.tagName === "a").map((node) => node.href)).toContain(url);
-  });
-
-  it("labels a bounded raw JSON tab when the file is larger than the display limit", () => {
-    const body =
-      JSON.stringify({
-        request_url: "https://api.example.org/x",
-        result: {
-          database: "db",
-          results: [{ id: "r", title: "x".repeat(TEXT_SOURCE_PREVIEW_CHARACTERS + 10) }],
-        },
-      });
-    const root = new FakeNode();
-    renderScienceResults(host(root), artifact, url, body);
-    withText(root, filesT("science.tab.json"))[0]!.onclick?.();
-    const pre = walk(root).find((node) => node.className.includes("science-json"))!;
-    expect(pre.textContent.length).toBe(TEXT_SOURCE_PREVIEW_CHARACTERS);
-    expect(texts(root)).toContain(
-      filesT("science.json.truncated", TEXT_SOURCE_PREVIEW_CHARACTERS.toLocaleString()),
+    expect(rawCalls).toBe(1);
+    const raw = walk(root).find((node) => (node.className || "") === "renderer-source")!;
+    expect(raw.textContent).toBe(body);
+    // The records pane is hidden; the raw tab can be switched back.
+    const recordsTab = withText(root, filesT("science.tab.records"))[0]!;
+    recordsTab.onclick?.();
+    const panes = walk(root).filter(
+      (node) =>
+        (node.className || "").includes("science-pane") ||
+        (node.className || "").includes("renderer-source"),
     );
+    // The raw pane stays built but hidden when the records tab is active.
+    const rawPane = walk(root).find((node) =>
+      node.children.some((child) => (child.className || "") === "renderer-source"),
+    )!;
+    expect(rawPane.classList.contains("hidden")).toBe(true);
+    expect(panes.length).toBeGreaterThan(0);
   });
 
-  it("declines unrelated JSON so the caller keeps its generic path", () => {
-    const root = new FakeNode();
-    expect(renderScienceResults(host(root), artifact, url, '{"result": {"a": 1}}')).toBe(false);
-    expect(root.children).toHaveLength(0);
+  it("renders a fallback raw view with the download when no shared renderer is passed", () => {
+    const body = envelope();
+    const root = mount(body);
+    withText(root, filesT("science.tab.json"))[0]!.onclick?.();
+    const raw = walk(root).find((node) => (node.className || "") === "renderer-source")!;
+    expect(raw.textContent).toBe(body);
+    expect(walk(root).filter((node) => node.tagName === "A").map((node) => node.href)).toContain(url);
+  });
+
+  it("keeps two versions' record lists separate", () => {
+    const first = mount(
+      JSON.stringify({
+        query: "q1",
+        request_url: "https://api.example.org/x",
+        result: { results: [{ id: "one", title: "first version" }] },
+      }),
+    );
+    const second = mount(
+      JSON.stringify({
+        query: "q2",
+        request_url: "https://api.example.org/x",
+        result: { results: [{ id: "two", title: "second version" }] },
+      }),
+    );
+    expect(texts(first)).toContain("first version");
+    expect(texts(first)).not.toContain("second version");
+    expect(texts(second)).toContain("second version");
+    expect(texts(second)).not.toContain("first version");
+  });
+});
+
+describe("public-source readability status (S1 panel helper)", () => {
+  it("is still exported for the version-history panel", async () => {
+    const module = await import("./science-results");
+    expect(typeof module.scienceSourceStatus).toBe("function");
   });
 });

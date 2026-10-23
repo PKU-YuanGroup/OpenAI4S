@@ -616,19 +616,6 @@ export function abortPreviewReads(): void {
   activePreviewRead = null;
 }
 
-/**
- * Slice for display without splitting a surrogate pair. Returning half of an
- * astral character (emoji, some CJK extensions) would render a replacement
- * glyph that looks like corrupted content rather than a labelled prefix.
- */
-export function unicodeSafeSlice(text: string, limit: number): string {
-  if (limit <= 0 || !text) return "";
-  if (text.length <= limit) return text;
-  const last = text.charCodeAt(limit - 1);
-  const end = last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
-  return text.slice(0, Math.max(0, end));
-}
-
 export function isApiStatus(e: unknown, status: number, code?: string): boolean {
   if (!(e instanceof ApiError)) return false;
   if (e.status !== status) return false;

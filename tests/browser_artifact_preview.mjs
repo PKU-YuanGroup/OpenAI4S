@@ -85,6 +85,28 @@ const PDB = [
 ].join("\n");
 const SMALL_CSV = "gene,logFC\nTP53,2.4\nBRCA1,-1.1\n";
 const SMALL_MARKDOWN = "# Short report\n\nAll rows are present.\n";
+const SCIENCE_SEARCH = JSON.stringify({
+  query: "tp53",
+  request_url: "https://api.example.org/search?q=tp53",
+  retrieved_at: "2026-10-20T10:00:00Z",
+  response_sha256: "a".repeat(64),
+  result: {
+    database: "uniprot",
+    next_cursor: "page-2",
+    results: [
+      {
+        id: "P04637",
+        title: "Cellular tumor antigen p53",
+        url: "https://www.uniprot.org/uniprotkb/P04637",
+        type: "protein",
+        attributes: { organism: "Homo sapiens", length: 393 },
+      },
+      { id: "P04638", title: "p53 isoform", url: "javascript:alert(1)", type: "protein" },
+      { id: "P04639", title: "p53 fragment", url: "data:text/html,<b>x</b>", type: "protein" },
+    ],
+  },
+});
+
 const NOTEBOOK = JSON.stringify({
   nbformat: 4,
   nbformat_minor: 5,
@@ -224,6 +246,7 @@ async function main() {
       ">oversized\n" + "ACDEFGHIKLMNPQRSTVWY".repeat(Math.ceil((8 * 1024 * 1024 + 64) / 20)),
     );
     const notebook = await upload("session.python.ipynb", "application/x-ipynb+json", NOTEBOOK);
+    const scienceSearch = await upload("science-search.json", "application/json", SCIENCE_SEARCH);
     // Two immutable versions of the same artifact, to prove a fixed-version
     // preview and its download keep addressing version one.
     const history = await upload("history.csv", "text/csv", "revision,value\n1,11\n");
@@ -343,6 +366,57 @@ async function main() {
       await page.locator("#dock-viewer table.sheet").waitFor({ timeout: 30000 });
       const text = await page.locator("#dock-viewer table.sheet").innerText();
       assertion(text.includes("TP53") && text.includes("BRCA1"), "table did not show the saved rows");
+    });
+
+    await runCase(page, "saved science search shows records and keeps raw JSON", async () => {
+      const before = requests.length;
+      await open(scienceSearch, "science-search.json");
+      await page.locator("#dock-viewer .science-results").waitFor({ timeout: 30000 });
+      const text = await page.locator("#dock-viewer").innerText();
+      assertion(
+        /This file contains 3 records|本文件保存 3 条记录/.test(text),
+        `saved-record count missing: ${text.slice(0, 200)}`,
+      );
+      assertion(
+        /later pages|后续页/.test(text),
+        "a saved next_cursor was not reported as a later page",
+      );
+      const rows = page.locator("#dock-viewer .science-record:not(.science-record-head)");
+      assertion((await rows.count()) === 3, `expected 3 record rows, saw ${await rows.count()}`);
+      const links = page.locator("#dock-viewer .science-record a");
+      assertion(
+        (await links.count()) === 1,
+        `only the http(s) record may be a link, saw ${await links.count()}`,
+      );
+      assertion(
+        (await links.first().getAttribute("target")) === "_blank" &&
+          (await links.first().getAttribute("rel")) === "noopener noreferrer",
+        "record link is missing its safe target/rel",
+      );
+      const rendered = await page.locator("#dock-viewer").innerText();
+      assertion(rendered.includes("javascript:alert(1)"), "javascript URL was not kept as plain text");
+      // Raw JSON tab uses the shared raw-source view on the exact version.
+      await page.locator("#dock-viewer .science-tab").nth(1).click();
+      await page.locator("#dock-viewer .renderer-source").waitFor({ timeout: 30000 });
+      const raw = await page.locator("#dock-viewer .renderer-source").innerText();
+      assertion(raw.includes('"query":"tp53"'), "raw JSON tab does not show the saved bytes");
+      const href = await page
+        .locator("#dock-viewer .science-pane a.outline-btn")
+        .last()
+        .getAttribute("href");
+      assertion(
+        href === `/api/v1/artifacts/versions/${scienceSearch.versionId}`,
+        `raw JSON download is not the exact version: ${href}`,
+      );
+      const during = requests.slice(before);
+      assertion(
+        !during.some((url) => /\/kernel|\/execut|\/host/.test(new URL(url).pathname)),
+        "the records view called a kernel/Host endpoint",
+      );
+      assertion(
+        during.every((url) => new URL(url).origin === appOrigin),
+        "the records view reached another origin",
+      );
     });
 
     await runCase(page, "markdown states complete vs partial with the full-file entry", async () => {
