@@ -13,12 +13,13 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`load.test.ts`](load.test.ts) | `custTab()` 开始一次待定加载；标记只结算一次；超时只对仍在等待的 generation 生效。 |
 | [`dismiss.ts`](dismiss.ts) | Customize 如何关闭。打开状态只归 `customizeOpen` 一个来源：`#cust` 在最上层时，chrome 的焦点陷阱把 Esc 让给 Customize（先关嵌套编辑器，再关模态）；其他途径给 `#cust` 加上 `.hidden` 时，随后调用 `closeCust()`。只有按下不在对话框内开始的点击，遮罩才会关闭它。 |
 | [`dismiss.test.ts`](dismiss.test.ts) | 嵌套编辑器里按 Esc 只关编辑器；Customize 之上的模态自己处理 Esc；输入法组字的 Esc 不处理；`#cust` 被别的途径隐藏时 Customize 随之关闭；在对话框内按下、在遮罩上松开的点击不关闭。 |
-| [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`。路径必须是单个前导斜杠。 |
+| [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`（路径必须是单个前导斜杠），以及附录 B.2 更新客户端：`getUpdateStatus()`（本地读取）、`checkForUpdates({refresh})`（显式检查）、严格 `sanitizeUpdateStatus`（非 B.2 载荷降级为 `null`）、429 的 `updateRetryAfterSeconds` 与团队模式拒绝的 `isUpdateAdminOnly`。 |
 | [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
 | [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer`；直接 re-export `models.ts` 里真正的 `loadModels`（不经 window 桥）；`effProject`，以及供渲染使用的 `customizeProject`（它的 computed，只在项目变化时通知）。 |
 | [`index.ts`](index.ts) | `installCustomize` / `bootCustomize` 与对外 re-export。`window.openCust` / `custTab` 先加载并挂载设置 UI（`ensureCustomizeMounted` / `openCustomize`）；加载失败会提示，下次打开时重试。 |
 | [`layout.ts`](layout.ts) | `os-layout` 密度。`setLayout` / `applyLayout`。 |
 | [`memory.ts`](memory.ts) | Memory 作用域 id 与名称。绝不发送字面 `"default"`。 |
+| [`update.ts`](update.ts) | U2 更新行的中英双语文案表（`updateT`）：标题、版本/缓存/信任措辞、渠道标签与人工指引、原因码文案、管理员/频率/超时错误。车道本地：生成的 `i18n` 词典来自冻结的 `app.js`。 |
 | [`models.ts`](models.ts) | 本机端点清洗、协议目录、capability-receipt 读取；`loadModels` 用 `GET /models` 填充 composer `#model-select` 的 store（由 `bootCustomize` 调用），并保留每个条目的 `revision`。`sessionModelPin` 保存当前打开会话的固定：由 `watchSessionModelPin`（`bootCustomize` 只启动一次）从 `GET /frames/{id}` 读取；由 `noteSessionModelBinding` 根据任一 `model-binding` 响应更新，由 `noteAdmittedModelBinding` 根据发送消息 202 里的 `model_binding` 更新（发送开始后用户又选过模型时不采用，依据 `composerChoiceMark`）；版本计数器会丢弃被更新的读或写超越的读取，列表里找不到的固定会让列表重新加载一次。`composerSelection` 决定选择框显示什么——固定本身；固定找不到对应条目（profile 已删除、修订号较早）时显示占位项；否则显示默认。`chooseComposerModel` 先改绑当前会话（`POST /frames/{id}/model-binding {model_id}`，改绑和默认模型更新共用一个顺序写入队列），再设置服务端默认（`PUT /models/default`）并重新加载列表；重叠的多次选择只有最后一次会完成；没有打开的会话时只设置默认。`composerModelChoicePending` 防止发送越过尚未完成的选择，保留草稿并提示稍后重试；较早开始的列表读取不会覆盖更新的选择。文案在本模块的 `modelT` 表里；`resetSessionModelState` 供测试使用。 |
 | [`mount.ts`](mount.ts) | `mountCustomize()`：把设置弹窗渲染到 `#cust-root`。它是唯一导入 Customize 组件树的模块，首次打开设置时才加载（`ensureCustomizeMounted`），构建时因此被拆出首屏包。 |
 | [`models.test.ts`](models.test.ts) | `loadModels` 请求 `/models` 并填充 `models` / `defaultModel` / `defaultModelName`（配置档条目用模型名命名，id 原样保留）；`bootCustomize` 接好了它。打开会话时读取其固定，切到下一个会话时再读一次；已不再打开的会话的迟到响应会被丢弃；读不到的会话不留下任何东西；无论 boot 跑几次都只有一个监听；`bootCustomize` 启动了它。 |
