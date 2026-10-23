@@ -16,7 +16,8 @@ import {
 import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
-import { tileThumb, tileThumbBig } from "./thumbs";
+import { closeNotebookPreview } from "./notebook";
+import { beginThumbPaint, endThumbPaint, releaseThumbReads, tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
 export function addOpenTab(a: ArtifactRow): void {
@@ -120,6 +121,9 @@ export function dockOpen(): void {
 }
 
 export function dockClose(): void {
+  // Closing the dock leaves the notebook preview: cancel its read and release
+  // the image object URLs it created.
+  closeNotebookPreview();
   const d = dock.value as { open: boolean; tab: string };
   dock.value = { ...d, open: false, tab: d.tab };
   dockEl()?.classList.add("collapsed");
@@ -133,6 +137,8 @@ export function dockToggle(): void {
 
 export function setActiveTab(tab: string, selectArtifact = true): void {
   viewerRequest += 1;
+  // Leaving Files drops every tile read no other view is showing.
+  if (tab !== "files") releaseThumbReads();
   activeTab.value = tab;
   const selected = (openTabs.value as ArtifactRow[]).find((row) => artifactTabKey(row) === tab);
   if (selected && selectArtifact) {
@@ -143,6 +149,7 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   renderDockTabs();
   const pane =
     tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
+  if (pane !== "viewer") closeNotebookPreview();
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
   else if (tab === "timeline") {
@@ -236,6 +243,17 @@ function paintReadError(list: HTMLElement, confirmed: boolean): void {
 
 export function renderFilesGrid(): void {
   if (typeof document === "undefined") return;
+  // One paint owns the tiles it builds; a later paint cancels reads this one
+  // started but the next grid no longer shows.
+  const paint = beginThumbPaint();
+  try {
+    paintFilesGrid();
+  } finally {
+    endThumbPaint(paint);
+  }
+}
+
+function paintFilesGrid(): void {
   const list = document.getElementById("results-list");
   const count = document.getElementById("results-count");
   if (!list) return;

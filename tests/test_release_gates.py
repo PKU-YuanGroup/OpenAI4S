@@ -1710,6 +1710,38 @@ def _desktop_launcher_argv(value: str) -> list[str]:
     return argv
 
 
+def test_a_bundle_missing_a_shipped_web_ui_asset_fails_the_verifier(tmp_path):
+    """Deleting a required interface resource is a release failure, not a warning.
+
+    The verifier's whole job is to judge what ships. The default shell names its
+    entrypoint through a content-hashed Vite path, so a bundle can keep a
+    plausible `dist/index.html` while the module it loads is gone; the daemon
+    then serves a blank workbench to every user of that release. The contract
+    reads the shell and resolves each same-origin asset it names.
+    """
+    contract = _load_script("bundle_contract")
+    src = tmp_path / "src"
+    web = src / "openai4s" / "server" / "webui"
+    (web / "dist" / "assets").mkdir(parents=True)
+    (web / "dist" / "index.html").write_text(
+        "<!doctype html><html><head>"
+        '<link rel="stylesheet" href="/static/dist/assets/app.css">'
+        "</head><body>"
+        '<script type="module" src="/static/dist/assets/app.js"></script>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (web / "dist" / "assets" / "app.css").write_text("body{}", encoding="utf-8")
+    (web / "dist" / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    contract.check_web_assets(src)
+
+    (web / "dist" / "assets" / "app.js").unlink()
+    with pytest.raises(
+        contract.BundleCheckError, match="default Web UI resource is missing"
+    ):
+        contract.check_web_assets(src)
+
+
 def _generated_linux_bundle(tmp_path, directory, themed_icon):
     """A bundle directory written by the shipped step-6 generator, not installed."""
     bash = shutil.which("bash")

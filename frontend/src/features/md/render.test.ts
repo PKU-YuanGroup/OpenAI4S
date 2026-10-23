@@ -175,3 +175,50 @@ describe("renderMd on pathological input", () => {
     expect(mdInline("![plot](https://ex.com/p.png)")).toBe('<img alt="plot" src="https://ex.com/p.png">');
   });
 });
+
+
+describe("notebook-only resource-free rendering (A3)", () => {
+  it("refuses every image including inline data images and keeps links as text", () => {
+    const md = [
+      "![plot](https://example.com/x.png)",
+      "![data](data:image/png;base64,QUJDREVGRw==)",
+      "[paper](https://example.com/paper)",
+      "[bad](javascript:alert(1))",
+    ].join("\n\n");
+    const html = renderMd(md, {
+      plainResources: true,
+      omittedResourceText: "[image omitted]",
+    });
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("base64");
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("[image omitted]");
+    expect(html).toContain("paper");
+  });
+
+  it("applies inside every nested markdown path", () => {
+    const md = [
+      "# [title](https://example.com)",
+      "",
+      "> ![quote](data:image/png;base64,QUJD)",
+      "",
+      "- [item](https://example.com)",
+      "",
+      "| a |",
+      "|---|",
+      "| [cell](https://example.com) |",
+    ].join("\n");
+    const html = renderMd(md, { plainResources: true, omittedResourceText: "[image omitted]" });
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("example.com");
+    expect(html).toContain("title");
+    expect(html).toContain("item");
+  });
+
+  it("leaves default rendering for every other surface unchanged", () => {
+    expect(renderMd("![a](https://x/y.png)")).toContain("<img");
+    expect(renderMd("[x](https://ex.com)")).toContain('href="https://ex.com"');
+  });
+});

@@ -5726,6 +5726,25 @@ class Store:
         """One owner's remote jobs, live and finished. Never installation-wide."""
         return self._compute_jobs.for_owner(owner_key, limit)
 
+    def compute_jobs_page_for_owner(
+        self,
+        owner_key: str | None,
+        *,
+        limit: int = 200,
+        state: str = "all",
+        cursor: str | None = None,
+    ) -> dict:
+        """One keyset page plus the same-owner live total, from one read.
+
+        A thin pass-through on purpose: the stable sort, the cursor's ownership
+        and filter binding, and the aggregate all belong to the repository, and
+        the route above it must not be able to ask for a page and a count from
+        two different snapshots.
+        """
+        return self._compute_jobs.page_for_owner(
+            owner_key, limit=limit, state=state, cursor=cursor
+        )
+
     def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
         return self._compute_jobs.append_event(job_id, kind, payload)
 

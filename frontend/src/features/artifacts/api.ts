@@ -318,11 +318,293 @@ export function translate(key: string, ...args: unknown[]): string {
   return t(key, ...args);
 }
 
-export function fetchArtifactText(url: string): Promise<string> {
-  return artifactsFetch(url).then((response) => {
+/** Frozen preview budgets (PLAN §2.4). */
+export const PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+
+/** Frozen display limits (PLAN §2.4) — display budgets, never read budgets. */
+export const MARKDOWN_PREVIEW_CHARACTERS = 1_000_000;
+export const CHEMISTRY_SOURCE_PREVIEW_CHARACTERS = 300_000;
+export const LATEX_SOURCE_PREVIEW_CHARACTERS = 500_000;
+export const MOLECULE_FALLBACK_PREVIEW_CHARACTERS = 8_000;
+export const LEGACY_TABLE_PREVIEW_CHARACTERS = 300_000;
+export const THUMB_MAX_BYTES = 256 * 1024;
+export const THUMB_MAX_CONCURRENCY = 4;
+export const THUMB_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * Why an artifact read did not produce a usable text preview. `too-large` is a
+ * proven over-budget body, `unbounded` a response whose size cannot be proven
+ * (no readable stream), `timeout` the bounded wait from initiation, `cancelled`
+ * the caller leaving, and `read-failed` anything else (HTTP error, network).
+ */
+export type ArtifactReadFailure =
+  | "too-large"
+  | "unbounded"
+  | "timeout"
+  | "cancelled"
+  | "read-failed";
+
+/** A read that the preview budget, its deadline, or its owner stopped. */
+export class ArtifactReadError extends Error {
+  code: ArtifactReadFailure;
+  /** The byte budget the read was enforcing. */
+  maxBytes: number;
+  /** Bytes actually read from the response body before stopping. */
+  bytes: number;
+  constructor(
+    code: ArtifactReadFailure,
+    message: string,
+    context: { maxBytes: number; bytes?: number },
+  ) {
+    super(message);
+    this.name = "ArtifactReadError";
+    this.code = code;
+    this.maxBytes = context.maxBytes;
+    this.bytes = context.bytes || 0;
+  }
+}
+
+export type ArtifactReadOptions = {
+  /** Byte budget for the decoded body. Defaults to the main preview budget. */
+  maxBytes?: number;
+  /** Cancels the read when its view goes away or a newer read replaces it. */
+  signal?: AbortSignal | null;
+  /** Time from initiating the request to the last body byte read. */
+  timeoutMs?: number;
+  /**
+   * Size from trusted artifact metadata. Used only to reject early; a body
+   * larger than its own headers (missing, wrong, compressed) is still stopped
+   * while streaming, so this value can never bypass the budget.
+   */
+  declaredBytes?: number | null;
+  /**
+   * Keep the prefix read before the budget was exceeded instead of failing.
+   * Only thumbnail text tiles may do this: structure parsers must never see a
+   * partial document, and a partial file cannot claim a total row count.
+   */
+  allowPartial?: boolean;
+};
+
+export type ArtifactTextRead = {
+  text: string;
+  /** Bytes read from the response body. */
+  bytes: number;
+  /** True when the read stopped at `maxBytes`; `text` is then a prefix. */
+  truncated: boolean;
+};
+
+function aborted(error: unknown): boolean {
+  const e = error as { name?: unknown } | null;
+  if (e && e.name === "AbortError") return true;
+  return e instanceof DOMException && e.name === "AbortError";
+}
+
+/**
+ * Read one artifact version as text under a hard byte budget (R1).
+ *
+ * The budget is enforced on the bytes that actually arrive: the HTTP status is
+ * checked first, and `declaredBytes` can only reject before the body is read.
+ * Overflow cancels the reader immediately and never reaches a parser. Without
+ * a readable stream a response's size cannot be proven, so automatic preview is
+ * refused (`unbounded`) rather than read whole. Every failure is classified so
+ * the UI can say "over the preview limit / read timed out / read failed" and
+ * still offer the exact-version download.
+ */
+export async function readArtifactText(
+  url: string,
+  options: ArtifactReadOptions = {},
+): Promise<ArtifactTextRead> {
+  const maxBytes = options.maxBytes ?? PREVIEW_MAX_BYTES;
+  const allowPartial = !!options.allowPartial;
+  const declared = options.declaredBytes;
+  if (!allowPartial && declared != null && Number.isFinite(declared) && declared > maxBytes) {
+    throw new ArtifactReadError(
+      "too-large",
+      `artifact is ${declared} bytes, over the ${maxBytes}-byte preview budget`,
+      { maxBytes, bytes: 0 },
+    );
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const external = options.signal || null;
+  const onAbort = (): void => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onAbort, { once: true });
+  }
+  const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 0;
+  const timer = timeoutMs
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs)
+    : null;
+  const finish = (): void => {
+    if (timer) clearTimeout(timer);
+    if (external) external.removeEventListener("abort", onAbort);
+  };
+  try {
+    let response: Response;
+    try {
+      response = await artifactsFetch(url, { signal: controller.signal });
+    } catch (error) {
+      if (timedOut) {
+        throw new ArtifactReadError("timeout", "artifact read timed out", { maxBytes });
+      }
+      if (controller.signal.aborted || aborted(error)) {
+        throw new ArtifactReadError("cancelled", "artifact read cancelled", { maxBytes });
+      }
+      throw new ArtifactReadError("read-failed", "artifact read failed", { maxBytes });
+    }
+    // The HTTP status is checked before any body byte is interpreted.
     if (!response.ok) throw new ApiError(null, response.status);
-    return response.text();
-  });
+    const body = response.body;
+    if (!body || typeof body.getReader !== "function") {
+      throw new ArtifactReadError(
+        "unbounded",
+        "response cannot be read as a bounded stream; automatic preview refused",
+        { maxBytes },
+      );
+    }
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let text = "";
+    let truncated = false;
+    // A body read may stay pending forever on a stalled transport; racing the
+    // abort signal turns the deadline/cancellation into a real stop even for a
+    // stream that is not wired to the fetch's own abort handling.
+    const stop = new Promise<void>((resolve) => {
+      if (controller.signal.aborted) resolve();
+      else controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    try {
+      for (;;) {
+        const pending = reader.read();
+        pending.catch(() => {
+          /* an aborted stream may reject after this read was abandoned */
+        });
+        const step = await Promise.race([pending, stop.then(() => "aborted" as const)]);
+        if (step === "aborted") {
+          try {
+            await reader.cancel();
+          } catch {
+            /* already closed */
+          }
+          if (timedOut) {
+            throw new ArtifactReadError("timeout", "artifact read timed out", { maxBytes, bytes });
+          }
+          throw new ArtifactReadError("cancelled", "artifact read cancelled", { maxBytes, bytes });
+        }
+        const { done, value } = step;
+        if (done) break;
+        if (!value || !value.byteLength) continue;
+        const over = bytes + value.byteLength - maxBytes;
+        if (over > 0) {
+          // Stop at the budget: decode no more than the remaining allowance,
+          // cancel the transport, and never touch the rest of the body.
+          const keep = Math.max(0, value.byteLength - over);
+          if (keep > 0) {
+            text += decoder.decode(value.subarray(0, keep), { stream: true });
+            bytes += keep;
+          }
+          truncated = true;
+          try {
+            await reader.cancel();
+          } catch {
+            /* already closed */
+          }
+          break;
+        }
+        bytes += value.byteLength;
+        text += decoder.decode(value, { stream: true });
+      }
+      if (!truncated) text += decoder.decode();
+    } catch (error) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* already closed */
+      }
+      if (timedOut) {
+        throw new ArtifactReadError("timeout", "artifact read timed out", { maxBytes, bytes });
+      }
+      if (controller.signal.aborted || aborted(error)) {
+        throw new ArtifactReadError("cancelled", "artifact read cancelled", { maxBytes, bytes });
+      }
+      throw new ArtifactReadError("read-failed", "artifact read failed", { maxBytes, bytes });
+    }
+    if (truncated && !allowPartial) {
+      throw new ArtifactReadError(
+        "too-large",
+        `artifact exceeds the ${maxBytes}-byte preview budget`,
+        { maxBytes, bytes },
+      );
+    }
+    return { text, bytes, truncated };
+  } finally {
+    finish();
+  }
+}
+
+/** True when a read stopped only because its view went away (never shown as an error). */
+export function isArtifactReadCancelled(error: unknown): boolean {
+  return error instanceof ArtifactReadError && error.code === "cancelled";
+}
+
+/**
+ * The read scope of the artifact currently open in the viewer. A newer paint
+ * aborts it, so replacing a preview cancels its transport instead of only
+ * ignoring the late result.
+ */
+let previewScope: AbortController | null = null;
+
+export function beginPreviewScope(): AbortSignal {
+  previewScope?.abort();
+  previewScope = new AbortController();
+  return previewScope.signal;
+}
+
+/** Options for one preview read in the current scope; metadata may only reject early. */
+export function previewReadOptions(a?: { size_bytes?: number | null } | null): ArtifactReadOptions {
+  return { signal: previewScope?.signal, declaredBytes: a ? a.size_bytes : null };
+}
+
+/**
+ * Slice for display without splitting a surrogate pair. Returning half of an
+ * astral character (emoji, some CJK extensions) would render a replacement
+ * glyph that looks like corrupted content rather than a labelled prefix.
+ */
+export function unicodeSafeSlice(text: string, limit: number): string {
+  if (limit <= 0 || !text) return "";
+  if (text.length <= limit) return text;
+  const last = text.charCodeAt(limit - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
+  return text.slice(0, Math.max(0, end));
+}
+
+/**
+ * Markdown shown only up to the character limit. A fenced code block cut open
+ * by the limit is closed so the retained prefix renders as the partial report
+ * it is instead of swallowing the completeness note into a code block.
+ */
+export function truncateMarkdown(
+  text: string,
+  limit: number = MARKDOWN_PREVIEW_CHARACTERS,
+): { text: string; truncated: boolean } {
+  if (text.length <= limit) return { text, truncated: false };
+  const sliced = unicodeSafeSlice(text, limit);
+  const fences = (sliced.match(/^```/gm) || []).length;
+  return { text: fences % 2 === 1 ? sliced + "\n```\n" : sliced, truncated: true };
+}
+
+/**
+ * Complete text under the main preview budget (8 MiB). Callers that display a
+ * prefix (thumbnails) use `readArtifactText` with `allowPartial`; structure
+ * parsers must use this one so they can never see half a document.
+ */
+export function fetchArtifactText(url: string, options: ArtifactReadOptions = {}): Promise<string> {
+  return readArtifactText(url, options).then((read) => read.text);
 }
 
 export function isApiStatus(e: unknown, status: number, code?: string): boolean {

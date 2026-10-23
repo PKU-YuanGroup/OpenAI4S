@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { _molView } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
-import { MOL_VENDOR_SRC, molecule } from "./mol";
+import { MOL_VENDOR_SRC, molTeardown, molecule } from "./mol";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactsDir = join(here, "../features/artifacts");
@@ -157,6 +157,36 @@ describe("one live 3Dmol viewer (AUDIT A37)", () => {
     for (let i = 0; i < 3; i++) await settle();
     expect(views).toHaveLength(0);
     expect(_molView.value).toBeNull();
+  });
+
+  it("aborts the structure read when the viewer is torn down", async () => {
+    const { page, runtime, host } = setup();
+    vi.stubGlobal("$3Dmol", runtime);
+    let aborted = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async (_url: string, init?: RequestInit) =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                init?.signal?.addEventListener("abort", () => {
+                  aborted += 1;
+                  controller.error(new DOMException("aborted", "AbortError"));
+                });
+              },
+              pull() {
+                /* waits for the abort */
+              },
+            }),
+          ),
+      ),
+    );
+    const first = page.appendChild(new FakeEl());
+    molecule(host(first), "/a.pdb", "a.pdb");
+    await vi.waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1));
+    molTeardown();
+    await vi.waitFor(() => expect(aborted).toBe(1));
   });
 
   it("injects the vendored script once for structures opened before it loads", async () => {

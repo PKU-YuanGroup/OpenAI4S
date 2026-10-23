@@ -816,6 +816,42 @@ def test_the_finalize_job_refuses_when_its_attestation_is_absent(tmp_path):
 # without a timeout.
 
 
+def test_the_linux_job_proves_the_package_executes_before_it_receipts_and_uploads():
+    """A digest binds bytes; only an executed run binds behaviour.
+
+    The workflow is read as data, not as text: the probe that runs the two-Cell
+    science chain against the unpacked bundle must be part of the *same* job
+    step that verifies the bundle, its report must be handed to the receipt
+    step, and both must happen before the artifact is uploaded and becomes
+    available to staging.
+    """
+    job = _workflow("release.yml")["jobs"]["linux-app"]
+    names = [str(step.get("name") or "") for step in job["steps"]]
+    verify_index = names.index("Verify the bundle")
+    receipt_index = next(
+        index
+        for index, name in enumerate(names)
+        if name.startswith("Receipt the bundle")
+    )
+    upload_index = next(
+        index
+        for index, name in enumerate(names)
+        if name.startswith("Upload the verified bundle")
+    )
+    assert verify_index < receipt_index < upload_index
+
+    verify_run = str(job["steps"][verify_index].get("run") or "")
+    assert "scripts/verify_linux_bundle.py" in verify_run
+    assert "--source-sha" in verify_run
+    assert "--smoke-report" in verify_run
+    assert "$RUNNER_TEMP/runtime-smoke.json" in verify_run
+
+    receipt_run = str(job["steps"][receipt_index].get("run") or "")
+    assert "--kind linux" in receipt_run
+    assert "--runtime-smoke-file" in receipt_run
+    assert "$RUNNER_TEMP/runtime-smoke.json" in receipt_run
+
+
 def _workflow(name):
     yaml = pytest.importorskip("yaml")
     return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text())

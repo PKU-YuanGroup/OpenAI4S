@@ -1,4 +1,5 @@
 import { copyLookup, type CopyTable } from "../../i18n/copy";
+import { ArtifactReadError, bytes } from "./api";
 
 /**
  * M-03 copy. Existing Files/viewer keys stay in the F-07 dictionaries.
@@ -52,6 +53,32 @@ const COPY: CopyTable = {
     "editor.observedMatch": "读取到版本 {0}，内容与草稿相同。这不能确认是哪一次请求写入的。",
     "editor.observedDifferent": "读取到版本 {0}，内容与草稿不同。",
     "editor.copyManually": "自动复制失败，已选中草稿；请使用系统复制快捷键。",
+    "notebook.readonly": "以下内容是文件内保存的输出，未在本次查看时执行。",
+    "notebook.meta": "{0} 个 Cell · 语言 {1}",
+    "notebook.languageUnknown": "未知",
+    "notebook.empty": "此 Notebook 没有 Cell。",
+    "notebook.cellsOmitted": "另有 {0} 个 Cell 未显示（上限 200 个）。",
+    "notebook.outputsOmitted": "此 Cell 另有 {0} 个输出未显示（每 Cell 上限 20 个）。",
+    "notebook.textTruncated": "此文本超过 64 KiB，仅显示开头部分；完整内容请下载原文件。",
+    "notebook.imageOmitted": "[文件内嵌图像已省略，预览不加载资源]",
+    "notebook.imageLimitBytes": "图像超过单张 2 MiB 限制，未显示。",
+    "notebook.imageLimitPixels": "整份预览的图像像素累计超过 1600 万，后续图像已省略。",
+    "notebook.imageInvalid": "图像数据无法通过 PNG 校验，未显示。",
+    "notebook.imageUnavailable": "当前环境无法安全创建图像预览。",
+    "notebook.mimeUnsupported": "不支持的输出类型：{0}；不会执行或加载该内容。",
+    "notebook.unknownCell": "未知 Cell 类型，仅显示其源文本。",
+    "notebook.pngAlt": "Notebook 中保存的图像输出",
+    "notebook.problem.invalidJson": "无法预览：文件内容不是有效的 JSON。",
+    "notebook.problem.version": "无法预览：仅支持 nbformat 4 Notebook（读到 {0}）。",
+    "notebook.problem.shape": "无法预览：Notebook 结构或字段类型不符合 nbformat 4 的受检要求。",
+    "viewer.read.limit": "文件超出预览读取上限（{0}），已停止自动预览。可下载确切版本的原文件。",
+    "viewer.read.unbounded": "无法确认这次读取的大小上限，已停止自动预览。可下载原文件。",
+    "viewer.read.timeout": "读取超时，已停止自动预览。可重试或下载原文件。",
+    "viewer.read.failed": "读取失败。可重试或下载原文件。",
+    "viewer.read.retry": "重试读取",
+    "viewer.preview.complete": "完整预览：已读取全部 {0} 个字符。",
+    "viewer.preview.partial": "部分预览：仅显示前 {0} 个字符（共 {1} 个），其余内容未读取。",
+    "viewer.preview.latest": "latest（未固定版本）",
     "viewer.text.truncated": "预览已截断。可展开已读取的完整原文，或下载文件。",
     "viewer.text.expand": "展开完整原文",
     "viewer.text.complete": "已展示完整原文。",
@@ -78,6 +105,7 @@ const COPY: CopyTable = {
     "files.index.unavailable": "无法加载文件索引。",
     "files.read.failed": "无法读取此会话的文件。",
     "files.read.stale": "无法刷新此会话的文件，下面是上次确认的列表。",
+    "files.thumb.partial": "部分预览",
     "artifact.editPinned": "当前标签页显示的是固定版本；请打开最新版本后再编辑",
     "prov.env.noSnapshot": "此版本未记录生产时环境（上传文件，或早于环境捕获功能生成）；不会用守护进程的实时环境替代。",
     "prov.env.packagesUnknown": "未知",
@@ -132,6 +160,32 @@ const COPY: CopyTable = {
     "editor.observedMatch": "Read version {0}; its content matches the draft. This does not identify which request wrote it.",
     "editor.observedDifferent": "Read version {0}; its content differs from the draft.",
     "editor.copyManually": "Automatic copying failed. The draft is selected; use your system copy shortcut.",
+    "notebook.readonly": "Outputs saved in the file; nothing was executed while viewing it.",
+    "notebook.meta": "{0} cells · language {1}",
+    "notebook.languageUnknown": "unknown",
+    "notebook.empty": "This notebook has no cells.",
+    "notebook.cellsOmitted": "{0} more cells are not shown (limit 200).",
+    "notebook.outputsOmitted": "{0} more outputs in this cell are not shown (limit 20 per cell).",
+    "notebook.textTruncated": "This text exceeds 64 KiB; only the beginning is shown. Download the original file for the rest.",
+    "notebook.imageOmitted": "[embedded image omitted; the preview loads no resources]",
+    "notebook.imageLimitBytes": "This image exceeds the 2 MiB per-image limit and is not shown.",
+    "notebook.imageLimitPixels": "Images in this preview exceeded the 16 million decoded-pixel budget; later images are omitted.",
+    "notebook.imageInvalid": "The image data did not pass PNG validation and is not shown.",
+    "notebook.imageUnavailable": "This environment cannot create a safe image preview.",
+    "notebook.mimeUnsupported": "Unsupported output type: {0}; it is not executed or loaded.",
+    "notebook.unknownCell": "Unknown cell type; only its source text is shown.",
+    "notebook.pngAlt": "Image output saved in the notebook",
+    "notebook.problem.invalidJson": "Cannot preview: the file content is not valid JSON.",
+    "notebook.problem.version": "Cannot preview: only nbformat 4 notebooks are supported (found {0}).",
+    "notebook.problem.shape": "Cannot preview: the notebook structure or field types do not match the checked nbformat 4 shape.",
+    "viewer.read.limit": "The file is over the preview read limit ({0}); automatic preview stopped. The exact version can still be downloaded.",
+    "viewer.read.unbounded": "The size of this read could not be bounded, so automatic preview stopped. The original file can still be downloaded.",
+    "viewer.read.timeout": "The read timed out and automatic preview stopped. Retry, or download the original file.",
+    "viewer.read.failed": "The read failed. Retry, or download the original file.",
+    "viewer.read.retry": "Retry reading",
+    "viewer.preview.complete": "Complete preview: all {0} characters were read.",
+    "viewer.preview.partial": "Partial preview: showing the first {0} of {1} characters; the rest was not read.",
+    "viewer.preview.latest": "latest (version not pinned)",
     "viewer.text.truncated": "Preview truncated. Expand the complete text already loaded, or download the file.",
     "viewer.text.expand": "Show complete text",
     "viewer.text.complete": "Showing complete text.",
@@ -158,6 +212,7 @@ const COPY: CopyTable = {
     "files.index.unavailable": "Could not load the file index.",
     "files.read.failed": "Could not read this session's files.",
     "files.read.stale": "Could not refresh this session's files; showing the last confirmed list.",
+    "files.thumb.partial": "Partial preview",
     "artifact.editPinned": "This tab shows a fixed version; open the latest version to edit the file",
     "prov.env.noSnapshot": "No environment was recorded for this version (uploaded file, or produced before environment capture existed); the live daemon environment is not substituted.",
     "prov.env.packagesUnknown": "unknown",
@@ -169,3 +224,17 @@ const COPY: CopyTable = {
 };
 
 export const filesT = copyLookup(COPY);
+
+/**
+ * The honest one-line reason a bounded preview read stopped: over the limit,
+ * unprovable size, timeout, or a plain read failure. Cancellation is not an
+ * error and is filtered by the caller.
+ */
+export function readFailureText(error: unknown): string {
+  if (error instanceof ArtifactReadError) {
+    if (error.code === "too-large") return filesT("viewer.read.limit", bytes(error.maxBytes));
+    if (error.code === "unbounded") return filesT("viewer.read.unbounded");
+    if (error.code === "timeout") return filesT("viewer.read.timeout");
+  }
+  return filesT("viewer.read.failed");
+}

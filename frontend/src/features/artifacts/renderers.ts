@@ -5,18 +5,26 @@ import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { applyArtifactIframeSandbox } from "../../islands/frames";
 import {
+  beginPreviewScope,
   callWindow,
+  CHEMISTRY_SOURCE_PREVIEW_CHARACTERS,
   controlDense,
   el,
   fetchArtifactText,
   hostWindow,
   iconEl,
+  isArtifactReadCancelled,
+  LATEX_SOURCE_PREVIEW_CHARACTERS,
   looksBinary,
+  MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
+  previewReadOptions,
   svgElement,
   translate,
+  truncateMarkdown,
+  unicodeSafeSlice,
 } from "./api";
-import { filesT } from "./copy";
-import { artUrl } from "./cache";
+import { filesT, readFailureText } from "./copy";
+import { artUrl, artifactMetadataTarget, artifactPreviewTarget } from "./cache";
 import {
   artifactRendererDescriptor,
   compatibilityRendererDescriptor,
@@ -27,19 +35,90 @@ import {
 } from "./catalog";
 import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
+import { closeNotebookPreview, renderNotebookArtifact } from "./notebook";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
-export function rendererFailure(container: HTMLElement, a: ArtifactRow, url: string): void {
+/**
+ * The persistent completeness state of a display-limited preview (A2). Every
+ * limited preview is exactly one of "complete" or "partial preview"; a failure
+ * to read at all is the third state, rendered by `rendererFailure`.
+ */
+function previewStatus(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  shown: number,
+  total: number,
+): void {
+  const partial = shown < total;
+  const note = el(
+    "div",
+    "renderer-note renderer-completeness",
+    partial
+      ? filesT("viewer.preview.partial", shown.toLocaleString(), total.toLocaleString())
+      : filesT("viewer.preview.complete", total.toLocaleString()),
+  );
+  note.setAttribute("data-state", partial ? "partial" : "complete");
+  note.setAttribute("role", "status");
+  container.appendChild(note);
+  if (!partial) return;
+  // A partial preview keeps the full-file entry right next to its explanation.
+  const download = el("a", "outline-btn small", translate("common.download"));
+  download.href = url;
+  download.setAttribute("download", a.filename || "artifact");
+  container.appendChild(download);
+}
+
+/**
+ * A preview that could not be shown: why it failed, an optional manual retry,
+ * and the exact-version original download. A failed read is never rendered as
+ * a blank success.
+ */
+export function rendererFailure(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  error?: unknown,
+  retry?: () => void,
+): void {
   container.innerHTML = "";
   const card = el("div", "renderer-fallback");
   card.appendChild(iconEl("alert-triangle", 18));
-  card.appendChild(el("div", "renderer-fallback-text", translate("viewer.renderer.error")));
+  const text = el(
+    "div",
+    "renderer-fallback-text",
+    error === undefined ? translate("viewer.renderer.error") : readFailureText(error),
+  );
+  text.setAttribute("role", "alert");
+  card.appendChild(text);
+  if (retry) {
+    const again = el("button", "outline-btn small", filesT("viewer.read.retry"));
+    again.onclick = () => {
+      container.innerHTML = "";
+      retry();
+    };
+    card.appendChild(again);
+  }
   const download = el("a", "outline-btn small", translate("common.download"));
   download.href = url;
   download.setAttribute("download", a.filename || "artifact");
   card.appendChild(download);
   container.appendChild(card);
+}
+
+/** Catch handler shared by the text-backed previews: silent on cancel, honest otherwise. */
+function readFailure(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  retry: () => void,
+): (error: unknown) => void {
+  return (error: unknown) => {
+    if (isArtifactReadCancelled(error)) return;
+    if (!container.isConnected) return;
+    rendererFailure(container, a, url, error, retry);
+  };
 }
 
 function appendResidues(
@@ -60,25 +139,32 @@ function appendResidues(
   return shown.length;
 }
 
-export function renderMarkdownArtifact(container: HTMLElement, url: string): void {
-  fetchArtifactText(url)
+export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
+  const target = artifactMetadataTarget(a);
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
+      const shown = truncateMarkdown(text);
       const markdown = el("div", "md renderer-markdown");
-      markdown.innerHTML = renderMd(text.slice(0, 1000000));
+      markdown.innerHTML = renderMd(shown.text);
       container.appendChild(markdown);
+      previewStatus(container, target, url, shown.text.length, text.length);
     })
-    .catch(() => rendererFailure(container, { id: "", filename: "artifact" }, url));
+    .catch(readFailure(container, a, url, () => renderMarkdownArtifact(container, a, url)));
 }
 
-const SOURCE_PREVIEW_CHARACTERS = 300000;
+const SOURCE_PREVIEW_CHARACTERS = CHEMISTRY_SOURCE_PREVIEW_CHARACTERS;
 
 function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
   const pre = el("pre", "renderer-source");
-  pre.textContent = text.slice(0, SOURCE_PREVIEW_CHARACTERS);
+  pre.textContent = unicodeSafeSlice(text, SOURCE_PREVIEW_CHARACTERS);
   container.appendChild(pre);
-  if (text.length <= SOURCE_PREVIEW_CHARACTERS) return;
-  const note = el("div", "renderer-note", filesT("viewer.text.truncated"));
+  if (text.length <= SOURCE_PREVIEW_CHARACTERS) {
+    previewStatus(container, a, url, text.length, text.length);
+    return;
+  }
+  const note = el("div", "renderer-note renderer-completeness", filesT("viewer.text.truncated"));
+  note.setAttribute("data-state", "partial");
   note.setAttribute("role", "status");
   const expand = el("button", "outline-btn small", filesT("viewer.text.expand"));
   expand.setAttribute("aria-expanded", "false");
@@ -117,7 +203,7 @@ export function renderStructuredText(
 }
 
 export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       const ct = String(a.content_type || "").toLowerCase();
@@ -129,7 +215,7 @@ export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: 
       if (looksBinary(text)) return renderDownloadCard(container, a, url);
       renderRawSource(container, a, text, url);
     })
-    .catch(() => rendererFailure(container, a, url));
+    .catch(readFailure(container, a, url, () => renderTextArtifact(container, a, url)));
 }
 
 export function renderTableArtifact(
@@ -144,7 +230,7 @@ export function renderTableArtifact(
 }
 
 export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -203,11 +289,11 @@ export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, u
         );
       }
     })
-    .catch(() => rendererFailure(container, a, url));
+    .catch(readFailure(container, a, url, () => renderSequenceArtifact(container, a, url)));
 }
 
 export function renderAlignmentArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -248,11 +334,11 @@ export function renderAlignmentArtifact(container: HTMLElement, a: ArtifactRow, 
         );
       }
     })
-    .catch(() => rendererFailure(container, a, url));
+    .catch(readFailure(container, a, url, () => renderAlignmentArtifact(container, a, url)));
 }
 
 export function renderGenomeTrack(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -334,7 +420,7 @@ export function renderGenomeTrack(container: HTMLElement, a: ArtifactRow, url: s
       });
       container.appendChild(details);
     })
-    .catch(() => rendererFailure(container, a, url));
+    .catch(readFailure(container, a, url, () => renderGenomeTrack(container, a, url)));
 }
 
 function chemistryElementColor(element: string): string {
@@ -421,6 +507,7 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 }
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
+  const target = artifactMetadataTarget(a);
   if (readWorkbenchFlag()) {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
@@ -430,7 +517,7 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
     bar.appendChild(open);
     container.appendChild(bar);
   }
-  fetchArtifactText(url)
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -462,16 +549,18 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
       const details = el("details", "chem-source");
       details.appendChild(el("summary", null, translate("viewer.chem.source")));
       const pre = el("pre");
-      pre.textContent = text.slice(0, 300000);
+      pre.textContent = unicodeSafeSlice(text, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS);
       details.appendChild(pre);
       wrap.appendChild(details);
       container.appendChild(wrap);
+      previewStatus(container, target, url, Math.min(text.length, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS), text.length);
     })
-    .catch(() => rendererFailure(container, a, url));
+    .catch(readFailure(container, a, url, () => renderChemistry2D(container, a, url)));
 }
 
 export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  const target = artifactMetadataTarget(a);
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       const runtime = scientificRenderers();
@@ -495,7 +584,7 @@ export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url:
       });
       if (!blocks.length) preview.appendChild(el("div", "renderer-note", translate("viewer.chem.fallback")));
       const source = el("pre", "renderer-source latex-source");
-      source.textContent = text.slice(0, 500000);
+      source.textContent = unicodeSafeSlice(text, LATEX_SOURCE_PREVIEW_CHARACTERS);
       source.classList.add("hidden");
       wrap.appendChild(preview);
       wrap.appendChild(source);
@@ -509,8 +598,9 @@ export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url:
       previewButton.onclick = () => show("preview");
       sourceButton.onclick = () => show("source");
       container.appendChild(wrap);
+      previewStatus(container, target, url, Math.min(text.length, LATEX_SOURCE_PREVIEW_CHARACTERS), text.length);
     })
-    .catch(() => rendererFailure(container, a, url));
+    .catch(readFailure(container, a, url, () => renderLatexArtifact(container, a, url)));
 }
 
 export function renderDownloadArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
@@ -565,19 +655,21 @@ function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
   if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "html");
 }
 
-function renderMolecule3dGlue(content: HTMLElement, url: string, nm: string): void {
+function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string, nm: string): void {
   if (runIsland("molecule", content, url, nm)) return;
-  fetchArtifactText(url)
+  // Degraded path when the 3Dmol island is not mounted: the coordinates as
+  // text, still under the main preview budget and cancellable.
+  const target = artifactMetadataTarget(a);
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!content.isConnected) return;
       const pre = el("pre");
       pre.style.padding = "16px";
-      pre.textContent = text.slice(0, 8000);
+      pre.textContent = unicodeSafeSlice(text, MOLECULE_FALLBACK_PREVIEW_CHARACTERS);
       content.appendChild(pre);
+      previewStatus(content, target, url, pre.textContent.length, text.length);
     })
-    .catch(() => {
-      /* F-18 3Dmol island not mounted; bytes still downloadable via chrome */
-    });
+    .catch(readFailure(content, a, url, () => renderMolecule3dGlue(content, a, url, nm)));
 }
 
 export function renderArtifactDescriptor(
@@ -588,6 +680,7 @@ export function renderArtifactDescriptor(
   body.innerHTML = "";
   const renderer = descriptor.renderer || {};
   const rendererId = renderer.renderer_id || "download";
+  const target = artifactPreviewTarget(a, descriptor.version_id);
   const shell = el("div", "renderer-shell");
   shell.dataset.rendererId = rendererId;
   const meta = el("div", "renderer-meta");
@@ -597,37 +690,38 @@ export function renderArtifactDescriptor(
       ? translate("viewer.renderer.compat")
       : translate("viewer.renderer.matched", publicText(descriptor.matched_by || "metadata", 30));
   meta.appendChild(el("span", "renderer-detail", match));
-  if (descriptor.version_id) {
+  if (target._exactVersion) {
     meta.appendChild(
       el(
         "span",
         "renderer-version",
-        translate(
-          "viewer.renderer.version",
-          publicText(String(descriptor.version_id).slice(0, 10), 12),
-        ),
+        translate("viewer.renderer.version", publicText(String(target.version_id), 12)),
       ),
     );
+  } else {
+    // No version identity: the preview reads latest, and this is visible.
+    meta.appendChild(el("span", "renderer-version", filesT("viewer.preview.latest")));
   }
   shell.appendChild(meta);
   const content = el("div", "renderer-content");
   shell.appendChild(content);
   body.appendChild(shell);
-  const url = artUrl(a);
-  const nm = String(a.filename || "").toLowerCase();
-  if (rendererId === "image") renderImageGlue(content, a, url);
-  else if (rendererId === "pdf") renderPdfGlue(content, a, url);
-  else if (rendererId === "html-preview") renderHtmlPreviewGlue(content, a);
-  else if (rendererId === "molecule-3d") renderMolecule3dGlue(content, url, nm);
-  else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
-  else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);
-  else if (rendererId === "sequence") renderSequenceArtifact(content, a, url);
-  else if (rendererId === "msa") renderAlignmentArtifact(content, a, url);
-  else if (rendererId === "latex") renderLatexArtifact(content, a, url);
-  else if (rendererId === "markdown") renderMarkdownArtifact(content, url);
-  else if (rendererId === "table") renderTableArtifact(content, a, url, renderer);
-  else if (rendererId === "text") renderTextArtifact(content, a, url);
-  else renderDownloadArtifact(content, a, url);
+  const url = artUrl(target);
+  const nm = String(target.filename || "").toLowerCase();
+  if (rendererId === "image") renderImageGlue(content, target, url);
+  else if (rendererId === "pdf") renderPdfGlue(content, target, url);
+  else if (rendererId === "html-preview") renderHtmlPreviewGlue(content, target);
+  else if (rendererId === "molecule-3d") renderMolecule3dGlue(content, target, url, nm);
+  else if (rendererId === "chemistry-2d") renderChemistry2D(content, target, url);
+  else if (rendererId === "genome-track") renderGenomeTrack(content, target, url);
+  else if (rendererId === "sequence") renderSequenceArtifact(content, target, url);
+  else if (rendererId === "msa") renderAlignmentArtifact(content, target, url);
+  else if (rendererId === "latex") renderLatexArtifact(content, target, url);
+  else if (rendererId === "markdown") renderMarkdownArtifact(content, target, url);
+  else if (rendererId === "notebook") renderNotebookArtifact(content, target, url, rendererFailure);
+  else if (rendererId === "table") renderTableArtifact(content, target, url, renderer);
+  else if (rendererId === "text") renderTextArtifact(content, target, url);
+  else renderDownloadArtifact(content, target, url);
 }
 
 /**
@@ -642,6 +736,11 @@ export function renderArtifactDescriptor(
  * any later render (or another modal) clears a reused body.
  */
 export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
+  // A new artifact (or a repaint) owns the viewer: anything the previous view
+  // was still reading is no longer needed, and a notebook releases the image
+  // URLs it created.
+  closeNotebookPreview();
+  beginPreviewScope();
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");
   loading.appendChild(iconEl("loader", 16, "spin"));

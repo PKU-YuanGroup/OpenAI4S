@@ -213,7 +213,10 @@ matching Linux host, rather than only reading them.
 
 ```bash
 bash scripts/build_linux_bundle.sh                               # native
-python3 scripts/verify_linux_bundle.py dist/OpenAI4S-*-linux-x86_64.tar.gz
+python3 scripts/verify_linux_bundle.py \
+  --source-sha "$(git rev-parse HEAD)" \
+  --smoke-report /tmp/runtime-smoke.json \
+  dist/OpenAI4S-*-linux-x86_64.tar.gz
 ```
 
 Unlike the DMG this **can** be cross-built, because nothing in it is compiled:
@@ -221,9 +224,25 @@ Unlike the DMG this **can** be cross-built, because nothing in it is compiled:
 only, and bytecode magic tracks the CPython version rather than the machine.
 What a foreign host cannot do is *execute* the result, so the verifier reports
 two depths and names which one it reached — a static inspection anywhere, and on
-a matching Linux host the import probe that actually proves the science stack
-imports rather than merely being present on disk. The release job therefore runs
-on a Linux runner, and a cross-build says out loud that it has not been run.
+a matching Linux host the import probe that proves the science stack imports
+rather than merely being present on disk. The release job therefore runs on a
+Linux runner, and a cross-build says out loud that it has not been run.
+
+On that matching host the verifier does strictly more than import: it runs
+[`scripts/installed_runtime_smoke.py`](../scripts/installed_runtime_smoke.py)
+against the unpacked bundle, which starts the packaged daemon in an isolated
+data directory on a random loopback port and proves the science chain end to
+end — two Python Cells sharing one persistent kernel (the second uses the
+first's variable), a CSV captured through the production path as an immutable
+Artifact version, a stop that waits for the daemon *and* its kernel worker to
+exit, a reopen of the same data directory, and the same version bytes, digest
+and execution history read back. A science stack that imports is still not a
+package that executes a Cell, and this is the check that can tell the
+difference. The `--smoke-report` path receives that report so the job can bind
+it into the tarball's build receipt; a cross-built bundle gets a report with
+`status: not_run` naming the missing run, never a pass. The report carries no
+credential, and the probe never imports `openai4s` itself, so the host
+interpreter cannot be mistaken for the runtime under test.
 
 ## Windows package
 
@@ -303,15 +322,24 @@ matrix and in the quality-receipt check-suite gates. Container smoke is not a
 substitute for that matrix.
 
 A candidate SHA is not publishable on the strength of a `publish=true`
-dispatch. Schema-2 build receipts record the candidate commit, the workflow
+dispatch. Schema-3 build receipts record the candidate commit, the workflow
 run id, the dispatch inputs, the builder platform and artifact checksums (the
-macOS receipt also the notary/staple result). Check-run ids are recorded on
-the stage attestation only: they come from the quality receipt, and the
-`--check-runs-json` slot on a build receipt exists but the workflow does not
-fill it, so a build receipt's `check_runs` is `[]`. `publish=false` is a
-rehearsal: PyPI and the public GitHub Release must not change, and
-`macos_asset=omit` (or a missing notary success) means DMG count is zero.
-Old schema-1 receipts remain readable JSON and cannot satisfy this gate.
+macOS receipt also the notary/staple result). The Linux receipt additionally
+carries `runtime_smoke`, the installed-runtime probe report bound to that
+tarball's digest, the frozen source SHA and `linux/<arch>`, and — once the
+browser acceptance has run — `bundle_smoke`, the Linux browser scenario bound
+to the same bytes. A digest says the bytes did not change; neither of those
+reports may be inferred from it. Staging refuses a Linux receipt whose
+`runtime_smoke` is missing, `not_run`, failed, timed out, describes other
+bytes or another commit, comes from an older probe scenario, or leaves a
+daemon or worker behind. Check-run ids are recorded on the stage attestation
+only: they come from the quality receipt, and the `--check-runs-json` slot on
+a build receipt exists but the workflow does not fill it, so a build receipt's
+`check_runs` is `[]`. `publish=false` is a rehearsal: PyPI and the public
+GitHub Release must not change, and `macos_asset=omit` (or a missing notary
+success) means DMG count is zero. Older schema-1 and schema-2 receipts remain
+readable JSON and cannot satisfy this gate: they describe artifacts nothing
+executed.
 
 ## Trusted publication
 
