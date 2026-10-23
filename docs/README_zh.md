@@ -55,7 +55,7 @@
 | `pre-upgrade-snapshot-design.md` / `pre-upgrade-snapshot-design_zh.md` | P2-01 准备：一份已校验预升级 DB 快照、私有有界发布、独立目录恢复边界及未来故障验收；不改变运行时或迁移。 |
 | `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 准备：HTTP／请求头／上传／WS 分阶段预算、有界准入与状态余量、真实连接释放和本地故障验收；不启用新配额或期限。 |
 | `delegation-continue-design.md` / `delegation-continue-design_zh.md` | D1 准备，**本版明确不实现**：基于现有请求／尝试行的只读可继续性投影与拒绝原因码、按 root/child/request/attempt 绑定的幂等准入键、异步受理与观察超时语义、与执行协调器和可信捕获限制的关系、同步接口兼容性，以及使用真实 runner 的后续验收矩阵。 |
-| `remote-observation-design.md` / `remote-observation-design_zh.md` | P2-02 准备：把只读的远程任务观察与 `result()` 实际执行的显式取回分离——可观察／不支持观察的接口面、身份绑定、观察状态与超时、零文件写入约定，以及后续验收用例；不新增路由、轮询器、持久字段，也不改变 `result()`。 |
+| `compute-observation-design.md` / `compute-observation-design_zh.md` | D2 准备，**本版明确不实现**：单任务、只读观察的 provider 契约（可观察或不支持观察、最后观察时间、unknown、超时、身份绑定）与 `result()` 显式取回的分离、与 C1 列表字段的关系、零文件写入与不重提约定，以及后续验收用例；不新增路由、轮询器、持久字段、provider 操作，也不改变 `result()`。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 | `experimental-judgment.md` | 默认关闭的实验性语义判断层（TypeSafe Jev）操作说明：它是什么、每项能力会发送什么、如何开关、doctor/审计状态、已知限制、毕业标准、FAQ。 |
