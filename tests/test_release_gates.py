@@ -1929,6 +1929,33 @@ def test_the_linux_verifier_runs_the_installer_it_ships(tmp_path):
         verifier._check_installer_runs(app)
 
 
+def test_a_linux_receipt_without_runtime_smoke_is_refused(tmp_path):
+    """The release receipt gate treats executed evidence as part of the receipt.
+
+    A build receipt binds bytes to a commit; schema 3 additionally requires the
+    Linux artifact to carry the appendix-B.4 runtime-smoke report. A receipt
+    written without it is a claim about bytes nothing ran, so the builder must
+    refuse before such a document can reach staging.
+    """
+    receipts = _load_script("release_receipts")
+    linux = tmp_path / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
+    linux.write_bytes(b"linux-bundle")
+    with pytest.raises(receipts.ReceiptError, match="never executed"):
+        receipts.build_build_receipt(
+            "linux",
+            "a" * 40,
+            [linux],
+            workflow_run_id="7100",
+            workflow_inputs={
+                "tag": "v0.2.0",
+                "publish": False,
+                "pypi_only": False,
+                "macos_asset": "omit",
+            },
+            runtime_smoke=None,
+        )
+
+
 def test_the_windows_package_has_no_native_windows_execution_path():
     """Both halves, because either alone is satisfiable by a broken package."""
     launcher = (ROOT / "scripts" / "windows" / "openai4s.ps1").read_text("utf-8")

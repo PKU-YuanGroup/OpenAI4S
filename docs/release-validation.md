@@ -383,21 +383,31 @@ A candidate SHA is not publishable on the strength of a `publish=true`
 dispatch. Schema-3 build receipts record the candidate commit, the workflow
 run id, the dispatch inputs, the builder platform and artifact checksums (the
 macOS receipt also the notary/staple result). The Linux receipt additionally
-carries `runtime_smoke`, the installed-runtime probe report bound to that
-tarball's digest, the frozen source SHA and `linux/<arch>`, and `bundle_smoke`,
-the Linux browser scenario bound to the same bytes (including that its figure
-came from the packaged matplotlib). A digest says the bytes did not change;
-neither of those reports may be inferred from it. Staging refuses a Linux
-receipt whose `runtime_smoke` or `bundle_smoke` is missing, `not_run`, failed,
-timed out, describes other bytes or another commit, comes from an older
-scenario, or leaves a daemon or worker behind. Check-run ids are recorded on the stage attestation
-only: they come from the quality receipt, and the `--check-runs-json` slot on
-a build receipt exists but the workflow does not fill it, so a build receipt's
-`check_runs` is `[]`. `publish=false` is a rehearsal: PyPI and the public
-GitHub Release must not change, and `macos_asset=omit` (or a missing notary
-success) means DMG count is zero. Older schema-1 and schema-2 receipts remain
-readable JSON and cannot satisfy this gate: they describe artifacts nothing
-executed.
+carries `runtime_smoke`: the appendix-B.4 report of the scenario that ran inside
+the packaged runtime, bound to that tarball's own SHA-256. The report names
+`linux`/`x86_64`, the interpreter version, and the ten frozen checks; every one
+of them must say `passed` — `figure` because the bundle pre-bakes the science
+stack, and `browser_open` because the release job runs the browser layer — so a
+skip, a `not_run` or a timeout is a refusal rather than an omission. The stored
+copy is canonicalised to those fields, so no log text or unbounded diagnostic
+enters the receipt.
+
+Staging re-validates the same report against the tarball it finds on disk, and
+so do the finalize-time checks: a receipt whose evidence is missing, `not_run`,
+failed, timed out, describes other bytes, was run on another platform, comes
+from an older scenario, or claims success while carrying a failure is refused.
+What this evidence does not prove is equally explicit: it is one Linux x86_64
+Python scenario, not macOS or Windows packaging, not the R channel, not a real
+model's scientific output, and not the full OS sandbox boundary — those have
+their own gates, and a green runtime smoke does not stand in for them.
+
+Check-run ids are recorded on the stage attestation only: they come from the
+quality receipt, and the `--check-runs-json` slot on a build receipt exists but
+the workflow does not fill it, so a build receipt's `check_runs` is `[]`.
+`publish=false` is a rehearsal: PyPI and the public GitHub Release must not
+change, and `macos_asset=omit` (or a missing notary success) means DMG count is
+zero. Older schema-1 and schema-2 receipts remain readable JSON and cannot
+satisfy this gate: they describe artifacts nothing executed.
 
 ## Trusted publication
 

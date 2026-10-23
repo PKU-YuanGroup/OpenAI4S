@@ -1899,6 +1899,25 @@ class Pipeline:
                     }
                     for kind, document in build_receipts.items()
                 },
+                # The executed-runtime evidence the Linux receipt carries, as
+                # verified against the tarball's digest on disk. Recorded here so
+                # the sealed evidence names the run that proved the bytes
+                # execute, not only that they were built.
+                "runtime_smoke": {
+                    kind: {
+                        "status": document["runtime_smoke"].get("status"),
+                        "scenario_version": document["runtime_smoke"].get(
+                            "scenario_version"
+                        ),
+                        "artifact_sha256": document["runtime_smoke"].get(
+                            "artifact_sha256"
+                        ),
+                        "duration_s": document["runtime_smoke"].get("duration_s"),
+                        "checks": document["runtime_smoke"].get("checks"),
+                    }
+                    for kind, document in build_receipts.items()
+                    if isinstance(document.get("runtime_smoke"), Mapping)
+                },
             },
         )
 

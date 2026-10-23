@@ -872,6 +872,14 @@ def test_the_linux_job_runs_the_installed_runtime_smoke_before_the_receipt():
 
     receipt_run = str(job["steps"][receipt_index].get("run") or "")
     assert "--kind linux" in receipt_run
+    assert (
+        "--runtime-smoke dist/runtime-smoke-linux.json" in receipt_run
+    ), "the receipt must bind the scenario report the smoke step just wrote"
+
+    upload = job["steps"][upload_index].get("with") or {}
+    assert "dist/runtime-smoke-linux.json" in str(
+        upload.get("path") or ""
+    ), "the report travels with the bundle so staging failures can be diagnosed"
 
 
 def test_the_nightly_bundle_job_runs_the_same_installed_runtime_smoke():
