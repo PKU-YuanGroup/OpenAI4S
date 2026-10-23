@@ -578,21 +578,27 @@ def test_page_load_and_ordinary_stop_never_post_cancel():
         encoding="utf-8"
     )
     deletion = Path("openai4s/server/session_deletion.py").read_text(encoding="utf-8")
-    # Page load fetches the listing. C2 moved that read into the
-    # `compute-records` controller (one path builder, one ownership rule), so
-    # the endpoint string lives there while the load still triggers the read.
-    # The cancel POST lives only in the confirm-gated helper, which neither the
-    # load path nor the listing module calls.
+    # Page load fetches the listing. C2 keeps that read in `island.ts` and
+    # routes it through the dedicated `loadComputeTasks`; the endpoint string
+    # lives only in the `computeTasksPath` builder beside it. The cancel POST
+    # lives only in the confirm-gated helper, which neither the load path nor
+    # the listing read calls.
     load_fn = island.split("export async function loadWorkbenchState", 1)[1].split(
         "export function scheduleWorkbenchRefresh", 1
     )[0]
-    records = Path("frontend/src/features/timeline/compute-records.ts").read_text(
-        encoding="utf-8"
-    )
-    assert "computeRecords.read" in load_fn
-    assert "/compute/tasks" in records
+    assert "loadComputeTasks" in load_fn
+    # One builder names the endpoint, and it is the one the load reaches.
+    assert "function computeTasksPath" in island
+    read_fn = island.split("function computeTasksPath", 1)[1].split("\n}\n", 1)[0]
+    assert "/compute/tasks" in read_fn
+    # The load path itself does not build the URL, and the template that names
+    # the listing endpoint exists exactly once — inside that read builder. The
+    # cancel/refresh helpers build their own per-job sub-paths.
+    assert "/compute/tasks" not in load_fn
+    assert island.count("/compute/tasks${") == 1
+    assert read_fn.count("/compute/tasks${") == 1
     assert "/cancel" not in load_fn
-    assert "/cancel" not in records
+    assert "/cancel" not in read_fn
     assert "confirm: true" not in load_fn
     # The cancel helper itself is the only POST, and it is behind confirm().
     assert "function cancelComputeTask" in island
