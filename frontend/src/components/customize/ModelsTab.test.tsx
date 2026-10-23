@@ -426,6 +426,55 @@ describe("M2 model capability provenance", () => {
     expect(text).toContain("next request: off (catalogue default)");
   });
 
+  it("keeps the old observation and projection when the probe fails", async () => {
+    // Lead reminder: a persistence/transport failure must not turn the failed
+    // probe into a new observation or a new next-request decision.
+    hookState.length = 0;
+    const p = savedProfile({
+      capability_receipt: {
+        native_tool_call: "true",
+        streaming: "unknown",
+        stale: false,
+        native_completion: true,
+        reachable: true,
+        observed_at: 1761177600000,
+      },
+      effective_capabilities: {
+        native_tool_call: { value: true, source: "explicit_override" },
+        streaming: { value: false, source: "catalog" },
+      },
+    });
+    let tree = renderProfile(p);
+    const before = badgeText(tree);
+    expect(before).toContain("next request: on (explicit config)");
+
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
+        return Promise.resolve(response({ error: "receipt could not be persisted" }, 500));
+      }
+      return Promise.resolve(response({ ok: true }));
+    });
+    await (buttonByText(tree, "cust.models.test")!.props!.onClick as () => Promise<void>)();
+    tree = renderProfile(p);
+    const after = badgeText(tree);
+    // The observation itself and the next-request decision are the old ones;
+    // only the unknown row gains the reason the failed attempt reported.
+    expect(after).toContain("native tool call · true");
+    expect(after).toContain("next request: on (explicit config)");
+    expect(after).toContain("next request: off (catalogue default)");
+    expect(after).toContain("receipt could not be persisted");
+    const pills = tagged(badgeTree(tree), "data-cap");
+    expect(pills.map((pill) => pill.props!["data-state"])).toEqual(["true", "unknown"]);
+    expect(pills.map((pill) => pill.props!["data-source"])).toEqual([
+      "explicit_override",
+      "catalog",
+    ]);
+    expect(pills.map((pill) => pill.props!["data-observed-at"])).toEqual([
+      "1761177600000",
+      "1761177600000",
+    ]);
+  });
+
   it("keeps the previous display when the service sends no projection", () => {
     hookState.length = 0;
     const tree = renderProfile(
