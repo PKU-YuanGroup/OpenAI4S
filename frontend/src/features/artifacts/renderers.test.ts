@@ -722,3 +722,114 @@ describe("notebook artifact routing (A3)", () => {
     expect(descriptor.renderer?.renderer_id).toBe("notebook");
   });
 });
+
+
+describe("saved science-search rendering (A4)", () => {
+  class Dom4 {
+    children: Dom4[] = [];
+    parent: Dom4 | null = null;
+    page = false;
+    className = "";
+    textContent = "";
+    html = "";
+    href = "";
+    hidden = false;
+    alt = "";
+    target = "";
+    rel = "";
+    attrs: Record<string, string> = {};
+    dataset: Record<string, string> = {};
+    style: Record<string, string> = {};
+    classList = (() => {
+      const tokens = new Set<string>();
+      return {
+        add: (...names: string[]) => names.forEach((name) => tokens.add(name)),
+        remove: (...names: string[]) => names.forEach((name) => tokens.delete(name)),
+        toggle: (name: string, force?: boolean) => {
+          const next = force === undefined ? !tokens.has(name) : force;
+          if (next) tokens.add(name);
+          else tokens.delete(name);
+          return next;
+        },
+        contains: (name: string) => tokens.has(name),
+      };
+    })();
+    onclick: (() => void) | null = null;
+    constructor(readonly tagName = "div") {}
+    get isConnected(): boolean {
+      return this.page || (!!this.parent && this.parent.isConnected);
+    }
+    get innerHTML(): string { return this.html; }
+    set innerHTML(value: string) {
+      for (const child of this.children) child.parent = null;
+      this.children = [];
+      this.html = value;
+    }
+    appendChild(child: Dom4): Dom4 {
+      child.parent = this;
+      this.children.push(child);
+      return child;
+    }
+    setAttribute(name: string, value: string): void { this.attrs[name] = value; }
+  }
+  const walk4 = (node: Dom4): Dom4[] => [node, ...node.children.flatMap(walk4)];
+  const host4 = (node: Dom4) => node as unknown as HTMLElement;
+  const envelope = JSON.stringify({
+    query: "tp53",
+    endpoint: "https://api.example.org/search?q=tp53&key=SECRET",
+    retrieved_at: "2026-10-20T10:00:00Z",
+    source_checksum: "a".repeat(64),
+    result: {
+      database: "uniprot",
+      results: [{ id: "P04637", title: "p53", url: "https://www.uniprot.org/uniprotkb/P04637" }],
+    },
+  });
+
+  beforeEach(() => {
+    resetStoreFields();
+    vi.stubGlobal("document", { createElement: (tag: string) => new Dom4(tag) });
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("routes a saved search to the read-only result view on the exact version", async () => {
+    setArtifactsFetch(async () => new Response(envelope));
+    const container = new Dom4();
+    container.page = true;
+    renderTextArtifact(
+      host4(container),
+      { id: "search", filename: "science-uniprot.json", version_id: "v1", _exactVersion: true },
+      "/api/v1/artifacts/versions/v1",
+    );
+    await vi.waitFor(
+      () => expect(walk4(container).some((node) => node.className === "science-results")).toBe(true),
+      { timeout: 3000 },
+    );
+    expect(walk4(container).some((node) => node.className.includes("science-json"))).toBe(false);
+    const jsonTab = walk4(container).find((node) => node.textContent === filesT("science.tab.json"))!;
+    jsonTab.onclick?.();
+    expect(walk4(container).some((node) => node.className.includes("science-json"))).toBe(true);
+    expect(walk4(container).filter((node) => node.tagName === "a").map((node) => node.href)).toContain(
+      "/api/v1/artifacts/versions/v1",
+    );
+  });
+
+  it("keeps unrelated JSON with a result property on the generic source path", async () => {
+    setArtifactsFetch(async () => new Response(JSON.stringify({ result: { a: 1 } })));
+    const container = new Dom4();
+    container.page = true;
+    renderTextArtifact(
+      host4(container),
+      { id: "other", filename: "other.json", version_id: "v1", _exactVersion: true },
+      "/api/v1/artifacts/versions/v1",
+    );
+    await vi.waitFor(
+      () => expect(walk4(container).some((node) => node.className === "renderer-source")).toBe(true),
+      { timeout: 3000 },
+    );
+    expect(walk4(container).some((node) => node.className === "science-results")).toBe(false);
+  });
+});

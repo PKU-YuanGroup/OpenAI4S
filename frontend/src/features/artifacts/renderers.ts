@@ -37,6 +37,7 @@ import {
 import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
 import { closeNotebookPreview, renderNotebookArtifact } from "./notebook";
+import { renderScienceResults } from "./science-results";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
@@ -202,6 +203,9 @@ export function renderStructuredText(
     // The tile is built directly: `renderDownloadArtifact` would route a
     // `.json` name back into the text renderer and fetch forever.
     if (controlDense(text)) return renderDownloadCard(container, a, url);
+    // A saved science-search envelope gets its own read-only result list; any
+    // other JSON keeps the source view below.
+    if (renderScienceResults(container, a, url, text)) return;
     renderRawSource(container, a, text, url);
     return;
   }

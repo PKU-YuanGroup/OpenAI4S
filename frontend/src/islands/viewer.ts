@@ -16,6 +16,8 @@ import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
+import { scienceSourceStatus } from "../features/artifacts/science-results";
+import { publicText } from "../features/scrub/scrub";
 import { viewerVersionState } from "../features/artifacts/state";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { closeTab, openViewer } from "../features/artifacts/ui";
@@ -58,15 +60,41 @@ const RETRIEVAL_FIELD_ORDER = [
 export function retrievalSourcePanel(src: Record<string, unknown>): HTMLElement {
   const box = el("div", "ver-src");
   box.appendChild(el("div", "ver-src-head", translate("versions.retrievalSource")));
+  // A withheld digest says so instead of rendering marker text a reader cannot
+  // interpret; conflicts and normalized legacy aliases are named explicitly
+  // rather than silently resolved.
+  const status = scienceSourceStatus(src);
   RETRIEVAL_FIELD_ORDER.forEach((field) => {
+    if (field === "response_sha256") {
+      const label = src.dataset ? filesT("versions.datasetMetadataFingerprint") : field;
+      if (status.digestHidden) {
+        const row = el("div", "ver-src-row");
+        row.appendChild(el("span", "ver-src-k", label));
+        row.appendChild(el("span", "ver-src-v", filesT("science.responseHidden")));
+        box.appendChild(row);
+        box.appendChild(el("div", "ver-src-note", filesT("science.responseHiddenNote")));
+        return;
+      }
+      if (!status.digest) return;
+      const row = el("div", "ver-src-row");
+      row.appendChild(el("span", "ver-src-k", label));
+      row.appendChild(el("span", "ver-src-v", status.digest));
+      box.appendChild(row);
+      return;
+    }
     if (src[field] === undefined || src[field] === null || src[field] === "") return;
     const row = el("div", "ver-src-row");
-    const label = field === "response_sha256" && src.dataset
-      ? filesT("versions.datasetMetadataFingerprint") : field;
-    row.appendChild(el("span", "ver-src-k", label));
-    row.appendChild(el("span", "ver-src-v", String(src[field])));
+    row.appendChild(el("span", "ver-src-k", field));
+    const value = typeof src[field] === "string" ? publicText(src[field], 2000) : String(src[field]);
+    row.appendChild(el("span", "ver-src-v", value));
     box.appendChild(row);
   });
+  if (status.aliases.length) {
+    box.appendChild(el("div", "ver-src-note", filesT("science.aliasNote", status.aliases.join(", "))));
+  }
+  if (status.conflicts.length) {
+    box.appendChild(el("div", "ver-src-note", filesT("science.conflictNote", status.conflicts.join(", "))));
+  }
   if (src.dataset && typeof src.dataset === "object" && !Array.isArray(src.dataset)) {
     const dataset = src.dataset as Record<string, unknown>;
     const section = el("div", "ver-src-dataset");

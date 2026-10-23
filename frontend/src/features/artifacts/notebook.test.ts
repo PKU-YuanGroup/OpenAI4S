@@ -16,10 +16,16 @@ import {
 } from "./notebook";
 import type { ArtifactRow } from "./types";
 
-const { createObjectURL, revokeObjectURL } = vi.hoisted(() => ({
-  createObjectURL: vi.fn((_blob: unknown) => "blob:notebook-live"),
-  revokeObjectURL: vi.fn(),
-}));
+const { createObjectURL, revokeObjectURL } = vi.hoisted(() => {
+  let created = 0;
+  return {
+    createObjectURL: vi.fn((_blob: unknown) => {
+      created += 1;
+      return "blob:notebook-" + created;
+    }),
+    revokeObjectURL: vi.fn(),
+  };
+});
 
 function png(width: number, height: number, extra = 0): Uint8Array {
   const bytes = new Uint8Array(33 + extra);
@@ -310,7 +316,7 @@ describe("read-only notebook preview (A3)", () => {
     const root = await mount(notebookDoc([codeCell("plot()", [pngOutput(120, 80)])]));
     await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
     const image = walk(root).find((node) => node.tagName === "img");
-    expect(image?.src).toBe("blob:notebook-live");
+    expect(image?.src).toMatch(/^blob:notebook-\d+$/);
     expect(image?.alt).toBe(filesT("notebook.pngAlt"));
   });
 
@@ -391,6 +397,34 @@ describe("read-only notebook preview (A3)", () => {
 
     const old = await mountProblem(JSON.stringify({ nbformat: 3, cells: [{ cell_type: "markdown", source: "x" }] }));
     expect(texts(old)).toContain(filesT("notebook.problem.version", "3"));
+  });
+
+  it("never creates an image URL after the preview was closed before painting", async () => {
+    setArtifactsFetch(async () => new Response(notebookDoc([codeCell("a", [pngOutput(10, 10)])])));
+    const root = new FakeNode();
+    root.page = true;
+    renderNotebookArtifact(host(root), notebook, url);
+    // Close in the same tick the read was started: the render continuation must
+    // not schedule or materialize an image afterwards.
+    closeNotebookPreview();
+    for (let i = 0; i < 8; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("walks saved images through the bounded queue in file order", async () => {
+    const root = await mount(
+      notebookDoc(
+        Array.from({ length: 6 }, (_, index) => codeCell("p" + index, [pngOutput(10, 10)])),
+      ),
+    );
+    await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(6), { timeout: 3000 });
+    const images = walk(root).filter((node) => node.tagName === "img");
+    expect(images).toHaveLength(6);
+    expect(new Set(images.map((image) => image.src)).size).toBe(6);
+    closeNotebookPreview();
+    expect(revokeObjectURL).toHaveBeenCalledTimes(6);
+    expect(NOTEBOOK_MAX_PNG_PIXELS).toBeGreaterThan(0);
   });
 
   it("cancels the read and releases image URLs when the preview closes", async () => {
