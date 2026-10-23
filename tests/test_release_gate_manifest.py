@@ -850,6 +850,25 @@ def test_the_linux_job_runs_the_installed_runtime_smoke_before_the_receipt():
     assert "scripts/installed_runtime_smoke.py" in smoke_run
     assert "--bundle" in smoke_run
     assert "--report dist/runtime-smoke-linux.json" in smoke_run
+    assert (
+        "--browser" in smoke_run
+    ), "the release job must exercise the packaged workbench in a real browser"
+
+    # The browser layer needs Node 22 and a Chromium driver in this job. It must
+    # reuse the PR browser job's pinned setup-node action and install commands,
+    # because release.yml is a privileged workflow and its action majors are an
+    # explicit decision (tests/test_governance.py).
+    earlier = job["steps"][:smoke_index]
+    setup_node = [
+        step for step in earlier if "actions/setup-node@" in str(step.get("uses") or "")
+    ]
+    assert len(setup_node) == 1, "the linux job must set up Node exactly once"
+    # The YAML parser drops the trailing `# v7.0.0` comment, so pin the SHA the
+    # comment names -- the same value as the three ci.yml setup-node steps.
+    assert "820762786026740c76f36085b0efc47a31fe5020" in str(setup_node[0].get("uses"))
+    install_runs = "\n".join(str(step.get("run") or "") for step in earlier)
+    assert "npm ci --ignore-scripts" in install_runs
+    assert "playwright install --with-deps chromium" in install_runs
 
     receipt_run = str(job["steps"][receipt_index].get("run") or "")
     assert "--kind linux" in receipt_run

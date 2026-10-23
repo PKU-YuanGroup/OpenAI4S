@@ -80,6 +80,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1336,6 +1337,7 @@ class Scenario:
             "artifact_id": str(row["artifact_id"]),
             "version_id": str(row["version_id"]),
             "checksum": str(version_row.get("checksum") or ""),
+            "filename": name,
         }
         self.checks["figure"] = PASSED
 
@@ -1409,6 +1411,25 @@ class Scenario:
         )
         self.checks["restart_readback"] = PASSED
 
+    def browser_expectation(self) -> dict[str, Any]:
+        """The expectation document the browser layer consumes.
+
+        It names the session, its project, and for both captured artifacts the
+        artifact id, exact version id, SHA-256 and filename a viewer needs --
+        never a token, a URL or a log line.
+        """
+        return {
+            "frame_id": self.frame_id,
+            "project_id": self.project_id,
+            "csv": {
+                "artifact_id": self.csv_artifact_id,
+                "version_id": self.csv_version_first,
+                "checksum": self.csv_sha_first,
+                "filename": CSV_FILENAME,
+            },
+            "png": dict(self.figure),
+        }
+
     def step_browser_open(self) -> None:
         if not self.browser:
             self.checks["browser_open"] = NOT_RUN
@@ -1420,21 +1441,7 @@ class Scenario:
                 "browser_open", f"the browser script is missing: {script}"
             )
         expect = self.work_root / "browser-expect.json"
-        expect.write_text(
-            json.dumps(
-                {
-                    "frame_id": self.frame_id,
-                    "csv": {
-                        "artifact_id": self.csv_artifact_id,
-                        "version_id": self.csv_version_first,
-                        "checksum": self.csv_sha_first,
-                    },
-                    "png": self.figure,
-                }
-            )
-            + "\n",
-            "utf-8",
-        )
+        expect.write_text(json.dumps(self.browser_expectation()) + "\n", "utf-8")
         inherited = self._env(self.daemon.port)
         env = {
             key: inherited[key]
@@ -1547,11 +1554,22 @@ class Scenario:
                 daemon.stop(BUDGETS["cleanup"])
             except SmokeFailure:
                 # Best effort here: the report already names the real failure.
+                # Only this run's own session/process group is signalled -- a
+                # leaked kernel worker would otherwise outlive a failed smoke.
                 try:
                     assert daemon.proc is not None
                     daemon.proc.kill()
                     daemon.proc.wait(timeout=10)
                 except (OSError, subprocess.TimeoutExpired):  # pragma: no cover
+                    pass
+                try:
+                    if hasattr(os, "killpg") and daemon.pgid:
+                        os.killpg(daemon.pgid, signal.SIGKILL)
+                except (
+                    OSError,
+                    ProcessLookupError,
+                    PermissionError,
+                ):  # pragma: no cover
                     pass
         if self.work_root.exists():
             shutil.rmtree(self.work_root, ignore_errors=True)
