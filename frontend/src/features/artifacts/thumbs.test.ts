@@ -107,6 +107,7 @@ describe("thumbnail read budget and lifecycle (R1)", () => {
     children: Node2[] = [];
     className = "";
     textContent = "";
+    title = "";
     src = "";
     html = "";
     get innerHTML(): string {
