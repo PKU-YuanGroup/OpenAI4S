@@ -490,73 +490,81 @@ describe("preview completeness states and exact-version binding (A2)", () => {
     expect(fenced.text.endsWith("```\n")).toBe(true);
   });
 
-  it("marks a markdown preview complete at the limit and partial above it", async () => {
-    const atLimit = "a".repeat(MARKDOWN_PREVIEW_CHARACTERS);
-    const atHost = new Dom2("div");
-    atHost.page = true;
-    setArtifactsFetch(async () => new Response(atLimit));
-    renderArtifactDescriptor(host(atHost), { id: "a", filename: "r.md", version_id: "v1" }, descriptor("markdown", "v1"));
-    await vi.waitFor(() => expect(status(atHost)).toBeDefined(), { timeout: 3000 });
-    expect(status(atHost)!.attrs["data-state"]).toBe("complete");
-    expect(links(atHost)).toHaveLength(0);
-
-    const overHost = new Dom2("div");
-    overHost.page = true;
-    setArtifactsFetch(async () => new Response(atLimit + "b"));
-    renderArtifactDescriptor(host(overHost), { id: "a", filename: "r.md", version_id: "v1" }, descriptor("markdown", "v1"));
-    await vi.waitFor(() => expect(status(overHost)).toBeDefined(), { timeout: 3000 });
-    expect(status(overHost)!.attrs["data-state"]).toBe("partial");
-    expect(links(overHost).map((node) => node.href)).toEqual(["/api/v1/artifacts/versions/v1"]);
-  });
-
-  it("marks a chemistry source preview partial above 300,000 code units", async () => {
-    vi.stubGlobal("OpenAI4SScientificRenderers", {
-      parseMolfile: () => null,
-      smilesLines: () => [],
-    });
-    const text = "C".repeat(CHEMISTRY_SOURCE_PREVIEW_CHARACTERS + 1);
-    setArtifactsFetch(async () => new Response(text));
-    const atOver = new Dom2("div");
-    atOver.page = true;
-    renderArtifactDescriptor(
-      host(atOver),
-      { id: "a", filename: "m.mol", version_id: "v1" },
-      descriptor("chemistry-2d", "v1"),
-    );
-    await vi.waitFor(() => expect(status(atOver)).toBeDefined(), { timeout: 3000 });
-    expect(status(atOver)!.attrs["data-state"]).toBe("partial");
-    expect(links(atOver).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
-  });
-
-  it("marks a LaTeX source preview complete at exactly 500,000 code units", async () => {
-    vi.stubGlobal("OpenAI4SScientificRenderers", { latexPreview: () => [] });
-    const text = "x".repeat(LATEX_SOURCE_PREVIEW_CHARACTERS);
-    setArtifactsFetch(async () => new Response(text));
-    const atHost = new Dom2("div");
-    atHost.page = true;
-    renderArtifactDescriptor(
-      host(atHost),
-      { id: "a", filename: "p.tex", version_id: "v1" },
-      descriptor("latex", "v1"),
-    );
-    await vi.waitFor(() => expect(status(atHost)).toBeDefined(), { timeout: 3000 });
-    expect(status(atHost)!.attrs["data-state"]).toBe("complete");
-    expect(links(atHost)).toHaveLength(0);
-  });
-
-  it("labels the 3D fallback when it truncates at 8,000 code units", async () => {
-    const text = "ATOM ".repeat(MOLECULE_FALLBACK_PREVIEW_CHARACTERS / 5 + 2);
-    setArtifactsFetch(async () => new Response(text));
+  async function renderBodyState(
+    rendererId: string,
+    filename: string,
+    body: string,
+    extras: Record<string, unknown> = {},
+  ): Promise<{ root: Dom2; state: string; links: string[] }> {
+    setArtifactsFetch(async () => new Response(body));
     const root = new Dom2("div");
     root.page = true;
     renderArtifactDescriptor(
       host(root),
-      { id: "a", filename: "s.pdb", version_id: "v1" },
-      descriptor("molecule-3d", "v1"),
+      { id: "a", filename, version_id: "v1", ...extras },
+      descriptor(rendererId, "v1"),
     );
     await vi.waitFor(() => expect(status(root)).toBeDefined(), { timeout: 3000 });
-    expect(status(root)!.attrs["data-state"]).toBe("partial");
-    expect(links(root).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
+    return {
+      root,
+      state: status(root)!.attrs["data-state"]!,
+      links: links(root).map((node) => node.href),
+    };
+  }
+
+  it.each([
+    ["below", MARKDOWN_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", MARKDOWN_PREVIEW_CHARACTERS, "complete"],
+    ["above", MARKDOWN_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("marks a markdown preview %s the 1,000,000 code-unit limit", async (_label, length, expected) => {
+    const rendered = await renderBodyState("markdown", "r.md", "a".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links).toEqual(expected === "partial" ? ["/api/v1/artifacts/versions/v1"] : []);
+  });
+
+  it("does not report a fence-closing partial markdown as complete at the narrow boundary", async () => {
+    // total = limit + 1 with an odd fence; closing it appends 5 characters, so a
+    // length comparison would call this partial render "complete".
+    const prefix = "```\n";
+    const body = prefix + "a".repeat(MARKDOWN_PREVIEW_CHARACTERS + 1 - prefix.length);
+    const rendered = await renderBodyState("markdown", "r.md", body);
+    expect(rendered.state).toBe("partial");
+    expect(rendered.links).toEqual(["/api/v1/artifacts/versions/v1"]);
+  });
+
+  it.each([
+    ["below", CHEMISTRY_SOURCE_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", CHEMISTRY_SOURCE_PREVIEW_CHARACTERS, "complete"],
+    ["above", CHEMISTRY_SOURCE_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("marks a chemistry source preview %s the 300,000 code-unit limit", async (_label, length, expected) => {
+    vi.stubGlobal("OpenAI4SScientificRenderers", {
+      parseMolfile: () => null,
+      smilesLines: () => [],
+    });
+    const rendered = await renderBodyState("chemistry-2d", "m.mol", "C".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links.includes("/api/v1/artifacts/versions/v1")).toBe(expected === "partial");
+  });
+
+  it.each([
+    ["below", LATEX_SOURCE_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", LATEX_SOURCE_PREVIEW_CHARACTERS, "complete"],
+    ["above", LATEX_SOURCE_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("marks a LaTeX source preview %s the 500,000 code-unit limit", async (_label, length, expected) => {
+    vi.stubGlobal("OpenAI4SScientificRenderers", { latexPreview: () => [] });
+    const rendered = await renderBodyState("latex", "p.tex", "x".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links.includes("/api/v1/artifacts/versions/v1")).toBe(expected === "partial");
+  });
+
+  it.each([
+    ["below", MOLECULE_FALLBACK_PREVIEW_CHARACTERS - 1, "complete"],
+    ["at", MOLECULE_FALLBACK_PREVIEW_CHARACTERS, "complete"],
+    ["above", MOLECULE_FALLBACK_PREVIEW_CHARACTERS + 1, "partial"],
+  ])("labels the 3D fallback state %s the 8,000 code-unit limit", async (_label, length, expected) => {
+    const rendered = await renderBodyState("molecule-3d", "s.pdb", "A".repeat(Number(length)));
+    expect(rendered.state).toBe(expected);
+    expect(rendered.links.includes("/api/v1/artifacts/versions/v1")).toBe(expected === "partial");
   });
 
   it("binds preview, source and download to the same version and says so for latest", async () => {
