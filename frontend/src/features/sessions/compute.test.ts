@@ -18,6 +18,7 @@ class FakeEl {
     contains: (name: string) => this.className.split(" ").includes(name),
   };
   style: Record<string, string> = {};
+  attrs = new Map<string, string>();
   children: FakeEl[] = [];
   parentNode: FakeEl | null = null;
   onclick: (() => void) | null = null;
@@ -47,6 +48,15 @@ class FakeEl {
     if (at < 0) this.children.push(child);
     else this.children.splice(at, 0, child);
     return child;
+  }
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, value);
+  }
+  getAttribute(name: string): string | null {
+    return this.attrs.has(name) ? this.attrs.get(name)! : null;
+  }
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
   }
   remove(): void {
     if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((node) => node !== this);
@@ -591,6 +601,47 @@ describe("run-location submission ownership", () => {
     await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
   });
 
+  it("announces the dialog busy while a POST is in flight and clears it when it fails", async () => {
+    // Cluster, not local: a local opening renders no release action, so the
+    // "release button disabled while in flight" requirement would be untested.
+    daemon(
+      { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } },
+      [{ name: "gpu" }, { name: "cpu" }],
+    );
+    await openRunLocationDialog("f");
+    const busy = () => modalBody.firstChild!.getAttribute("aria-busy");
+    const release = () => modalBody.find((node) => node.className === "rl-release")!;
+    expect(busy()).toBe("false");
+    expect(release()).toBeTruthy();
+
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        return gate.promise.then(() => {
+          throw new ApiError({ error: "gateway down" }, 503);
+        });
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }, { name: "cpu" }] };
+      return { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } };
+    });
+    option("cpu").onclick!();
+    expect(busy()).toBe("true");
+    // Every choice and the release action in this window is unavailable while
+    // the POST runs.
+    expect(option("gpu").disabled).toBe(true);
+    expect(option("cpu").disabled).toBe(true);
+    expect(option(t("compute.location.local")).disabled).toBe(true);
+    expect(release().disabled).toBe(true);
+
+    gate.resolve({ ok: true });
+    await vi.waitFor(() => expect(hint).toHaveBeenCalled());
+    // The same window stays open and usable for an explicit retry.
+    expect(busy()).toBe("false");
+    expect(option("gpu").disabled).toBe(false);
+    expect(option("cpu").disabled).toBe(false);
+    expect(release().disabled).toBe(false);
+  });
+
   it("keeps the last confirmed location, marks it unconfirmed and allows an explicit retry", async () => {
     daemon({ location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } }, [{ name: "gpu" }, { name: "cpu" }]);
     await refreshComputeStatus("f");
@@ -746,9 +797,10 @@ describe("run-location submission ownership", () => {
       return { location: "local" };
     });
     option("gpu").onclick!();
-    // Reopen the same session's dialog while the accepted POST is still in
-    // flight: its buttons are enabled again, so a repeat click must explain
-    // itself and must not queue a second scheduler request.
+    // Close the dialog and open a new one while the accepted POST is still in
+    // flight: the replacement's buttons are enabled again, so a repeat click
+    // must explain itself and must not queue a second scheduler request.
+    modal.className = "hidden";
     await openRunLocationDialog("f");
     option("gpu").onclick!();
     expect(posts).toBe(1);
