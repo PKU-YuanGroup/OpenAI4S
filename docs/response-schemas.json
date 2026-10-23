@@ -13416,8 +13416,17 @@
     "GET /frames/([^/]+)/compute/tasks [ok]": {
       "schema": {
         "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
           "live_count": {
             "type": "integer"
+          },
+          "next_cursor": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "polled": {
             "type": "boolean"
@@ -13481,12 +13490,18 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "total_live_count": {
+            "type": "integer"
           }
         },
         "required": [
+          "has_more",
           "live_count",
+          "next_cursor",
           "polled",
-          "tasks"
+          "tasks",
+          "total_live_count"
         ],
         "type": "object"
       }

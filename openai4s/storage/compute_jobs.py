@@ -23,6 +23,7 @@ the difference between recovering a job and paying for it twice.
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 from typing import Any, Callable
@@ -81,6 +82,73 @@ from openai4s.compute.states import (  # noqa: E402
     IllegalTransition,
     check_transition,
 )
+
+#: How many jobs one page may carry, and the largest a caller may ask for.
+#: Remote work accumulates over a long project; the panel is a summary.
+MAX_PAGE = 200
+
+#: The filters a page cursor is bound to. `live` narrows the row set to the
+#: states that may still be consuming a remote resource; `all` is the record.
+PAGE_STATES: tuple[str, ...] = ("all", "live")
+
+#: Bumped when the cursor payload changes shape. A cursor from an older daemon
+#: is a malformed cursor, not a position in the new listing.
+_CURSOR_VERSION = 1
+
+
+class ComputeCursorError(ValueError):
+    """A page cursor that does not name a position in *this* listing.
+
+    Raised for a payload that cannot be decoded, one minted for a different
+    state filter, and one whose anchor job does not belong to the caller's
+    owner scope. All three mean "start again from the first page": continuing
+    from a position the server cannot vouch for would either skip rows or walk
+    another owner's work, and both read as a complete list to the client.
+    """
+
+
+def encode_page_cursor(*, created_at: int, job_id: str, state: str) -> str:
+    """The opaque position of one row in a ``(created_at, job_id)`` ordering.
+
+    Opaque on purpose: a client that parses it becomes coupled to the sort key.
+    It carries only the sort key and the filter, never ``owner_key`` — that is
+    the session's workspace path, which is both a leak and useless as an
+    authorization token (the server scopes every query by the authenticated
+    owner and checks the anchor row belongs to it).
+    """
+    raw = json.dumps(
+        {
+            "v": _CURSOR_VERSION,
+            "j": str(job_id),
+            "t": int(created_at),
+            "s": state,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_page_cursor(value: str, *, state: str) -> tuple[int, str]:
+    """Return the keyset anchor, or raise :class:`ComputeCursorError`."""
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - unreadable is 400, not page one
+        raise ComputeCursorError("cursor is not decodable") from exc
+    if not isinstance(payload, dict):
+        raise ComputeCursorError("cursor is not an object")
+    if payload.get("v") != _CURSOR_VERSION:
+        raise ComputeCursorError("cursor version is not supported")
+    if payload.get("s") != state:
+        raise ComputeCursorError("cursor filter mismatch")
+    job_id = payload.get("j")
+    created_at = payload.get("t")
+    if not isinstance(job_id, str) or not job_id:
+        raise ComputeCursorError("cursor names no job")
+    if isinstance(created_at, bool) or not isinstance(created_at, int):
+        raise ComputeCursorError("cursor names no creation time")
+    return created_at, job_id
 
 
 class ComputeJobRepository:
@@ -306,6 +374,102 @@ class ComputeJobRepository:
             rows = self._connection.execute(sql, params).fetchall()
         return [self._decode(row) for row in rows if row is not None]
 
+    def page_for_owner(
+        self,
+        owner_key: str | None,
+        *,
+        limit: int = MAX_PAGE,
+        state: str = "all",
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """One bounded page of one owner's jobs, plus that owner's live total.
+
+        `for_owner` returns the newest N and nothing else, so a task older than
+        the N most recent rows exists in the record and is invisible on the
+        page — including the one that is still running. Two things fix that
+        here, and they are one read:
+
+          * a **keyset** position ordered by ``(created_at, job_id)``. The
+            original ``ORDER BY created_at DESC LIMIT`` had no tiebreak, so two
+            jobs recorded in the same millisecond had no defined order and a
+            page boundary between them could repeat one and skip the other.
+          * an aggregate over the *same owner scope*, not over the page. The
+            count and the rows come from one critical section, so a job
+            finishing between them cannot make the response say "1 live" over a
+            page that shows none — or the reverse.
+
+        The cursor is bound to the owner by checking that its anchor job is in
+        the caller's scope (``owner_key`` cannot be part of the cursor: it is a
+        workspace path, and a listing is not an authorization token), and to
+        the state filter by its payload. A cursor is `None` for the first page.
+
+        ``state`` is ``"all"`` (the record) or ``"live"`` (states that may still
+        be consuming a remote resource). The live total is always over all
+        states, which is what makes "3 running elsewhere" sayable on a page
+        that shows none of them.
+        """
+        if state not in PAGE_STATES:
+            raise ValueError(f"unknown page state: {state!r}")
+        try:
+            size = max(1, min(int(limit), MAX_PAGE))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limit must be an integer") from exc
+        anchor = decode_page_cursor(cursor, state=state) if cursor else None
+
+        if owner_key is None:
+            owner_sql, owner_params = "owner_key IS NULL", []
+        else:
+            owner_sql, owner_params = "owner_key=?", [owner_key]
+
+        where = [owner_sql]
+        params: list[Any] = list(owner_params)
+        if state == "live":
+            placeholders = ",".join("?" for _ in LIVE_STATES)
+            where.append(f"status IN ({placeholders})")
+            params.extend(LIVE_STATES)
+        if anchor is not None:
+            where.append("(created_at < ? OR (created_at = ? AND job_id < ?))")
+            params.extend((anchor[0], anchor[0], anchor[1]))
+
+        with self._lock:
+            if anchor is not None:
+                anchored = self._connection.execute(
+                    f"SELECT 1 FROM compute_jobs WHERE job_id=? AND {owner_sql}",
+                    (anchor[1], *owner_params),
+                ).fetchone()
+                if anchored is None:
+                    raise ComputeCursorError("cursor does not name this owner's job")
+            rows = self._connection.execute(
+                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
+                f"WHERE {' AND '.join(where)} "
+                f"ORDER BY created_at DESC, job_id DESC LIMIT ?",
+                (*params, size + 1),
+            ).fetchall()
+            live_placeholders = ",".join("?" for _ in LIVE_STATES)
+            live_row = self._connection.execute(
+                f"SELECT COUNT(*) FROM compute_jobs WHERE {owner_sql} "
+                f"AND status IN ({live_placeholders})",
+                (*owner_params, *LIVE_STATES),
+            ).fetchone()
+
+        has_more = len(rows) > size
+        rows = rows[:size]
+        tasks = [decoded for decoded in (self._decode(row) for row in rows) if decoded]
+        next_cursor = None
+        if has_more and tasks:
+            last = tasks[-1]
+            next_cursor = encode_page_cursor(
+                created_at=int(last["created_at"]),
+                job_id=str(last["job_id"]),
+                state=state,
+            )
+        return {
+            "tasks": tasks,
+            "total_live_count": int(live_row[0]) if live_row else 0,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+
     def list(self, limit: int = 200) -> list[dict]:
         with self._lock:
             rows = self._connection.execute(
@@ -384,4 +548,12 @@ class ComputeJobRepository:
         return job
 
 
-__all__ = ["ComputeJobRepository", "LIVE_STATES"]
+__all__ = [
+    "ComputeCursorError",
+    "ComputeJobRepository",
+    "LIVE_STATES",
+    "MAX_PAGE",
+    "PAGE_STATES",
+    "decode_page_cursor",
+    "encode_page_cursor",
+]
