@@ -99,7 +99,8 @@ function button(label: string): Button {
   return match!;
 }
 
-// Slot order in WizardHost: reducer, status, busy, testing, probeRun, alive.
+// Slot order in WizardHost: reducer, status, busy, testing, probeRun, alive,
+// savedProfiles, readiness-refresh state/refs (O1).
 const REDUCER = 0;
 
 function wizard(): WizardState {

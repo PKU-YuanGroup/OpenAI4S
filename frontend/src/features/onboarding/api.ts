@@ -5,6 +5,29 @@ export async function fetchOnboarding(): Promise<OnboardingStatus> {
   return sanitizeOnboardingStatus(await api("/onboarding"));
 }
 
+/**
+ * Fold a readiness refresh into the snapshot the wizard is holding.
+ *
+ * A refresh re-reads the *local* environment, network and platform posture;
+ * it is not the initialising load. The wizard's step, chosen path, finished
+ * Test and its receipt live in its reducer and are never re-hydrated here, and
+ * the model identity in the refreshed payload is stale relative to the wizard
+ * (it may have saved a profile since) — adopting it would make the Test step
+ * describe a different model than the one it measured.
+ */
+export function mergeReadinessRefresh(
+  current: OnboardingStatus,
+  refreshed: OnboardingStatus,
+): OnboardingStatus {
+  return {
+    ...current,
+    platform: refreshed.platform,
+    native_runtime_supported: refreshed.native_runtime_supported,
+    network: refreshed.network,
+    environment: refreshed.environment,
+  };
+}
+
 export async function completeOnboarding(
   body: Record<string, unknown>,
 ): Promise<OnboardingStatus> {

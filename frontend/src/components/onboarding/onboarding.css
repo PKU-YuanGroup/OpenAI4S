@@ -244,3 +244,21 @@
     margin-left: 0;
   }
 }
+
+/* O1: the readiness step's in-place re-read. The action lives in the
+   environment card head (same slot Settings -> Compute uses); the read state
+   sits under it so the cards themselves keep showing the last snapshot. */
+#onboarding .onb-refresh-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 12px;
+}
+#onboarding .onb-refresh-state {
+  margin: -4px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-400, #6c6a64);
+}
+#onboarding .onb-refresh-state.error {
+  color: var(--danger, #c64545);
+}

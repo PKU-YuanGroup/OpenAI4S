@@ -6,6 +6,8 @@ import io
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from openai4s.config import Config, LLMConfig
 from openai4s.onboarding import OnboardingService
 from openai4s.server import gateway as gateway_mod
@@ -341,3 +343,94 @@ def test_an_install_with_only_a_saved_profile_is_not_a_first_run(tmp_path):
     for key in OnboardingService._CONFIGURATION_SETTINGS:
         assert runner.store.get_setting(key) in (None, ""), key
     assert call("GET", "/onboarding")["body"]["complete"] is False
+
+
+# --- O1: the first-run readiness step refreshes in place ---------------------
+#
+# The wizard's Refresh is one more `GET /onboarding`, not the initialising load:
+# only the local environment/network/platform projection may change, and the
+# request must write nothing. Because the projection is a local read, an
+# environment repaired outside the daemon has to show up on the next GET without
+# a restart -- otherwise the button would only re-display a stale snapshot.
+
+
+@pytest.mark.stubbed_backend
+def test_readiness_refresh_is_an_in_place_reread(tmp_path, monkeypatch):
+    """O1: an external repair is visible on the next GET and nothing is written.
+
+    The readiness projection itself is stubbed (hence `stubbed_backend`): what
+    this test pins is the route's freshness and its side effects, not package
+    discovery. Provider transport is trapped so a refresh that reached the model
+    would fail rather than count as outbound.
+    """
+    monkeypatch.setattr(
+        "openai4s.llm.chat",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("refresh contacted LLM")
+        ),
+    )
+    monkeypatch.setattr(
+        "openai4s.llm.transport.post_json",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("refresh made a request")
+        ),
+    )
+    runner, call = _api(tmp_path)
+
+    missing = {
+        "schema_version": 1,
+        "enabled": True,
+        "ready": False,
+        "state": "needs_setup",
+        "reason": "missing_environment",
+        "requirements_digest": "sha256:test",
+        "missing_environments": ["python", "r"],
+        "missing_packages": {},
+        "remediation": {
+            "requires_explicit_action": True,
+            "commands": [
+                {"command": "openai4s setup --profile standard", "label": "Set up"}
+            ],
+        },
+    }
+    repaired = {
+        **missing,
+        "ready": True,
+        "state": "ready",
+        "reason": "",
+        "missing_environments": [],
+    }
+    reads: list[bool] = []
+
+    def _readiness(*, enabled: bool):
+        reads.append(enabled)
+        return dict(missing if len(reads) == 1 else repaired)
+
+    monkeypatch.setattr(
+        "openai4s.server.onboarding_routes.standard_profile_readiness", _readiness
+    )
+
+    before = runner.store.get_setting("onboarding_complete")
+    first = call("GET", "/onboarding")
+    second = call("GET", "/onboarding")
+    assert first["code"] == 200, first
+    assert second["code"] == 200, second
+
+    # Same daemon, no restart: the second read sees the repair.
+    assert first["body"]["environment"]["state"] == "needs_setup"
+    assert first["body"]["environment"]["missing_environments"] == ["python", "r"]
+    assert second["body"]["environment"]["state"] == "ready"
+    assert second["body"]["environment"]["ready"] is True
+    assert second["body"]["environment"]["missing_environments"] == []
+    assert reads == [True, True]
+
+    # A read is a read: no completion flag, no configuration row, no history,
+    # no provider request, and the response keeps the honest outbound count.
+    assert second["body"]["complete"] is False
+    assert runner.store.get_setting("onboarding_complete") == before
+    for key in OnboardingService._CONFIGURATION_SETTINGS:
+        assert runner.store.get_setting(key) in (None, ""), key
+    assert runner.store.has_message_history() is False
+    assert second["body"]["outbound"] == 0
+    assert second["body"]["contacted"] is False
+    assert second["body"]["network"]["contacted"] is False
