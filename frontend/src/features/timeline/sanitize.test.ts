@@ -13,6 +13,7 @@ import {
   RECOVERY_ACTION_IDS,
   sanitizeActionTimeline,
   sanitizeBranches,
+  mergeComputeTaskPages,
   sanitizeComputeTasks,
   sanitizeContext,
   sanitizeArtifactEvidence,
@@ -724,5 +725,87 @@ describe("sanitizeArtifactEvidence", () => {
       ],
     });
     expect(present.children[0]?.artifact_evidence?.items[0]?.version_id).toBe("v-kept");
+  });
+});
+
+// C2: the task list grows a same-owner total and a bounded page cursor. An old
+// service sends neither, and "absent" must stay unknown: a zero there would
+// be read as "no tasks in the whole session", which the page cannot support.
+describe("sanitizeComputeTasks paging", () => {
+  it("keeps absent paging fields unknown rather than zero", () => {
+    const page = sanitizeComputeTasks({ tasks: [], live_count: 0, polled: false });
+    expect(page.total_live_count).toBeNull();
+    expect(page.has_more).toBe(false);
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("reads the additive fields and bounds the opaque cursor", () => {
+    const page = sanitizeComputeTasks({
+      polled: false,
+      live_count: 2,
+      total_live_count: 17,
+      has_more: true,
+      next_cursor: "x".repeat(600),
+      tasks: [{ job_id: "j1", status: "running", live: true }],
+    });
+    expect(page.total_live_count).toBe(17);
+    expect(page.has_more).toBe(true);
+    expect(page.next_cursor?.length).toBeLessThanOrEqual(300);
+  });
+
+  it("does not turn malformed counts or cursors into a claim", () => {
+    const page = sanitizeComputeTasks({
+      live_count: -3,
+      total_live_count: "12",
+      has_more: "yes",
+      next_cursor: { op: "all" },
+      tasks: [],
+    });
+    expect(page.live_count).toBe(0);
+    expect(page.total_live_count).toBeNull();
+    expect(page.has_more).toBe(false);
+    expect(page.next_cursor).toBeNull();
+  });
+
+  it("merges the next page without repeating a task and keeps the newest state", () => {
+    const first = sanitizeComputeTasks({
+      live_count: 2,
+      total_live_count: 3,
+      has_more: true,
+      next_cursor: "c1",
+      tasks: [
+        { job_id: "a", live: true },
+        { job_id: "b", live: false },
+      ],
+    });
+    const second = sanitizeComputeTasks({
+      live_count: 1,
+      total_live_count: 3,
+      has_more: false,
+      next_cursor: null,
+      tasks: [
+        { job_id: "b", live: true },
+        { job_id: "c", live: false },
+      ],
+    });
+    const merged = mergeComputeTaskPages(first, second);
+    expect(merged.tasks.map((task) => task.job_id)).toEqual(["a", "b", "c"]);
+    // The later page is the newer observation of the task it repeats.
+    expect(merged.tasks[1]?.live).toBe(true);
+    expect(merged.has_more).toBe(false);
+    expect(merged.next_cursor).toBeNull();
+    expect(merged.total_live_count).toBe(3);
+    // `live_count` stays the page-scoped count over what is loaded.
+    expect(merged.live_count).toBe(2);
+  });
+
+  it("merges into a missing previous page", () => {
+    const merged = mergeComputeTaskPages(
+      null,
+      sanitizeComputeTasks({ tasks: [{ job_id: "a", live: true }], live_count: 1 }),
+    );
+    expect(merged.tasks).toHaveLength(1);
+    expect(merged.total_live_count).toBeNull();
+    expect(merged.next_cursor).toBeNull();
   });
 });

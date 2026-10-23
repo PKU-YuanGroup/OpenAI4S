@@ -359,10 +359,45 @@ export type ComputeTask = {
   outputs: { file_count: number; total_bytes: number };
 };
 
+/** "live" is the `state=live` filter; "all" is the default latest-first view. */
+export type ComputeTaskFilter = "all" | "live";
+
 export type ComputeTasks = {
   polled: boolean;
+  /** Live tasks on this page — the pre-C1 semantics, kept as-is. */
   live_count: number;
+  /**
+   * Live tasks for the whole owner scope in the same read-only snapshot.
+   * `null` when the service predates the field: unknown is not zero, and the
+   * UI may then only speak about this page.
+   */
+  total_live_count: number | null;
+  has_more: boolean;
+  /** Opaque, owner/filter-bound page cursor; never an absolute path. */
+  next_cursor: string | null;
   tasks: ComputeTask[];
+};
+
+/**
+ * The Timeline's own state for the remote-task panel. It is deliberately not
+ * derived from the generic workbench fan-out: a failed read is an error state
+ * with the previous successful page kept aside, not "no tasks".
+ */
+export type ComputeRecordsState = {
+  /** The session this view belongs to; another session's page must not render. */
+  fid: string;
+  filter: ComputeTaskFilter;
+  phase: "loading" | "ready" | "error";
+  /** Last successful page (the load-more base); null means nothing is known. */
+  page: ComputeTasks | null;
+  /** A page existed and the latest read failed. */
+  stale: boolean;
+  error: string;
+  /** Local clock of the last successful read; 0 before the first one. */
+  updatedAt: number;
+  loadingMore: boolean;
+  /** Monotonic request token; only the newest settles into the view. */
+  request: number;
 };
 
 export type TimelineSpanSegment = {
