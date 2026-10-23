@@ -830,7 +830,7 @@ describe("notebook artifact routing (A3)", () => {
 });
 
 
-describe("saved science-search rendering (A4)", () => {
+describe("saved science-search rendering (A5)", () => {
   class Dom4 {
     children: Dom4[] = [];
     parent: Dom4 | null = null;
@@ -914,13 +914,36 @@ describe("saved science-search rendering (A4)", () => {
       () => expect(walk4(container).some((node) => node.className === "science-results")).toBe(true),
       { timeout: 3000 },
     );
-    expect(walk4(container).some((node) => node.className.includes("science-json"))).toBe(false);
+    // The records tab is the default: saved count and the record are visible,
+    // the shared raw-source view is not built yet.
+    expect(walk4(container).some((node) => node.textContent === filesT("science.records.saved", "1"))).toBe(true);
+    expect(walk4(container).some((node) => node.className === "renderer-source")).toBe(false);
     const jsonTab = walk4(container).find((node) => node.textContent === filesT("science.tab.json"))!;
     jsonTab.onclick?.();
-    expect(walk4(container).some((node) => node.className.includes("science-json"))).toBe(true);
+    const raw = walk4(container).find((node) => node.className === "renderer-source")!;
+    expect(raw.textContent).toBe(envelope);
     expect(walk4(container).filter((node) => node.tagName === "a").map((node) => node.href)).toContain(
       "/api/v1/artifacts/versions/v1",
     );
+  });
+
+  it.each([
+    ["results is not an array", JSON.stringify({ query: "q", request_url: "https://a/x", result: { results: "no" } })],
+    ["an extra top-level key", JSON.stringify({ query: "q", request_url: "https://a/x", result: { results: [] }, extra: 1 })],
+  ])("keeps %s on the generic source path", async (_label, body) => {
+    setArtifactsFetch(async () => new Response(body));
+    const container = new Dom4();
+    container.page = true;
+    renderTextArtifact(
+      host4(container),
+      { id: "other", filename: "other.json", version_id: "v1", _exactVersion: true },
+      "/api/v1/artifacts/versions/v1",
+    );
+    await vi.waitFor(
+      () => expect(walk4(container).some((node) => node.className === "renderer-source")).toBe(true),
+      { timeout: 3000 },
+    );
+    expect(walk4(container).some((node) => node.className === "science-results")).toBe(false);
   });
 
   it("keeps unrelated JSON with a result property on the generic source path", async () => {

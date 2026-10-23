@@ -36,7 +36,7 @@ import {
 import { renderSheet } from "./sheet";
 import { renderHtmlPreview } from "./preview";
 import { closeNotebookPreview, renderNotebookArtifact } from "./notebook";
-import { renderScienceResults } from "./science-results";
+import { readScienceSearchEnvelope, renderScienceResults } from "./science-results";
 import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
@@ -163,12 +163,13 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
 
 const SOURCE_PREVIEW_CHARACTERS = TEXT_SOURCE_PREVIEW_CHARACTERS;
 
-function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
+/** Render bounded raw text; returns whether an exact-version download entry was included. */
+export function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): boolean {
   const slice = previewSlice(text, SOURCE_PREVIEW_CHARACTERS);
   const pre = el("pre", "renderer-source");
   pre.textContent = slice.shown;
   container.appendChild(pre);
-  if (!slice.truncated) return;
+  if (!slice.truncated) return false;
   partialNotice(container, slice.shown.length);
   // The raw-source preview can prove the already-read bytes are complete, so
   // it keeps the "show complete text" expansion on top of the download entry.
@@ -181,6 +182,7 @@ function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, u
   };
   container.appendChild(expand);
   previewDownload(container, a, url);
+  return true;
 }
 
 export function renderStructuredText(
@@ -189,6 +191,23 @@ export function renderStructuredText(
   text: string,
   url: string = artUrl(a),
 ): void {
+  // A5: a saved science-search envelope is recognised before the table parse
+  // (and before the raw-source fallback); anything that does not pass the
+  // strict envelope reader keeps the behaviour below.
+  const search = readScienceSearchEnvelope(text);
+  if (search) {
+    renderScienceResults(container, a, url, text, search, (target) => {
+      const hasDownload = renderRawSource(target, a, text, url);
+      if (hasDownload) return;
+      // A complete raw source has no truncation entry of its own; the raw
+      // JSON tab still promises the exact-version download (A5).
+      const download = el("a", "outline-btn small", translate("common.download"));
+      download.href = url;
+      download.setAttribute("download", a.filename || "artifact");
+      target.appendChild(download);
+    });
+    return;
+  }
   const rows = parseTable(text, a);
   if (!rows || !rows.length) {
     // The JSON branch runs before `looksBinary` so long string values are
@@ -197,9 +216,6 @@ export function renderStructuredText(
     // The tile is built directly: `renderDownloadArtifact` would route a
     // `.json` name back into the text renderer and fetch forever.
     if (controlDense(text)) return renderDownloadCard(container, a, url);
-    // A saved science-search envelope gets its own read-only result list; any
-    // other JSON keeps the source view below.
-    if (renderScienceResults(container, a, url, text)) return;
     renderRawSource(container, a, text, url);
     return;
   }
