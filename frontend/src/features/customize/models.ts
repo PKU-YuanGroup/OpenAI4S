@@ -154,18 +154,13 @@ export type EffectiveCapability = {
 };
 
 /**
- * The boolean fields the server's effective-capability projection reports
- * (M1 `EFFECTIVE_BOOLEAN_FIELDS`), in contract order. Probe evidence in this
- * version exists only for `tool_calling` and `streaming`; the other five come
- * from the catalogue or an explicit override.
+ * Appendix B.3: the projection reports exactly the two fields probe evidence
+ * can change, each as `{value: boolean, source: "catalog" | "explicit_override"
+ * | "probe"}`. Any other shape is ignored as a whole — a half-read projection
+ * would let the UI describe a request the daemon will not send.
  */
 export const EFFECTIVE_CAPABILITY_FIELDS = [
   "tool_calling",
-  "parallel_tool_calls",
-  "strict_tool_schema",
-  "vision",
-  "audio",
-  "reasoning",
   "streaming",
 ] as const;
 export type EffectiveCapabilityField =
@@ -175,50 +170,49 @@ export type EffectiveCapabilities = Partial<
   Record<EffectiveCapabilityField, EffectiveCapability>
 >;
 
-function capabilityProjectionOf(raw: unknown): unknown {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const row = raw as Record<string, unknown>;
-  const top = row.effective_capabilities;
-  if (top && typeof top === "object" && !Array.isArray(top)) return top;
-  const receipt = row.capability_receipt;
-  if (receipt && typeof receipt === "object" && !Array.isArray(receipt)) {
-    const nested = (receipt as Record<string, unknown>).effective_capabilities;
-    if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested;
-  }
-  return null;
+function projectionRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 /**
  * The server's read-only next-request projection, or `null` when the service
- * does not send it. An entry is only accepted when both the boolean and the
- * allowlisted provenance are present: an unknown source is not a claim, and
- * the caller keeps its legacy display instead.
+ * does not send the B.3 shape. `effective_capabilities: null` (a protocol this
+ * build cannot dispatch) and a missing field both degrade to the observation
+ * display. Malformed entries, unknown sources and extra keys reject the whole
+ * projection instead of publishing a partially believed decision.
  */
 export function readEffectiveCapabilities(
   raw: unknown,
 ): EffectiveCapabilities | null {
-  const projection = capabilityProjectionOf(raw);
+  const row = projectionRecord(raw);
+  if (!row || !("effective_capabilities" in row)) return null;
+  const projection = projectionRecord(row.effective_capabilities);
   if (!projection) return null;
-  const row = projection as Record<string, unknown>;
+  const keys = Object.keys(projection).sort();
+  const contract = [...EFFECTIVE_CAPABILITY_FIELDS].sort();
+  if (keys.length !== contract.length || keys.some((key, index) => key !== contract[index])) {
+    return null;
+  }
   const out: EffectiveCapabilities = {};
-  let any = false;
-  EFFECTIVE_CAPABILITY_FIELDS.forEach((field) => {
-    // `native_tool_call` is the receipt-era spelling of `tool_calling`; accept
-    // it as an alias so a transitional producer cannot half-populate the row.
-    const entry =
-      field === "tool_calling" && row[field] == null
-        ? row.native_tool_call
-        : row[field];
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
-    const record = entry as Record<string, unknown>;
-    const value = record.value !== undefined ? record.value : record.effective;
-    const source = typeof record.source === "string" ? record.source : "";
-    if (typeof value !== "boolean") return;
-    if (!(CAPABILITY_SOURCES as readonly string[]).includes(source)) return;
+  for (const field of EFFECTIVE_CAPABILITY_FIELDS) {
+    const entry = projectionRecord(projection[field]);
+    if (!entry) return null;
+    const entryKeys = Object.keys(entry).sort();
+    if (entryKeys.length !== 2 || entryKeys[0] !== "source" || entryKeys[1] !== "value") {
+      return null;
+    }
+    const { value, source } = entry;
+    if (typeof value !== "boolean") return null;
+    if (
+      typeof source !== "string" ||
+      !(CAPABILITY_SOURCES as readonly string[]).includes(source)
+    ) {
+      return null;
+    }
     out[field] = { value, source: source as CapabilitySource };
-    any = true;
-  });
-  return any ? out : null;
+  }
+  return out;
 }
 
 function asEvidence(value: unknown): Evidence {
@@ -503,6 +497,13 @@ const MODEL_COPY: CopyTable = {
     "model.ollama": "Ollama (cloud or local)",
     "model.session.unavailable": "Model no longer available",
     "model.session.earlier": "{0} (earlier configuration)",
+    "model.effective.label": "Next request uses",
+    "model.effective.on": "on",
+    "model.effective.off": "off",
+    "model.effective.value": "{0} ({1})",
+    "model.effective.source.catalog": "catalogue default",
+    "model.effective.source.explicit_override": "explicit config",
+    "model.effective.source.probe": "measured",
     "model.session.switched": "This session now uses {0}",
     "model.session.switchedNextTurn":
       "This session uses {0} from your next message; the turn already running keeps its model",
@@ -514,6 +515,13 @@ const MODEL_COPY: CopyTable = {
     "model.ollama": "Ollama（云端或本地）",
     "model.session.unavailable": "原模型已不可用",
     "model.session.earlier": "{0}（旧配置）",
+    "model.effective.label": "下一次请求采用",
+    "model.effective.on": "开启",
+    "model.effective.off": "关闭",
+    "model.effective.value": "{0}（{1}）",
+    "model.effective.source.catalog": "目录默认",
+    "model.effective.source.explicit_override": "显式配置",
+    "model.effective.source.probe": "实测",
     "model.session.switched": "该会话已切换到 {0}",
     "model.session.switchedNextTurn": "该会话将从你的下一条消息起使用 {0}；正在运行的这一轮保持原模型",
     "model.session.switchFailed": "未能切换该会话的模型：{0}",

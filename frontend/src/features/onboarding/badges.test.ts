@@ -92,7 +92,26 @@ describe("M-01 capability badges", () => {
 // next request will use. A catalogue default is not a measured pass, so its
 // provenance has to be on the text; without the additive projection the old
 // display is unchanged.
-describe("M2 observation vs next-request badge", () => {
+function textOf(node: unknown): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join(" ");
+  return textOf((node as { props?: { children?: unknown } }).props?.children);
+}
+
+function descendants(node: unknown, match: (node: Pill) => boolean, out: Pill[] = []): Pill[] {
+  if (Array.isArray(node)) {
+    node.forEach((child) => descendants(child, match, out));
+    return out;
+  }
+  if (!node || typeof node !== "object") return out;
+  const current = node as Pill;
+  if (match(current)) out.push(current);
+  descendants((current as { props?: { children?: unknown } }).props?.children, match, out);
+  return out;
+}
+
+describe("M2 observation and next-request rows", () => {
   const RECEIPT: CapabilityReceipt = {
     native_tool_call: "unknown",
     streaming: "unknown",
@@ -101,112 +120,92 @@ describe("M2 observation vs next-request badge", () => {
     reachable: true,
     observed_at: 1761177600000,
   };
-  const CATALOG: EffectiveCapabilities = {
+  const FULL: EffectiveCapabilities = {
     tool_calling: { value: true, source: "catalog" },
+    streaming: { value: false, source: "probe" },
   };
 
-  it("states the next request separately and never presents a catalogue default as measured", () => {
-    const rows = capabilityBadgeRows(RECEIPT, "", CATALOG);
-    const native = rows[0]!;
-    expect(native.cap).toBe("native_tool_call");
-    expect(native.field).toBe("tool_calling");
-    expect(native.effective).toEqual({ value: true, source: "catalog" });
-    expect(native.observedAt).toBe(1761177600000);
-    const text = capabilityBadgeText(native);
-    expect(text).toContain("next request: on");
-    expect(text).toContain("catalogue default");
-    expect(text).not.toContain("tested");
-    // The observation time is shown, so "unknown" cannot read as "just asked".
-    expect(text).toContain("observed ");
-  });
-
-  it("labels probe and explicit-override provenance, and never claims a probe it did not do", () => {
-    const probe = capabilityBadgeText(
-      capabilityBadgeRows(RECEIPT, "", {
-        streaming: { value: false, source: "probe" },
-      })[1]!,
-    );
-    expect(probe).toContain("next request: off");
-    expect(probe).toContain("tested");
-    expect(probe).not.toContain("catalogue");
-
-    const explicit = capabilityBadgeText(
-      capabilityBadgeRows(RECEIPT, "", {
-        tool_calling: { value: true, source: "explicit_override" },
-      })[0]!,
-    );
-    expect(explicit).toContain("explicit config");
-    expect(explicit).not.toContain("tested");
-  });
-
-  it("shows the next-request decision even when nothing was ever probed", () => {
-    const rows = capabilityBadgeRows(null, "", CATALOG);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.cap).toBe("native_tool_call");
-    expect(rows[0]!.field).toBe("tool_calling");
-    expect(rows[0]!.state).toBe("unknown");
-    expect(rows[0]!.observed).toBe(false);
-    const text = capabilityBadgeText(rows[0]!);
-    expect(text).toContain("catalogue default");
-    expect(text).not.toContain("tested");
-  });
-
-  it("renders all seven contract fields in order, observing only what the receipt saw", () => {
-    const FULL: EffectiveCapabilities = {
-      tool_calling: { value: true, source: "probe" },
-      parallel_tool_calls: { value: false, source: "catalog" },
-      strict_tool_schema: { value: true, source: "explicit_override" },
-      vision: { value: false, source: "catalog" },
-      audio: { value: false, source: "catalog" },
-      reasoning: { value: true, source: "catalog" },
-      streaming: { value: true, source: "catalog" },
-    };
+  it("emits an observation row and a separate next-request row per capability", () => {
     const rows = capabilityBadgeRows(RECEIPT, "", FULL);
-    expect(rows.map((row) => row.field)).toEqual([
-      "tool_calling",
-      "parallel_tool_calls",
-      "strict_tool_schema",
-      "vision",
-      "audio",
-      "reasoning",
-      "streaming",
+    expect(rows.map((row) => `${row.kind}:${row.cap}`)).toEqual([
+      "observed:native_tool_call",
+      "effective:native_tool_call",
+      "observed:streaming",
+      "effective:streaming",
     ]);
-    expect(rows.map((row) => row.observed)).toEqual([
-      true,
-      false,
-      false,
-      false,
-      false,
-      false,
-      true,
-    ]);
-    // The receipt only observes tool_calling and streaming; the other five
-    // show the next-request decision and no "unknown" observation at all.
-    expect(rows.map((row) => row.cap)).toEqual([
-      "native_tool_call",
-      "parallel_tool_calls",
-      "strict_tool_schema",
-      "vision",
-      "audio",
-      "reasoning",
-      "streaming",
-    ]);
-    expect(capabilityBadgeText(rows[3]!)).toBe(
-      "vision · next request: off (catalogue default)",
-    );
-    expect(capabilityBadgeText(rows[2]!)).toBe(
-      "strict tool schema · next request: on (explicit config)",
-    );
-    expect(capabilityBadgeText(rows[0]!)).toContain("native tool call · unknown");
-    expect(capabilityBadgeText(rows[0]!)).toContain("next request: on (tested)");
+    const observed = rows[0]!;
+    expect(observed.observed).toBe(true);
+    expect(capabilityBadgeText(observed)).toContain("native tool call · unknown");
+    expect(capabilityBadgeText(observed)).toContain("observed ");
+    const effective = rows[1]!;
+    expect(effective.observed).toBe(false);
+    expect(effective.effective).toEqual({ value: true, source: "catalog" });
+    expect(capabilityBadgeText(effective)).toBe("on (catalogue default)");
   });
 
-  it("keeps the old display when the service sends no projection", () => {
+  it("labels explicit-override and probe provenance, and never calls a catalogue default measured", () => {
+    const rows = capabilityBadgeRows(null, "", {
+      tool_calling: { value: true, source: "probe" },
+      streaming: { value: false, source: "explicit_override" },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.kind === "effective")).toBe(true);
+    expect(capabilityBadgeText(rows[0]!)).toBe("on (measured)");
+    expect(capabilityBadgeText(rows[1]!)).toBe("off (explicit config)");
+  });
+
+  it("keeps the unknown reason on its observation row and never reports 'unsupported'", () => {
+    const reason = "timed out contacting the endpoint";
+    const rows = capabilityBadgeRows(RECEIPT, reason, FULL);
+    const observed = rows.find(
+      (row) => row.kind === "observed" && row.cap === "native_tool_call",
+    )!;
+    expect(capabilityBadgeText(observed)).toContain(reason);
+    expect(capabilityBadgeText(observed).toLowerCase()).not.toMatch(
+      /does not support|unsupported/,
+    );
+    // The next-request row does not borrow the observation's reason.
+    const effective = rows.find(
+      (row) => row.kind === "effective" && row.cap === "native_tool_call",
+    )!;
+    expect(capabilityBadgeText(effective)).not.toContain(reason);
+  });
+
+  it("renders two labelled lines when the projection is present", () => {
+    const tree = CapabilityBadges({ receipt: RECEIPT, effective: FULL }) as unknown;
+    const text = textOf(tree);
+    expect(text).toContain("Last test observation");
+    expect(text).toContain("Next request uses");
+    expect(text).toContain("on (catalogue default)");
+    expect(text).toContain("off (measured)");
+    const effectivePills = descendants(
+      tree,
+      (node) =>
+        node.props?.["data-kind"] === "effective" &&
+        "data-source" in (node.props || {}),
+    );
+    expect(effectivePills.map((pill) => pill.props["data-source"])).toEqual([
+      "catalog",
+      "probe",
+    ]);
+    const observedPills = descendants(
+      tree,
+      (node) =>
+        node.props?.["data-kind"] === "observed" &&
+        "data-state" in (node.props || {}),
+    );
+    expect(observedPills.map((pill) => pill.props["data-state"])).toEqual([
+      "unknown",
+      "unknown",
+    ]);
+  });
+
+  it("keeps the legacy single-line display when the service sends no projection", () => {
     const rows = capabilityBadgeRows(RECEIPT, "");
+    expect(rows.map((row) => row.kind)).toEqual(["observed", "observed"]);
     expect(rows.every((row) => row.effective == null)).toBe(true);
-    expect(capabilityBadgeText(rows[0]!)).not.toContain("next request");
-    // The observation time still shows: it is a fact about the receipt, not
-    // part of the additive next-request projection.
-    expect(capabilityBadgeText(rows[0]!)).toContain("observed ");
+    const tree = CapabilityBadges({ receipt: RECEIPT }) as unknown;
+    expect(textOf(tree)).not.toContain("Next request uses");
+    expect(descendants(tree, (node) => "data-source" in (node.props || {}))).toHaveLength(0);
   });
 });
