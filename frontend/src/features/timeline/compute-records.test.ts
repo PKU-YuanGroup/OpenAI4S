@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 // the panel used to render as "no tasks", and a stale page used to render as
 // the next session's tasks). The controller below is the whole ownership
 // rule: a session, a filter, and a monotonic request token.
+import { ApiError } from "./api";
 import {
   computeRecordsPath,
   createComputeRecordsController,
@@ -160,6 +161,32 @@ describe("compute records read ownership", () => {
     expect(computeRecordsPath("f", "all", null)).toBe("/frames/f/compute/tasks");
     expect(computeRecordsPath("f/1", "live", "c 2")).toBe(
       "/frames/f%2F1/compute/tasks?state=live&cursor=c+2",
+    );
+  });
+});
+
+describe("C2 contract: the real 503 envelope", () => {
+  it("turns the route's 503 into a visible failure instead of an empty page", async () => {
+    // Verbatim shape from the merged route:
+    // GatewayError(503, "compute records are unavailable right now",
+    //              "compute_record_unavailable").
+    const read = vi.fn().mockRejectedValue(
+      new ApiError(
+        {
+          error: "compute records are unavailable right now",
+          code: "compute_record_unavailable",
+          status: 503,
+        },
+        503,
+      ),
+    );
+    const controller = createComputeRecordsController({ read });
+    await controller.read("f");
+    expect(controller.state?.phase).toBe("error");
+    expect(controller.state?.page).toBeNull();
+    expect(controller.state?.stale).toBe(false);
+    expect(controller.state?.error).toContain(
+      "compute records are unavailable right now",
     );
   });
 });

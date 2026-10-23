@@ -809,3 +809,76 @@ describe("sanitizeComputeTasks paging", () => {
     expect(merged.next_cursor).toBeNull();
   });
 });
+
+// Captured from the real C1 route (`compute_tasks.owner_tasks` over a
+// 201-job owner whose oldest job is still live, at C1 5d565c67) rather than
+// hand-written: the six top-level keys, the page-scoped `live_count` next to
+// the same-owner `total_live_count`, a non-empty cursor and the public task
+// fields are whatever the server actually produced.
+describe("C2 contract: a payload captured from the merged C1 route", () => {
+  const C1_PAGE = {
+    tasks: [
+      {
+        created_at: 5000,
+        job_id: "job-001",
+        live: false,
+        outputs: { file_count: 0, total_bytes: 0 },
+        provider: "byoc-test",
+        status: "succeeded",
+        terminal: true,
+        terminal_at: 1,
+        updated_at: 1792759716313,
+      },
+    ],
+    live_count: 0,
+    polled: false,
+    total_live_count: 1,
+    has_more: true,
+    next_cursor: "eyJqIjoiam9iLTAwMSIsInMiOiJhbGwiLCJ0Ijo1MDAwLCJ2IjoxfQ",
+  };
+
+  it("keeps every documented field and the opaque cursor as the server sent them", () => {
+    const page = sanitizeComputeTasks(C1_PAGE);
+    expect(page.has_more).toBe(true);
+    expect(page.next_cursor).toBe(C1_PAGE.next_cursor);
+    expect(page.polled).toBe(false);
+    // 200 newest rows contain no live job; the same-owner total still says 1.
+    expect(page.live_count).toBe(0);
+    expect(page.total_live_count).toBe(1);
+    expect(page.tasks[0]).toMatchObject({
+      job_id: "job-001",
+      provider: "byoc-test",
+      status: "succeeded",
+      live: false,
+      terminal: true,
+      updated_at: 1792759716313,
+      outputs: { file_count: 0, total_bytes: 0 },
+    });
+  });
+
+  it("appends the real next page without inventing another page", () => {
+    const first = sanitizeComputeTasks(C1_PAGE);
+    const second = sanitizeComputeTasks({
+      ...C1_PAGE,
+      tasks: [
+        {
+          ...C1_PAGE.tasks[0],
+          job_id: "job-000",
+          status: "running",
+          live: true,
+          terminal: false,
+          terminal_at: undefined,
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+      live_count: 1,
+    });
+    const merged = mergeComputeTaskPages(first, second);
+    expect(merged.tasks.map((task) => task.job_id)).toEqual(["job-001", "job-000"]);
+    expect(merged.has_more).toBe(false);
+    expect(merged.next_cursor).toBeNull();
+    expect(merged.total_live_count).toBe(1);
+    expect(merged.live_count).toBe(1);
+  });
+});
