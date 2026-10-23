@@ -46,6 +46,23 @@ def supports_vision_for(cfg: LLMConfig) -> bool:
     ).vision
 
 
+def request_capabilities(cfg: LLMConfig) -> Any:
+    """The capability record this exact configuration's next request decides on.
+
+    One named seam for the request decision.  ``model_profiles`` publishes the
+    read-only ``effective_capabilities`` projection through
+    :func:`openai4s.llm.capabilities.effective_capabilities`, which resolves
+    through the same function below -- so a badge saying "tools will be sent"
+    and a request that omits them cannot both be true.
+    """
+    spec = provider_spec(cfg.provider)
+    return get_model_capabilities(
+        cfg.provider,
+        cfg.model or spec["model"],
+        base_url=cfg.base_url or spec["base_url"],
+    )
+
+
 def _guard_vision(provider: str, messages: list[dict], *, capabilities=None) -> None:
     """Raise a clear error if image parts are sent to a text-only provider."""
     if (capabilities or get_model_capabilities(provider)).vision:
@@ -82,7 +99,9 @@ def chat(
         spec = provider_spec(cfg.provider)
         base = cfg.base_url or spec["base_url"]
         model = cfg.model or spec["model"]
-        capabilities = get_model_capabilities(cfg.provider, model, base_url=base)
+        # The same resolver `effective_capabilities` projects, so the tools and
+        # streaming this call decides are the ones the UI can explain.
+        capabilities = request_capabilities(cfg)
         if not cfg.api_key and not capabilities.local_endpoint:
             raise MissingCredentialError(
                 f"no API key configured for provider {cfg.provider!r}: set the "
