@@ -346,7 +346,7 @@ function renderProfile(p: Record<string, unknown>): Node {
 }
 
 describe("M2 model capability provenance", () => {
-  it("shows the next request's decision and source beside the last observation", () => {
+  it("shows the last observation and the next request as two labelled lines", () => {
     hookState.length = 0;
     const tree = renderProfile(
       savedProfile({
@@ -365,17 +365,28 @@ describe("M2 model capability provenance", () => {
       }),
     );
     const text = badgeText(tree);
+    expect(text).toContain("Last test observation");
+    expect(text).toContain("Next request uses");
     // A catalogue default is labelled as such; it is not a measured pass.
+    expect(text).toContain("on (catalogue default)");
+    expect(text).toContain("on (measured)");
     expect(text).toContain("native tool call · unknown");
-    expect(text).toContain("next request: on (catalogue default)");
-    expect(text).toContain("next request: on (tested)");
     expect(text).toContain("observed ");
-    const pills = tagged(badgeTree(tree), "data-cap");
-    expect(pills.map((pill) => pill.props!["data-source"])).toEqual([
+
+    const effective = tagged(badgeTree(tree), "data-effective-field");
+    expect(effective.map((pill) => pill.props!["data-effective-field"])).toEqual([
+      "tool_calling",
+      "streaming",
+    ]);
+    expect(effective.map((pill) => pill.props!["data-source"])).toEqual([
       "catalog",
       "probe",
     ]);
-    expect(pills.map((pill) => pill.props!["data-effective"])).toEqual(["true", "true"]);
+    const observed = tagged(badgeTree(tree), "data-state");
+    expect(observed.map((pill) => pill.props!["data-state"])).toEqual([
+      "unknown",
+      "true",
+    ]);
   });
 
   it("adopts the projection returned by a probe instead of the previous one", async () => {
@@ -390,7 +401,7 @@ describe("M2 model capability provenance", () => {
       },
     });
     let tree = renderProfile(p);
-    expect(badgeText(tree)).not.toContain("next request");
+    expect(badgeText(tree)).not.toContain("Next request uses");
 
     mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
@@ -406,7 +417,7 @@ describe("M2 model capability provenance", () => {
               observed_at: 1761177600000,
             },
             effective_capabilities: {
-              native_tool_call: { value: true, source: "probe" },
+              tool_calling: { value: true, source: "probe" },
               streaming: { value: false, source: "catalog" },
             },
           }),
@@ -418,53 +429,45 @@ describe("M2 model capability provenance", () => {
     const test = buttonByText(tree, "cust.models.test")!;
     expect(test).toBeTruthy();
     await (test.props!.onClick as () => Promise<void>)();
-    await vi.waitFor(() => expect(badgeText(renderProfile(p))).toContain("next request"));
+    await vi.waitFor(() =>
+      expect(badgeText(renderProfile(p))).toContain("Next request uses"),
+    );
 
     tree = renderProfile(p);
     const text = badgeText(tree);
-    expect(text).toContain("next request: on (tested)");
-    expect(text).toContain("next request: off (catalogue default)");
+    expect(text).toContain("on (measured)");
+    expect(text).toContain("off (catalogue default)");
   });
 
-  it("renders all seven contract fields returned with a profile", () => {
+  it("ignores a projection that is not the two-field B.3 shape", () => {
     hookState.length = 0;
     const tree = renderProfile(
       savedProfile({
+        capability_receipt: {
+          native_tool_call: "true",
+          streaming: "unknown",
+          stale: false,
+          native_completion: true,
+          reachable: true,
+        },
         effective_capabilities: {
           tool_calling: { value: true, source: "catalog" },
-          parallel_tool_calls: { value: false, source: "catalog" },
-          strict_tool_schema: { value: true, source: "explicit_override" },
-          vision: { value: false, source: "catalog" },
-          audio: { value: false, source: "catalog" },
-          reasoning: { value: true, source: "catalog" },
           streaming: { value: true, source: "catalog" },
+          // An extra field is not the B.3 shape: the whole projection is
+          // ignored rather than half-believed.
+          vision: { value: true, source: "catalog" },
         },
       }),
     );
     const text = badgeText(tree);
-    expect(text).toContain("native tool call · next request: on (catalogue default)");
-    expect(text).toContain("parallel tool calls · next request: off (catalogue default)");
-    expect(text).toContain("strict tool schema · next request: on (explicit config)");
-    expect(text).toContain("vision · next request: off (catalogue default)");
-    expect(text).toContain("reasoning · next request: on (catalogue default)");
-    const pills = tagged(badgeTree(tree), "data-effective-field");
-    expect(pills.map((pill) => pill.props!["data-effective-field"])).toEqual([
-      "tool_calling",
-      "parallel_tool_calls",
-      "strict_tool_schema",
-      "vision",
-      "audio",
-      "reasoning",
-      "streaming",
-    ]);
-    // No receipt: nothing may look measured, so no pill claims an observation.
-    expect(pills.every((pill) => pill.props!["data-observed"] === "false")).toBe(true);
-    expect(pills.every((pill) => pill.props!["data-state"] === undefined)).toBe(true);
+    expect(text).toContain("native tool call · true");
+    expect(text).not.toContain("Next request uses");
+    expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
   });
 
   it("keeps the old observation and projection when the probe fails", async () => {
-    // Lead reminder: a persistence/transport failure must not turn the failed
-    // probe into a new observation or a new next-request decision.
+    // A persistence/transport failure must not turn the failed probe into a
+    // new observation or a new next-request decision.
     hookState.length = 0;
     const p = savedProfile({
       capability_receipt: {
@@ -482,7 +485,7 @@ describe("M2 model capability provenance", () => {
     });
     let tree = renderProfile(p);
     const before = badgeText(tree);
-    expect(before).toContain("next request: on (explicit config)");
+    expect(before).toContain("on (explicit config)");
 
     mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
@@ -493,21 +496,21 @@ describe("M2 model capability provenance", () => {
     await (buttonByText(tree, "cust.models.test")!.props!.onClick as () => Promise<void>)();
     tree = renderProfile(p);
     const after = badgeText(tree);
-    // The observation itself and the next-request decision are the old ones;
-    // only the unknown row gains the reason the failed attempt reported.
+    // The observation and the next-request decision are the old ones; only the
+    // unknown observation row gains the reason the failed attempt reported.
     expect(after).toContain("native tool call · true");
-    expect(after).toContain("next request: on (explicit config)");
-    expect(after).toContain("next request: off (catalogue default)");
+    expect(after).toContain("on (explicit config)");
+    expect(after).toContain("off (catalogue default)");
     expect(after).toContain("receipt could not be persisted");
-    const pills = tagged(badgeTree(tree), "data-cap");
-    expect(pills.map((pill) => pill.props!["data-state"])).toEqual(["true", "unknown"]);
-    expect(pills.map((pill) => pill.props!["data-source"])).toEqual([
+    const effective = tagged(badgeTree(tree), "data-effective-field");
+    expect(effective.map((pill) => pill.props!["data-source"])).toEqual([
       "explicit_override",
       "catalog",
     ]);
-    expect(pills.map((pill) => pill.props!["data-observed-at"])).toEqual([
-      "1761177600000",
-      "1761177600000",
+    const observed = tagged(badgeTree(tree), "data-state");
+    expect(observed.map((pill) => pill.props!["data-state"])).toEqual([
+      "true",
+      "unknown",
     ]);
   });
 
@@ -527,11 +530,7 @@ describe("M2 model capability provenance", () => {
     const text = badgeText(tree);
     expect(text).toContain("native tool call · true");
     expect(text).toContain("streaming · false");
-    expect(text).not.toContain("next request");
-    expect(
-      tagged(badgeTree(tree), "data-source").every(
-        (node) => node.props!["data-source"] === undefined,
-      ),
-    ).toBe(true);
+    expect(text).not.toContain("Next request uses");
+    expect(tagged(badgeTree(tree), "data-effective-field")).toHaveLength(0);
   });
 });
