@@ -4,9 +4,14 @@ import {
   apiErrorText,
   el,
   fetchArtifactText,
+  isArtifactReadCancelled,
+  LEGACY_TABLE_PREVIEW_CHARACTERS,
   looksBinary,
+  previewReadOptions,
   translate,
+  unicodeSafeSlice,
 } from "../artifacts/api";
+import { filesT, readFailureText } from "../artifacts/copy";
 import { parseTable } from "../csv/csv";
 import { renderSheet } from "../artifacts/sheet";
 import { planTableViewer, tableCatalogPosture } from "./catalog";
@@ -44,10 +49,27 @@ export function payloadFilters(text: string, a: ArtifactRow): Record<string, str
   return { [((a && a.filename) || "col").replace(/\.[^.]+$/, "")]: value };
 }
 
-function renderLegacyFailure(container: HTMLElement, a: ArtifactRow, url: string): void {
+function renderLegacyFailure(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  error?: unknown,
+): void {
   container.innerHTML = "";
   const card = el("div", "renderer-fallback");
-  card.appendChild(el("div", "renderer-fallback-text", translate("viewer.renderer.error")));
+  const text = el(
+    "div",
+    "renderer-fallback-text",
+    error === undefined ? translate("viewer.renderer.error") : readFailureText(error),
+  );
+  text.setAttribute("role", "alert");
+  card.appendChild(text);
+  const retry = el("button", "outline-btn small", filesT("viewer.read.retry"));
+  retry.onclick = () => {
+    container.innerHTML = "";
+    renderLegacyTable(container, a, url);
+  };
+  card.appendChild(retry);
   const download = el("a", "outline-btn small", translate("common.download"));
   download.setAttribute("href", url);
   download.setAttribute("download", a.filename || "artifact");
@@ -55,9 +77,33 @@ function renderLegacyFailure(container: HTMLElement, a: ArtifactRow, url: string
   container.appendChild(card);
 }
 
+/**
+ * The completeness state of a display-limited legacy table (A2): a parse
+ * failure that falls back to source shows a labelled prefix, never an
+ * unexplained cut or a row count derived from partial content.
+ */
+function legacySourceStatus(container: HTMLElement, a: ArtifactRow, url: string, shown: number, total: number): void {
+  const partial = shown < total;
+  const note = el(
+    "div",
+    "renderer-note renderer-completeness",
+    partial
+      ? filesT("viewer.preview.partial", shown.toLocaleString(), total.toLocaleString())
+      : filesT("viewer.preview.complete", total.toLocaleString()),
+  );
+  note.setAttribute("data-state", partial ? "partial" : "complete");
+  note.setAttribute("role", "status");
+  container.appendChild(note);
+  if (!partial) return;
+  const download = el("a", "outline-btn small", translate("common.download"));
+  download.setAttribute("href", url);
+  download.setAttribute("download", a.filename || "artifact");
+  container.appendChild(download);
+}
+
 /** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */
 export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url)
+  fetchArtifactText(url, previewReadOptions(a))
     .then((text) => {
       if (!container.isConnected) return;
       if (looksBinary(text)) {
@@ -74,11 +120,15 @@ export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: s
       if (rows && rows.length) renderSheet(container, rows);
       else {
         const pre = el("pre", "renderer-source");
-        pre.textContent = text.slice(0, 300000);
+        pre.textContent = unicodeSafeSlice(text, LEGACY_TABLE_PREVIEW_CHARACTERS);
         container.appendChild(pre);
+        legacySourceStatus(container, a, url, pre.textContent.length, text.length);
       }
     })
-    .catch(() => renderLegacyFailure(container, a, url));
+    .catch((error: unknown) => {
+      if (isArtifactReadCancelled(error) || !container.isConnected) return;
+      renderLegacyFailure(container, a, url, error);
+    });
 }
 
 export function renderWorkbenchTable(

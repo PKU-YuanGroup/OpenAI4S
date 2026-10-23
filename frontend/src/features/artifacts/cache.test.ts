@@ -12,7 +12,16 @@ import { resetStoreFields } from "../../stores/signal-field";
 import { currentId } from "../../stores/session";
 import { openTabs } from "../../stores/ui";
 import { ApiError, setArtifactsFetch } from "./api";
-import { artifactCacheKey, artifactMetadataCacheKey, artifactMetadataTarget, artifactMetadataUrl, artUrl, syncArtifactVersion } from "./cache";
+import {
+  artifactCacheKey,
+  artifactMetadataCacheKey,
+  artifactMetadataTarget,
+  artifactMetadataUrl,
+  artifactPreviewTarget,
+  artifactPreviewUrl,
+  artUrl,
+  syncArtifactVersion,
+} from "./cache";
 import { jsonResponse } from "./http-stub";
 import { loadArtifacts } from "./load";
 import type { ArtifactRow } from "./types";
@@ -195,4 +204,36 @@ it("legacy metadata without a known version cannot share an exact cache entry", 
   expect(artifactMetadataCacheKey(legacy)).not.toBe(artifactMetadataCacheKey(exact));
   expect(artifactMetadataTarget(legacy)._exactVersion).toBeUndefined();
   resetStoreFields();
+});
+
+
+describe("frozen preview target and exact-version download (A2)", () => {
+  afterEach(() => {
+    setArtifactsFetch(null);
+    resetStoreFields();
+  });
+
+  it("pins a known version so preview and download address the same bytes", () => {
+    const row: ArtifactRow = { id: "a1", version_id: "v4" };
+    const target = artifactPreviewTarget(row);
+    expect(target._exactVersion).toBe(true);
+    expect(target.version_id).toBe("v4");
+    expect(artifactPreviewUrl(row)).toBe("/api/v1/artifacts/versions/v4");
+    expect(artifactPreviewTarget(row, "v5").version_id).toBe("v5");
+  });
+
+  it("prefers the version the renderer descriptor reported for this paint", () => {
+    const row: ArtifactRow = { id: "a1", version_id: "v4", latest_version_id: "v4" };
+    expect(artifactPreviewUrl(row, "v3")).toBe("/api/v1/artifacts/versions/v3");
+  });
+
+  it("reads latest only when the row has no version identity", () => {
+    const row: ArtifactRow = { id: "a1" };
+    expect(artifactPreviewTarget(row)._exactVersion).toBeFalsy();
+    expect(artifactPreviewUrl(row)).toBe("/api/v1/artifacts/a1");
+  });
+
+  it("refuses an exact target that has no version", () => {
+    expect(() => artifactPreviewTarget({ id: "a1", _exactVersion: true })).toThrow();
+  });
 });
