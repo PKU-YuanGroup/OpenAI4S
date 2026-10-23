@@ -828,6 +828,7 @@ def test_the_linux_job_proves_the_package_executes_before_it_receipts_and_upload
     job = _workflow("release.yml")["jobs"]["linux-app"]
     names = [str(step.get("name") or "") for step in job["steps"]]
     verify_index = names.index("Verify the bundle")
+    browser_index = names.index("Run the Linux bundle in a real browser")
     receipt_index = next(
         index
         for index, name in enumerate(names)
@@ -838,7 +839,10 @@ def test_the_linux_job_proves_the_package_executes_before_it_receipts_and_upload
         for index, name in enumerate(names)
         if name.startswith("Upload the verified bundle")
     )
-    assert verify_index < receipt_index < upload_index
+    assert verify_index < browser_index < receipt_index < upload_index, (
+        "the packaged science chain and the browser acceptance must both pass "
+        "before the bytes are receipted and uploaded"
+    )
 
     verify_run = str(job["steps"][verify_index].get("run") or "")
     assert "scripts/verify_linux_bundle.py" in verify_run
@@ -846,10 +850,24 @@ def test_the_linux_job_proves_the_package_executes_before_it_receipts_and_upload
     assert "--smoke-report" in verify_run
     assert "$RUNNER_TEMP/runtime-smoke.json" in verify_run
 
+    browser_run = str(job["steps"][browser_index].get("run") or "")
+    assert "tests/browser_bundle_smoke.mjs" in browser_run
+    assert "--bundle" in browser_run
+    assert "--source-sha" in browser_run
+    assert "$RUNNER_TEMP/bundle-smoke.json" in browser_run
+
     receipt_run = str(job["steps"][receipt_index].get("run") or "")
     assert "--kind linux" in receipt_run
     assert "--runtime-smoke-file" in receipt_run
     assert "$RUNNER_TEMP/runtime-smoke.json" in receipt_run
+    assert "--bundle-smoke-file" in receipt_run
+    assert "$RUNNER_TEMP/bundle-smoke.json" in receipt_run
+
+    # The browser needs its own driver in this job; the workflow must say so
+    # rather than assuming the quality job's Python environment provides one.
+    earlier = job["steps"][:browser_index]
+    assert any("actions/setup-node" in str(step.get("uses") or "") for step in earlier)
+    assert any("playwright install" in str(step.get("run") or "") for step in earlier)
 
 
 def _workflow(name):
