@@ -55,6 +55,7 @@
 | `pre-upgrade-snapshot-design.md` / `pre-upgrade-snapshot-design_zh.md` | P2-01 准备：一份已校验预升级 DB 快照、私有有界发布、独立目录恢复边界及未来故障验收；不改变运行时或迁移。 |
 | `inbound-connection-design.md` / `inbound-connection-design_zh.md` | P2-02 准备：HTTP／请求头／上传／WS 分阶段预算、有界准入与状态余量、真实连接释放和本地故障验收；不启用新配额或期限。 |
 | `delegation-continuation-design.md` / `delegation-continuation-design_zh.md` | P2-01 准备：基于现有请求／尝试行的只读可继续性投影、绑定身份的幂等准入、执行与观察超时边界，以及继续委派子任务所需的后续验收用例；不新增路由、字段、开关或生产代码。 |
+| `remote-observation-design.md` / `remote-observation-design_zh.md` | P2-02 准备：把只读的远程任务观察与 `result()` 实际执行的显式取回分离——可观察／不支持观察的接口面、身份绑定、观察状态与超时、零文件写入约定，以及后续验收用例；不新增路由、轮询器、持久字段，也不改变 `result()`。 |
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
 | `webshare.md` | Web 分享：只读快照 + 出站 relay 隧道、部署方式与信任模型。 |
 | `experimental-judgment.md` | 默认关闭的实验性语义判断层（TypeSafe Jev）操作说明：它是什么、每项能力会发送什么、如何开关、doctor/审计状态、已知限制、毕业标准、FAQ。 |
