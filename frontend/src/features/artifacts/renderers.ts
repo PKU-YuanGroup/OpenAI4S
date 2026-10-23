@@ -16,16 +16,15 @@ import {
   isArtifactReadAborted,
   LATEX_SOURCE_PREVIEW_CHARACTERS,
   looksBinary,
+  MARKDOWN_PREVIEW_CHARACTERS,
   MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
   previewReadSignal,
   svgElement,
   translate,
   TEXT_SOURCE_PREVIEW_CHARACTERS,
-  truncateMarkdown,
-  unicodeSafeSlice,
 } from "./api";
 import { filesT, readFailureText } from "./copy";
-import { artUrl, artifactMetadataTarget, artifactPreviewTarget } from "./cache";
+import { artifactMetadataTarget, artUrl, previewSlice } from "./cache";
 import {
   artifactRendererDescriptor,
   compatibilityRendererDescriptor,
@@ -42,39 +41,34 @@ import type { ArtifactRow } from "./types";
 import { TEXT_EXT } from "./types";
 
 /**
- * The persistent completeness state of a display-limited preview (A2). Every
- * limited preview is exactly one of "complete" or "partial preview"; a failure
- * to read at all is the third state, rendered by `rendererFailure`.
+ * The persistent notice every `partial` preview carries (F3): how much was
+ * shown and where to get the complete file. Complete previews add nothing, so
+ * short content renders exactly as it did before the truncation work; a failed
+ * read is the third state, rendered by `rendererFailure`.
  */
-function previewStatus(
-  container: HTMLElement,
-  a: ArtifactRow,
-  url: string,
-  truncated: boolean,
-  shown: number,
-  total: number,
-): void {
-  // The state comes from the slice that was actually taken, not from comparing
-  // a possibly-rewritten prefix length with the source length: closing a cut
-  // Markdown code fence appends characters, which could make a partial render
-  // look longer than the file for totals within a few characters of the limit.
-  const partial = truncated;
+function partialNotice(container: HTMLElement, shown: number): void {
   const note = el(
     "div",
     "renderer-note renderer-completeness",
-    partial
-      ? filesT("viewer.preview.partial", shown.toLocaleString(), total.toLocaleString())
-      : filesT("viewer.preview.complete", total.toLocaleString()),
+    filesT("viewer.preview.partial", shown.toLocaleString()),
   );
-  note.setAttribute("data-state", partial ? "partial" : "complete");
+  note.setAttribute("data-state", "partial");
   note.setAttribute("role", "status");
   container.appendChild(note);
-  if (!partial) return;
-  // A partial preview keeps the full-file entry right next to its explanation.
+}
+
+/** The exact-version download that must accompany every partial preview. */
+function previewDownload(container: HTMLElement, a: ArtifactRow, url: string): void {
   const download = el("a", "outline-btn small", translate("common.download"));
   download.href = url;
   download.setAttribute("download", a.filename || "artifact");
   container.appendChild(download);
+}
+
+/** Partial notice plus the full-file entry, for previews with one display limit. */
+function partialPreview(container: HTMLElement, a: ArtifactRow, url: string, shown: number): void {
+  partialNotice(container, shown);
+  previewDownload(container, a, url);
 }
 
 /**
@@ -147,15 +141,22 @@ function appendResidues(
 }
 
 export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  const target = artifactMetadataTarget(a);
   fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
-      const shown = truncateMarkdown(text);
+      const slice = previewSlice(text, MARKDOWN_PREVIEW_CHARACTERS);
+      // Markdown keeps both notices outside the rendered body: the top one is
+      // visible before the reader starts, the bottom one right after the cut,
+      // so a reader who reaches the end of the shown text cannot mistake it for
+      // the end of the report.
+      if (slice.truncated) partialNotice(container, slice.shown.length);
       const markdown = el("div", "md renderer-markdown");
-      markdown.innerHTML = renderMd(shown.text);
+      markdown.innerHTML = renderMd(slice.shown);
       container.appendChild(markdown);
-      previewStatus(container, target, url, shown.truncated, shown.text.length, text.length);
+      if (slice.truncated) {
+        partialNotice(container, slice.shown.length);
+        previewDownload(container, a, url);
+      }
     })
     .catch(readFailure(container, a, url, () => renderMarkdownArtifact(container, a, url)));
 }
@@ -163,30 +164,23 @@ export function renderMarkdownArtifact(container: HTMLElement, a: ArtifactRow, u
 const SOURCE_PREVIEW_CHARACTERS = TEXT_SOURCE_PREVIEW_CHARACTERS;
 
 function renderRawSource(container: HTMLElement, a: ArtifactRow, text: string, url: string): void {
+  const slice = previewSlice(text, SOURCE_PREVIEW_CHARACTERS);
   const pre = el("pre", "renderer-source");
-  pre.textContent = unicodeSafeSlice(text, SOURCE_PREVIEW_CHARACTERS);
+  pre.textContent = slice.shown;
   container.appendChild(pre);
-  if (text.length <= SOURCE_PREVIEW_CHARACTERS) {
-    previewStatus(container, a, url, false, text.length, text.length);
-    return;
-  }
-  const note = el("div", "renderer-note renderer-completeness", filesT("viewer.text.truncated"));
-  note.setAttribute("data-state", "partial");
-  note.setAttribute("role", "status");
+  if (!slice.truncated) return;
+  partialNotice(container, slice.shown.length);
+  // The raw-source preview can prove the already-read bytes are complete, so
+  // it keeps the "show complete text" expansion on top of the download entry.
   const expand = el("button", "outline-btn small", filesT("viewer.text.expand"));
   expand.setAttribute("aria-expanded", "false");
   expand.onclick = () => {
     pre.textContent = text;
-    note.textContent = filesT("viewer.text.complete");
     expand.setAttribute("aria-expanded", "true");
     expand.disabled = true;
   };
-  const download = el("a", "outline-btn small", translate("common.download"));
-  download.href = url;
-  download.setAttribute("download", a.filename || "artifact");
-  container.appendChild(note);
   container.appendChild(expand);
-  container.appendChild(download);
+  previewDownload(container, a, url);
 }
 
 export function renderStructuredText(
@@ -517,7 +511,6 @@ function molecule2dSvg(model: MolfileModel | null | undefined): SVGElement | nul
 }
 
 export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: string): void {
-  const target = artifactMetadataTarget(a);
   if (readWorkbenchFlag()) {
     const bar = el("div", "wb-ketcher-bar");
     const open = el("button", "solid-btn small", translate("wb.ketcher.edit"));
@@ -558,25 +551,18 @@ export function renderChemistry2D(container: HTMLElement, a: ArtifactRow, url: s
       }
       const details = el("details", "chem-source");
       details.appendChild(el("summary", null, translate("viewer.chem.source")));
+      const slice = previewSlice(text, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS);
       const pre = el("pre");
-      pre.textContent = unicodeSafeSlice(text, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS);
+      pre.textContent = slice.shown;
       details.appendChild(pre);
       wrap.appendChild(details);
       container.appendChild(wrap);
-      previewStatus(
-        container,
-        target,
-        url,
-        text.length > CHEMISTRY_SOURCE_PREVIEW_CHARACTERS,
-        Math.min(text.length, CHEMISTRY_SOURCE_PREVIEW_CHARACTERS),
-        text.length,
-      );
+      if (slice.truncated) partialPreview(container, a, url, slice.shown.length);
     })
     .catch(readFailure(container, a, url, () => renderChemistry2D(container, a, url)));
 }
 
 export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  const target = artifactMetadataTarget(a);
   fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!container.isConnected) return;
@@ -600,8 +586,9 @@ export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url:
         preview.appendChild(node);
       });
       if (!blocks.length) preview.appendChild(el("div", "renderer-note", translate("viewer.chem.fallback")));
+      const slice = previewSlice(text, LATEX_SOURCE_PREVIEW_CHARACTERS);
       const source = el("pre", "renderer-source latex-source");
-      source.textContent = unicodeSafeSlice(text, LATEX_SOURCE_PREVIEW_CHARACTERS);
+      source.textContent = slice.shown;
       source.classList.add("hidden");
       wrap.appendChild(preview);
       wrap.appendChild(source);
@@ -615,14 +602,7 @@ export function renderLatexArtifact(container: HTMLElement, a: ArtifactRow, url:
       previewButton.onclick = () => show("preview");
       sourceButton.onclick = () => show("source");
       container.appendChild(wrap);
-      previewStatus(
-        container,
-        target,
-        url,
-        text.length > LATEX_SOURCE_PREVIEW_CHARACTERS,
-        Math.min(text.length, LATEX_SOURCE_PREVIEW_CHARACTERS),
-        text.length,
-      );
+      if (slice.truncated) partialPreview(container, a, url, slice.shown.length);
     })
     .catch(readFailure(container, a, url, () => renderLatexArtifact(container, a, url)));
 }
@@ -683,22 +663,15 @@ function renderMolecule3dGlue(content: HTMLElement, a: ArtifactRow, url: string,
   if (runIsland("molecule", content, url, nm)) return;
   // Degraded path when the 3Dmol island is not mounted: the coordinates as
   // text, still under the main preview budget and cancellable.
-  const target = artifactMetadataTarget(a);
   fetchArtifactText(url, { signal: previewReadSignal() })
     .then((text) => {
       if (!content.isConnected) return;
+      const slice = previewSlice(text, MOLECULE_FALLBACK_PREVIEW_CHARACTERS);
       const pre = el("pre");
       pre.style.padding = "16px";
-      pre.textContent = unicodeSafeSlice(text, MOLECULE_FALLBACK_PREVIEW_CHARACTERS);
+      pre.textContent = slice.shown;
       content.appendChild(pre);
-      previewStatus(
-        content,
-        target,
-        url,
-        text.length > MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
-        pre.textContent.length,
-        text.length,
-      );
+      if (slice.truncated) partialPreview(content, a, url, slice.shown.length);
     })
     .catch(readFailure(content, a, url, () => renderMolecule3dGlue(content, a, url, nm)));
 }
@@ -711,7 +684,10 @@ export function renderArtifactDescriptor(
   body.innerHTML = "";
   const renderer = descriptor.renderer || {};
   const rendererId = renderer.renderer_id || "download";
-  const target = artifactPreviewTarget(a, descriptor.version_id);
+  // F4: freeze the read target once for this paint. Every renderer, the
+  // expansion and the download use this exact target and URL, so a version
+  // published after this paint cannot move part of the preview to new bytes.
+  const target = artifactMetadataTarget(a);
   const shell = el("div", "renderer-shell");
   shell.dataset.rendererId = rendererId;
   const meta = el("div", "renderer-meta");

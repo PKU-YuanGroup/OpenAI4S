@@ -96,26 +96,26 @@ export function artifactMetadataTarget(a: ArtifactRow): ArtifactRow {
   return version ? { ...a, version_id: version, _exactVersion: true } : { ...a };
 }
 
-/**
- * The frozen read target of one preview paint (A2). When this artifact knows
- * its version — an exact tab, a listed row, or the descriptor's own version —
- * the preview, source and download all address that immutable version. A row
- * with no version identity can only read latest; the viewer labels that
- * instead of implying a fixed-version guarantee.
- *
- * Reuses `artifactMetadataTarget` for the row itself and `artUrl` for the byte
- * URL, so the exact-version address cannot drift between the two.
- */
-export function artifactPreviewTarget(a: ArtifactRow, versionId?: string | null): ArtifactRow {
-  if (a._exactVersion) return artifactMetadataTarget(a);
-  const known = String(versionId || a.version_id || a.latest_version_id || "").trim();
-  if (!known) return { ...a };
-  return { ...a, version_id: known, latest_version_id: undefined, _exactVersion: true };
-}
+export type PreviewSlice = {
+  /** The prefix a preview may display. */
+  shown: string;
+  /** True when the source continued past the limit. */
+  truncated: boolean;
+};
 
-/** The preview/original URL for this paint: exact when the version is known. */
-export function artifactPreviewUrl(a: ArtifactRow, versionId?: string | null): string {
-  return artUrl(artifactPreviewTarget(a, versionId));
+/**
+ * Shared display-limit slice (F3): never splits a surrogate pair. When the
+ * code units before `limit` end on a high surrogate (the first half of an
+ * emoji or a CJK extension), one fewer unit is kept, so a partial preview
+ * cannot render a lone surrogate as a replacement glyph.
+ */
+export function previewSlice(text: string | null | undefined, limit: number): PreviewSlice {
+  const source = String(text == null ? "" : text);
+  if (limit <= 0) return { shown: "", truncated: source.length > 0 };
+  if (source.length <= limit) return { shown: source, truncated: false };
+  const last = source.charCodeAt(limit - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit;
+  return { shown: source.slice(0, Math.max(0, end)), truncated: true };
 }
 
 export function artifactMetadataCacheKey(a: ArtifactRow | null | undefined): string {

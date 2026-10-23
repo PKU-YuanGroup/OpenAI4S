@@ -570,10 +570,10 @@ describe("legacy table completeness and failure recovery (A2)", () => {
   });
 
   it.each([
-    ["below", LEGACY_TABLE_PREVIEW_CHARACTERS - 1, "complete"],
-    ["at", LEGACY_TABLE_PREVIEW_CHARACTERS, "complete"],
-    ["above", LEGACY_TABLE_PREVIEW_CHARACTERS + 1, "partial"],
-  ])("labels a source fallback %s the 300k display limit", async (_label, length, expected) => {
+    ["below", LEGACY_TABLE_PREVIEW_CHARACTERS - 1, false],
+    ["at", LEGACY_TABLE_PREVIEW_CHARACTERS, false],
+    ["above", LEGACY_TABLE_PREVIEW_CHARACTERS + 1, true],
+  ])("marks a source fallback %s the 300k display limit only when truncated", async (_label, length, truncated) => {
     const host = installDom();
     // A single long line is not a table, so the legacy path falls back to source.
     setArtifactsFetch(async () => new Response("x".repeat(Number(length))));
@@ -583,12 +583,22 @@ describe("legacy table completeness and failure recovery (A2)", () => {
       "/api/v1/artifacts/versions/v1",
       { workbenchOn: false, capabilities: WORKBENCH_CAPS },
     );
-    await vi.waitFor(() => expect(host.querySelector(".renderer-completeness")).toBeTruthy(), { timeout: 3000 });
-    expect(host.querySelector(".renderer-completeness")!.dataset.state).toBe(expected);
-    if (expected === "partial") {
-      expect(host.querySelector("a")?.href).toBe("/api/v1/artifacts/versions/v1");
-      expect(host.querySelector("pre")?.textContent.length).toBe(LEGACY_TABLE_PREVIEW_CHARACTERS);
+    await vi.waitFor(() => expect(host.querySelector("pre")).toBeTruthy(), { timeout: 3000 });
+    const notice = host.querySelector(".renderer-completeness");
+    if (!truncated) {
+      // A complete prefix renders exactly as before: no truncation notice.
+      expect(notice).toBeNull();
+      expect(host.querySelector("pre")?.textContent.length).toBe(Number(length));
+      return;
     }
+    await vi.waitFor(() => expect(host.querySelector(".renderer-completeness")).toBeTruthy(), { timeout: 3000 });
+    expect(host.querySelector(".renderer-completeness")!.dataset.state).toBe("partial");
+    expect(host.querySelector(".renderer-completeness")!.attrs.role).toBe("status");
+    expect(host.querySelector(".renderer-completeness")!.textContent).toBe(
+      filesT("viewer.preview.partial", LEGACY_TABLE_PREVIEW_CHARACTERS.toLocaleString()),
+    );
+    expect(host.querySelector("a")?.href).toBe("/api/v1/artifacts/versions/v1");
+    expect(host.querySelector("pre")?.textContent.length).toBe(LEGACY_TABLE_PREVIEW_CHARACTERS);
   });
 
   it("shows a classified failure with retry instead of a blank success", async () => {
