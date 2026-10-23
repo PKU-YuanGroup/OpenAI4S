@@ -75,6 +75,7 @@ function isDiagnosticsConfigWrite(path: string, method: string): boolean {
   // `/models/default` activates the chosen profile (or rewrites `llm_model`);
   // `/connectors/<id>` is the connector editor's save.
   if (verb === "PUT") return route === "/network/status"
+    || route === "/ollama-web/config"
     || route === "/experimental/judgment"
     || route === "/models/default"
     || /^\/connectors\/[^/]+(?:\/enabled)?$/.test(route);

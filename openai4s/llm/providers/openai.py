@@ -7,6 +7,7 @@ from typing import Any
 
 from ..messages import _openai_messages
 from ..models import LLMError, TransportError, status_is_retryable
+from ..resolve import keyless_endpoint
 from ..tooling import _apply_chat_tools, _assistant_message, _normalized_tool_call
 from ..transport import _BROWSER_UA, bind_call_context, streaming_refused
 from ..usage import RawUsage
@@ -42,12 +43,23 @@ def _chat_openai(
     effort = os.environ.get("OPENAI4S_LLM_REASONING_EFFORT")
     if effort:
         payload["reasoning_effort"] = effort
-    _apply_chat_tools(payload, tools or [], tool_choice, parallel_tool_calls)
+    if cfg.provider == "ollama":
+        # Ollama accepts function schemas, but not OpenAI's tool-selection or
+        # parallel-control fields. Do not silently promise forced selection.
+        if tool_choice not in (None, "auto", "none"):
+            raise LLMError("Ollama does not support forced tool_choice")
+        _apply_chat_tools(
+            payload, [] if tool_choice == "none" else tools or [], None, None
+        )
+    else:
+        _apply_chat_tools(payload, tools or [], tool_choice, parallel_tool_calls)
     headers = {
         "Content-Type": "application/json",
         "User-Agent": os.environ.get("OPENAI4S_LLM_USER_AGENT", _BROWSER_UA),
     }
-    if cfg.api_key:
+    if cfg.api_key and not (
+        cfg.provider == "ollama" and keyless_endpoint(cfg.provider, model, base)
+    ):
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     # Real token streaming: when a delta callback is supplied AND streaming isn't
     # explicitly disabled, POST with `stream:true` and forward each token to

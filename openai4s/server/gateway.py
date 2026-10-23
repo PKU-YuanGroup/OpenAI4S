@@ -19326,6 +19326,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"ok": True})
                     return
 
+            # ---- independent Ollama web credential ----
+            if sub == "/ollama-web/config":
+                from openai4s.ollama_web import save_web_config, web_config_status
+
+                if method == "PUT":
+                    try:
+                        save_web_config(store, self._body())
+                    except ValueError as error:
+                        raise GatewayError(400, str(error)) from error
+                elif method != "GET":
+                    raise GatewayError(405, "method not allowed")
+                self._json(
+                    web_config_status(runner._llm_cfg(apply_user_key=False), store)
+                )
+                return
+
             # ---- Doubao Search (primary, direct API, never falls back) ----
             if sub == "/doubao-search/config":
                 if method == "GET":

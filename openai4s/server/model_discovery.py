@@ -155,7 +155,7 @@ class LocalModelDiscoveryService:
             {
                 "kind": endpoint.kind,
                 "label": endpoint.label,
-                "provider": "chatgpt",
+                "provider": "ollama" if endpoint.kind == "ollama" else "chatgpt",
                 "base_url": endpoint.base_url,
                 "models": [],
                 "default_model": "",
@@ -200,7 +200,7 @@ class LocalModelDiscoveryService:
         return {
             "kind": endpoint.kind,
             "label": endpoint.label,
-            "provider": "chatgpt",
+            "provider": "ollama" if endpoint.kind == "ollama" else "chatgpt",
             "base_url": endpoint.base_url,
             "models": models,
             "default_model": models[0] if models else "",

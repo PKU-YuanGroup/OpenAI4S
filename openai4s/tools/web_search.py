@@ -13,8 +13,9 @@ class WebSearchTool(Tool):
     name = "web_search"
     host_method = "web_search"
     description = (
-        "Live web search; uses Doubao Search when an Agent Plan Key is configured, "
-        "otherwise the built-in fallback engines. Returns {title, url, snippet}."
+        "Live web search; uses Ollama when its cloud key is configured, then "
+        "Doubao Search with an Agent Plan Key, otherwise built-in engines. "
+        "Returns {title, url, snippet}."
     )
     parameters = {
         "properties": {

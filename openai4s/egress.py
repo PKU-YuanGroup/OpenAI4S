@@ -115,12 +115,18 @@ EGRESS_GROUPS: list[dict] = [
     {
         "name": "Web search",
         "enabled": True,
-        "exact_domains": ["open.feedcoopapi.com", "ydc-index.io", "api.tavily.com"],
+        "exact_domains": [
+            "open.feedcoopapi.com",
+            "ollama.com",
+            "ydc-index.io",
+            "api.tavily.com",
+        ],
         "domains": [
             # Exact authenticated Doubao Search upstream.  Keep this narrower
             # than feedcoopapi.com so the Agent Plan credential cannot be sent
             # to sibling services through an allowlist match.
             "open.feedcoopapi.com",
+            "ollama.com",
             # You.com: keyless tier, and the exact host that receives YDC_API_KEY.
             "api.you.com",
             "ydc-index.io",

@@ -216,6 +216,7 @@ INSTANCE_CONFIG_PATHS = frozenset(
         "/search/config",
         "/datapro/config",
         "/doubao-search/config",
+        "/ollama-web/config",
         "/telemetry/consent",
         # Volcengine onboarding owns host Ark CLI authentication and can
         # install, activate, or remove the instance-wide LLM credential.

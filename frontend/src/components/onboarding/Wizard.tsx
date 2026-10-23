@@ -213,7 +213,7 @@ function PathStep({
                   onChoose({
                     kind: "local",
                     profileId: "",
-                    provider: "chatgpt",
+                    provider: endpoint.provider,
                     model: endpoint.default_model,
                     baseUrl: endpoint.base_url,
                     name: endpoint.label,

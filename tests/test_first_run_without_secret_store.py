@@ -130,3 +130,13 @@ def test_the_refusal_never_quotes_the_backend():
     # Every other unknown exception keeps the generic answer.
     body, status = errors.public_exception(RuntimeError(leaked), surface="test")
     assert (status, body["error"]) == (500, errors.INTERNAL_ERROR_MESSAGE)
+
+
+def test_ollama_web_status_needs_no_keychain_but_save_requires_one(api):
+    status = api("GET", "/ollama-web/config")
+    assert status["code"] == 200
+    assert status["body"]["key_configured"] is False
+    saved = api("PUT", "/ollama-web/config", {"api_key": "synthetic-ollama-not-stored"})
+    assert saved["code"] == 503
+    assert saved["body"]["code"] == "secret_store_unavailable"
+    assert "synthetic-ollama-not-stored" not in json.dumps(saved)

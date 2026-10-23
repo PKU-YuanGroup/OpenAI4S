@@ -68,6 +68,7 @@ import { ConnectorsTab } from "../ConnectorsTab";
 import { NetworkTab } from "../NetworkTab";
 import { DataProCard } from "./datapro";
 import { DoubaoSearchCard } from "./doubao";
+import { OllamaWebCard } from "./ollama";
 
 type Node = {
   type?: unknown;
@@ -208,5 +209,100 @@ describe("Doubao card on Network", () => {
     expect(text(credential(card))).toBe("cust.doubao.keyArkReused");
     expect(credential(card).props!.class).not.toContain("bad");
     expect(find(card, (node) => node.props?.["data-action"] === "doubao-search-save-key")!.props!.disabled).toBe(false);
+  });
+});
+
+describe("Independent Ollama web key on Network", () => {
+  const render = () => renderCard(NetworkTab, OllamaWebCard);
+  const button = (card: Node, action: string) =>
+    find(card, (node) => node.props?.["data-action"] === `ollama-web-${action}-key`)!;
+  const input = (card: Node) =>
+    find(card, (node) => node.props?.id === "ollama-web-api-key")!;
+  const typeKey = (card: Node) => {
+    (input(card).props!.onInput as (event: unknown) => void)({
+      target: { value: "synthetic-independent-web-key" },
+    });
+  };
+
+  it("waits for configuration, saves once without model writes, and clears the password input", async () => {
+    const read = deferred<Response>();
+    const save = deferred<Response>();
+    routes({
+      "GET /ollama-web/config": () => read.promise,
+      "PUT /ollama-web/config": () => save.promise,
+    });
+    let card = render();
+    expect(button(card, "save").props!.disabled).toBe(true);
+    await settle();
+    read.resolve(response({ key_configured: false, available: false, source: "" }));
+    await settle();
+    card = render();
+    expect(button(card, "save").props!.disabled).toBe(false);
+    expect(button(card, "clear").props!.disabled).toBe(true);
+    typeKey(card);
+    card = render();
+    button(card, "save").props!.onClick!();
+    button(card, "save").props!.onClick!();
+    card = render();
+    expect(input(card).props!.value).toBe("");
+    expect(button(card, "save").props!.disabled).toBe(true);
+    expect(writes()).toEqual([
+      ["/api/v1/ollama-web/config", JSON.stringify({ api_key: "synthetic-independent-web-key" })],
+    ]);
+    save.resolve(response({ key_configured: true, available: true, source: "saved" }));
+    await settle();
+    card = render();
+    expect(input(card).props!.value).toBe("");
+    expect(button(card, "clear").props!.disabled).toBe(false);
+    expect(credential(card).props!.class).not.toContain("bad");
+  });
+
+  it("reads a previously saved key without returning it to the input, and can remove it", async () => {
+    routes({
+      "GET /ollama-web/config": () => Promise.resolve(response({ key_configured: true, available: true, source: "saved" })),
+      "PUT /ollama-web/config": () => Promise.resolve(response({ key_configured: false, available: false, source: "" })),
+    });
+    render();
+    await settle();
+    let card = render();
+    expect(input(card).props!.value).toBe("");
+    expect(button(card, "clear").props!.disabled).toBe(false);
+    button(card, "clear").props!.onClick!();
+    await settle();
+    card = render();
+    expect(button(card, "clear").props!.disabled).toBe(true);
+    expect(writes()).toEqual([
+      ["/api/v1/ollama-web/config", JSON.stringify({ clear_api_key: true })],
+    ]);
+  });
+
+  it("shows a save failure without retaining the typed key or claiming it was saved", async () => {
+    routes({
+      "GET /ollama-web/config": () => Promise.resolve(response({ key_configured: false, available: false, source: "" })),
+      "PUT /ollama-web/config": () => Promise.resolve(response({ error: "Secret store unavailable" }, 503)),
+    });
+    render();
+    await settle();
+    typeKey(render());
+    button(render(), "save").props!.onClick!();
+    await settle();
+    const card = render();
+    expect(input(card).props!.value).toBe("");
+    expect(text(credential(card))).toContain("Secret store unavailable");
+    expect(credential(card).props!.class).toContain("bad");
+    expect(button(card, "clear").props!.disabled).toBe(true);
+  });
+
+  it("does not allow a write when the settings could not be read", async () => {
+    routes({
+      "GET /ollama-web/config": () => Promise.resolve(response({ error: "Unavailable" }, 503)),
+    });
+    render();
+    await settle();
+    const card = render();
+    expect(button(card, "save").props!.disabled).toBe(true);
+    expect(button(card, "clear").props!.disabled).toBe(true);
+    expect(text(credential(card))).toContain("Unavailable");
+    expect(writes()).toEqual([]);
   });
 });

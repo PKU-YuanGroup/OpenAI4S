@@ -69,11 +69,11 @@ class WebFetchTool(Tool):
     def resource_keys(self, arguments: Any) -> tuple[str, ...]:
         return (resource_key("network", self.permission_target(arguments)),)
 
-    def execute(self, _runtime: Any, arguments: dict) -> dict:
+    def execute(self, runtime: Any, arguments: dict) -> dict:
         from openai4s import egress, webtools
 
         try:
-            return webtools.web_fetch(
+            return runtime.fetch_web(
                 arguments.get("url", ""),
                 fmt=arguments.get("format", "markdown"),
                 timeout=float(arguments.get("timeout") or 30),

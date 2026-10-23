@@ -157,6 +157,25 @@ beforeEach(() => {
 });
 
 describe("first-run wizard: the composer model list", () => {
+  it.each(["ollama", "chatgpt"])("keeps the discovered %s protocol when choosing a local endpoint", async (provider) => {
+    const local = { kind: "local", profileId: "", provider, model: "local-test", baseUrl: "http://127.0.0.1:11434/v1", name: "Local" } satisfies PathChoice;
+    hooks.slots[REDUCER] = { ...wizard(), path: local };
+    hooks.slots[STATUS] = {
+      ...STATUS_BODY,
+      local_model_catalog: { endpoints: [{
+        kind: provider === "ollama" ? "ollama" : "lmstudio", provider,
+        label: local.name, base_url: local.baseUrl, default_model: local.model,
+      }] },
+    };
+    const step = find(render(), (node) => typeof node.props?.onSaveNew === "function")!;
+    hooks.reset();
+    const choose = vi.fn();
+    const pathTree = (step.type as (props: unknown) => VNode)({ ...step.props, onChoose: choose });
+    const radio = find(pathTree, (node) => node.type === "input" && node.props?.name === "onb-local")!;
+    (radio.props!.onChange as () => void)();
+    expect(choose).toHaveBeenCalledWith(local);
+  });
+
   it("is re-read after a new profile is saved and activated", async () => {
     await saveNew(CLOUD, "sk-test");
     expect(api.activateModelProfile).toHaveBeenCalledWith("mp-new");

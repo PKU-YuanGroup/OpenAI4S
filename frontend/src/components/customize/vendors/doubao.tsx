@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { t } from "../../../i18n";
+import { copyLookup } from "../../../i18n/copy";
 import { api, apiErrorText } from "../../../features/customize/api";
 import {
   doubaoSearchAvailable,
@@ -7,6 +8,15 @@ import {
 } from "../../../features/customize/vendors";
 import { hint } from "../../../features/customize/host";
 import { useVendorKey } from "./use-vendor-key";
+
+const dt = copyLookup({
+  en: {
+    "doubao.web.description": "Used for search when Ollama web tools are not configured. Shares one Agent Plan Key with Ark and DataPro. Availability is confirmed only by a successful search with results.",
+  },
+  zh: {
+    "doubao.web.description": "未配置 Ollama 网页工具时使用的搜索服务；与 Ark 和 DataPro 共用同一个 Agent Plan Key。只有真实返回非空搜索结果才会标记可用。",
+  },
+});
 
 export function DoubaoSearchCard({
   config,
@@ -61,9 +71,9 @@ export function DoubaoSearchCard({
       <div class="datapro-head">
         <div>
           <div class="datapro-title">
-            {t("cust.doubao.title")} <span class="pill">{t("cust.doubao.primary")}</span>
+            {t("cust.doubao.title")}
           </div>
-          <div class="datapro-desc">{t("cust.doubao.desc")}</div>
+          <div class="datapro-desc">{dt("doubao.web.description")}</div>
         </div>
       </div>
       <div class="datapro-field">
