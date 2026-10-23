@@ -114,6 +114,77 @@ _MAX_IDENTIFIER_CHARS = 512
 MAX_VALUE_CHARS = 2000
 
 
+# --------------------------------------------------------------------------- #
+#  read compatibility for the one kind that ever wrote the old names
+# --------------------------------------------------------------------------- #
+
+#: The retrieval kind `write_search_artifact` writes. Only this known kind has
+#: historical aliases, and only this kind's are interpreted: an envelope of any
+#: other shape is free-form JSON written by unaudited retrieval code, and
+#: reading a key of it as a provenance field would let that code name a field
+#: this projection then renders.
+_SCIENCE_SEARCH_KIND = "science_search"
+
+#: Historical field name -> the canonical name it became. Artifacts written
+#: before the names were promoted carry the alias; they are not migrated (the
+#: bytes are immutable) and have to stay readable.
+LEGACY_SEARCH_ALIASES: dict[str, str] = {
+    "endpoint": "request_url",
+    "source_checksum": "response_sha256",
+}
+
+#: Optional projection keys. Named rather than implied: a client that shows a
+#: canonical value without knowing it came from an alias, or shows the
+#: canonical value while the alias disagreed, is describing a record it did not
+#: read.
+LEGACY_FIELDS_KEY = "legacy_normalized"
+CONFLICT_FIELDS_KEY = "source_conflicts"
+
+#: The response digest's public state, spelled separately from the artifact's
+#: own file checksum: hiding one must not read as "the retrieval was verified".
+RESPONSE_HASH_FIELD = "response_sha256"
+RESPONSE_HASH_STATE_KEY = "response_sha256_state"
+RESPONSE_HASH_SHOWN = "shown"
+RESPONSE_HASH_HIDDEN = "hidden"
+
+
+def _has_value(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _normalize_legacy_search(
+    envelope: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Merge the historical ``science_search`` names into the canonical ones.
+
+    The canonical field always wins a disagreement; the alias value is not
+    rendered, and the conflict is named, because silently picking one of two
+    recorded request URLs would make the panel describe a request that may not
+    be the one that produced the data. An alias that agrees is simply merged —
+    one fact under two names, so it is neither a conflict nor an unknown field.
+    Both the canonical value and a promoted alias value then go through the same
+    redaction, clipping and unknown-field counting as everything else; nothing
+    is exempt because of its name or its shape.
+    """
+    normalized = dict(envelope)
+    legacy: list[str] = []
+    conflicts: list[str] = []
+    for alias, canonical in LEGACY_SEARCH_ALIASES.items():
+        if alias not in envelope:
+            continue
+        alias_value = envelope[alias]
+        normalized.pop(alias, None)
+        canonical_value = envelope.get(canonical)
+        if _has_value(canonical_value):
+            if _has_value(alias_value) and alias_value != canonical_value:
+                conflicts.append(canonical)
+            continue
+        if _has_value(alias_value):
+            normalized[canonical] = alias_value
+            legacy.append(canonical)
+    return normalized, sorted(legacy), sorted(conflicts)
+
+
 def _clip(value: str) -> tuple[str, bool]:
     if len(value) <= MAX_VALUE_CHARS:
         return value, False
@@ -211,13 +282,23 @@ def public_source(
     if not isinstance(envelope, dict) or not envelope:
         return None
 
+    # Read compatibility only for the one known kind that ever wrote the old
+    # names. Everything below sees canonical fields and one envelope whose
+    # unknown-field count no longer includes a legacy key that was consumed.
+    working = envelope
+    legacy: list[str] = []
+    conflicts: list[str] = []
+    if envelope.get("kind") == _SCIENCE_SEARCH_KIND:
+        working, legacy, conflicts = _normalize_legacy_search(envelope)
+
     out: dict[str, Any] = {}
     truncated: list[str] = []
     unprojected = 0
+    hash_state: str | None = None
     for field in ALLOWED_FIELDS:
-        if field not in envelope:
+        if field not in working:
             continue
-        value = envelope[field]
+        value = working[field]
         if field == "dataset":
             dataset = _public_dataset(value, artifact_sha256)
             if dataset is not None:
@@ -233,15 +314,30 @@ def public_source(
         if isinstance(value, (int, float, bool)):
             out[field] = value
             continue
-        text = value if isinstance(value, str) else json.dumps(value, default=str)
-        text = _redact_url(text) if field == "request_url" else redact_text(text)
-        text, was_clipped = _clip(text)
+        raw_text = value if isinstance(value, str) else json.dumps(value, default=str)
+        safe = (
+            _redact_url(raw_text) if field == "request_url" else redact_text(raw_text)
+        )
+        text, was_clipped = _clip(safe)
         if was_clipped:
             truncated.append(field)
         out[field] = text
+        if field == RESPONSE_HASH_FIELD:
+            # The digest is not released because it is 64 hex characters: it is
+            # treated as text like every other value, and its public state is
+            # said out loud so "hidden" cannot be mistaken for "verified".
+            hash_state = (
+                RESPONSE_HASH_HIDDEN if safe != raw_text else RESPONSE_HASH_SHOWN
+            )
 
     if not out:
         return None
+    if hash_state is not None:
+        out[RESPONSE_HASH_STATE_KEY] = hash_state
+    if legacy:
+        out[LEGACY_FIELDS_KEY] = legacy
+    if conflicts:
+        out[CONFLICT_FIELDS_KEY] = conflicts
     # Named, not implied. A field silently cut at 2000 characters reads as the
     # whole value, and a provenance panel that shows a shortened URL as if it
     # were the request is worse than showing nothing.
@@ -249,7 +345,7 @@ def public_source(
         out["truncated_fields"] = sorted(truncated)
     # What was dropped, counted rather than listed: the names themselves come
     # from unaudited retrieval code and are not safe to render.
-    dropped = len([k for k in envelope if k not in ALLOWED_FIELDS]) + unprojected
+    dropped = len([k for k in working if k not in ALLOWED_FIELDS]) + unprojected
     if dropped:
         out["undisclosed_field_count"] = dropped
     return out
@@ -257,7 +353,14 @@ def public_source(
 
 __all__ = [
     "ALLOWED_FIELDS",
+    "CONFLICT_FIELDS_KEY",
     "CREDENTIAL_PARAMS",
+    "LEGACY_FIELDS_KEY",
+    "LEGACY_SEARCH_ALIASES",
     "MAX_VALUE_CHARS",
+    "RESPONSE_HASH_FIELD",
+    "RESPONSE_HASH_HIDDEN",
+    "RESPONSE_HASH_SHOWN",
+    "RESPONSE_HASH_STATE_KEY",
     "public_source",
 ]

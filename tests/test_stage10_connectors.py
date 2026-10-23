@@ -129,10 +129,17 @@ def test_clinvar_search_records_accession_url_time_and_file_receipt(tmp_path):
     assert receipt["checksum"] == hashlib.sha256(path.read_bytes()).hexdigest()
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["result"] == result
+    # New writes carry the canonical provenance names; the historical
+    # `endpoint` / `source_checksum` spellings are read-compatible only.
+    assert payload["request_url"]
+    assert payload["response_sha256"]
+    assert "endpoint" not in payload and "source_checksum" not in payload
     source = receipt["source"]
     assert source["query"] == "VCV000012345"
-    assert urlparse(source["endpoint"]).hostname == "eutils.ncbi.nlm.nih.gov"
+    assert urlparse(source["request_url"]).hostname == "eutils.ncbi.nlm.nih.gov"
     assert source["retrieved_at"]
+    assert source["response_sha256"]
+    assert "endpoint" not in source and "source_checksum" not in source
     assert "VCV000012345" in source["accessions"]
     assert not list(workspace.glob(".openai4s-*"))
 
@@ -554,6 +561,25 @@ class _Hub:
         return None
 
 
+def _versions_payload(runner, cfg, artifact_id):
+    """The public version interface: the bodies a client actually receives."""
+    handler_class = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_class)
+    handler._correlation_id = "req-stage10-versions"
+    handler.headers = {}
+    handler.path = f"/api/v1/artifacts/{artifact_id}/versions"
+    handler._body = lambda: {}
+    sent: dict = {}
+
+    def _send(code, payload, ctype, extra=None, security=None):
+        sent["code"] = code
+        sent["body"] = json.loads(payload.decode("utf-8"))
+
+    handler._send = _send
+    handler._api("GET", f"/artifacts/{artifact_id}/versions")
+    return sent
+
+
 def _stage10_result() -> dict:
     return {
         "database": "clinvar",
@@ -651,11 +677,29 @@ def test_real_native_stage10_tool_is_captured_as_a_trusted_artifact(
         "kind": "science_search",
         "database": "clinvar",
         "query": "VCV000012345",
-        "endpoint": "https://eutils.ncbi.nlm.nih.gov/example",
+        "request_url": "https://eutils.ncbi.nlm.nih.gov/example",
         "retrieved_at": 123456789,
-        "source_checksum": "ab" * 32,
+        "response_sha256": "ab" * 32,
         "accessions": ["VCV000012345"],
     }
+    # New bytes carry the canonical names only.
+    payload_bytes = files[0].read_bytes()
+    assert b'"request_url"' in payload_bytes
+    assert b'"endpoint"' not in payload_bytes
+    assert b'"source_checksum"' not in payload_bytes
+    # ...and reach a client through the public version interface.
+    served = _versions_payload(runner, cfg, artifact["artifact_id"])
+    assert served["code"] == 200
+    version_rows = {row["version_id"]: row for row in served["body"]["versions"]}
+    projected = version_rows[version_id]["retrieval_source"]
+    assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/example"
+    assert projected["response_sha256"] == "ab" * 32
+    assert projected["response_sha256_state"] == "shown"
+    assert "legacy_normalized" not in projected
+    assert "source_conflicts" not in projected
+    assert (
+        files[0].read_bytes() == payload_bytes
+    ), "viewing provenance rewrote the artifact"
     created = next(event for event in events if event.get("type") == "artifact_created")
     assert created["artifact"]["artifact_id"] == artifact["artifact_id"]
     assert created["artifact"]["version_id"] == version_id
@@ -705,7 +749,15 @@ def test_host_rpc_stage10_receipt_is_bound_by_enclosing_cell_capture(
     if isinstance(source, str):
         source = json.loads(source)
     assert source["kind"] == "science_search"
-    assert source["source_checksum"] == "ab" * 32
+    assert source["response_sha256"] == "ab" * 32
+    assert "endpoint" not in source and "source_checksum" not in source
+    served = _versions_payload(runner, cfg, captured.artifacts[0]["artifact_id"])
+    projected = {row["version_id"]: row for row in served["body"]["versions"]}[
+        version_id
+    ]["retrieval_source"]
+    assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/example"
+    assert projected["response_sha256"] == "ab" * 32
+    assert projected["response_sha256_state"] == "shown"
     assert events[-1]["artifact"]["version_id"] == version_id
     runner.close()
 
@@ -789,3 +841,111 @@ def test_delegated_cell_and_native_action_keep_their_own_receipt_scope(
         assert getattr(dispatcher._artifact_receipt_local, "receipts", None) is None
     finally:
         runner.close()
+
+
+def _record_science_version_with_source(tmp_path, source: dict) -> tuple[Config, dict]:
+    """Record one retrieval version the way a historical build wrote it."""
+    import hashlib
+
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    store = get_store(cfg.db_path)
+    frame_id = store.new_frame(kind="turn", project_id="p")
+    body = b'{"result": {"results": []}}'
+    versions = tmp_path / "data" / "artifact-versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    snapshot = versions / "v1__science-clinvar.json"
+    snapshot.write_bytes(body)
+    row = store.record_cell_artifact(
+        path=str(snapshot),
+        filename="science-clinvar.json",
+        content_type="application/json",
+        size_bytes=len(body),
+        checksum=hashlib.sha256(body).hexdigest(),
+        producing_cell_id=None,
+        frame_id=frame_id,
+        root_frame_id=frame_id,
+        project_id="p",
+        snapshot_path=str(snapshot),
+        source=json.dumps(source),
+    )
+    store.close()
+    return cfg, row
+
+
+def test_a_historical_legacy_source_reads_through_the_public_version_route(tmp_path):
+    """Artifacts written before the canonical names existed still have to be
+    readable — without rewriting their bytes or their recorded source."""
+    source = {
+        "kind": "science_search",
+        "database": "clinvar",
+        "query": "VCV000012345",
+        "endpoint": "https://eutils.ncbi.nlm.nih.gov/example",
+        "retrieved_at": 123456789,
+        "source_checksum": "ab" * 32,
+        "accessions": ["VCV000012345"],
+    }
+    cfg, row = _record_science_version_with_source(tmp_path, source)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        meta = runner.store.version_meta(row["version_id"])
+        before = json.loads(meta["source"]) if isinstance(meta["source"], str) else None
+        served = _versions_payload(runner, cfg, row["artifact_id"])
+        projected = served["body"]["versions"][0]["retrieval_source"]
+        assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/example"
+        assert projected["response_sha256"] == "ab" * 32
+        assert projected["response_sha256_state"] == "shown"
+        assert projected["legacy_normalized"] == [
+            "request_url",
+            "response_sha256",
+        ]
+        assert "endpoint" not in projected and "source_checksum" not in projected
+        # Read compatibility, not a migration: neither the bytes nor the stored
+        # source were rewritten by looking at them.
+        assert before == source
+        after_meta = runner.store.version_meta(row["version_id"])
+        after = (
+            json.loads(after_meta["source"])
+            if isinstance(after_meta["source"], str)
+            else None
+        )
+        assert after == source
+        assert (
+            Path(after_meta["snapshot_path"]).read_bytes()
+            == Path(meta["snapshot_path"]).read_bytes()
+        )
+    finally:
+        runner.close()
+        runner.store.close()
+
+
+def test_conflicting_legacy_and_canonical_names_keep_the_canonical_value(tmp_path):
+    """Two recorded requests, one of which may not be the one that produced the
+    data: the canonical value wins and the disagreement is named, never
+    silently resolved."""
+    source = {
+        "kind": "science_search",
+        "database": "clinvar",
+        "request_url": "https://eutils.ncbi.nlm.nih.gov/canonical",
+        "endpoint": "https://legacy.example.org/other",
+        "retrieved_at": 123456789,
+        "response_sha256": "ab" * 32,
+        "source_checksum": "cd" * 32,
+    }
+    cfg, row = _record_science_version_with_source(tmp_path, source)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    try:
+        served = _versions_payload(runner, cfg, row["artifact_id"])
+        projected = served["body"]["versions"][0]["retrieval_source"]
+        assert projected["request_url"] == "https://eutils.ncbi.nlm.nih.gov/canonical"
+        assert projected["response_sha256"] == "ab" * 32
+        assert projected["source_conflicts"] == ["request_url", "response_sha256"]
+        assert "legacy_normalized" not in projected
+        rendered = json.dumps(served["body"])
+        assert "legacy.example.org" not in rendered
+        assert "cd" * 32 not in rendered
+    finally:
+        runner.close()
+        runner.store.close()
