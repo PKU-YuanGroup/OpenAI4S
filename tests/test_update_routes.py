@@ -1,19 +1,28 @@
-"""Explicit update checks: admin-only, no-store, and honest when unsure.
+"""Explicit update checks: read-only status, and a check the operator pressed.
 
-The read side must not reach the network or write the cache — opening the
-settings page is not an update check. The write side is the operator pressing
-the button, and even then a failure is ``unknown`` with a reason; it is never
-"up to date", because a user who stops looking after a DNS failure is the
-failure mode this feature exists to avoid.
+Appendix B.2 freezes one shape for both routes: the running version, a channel
+projection of three static fields, `check` (or `null`), and `apply_available:
+false`. The assertions that matter are the negative ones:
 
-Everything here is offline: the release source is `discovery._SOURCE`, and the
-suite-wide `OPENAI4S_UPDATE_SOURCE=offline` pin is lifted only for the tests that
-drive that seam. Those tests carry `stubbed_backend`, so a fabricated response
-shape cannot be published as the route's captured contract.
+* opening the settings page must not reach the network or write the check cache
+  (the GET only reads it), and `OPENAI4S_UPDATE_SOURCE=offline` must not even
+  read it;
+* a failure must never be reported as "up to date", and `previous` must keep its
+  own timestamp instead of passing as this check's answer;
+* the response must carry none of discovery's internals, `Channel.evidence`, an
+  install path, a credential or a download URL;
+* a member is refused before the cache or a socket, and one forced refresh
+  cannot dial the index twice.
+
+The two default-suite (offline) tests replace no service: their real shapes are
+what the response-schema capture freezes. Everything that replaces the release
+source carries `stubbed_backend`, so a fabricated shape cannot be published as
+the captured contract.
 """
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import threading
@@ -24,11 +33,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from openai4s import egress, webtools
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth, team_policy, update_routes
-from openai4s.server.errors import GatewayError
-from openai4s.update import discovery
+from openai4s.update import discovery, verify
 
 VERSION = "0.4.0"
 RUNNING = "0.3.0"
@@ -37,28 +46,40 @@ SDIST = f"openai4s-{VERSION}.tar.gz"
 BUNDLE = f"OpenAI4S-{VERSION}-linux-x86_64.tar.gz"
 A, B, C = "a" * 64, "b" * 64, "c" * 64
 
+#: Appendix B.2's 200 shape, exactly.
+CHANNEL_KEYS = {"id", "refusal_text_key", "refusal_command"}
 CHECK_KEYS = {
     "status",
     "reason",
-    "running",
     "latest",
+    "source",
     "checked_at_ms",
+    "retry_after_at",
     "cached",
     "age_s",
-    "retry_after_at",
     "previous",
     "trust",
 }
+TRUST_KEYS = {"integrity", "authorship"}
+#: Never published: discovery internals, Channel.evidence, install paths,
+#: download URLs, and the route-level request id the DTO does not carry.
+FORBIDDEN_KEYS = {
+    "detail",
+    "assets",
+    "index",
+    "witnesses",
+    "evidence",
+    "install_root",
+    "interpreter",
+    "request_id",
+}
 
 
-#: `test_the_real_update_module_is_the_only_implementation`: the route must not
-#: grow a second version oracle. The fake source below is *the* real seam the
-#: discovery tests use.
 def _project_doc(version=VERSION, yanked=False):
     return {"info": {"name": "openai4s", "version": version, "yanked": yanked}}
 
 
-def _release_doc(*, wheel_digest=A, sdist_digest=B, yanked=False):
+def _release_doc(*, wheel_digest=A, sdist_digest=B):
     return {
         "urls": [
             {
@@ -66,7 +87,7 @@ def _release_doc(*, wheel_digest=A, sdist_digest=B, yanked=False):
                 "size": 4_000_000,
                 "digests": {"sha256": wheel_digest, "md5": "x" * 32},
                 "packagetype": "bdist_wheel",
-                "yanked": yanked,
+                "yanked": False,
                 "url": f"https://files.pythonhosted.org/packages/ab/{WHEEL}",
             },
             {
@@ -81,6 +102,16 @@ def _release_doc(*, wheel_digest=A, sdist_digest=B, yanked=False):
     }
 
 
+def _release_doc_without_wheel():
+    return {
+        "urls": [
+            item
+            for item in _release_doc()["urls"]
+            if item["packagetype"] != "bdist_wheel"
+        ]
+    }
+
+
 def _sums_text(wheel_digest=A, sdist_digest=B, bundle_digest=C):
     return (
         f"{wheel_digest}  {WHEEL}\n"
@@ -90,6 +121,8 @@ def _sums_text(wheel_digest=A, sdist_digest=B, bundle_digest=C):
 
 
 class _Source(discovery.ReleaseSource):
+    """A scripted release source. Any member may be an exception to raise."""
+
     def __init__(self, *, project=None, release=None, sums=None):
         self._project = project if project is not None else _project_doc()
         self._release = release if release is not None else _release_doc()
@@ -194,20 +227,34 @@ def _call(handler, method, path, cfg):
 def _document(**overrides):
     now = int(time.time() * 1000)
     params = {
-        "status": "up_to_date",
+        "status": "update_available",
         "reason": "ok",
         "running": RUNNING,
         "checked_at_ms": now,
         "retry_after_at": now + discovery.SUCCESS_TTL_MS,
-        "latest": RUNNING,
+        "latest": VERSION,
         "index": discovery.DEFAULT_INDEX,
     }
     params.update(overrides)
     return discovery._document(**params)
 
 
+def _witnesses(*, single=False):
+    return verify.agree(
+        VERSION,
+        {WHEEL: A, SDIST: B},
+        {} if single else {WHEEL: A, SDIST: B, BUNDLE: C},
+        wheel=WHEEL,
+        allow_single_witness=single,
+    ).as_dict()
+
+
 def _write_cache(cfg, document):
     assert discovery.write_cache(discovery.cache_path(cfg), document)
+
+
+def _cache_file(cfg):
+    return discovery.cache_path(cfg)
 
 
 def _no_check(monkeypatch):
@@ -215,6 +262,14 @@ def _no_check(monkeypatch):
         raise AssertionError("the read-only status route ran a check")
 
     monkeypatch.setattr(discovery, "check", boom)
+
+
+def _assert_whitelisted(payload):
+    blob = json.dumps(payload)
+    for key in FORBIDDEN_KEYS:
+        assert f'"{key}"' not in blob, (key, payload)
+    assert "http://" not in blob and "https://" not in blob
+    assert "<redacted" not in blob
 
 
 # --------------------------------------------------------------------------
@@ -228,16 +283,29 @@ def test_both_routes_are_declared_and_admin_only_in_team_mode():
     routes = contract.http_routes()
     assert "/updates/status" in routes
     assert "/updates/check" in routes
-    names = {spec.name for spec in update_routes.ROUTES}
-    assert names == {"updates.status", "updates.check"}
+    assert {spec.name for spec in update_routes.ROUTES} == {
+        "updates.status",
+        "updates.check",
+    }
+    # F14 registers the surface as a daemon-operation prefix, which is what
+    # makes the gateway guard cover every verb (including the GET).
+    assert "/updates/" in team_policy.DAEMON_OPERATION_PREFIXES
     assert team_policy.is_daemon_operation("GET", "/updates/status")
     assert team_policy.is_daemon_operation("POST", "/updates/check")
     assert team_policy.is_admin_only_surface("GET", "/updates/status")
     assert team_policy.is_admin_only_surface("POST", "/updates/check")
-    assert not team_policy.is_instance_mutation("GET", "/updates/status")
 
 
-@pytest.mark.stubbed_backend
+def test_unrelated_paths_and_wrong_verbs_are_not_owned(cfg):
+    assert _call(_Handler(), "GET", "/updates/other", cfg) == (False, None)
+    for method, path in (
+        ("POST", "/updates/status"),
+        ("GET", "/updates/check"),
+        ("DELETE", "/updates/check"),
+    ):
+        assert _call(_Handler(path=path), method, path, cfg) == (False, None)
+
+
 def test_a_member_is_refused_before_the_cache_or_the_network(cfg, monkeypatch):
     """The refusal is a policy answer, not a failed check: nothing is read,
     written or dialled on the member's behalf."""
@@ -260,75 +328,98 @@ def test_a_member_is_refused_before_the_cache_or_the_network(cfg, monkeypatch):
         assert sent[0] == 403
         assert sent[1]["code"] == "admin_only"
         assert sent[2]["Cache-Control"] == "no-store"
-
-
-def test_an_unrelated_path_is_not_owned(cfg):
-    handler = _Handler()
-    assert _call(handler, "GET", "/updates/other", cfg) == (False, None)
-
-
-def test_the_wrong_verb_does_not_answer_a_route(cfg):
-    for method, path in (
-        ("POST", "/updates/status"),
-        ("GET", "/updates/check"),
-        ("DELETE", "/updates/check"),
-    ):
-        handler = _Handler(path=path)
-        assert _call(handler, method, path, cfg) == (False, None)
+    assert not _cache_file(cfg).exists()
 
 
 # --------------------------------------------------------------------------
-# GET /updates/status: a read, and only a read
+# GET /updates/status: the read
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.stubbed_backend
-def test_no_record_says_not_checked_and_touches_nothing(cfg, monkeypatch):
-    _no_check(monkeypatch)
-    monkeypatch.setattr(discovery, "_SOURCE", _Exploding())
+def test_offline_pin_returns_the_offline_state_without_reading_the_cache(cfg):
+    """The suite pins `OPENAI4S_UPDATE_SOURCE=offline`. The GET answers the
+    offline state and must not even read the cache file: reporting a recorded
+    answer as this install's current state is the claim the pin forbids."""
+    from openai4s.update.channel import CHANNEL_IDS
+
+    _write_cache(cfg, _document(status="up_to_date", latest=RUNNING))
+    before = _cache_file(cfg).read_bytes()
+
     handler = _Handler(path="/updates/status")
-
     owned, sent = _call(handler, "GET", "/updates/status", cfg)
 
     assert owned is True
     code, payload, headers = sent
     assert code == 200
     assert headers["Cache-Control"] == "no-store"
-    assert set(payload) == {"request_id", "channel", "check", "apply_available"}
-    assert set(payload["channel"]) == {"id"}
+    assert set(payload) == {"running", "channel", "check", "apply_available"}
+    assert payload["running"]
+    assert set(payload["channel"]) == CHANNEL_KEYS
+    assert payload["channel"]["id"] in CHANNEL_IDS
+    assert isinstance(payload["channel"]["refusal_command"], list)
     assert payload["apply_available"] is False
-    assert payload["request_id"] == "req-update"
     check = payload["check"]
+    assert check is not None
     assert set(check) == CHECK_KEYS
     assert check["status"] == "unknown"
-    assert check["reason"] == update_routes.REASON_NOT_CHECKED
+    assert check["reason"] == "offline_pin"
+    assert check["source"] == "offline"
+    assert check["latest"] == ""
     assert check["cached"] is False
-    assert check["age_s"] is None, "an unread age must not read as zero seconds old"
+    assert check["age_s"] == 0
     assert check["checked_at_ms"] == 0
     assert check["retry_after_at"] == 0
-    assert check["latest"] == ""
     assert check["previous"] == {}
-    assert check["trust"] == {}
+    assert set(check["trust"]) == TRUST_KEYS
+    assert check["trust"] == {"integrity": "none", "authorship": "not_established"}
+    assert _cache_file(cfg).read_bytes() == before, "the read rewrote the cache"
+
+
+def test_offline_get_creates_no_cache_file(tmp_path):
+    fresh = SimpleNamespace(data_dir=tmp_path / "fresh")
+    handler = _Handler(path="/updates/status")
+    _owned, sent = _call(handler, "GET", "/updates/status", fresh)
+    assert sent[0] == 200
+    assert not (Path(fresh.data_dir) / "updates").exists()
+
+
+def test_get_without_a_record_returns_a_null_check(tmp_path, monkeypatch):
+    """No record is `"check": null`, not an invented "not checked" object, and
+    reading it writes nothing."""
+    monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
+    cfg = SimpleNamespace(data_dir=tmp_path / "empty")
+    handler = _Handler(path="/updates/status")
+    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
+    code, payload, headers = sent
+    assert code == 200
+    assert headers["Cache-Control"] == "no-store"
+    assert payload["check"] is None
     assert not (Path(cfg.data_dir) / "updates").exists()
 
 
 @pytest.mark.stubbed_backend
-def test_a_cached_answer_is_read_without_checking_or_writing(cfg, monkeypatch):
+def test_get_never_runs_a_check(cfg, monkeypatch):
+    _no_check(monkeypatch)
+    monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
+    handler = _Handler(path="/updates/status")
+    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
+    assert sent[0] == 200
+    assert sent[1]["check"] is None
+
+
+def test_get_projects_the_cached_answer_without_writing(cfg, monkeypatch):
+    monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
     checked_at = int(time.time() * 1000) - 120_000
     _write_cache(
         cfg,
         _document(
             status="update_available",
             checked_at_ms=checked_at,
-            latest=VERSION,
-            previous={},
+            witnesses=_witnesses(),
         ),
     )
-    monkeypatch.setattr(discovery, "running_version", lambda: RUNNING)
     _no_check(monkeypatch)
-    monkeypatch.setattr(discovery, "_SOURCE", _Exploding())
-    cache_file = discovery.cache_path(cfg)
-    before = cache_file.read_bytes()
+    before = _cache_file(cfg).read_bytes()
 
     handler = _Handler(path="/updates/status")
     _owned, sent = _call(handler, "GET", "/updates/status", cfg)
@@ -337,116 +428,64 @@ def test_a_cached_answer_is_read_without_checking_or_writing(cfg, monkeypatch):
     assert code == 200
     check = payload["check"]
     assert check["status"] == "update_available"
+    assert check["reason"] == "ok"
     assert check["latest"] == VERSION
+    assert check["source"] == "pypi"
     assert check["cached"] is True
     assert check["checked_at_ms"] == checked_at
     assert isinstance(check["age_s"], int) and check["age_s"] >= 120
-    assert cache_file.read_bytes() == before, "a read rewrote the check cache"
-
-
-@pytest.mark.stubbed_backend
-def test_a_cache_from_another_install_is_not_this_installs_answer(cfg, monkeypatch):
-    _write_cache(cfg, _document(running="0.2.0"))
-    monkeypatch.setattr(discovery, "running_version", lambda: RUNNING)
-    _no_check(monkeypatch)
-
-    handler = _Handler(path="/updates/status")
-    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
-    check = sent[1]["check"]
-    assert check["status"] == "unknown"
-    assert check["reason"] == update_routes.REASON_NOT_CHECKED
-    assert check["cached"] is False
-
-
-@pytest.mark.stubbed_backend
-def test_a_cache_from_another_index_is_not_this_installs_answer(cfg, monkeypatch):
-    _write_cache(cfg, _document(index="https://mirror.example.org/simple"))
-    monkeypatch.setattr(discovery, "running_version", lambda: RUNNING)
-    _no_check(monkeypatch)
-
-    handler = _Handler(path="/updates/status")
-    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
-    assert sent[1]["check"]["reason"] == update_routes.REASON_NOT_CHECKED
-
-
-@pytest.mark.stubbed_backend
-def test_a_cached_failure_carries_the_previous_known_answer(cfg, monkeypatch):
-    """The failure is this check; the previous answer is not this check."""
-    now = int(time.time() * 1000)
-    previous_at = now - 3 * 60 * 60 * 1000
-    _write_cache(
-        cfg,
-        _document(
-            status="unknown",
-            reason="unreachable",
-            checked_at_ms=now - 60_000,
-            latest="",
-            retry_after_at=now + discovery.FAILURE_RETRY_MS,
-            previous={
-                "status": "update_available",
-                "latest": VERSION,
-                "checked_at_ms": previous_at,
-            },
-        ),
-    )
-    monkeypatch.setattr(discovery, "running_version", lambda: RUNNING)
-    _no_check(monkeypatch)
-
-    handler = _Handler(path="/updates/status")
-    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
-    check = sent[1]["check"]
-    assert check["status"] == "unknown"
-    assert check["reason"] == "unreachable"
-    assert check["previous"] == {
-        "status": "update_available",
-        "latest": VERSION,
-        "checked_at_ms": previous_at,
+    assert check["trust"] == {
+        "integrity": "two_witnesses",
+        "authorship": "not_established",
     }
-    assert check["checked_at_ms"] != check["previous"]["checked_at_ms"]
+    assert _cache_file(cfg).read_bytes() == before
 
 
-@pytest.mark.stubbed_backend
-def test_the_cache_trust_projection_is_a_whitelist(cfg, monkeypatch):
-    secret = "Zx9Qw3Er7Ty1Ui5Op2As6Df4Gh8Jk0Lm"
-    _write_cache(
-        cfg,
-        _document(
-            status="update_available",
-            latest=VERSION,
-            witnesses={
-                "version": VERSION,
-                "pypi": {"wheel": A},
-                "trust": {
-                    "integrity": "integrity: verified against two witnesses",
-                    "authorship": "not established",
-                    "authorship_detail": "authorship: not established",
-                    "debug_headers": {"Authorization": secret},
-                },
-            },
-        ),
-    )
-    monkeypatch.setattr(discovery, "running_version", lambda: RUNNING)
-    _no_check(monkeypatch)
-
-    handler = _Handler(path="/updates/status")
-    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
-    trust = sent[1]["check"]["trust"]
-    assert set(trust) == {"integrity", "authorship", "authorship_detail"}
-    assert secret not in json.dumps(sent[1])
-
-
-@pytest.mark.stubbed_backend
-def test_a_cache_with_an_unreadable_shape_reads_as_not_checked(cfg, monkeypatch):
-    cache_file = discovery.cache_path(cfg)
+def test_get_ignores_an_invalid_cache_record(cfg, monkeypatch):
+    monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
+    cache_file = _cache_file(cfg)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text('{"status": "not-a-status"}', encoding="utf-8")
-    monkeypatch.setattr(discovery, "running_version", lambda: RUNNING)
-    _no_check(monkeypatch)
 
     handler = _Handler(path="/updates/status")
     _owned, sent = _call(handler, "GET", "/updates/status", cfg)
     assert sent[0] == 200
-    assert sent[1]["check"]["reason"] == update_routes.REASON_NOT_CHECKED
+    assert sent[1]["check"] is None
+
+
+@pytest.mark.stubbed_backend
+def test_the_channel_projection_is_static_and_path_free(cfg, monkeypatch):
+    """`Channel.evidence`, `install_root` and `interpreter` name absolute paths;
+    the response carries only the three static B.2 fields."""
+    from openai4s.update import channel as update_channel
+
+    channel = update_channel.Channel(
+        id="source",
+        self_update=False,
+        restart_supported=False,
+        install_root=Path("/Users/alice/secret-checkout"),
+        interpreter=Path("/Users/alice/secret-venv/bin/python"),
+        refusal="this install runs from a git worktree",
+        refusal_command=("git pull", "uv sync --locked"),
+        refusal_text_key="update.refusal.source",
+        evidence=("/Users/alice/secret-checkout/pyproject.toml",),
+    )
+    monkeypatch.setattr(update_channel, "detect", lambda _cfg: channel)
+
+    handler = _Handler(path="/updates/status")
+    _owned, sent = _call(handler, "GET", "/updates/status", cfg)
+
+    payload = sent[1]
+    assert payload["channel"] == {
+        "id": "source",
+        "refusal_text_key": "update.refusal.source",
+        "refusal_command": ["git pull", "uv sync --locked"],
+    }
+    rendered = json.dumps(payload)
+    assert "/Users/alice" not in rendered
+    assert "secret-checkout" not in rendered
+    assert "evidence" not in rendered
+    assert "install_root" not in rendered
 
 
 # --------------------------------------------------------------------------
@@ -454,58 +493,74 @@ def test_a_cache_with_an_unreadable_shape_reads_as_not_checked(cfg, monkeypatch)
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.stubbed_backend
-def test_the_body_is_exactly_a_boolean_refresh(cfg, monkeypatch):
-    _no_check(monkeypatch)
+def test_the_body_is_an_object_with_at_most_a_boolean_refresh(cfg, monkeypatch):
+    # The accepted bodies run the real (offline-pinned) check; the refused ones
+    # never reach it, so the check seam is made to fail loudly for those.
+    for body in ({}, {"refresh": True}, {"refresh": False}):
+        handler = _Handler(path="/updates/check", body=body)
+        owned, sent = _call(handler, "POST", "/updates/check", cfg)
+        assert owned is True
+        assert sent[0] == 200, body
+        assert sent[2]["Cache-Control"] == "no-store"
 
+    update_routes.reset_check_gate_for_tests()
+    _no_check(monkeypatch)
     for body in (
-        {},
         {"refresh": "true"},
         {"refresh": 1},
+        {"refresh": None},
         {"refresh": True, "index": "https://evil.example.org/simple"},
         {"refresh": True, "host": "evil.example.org"},
     ):
         handler = _Handler(path="/updates/check", body=body)
-        owned, sent = _call(handler, "POST", "/updates/check", cfg)
-        assert owned is True
+        _owned, sent = _call(handler, "POST", "/updates/check", cfg)
         assert sent[0] == 400, body
-        assert sent[1]["code"] == "invalid_request"
+        assert sent[1]["code"] == "bad_request"
         assert sent[2]["Cache-Control"] == "no-store"
 
 
-@pytest.mark.stubbed_backend
-def test_a_malformed_json_body_is_the_same_refusal(cfg, monkeypatch):
+def test_a_malformed_json_or_non_object_body_is_bad_request(cfg, monkeypatch):
+    from openai4s.server.errors import GatewayError
+
     _no_check(monkeypatch)
-    handler = _Handler(
-        path="/updates/check",
-        body=GatewayError(400, "request body is not valid JSON", "malformed_json"),
-    )
-    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
-    assert sent[0] == 400
-    assert sent[1]["code"] == "malformed_json"
-    assert sent[2]["Cache-Control"] == "no-store"
+    for error in (
+        # What `Handler._body` raises for a truncated payload...
+        GatewayError(400, "request body is not valid JSON", "malformed_json"),
+        # ...and for `[1,2]`, which parses but is not an object.
+        GatewayError(400, "request body must be a JSON object", "invalid_body_type"),
+    ):
+        handler = _Handler(path="/updates/check", body=error)
+        _owned, sent = _call(handler, "POST", "/updates/check", cfg)
+        assert sent[0] == 400
+        # B.2 names one code for every bad request on this route.
+        assert sent[1]["code"] == "bad_request"
+        assert sent[2]["Cache-Control"] == "no-store"
 
 
-@pytest.mark.stubbed_backend
-def test_the_offline_pin_short_circuits_before_the_source(cfg, monkeypatch):
-    source = _Exploding()
-    monkeypatch.setattr(discovery, "_SOURCE", source)
+def test_the_offline_post_short_circuits_and_writes_no_cache(tmp_path):
+    """The default suite's pin: the check answers from the pin, before the cache
+    or the network, so no cache file appears and `previous` claims nothing."""
+    cfg = SimpleNamespace(data_dir=tmp_path / "offline")
     handler = _Handler(path="/updates/check", body={"refresh": True})
-
     _owned, sent = _call(handler, "POST", "/updates/check", cfg)
 
     code, payload, headers = sent
     assert code == 200
     assert headers["Cache-Control"] == "no-store"
-    assert payload["check"]["status"] == "unknown"
-    assert payload["check"]["reason"] == "offline_pin"
-    assert payload["check"]["cached"] is False
-    assert payload["check"]["age_s"] == 0
-    assert payload["apply_available"] is False
+    assert set(payload) == {"running", "channel", "check", "apply_available"}
+    assert "request_id" not in payload
+    check = payload["check"]
+    assert check is not None
+    assert check["status"] == "unknown"
+    assert check["reason"] == "offline_pin"
+    assert check["source"] == "offline"
+    assert check["cached"] is False
+    assert set(check["trust"]) == TRUST_KEYS
+    assert not (Path(cfg.data_dir) / "updates").exists()
 
 
 @pytest.mark.stubbed_backend
-def test_a_forced_check_reports_update_available_from_the_real_module(cfg, online):
+def test_a_forced_check_reports_update_available(cfg, online):
     source = online(_Source())
     handler = _Handler(path="/updates/check", body={"refresh": True})
 
@@ -514,30 +569,30 @@ def test_a_forced_check_reports_update_available_from_the_real_module(cfg, onlin
     code, payload, headers = sent
     assert code == 200
     assert headers["Cache-Control"] == "no-store"
-    assert set(payload) == {"request_id", "channel", "check", "apply_available"}
+    assert set(payload) == {"running", "channel", "check", "apply_available"}
+    assert payload["running"] == RUNNING
     assert payload["apply_available"] is False
     check = payload["check"]
     assert set(check) == CHECK_KEYS
     assert check["status"] == "update_available"
     assert check["reason"] == "ok"
     assert check["latest"] == VERSION
-    assert check["running"] == RUNNING
+    assert check["source"] == "pypi"
     assert check["cached"] is False
     assert check["age_s"] == 0
     assert check["previous"] == {}
-    assert check["trust"]["integrity"]
-    assert check["trust"]["authorship"] == "not established"
+    assert check["trust"] == {
+        "integrity": "two_witnesses",
+        "authorship": "not_established",
+    }
     assert source.calls == ["project", "release", "sums"]
-    rendered = json.dumps(payload)
-    assert "files.pythonhosted.org" not in rendered
-    assert "download" not in rendered
-    assert str(Path(cfg.data_dir)) not in rendered
+    _assert_whitelisted(payload)
 
 
 @pytest.mark.stubbed_backend
 def test_a_cached_check_is_served_without_dialling_again(cfg, online):
     source = online(_Source())
-    first = _Handler(path="/updates/check", body={"refresh": False})
+    first = _Handler(path="/updates/check", body={})
     _owned, sent = _call(first, "POST", "/updates/check", cfg)
     assert sent[1]["check"]["cached"] is False
     calls = list(source.calls)
@@ -547,7 +602,23 @@ def test_a_cached_check_is_served_without_dialling_again(cfg, online):
     _owned, sent = _call(second, "POST", "/updates/check", cfg)
     assert sent[0] == 200
     assert sent[1]["check"]["cached"] is True
+    assert sent[1]["check"]["age_s"] == 0
     assert source.calls == calls, "a fresh cache was re-dialled"
+
+
+@pytest.mark.stubbed_backend
+def test_up_to_date_is_reported_without_claiming_trust(cfg, online):
+    online(_Source(project=_project_doc(RUNNING)))
+    handler = _Handler(path="/updates/check", body={})
+    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
+    check = sent[1]["check"]
+    assert check["status"] == "up_to_date"
+    assert check["reason"] == "ok"
+    assert check["latest"] == RUNNING
+    assert check["trust"] == {
+        "integrity": "none",
+        "authorship": "not_established",
+    }
 
 
 @pytest.mark.stubbed_backend
@@ -556,15 +627,16 @@ def test_a_cached_check_is_served_without_dialling_again(cfg, online):
     [
         (urllib.error.URLError("name resolution failed"), "unreachable"),
         (urllib.error.URLError(TimeoutError("timed out")), "timeout"),
+        (webtools.NetworkDisabled("networking is disabled"), "network_disabled"),
+        (egress.EgressBlocked("pypi.org is not allowlisted"), "egress_blocked"),
         (ValueError("not a release document"), "malformed"),
     ],
 )
 def test_a_failure_is_unknown_and_keeps_the_previous_answer(
     cfg, online, failure, reason
 ):
-    """A failure never becomes "latest". The previous answer is carried, with
-    its own timestamp, so the UI can show it as history rather than this
-    check's result."""
+    """A failure never becomes "latest". `previous` is carried with its own
+    timestamp, so the UI can show it as history rather than this result."""
     now = int(time.time() * 1000)
     previous_at = now - 2 * 60 * 60 * 1000
     _write_cache(
@@ -595,36 +667,76 @@ def test_a_failure_is_unknown_and_keeps_the_previous_answer(
 
 
 @pytest.mark.stubbed_backend
-def test_witness_disagreement_is_never_up_to_date(cfg, online):
-    source = _Source(sums=_sums_text(wheel_digest="f" * 64))
-    online(source)
+def test_witness_disagreement_and_missing_witness_are_never_up_to_date(cfg, online):
+    online(_Source(sums=_sums_text(wheel_digest="f" * 64)))
+    handler = _Handler(path="/updates/check", body={"refresh": True})
+    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
+    assert sent[1]["check"]["status"] == "unknown"
+    assert sent[1]["check"]["reason"] == "witness_disagreement"
+    assert sent[1]["check"]["latest"] == ""
+
+    update_routes.reset_check_gate_for_tests()
+    online(_Source(release=_release_doc_without_wheel()))
+    handler = _Handler(path="/updates/check", body={"refresh": True})
+    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
+    assert sent[1]["check"]["status"] == "unknown"
+    assert sent[1]["check"]["reason"] == "witness_missing"
+
+
+@pytest.mark.stubbed_backend
+def test_a_single_readable_witness_says_so(cfg, online):
+    online(_Source(sums=urllib.error.URLError("github.com is unreachable")))
+    handler = _Handler(path="/updates/check", body={"refresh": True})
+    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
+    check = sent[1]["check"]
+    assert check["status"] == "update_available"
+    assert check["trust"] == {
+        "integrity": "single_witness",
+        "authorship": "not_established",
+    }
+
+
+@pytest.mark.stubbed_backend
+def test_a_malicious_index_response_never_reaches_the_client(cfg, online):
+    online(_Source(project={"info": {"version": "9.9.9<script>alert(1)</script>"}}))
     handler = _Handler(path="/updates/check", body={"refresh": True})
     _owned, sent = _call(handler, "POST", "/updates/check", cfg)
     check = sent[1]["check"]
     assert check["status"] == "unknown"
-    assert check["reason"] == "witness_disagreement"
+    assert check["reason"] == "malformed"
     assert check["latest"] == ""
-
-
-@pytest.mark.stubbed_backend
-def test_a_malformed_release_document_is_never_up_to_date(cfg, online):
-    online(_Source(project={"info": {"version": "not-a-version"}}))
-    handler = _Handler(path="/updates/check", body={"refresh": True})
-    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
-    assert sent[1]["check"]["status"] == "unknown"
-    assert sent[1]["check"]["reason"] == "malformed"
+    assert "<script>" not in json.dumps(sent[1])
 
 
 @pytest.mark.stubbed_backend
 def test_an_invalid_index_setting_is_unknown_without_a_dial(cfg, monkeypatch):
     monkeypatch.setenv("OPENAI4S_UPDATE_INDEX", "http://evil.example.org/simple")
-    source = _Exploding()
-    monkeypatch.setattr(discovery, "_SOURCE", source)
+    monkeypatch.setattr(discovery, "_SOURCE", _Exploding())
     handler = _Handler(path="/updates/check", body={"refresh": True})
     _owned, sent = _call(handler, "POST", "/updates/check", cfg)
     assert sent[0] == 200
     assert sent[1]["check"]["status"] == "unknown"
     assert sent[1]["check"]["reason"] == "bad_index"
+
+
+@pytest.mark.stubbed_backend
+def test_the_response_never_carries_the_discovery_internals_or_paths(cfg, online):
+    online(_Source())
+    handler = _Handler(path="/updates/check", body={"refresh": True})
+    _owned, sent = _call(handler, "POST", "/updates/check", cfg)
+    _assert_whitelisted(sent[1])
+    assert str(Path(cfg.data_dir)) not in json.dumps(sent[1])
+
+
+def test_apply_available_is_always_false(cfg):
+    """This version reports and points at a manual upgrade; it never installs."""
+    for method, path, body in (
+        ("GET", "/updates/status", None),
+        ("POST", "/updates/check", {}),
+    ):
+        _owned, sent = _call(_Handler(path=path, body=body), method, path, cfg)
+        assert sent[0] == 200
+        assert sent[1]["apply_available"] is False
 
 
 @pytest.mark.stubbed_backend
@@ -635,21 +747,18 @@ def test_a_second_forced_check_is_rate_limited(cfg, online):
     assert sent[0] == 200
     calls = list(source.calls)
 
-    second = _Handler(
-        path="/updates/check", body={"refresh": True}, request_id="req-second"
-    )
+    second = _Handler(path="/updates/check", body={"refresh": True})
     _owned, sent = _call(second, "POST", "/updates/check", cfg)
     code, payload, headers = sent
     assert code == 429
     assert payload["code"] == "rate_limited"
-    assert payload["reason"] == "refresh_cooldown"
     assert 1 <= payload["retry_after_s"] <= 60
     assert headers["Retry-After"] == str(payload["retry_after_s"])
     assert headers["Cache-Control"] == "no-store"
     assert source.calls == calls, "a cooled-down request still dialled"
 
-    # Only the *forced* refresh is cooled down; a normal read is not.
-    third = _Handler(path="/updates/check", body={"refresh": False})
+    # Only the *forced* refresh is cooled down; a normal check is not.
+    third = _Handler(path="/updates/check", body={})
     _owned, sent = _call(third, "POST", "/updates/check", cfg)
     assert sent[0] == 200
     assert sent[1]["check"]["cached"] is True
@@ -681,7 +790,7 @@ def test_only_one_check_runs_at_a_time(cfg, monkeypatch):
         second = _Handler(path="/updates/check", body={"refresh": True})
         _owned, sent = _call(second, "POST", "/updates/check", cfg)
         assert sent[0] == 429
-        assert sent[1]["reason"] == "check_in_progress"
+        assert sent[1]["code"] == "rate_limited"
         release.set()
         worker.join(10)
         assert result["sent"][0] == 200
@@ -691,22 +800,36 @@ def test_only_one_check_runs_at_a_time(cfg, monkeypatch):
         worker.join(10)
 
 
-@pytest.mark.stubbed_backend
-def test_apply_available_is_always_false(cfg, online):
-    """This version reports and points at a manual upgrade; it never installs."""
-    online(_Source())
-    _write_cache(cfg, _document())
-    for method, path, body in (
-        ("GET", "/updates/status", None),
-        ("POST", "/updates/check", {"refresh": False}),
-    ):
-        handler = _Handler(path=path, body=body)
-        _owned, sent = _call(handler, method, path, cfg)
-        assert sent[1]["apply_available"] is False
+# --------------------------------------------------------------------------
+# isolation: no turn-reachable surface can import the updater (INV-9)
+# --------------------------------------------------------------------------
+
+
+def test_no_tool_host_skill_source_imports_the_update_package():
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for base in ("openai4s/tools", "openai4s/host", "openai4s/sdk", "skills"):
+        for path in sorted((root / base).rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):  # pragma: no cover - not Python source
+                continue
+            for node in ast.walk(tree):
+                modules: list[str] = []
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    modules = [node.module]
+                if any(
+                    module == "openai4s.update" or module.startswith("openai4s.update.")
+                    for module in modules
+                ):
+                    offenders.append(str(path.relative_to(root)))
+    assert offenders == [], offenders
 
 
 # --------------------------------------------------------------------------
-# through the gateway: dispatch, auth, and the team guard
+# through the gateway: dispatch, auth, no-store
 # --------------------------------------------------------------------------
 
 
@@ -766,73 +889,44 @@ def _api(tmp_path):
     def close():
         runner.close()
 
-    return call, close, cfg
+    return call, close
 
 
-def test_the_gateway_dispatches_both_routes_with_no_store(tmp_path):
-    call, close, cfg = _api(tmp_path)
+def test_the_gateway_dispatches_both_routes_with_no_store(tmp_path, monkeypatch):
+    call, close = _api(tmp_path)
     try:
         sent = call("GET", "/updates/status")
         assert sent["code"] == 200
         assert sent["headers"]["Cache-Control"] == "no-store"
-        assert sent["body"]["request_id"] == "req-gateway"
-        assert sent["body"]["check"]["reason"] == update_routes.REASON_NOT_CHECKED
-
-        sent = call("POST", "/updates/check", {"refresh": True})
-        assert sent["code"] == 200
-        assert sent["headers"]["Cache-Control"] == "no-store"
-        # The suite pins OPENAI4S_UPDATE_SOURCE=offline, so this is the real
-        # short-circuit rather than a stubbed success.
+        assert set(sent["body"]) == {"running", "channel", "check", "apply_available"}
         assert sent["body"]["check"]["reason"] == "offline_pin"
 
         sent = call("POST", "/updates/check", {})
-        assert sent["code"] == 400
-        assert sent["body"]["code"] == "invalid_request"
+        assert sent["code"] == 200
+        assert sent["headers"]["Cache-Control"] == "no-store"
+        assert sent["body"]["check"]["reason"] == "offline_pin"
 
-        # A second forced check is the cooldown refusal; it is driven through
-        # the real handler so its no-store + Retry-After shape is captured too.
+        # A JSON array parses but is not an object; `Handler._body` refuses it and
+        # the route reports B.2's single bad-request code.
+        sent = call("POST", "/updates/check", [1, 2])
+        assert sent["code"] == 400
+        assert sent["body"]["code"] == "bad_request"
+
+        sent = call("POST", "/updates/check", {"refresh": True})
+        assert sent["code"] == 200
         sent = call("POST", "/updates/check", {"refresh": True})
         assert sent["code"] == 429
         assert sent["body"]["code"] == "rate_limited"
-        assert sent["body"]["reason"] == "refresh_cooldown"
+        assert sent["body"]["retry_after_s"] >= 1
         assert sent["headers"]["Cache-Control"] == "no-store"
-        assert sent["headers"]["Retry-After"] == str(sent["body"]["retry_after_s"])
 
-        # A cached answer reaches the client through the gateway too: an age in
-        # seconds, the previous known answer, and the whitelisted trust lines.
-        now = int(time.time() * 1000)
-        previous_at = now - 4 * 60 * 60 * 1000
-        from openai4s.update import verify
-
-        witnesses = verify.agree(
-            "9.9.9",
-            {WHEEL: A, SDIST: B},
-            {WHEEL: A, SDIST: B, BUNDLE: C},
-            wheel=WHEEL,
-            allow_single_witness=True,
-        )
-        _write_cache(
-            cfg,
-            _document(
-                status="update_available",
-                latest="9.9.9",
-                running=discovery.running_version(),
-                checked_at_ms=now - 120_000,
-                previous={
-                    "status": "up_to_date",
-                    "latest": discovery.running_version(),
-                    "checked_at_ms": previous_at,
-                },
-                witnesses=witnesses.as_dict(),
-            ),
-        )
+        # Without the offline pin and without a record, the same route answers
+        # `"check": null` (B.2) — the shape the settings card reads on a fresh
+        # install.
+        monkeypatch.delenv("OPENAI4S_UPDATE_SOURCE", raising=False)
         sent = call("GET", "/updates/status")
         assert sent["code"] == 200
-        check = sent["body"]["check"]
-        assert check["cached"] is True
-        assert isinstance(check["age_s"], int) and check["age_s"] >= 120
-        assert check["previous"]["checked_at_ms"] == previous_at
-        assert set(check["trust"]) == {"integrity", "authorship", "authorship_detail"}
+        assert sent["body"]["check"] is None
 
         sent = call("GET", "/updates/check")
         assert sent["code"] in (404, 405)
