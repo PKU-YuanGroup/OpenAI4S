@@ -6,6 +6,7 @@ import {
   readScienceSearchEnvelope,
   renderScienceResults,
   scienceRecordPage,
+  scienceSourceStatus,
   SCIENCE_RECORD_MAX,
   SCIENCE_RECORD_PAGE,
   sanitizeExternalUrl,
@@ -94,6 +95,35 @@ describe("strict saved-search envelope reader (A5)", () => {
       }),
     ];
     for (const body of cases) expect(readScienceSearchEnvelope(body), body).toBeNull();
+  });
+
+  it("names canonical/legacy disagreements instead of silently picking one", () => {
+    const search = readScienceSearchEnvelope(
+      JSON.stringify({
+        query: "q",
+        request_url: "https://api.example.org/canonical",
+        endpoint: "https://api.example.org/legacy",
+        response_sha256: "b".repeat(64),
+        source_checksum: "c".repeat(64),
+        result: { results: [] },
+      }),
+    );
+    expect(search).not.toBeNull();
+    expect(search!.conflicts).toEqual([
+      "request_url ↔ endpoint",
+      "response_sha256 ↔ source_checksum",
+    ]);
+    // Agreeing spellings are one fact under two names: no conflict.
+    const agreeing = readScienceSearchEnvelope(
+      JSON.stringify({
+        query: "q",
+        request_url: "https://api.example.org/same",
+        endpoint: "https://api.example.org/same",
+        result: { results: [] },
+      }),
+    );
+    expect(agreeing).not.toBeNull();
+    expect(agreeing!.conflicts).toEqual([]);
   });
 
   it("reports a saved next cursor but never claims a database total", () => {
@@ -364,6 +394,20 @@ describe("saved-search result view (A5)", () => {
     expect(joined.some((line) => line.includes("list"))).toBe(false);
   });
 
+  it("shows the canonical/legacy conflict notice in the records view", () => {
+    const root = mount(
+      JSON.stringify({
+        query: "q",
+        request_url: "https://api.example.org/canonical",
+        endpoint: "https://api.example.org/legacy",
+        result: { results: [{ id: "r1", title: "record", type: "paper" }] },
+      }),
+    );
+    expect(texts(root)).toContain(
+      filesT("science.conflictNote", "request_url ↔ endpoint"),
+    );
+  });
+
   it("names an empty result file and a saved next page instead of a database total", () => {
     const empty = mount(
       JSON.stringify({ query: "q", request_url: "https://api.example.org/x", result: { results: [] } }),
@@ -489,8 +533,16 @@ describe("saved-search result view (A5)", () => {
 });
 
 describe("public-source readability status (S1 panel helper)", () => {
-  it("is still exported for the version-history panel", async () => {
-    const module = await import("./science-results");
-    expect(typeof module.scienceSourceStatus).toBe("function");
+  it("reads the current alias_conflicts key and the earlier source_conflicts spelling", () => {
+    expect(scienceSourceStatus({ alias_conflicts: ["request_url"] })).toMatchObject({
+      conflicts: ["request_url"],
+    });
+    expect(scienceSourceStatus({ source_conflicts: ["response_sha256"] })).toMatchObject({
+      conflicts: ["response_sha256"],
+    });
+    expect(
+      scienceSourceStatus({ alias_conflicts: ["request_url"], source_conflicts: ["request_url"] }),
+    ).toMatchObject({ conflicts: ["request_url"] });
+    expect(scienceSourceStatus({}).conflicts).toEqual([]);
   });
 });
