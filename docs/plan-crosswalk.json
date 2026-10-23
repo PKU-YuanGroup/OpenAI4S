@@ -81,7 +81,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "df71ccfcaf088d9888b6888e40eb5787111d5aeee178aa0e5caf90939ce94c9f"
+      "evidence_digest": "23220733f6037b09c8a9edb1e0201ae9e5090d06ee0c744414c3bdfe91d53e40"
     },
     {
       "source": "R1",
@@ -231,7 +231,7 @@
       "tests": "tests/test_retrieval_source.py,tests/test_retrieval_provenance.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "7e562083866ff94c86ed246b9beab43dd16ff679b5ff1fb5e80c599b9a0a93b2"
+      "evidence_digest": "8a5ff832c14f8b23be8d7925f7d61e38351510765692ccdeaf3b0335aa27a43d"
     },
     {
       "source": "R3",
@@ -314,7 +314,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a2e145a68332075c9dad20014adb4773390d82d32be29087a801933d19da7a7a"
+      "evidence_digest": "75a94d63a51d3271d1d353c8843046010de23aaf31382de38be19bf3cd6044af"
     },
     {
       "source": "R3",
@@ -453,7 +453,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "df71ccfcaf088d9888b6888e40eb5787111d5aeee178aa0e5caf90939ce94c9f"
+      "evidence_digest": "23220733f6037b09c8a9edb1e0201ae9e5090d06ee0c744414c3bdfe91d53e40"
     },
     {
       "source": "R5",
@@ -564,7 +564,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "df71ccfcaf088d9888b6888e40eb5787111d5aeee178aa0e5caf90939ce94c9f"
+      "evidence_digest": "23220733f6037b09c8a9edb1e0201ae9e5090d06ee0c744414c3bdfe91d53e40"
     },
     {
       "source": "R6",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "ed160a902a4fb5ecc9ff72e6d929c91221252d9bd066fcaeac5a26d72a6bebfa"
+      "evidence_digest": "f90bc3dffb7146884233e67990c555b853f06e28a4b0b89f0a45dfa81e16fa4d"
     },
     {
       "source": "R7",
