@@ -19,10 +19,11 @@
 **列表结构上接触不到 provider。** `GET /api/v1/frames/{fid}/compute/tasks` 调用
 [`compute_tasks.owner_tasks`](../openai4s/server/compute_tasks.py)，它只拿到
 `Store`，不 import `ComputeManager`；返回 `polled: false`，无论被调用多少次都无法
-推进任何一行。`public_task` 只暴露允许列表（`status`、`reason`、`exit_code`、
-`created_at`、`updated_at`、`terminal_at`、`integrity_sha256`、`live`、`terminal`、
-`outputs` 摘要）；其中 `updated_at` 是状态最后一次**被确立**的时间，模块刻意不写
-读取时间，避免陈旧行看起来像刚被确认过。
+推进任何一行。`public_task` 只暴露一个有界投影：存储字段的允许列表（`job_id`、
+`provider`、`status`、`reason`、`termination_reason`、`exit_code`、`created_at`、
+`updated_at`、`submitted_at`、`terminal_at`、`integrity_sha256`），加上计算出的
+`live`、`terminal` 与 `outputs` 清单摘要；其中 `updated_at` 是状态最后一次**被确立**
+的时间，模块刻意不写读取时间，避免陈旧行看起来像刚被确认过。
 
 **每条传输都把状态与字节绑在一起。** SSH 路径运行一条有界探测脚本
 （`kill -0 <pid>` → `RUNNING`；否则 `.rc` → `RC <code> [TIMEOUT]`；否则 `NORC`），

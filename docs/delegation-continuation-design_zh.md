@@ -26,7 +26,7 @@
 
 | 接口面 | 当前行为（须保留或区分） |
 | --- | --- |
-| 继续端点 | `POST /api/v1/frames/{fid}/delegations/{child_id}/continue` → `WebRunner.continue_delegation_child`。未知子任务 404；根帧没有活跃 runner 时为 409 `delegation_record_stale`；`DelegationConflictError` 为 409 `delegation_conflict`；其余情况 409 `delegation_error`。 |
+| 继续端点 | `POST /api/v1/frames/{fid}/delegations/{child_id}/continue` → `SessionRunner.continue_delegation_child`。未知子任务 404；根帧没有活跃 runner 时为 409 `delegation_record_stale`；`DelegationConflictError` 为 409 `delegation_conflict`；其余情况 409 `delegation_error`。 |
 | 响应 | 通过 `project_browser_child` 返回已保存的子任务（与 `GET …/delegations` 同形），不是运行信封；没有存储行的子任务会被裁剪到浏览器允许列表。 |
 | 阻塞形态 | `wait=True` 会在整个子任务运行期间占住 HTTP handler；该路由没有异步受理，也没有 202。 |
 | 持久请求／尝试 | `delegation_requests` 与 `delegation_attempts`；尝试状态为 `pending/running/done/failed/stopped`。重复的**委派**调用已按请求身份去重。 |

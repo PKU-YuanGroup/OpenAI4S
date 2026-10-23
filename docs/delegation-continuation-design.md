@@ -34,7 +34,7 @@ request and attempt identity to bind to; what does not exist is an identity for
 
 | Surface | Current behavior to preserve or distinguish |
 | --- | --- |
-| Continue endpoint | `POST /api/v1/frames/{fid}/delegations/{child_id}/continue` → `WebRunner.continue_delegation_child`. 404 for an unknown child, 409 `delegation_record_stale` when no live runner owns the root frame, 409 `delegation_conflict` for `DelegationConflictError`, 409 `delegation_error` otherwise. |
+| Continue endpoint | `POST /api/v1/frames/{fid}/delegations/{child_id}/continue` → `SessionRunner.continue_delegation_child`. 404 for an unknown child, 409 `delegation_record_stale` when no live runner owns the root frame, 409 `delegation_conflict` for `DelegationConflictError`, 409 `delegation_error` otherwise. |
 | Response | The stored child through `project_browser_child` — the same shape `GET …/delegations` returns — not the run envelope. A child with no stored row is cut down to the browser allowlist. |
 | Blocking | `wait=True` holds the HTTP handler for the whole child run. There is no asynchronous accept and no 202 on this route. |
 | Durable request/attempt | `delegation_requests` and `delegation_attempts`; attempt states are `pending/running/done/failed/stopped`. Duplicate *delegate* calls are already deduplicated by request identity. |

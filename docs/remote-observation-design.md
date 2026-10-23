@@ -24,11 +24,13 @@ page refresh. There is no read-only provider probe behind it.
 **The listing cannot reach a provider.** `GET /api/v1/frames/{fid}/compute/tasks`
 calls [`compute_tasks.owner_tasks`](../openai4s/server/compute_tasks.py), which is
 handed a `Store` and has no import of `ComputeManager`; it reports
-`polled: false` and cannot advance a row however it is called. `public_task` exposes an
-allowlist (`status`, `reason`, `exit_code`, `created_at`, `updated_at`,
-`terminal_at`, `integrity_sha256`, `live`, `terminal`, `outputs` summary); its
-`updated_at` is when the state was last *established*, and the module
-deliberately omits a read time so a stale row cannot look freshly confirmed.
+`polled: false` and cannot advance a row however it is called. `public_task`
+exposes only a bounded projection: an allowlist of stored fields (`job_id`,
+`provider`, `status`, `reason`, `termination_reason`, `exit_code`, `created_at`,
+`updated_at`, `submitted_at`, `terminal_at`, `integrity_sha256`) plus computed
+`live`, `terminal` and an `outputs` manifest summary; its `updated_at` is when
+the state was last *established*, and the module deliberately omits a read time
+so a stale row cannot look freshly confirmed.
 
 **Every transport couples state and bytes.** The SSH path runs one bounded probe
 script (`kill -0 <pid>` → `RUNNING`; else `.rc` → `RC <code> [TIMEOUT]`; else
