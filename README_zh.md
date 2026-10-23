@@ -320,7 +320,7 @@ npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定
 
 OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
-提 PR 前请先阅读 [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
+提 PR 前请先阅读 [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、评审与发布政策,以及离线测试政策。贡献者无需写权限即可 fork 仓库并提交 PR。由 Nobody-Zhang 评审并决定合并，不自动请求其他评审人。
 
 ### 开发环境配置
 

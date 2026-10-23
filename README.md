@@ -339,7 +339,7 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 OpenAI4S is a community effort to keep the **Code-as-Action** paradigm open.
 
-Before opening a PR, please read [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) — it defines branch naming, the PR checklist ([`.github/pull_request_template.md`](.github/pull_request_template.md)), code ownership ([`.github/CODEOWNERS`](.github/CODEOWNERS)), review & release policy, and the offline-test policy.
+Before opening a PR, please read [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) — it defines branch naming, the PR checklist ([`.github/pull_request_template.md`](.github/pull_request_template.md)), review & release policy, and the offline-test policy. Contributors can fork the repository and open PRs without write access. Nobody-Zhang reviews and decides when to merge; other reviewers are not automatically requested.
 
 ### Development setup
 
