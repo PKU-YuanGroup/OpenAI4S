@@ -8278,8 +8278,7 @@
                     }
                   },
                   "required": [
-                    "database",
-                    "dataset"
+                    "database"
                   ],
                   "type": "object"
                 },
