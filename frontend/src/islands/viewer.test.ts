@@ -273,6 +273,27 @@ it("names conflicting source fields and normalized legacy aliases", () => {
   expect(values).toContain(filesT("science.aliasNote", "endpoint"));
 });
 
+it("reads the S1 projection keys for hidden digests, aliases and conflicts", () => {
+  const hidden = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "<redacted:credential>",
+    response_sha256_state: "hidden",
+  }).map((node) => node.textContent);
+  expect(hidden).toContain(filesT("science.responseHidden"));
+  expect(hidden.some((value) => value.includes("<redacted"))).toBe(false);
+
+  const shown = sourcePanelNodes({
+    database: "uniprot",
+    response_sha256: "a".repeat(64),
+    response_sha256_state: "shown",
+    legacy_normalized: ["request_url"],
+    source_conflicts: ["request_url"],
+  }).map((node) => node.textContent);
+  expect(shown).toContain("a".repeat(64));
+  expect(shown).toContain(filesT("science.aliasNote", "request_url"));
+  expect(shown).toContain(filesT("science.conflictNote", "request_url"));
+});
+
 it.each(["en", "zh"] as const)("names a clipped dataset field by its %s row label", async (locale) => {
   const previousLanguage = LANG;
   await setLang(locale);

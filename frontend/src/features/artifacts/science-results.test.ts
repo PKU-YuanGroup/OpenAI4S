@@ -255,7 +255,30 @@ describe("public-source readability status (A4)", () => {
     expect(scienceSourceStatus({})).toMatchObject({ digest: "", digestHidden: false });
   });
 
-  it("surfaces conflict and normalized-alias markers", () => {
+  it("reads the S1 projection keys: response_sha256_state, legacy_normalized, source_conflicts", () => {
+    expect(
+      scienceSourceStatus({
+        response_sha256: "<redacted:credential>",
+        response_sha256_state: "hidden",
+      }),
+    ).toMatchObject({ digest: "", digestHidden: true });
+    expect(
+      scienceSourceStatus({
+        response_sha256: "a".repeat(64),
+        response_sha256_state: "shown",
+      }),
+    ).toMatchObject({ digest: "a".repeat(64), digestHidden: false });
+    expect(
+      scienceSourceStatus({
+        response_sha256: "a".repeat(64),
+        response_sha256_state: "shown",
+        legacy_normalized: ["request_url"],
+        source_conflicts: ["request_url"],
+      }),
+    ).toMatchObject({ aliases: ["request_url"], conflicts: ["request_url"] });
+  });
+
+  it("keeps the pre-S1 marker fallbacks working", () => {
     expect(
       scienceSourceStatus({ conflict_fields: ["request_url"], normalized_fields: ["endpoint"] }),
     ).toMatchObject({ conflicts: ["request_url"], aliases: ["endpoint"] });

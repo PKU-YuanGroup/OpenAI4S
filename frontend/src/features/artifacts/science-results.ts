@@ -277,21 +277,29 @@ export function scienceSourceStatus(src: Record<string, unknown>): ScienceSource
     ...stringList((record(src.result) || {}).hidden_fields),
   ]);
   const rawDigest = textField(src.response_sha256) || textField(src.source_checksum);
+  // The public projection names the digest's state out loud
+  // (`response_sha256_state: "shown" | "hidden"`): a hidden digest is not
+  // "verified", and the redacted marker text must not be rendered as one.
+  const digestState = textField(src.response_sha256_state);
   const conflicts = unique([
+    // S1 projection: canonical field names whose legacy alias disagreed.
+    ...stringList(src.source_conflicts),
     ...stringList(src.conflict_fields),
     ...stringList(src.conflicts),
-    ...stringList(src.source_conflicts),
   ]).slice(0, 8);
   const aliases = unique([
+    // S1 projection: canonical field names promoted from a legacy alias.
+    ...stringList(src.legacy_normalized),
     ...stringList(src.alias_fields),
     ...stringList(src.normalized_fields),
     ...stringList(src.aliases),
   ]).slice(0, 8);
-  const digestHidden =
+  const legacyHidden =
     src.response_sha256_hidden === true ||
     hiddenFields.includes("response_sha256") ||
     hiddenFields.includes("source_checksum") ||
     HIDDEN_DIGEST.test(rawDigest);
+  const digestHidden = digestState === "hidden" || (digestState !== "shown" && legacyHidden);
   return { digest: digestHidden ? "" : rawDigest, digestHidden, conflicts, aliases };
 }
 
