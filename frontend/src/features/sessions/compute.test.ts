@@ -602,10 +602,17 @@ describe("run-location submission ownership", () => {
   });
 
   it("announces the dialog busy while a POST is in flight and clears it when it fails", async () => {
-    daemon({ location: "local" }, [{ name: "gpu" }, { name: "cpu" }]);
+    // Cluster, not local: a local opening renders no release action, so the
+    // "release button disabled while in flight" requirement would be untested.
+    daemon(
+      { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } },
+      [{ name: "gpu" }, { name: "cpu" }],
+    );
     await openRunLocationDialog("f");
     const busy = () => modalBody.firstChild!.getAttribute("aria-busy");
+    const release = () => modalBody.find((node) => node.className === "rl-release")!;
     expect(busy()).toBe("false");
+    expect(release()).toBeTruthy();
 
     const gate = deferred<unknown>();
     vi.mocked(api).mockImplementation(async (path, options) => {
@@ -615,14 +622,16 @@ describe("run-location submission ownership", () => {
         });
       }
       if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }, { name: "cpu" }] };
-      return { location: "local" };
+      return { location: "cluster", readiness: { ready: true }, workload: { profile: "gpu" } };
     });
-    option("gpu").onclick!();
+    option("cpu").onclick!();
     expect(busy()).toBe("true");
-    // Every choice in this window is unavailable while the POST runs.
+    // Every choice and the release action in this window is unavailable while
+    // the POST runs.
     expect(option("gpu").disabled).toBe(true);
     expect(option("cpu").disabled).toBe(true);
     expect(option(t("compute.location.local")).disabled).toBe(true);
+    expect(release().disabled).toBe(true);
 
     gate.resolve({ ok: true });
     await vi.waitFor(() => expect(hint).toHaveBeenCalled());
@@ -630,6 +639,7 @@ describe("run-location submission ownership", () => {
     expect(busy()).toBe("false");
     expect(option("gpu").disabled).toBe(false);
     expect(option("cpu").disabled).toBe(false);
+    expect(release().disabled).toBe(false);
   });
 
   it("keeps the last confirmed location, marks it unconfirmed and allows an explicit retry", async () => {
