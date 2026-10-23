@@ -26,6 +26,7 @@ export const computeT = copyLookup({
     "compute.status.unsupported": "Run-location control is not available on this daemon",
     "compute.status.stale": "last confirmed; may be out of date",
     "compute.status.unconfirmed": "change not confirmed",
+    "compute.status.submitting": "that change is still being submitted",
     "compute.status.retry": "Retry",
     "compute.status.invalid": "Invalid run-location response",
     "compute.profiles.unavailable": "Could not load cluster profiles",
@@ -39,6 +40,7 @@ export const computeT = copyLookup({
     "compute.status.unsupported": "本 daemon 不提供运行位置切换",
     "compute.status.stale": "上次确认；可能已过期",
     "compute.status.unconfirmed": "变更未确认",
+    "compute.status.submitting": "该变更仍在提交中",
     "compute.status.retry": "重试",
     "compute.status.invalid": "运行位置响应无效",
     "compute.profiles.unavailable": "无法加载集群配置",
@@ -169,9 +171,15 @@ async function readComputeStatus(fid: string): Promise<ComputeResult> {
   if (fid !== currentId.value) return loadComputeStatus(fid);
   const generation = _openGen.value;
   const previous = computeStatus.value;
+  const held = previous?.fid === fid ? previous : null;
   const loading: ComputeReadState = {
-    fid, generation, phase: "loading",
-    status: previous?.fid === fid ? previous.status : null,
+    fid,
+    generation,
+    phase: "loading",
+    status: held?.status ?? null,
+    // A failed reread is not evidence that an earlier ambiguous mutation was
+    // confirmed; only a successful payload may clear this.
+    ...(held?.unconfirmed ? { unconfirmed: true } : {}),
   };
   computeStatus.value = loading;
   renderComputeBadge();
@@ -220,7 +228,10 @@ function renderComputeBadge(): void {
     const key = state.phase === "loading" ? "compute.status.loading"
       : state.phase === "unsupported" ? "compute.status.unsupported"
       : "compute.status.unavailable";
-    const text = previous ? `${t(key)} · ${previous} (${t("compute.status.stale")})` : t(key);
+    const notes = state.unconfirmed
+      ? `${t("compute.status.stale")}; ${t("compute.status.unconfirmed")}`
+      : t("compute.status.stale");
+    const text = previous ? `${t(key)} · ${previous} (${notes})` : t(key);
     badge.appendChild(el("span", "cb-label", text));
     badge.className = "compute-badge waiting";
     badge.title = [text, state.error].filter(Boolean).join("\n");
@@ -405,7 +416,12 @@ export async function openRunLocationDialog(fid: string | null | undefined): Pro
     const key = submitKey(profile);
     // One mutation per (session, choice) at a time -- also across a reopened
     // window, because the first POST is still an accepted request in flight.
-    if (pendingSubmits.has(key)) return;
+    // That window's copy of the button is enabled again, so a click must say
+    // why nothing happens rather than silently doing nothing.
+    if (pendingSubmits.has(key)) {
+      if (ownsDialog()) hint(t("compute.status.submitting"));
+      return;
+    }
     submitting = true;
     pendingSubmits.add(key);
     setActionsDisabled(true);

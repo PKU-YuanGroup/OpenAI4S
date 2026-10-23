@@ -621,10 +621,13 @@ describe("run-location submission ownership", () => {
     option("cpu").onclick!();
     await vi.waitFor(() => expect(posts).toBe(2));
     await vi.waitFor(() => expect(closeModalEl).toHaveBeenCalled());
+    // The mark clears when the confirming read lands, not when the POST
+    // answers: until then the position is still "not confirmed".
+    await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
     expect(computeStatus.value?.unconfirmed).toBeUndefined();
   });
 
-  it("clears the unconfirmed mark when a later read succeeds", async () => {
+  it("keeps the unconfirmed mark through a failed reread and clears it only on success", async () => {
     daemon({ location: "cluster", workload: { profile: "gpu" } }, [{ name: "gpu" }]);
     await refreshComputeStatus("f");
     vi.mocked(api).mockImplementation(async (path, options) => {
@@ -637,6 +640,16 @@ describe("run-location submission ownership", () => {
     await openRunLocationDialog("f");
     option("gpu").onclick!();
     await vi.waitFor(() => expect(computeStatus.value?.unconfirmed).toBe(true));
+
+    // A failed reread is not evidence that the mutation was confirmed: the
+    // unconfirmed mark must survive it (the badge shows both facts).
+    failingApi(503);
+    await refreshComputeStatus("f");
+    expect(computeStatus.value?.unconfirmed).toBe(true);
+    expect(computeStatus.value?.phase).toBe("unavailable");
+    expect(byId("compute-badge")?.texts().join(" ")).toContain(t("compute.status.unconfirmed"));
+    expect(byId("compute-badge")?.texts().join(" ")).toContain("gpu");
+
     daemon({ location: "local" });
     await refreshComputeStatus("f");
     expect(computeStatus.value?.unconfirmed).toBeUndefined();
@@ -697,6 +710,57 @@ describe("run-location submission ownership", () => {
     expect(closeModalEl).not.toHaveBeenCalled();
     expect(computeStatus.value).toBeNull();
     expect(vi.mocked(api).mock.calls.some(([path]) => path === "/sessions/g/compute")).toBe(false);
+  });
+
+  it("does not close or replace a viewer opened while a submitted change is in flight", async () => {
+    daemon({ location: "local" }, [{ name: "gpu" }]);
+    await openRunLocationDialog("f");
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") return gate.promise;
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    option("gpu").onclick!();
+    // An artifact viewer takes the shared modal without writing _modalMode.
+    modalBody.innerHTML = "";
+    modalBody.appendChild(new FakeEl("iframe"));
+    gate.resolve({ ok: true });
+    await tick();
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(openModalEl).toHaveBeenCalledTimes(1);
+    expect(modalBody.firstChild?.tag).toBe("iframe");
+  });
+
+  it("says that a choice is still submitting instead of silently ignoring a repeat", async () => {
+    daemon({ location: "local" }, [{ name: "gpu" }]);
+    await openRunLocationDialog("f");
+    let posts = 0;
+    const gate = deferred<unknown>();
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path === "/sessions/f/compute" && options?.method === "POST") {
+        posts += 1;
+        return gate.promise;
+      }
+      if (path === "/orchestration/profiles") return { profiles: [{ name: "gpu" }] };
+      return { location: "local" };
+    });
+    option("gpu").onclick!();
+    // Reopen the same session's dialog while the accepted POST is still in
+    // flight: its buttons are enabled again, so a repeat click must explain
+    // itself and must not queue a second scheduler request.
+    await openRunLocationDialog("f");
+    option("gpu").onclick!();
+    expect(posts).toBe(1);
+    expect(hint).toHaveBeenCalledWith(t("compute.status.submitting"));
+    gate.resolve({ ok: true });
+    await vi.waitFor(() => expect(computeStatus.value?.phase).toBe("available"));
+    // The accepted POST belongs to the first window: it refreshes the badge
+    // but does not close the window the user has open now.
+    expect(closeModalEl).not.toHaveBeenCalled();
+    expect(openModalEl).toHaveBeenCalledTimes(2);
+    expect(modalBody.firstChild?.tag).not.toBe("iframe");
+    expect(posts).toBe(1);
   });
 
   it("keeps a reopened dialog open when an earlier submission answers", async () => {
