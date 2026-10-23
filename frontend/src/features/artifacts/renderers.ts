@@ -736,7 +736,7 @@ export function renderArtifactDescriptor(
   else if (rendererId === "msa") renderAlignmentArtifact(content, target, url);
   else if (rendererId === "latex") renderLatexArtifact(content, target, url);
   else if (rendererId === "markdown") renderMarkdownArtifact(content, target, url);
-  else if (rendererId === "notebook") renderNotebookArtifact(content, target, url, rendererFailure);
+  else if (rendererId === "notebook") renderNotebookArtifact(content, target, url);
   else if (rendererId === "table") renderTableArtifact(content, target, url, renderer);
   else if (rendererId === "text") renderTextArtifact(content, target, url);
   else renderDownloadArtifact(content, target, url);

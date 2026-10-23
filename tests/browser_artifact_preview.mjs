@@ -96,6 +96,7 @@ const NOTEBOOK = JSON.stringify({
       source: [
         "# Saved analysis\n\n",
         "![inline](data:image/png;base64," + PNG_1X1 + ")\n\n",
+        "![external](https://example.invalid/x.png)\n\n",
         "[paper](https://example.com/paper)\n",
       ],
     },
@@ -105,7 +106,7 @@ const NOTEBOOK = JSON.stringify({
       metadata: {},
       source: "print('saved output')\n",
       outputs: [
-        { output_type: "stream", name: "stdout", text: ["saved output\n"] },
+        { output_type: "stream", name: "stdout", text: ["saved output\n", "[OpenAI4S artifacts] figure.png\n"] },
         {
           output_type: "display_data",
           metadata: {},
@@ -329,9 +330,12 @@ async function main() {
     await runCase(page, "molecule opens without falling back to a blank", async () => {
       await open(molecule, "peptide.pdb");
       await page.locator("#dock-viewer .mol-wrap").waitFor({ timeout: 30000 });
-      const drawn = await page.locator("#dock-viewer .mol-wrap canvas").count();
-      const fallbackText = await page.locator("#dock-viewer .mol-wrap pre").count();
-      assertion(drawn + fallbackText >= 1, "molecule view drew neither a canvas nor a text fallback");
+      // The frame is built before the bytes are read; wait for either the drawn
+      // canvas or the documented text fallback rather than racing the read.
+      await page
+        .locator("#dock-viewer .mol-wrap canvas, #dock-viewer .mol-wrap pre")
+        .first()
+        .waitFor({ timeout: 30000 });
     });
 
     await runCase(page, "csv renders as a table", async () => {
@@ -374,6 +378,7 @@ async function main() {
     });
 
     await runCase(page, "notebook renders saved cells without executing or calling out", async () => {
+      const versionsBefore = await api(`/artifacts/${notebook.artifactId}/versions`);
       const before = requests.length;
       await open(notebook, "session.python.ipynb");
       await page.locator("#dock-viewer .notebook-preview").waitFor({ timeout: 30000 });
@@ -399,6 +404,26 @@ async function main() {
         (await page.locator("#dock-viewer .notebook-output-unsupported").count()) === 1,
         "html output was not handled as unsupported",
       );
+      // F5: the code cell is the copy-enabled code block.
+      assertion(
+        (await page.locator("#dock-viewer .notebook-code .cb-copy").count()) === 1,
+        "the notebook code cell has no Copy button",
+      );
+      // The saved artifact line stays plain text; it must not be fetched.
+      assertion(
+        (await page.locator("#dock-viewer .notebook-output-text").innerText()).includes(
+          "[OpenAI4S artifacts] figure.png",
+        ),
+        "the saved artifact line is missing",
+      );
+      assertion(
+        (await page.locator('#dock-viewer img[src^="http"]').count()) === 0,
+        "the notebook rendered an external image",
+      );
+      assertion(
+        (await page.locator("#dock-viewer script, #dock-viewer iframe").count()) === 0,
+        "the notebook inserted a script or iframe",
+      );
       assertion(
         (await page.evaluate(() => window.__notebookHtmlRan)) === undefined,
         "notebook HTML output executed",
@@ -415,6 +440,12 @@ async function main() {
       assertion(
         kernel.alive !== true && python.alive !== true,
         "opening the notebook started a kernel",
+      );
+      // Viewing never rewrote the file: same version identity and bytes hash.
+      const versionsAfter = await api(`/artifacts/${notebook.artifactId}/versions`);
+      assertion(
+        JSON.stringify(versionsAfter) === JSON.stringify(versionsBefore),
+        "opening the notebook changed the artifact version history",
       );
     });
 

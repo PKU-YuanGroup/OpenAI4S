@@ -14,22 +14,33 @@ from openai4s.server.renderers import Renderer, RendererRegistry
         ({"content_type": "text/html; charset=utf-8"}, "html-preview", "content_type"),
         ({"content_type": "text/csv; charset=utf-8"}, "table", "content_type"),
         ({"metadata": {"kind": "protein_sequence"}}, "sequence", "kind"),
+        # A saved notebook is selected by its own extension before the generic
+        # kind/MIME loops, whatever the capturing tool stamped on it.
+        ({"filename": "analysis.ipynb"}, "notebook", "extension"),
         (
             {
                 "filename": "session.python.ipynb",
                 "content_type": "application/x-ipynb+json",
             },
             "notebook",
-            "content_type",
+            "extension",
         ),
-        ({"filename": "analysis.ipynb"}, "notebook", "extension"),
-        # A generic kind from the capturing tool must not hand a saved .ipynb
-        # to the plain-text renderer before the notebook renderer is reached.
-        ({"filename": "analysis.ipynb", "kind": "code"}, "notebook", "extension"),
+        (
+            {"filename": "analysis.ipynb", "content_type": "application/octet-stream"},
+            "notebook",
+            "extension",
+        ),
         (
             {"filename": "analysis.ipynb", "content_type": "application/json"},
             "notebook",
             "extension",
+        ),
+        ({"filename": "analysis.ipynb", "kind": "code"}, "notebook", "extension"),
+        # A plain .json is still plain text, not a notebook.
+        (
+            {"filename": "result.json", "content_type": "application/json"},
+            "text",
+            "content_type",
         ),
         ({"filename": "weights.unknown"}, "download", "fallback"),
     ],

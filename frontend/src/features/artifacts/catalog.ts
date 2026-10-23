@@ -127,12 +127,13 @@ export function compatibilityRendererDescriptor(a: ArtifactRow): RendererDescrip
   else if (/\.(bed|bedgraph|gff3?|gtf|vcf)$/i.test(nm)) id = "genome-track";
   else if (/\.(aln|a2m|a3m|sto|stockholm)$/i.test(nm)) id = "msa";
   else if (/\.(fa|fasta|faa|fna|fastq|fq)$/i.test(nm)) id = "sequence";
+  // A saved notebook is its own container. It is recognised before the
+  // Markdown and generic text branches (and before any JSON source dump), by
+  // extension or by the notebook MIME the exporter records.
+  else if (/\.ipynb$/i.test(nm) || /x-ipynb\+json/.test(ct)) id = "notebook";
   else if (/\.(md|markdown|rst)$/i.test(nm)) id = "markdown";
   else if (/\.tex$/i.test(nm)) id = "latex";
   else if (/csv|tab-separated/.test(ct) || /\.(csv|tsv)$/i.test(nm)) id = "table";
-  // A saved notebook is its own container: the extension/MIME identifies it
-  // before the generic text branch could show a JSON source dump instead.
-  else if (/\.ipynb$/i.test(nm) || /x-ipynb\+json/.test(ct)) id = "notebook";
   else if (ct.startsWith("text/") || /json/.test(ct) || TEXT_EXT.test(nm)) id = "text";
   return {
     artifact_id: a.id,

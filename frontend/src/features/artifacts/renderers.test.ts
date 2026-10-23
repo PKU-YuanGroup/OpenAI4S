@@ -10,6 +10,7 @@ import {
   MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
   PREVIEW_READ_MAX_BYTES,
   PREVIEW_READ_TIMEOUT_MS,
+  TEXT_SOURCE_PREVIEW_CHARACTERS,
   abortPreviewReads,
   setArtifactsFetch,
   translate,
@@ -636,6 +637,33 @@ describe("visible truncation and frozen preview version (A3)", () => {
     } else {
       expect(links(root)).toHaveLength(0);
     }
+  });
+
+  it.each([
+    ["below", -1, false],
+    ["at", 0, false],
+    ["above", 1, true],
+  ])("raw text source %s its 300,000 code-unit limit", async (_label, offset, truncated) => {
+    const length = TEXT_SOURCE_PREVIEW_CHARACTERS + offset;
+    const root = await renderBody("text", "notes.txt", "z".repeat(length));
+    const pre = walk(root).find((node) => (node.className || "").includes("renderer-source"))!;
+    expect(pre.textContent.length).toBe(truncated ? TEXT_SOURCE_PREVIEW_CHARACTERS : length);
+    const notices = partials(root);
+    if (!truncated) {
+      expect(notices).toHaveLength(0);
+      return;
+    }
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.textContent).toBe(
+      filesT("viewer.preview.partial", TEXT_SOURCE_PREVIEW_CHARACTERS.toLocaleString()),
+    );
+    // The raw-source preview keeps its "show complete text" expansion.
+    expect(
+      walk(root).some(
+        (node) => node.tagName === "BUTTON" && node.textContent === filesT("viewer.text.expand"),
+      ),
+    ).toBe(true);
+    expect(links(root).map((node) => node.href)).toContain("/api/v1/artifacts/versions/v1");
   });
 
   it("freezes the preview and download to the row's version, not the descriptor's", async () => {
