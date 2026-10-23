@@ -1,15 +1,16 @@
-# Delegation continuation — admission design and acceptance preparation
+# Delegation continue — admission contract and acceptance preparation
 
-[中文](delegation-continuation-design_zh.md)
+[中文](delegation-continue-design_zh.md)
 
-Status: **P2-01 preparation only**. This document fixes the proposed read-only
-continuability projection, the identity-bound admission contract, the execution
-and observation boundaries, and the future acceptance cases for continuing a
-finished or stopped delegated child. It adds no route, response field, UI
-control, configuration switch or production code, and changes no default. The
-cases below are requirements for a later implementation, not test results, and
-the existing synchronous `POST …/continue` keeps its present meaning in this
-version.
+Status: **D1 preparation only — not implemented in this version**. This
+document fixes the proposed read-only continuability projection, the
+identity-bound admission contract, the execution-coordinator/capture
+boundaries, and the future acceptance cases for continuing a finished or
+stopped delegated child. It adds no route, response field, UI control,
+configuration switch or production code, changes no default, and **this version
+does not implement any part of it**. The cases below are requirements for a
+later implementation, not test results, and the existing synchronous
+`POST …/continue` keeps its present meaning.
 
 ## Current boundary
 
@@ -123,8 +124,28 @@ version adds none. A later implementation must decide whether the record is a
 new durable row — numbering a migration — or can be derived from existing
 attempt rows; that decision is out of scope here.
 
-## Execution coordination and observation timeout (future)
+## Execution coordination, capture and observation timeout (future)
 
+- **The execution coordinator.** Today the route runs
+  `continue_delegation_child` synchronously on the HTTP handler thread; it is
+  not submitted as a `WebExecutionCoordinator` ticket, so the per-session FIFO
+  execution queue, its owner/lease binding and its exact-owner interrupt are not
+  what admits it. A future asynchronous acceptance must change that shape rather
+  than preserve it: the new attempt must run as a first-class execution
+  submitted through
+  [`WebExecutionCoordinator`](../openai4s/server/execution_coordinator.py) and
+  the core
+  [`SessionExecutionCoordinator`](../openai4s/execution/coordinator.py), bound
+  to its own execution id, owner and lease. A stale ticket or the previous
+  attempt's lease must never be reusable, and a cancelled or expired execution
+  must not be revived by a continue request.
+- **Trusted capture.** The capture ceiling
+  (`_apply_trusted_capture_ceiling`, the `cell_hooks_factory` conditions, the
+  admission/lease hooks and the exclusive gate) is a mandatory provenance
+  constraint, not a caller preference. A continuation may be refused because
+  capture is busy; it must never start an attempt outside capture, lower the
+  child's `background: deny`, or serialize around the gate by spawning a
+  parallel child.
 - The synchronous route is the compatibility surface, not the future UI shape.
   A child can run for many turns, so a future entry may prefer an accepted
   (asynchronous) response that names the attempt identity. If it is added, it
@@ -150,6 +171,9 @@ attempt rows; that decision is out of scope here.
 
 ## Compatibility and non-goals
 
+- **This version does not implement the contract.** No route change, no new
+  field, no asynchronous accept, no UI control, no configuration switch and no
+  storage migration ships here; this document is a preparation record only.
 - Keep the existing route's meaning: `POST …/continue` stays explicit,
   synchronous by default, and answers with the browser child projection.
   Existing error codes `not_found`, `delegation_record_stale`,
