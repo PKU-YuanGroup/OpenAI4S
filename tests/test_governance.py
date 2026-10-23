@@ -60,6 +60,14 @@ PRIVILEGED_WORKFLOW_ACTION_MAJORS = {
     "release.yml": {
         "actions/checkout": 7,
         "actions/download-artifact": 8,
+        # The Linux job's browser acceptance needs Node 22 (the frontend's
+        # `engine-strict` floor), and this is the same frozen pin the PR
+        # browser jobs already use: `820762786026740c76f36085b0efc47a31fe5020
+        # # v7.0.0`. Naming it here extends an approved pin to the publish
+        # workflow rather than relaxing the policy -- the job it runs in holds
+        # no publish credential, and a major bump still has to be read here
+        # instead of riding the weekly batch.
+        "actions/setup-node": 7,
         "actions/upload-artifact": 7,
         "astral-sh/setup-uv": 10,
         "pypa/gh-action-pypi-publish": 1,
