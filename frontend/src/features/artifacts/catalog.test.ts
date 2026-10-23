@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { compatibilityRendererDescriptor, scientificRenderers } from "./catalog";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { _rendererCatalogPromise, rendererCatalog, rendererDescriptors } from "../../stores/artifacts";
+import { resetStoreFields } from "../../stores/signal-field";
+import { setArtifactsFetch } from "./api";
+import { artifactRendererDescriptor, compatibilityRendererDescriptor, loadRendererCatalog, scientificRenderers } from "./catalog";
 import { parseMolPoints } from "./thumbs";
 
 describe("scientificRenderers empty-value defense (app.js:8578)", () => {
@@ -56,5 +59,91 @@ describe("parseMolPoints (app.js:8455-8473)", () => {
     const pts = parseMolPoints(pdb);
     expect(pts).toHaveLength(3);
     expect(pts[0]).toEqual({ x: 21, y: 22, z: 23 });
+  });
+});
+
+
+describe("renderer catalog failure recovery (R1)", () => {
+  afterEach(() => {
+    setArtifactsFetch(null);
+    vi.unstubAllGlobals();
+    resetStoreFields();
+  });
+
+  it("does not cache a failed catalog as an empty success and retries on the next call", async () => {
+    resetStoreFields();
+    let requests = 0;
+    setArtifactsFetch(async (url) => {
+      requests += 1;
+      expect(url).toBe("/api/v1/renderers");
+      if (requests === 1) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+      return new Response(JSON.stringify({ renderers: [{ renderer_id: "sequence", label: "Sequence" }] }));
+    });
+    await expect(loadRendererCatalog()).rejects.toBeTruthy();
+    // A failure is not a successful empty directory, and no in-flight promise
+    // is kept that would answer every retry with the same failure.
+    expect(rendererCatalog.value).toBeNull();
+    expect(_rendererCatalogPromise.value).toBeNull();
+    await expect(loadRendererCatalog()).resolves.toEqual([{ renderer_id: "sequence", label: "Sequence" }]);
+    expect(requests).toBe(2);
+  });
+
+  it("re-resolves an artifact descriptor after a catalog failure without a page reload", async () => {
+    resetStoreFields();
+    let catalogCalls = 0;
+    let catalogDown = true;
+    setArtifactsFetch(async (url) => {
+      if (url === "/api/v1/renderers") {
+        catalogCalls += 1;
+        if (catalogDown) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+        return new Response(
+          JSON.stringify({
+            renderers: [{ renderer_id: "sequence", label: "Sequence", capabilities: ["view", "copy"] }],
+          }),
+        );
+      }
+      if (url === "/api/v1/artifacts/A/renderer?version=v1") {
+        return new Response(
+          JSON.stringify({
+            artifact_id: "A",
+            version_id: "v1",
+            matched_by: "extension",
+            renderer: { renderer_id: "sequence", label: "Sequence" },
+          }),
+        );
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    (globalThis as { OpenAI4SScientificRenderers?: unknown }).OpenAI4SScientificRenderers = {
+      rendererIdFromDescriptor: (descriptor: { renderer?: { renderer_id?: string } }) =>
+        descriptor.renderer?.renderer_id || "download",
+    };
+    const a = { id: "A", filename: "pep.fasta", version_id: "v1" };
+    await expect(artifactRendererDescriptor(a)).rejects.toBeTruthy();
+    // Descriptors resolved from the failed catalog are not left cached.
+    expect(Object.keys(rendererDescriptors.value)).toEqual([]);
+    catalogDown = false;
+    const descriptor = await artifactRendererDescriptor(a);
+    expect(descriptor.renderer?.renderer_id).toBe("sequence");
+    expect(descriptor.renderer?.capabilities).toEqual(["view", "copy"]);
+    expect(catalogCalls).toBe(2);
+  });
+
+  it("keeps the capability whitelist when the retried catalog does not declare a renderer", async () => {
+    resetStoreFields();
+    setArtifactsFetch(async (url) => {
+      if (url === "/api/v1/renderers") return new Response(JSON.stringify({ renderers: [] }));
+      if (url === "/api/v1/artifacts/B/renderer") {
+        return new Response(JSON.stringify({ artifact_id: "B", matched_by: "extension", renderer: { renderer_id: "notebook" } }));
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    (globalThis as { OpenAI4SScientificRenderers?: unknown }).OpenAI4SScientificRenderers = {
+      rendererIdFromDescriptor: () => "notebook",
+    };
+    const descriptor = await artifactRendererDescriptor({ id: "B", filename: "report.ipynb" });
+    // Catalog absence may only degrade to the conservative view capability; a
+    // retry must never invent copy/edit rights the server did not declare.
+    expect(descriptor.renderer?.capabilities).toEqual(["view"]);
   });
 });

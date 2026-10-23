@@ -73,32 +73,44 @@ export function scientificRenderers(): ScientificRenderersApi | null {
   return host.OpenAI4SScientificRenderers || null;
 }
 
-/** app.js:8580-8591 */
+/**
+ * app.js:8580-8591, plus R1 recovery.
+ *
+ * A failed catalog read is never cached as a successful empty directory: the
+ * in-flight promise is cleared and the request rejects, so the next call
+ * refetches. Descriptors resolved from that catalog are dropped with it, so a
+ * manual retry re-resolves the artifact instead of keeping a view-only
+ * fallback until the page reloads. The server's capability whitelist is not
+ * widened by a retry — a missing catalog entry still falls back conservatively.
+ */
 export function loadRendererCatalog(): Promise<RendererCatalogItem[]> {
   if (Array.isArray(rendererCatalog.value)) {
     return Promise.resolve(rendererCatalog.value as RendererCatalogItem[]);
   }
   const pending = _rendererCatalogPromise.value as Promise<RendererCatalogItem[]> | null;
   if (pending) return pending;
-  const request = api("/renderers")
-    .then((result) => {
-      const rec = result && typeof result === "object" ? (result as { renderers?: unknown }) : null;
-      const catalog = rec && Array.isArray(rec.renderers)
-        ? rec.renderers.filter(
-            (item): item is RendererCatalogItem =>
-              !!item &&
-              typeof item === "object" &&
-              typeof (item as RendererCatalogItem).renderer_id === "string",
-          )
-        : [];
-      rendererCatalog.value = catalog;
-      return catalog;
-    })
-    .catch(() => {
-      rendererCatalog.value = [];
-      return [] as RendererCatalogItem[];
-    });
+  const request = api("/renderers").then((result) => {
+    const rec = result && typeof result === "object" ? (result as { renderers?: unknown }) : null;
+    const catalog = rec && Array.isArray(rec.renderers)
+      ? rec.renderers.filter(
+          (item): item is RendererCatalogItem =>
+            !!item &&
+            typeof item === "object" &&
+            typeof (item as RendererCatalogItem).renderer_id === "string",
+        )
+      : [];
+    rendererCatalog.value = catalog;
+    return catalog;
+  });
   _rendererCatalogPromise.value = request;
+  const clearPending = (): void => {
+    if (_rendererCatalogPromise.value === request) _rendererCatalogPromise.value = null;
+  };
+  request.then(clearPending, () => {
+    clearPending();
+    const bag = rendererDescriptors.value as Record<string, unknown>;
+    for (const key of Object.keys(bag)) delete bag[key];
+  });
   return request;
 }
 
