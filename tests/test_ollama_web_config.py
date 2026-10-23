@@ -18,6 +18,7 @@ from openai4s.ollama_web import (
 )
 from openai4s.server import gateway
 from openai4s.server.errors import GatewayError
+from openai4s.server.model_profiles import ModelProfileService
 from openai4s.store import get_store
 
 KEY = "synthetic-ollama-web-credential"
@@ -167,3 +168,45 @@ def test_saved_key_wins_over_cloud_profile_and_environment(settings, monkeypatch
         "source": "environment",
     }
     assert web_config_status(cfg.llm, store)["source"] == "environment"
+
+
+def test_status_follows_profile_activation_and_clear_fallback(settings):
+    cfg, store, _handler, call = settings
+    profiles = ModelProfileService(store, cfg, providers=lambda: gateway.PROVIDERS)
+    cloud = profiles.create(
+        {"name": "Ollama cloud", "provider": "ollama", "api_key": KEY}
+    )
+    other = profiles.create(
+        {"name": "Other model", "provider": "claude", "api_key": "other-key"}
+    )
+    profiles.activate(cloud["id"])
+    assert call() == {"key_configured": False, "available": True, "source": "model"}
+    call("PUT", {"api_key": KEY + "-independent"})
+    assert call("PUT", {"clear_api_key": True})["source"] == "model"
+    # Boot configuration must not outlive the profile the user selected.
+    cfg.llm = LLMConfig(provider="ollama", api_key=KEY + "-boot")
+    profiles.activate(other["id"])
+    assert call() == {"key_configured": False, "available": False, "source": ""}
+
+
+def test_injected_web_key_resolves_without_a_settings_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_SECRET_STORE", "env")
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    variable = "OPENAI4S_SECRET_OLLAMA_WEB_OLLAMA_WEB_API_KEY"
+    monkeypatch.setenv(variable, KEY)
+    cfg = LLMConfig(provider="deepseek", api_key="unrelated-key")
+    store = get_store(tmp_path / "injected.db")
+    try:
+        assert store.get_setting(WEB_API_KEY_SETTING) is None
+        assert resolve_web_key(cfg, store) == KEY
+        assert web_config_status(cfg, store) == {
+            "key_configured": False,
+            "available": True,
+            "source": "environment",
+        }
+        monkeypatch.setenv(variable, KEY + "-rotated")
+        assert resolve_web_key(cfg, store) == KEY + "-rotated"
+        monkeypatch.delenv(variable)
+        assert not resolve_web_key(cfg, store)
+    finally:
+        store.close()

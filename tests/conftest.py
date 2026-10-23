@@ -406,6 +406,9 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         # only planted dist/). OPENAI4S_WEBUI_NEXT is the retired F-04 name.
         "OPENAI4S_WEBUI",
         "OPENAI4S_WEBUI_NEXT",
+        # A real You.com key would turn the stubbed search tests into a live
+        # POST to ydc-index.io.
+        "YDC_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     # The BYOC confinement self-test caches its verdict process-wide, keyed by

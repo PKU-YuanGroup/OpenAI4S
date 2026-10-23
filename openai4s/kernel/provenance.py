@@ -509,6 +509,7 @@ def install(host_call: Callable[[str, list], Any]) -> None:
             for wname in ("to_csv", "to_parquet", "to_json", "to_pickle"):
                 _prov_wrap_method_writer(cls, wname, path_argno=0)
         _patch_dataframe_getitem(pd)
+        _patch_pandas_groupby(pd)
     except ImportError:
         pass
 
@@ -634,6 +635,63 @@ def _patch_dataframe_getitem(pd: Any) -> None:
             cls.__getitem__ = wrapper  # type: ignore[assignment]
         except (AttributeError, TypeError):
             pass
+
+
+#: Immutable atoms CPython shares by identity -- None, the bools, small ints,
+#: one-character strings. A side-table tag on one is not this call's input:
+#: `json.loads("false")` from a tracked file would otherwise attribute that file
+#: to every `as_index=False` grouping. A `_TaggedStr` is a subclass and counts.
+_SHARED_ATOM_TYPES = (type(None), bool, int, float, complex, str, bytes)
+
+
+def _prov_wrap_grouped_result(fn: Callable, *, is_groupby: bool = False) -> Callable:
+    """Forward native pandas behavior, then retain only known operand tags."""
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = fn(self, *args, **kwargs)
+        if _off():
+            return result
+        try:
+            operands = [
+                value
+                for value in (*args, *kwargs.values())
+                if type(value) not in _SHARED_ATOM_TYPES
+            ]
+            tags = merge_tags(self, result, *operands)
+            if tags:
+                set_tags(result, tags)
+            if is_groupby:
+                _patch_groupby_methods(type(result))
+        except Exception:  # noqa: BLE001 - tracing must never interrupt pandas
+            pass
+        return result
+
+    wrapper._openai4s_wrapped = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def _patch_grouped_method(cls: type, name: str, *, is_groupby: bool = False) -> None:
+    original = getattr(cls, name, None)
+    if original is None or getattr(original, "_openai4s_wrapped", False):
+        return
+    try:
+        setattr(cls, name, _prov_wrap_grouped_result(original, is_groupby=is_groupby))
+    except (AttributeError, TypeError):
+        pass
+
+
+def _patch_groupby_methods(cls: type) -> None:
+    # The public groupby/selection calls supply their real runtime types. Avoid
+    # importing pandas internals or requiring the newer api.typing namespace.
+    _patch_grouped_method(cls, "__getitem__", is_groupby=True)
+    for name in ("agg", "aggregate", "count", "size", "sum", "mean", "min", "max"):
+        _patch_grouped_method(cls, name)
+
+
+def _patch_pandas_groupby(pd: Any) -> None:
+    for cls in (pd.DataFrame, pd.Series):
+        _patch_grouped_method(cls, "groupby", is_groupby=True)
 
 
 def uninstall() -> None:

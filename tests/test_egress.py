@@ -111,6 +111,9 @@ def test_allowlist_permits_science_and_package_domains(monkeypatch):
         "www.bing.com",
         "duckduckgo.com",
         "www.mojeek.com",
+        "api.you.com",
+        "ydc-index.io",
+        "api.tavily.com",
     ):
         assert egress.domain_allowed(d), d
 
@@ -119,6 +122,11 @@ def test_allowlist_permits_science_and_package_domains(monkeypatch):
     assert not egress.domain_allowed("feedcoopapi.com")
     assert not egress.domain_allowed("other.feedcoopapi.com")
     assert not egress.domain_allowed("child.open.feedcoopapi.com")
+    # Same for the hosts that receive YDC_API_KEY and the Tavily key.
+    assert not egress.domain_allowed("child.ydc-index.io")
+    assert not egress.domain_allowed("you.com")
+    assert not egress.domain_allowed("tavily.com")
+    assert not egress.domain_allowed("child.api.tavily.com")
     assert egress.domain_allowed("datapro.hqd.cn-beijing.volces.com")
     assert not egress.domain_allowed("child.datapro.hqd.cn-beijing.volces.com")
 

@@ -16,6 +16,7 @@ from openai4s.config import LLMConfig, is_placeholder_api_key, provider_env_api_
 from openai4s.endpoint_identity import normalize_endpoint
 from openai4s.http_deadline import HTTPExchangeDeadline, read_body_capped
 from openai4s.mcp_protocol import redact_reflected_secret
+from openai4s.security.secret_broker import SecretStoreUnavailable
 
 BASE_URL = "https://ollama.com"
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -40,15 +41,21 @@ def _web_credential(
 ) -> tuple[str, str]:
     """The independent stored key wins; read it afresh for every operation.
 
-    Do not initialize a keychain for an unconfigured installation. Local servers
-    and custom proxies never donate their model credentials to ollama.com.
+    An unconfigured installation can read status without a secure store. Local
+    servers and custom proxies never donate model credentials to ollama.com.
     """
-    if store is not None and store.get_setting(WEB_API_KEY_SETTING):
-        key = store.get_secret_setting(
-            WEB_API_KEY_SETTING, scope=WEB_API_KEY_SCOPE
-        ).strip()
+    if store is not None:
+        saved = bool(store.get_setting(WEB_API_KEY_SETTING))
+        try:
+            key = store.get_secret_setting(
+                WEB_API_KEY_SETTING, scope=WEB_API_KEY_SCOPE
+            ).strip()
+        except SecretStoreUnavailable:
+            if saved:
+                raise
+            key = ""
         if key:
-            return key, "saved"
+            return key, "saved" if saved else "environment"
     endpoint = cfg.base_url
     try:
         parts = urllib.parse.urlsplit(endpoint)

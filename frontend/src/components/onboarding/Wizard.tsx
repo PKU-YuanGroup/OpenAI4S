@@ -36,6 +36,7 @@ import { loadProjects } from "../../features/sessions/load";
 import { projects } from "../../stores/session";
 import { CapabilityBadges } from "./CapabilityBadges";
 import { ReadinessPanel } from "./ReadinessPanel";
+import { SearchSetupCard } from "./SearchSetupCard";
 import "./onboarding.css";
 
 type Profile = Record<string, unknown>;
@@ -212,7 +213,7 @@ function PathStep({
                   onChoose({
                     kind: "local",
                     profileId: "",
-                    provider: "chatgpt",
+                    provider: endpoint.provider,
                     model: endpoint.default_model,
                     baseUrl: endpoint.base_url,
                     name: endpoint.label,
@@ -653,7 +654,12 @@ export function WizardHost() {
                 <CapabilityBadges receipt={state.receipt} unknownReason={state.probeDetail} />
               </div>
             ) : null}
-            {state.step === "readiness" && status ? <ReadinessPanel status={status} /> : null}
+            {state.step === "readiness" && status ? (
+              <>
+                <ReadinessPanel status={status} />
+                <SearchSetupCard />
+              </>
+            ) : null}
             {state.step === "project" ? (
               <ProjectStep
                 busy={busy}

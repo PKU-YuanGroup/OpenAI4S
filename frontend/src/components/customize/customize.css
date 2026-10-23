@@ -130,6 +130,45 @@
   line-height: 1.5;
   color: var(--text-400);
 }
+#cust .search-engines-head {
+  padding: 20px 0 6px;
+}
+#cust .search-engines-head .nm {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-000);
+}
+#cust .search-engines-head .ds {
+  margin-top: 2px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-400);
+}
+#cust .search-engine-row {
+  align-items: flex-start;
+}
+#cust .search-engine-row.dragging {
+  opacity: 0.5;
+}
+#cust .search-engine-row .info {
+  flex: 1;
+}
+#cust .search-engine-handle {
+  width: 16px;
+  padding-top: 2px;
+  color: var(--text-400);
+  cursor: grab;
+  user-select: none;
+}
+#cust .search-engine-row.locked .search-engine-handle {
+  cursor: default;
+}
+#cust .search-engine-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
 #cust .cust-subhead {
   padding: 28px 0 8px;
   font-size: 16px;

@@ -49,6 +49,11 @@ it and never returns the saved value.
 Credential priority is the independent saved key, then the active Ollama cloud
 profile's key, then `OPENAI4S_OLLAMA_API_KEY` / `OLLAMA_API_KEY`. Removing the
 saved key restores those existing fallbacks; the UI reports their source.
+The status follows the active model profile, including switches made after
+startup. With the SecretBroker environment backend, an independent credential
+can instead be injected as `OPENAI4S_SECRET_OLLAMA_WEB_OLLAMA_WEB_API_KEY`
+(or its namespaced equivalent); it needs no settings row and is reported as
+environment-provided. Change or remove injected keys in the environment.
 Credentials from local model servers and custom proxies are never reused for
 Ollama's cloud web APIs. In team mode, only admins may change this instance-wide
 credential. `GET`/`PUT /api/v1/ollama-web/config` return credential state only.
@@ -86,6 +91,9 @@ Ollama API key，Base URL 和模型留空时使用 `https://ollama.com/v1` 与
 优先级为：独立保存的密钥 → 当前 Ollama 云端模型的密钥 →
 `OPENAI4S_OLLAMA_API_KEY` / `OLLAMA_API_KEY`。移除独立密钥后恢复后两项，
 界面会显示实际来源；团队模式下只有管理员可以修改这项实例级配置。
+状态跟随当前启用的模型配置，启动后切换也会生效。使用 SecretBroker 环境后端时，
+可通过 `OPENAI4S_SECRET_OLLAMA_WEB_OLLAMA_WEB_API_KEY`（或带命名空间的变量）
+注入独立凭据，无需数据库设置行，界面显示其来源为环境变量；修改和移除需在环境中完成。
 `GET`/`PUT /api/v1/ollama-web/config` 只返回配置状态。
 本地服务器及自定义代理的凭据不会转交给 Ollama。Ollama 搜索优先于豆包和
 内置引擎，每次最多返回 10 条；鉴权、额度或服务错误直接报告。
@@ -264,6 +272,8 @@ for what the gate stands in front of.
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 
 `OPENAI4S_EGRESS` (`off`) — `allowlist` applies the host domain allowlist to `web_fetch`, `web_search`, and authorized `host.bash`. In that mode a new Python or R Cell is also admitted only when the kernel sandbox is enforced, its self-test passed, and `network_policy` is `blocked`. Anything else, including a remote kernel, is refused before the Cell runs with `egress_boundary_unavailable`. `off` leaves Cell execution unchanged. See [Security](security.md).
+
+**Web search engines.** With an Agent Plan key configured, Doubao Search always answers first. Behind it, `web_search` tries the backup engines in the order set in Settings → Network: Tavily (only with a key), You.com and the built-in keyless engines (DuckDuckGo → Bing → DuckDuckGo lite → Mojeek). All three are on by default; each can be reordered or switched off, but at least one usable engine stays on. You.com without a key uses the free tier at `api.you.com` (100 searches a day per IP); with a key (`YDC_API_KEY`, the Network tab, or `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` through the env broker) it uses `ydc-index.io`. Both hosts are on the built-in egress allowlist, `ydc-index.io` as an exact host because it receives the key (as is `api.tavily.com`; both keyed engines POST through the same egress, SSRF and no-redirect guards as `web_fetch`). After a 429 from You.com it is skipped for the server's `Retry-After` or an hour, and one You.com request is capped at 5 s. When Doubao's quota or rate limit is spent, the user is asked on an approval card whether to fall back and to which switched-on engine; a remembered answer applies later without asking, and with nobody to ask (a delegated child, a run with no UI, an active Auto Mode run) the search returns the quota error. A rejected Agent Plan key never falls back.
 
 `OPENAI4S_KERNEL_SANDBOX` (`auto`) — `enforce` fails closed when Seatbelt or bubblewrap cannot prove the boundary; `auto` warns and continues unsandboxed; `off` disables the OS boundary. Under `OPENAI4S_EGRESS=allowlist`, Cell admission needs the enforced, self-tested, `network_policy=blocked` posture. `OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1` reports `raw_allowed` and is refused while allowlist is on.
 
@@ -468,6 +478,13 @@ OpenAI4S settings database. Interactive API-key input is hidden; automation may
 pipe one line to `openai4s init --api-key-stdin --non-interactive`. An API key
 is never accepted as a command-line value or returned by `--json`, keeping it
 out of shell history and structured command output.
+
+The same command makes one web-search choice. Interactively it asks after the
+model; `--search doubao|tavily|you|builtin` makes it non-interactively, with
+`--search-key-stdin` supplying the Agent Plan, Tavily or You.com key (stdin
+carries one key per run, so not together with `--api-key-stdin`). `doubao`
+stores the Agent Plan key; any other choice moves that engine to the front of
+the backup list, and `builtin` keeps only the keyless engines.
 
 ## Platform support
 

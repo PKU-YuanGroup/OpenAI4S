@@ -26,6 +26,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable; the Skills list behind it re-reads as soon as the import lands, however the review is dismissed. |
 | [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. |
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. A rule's decision is optimistic and goes back when the server refuses it. |
+| [`SearchEngines.tsx`](SearchEngines.tsx) | Network tab's search-engine order: Doubao pinned on top, backups reorderable (drag or arrows) and switchable, Tavily / You.com keys. |
 | [`PermissionsTab.test.tsx`](PermissionsTab.test.tsx) | A decision the server took stays shown; a refused one goes back to the rule's decision (a render is asked for, so the select resets). |
 | [`refresh.test.tsx`](refresh.test.tsx) | A write that answers after the user moved to another tab, or opened another nested editor, leaves them where they are; a write on the tab still shown re-reads it in place without remounting it. |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |

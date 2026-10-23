@@ -40,6 +40,8 @@ type PermEvent = {
   resolved_file_path?: string;
   scopes?: string[];
   suggested_patterns?: string[];
+  /** Pick-one options: the chosen id is the decision's `pattern`. */
+  choices?: Array<{ id?: string; label?: string }>;
   allow?: unknown;
   scope?: string;
 };
@@ -69,7 +71,7 @@ export function permActionLine(m: PermEvent): { mono: boolean; text: string } {
     return { mono: true, text: String(inp.path || inp.filename || m.target || "") };
   }
   if (tool === "web_fetch") return { mono: true, text: String(inp.url || m.target || "") };
-  if (tool === "web_search") {
+  if (tool === "web_search" || tool === SEARCH_FALLBACK) {
     return { mono: false, text: "“" + String(inp.query || m.target || "") + "”" };
   }
   if (tool === "env_setup") {
@@ -97,6 +99,25 @@ const RESOLVING_COPY: Record<"en" | "zh", string> = {
   en: "Decision received; it is still being recorded.",
   zh: "已收到决定，正在记录。",
 };
+
+/** The Host's Doubao-quota fallback prompt (`openai4s/host/search.py`). */
+const SEARCH_FALLBACK = "web_search_fallback";
+const CHOICE_COPY: Record<"en" | "zh", Record<string, string>> = {
+  en: {
+    title: "Doubao search quota is spent",
+    sub: "Finish this search with another engine? Pick one and allow; deny and this search returns the quota error.",
+    choose: "Use instead",
+  },
+  zh: {
+    title: "豆包搜索配额已用尽",
+    sub: "要换用其他搜索引擎完成这次搜索吗？选一个引擎后允许；拒绝则这次搜索直接返回配额错误。",
+    choose: "换用",
+  },
+};
+
+function choiceCopy(key: string): string {
+  return CHOICE_COPY[LANG === "zh" ? "zh" : "en"][key] || key;
+}
 
 function statusLine(card: HTMLElement): HTMLElement {
   let st = card.querySelector(".perm-status") as HTMLElement | null;
@@ -188,11 +209,20 @@ export function renderPermissionCard(m: PermEvent): void {
   const card = el("div", "perm-card");
   const head = el("div", "perm-head");
   head.appendChild(iconEl("lock", 15, "perm-ic"));
-  head.appendChild(el("span", "perm-title", m.title || t("perm.title.run", m.tool)));
+  const fallback = m.tool === SEARCH_FALLBACK;
+  head.appendChild(
+    el(
+      "span",
+      "perm-title",
+      fallback ? choiceCopy("title") : m.title || t("perm.title.run", m.tool),
+    ),
+  );
   if (m.sub_agent) head.appendChild(el("span", "perm-badge", t("perm.badge.subAgent")));
   if (m.dangerous) head.appendChild(el("span", "perm-badge danger", t("perm.badge.dangerous")));
   card.appendChild(head);
-  card.appendChild(el("div", "perm-sub", t("perm.sub.approvalNeeded")));
+  card.appendChild(
+    el("div", "perm-sub", fallback ? choiceCopy("sub") : t("perm.sub.approvalNeeded")),
+  );
   const act = permActionLine(m);
   if (act.text) card.appendChild(el("div", "perm-detail" + (act.mono ? " mono" : ""), act.text));
   const fileReviewKeys: Record<string, string> = {
@@ -211,6 +241,27 @@ export function renderPermissionCard(m: PermEvent): void {
     }
   }
 
+  const choices = (m.choices || []).filter((c) => c && c.id);
+  let choice = choices.length ? String(choices[0]?.id) : "";
+  if (choices.length) {
+    card.appendChild(el("div", "perm-lbl", choiceCopy("choose")));
+    const choiceRow = el("div", "perm-scope perm-choices");
+    const choiceSegs: HTMLElement[] = [];
+    choices.forEach((c) => {
+      const id = String(c.id);
+      const b = el("button", "perm-seg" + (id === choice ? " active" : ""), c.label || id);
+      b.setAttribute("data-choice", id);
+      b.onclick = () => {
+        choice = id;
+        choiceSegs.forEach((x) => x.classList.remove("active"));
+        b.classList.add("active");
+      };
+      choiceSegs.push(b);
+      choiceRow.appendChild(b);
+    });
+    card.appendChild(choiceRow);
+  }
+
   let scope = defaultRememberScope(m);
   card.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberScope")));
   const scRow = el("div", "perm-scope");
@@ -222,13 +273,14 @@ export function renderPermissionCard(m: PermEvent): void {
       scope = s;
       Object.values(segs).forEach((x) => x.classList.remove("active"));
       b.classList.add("active");
-      patWrap.style.display = scope === "once" ? "none" : "";
+      patWrap.style.display = scope === "once" || choices.length ? "none" : "";
     };
     segs[s] = b;
     scRow.appendChild(b);
   });
   card.appendChild(scRow);
-  patWrap.style.display = scope === "once" ? "none" : "";
+  // With choices the remembered rule's pattern IS the choice, so no free text.
+  patWrap.style.display = scope === "once" || choices.length ? "none" : "";
 
   patWrap.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberRule")));
   const patIn = el("input", "perm-in") as HTMLInputElement;
@@ -259,7 +311,8 @@ export function renderPermissionCard(m: PermEvent): void {
   const submit = async (ok: boolean): Promise<void> => {
     allow.disabled = deny.disabled = true;
     const body: Record<string, unknown> = { decision_id: m.decision_id, allow: ok, scope };
-    if (scope !== "once") body.pattern = patIn.value.trim() || "*";
+    if (choices.length) body.pattern = choice;
+    else if (scope !== "once") body.pattern = patIn.value.trim() || "*";
     if (!ok && fb.value.trim()) body.message = fb.value.trim();
     let resolution: unknown;
     try {

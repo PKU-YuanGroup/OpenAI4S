@@ -28,5 +28,7 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | [`telemetry.ts`](telemetry.ts) | 同意开关 drain 循环；契约 `telemetryRow(host)`。 |
 | [`timers.ts`](timers.ts) | 按挂载的定时器租约。unmount 即 dispose。 |
 | [`timers.test.ts`](timers.test.ts) | unmount 后零残留；火山 key 轮询；vendor 辅助；window 导出。 |
+| [`search.ts`](search.ts) | 备用搜索引擎列表：解析 `/search/config`、「保留最后一个可用引擎」规则、排序、保存请求体，以及列表文案。 |
+| [`search.test.ts`](search.test.ts) | 解析时丢弃未知引擎；最后一个可用引擎不能关闭；移动不越界。 |
 | [`vendors.ts`](vendors.ts) | DataPro index-complete；豆包专用 source 检查。 |
 | [`volcengine.ts`](volcengine.ts) | 额度计算；key 轮询 2500/5000×24 绑在租约上。 |

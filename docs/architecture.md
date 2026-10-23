@@ -882,8 +882,22 @@ filename relative to the kernel's stable execution root before calling
 relative path resolves but not the artifact namespace root. The Web and CLI
 runtime adapters also inject their workspace, interpreter, and environment into
 independent background-kernel factories, so the host never guesses where a
-relative path came from. Store lookup first uses the exact live path, then a
-physical-path fallback for legacy relative rows and symlink aliases.
+relative path came from. Store lookup first matches an exact frozen
+`snapshot_path` -- what `host.artifact_path(version_id)` returns -- so a read
+of an older version keeps that version even after the live path moves on.
+Then it uses the exact live path, then a physical-path fallback (over live and
+snapshot paths) for legacy relative rows and symlink aliases.
+
+Pandas object tags also follow `DataFrame.groupby` / `Series.groupby`, column
+selection, and `agg` / `aggregate` / `count` / `size` / `sum` / `mean` / `min` /
+`max` results. Only known parent, direct operand and result tags are forwarded;
+scalar options (`None`, bools, numbers, plain strings) contribute none, because
+CPython shares those objects by identity. The normal pandas values and
+exceptions remain unchanged. This is bounded operator coverage: every other
+GroupBy method (`median`, `std`, `first`, `nunique`, `describe`, ...), group
+iteration and `get_group`, `apply`, `transform` and hidden reads inside
+user-defined functions are untracked. Use `host.save_artifact(input_version_ids=...)`
+when those unsupported transformations require explicit input declarations.
 
 ## Standard-profile readiness admission
 

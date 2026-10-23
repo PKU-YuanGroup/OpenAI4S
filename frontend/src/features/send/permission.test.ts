@@ -181,3 +181,56 @@ describe("permission card decisions", () => {
     expect(hintBox.textContent).toContain("approval request expired");
   });
 });
+
+describe("pick-one permission cards", () => {
+  function captureDecision(): { bodies: Record<string, unknown>[] } {
+    const seen = { bodies: [] as Record<string, unknown>[] };
+    vi.stubGlobal("fetch", (_url: string, init: { body?: string }) => {
+      seen.bodies.push(JSON.parse(String(init.body || "{}")));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ ok: true, allow: true })),
+      });
+    });
+    return seen;
+  }
+
+  const fallbackEvent = {
+    decision_id: "d-3",
+    frame_id: "f-1",
+    tool: "web_search_fallback",
+    input: { query: "crispr" },
+    choices: [
+      { id: "you", label: "You.com" },
+      { id: "builtin", label: "DuckDuckGo / Bing / Mojeek" },
+    ],
+  };
+
+  it("sends the chosen engine as the decision pattern", async () => {
+    const seen = captureDecision();
+    renderPermissionCard(fallbackEvent);
+    const { card: node, allow } = card();
+    const choices = node.querySelector(".perm-choices")!.querySelectorAll(".perm-seg");
+    expect(choices.map((c) => c.textContent)).toEqual(["You.com", "DuckDuckGo / Bing / Mojeek"]);
+    choices[1]!.onclick!();
+    allow.onclick!();
+    await settle();
+    expect(seen.bodies[0]).toMatchObject({ decision_id: "d-3", allow: true, pattern: "builtin" });
+  });
+
+  it("carries the choice even when nothing is remembered", async () => {
+    const seen = captureDecision();
+    renderPermissionCard({ ...fallbackEvent, decision_id: "d-4" });
+    const { card: node, allow } = card();
+    const once = node
+      .querySelectorAll(".perm-scope")
+      .find((row) => !row.classes.has("perm-choices"))!
+      .querySelectorAll(".perm-seg")
+      .find((b) => b.textContent === t("perm.scope.once"))!;
+    once.onclick!();
+    allow.onclick!();
+    await settle();
+    expect(seen.bodies[0]).toMatchObject({ scope: "once", pattern: "you" });
+  });
+});

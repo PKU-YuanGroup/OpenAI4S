@@ -158,6 +158,7 @@ upper-cased with every non-alphanumeric run collapsed to `_`. So:
 |---|---|
 | model API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
 | Tavily search key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
+| You.com search key | `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` |
 
 Use that plain form in a manifest. The UI's refusal names a *namespaced*
 variant (`OPENAI4S_SECRET_V2_<NS>_…`), which also works, but the namespace is
@@ -478,6 +479,7 @@ cookie 也随之失效。
 |---|---|
 | 模型 API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
 | Tavily 搜索 key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
+| You.com 搜索 key | `OPENAI4S_SECRET_SEARCH_YOU_API_KEY` |
 
 清单里请用上面这个朴素形式。UI 的拒绝信息给出的是**带命名空间**的变体
 （`OPENAI4S_SECRET_V2_<NS>_…`），它同样有效，但命名空间是从数据目录的真实路径推导出来
