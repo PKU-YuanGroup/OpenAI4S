@@ -8188,7 +8188,8 @@
                     }
                   },
                   "required": [
-                    "database"
+                    "database",
+                    "dataset"
                   ],
                   "type": "object"
                 },
@@ -8846,41 +8847,6 @@
             "type": "object"
           },
           "hosts": {
-            "items": {
-              "properties": {
-                "alias": {
-                  "type": "string"
-                },
-                "capabilities": {
-                  "type": "array"
-                },
-                "gpu_count": {
-                  "type": "integer"
-                },
-                "gpus": {
-                  "type": "null"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "provider": {
-                  "type": "string"
-                },
-                "reachable": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "alias",
-                "capabilities",
-                "gpu_count",
-                "gpus",
-                "label",
-                "provider",
-                "reachable"
-              ],
-              "type": "object"
-            },
             "type": "array"
           }
         },
@@ -17215,6 +17181,125 @@
                 "credential_source": {
                   "type": "string"
                 },
+                "effective_capabilities": {
+                  "properties": {
+                    "audio": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "parallel_tool_calls": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "reasoning": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "streaming": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "strict_tool_schema": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "tool_calling": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "vision": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "audio",
+                    "parallel_tool_calls",
+                    "reasoning",
+                    "streaming",
+                    "strict_tool_schema",
+                    "tool_calling",
+                    "vision"
+                  ],
+                  "type": "object"
+                },
                 "has_api_key": {
                   "type": "boolean"
                 },
@@ -17257,6 +17342,7 @@
                 "base_url",
                 "capability_receipt",
                 "credential_source",
+                "effective_capabilities",
                 "has_api_key",
                 "id",
                 "model",
@@ -17838,6 +17924,125 @@
                 "credential_source": {
                   "type": "string"
                 },
+                "effective_capabilities": {
+                  "properties": {
+                    "audio": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "parallel_tool_calls": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "reasoning": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "streaming": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "strict_tool_schema": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "tool_calling": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "vision": {
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "value"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "audio",
+                    "parallel_tool_calls",
+                    "reasoning",
+                    "streaming",
+                    "strict_tool_schema",
+                    "tool_calling",
+                    "vision"
+                  ],
+                  "type": "object"
+                },
                 "has_api_key": {
                   "type": "boolean"
                 },
@@ -17880,6 +18085,7 @@
                 "base_url",
                 "capability_receipt",
                 "credential_source",
+                "effective_capabilities",
                 "has_api_key",
                 "id",
                 "model",
@@ -18531,6 +18737,105 @@
             "type": "integer"
           },
           "groups": {
+            "items": {
+              "properties": {
+                "attempts": {
+                  "type": "array"
+                },
+                "branch_id": {
+                  "type": "string"
+                },
+                "cost": {
+                  "type": "null"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "events": {
+                  "type": "array"
+                },
+                "group_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "null"
+                },
+                "model": {
+                  "type": "null"
+                },
+                "ordinal": {
+                  "type": "integer"
+                },
+                "owner": {
+                  "type": "string"
+                },
+                "permission": {
+                  "type": "null"
+                },
+                "provider": {
+                  "type": "null"
+                },
+                "replay_policy": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "root_frame_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "root_frame_id"
+                  ],
+                  "type": "object"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "usage": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "attempts",
+                "branch_id",
+                "cost",
+                "created_at",
+                "events",
+                "group_id",
+                "kind",
+                "language",
+                "model",
+                "ordinal",
+                "owner",
+                "permission",
+                "provider",
+                "replay_policy",
+                "root_frame_id",
+                "session",
+                "status",
+                "title",
+                "turn_id",
+                "usage"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "project_id": {
@@ -19156,6 +19461,49 @@
             "type": "array"
           },
           "nodes": {
+            "items": {
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "latest": {
+                  "type": "boolean"
+                },
+                "producing_cell_id": {
+                  "type": "null"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "created_at",
+                "filename",
+                "id",
+                "kind",
+                "latest",
+                "producing_cell_id",
+                "root_frame_id",
+                "version_id"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "project_id": {
@@ -27076,6 +27424,125 @@
           "credential_source": {
             "type": "string"
           },
+          "effective_capabilities": {
+            "properties": {
+              "audio": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "parallel_tool_calls": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "reasoning": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "streaming": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "strict_tool_schema": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tool_calling": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "vision": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "audio",
+              "parallel_tool_calls",
+              "reasoning",
+              "streaming",
+              "strict_tool_schema",
+              "tool_calling",
+              "vision"
+            ],
+            "type": "object"
+          },
           "has_api_key": {
             "type": "boolean"
           },
@@ -27118,6 +27585,7 @@
           "base_url",
           "capability_receipt",
           "credential_source",
+          "effective_capabilities",
           "has_api_key",
           "id",
           "model",
@@ -39389,6 +39857,125 @@
           "credential_source": {
             "type": "string"
           },
+          "effective_capabilities": {
+            "properties": {
+              "audio": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "parallel_tool_calls": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "reasoning": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "streaming": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "strict_tool_schema": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tool_calling": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "vision": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "audio",
+              "parallel_tool_calls",
+              "reasoning",
+              "streaming",
+              "strict_tool_schema",
+              "tool_calling",
+              "vision"
+            ],
+            "type": "object"
+          },
           "has_api_key": {
             "type": "boolean"
           },
@@ -39431,6 +40018,7 @@
           "base_url",
           "capability_receipt",
           "credential_source",
+          "effective_capabilities",
           "has_api_key",
           "id",
           "model",
@@ -39632,6 +40220,125 @@
           "detail": {
             "type": "string"
           },
+          "effective_capabilities": {
+            "properties": {
+              "audio": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "parallel_tool_calls": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "reasoning": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "streaming": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "strict_tool_schema": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "tool_calling": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "vision": {
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "audio",
+              "parallel_tool_calls",
+              "reasoning",
+              "streaming",
+              "strict_tool_schema",
+              "tool_calling",
+              "vision"
+            ],
+            "type": "object"
+          },
           "outbound": {
             "type": "integer"
           },
@@ -39652,6 +40359,7 @@
           "capability_receipt",
           "contacted",
           "detail",
+          "effective_capabilities",
           "outbound",
           "reachable",
           "state",

@@ -174,6 +174,14 @@ def _write_build_receipt(directory, kind, artifacts, *, source_sha=FAKE_HEAD, **
                 source_sha=source_sha,
             ),
         )
+        kwargs.setdefault(
+            "bundle_smoke",
+            _bundle_smoke_report(
+                artifact_sha256=sha256_file(artifacts[0]),
+                arch=arch,
+                source_sha=source_sha,
+            ),
+        )
     document = release_receipts.build_build_receipt(
         kind, source_sha, artifacts, **kwargs
     )
@@ -3336,6 +3344,9 @@ def _linux_receipt_inputs(linux: Path, **overrides):
         "runtime_smoke": _runtime_smoke_report(
             package_sha256=sha256_file(linux), arch=arch
         ),
+        "bundle_smoke": _bundle_smoke_report(
+            artifact_sha256=sha256_file(linux), arch=arch
+        ),
     }
     kwargs.update(overrides)
     return kwargs
@@ -3352,6 +3363,37 @@ def test_a_linux_receipt_without_the_science_probe_is_refused(assets):
             FAKE_HEAD,
             [linux],
             **_linux_receipt_inputs(linux, runtime_smoke=None),
+        )
+
+
+def test_a_linux_receipt_without_the_browser_acceptance_is_refused(assets):
+    """The packaged workbench has to have been opened in a browser."""
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    with pytest.raises(
+        release_receipts.ReceiptError, match="never opened in a browser"
+    ):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [linux],
+            **_linux_receipt_inputs(linux, bundle_smoke=None),
+        )
+
+
+def test_the_browser_acceptance_must_have_drawn_with_packaged_matplotlib(assets):
+    from scripts import release_receipts
+
+    linux = _linux_tarball(assets)
+    report = _bundle_smoke_report(artifact_sha256=sha256_file(linux))
+    report["figure_tool"] = "stdlib-png"
+    with pytest.raises(release_receipts.ReceiptError, match="packaged matplotlib"):
+        release_receipts.build_build_receipt(
+            "linux",
+            FAKE_HEAD,
+            [linux],
+            **_linux_receipt_inputs(linux, bundle_smoke=report),
         )
 
 
@@ -3508,6 +3550,22 @@ def test_a_staged_linux_receipt_that_dropped_its_probe_is_refused(assets):
     assert "never executed" in failed["detail"], failed["detail"]
 
 
+def test_a_staged_linux_receipt_that_dropped_its_browser_acceptance_is_refused(assets):
+    _desktop_release_assets(assets)
+    receipt = assets / "build-receipt-linux.json"
+    document = json.loads(receipt.read_text("utf-8"))
+    assert document["bundle_smoke"]["status"] == "passed"
+    document.pop("bundle_smoke")
+    receipt.write_text(json.dumps(document), encoding="utf-8")
+
+    report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
+
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    failed = next(step for step in report["steps"] if step["step"] == "verify")
+    assert "browser acceptance" in failed["detail"], failed["detail"]
+
+
 def test_a_staged_linux_receipt_whose_probe_is_for_other_bytes_is_refused(assets):
     _desktop_release_assets(assets)
     receipt = assets / "build-receipt-linux.json"
@@ -3546,11 +3604,21 @@ def test_the_verify_step_records_the_executed_runtime_evidence(assets):
     report = _pipeline(assets, from_artifacts=True, stop_after="verify").run()
     assert report["ok"], report["steps"][-1]
     step = next(step for step in report["steps"] if step["step"] == "verify")
-    evidence = step["facts"]["build_smoke"]["linux"]["runtime_smoke"]
-    assert evidence["status"] == "passed"
-    assert evidence["scenario_version"] == smoke.SMOKE_SCENARIO_VERSION
+    evidence = step["facts"]["build_smoke"]["linux"]
     linux = assets / "OpenAI4S-0.2.0-linux-x86_64.tar.gz"
-    assert evidence["package_sha256"] == sha256_file(linux)
+    runtime_smoke = evidence["runtime_smoke"]
+    assert runtime_smoke["status"] == "passed"
+    assert runtime_smoke["scenario_version"] == smoke.SMOKE_SCENARIO_VERSION
+    assert runtime_smoke["package_sha256"] == sha256_file(linux)
+    bundle_smoke = evidence["bundle_smoke"]
+    from scripts import release_receipts
+
+    assert bundle_smoke["status"] == "passed"
+    assert (
+        bundle_smoke["scenario_version"]
+        == release_receipts.BUNDLE_SMOKE_SCENARIO_VERSION
+    )
+    assert bundle_smoke["package_sha256"] == sha256_file(linux)
 
 
 def test_a_python_only_release_needs_no_executed_runtime_evidence(assets):
@@ -3579,6 +3647,11 @@ def test_the_receipt_cli_binds_a_probe_report_file(assets, tmp_path):
         json.dumps(_runtime_smoke_report(package_sha256=sha256_file(linux))),
         encoding="utf-8",
     )
+    browser_path = tmp_path / "bundle-smoke.json"
+    browser_path.write_text(
+        json.dumps(_bundle_smoke_report(artifact_sha256=sha256_file(linux))),
+        encoding="utf-8",
+    )
     out = tmp_path / "out"
     code = release_receipts.main(
         [
@@ -3590,6 +3663,8 @@ def test_the_receipt_cli_binds_a_probe_report_file(assets, tmp_path):
             "7100",
             "--runtime-smoke-file",
             str(report_path),
+            "--bundle-smoke-file",
+            str(browser_path),
             "--output-dir",
             str(out),
             str(linux),
@@ -3602,6 +3677,8 @@ def test_the_receipt_cli_binds_a_probe_report_file(assets, tmp_path):
     assert document["schema_version"] == 3
     assert document["runtime_smoke"]["status"] == "passed"
     assert document["runtime_smoke"]["package"]["sha256"] == sha256_file(linux)
+    assert document["bundle_smoke"]["status"] == "passed"
+    assert document["bundle_smoke"]["artifact_sha256"] == sha256_file(linux)
 
 
 # -- the browser acceptance (R6) is validated here too ----------------------

@@ -30,7 +30,8 @@ Cell, capture the resulting Artifact and read it back after a restart. The Linux
 receipt therefore carries the report of `scripts/installed_runtime_smoke.py`,
 which ran exactly that chain inside the packaged runtime, bound to the tarball's
 digest and the frozen source SHA; `bundle_smoke` carries the Linux browser
-acceptance the R6 browser harness writes. `verify_build_receipts` refuses a
+acceptance the R6 browser harness writes, and is equally required: the packaged
+workbench has to have been opened in a real browser against those exact bytes. `verify_build_receipts` refuses a
 Linux receipt whose evidence is missing, was recorded as `not_run`, failed,
 timed out, describes other bytes, or comes from an older scenario. Without this
 a release could publish a package nothing ever executed.
@@ -72,6 +73,35 @@ BUNDLE_SMOKE_CHECKS = (
     "history",
     "restart",
     "processes",
+)
+
+#: R6's frozen browser-acceptance budgets, in seconds. The harness echoes them
+#: in its report and the gate requires that echo to match: otherwise a run that
+#: quietly doubled a timeout would still produce an acceptable-looking report.
+BUNDLE_SMOKE_BUDGETS = {
+    "service": 90,
+    "cell": 60,
+    "browser": 120,
+    "cleanup": 30,
+    "total": 420,
+}
+
+#: The environment knobs the browser acceptance must have handed its daemon.
+#: Names only: the report records the variable names, never their values.
+BUNDLE_SMOKE_DAEMON_ENV = (
+    "HOME",
+    "OPENAI4S_DATA_DIR",
+    "OPENAI4S_HOST",
+    "OPENAI4S_NOTEBOOK_REPL",
+    "OPENAI4S_PORT",
+    "PATH",
+    "TMPDIR",
+)
+
+#: A credential-shaped value that survived redaction. A diagnostic quoting a
+#: live `?token=` or bearer value is a refusal, not a cosmetic flaw.
+_LEAKED_CREDENTIAL = re.compile(
+    r"(?i)(?:[?&]token=|x-openai4s-token:\s*|bearer\s+)(?!<redacted)"
 )
 
 #: A receipt kind that must carry executed-runtime evidence, and the archive
@@ -389,6 +419,12 @@ def normalize_bundle_smoke(
         raise ReceiptError(
             "bundle browser acceptance did not pass: " + ", ".join(missing)
         )
+    if str(raw.get("figure_tool") or "") != "matplotlib":
+        raise ReceiptError(
+            "bundle browser acceptance did not produce its figure with the packaged "
+            f"matplotlib (figure_tool={raw.get('figure_tool')!r}); a stand-in figure "
+            "does not prove the shipped science stack draws one"
+        )
     artifact = raw.get("artifact")
     if not isinstance(artifact, Mapping):
         raise ReceiptError("bundle browser evidence records no Artifact version")
@@ -398,12 +434,66 @@ def normalize_bundle_smoke(
         raise ReceiptError(
             "bundle browser evidence records no Artifact version SHA-256"
         )
+    timings = raw.get("timings")
+    if not isinstance(timings, Mapping):
+        raise ReceiptError("bundle browser evidence records no timings")
+    budgets = timings.get("budgets_s")
+    if not isinstance(budgets, Mapping):
+        raise ReceiptError("bundle browser evidence records no time budgets")
+    for name, seconds in BUNDLE_SMOKE_BUDGETS.items():
+        try:
+            recorded = float(budgets.get(name))
+        except (TypeError, ValueError):
+            raise ReceiptError(
+                f"bundle browser evidence records no {name} time budget"
+            ) from None
+        if recorded != float(seconds):
+            raise ReceiptError(
+                f"bundle browser evidence ran with a {name} budget of {recorded:g}s, "
+                f"not the frozen {seconds}s; rerun the acceptance under the R6 limits"
+            )
+    try:
+        total_s = float(timings.get("total_s"))
+    except (TypeError, ValueError):
+        raise ReceiptError(
+            "bundle browser evidence records no total duration"
+        ) from None
+    if total_s <= 0 or total_s > BUNDLE_SMOKE_BUDGETS["total"]:
+        raise ReceiptError(
+            f"bundle browser evidence took {total_s:g}s, outside the "
+            f"{BUNDLE_SMOKE_BUDGETS['total']}s total budget"
+        )
+    posture = raw.get("posture")
+    environment_names = (
+        posture.get("daemon_environment") if isinstance(posture, Mapping) else None
+    )
+    if not isinstance(environment_names, list) or not all(
+        isinstance(item, str) for item in environment_names
+    ):
+        raise ReceiptError(
+            "bundle browser evidence records no daemon environment; the gate "
+            "cannot tell what the run handed the packaged daemon"
+        )
+    missing_environment = sorted(set(BUNDLE_SMOKE_DAEMON_ENV) - set(environment_names))
+    if missing_environment:
+        raise ReceiptError(
+            "bundle browser acceptance did not hand its daemon: "
+            + ", ".join(missing_environment)
+        )
     diagnostics = raw.get("diagnostics")
     if diagnostics is not None:
         if not isinstance(diagnostics, list) or not all(
             isinstance(item, str) for item in diagnostics
         ):
             raise ReceiptError("bundle browser evidence has malformed diagnostics")
+        if len(diagnostics) > 8:
+            raise ReceiptError("bundle browser evidence carries too many diagnostics")
+        for item in diagnostics:
+            if _LEAKED_CREDENTIAL.search(item):
+                raise ReceiptError(
+                    "bundle browser evidence carries a credential-shaped value in "
+                    "its diagnostics; the log was not redacted"
+                )
     return dict(raw)
 
 
@@ -491,13 +581,18 @@ def build_build_receipt(
             source_sha=str(source_sha),
             platform=platform,
         )
-        if bundle_smoke is not None:
-            document["bundle_smoke"] = normalize_bundle_smoke(
-                bundle_smoke,
-                artifact_sha256=_digest(linux_artifact),
-                source_sha=str(source_sha),
-                platform=platform,
+        if bundle_smoke is None:
+            raise ReceiptError(
+                f"a linux build receipt for {linux_artifact.name} must carry the "
+                "browser acceptance result (bundle_smoke); the packaged workbench was "
+                "never opened in a browser"
             )
+        document["bundle_smoke"] = normalize_bundle_smoke(
+            bundle_smoke,
+            artifact_sha256=_digest(linux_artifact),
+            source_sha=str(source_sha),
+            platform=platform,
+        )
     elif runtime_smoke is not None or bundle_smoke is not None:
         raise ReceiptError(
             f"a {kind} build receipt cannot carry platform smoke evidence; it "
@@ -547,15 +642,20 @@ def _verify_linux_smoke(
         platform=platform,
     )
     bundle_smoke = document.get("bundle_smoke")
-    if isinstance(bundle_smoke, Mapping) or bundle_smoke is not None:
-        # R6's producer writes this report from the Linux browser harness. When
-        # a receipt carries it, it must bind to the same tarball and commit.
-        normalize_bundle_smoke(
-            bundle_smoke,
-            artifact_sha256=digest,
-            source_sha=expected_sha,
-            platform=platform,
+    if not isinstance(bundle_smoke, Mapping):
+        raise ReceiptError(
+            f"build receipt {receipt_path.name} is for {name} but carries no browser "
+            "acceptance (bundle_smoke); nobody opened this package's workbench in a "
+            "browser before it was staged"
         )
+    # The browser harness writes this report and binds it to the same tarball
+    # and commit, so a report from another build cannot be borrowed.
+    normalize_bundle_smoke(
+        bundle_smoke,
+        artifact_sha256=digest,
+        source_sha=expected_sha,
+        platform=platform,
+    )
 
 
 def verify_build_receipts(
