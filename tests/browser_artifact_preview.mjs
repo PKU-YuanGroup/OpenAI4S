@@ -298,8 +298,14 @@ async function main() {
         href === `/api/v1/artifacts/versions/${oversized.versionId}`,
         `download is not the exact version: ${href}`,
       );
+      // F2 rejects from Content-Length when it is oversized; the header request
+      // itself is expected, the body must never be parsed into a preview.
       const reads = requests.filter((url) => url.includes(`/artifacts/versions/${oversized.versionId}`));
-      assertion(reads.length === 0, "trusted size metadata should stop the read before the body");
+      assertion(reads.length <= 1, `over-budget artifact was fetched ${reads.length} times`);
+      assertion(
+        (await page.locator("#dock-viewer .bio-summary").count()) === 0,
+        "an over-budget structure was parsed anyway",
+      );
     });
 
     await runCase(page, "interrupted read shows failure and Retry re-reads", async () => {

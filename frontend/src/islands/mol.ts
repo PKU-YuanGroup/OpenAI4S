@@ -13,7 +13,7 @@
  */
 
 import { _molView, _molViewer } from "../stores/artifacts";
-import { fetchArtifactText, isArtifactReadCancelled } from "../features/artifacts/api";
+import { fetchArtifactText, isArtifactReadAborted } from "../features/artifacts/api";
 import { filesT, readFailureText } from "../features/artifacts/copy";
 import { esc } from "../features/md/esc";
 import { themeIsDark } from "../features/theme/theme";
@@ -196,7 +196,7 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
   const stale = (): boolean => request !== molRequest || !view.isConnected;
   /** The bounded read failed (over limit / timeout / HTTP): say so, keep download. */
   const showFailure = (error: unknown): void => {
-    if (stale() || isArtifactReadCancelled(error)) return;
+    if (stale() || isArtifactReadAborted(error)) return;
     view.innerHTML = "";
     const card = el("div", "renderer-fallback");
     const text = el("div", "renderer-fallback-text", readFailureText(error));

@@ -16,8 +16,9 @@ import {
 import { browseFiles, currentFilesFilter, filesGridArtifacts, filesGridPending, filesListingIsCurrent, filesReadFailed, visibleArtifacts } from "./files-index";
 import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
+import { abortPreviewReads } from "./api";
 import { closeNotebookPreview } from "./notebook";
-import { beginThumbPaint, endThumbPaint, releaseThumbReads, tileThumb, tileThumbBig } from "./thumbs";
+import { pruneThumbReads, tileThumb, tileThumbBig } from "./thumbs";
 import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
 export function addOpenTab(a: ArtifactRow): void {
@@ -107,6 +108,10 @@ export function showDockPane(pane: string): void {
     const n = document.getElementById("dock-" + p);
     if (n) n.classList.toggle("hidden", p !== pane);
   });
+  // Leaving Files drops every tile read no mounted card still uses; leaving the
+  // Viewer aborts the preview read that was only for it.
+  if (pane !== "files") pruneThumbReads();
+  if (pane !== "viewer") abortPreviewReads();
 }
 
 function dockEl(): HTMLElement | null {
@@ -121,8 +126,10 @@ export function dockOpen(): void {
 }
 
 export function dockClose(): void {
-  // Closing the dock leaves the notebook preview: cancel its read and release
-  // the image object URLs it created.
+  // Closing the dock leaves both preview kinds: cancel the artifact read, the
+  // tile reads no card shows any more, and the notebook's image URLs.
+  abortPreviewReads();
+  pruneThumbReads();
   closeNotebookPreview();
   const d = dock.value as { open: boolean; tab: string };
   dock.value = { ...d, open: false, tab: d.tab };
@@ -137,8 +144,6 @@ export function dockToggle(): void {
 
 export function setActiveTab(tab: string, selectArtifact = true): void {
   viewerRequest += 1;
-  // Leaving Files drops every tile read no other view is showing.
-  if (tab !== "files") releaseThumbReads();
   activeTab.value = tab;
   const selected = (openTabs.value as ArtifactRow[]).find((row) => artifactTabKey(row) === tab);
   if (selected && selectArtifact) {
@@ -149,7 +154,10 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   renderDockTabs();
   const pane =
     tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
-  if (pane !== "viewer") closeNotebookPreview();
+  if (pane !== "viewer") {
+    abortPreviewReads();
+    closeNotebookPreview();
+  }
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
   else if (tab === "timeline") {
@@ -174,6 +182,8 @@ export function sessionNameFor(frameId: string | null | undefined): string {
 export function renderConversationArtifacts(): void {
   if (typeof document === "undefined") return;
   document.querySelectorAll(".generated, .uploaded").forEach((n) => n.remove());
+  // Repaint: reads whose tiles were just removed have no attached consumer.
+  pruneThumbReads();
   const arts = visibleArtifacts();
   if (!arts.length) return;
   const mkTile = (a: ArtifactRow) => {
@@ -243,14 +253,7 @@ function paintReadError(list: HTMLElement, confirmed: boolean): void {
 
 export function renderFilesGrid(): void {
   if (typeof document === "undefined") return;
-  // One paint owns the tiles it builds; a later paint cancels reads this one
-  // started but the next grid no longer shows.
-  const paint = beginThumbPaint();
-  try {
-    paintFilesGrid();
-  } finally {
-    endThumbPaint(paint);
-  }
+  paintFilesGrid();
 }
 
 function paintFilesGrid(): void {
@@ -262,6 +265,9 @@ function paintFilesGrid(): void {
   // No cards yet is not zero files while the read that decides it is pending.
   const pending = !arts.length && !readFailed && filesGridPending();
   list.innerHTML = "";
+  // The previous grid's cards are detached now: drop the tile reads no other
+  // view still shows before painting their replacements.
+  pruneThumbReads();
   if (count) count.textContent = pending ? "…" : String(arts.length);
   paintVersionBanner(list);
   if (readFailed) paintReadError(list, arts.length > 0);
@@ -312,6 +318,9 @@ export function setRenderViewerImpl(fn: (() => void) | null): void {
 }
 
 export function renderViewer(): void {
+  // A repaint/replacement owns the Viewer: abort the previous render's read
+  // before the new body is built (the new render starts its own controller).
+  abortPreviewReads();
   if (renderViewerImpl) renderViewerImpl();
 }
 

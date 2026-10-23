@@ -8,8 +8,8 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 
 | File | Responsibility |
 | --- | --- |
-| [`api.ts`](api.ts) | Same-origin `api()`, `ApiError`, `bytes`, `looksBinary` / `controlDense`, `el`/`icon` (`el` is shared with islands), `isReady` window calls. Bounded `readArtifactText()`/`fetchArtifactText()` (8 MiB main preview, streamed budget, timeout/cancel classification, `ArtifactReadError`) and the frozen display limits with `unicodeSafeSlice` / `truncateMarkdown`. |
-| [`read-budget.test.ts`](read-budget.test.ts) | Streamed byte budget: forged/missing length, multi-chunk overflow cancels the reader, timeout, cancellation, HTTP status first, unbounded body refused, partial prefix only when allowed. |
+| [`api.ts`](api.ts) | Same-origin `api()`, `ApiError`, `bytes`, `looksBinary` / `controlDense`, `el`/`icon` (`el` is shared with islands), `isReady` window calls. Two bounded read entries: strict `fetchArtifactText(url, opts?)` (complete file or rejection) and prefix `readArtifactPrefix(url, {maxBytes, …})` (thumbnails only, UTF-8 boundary respected); F1 constants, `ArtifactReadError.kind` (`too_large`/`timeout`/`aborted`), HTTP status as `ApiError`, per-render preview AbortController (`beginPreviewRead`/`abortPreviewReads`/`abortDetachedPreviews`), and the frozen display limits with `unicodeSafeSlice` / `truncateMarkdown`. |
+| [`read-budget.test.ts`](read-budget.test.ts) | F1/F2 read contracts: strict complete-or-reject at the limit, forged/oversized/missing Content-Length, multi-chunk overflow cancels the reader, HTTP status as ApiError, timeout, external abort, no-body fallback rules, prefix truncation without a replacement character at the UTF-8 boundary. |
 | [`api.test.ts`](api.test.ts) | `looksBinary`: one-line sequences stay text; base64 blobs, control characters and escape dumps do not; one linear pass over the first MiB. |
 | [`artifacts.css`](artifacts.css) | Files toolbar / filter / Load more / stale-version banner. |
 | [`boot.test.ts`](boot.test.ts) | DOM mount ordering and initial-route-before-deep-link regression coverage. |
@@ -39,7 +39,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` union keys; 5000×100 cap. |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape` (app.js:8771-8802). |
 | [`state.ts`](state.ts) | Lane-local M-03 signals. Not promoted into `stores/`. |
-| [`thumbs.ts`](thumbs.ts) | Tile thumbs from a bounded per-version preview cache, `parseMolPoints` / `molSvg`. Four concurrent 256 KiB reads with a 15 s deadline, reference-counted sharing, and cancellation when the Files paint leaves. |
+| [`thumbs.ts`](thumbs.ts) | Tile thumbs from a bounded per-version preview cache, `parseMolPoints` / `molSvg`. Global FIFO prefix queue (at most four reads, shared 15 s deadline), every tile DOM element a consumer of its cache key, `pruneThumbReads()` aborts only reads whose consumers have all left; truncated text/molecule tiles say "partial preview", a truncated data tile shows columns only (never a row count). |
 | [`thumbs.test.ts`](thumbs.test.ts) | One read per artifact version, error pages and failed reads never kept, LRU bound, read queue ≤4, leaving cancels unowned reads, partial text prefix. |
 | [`types.ts`](types.ts) | Artifact DTO, page size 50/100, TEXT_EXT / MOL_EXT. |
 | [`ui.ts`](ui.ts) | Files grid, dock tabs, `openViewer`, deep links; `renderViewer` delegates to the islands Viewer. Provided `version_id` never silent-latest. |

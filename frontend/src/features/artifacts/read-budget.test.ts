@@ -3,13 +3,15 @@ import { resetStoreFields } from "../../stores/signal-field";
 import {
   ApiError,
   ArtifactReadError,
-  PREVIEW_MAX_BYTES,
-  THUMB_MAX_BYTES,
-  THUMB_MAX_CONCURRENCY,
-  THUMB_READ_TIMEOUT_MS,
+  isApiStatus,
+  isArtifactReadAborted,
+  PREVIEW_READ_MAX_BYTES,
+  PREVIEW_READ_TIMEOUT_MS,
+  readArtifactPrefix,
   fetchArtifactText,
-  readArtifactText,
   setArtifactsFetch,
+  THUMB_READ_CONCURRENCY,
+  THUMB_READ_MAX_BYTES,
 } from "./api";
 
 function encoded(text: string): Uint8Array {
@@ -18,7 +20,11 @@ function encoded(text: string): Uint8Array {
 
 function streamed(
   chunks: Uint8Array[],
-  hooks: { onCancel?: () => void; onPull?: () => void; neverClose?: boolean } = {},
+  hooks: {
+    onCancel?: () => void;
+    onPull?: () => void;
+    neverClose?: boolean;
+  } = {},
 ): ReadableStream<Uint8Array> {
   let index = 0;
   return new ReadableStream<Uint8Array>({
@@ -34,8 +40,22 @@ function streamed(
   });
 }
 
-function responseOf(chunks: Uint8Array[], init: ResponseInit = {}): Response {
-  return new Response(streamed(chunks), init);
+function responseOf(
+  chunks: Uint8Array[],
+  init: ResponseInit = {},
+  hooks: { onCancel?: () => void; onPull?: () => void; neverClose?: boolean } = {},
+): Response {
+  return new Response(streamed(chunks, hooks), init);
+}
+
+function bodyless(headers: Record<string, string>, text = ""): Response {
+  return {
+    ok: true,
+    status: 200,
+    body: null,
+    headers: new Headers(headers),
+    text: async () => text,
+  } as unknown as Response;
 }
 
 afterEach(() => {
@@ -43,103 +63,115 @@ afterEach(() => {
   resetStoreFields();
 });
 
-describe("frozen preview read budgets (PLAN §2.4)", () => {
-  it("keeps the frozen numbers", () => {
-    expect(PREVIEW_MAX_BYTES).toBe(8 * 1024 * 1024);
-    expect(THUMB_MAX_BYTES).toBe(256 * 1024);
-    expect(THUMB_MAX_CONCURRENCY).toBe(4);
-    expect(THUMB_READ_TIMEOUT_MS).toBe(15_000);
+describe("frozen preview read numbers (F1)", () => {
+  it("pins the four constants by name and value", () => {
+    expect(PREVIEW_READ_MAX_BYTES).toBe(8_388_608);
+    expect(THUMB_READ_MAX_BYTES).toBe(262_144);
+    expect(THUMB_READ_CONCURRENCY).toBe(4);
+    expect(PREVIEW_READ_TIMEOUT_MS).toBe(15_000);
   });
 });
 
-describe("readArtifactText budget (R1)", () => {
-  it("reads a complete body under the budget and decodes multibyte text across chunks", async () => {
-    const whole = "中文🙂ok — naïve\r\nsecond line";
-    const bytes = encoded(whole);
-    // Split inside a 4-byte emoji and a 3-byte Chinese character.
-    const chunks = [bytes.subarray(0, 2), bytes.subarray(2, 7), bytes.subarray(7)];
-    setArtifactsFetch(async () => responseOf(chunks));
-    const read = await readArtifactText("/api/v1/artifacts/versions/v1", { maxBytes: 1024 });
-    expect(read.text).toBe(whole);
-    expect(read.bytes).toBe(bytes.byteLength);
-    expect(read.truncated).toBe(false);
+describe("fetchArtifactText: strict mode (F2)", () => {
+  it("returns the complete body when it is exactly at the limit", async () => {
+    const chunk = new Uint8Array(6).fill(65);
+    setArtifactsFetch(async () => responseOf([chunk, chunk]));
+    await expect(fetchArtifactText("/api/v1/artifacts/a", { maxBytes: 12 })).resolves.toBe(
+      "AAAAAA".repeat(2),
+    );
   });
 
-  it("stops at the byte budget across chunks, cancels the reader, and returns no body", async () => {
+  it("stops at the first byte over the budget with no length header and cancels the reader", async () => {
     let cancelled = false;
-    const chunk = new Uint8Array(8).fill(65);
-    setArtifactsFetch(
-      async () =>
-        new Response(streamed([chunk, chunk, chunk, chunk, chunk], { onCancel: () => { cancelled = true; } })),
-    );
-    const error = await readArtifactText("/api/v1/artifacts/a", { maxBytes: 12 }).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ArtifactReadError);
-    expect((error as ArtifactReadError).code).toBe("too-large");
-    expect((error as ArtifactReadError).bytes).toBe(12);
-    expect(cancelled).toBe(true);
-    // Nothing was handed to a parser: the caller only ever sees the rejection
-    // or an explicitly allowed prefix, never a silently short document.
-    await expect(readArtifactText("/api/v1/artifacts/a", { maxBytes: 12 })).rejects.toBeInstanceOf(
-      ArtifactReadError,
-    );
-  });
-
-  it("cannot be bypassed by a missing or forged content length", async () => {
-    const body = { onCancel: undefined } as { onCancel?: () => void };
     const chunk = new Uint8Array(8).fill(66);
     setArtifactsFetch(
       async () =>
-        new Response(streamed([chunk, chunk, chunk, chunk], body), {
-          // A compressed or lying response understates the decoded body.
-          headers: { "content-length": "8", "content-encoding": "gzip" },
+        new Response(
+          streamed([chunk, chunk, chunk, chunk], {
+            onCancel: () => {
+              cancelled = true;
+            },
+          }),
+        ),
+    );
+    const error = await fetchArtifactText("/api/v1/artifacts/a", { maxBytes: 12 }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ArtifactReadError);
+    expect((error as ArtifactReadError).kind).toBe("too_large");
+    expect((error as ArtifactReadError).maxBytes).toBe(12);
+    expect((error as ArtifactReadError).bytes).toBe(12);
+    expect(cancelled).toBe(true);
+  });
+
+  it("rejects a body that forges a small Content-Length", async () => {
+    const chunk = new Uint8Array(8).fill(67);
+    setArtifactsFetch(
+      async () =>
+        new Response(streamed([chunk, chunk, chunk]), {
+          headers: { "content-length": "8" },
         }),
     );
-    const error = await readArtifactText("/api/v1/artifacts/b", { maxBytes: 20 }).catch((e: unknown) => e);
-    expect((error as ArtifactReadError).code).toBe("too-large");
+    const error = await fetchArtifactText("/api/v1/artifacts/a", { maxBytes: 12 }).catch(
+      (e: unknown) => e,
+    );
+    expect((error as ArtifactReadError).kind).toBe("too_large");
   });
 
-  it("rejects early from trusted metadata before any byte is read", async () => {
-    let reads = 0;
-    setArtifactsFetch(async () => {
-      reads += 1;
-      return new Response("never read");
-    });
-    const error = await readArtifactText("/api/v1/artifacts/big", {
-      maxBytes: 1024,
-      declaredBytes: 2048,
-    }).catch((e: unknown) => e);
-    expect((error as ArtifactReadError).code).toBe("too-large");
-    expect(reads).toBe(0);
-  });
-
-  it("checks the HTTP status before reading the body", async () => {
+  it("rejects from an oversized Content-Length before reading the body", async () => {
     let readers = 0;
+    let cancelled = false;
     setArtifactsFetch(
       async () =>
         ({
-          ok: false,
-          status: 500,
+          ok: true,
+          status: 200,
+          headers: new Headers({ "content-length": "9000000" }),
           body: {
+            cancel: async () => {
+              cancelled = true;
+            },
             getReader: () => {
               readers += 1;
-              throw new Error("body must not be read for an error status");
+              throw new Error("the body must not be read");
             },
           },
         }) as unknown as Response,
     );
-    const error = await readArtifactText("/api/v1/artifacts/e", { maxBytes: 1024 }).catch((e: unknown) => e);
+    const error = await fetchArtifactText("/api/v1/artifacts/big").catch((e: unknown) => e);
+    expect((error as ArtifactReadError).kind).toBe("too_large");
+    expect((error as ArtifactReadError).maxBytes).toBe(PREVIEW_READ_MAX_BYTES);
+    expect(readers).toBe(0);
+    expect(cancelled).toBe(true);
+  });
+
+  it("throws ApiError with the HTTP status for a non-2xx response", async () => {
+    setArtifactsFetch(async () => new Response("server error", { status: 500 }));
+    const error = await fetchArtifactText("/api/v1/artifacts/e").catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(500);
-    expect(readers).toBe(0);
+    expect(isApiStatus(error, 500)).toBe(true);
   });
 
-  it("refuses automatic preview when the size cannot be proven bounded", async () => {
-    setArtifactsFetch(async () => ({ ok: true, body: null }) as unknown as Response);
-    const error = await readArtifactText("/api/v1/artifacts/u").catch((e: unknown) => e);
-    expect((error as ArtifactReadError).code).toBe("unbounded");
+  it("times out a stalled body and reports timeout", async () => {
+    setArtifactsFetch(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull() {
+              /* never delivers, never closes */
+            },
+          }),
+        ),
+    );
+    const error = await fetchArtifactText("/api/v1/artifacts/t", { timeoutMs: 25 }).catch(
+      (e: unknown) => e,
+    );
+    expect((error as ArtifactReadError).kind).toBe("timeout");
+    expect(isArtifactReadAborted(error)).toBe(false);
   });
 
-  it("classifies a read cancelled by its owner", async () => {
+  it("reports an external abort as aborted, not as a failed read", async () => {
     setArtifactsFetch(async (_url, init) => {
       const signal = init?.signal;
       return new Response(
@@ -156,65 +188,77 @@ describe("readArtifactText budget (R1)", () => {
       );
     });
     const controller = new AbortController();
-    const read = readArtifactText("/api/v1/artifacts/c", { signal: controller.signal });
+    const read = fetchArtifactText("/api/v1/artifacts/c", { signal: controller.signal });
     controller.abort();
     const error = await read.catch((e: unknown) => e);
-    expect((error as ArtifactReadError).code).toBe("cancelled");
+    expect((error as ArtifactReadError).kind).toBe("aborted");
+    expect(isArtifactReadAborted(error)).toBe(true);
+  });
+});
+
+describe("fetchArtifactText: no-body fallback rule (F2)", () => {
+  it("falls back to response.text() only for identity encoding with a small known length", async () => {
+    setArtifactsFetch(async () => bodyless({ "content-length": "5" }, "hello"));
+    await expect(fetchArtifactText("/api/v1/artifacts/n")).resolves.toBe("hello");
   });
 
-  it("classifies a read that outlives its deadline", async () => {
+  it("refuses a compressed body it cannot size while streaming", async () => {
+    setArtifactsFetch(async () =>
+      bodyless({ "content-length": "5", "content-encoding": "gzip" }, "hello"),
+    );
+    const error = await fetchArtifactText("/api/v1/artifacts/n").catch((e: unknown) => e);
+    expect((error as ArtifactReadError).kind).toBe("too_large");
+  });
+
+  it("refuses a body whose size is not knowable at all", async () => {
+    setArtifactsFetch(async () => bodyless({}, "hello"));
+    const error = await fetchArtifactText("/api/v1/artifacts/n").catch((e: unknown) => e);
+    expect((error as ArtifactReadError).kind).toBe("too_large");
+  });
+});
+
+describe("readArtifactPrefix: prefix mode (F2)", () => {
+  it("returns a complete prefix with truncated false below the budget", async () => {
+    setArtifactsFetch(async () => responseOf([encoded("complete file")]));
+    await expect(
+      readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 100 }),
+    ).resolves.toEqual({ text: "complete file", truncated: false });
+  });
+
+  it("stops exactly at the budget, cancels the reader and marks truncated", async () => {
+    let cancelled = false;
+    const chunk = encoded("0123456789");
     setArtifactsFetch(
       async () =>
         new Response(
-          new ReadableStream<Uint8Array>({
-            pull() {
-              /* never delivers, never closes */
+          streamed([chunk, chunk], {
+            onCancel: () => {
+              cancelled = true;
             },
           }),
         ),
     );
-    const error = await readArtifactText("/api/v1/artifacts/t", { timeoutMs: 25 }).catch(
-      (e: unknown) => e,
-    );
-    expect((error as ArtifactReadError).code).toBe("timeout");
+    const read = await readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 10 });
+    expect(read).toEqual({ text: "0123456789", truncated: true });
+    expect(cancelled).toBe(true);
   });
 
-  it("classifies a transport failure", async () => {
-    setArtifactsFetch(async () => {
-      throw new TypeError("network down");
-    });
-    const error = await readArtifactText("/api/v1/artifacts/f").catch((e: unknown) => e);
-    expect((error as ArtifactReadError).code).toBe("read-failed");
-  });
-
-  it("keeps an over-budget prefix only when the caller allows a partial preview", async () => {
-    const chunk = encoded("x".repeat(20));
-    setArtifactsFetch(async () => responseOf([chunk]));
-    const read = await readArtifactText("/api/v1/artifacts/p", {
-      maxBytes: 10,
-      allowPartial: true,
-    });
-    expect(read.truncated).toBe(true);
-    expect(read.text).toBe("x".repeat(10));
-    const strict = await readArtifactText("/api/v1/artifacts/p", { maxBytes: 10 }).catch(
-      (e: unknown) => e,
-    );
-    expect((strict as ArtifactReadError).code).toBe("too-large");
-  });
-
-  it("keeps fetchArtifactText complete-only under the 8 MiB main preview budget", async () => {
-    const text = "small complete file\n";
+  it("drops an incomplete trailing UTF-8 sequence instead of emitting a replacement character", async () => {
+    const text = "AAAAAAAAA" + "é" + "Z";
     setArtifactsFetch(async () => responseOf([encoded(text)]));
-    await expect(fetchArtifactText("/api/v1/artifacts/s")).resolves.toBe(text);
+    const read = await readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 10 });
+    expect(read.truncated).toBe(true);
+    expect(read.text).toBe("AAAAAAAAA");
+    expect(read.text).not.toContain("\uFFFD");
   });
 
-  it("stops the default 8 MiB read when the body is larger", async () => {
-    const megabyte = new Uint8Array(1024 * 1024).fill(65);
-    setArtifactsFetch(async () => responseOf([megabyte, megabyte, megabyte, megabyte, megabyte, megabyte, megabyte, megabyte, megabyte]));
-    const error = await fetchArtifactText("/api/v1/artifacts/huge").catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ArtifactReadError);
-    expect((error as ArtifactReadError).code).toBe("too-large");
-    expect((error as ArtifactReadError).maxBytes).toBe(PREVIEW_MAX_BYTES);
-    expect((error as ArtifactReadError).bytes).toBe(PREVIEW_MAX_BYTES);
+  it("decodes multi-byte characters that fit wholly inside the prefix", async () => {
+    setArtifactsFetch(async () => responseOf([encoded("中文报告")]));
+    // "中文报告" is 12 UTF-8 bytes; reading exactly to the budget keeps every
+    // whole character and marks the read truncated.
+    await expect(readArtifactPrefix("/api/v1/artifacts/p", { maxBytes: 12 })).resolves.toEqual({
+      text: "中文报告",
+      truncated: true,
+    });
   });
 });

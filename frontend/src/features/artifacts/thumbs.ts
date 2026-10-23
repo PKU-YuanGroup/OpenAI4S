@@ -1,16 +1,15 @@
-import { tableShape } from "../csv/csv";
+import { delimiterFor, parseDelimited, tableShape } from "../csv/csv";
 import { _thumbCache } from "../../stores/artifacts";
 import { artifactCacheKey, artUrl } from "./cache";
 import {
+  ArtifactReadError,
   el,
   icon,
-  isArtifactReadCancelled,
+  isArtifactReadAborted,
   looksBinary,
-  readArtifactText,
-  THUMB_MAX_BYTES,
-  THUMB_MAX_CONCURRENCY,
-  THUMB_READ_TIMEOUT_MS,
-  type ArtifactTextRead,
+  readArtifactPrefix,
+  THUMB_READ_CONCURRENCY,
+  THUMB_READ_MAX_BYTES,
 } from "./api";
 import { filesT, readFailureText } from "./copy";
 import type { ArtifactRow } from "./types";
@@ -22,39 +21,34 @@ export type MolPoint = { x: number; y: number; z: number };
 export const THUMB_CACHE_LIMIT = 64;
 
 /**
- * Frozen thumbnail budget (PLAN §2.4): one file may contribute at most
- * 256 KiB, at most four reads run at once, and a read that has not delivered
- * its body 15 s after it started is stopped. The constants live beside the
- * bounded read so every caller enforces the same numbers.
+ * Frozen thumbnail budget (F1): one file contributes at most 256 KiB read as a
+ * prefix, at most four reads run at once, and one read (any mode) may not take
+ * longer than the shared 15 s deadline measured from when it actually starts.
  */
-export { THUMB_MAX_BYTES, THUMB_MAX_CONCURRENCY, THUMB_READ_TIMEOUT_MS };
+export { THUMB_READ_CONCURRENCY, THUMB_READ_MAX_BYTES };
 
 type ThumbKind = "text" | "data" | "mol";
 
 /**
- * One in-flight tile read. `paints` are Files paint passes currently showing
- * the tile; a read also survives a paint when another view (the conversation
- * strip) is still showing it (`live`). Only a read that no view owns is
- * cancelled — sharing one read must never let one consumer close it for
- * another.
+ * One in-flight or queued tile read. Every tile DOM element showing the same
+ * cache key is a consumer; a read is dropped only when *all* of its consumers
+ * have left the document, so one view closing can never cancel another view's
+ * shared read.
  */
 type ThumbRead = {
   key: string;
   controller: AbortController;
-  paints: Set<number>;
-  live: boolean;
+  consumers: Set<Element>;
 };
 
 const thumbReads = new Map<string, ThumbRead>();
-const paints = new Set<number>();
-let paintSeq = 0;
-let currentPaint: number | null = null;
 
+/** Global FIFO: a read starts in the order it was requested, at most four at a time. */
 let thumbActive = 0;
 const thumbQueue: Array<() => void> = [];
 
 function acquireThumbSlot(): Promise<void> {
-  if (thumbActive < THUMB_MAX_CONCURRENCY) {
+  if (thumbActive < THUMB_READ_CONCURRENCY) {
     thumbActive += 1;
     return Promise.resolve();
   }
@@ -72,55 +66,30 @@ function releaseThumbSlot(): void {
   if (next) next();
 }
 
-function registerConsumer(read: ThumbRead | undefined): void {
-  if (!read) return;
-  if (currentPaint != null) read.paints.add(currentPaint);
-  else read.live = true;
+function allConsumersDetached(read: ThumbRead): boolean {
+  if (!read.consumers.size) return true;
+  for (const consumer of read.consumers) {
+    // Real Elements always carry a boolean; a test double without the property
+    // is treated as attached so it cannot silently cancel the read.
+    if (consumer.isConnected !== false) return false;
+  }
+  return true;
 }
 
-/** Whether a mounted view still owns this read: a live consumer or an active paint pass. */
-function owned(read: ThumbRead): boolean {
-  if (read.live) return true;
-  for (const id of read.paints) if (paints.has(id)) return true;
-  return false;
-}
-
-/** Stop tile reads that no mounted view owns any more. */
-function cancelOrphans(): void {
+/**
+ * Abort tile reads whose every consumer has left the document. Called on every
+ * conversation/Files repaint and whenever the Files pane is left, so a read
+ * nobody can see does not keep downloading or later write into a detached tile.
+ * A read shared with a mounted view is kept.
+ */
+export function pruneThumbReads(): void {
   for (const [key, read] of thumbReads) {
-    if (owned(read)) continue;
+    if (!allConsumersDetached(read)) continue;
     read.controller.abort();
     thumbReads.delete(key);
     const cache = _thumbCache.value as Record<string, Promise<unknown>>;
     delete cache[key];
   }
-}
-
-/**
- * Begin one Files grid paint. `tileThumb` calls made during the paint become
- * its consumers; `endThumbPaint` cancels reads the paint dropped.
- */
-export function beginThumbPaint(): number {
-  paintSeq += 1;
-  currentPaint = paintSeq;
-  paints.add(paintSeq);
-  return paintSeq;
-}
-
-export function endThumbPaint(token: number): void {
-  paints.delete(token);
-  if (currentPaint === token) currentPaint = paints.size ? Math.max(...paints) : null;
-  cancelOrphans();
-}
-
-/**
- * Leaving the Files view: no paint owns any read now, so every read that has
- * no other consumer is cancelled. Cached, already-finished previews stay.
- */
-export function releaseThumbReads(): void {
-  paints.clear();
-  currentPaint = null;
-  cancelOrphans();
 }
 
 /**
@@ -130,14 +99,15 @@ export function releaseThumbReads(): void {
  * The key was id + size, so a new version of the same length kept the old
  * preview; an error page, or a read that failed, stayed cached for the page's
  * life; and data tiles downloaded and parsed the whole file again on every
- * Files repaint. Entries now live in a bounded LRU, a failed read is dropped
- * so the next paint retries it, and the read itself is a bounded stream
- * (256 KiB, four at a time, 15 s) instead of an unbounded `text()`.
+ * Files repaint. Entries now live in a bounded LRU, a failed or cancelled read
+ * is evicted so the next paint retries it, and only the prefix the tile needs
+ * is read (256 KiB, four at a time, shared 15 s deadline).
  */
 function thumbRead<T>(
   kind: ThumbKind,
   a: ArtifactRow,
-  derive: (read: ArtifactTextRead) => T,
+  derive: (read: { text: string; truncated: boolean }) => T,
+  consumer: HTMLElement,
 ): Promise<T> {
   const cache = _thumbCache.value as Record<string, Promise<unknown>>;
   const key = `${kind}|${artifactCacheKey(a)}|${a.size_bytes ?? ""}`;
@@ -145,31 +115,32 @@ function thumbRead<T>(
   if (hit) {
     delete cache[key];
     cache[key] = hit;
-    registerConsumer(thumbReads.get(key));
+    thumbReads.get(key)?.consumers.add(consumer);
     return hit;
   }
   const controller = new AbortController();
-  const read: ThumbRead = { key, controller, paints: new Set(), live: false };
+  const read: ThumbRead = { key, controller, consumers: new Set([consumer]) };
   thumbReads.set(key, read);
   const promise = acquireThumbSlot()
-    .then(() =>
-      readArtifactText(artUrl(a), {
-        maxBytes: THUMB_MAX_BYTES,
+    .then(() => {
+      // Dropped before it started: every tile that wanted it has gone.
+      if (allConsumersDetached(read)) {
+        throw new ArtifactReadError("aborted", "thumbnail read has no attached consumer", {
+          maxBytes: THUMB_READ_MAX_BYTES,
+        });
+      }
+      return readArtifactPrefix(artUrl(a), {
+        maxBytes: THUMB_READ_MAX_BYTES,
         signal: controller.signal,
-        timeoutMs: THUMB_READ_TIMEOUT_MS,
-        declaredBytes: a.size_bytes,
-        // Only the text tile shows a prefix: data and molecule tiles keep a
-        // structured fallback instead of drawing half a table or molecule.
-        allowPartial: kind === "text",
-      }),
-    )
+      });
+    })
     .then(derive)
     .finally(() => {
       releaseThumbSlot();
       if (thumbReads.get(key) === read) thumbReads.delete(key);
     });
   cache[key] = promise;
-  registerConsumer(read);
+  // A failed or cancelled read must not stay cached: the next paint retries it.
   promise.catch(() => {
     if (cache[key] === promise) delete cache[key];
   });
@@ -178,14 +149,17 @@ function thumbRead<T>(
   return promise;
 }
 
-/** A text tile: its first 16 lines, at most 900 characters; null when binary. */
-function textSnippet(read: ArtifactTextRead): { text: string; partial: boolean } | null {
-  const txt = read.text;
-  if (looksBinary(txt)) return null;
-  return { text: snippet(txt), partial: read.truncated };
+/** The first line's cells, for a data tile that only has a prefix. */
+function partialColumns(text: string, a: ArtifactRow): string[] {
+  const firstLine = text.replace(/\r/g, "").split("\n", 1)[0] || "";
+  const separator = delimiterFor(a.filename, a.content_type, firstLine);
+  const row = parseDelimited(firstLine, separator)[0] || [];
+  return row.map((cell) => cell.trim()).filter(Boolean);
 }
 
-function snippet(txt: string): string {
+/** A text tile: its first 16 lines, at most 900 characters; null when binary. */
+function textSnippet(txt: string): string | null {
+  if (looksBinary(txt)) return null;
   return txt
     .slice(0, 4096)
     .replace(/\r/g, "")
@@ -291,15 +265,30 @@ function dataCol(iconName: string, label: string): HTMLElement {
 }
 
 function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
-  thumbRead("data", a, (read) => tableShape(read.text, a))
-    .then((shape) => {
+  thumbRead(
+    "data",
+    a,
+    (read) => ({
+      truncated: read.truncated,
+      shape: read.truncated ? null : tableShape(read.text, a),
+      columns: read.truncated ? partialColumns(read.text, a) : [],
+    }),
+    d,
+  )
+    .then((state) => {
       if (d.isConnected === false) return;
       d.innerHTML = "";
-      if (!shape) {
+      if (state.truncated) {
+        // Only a prefix was read: name the columns, never a row count.
+        d.appendChild(el("div", "rc", filesT("files.thumb.partial")));
+        state.columns.slice(0, 3).forEach((cn) => d.appendChild(dataCol("type", cn)));
+        return;
+      }
+      if (!state.shape) {
         d.appendChild(dataCol("table", "data"));
         return;
       }
-      const { rows, columns: cols } = shape;
+      const { rows, columns: cols } = state.shape;
       d.appendChild(
         el(
           "div",
@@ -318,38 +307,49 @@ function fillDataPreview(d: HTMLElement, a: ArtifactRow): void {
       d.appendChild(dataCol("table", "data"));
       // A structured tile cannot show a reason inline, but it must not hide
       // why it fell back: keep the classified reason as the tile's tooltip.
-      if (!isArtifactReadCancelled(error)) d.title = readFailureText(error);
+      if (!isArtifactReadAborted(error)) d.title = readFailureText(error);
     });
 }
 
 function fillTextPreview(d: HTMLElement, a: ArtifactRow): void {
-  thumbRead("text", a, textSnippet)
-    .then((snip) => {
+  thumbRead(
+    "text",
+    a,
+    (read) => ({ snippet: textSnippet(read.text), truncated: read.truncated }),
+    d,
+  )
+    .then(({ snippet: snip, truncated }) => {
       if (d.isConnected === false) return;
       if (snip === null) return thumbFallback(d, "file");
-      if (!snip.text.trim()) return thumbFallback(d, "file-text");
+      if (!snip.trim()) return thumbFallback(d, "file-text");
       // Only a thumbnail text preview may show a prefix: the rest of the body
       // was never read, and the download keeps the complete exact version.
-      d.textContent = (snip.partial ? filesT("files.thumb.partial") + "\n" : "") + snip.text;
+      d.textContent = (truncated ? filesT("files.thumb.partial") + "\n" : "") + snip;
     })
     .catch((error: unknown) => {
-      if (d.isConnected === false || isArtifactReadCancelled(error)) return;
+      if (d.isConnected === false || isArtifactReadAborted(error)) return;
       thumbFallback(d, "file-text");
       d.title = readFailureText(error);
     });
 }
 
 function fillMolPreview(d: HTMLElement, a: ArtifactRow): void {
-  thumbRead("mol", a, (read) => parseMolPoints(read.text))
-    .then((pts) => {
+  thumbRead(
+    "mol",
+    a,
+    (read) => ({ points: parseMolPoints(read.text), truncated: read.truncated }),
+    d,
+  )
+    .then(({ points: pts, truncated }) => {
       if (d.isConnected === false) return;
       if (pts.length < 3) return thumbFallback(d, "atom");
       d.innerHTML = molSvg(pts);
+      if (truncated) d.appendChild(el("div", "renderer-note", filesT("files.thumb.partial")));
     })
     .catch((error: unknown) => {
       if (d.isConnected === false) return;
       thumbFallback(d, "atom");
-      if (!isArtifactReadCancelled(error)) d.title = readFailureText(error);
+      if (!isArtifactReadAborted(error)) d.title = readFailureText(error);
     });
 }
 
