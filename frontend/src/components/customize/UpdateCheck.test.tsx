@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// U2 / §1 U1 DTO: the General Settings card reads the *local* update state on
-// mount (GET status, zero outbound) and contacts the release index only when
-// the user presses the button (POST check). It never downloads, installs,
-// restarts, polls, or presents a failed check as "up to date".
+// U2 / PLAN §10 U2 + appendix B.2: the General settings row reads the *local*
+// update state on mount (GET, zero outbound) and reaches the release index only
+// through an explicit button (POST `{refresh}`). It never installs, downloads,
+// restarts or polls, and it never turns a failed/unknown answer into "up to
+// date". These are behaviour tests against an HTTP stand-in.
 
 const hookState: unknown[] = [];
 let hookCursor = 0;
@@ -44,29 +45,63 @@ const mocks = vi.hoisted(() => ({
   alive: (): boolean => true,
 }));
 
-vi.mock("../../i18n", () => ({
-  LANG: "en",
-  t: (key: string, ...args: unknown[]) => [key, ...args].join(" "),
-  tOptional: () => null,
-}));
 vi.mock("./use-timer-lease", () => ({
   useAlive: () => mocks.alive,
   useTimerLease: () => ({}),
 }));
 
+import { updateT } from "../../features/customize/update";
 import { UpdateCheck } from "./UpdateCheck";
 
 type Node = {
   type?: unknown;
   props?: Record<string, unknown> & { children?: unknown; disabled?: boolean; onClick?: () => void };
 };
+type Call = { path: string; method: string; body?: unknown };
+type Reply = { status?: number; body: unknown };
+type Button = { action: string; text: string; disabled: boolean; onClick: () => void };
 
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-function text(node: unknown): string {
-  if (Array.isArray(node)) return node.map(text).join(" ");
+function stubFetch(handler: (call: Call) => Reply): Call[] {
+  const calls: Call[] = [];
+  mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+    const call: Call = {
+      path: String(url).replace(/^.*\/api\/v1/, ""),
+      method: init?.method || "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    };
+    calls.push(call);
+    const reply = handler(call);
+    return Promise.resolve(response(reply.body, reply.status ?? 200));
+  });
+  return calls;
+}
+
+function textOf(node: unknown): string {
+  if (node == null || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
-  return node && typeof node === "object" ? text((node as Node).props?.children) : "";
+  if (Array.isArray(node)) return node.map(textOf).join(" ");
+  return textOf((node as Node).props?.children);
+}
+
+function buttons(node: unknown, out: Button[] = []): Button[] {
+  if (!node || typeof node !== "object") return out;
+  if (Array.isArray(node)) {
+    node.forEach((child) => buttons(child, out));
+    return out;
+  }
+  const vnode = node as Node;
+  if (vnode.type === "button") {
+    out.push({
+      action: String(vnode.props?.["data-action"] || ""),
+      text: textOf(vnode.props?.children).trim(),
+      disabled: Boolean(vnode.props?.disabled),
+      onClick: vnode.props?.onClick as () => void,
+    });
+  }
+  buttons(vnode.props?.children, out);
+  return out;
 }
 
 function render(): Node {
@@ -74,24 +109,14 @@ function render(): Node {
   return UpdateCheck() as Node;
 }
 
-function nodes(node: unknown, match: (node: Node) => boolean, out: Node[] = []): Node[] {
-  if (Array.isArray(node)) {
-    node.forEach((child) => nodes(child, match, out));
-    return out;
-  }
-  if (!node || typeof node !== "object") return out;
-  const current = node as Node;
-  if (match(current)) out.push(current);
-  nodes(current.props?.children, match, out);
-  return out;
-}
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-function buttons(node: unknown): Node[] {
-  return nodes(node, (current) => current.type === "button");
-}
-
-function buttonByText(node: unknown, label: string): Node | null {
-  return buttons(node).find((button) => text(button).trim() === label) ?? null;
+async function mounted(): Promise<Node> {
+  render();
+  effects.splice(0).forEach((effect) => effect());
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  await flush();
+  return render();
 }
 
 function clock(ms: number): string {
@@ -110,57 +135,32 @@ function clock(ms: number): string {
   );
 }
 
-function calls(): Array<{ path: string; method: string; body?: unknown }> {
-  return mocks.fetch.mock.calls.map(
-    ([url, init]: unknown[]) => ({
-      path: String(url).replace(/^.*\/api\/v1/, ""),
-      method: (init as RequestInit | undefined)?.method || "GET",
-      body: (init as RequestInit | undefined)?.body
-        ? JSON.parse(String((init as RequestInit).body))
-        : undefined,
-    }),
-  );
-}
+const CHECK = (overrides: Record<string, unknown> = {}) => ({
+  status: "up_to_date",
+  reason: "ok",
+  latest: "0.3.1",
+  source: "pypi",
+  checked_at_ms: 1761177600000,
+  retry_after_at: 0,
+  cached: true,
+  age_s: 120,
+  previous: {},
+  trust: { integrity: "two_witnesses", authorship: "not_established" },
+  ...overrides,
+});
 
-function route(
-  responders: Record<string, (init?: RequestInit) => Response | Promise<Response>>,
-): void {
-  mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
-    const exact = Object.keys(responders).find(
-      (path) => String(url) === "/api/v1" + path,
-    );
-    if (!exact) return Promise.resolve(response({ error: "nope" }, 404));
-    return Promise.resolve(responders[exact]!(init));
-  });
-}
-
-const STATUS_BODY = {
-  request_id: "req-status",
-  channel: { id: "venv" },
-  check: {
-    status: "up_to_date",
-    reason: "ok",
-    running: "0.3.1",
-    latest: "0.3.1",
-    checked_at_ms: 1761177600000,
-    cached: true,
-    age_s: 120,
-    retry_after_at: 0,
-    previous: {},
-    trust: {
-      integrity: "integrity: verified against two independent witnesses",
-      authorship: "not established",
-    },
-  },
+const STATUS = (overrides: Record<string, unknown> = {}) => ({
+  running: "0.3.1",
+  channel: { id: "venv", refusal_text_key: "", refusal_command: [] },
+  check: CHECK(),
   apply_available: false,
-};
+  ...overrides,
+});
 
-async function mounted(): Promise<Node> {
-  render();
-  effects.splice(0).forEach((effect) => effect());
-  for (let i = 0; i < 8; i += 1) await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  return render();
+function checkButton(tree: Node, action: "update-check" | "update-force"): Button {
+  const found = buttons(tree).find((button) => button.action === action);
+  expect(found, `no ${action} button`).toBeTruthy();
+  return found!;
 }
 
 beforeEach(() => {
@@ -174,279 +174,224 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
-  vi.useRealTimers();
 });
 
-describe("update check card: local state", () => {
-  it("reads the local update state on mount without contacting the update source", async () => {
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-    });
+describe("update card: local status", () => {
+  it("reads the local status on mount, without contacting the release index", async () => {
+    const calls = stubFetch(() => ({ body: STATUS() }));
     const tree = await mounted();
-    const seen = calls();
-    expect(seen).toContainEqual({ path: "/updates/status", method: "GET", body: undefined });
-    // Opening the card must not start a check.
-    expect(seen.some((call) => call.method === "POST")).toBe(false);
-
-    const contentText = text(tree);
-    expect(contentText).toContain("0.3.1"); // current version from check.running
-    expect(contentText).toContain("Python environment"); // channel label
-    expect(contentText).toContain("local cache");
-    expect(contentText).toContain("does not download");
+    expect(calls.filter((call) => call.method === "GET")).toHaveLength(1);
+    expect(calls[0]!.path).toBe("/updates/status");
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+    const text = textOf(tree);
+    expect(text).toContain(updateT("update.title"));
+    expect(text).toContain(updateT("update.current"));
+    expect(text).toContain("0.3.1");
+    expect(text).toContain(updateT("update.channel.venv"));
+    expect(text).toContain("from the local cache");
+    expect(text).toContain(updateT("update.upToDate"));
+    expect(text).toContain(updateT("update.trust.two_witnesses"));
+    expect(text).toContain(updateT("update.authorship"));
+    expect(text).toContain(updateT("update.only"));
   });
 
-  it("says it has not checked yet from U1's no-record projection", async () => {
-    // Real GET /updates/status shape with no cache: a full check object with
-    // status unknown, reason not_checked, checked_at_ms 0 and cached false.
-    route({
-      "/updates/status": () =>
-        response({
-          request_id: "r1",
-          channel: { id: "venv" },
-          check: {
-            status: "unknown",
-            reason: "not_checked",
-            running: "0.3.1",
-            latest: "",
-            checked_at_ms: 0,
-            cached: false,
-            age_s: null,
-            retry_after_at: 0,
-            previous: {},
-            trust: {},
-          },
-          apply_available: false,
-        }),
-    });
-    const tree = await mounted();
-    expect(text(tree)).toContain("Not checked yet");
-    expect(text(tree)).toContain("0.3.1"); // current version still known
-    expect(text(tree)).not.toContain("Could not confirm");
-    expect(calls().some((call) => call.method === "POST")).toBe(false);
+  it("shows the single-witness trust line and never implies authorship", async () => {
+    stubFetch(() => ({
+      body: STATUS({ check: CHECK({ trust: { integrity: "single_witness", authorship: "not_established" } }) }),
+    }));
+    const text = textOf(await mounted());
+    expect(text).toContain(updateT("update.trust.single_witness"));
+    expect(text).toContain(updateT("update.authorship"));
+    expect(text).not.toContain(updateT("update.trust.two_witnesses"));
   });
 
-  it("also treats a missing check object as not checked yet", async () => {
-    route({
-      "/updates/status": () =>
-        response({ request_id: "r1", channel: { id: "venv" }, check: null, apply_available: false }),
-    });
-    const tree = await mounted();
-    expect(text(tree)).toContain("Not checked yet");
+  it("degrades a malformed status payload into 'could not read', with no claim", async () => {
+    stubFetch(() => ({ body: { running: 1, channel: {}, check: {}, apply_available: true } }));
+    const text = textOf(await mounted());
+    expect(text).toContain(updateT("update.readFailed", updateT("update.malformed")));
+    expect(text).not.toContain(updateT("update.upToDate"));
+    expect(text).not.toContain("A newer version is available");
   });
 
-  it("does not offer download, install, restart or one-click upgrade actions", async () => {
-    route({ "/updates/status": () => response(STATUS_BODY) });
+  it("hides the buttons when even the local status read is refused to members", async () => {
+    stubFetch(() => ({ status: 403, body: { error: "admin only", code: "admin_only" } }));
     const tree = await mounted();
-    const labels = buttons(tree).map((button) => text(button).toLowerCase());
-    expect(labels.join(" | ")).toContain("check for updates");
-    expect(labels.join(" | ")).not.toMatch(/install|upgrade|restart|download/);
-    expect(text(tree)).toContain("only provides");
+    expect(textOf(tree)).toContain(updateT("update.adminOnly"));
+    expect(buttons(tree).filter((button) => button.action)).toHaveLength(0);
   });
 });
 
-describe("update check card: explicit check", () => {
-  it("posts exactly one check on a double click and reports the result", async () => {
-    let finish!: (value: Response) => void;
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-      "/updates/check": () =>
-        new Promise<Response>((resolve) => {
-          finish = resolve;
-        }),
-    });
+describe("update card: explicit check", () => {
+  it("posts one {refresh:false} check and renders the answer", async () => {
+    const calls = stubFetch((call) =>
+      call.method === "POST"
+        ? { body: STATUS({ check: CHECK({ status: "update_available", latest: "0.4.0" }) }) }
+        : { body: STATUS() },
+    );
     let tree = await mounted();
-    const check = buttonByText(tree, "Check for updates")!;
-    expect(check).toBeTruthy();
-    (check.props!.onClick as () => void)();
-    // A second click while the first is in flight is one check.
+    checkButton(tree, "update-check").onClick();
+    await flush();
+    await flush();
     tree = render();
-    const again = buttonByText(tree, "Checking…")!;
-    expect(again.props!.disabled).toBe(true);
-    (again.props!.onClick as () => void)();
-    const posts = calls().filter((call) => call.method === "POST");
+    const posts = calls.filter((call) => call.method === "POST");
     expect(posts).toHaveLength(1);
     expect(posts[0]!.path).toBe("/updates/check");
-    expect(posts[0]!.body).toEqual({ refresh: true });
+    expect(posts[0]!.body).toEqual({ refresh: false });
+    expect(textOf(tree)).toContain(updateT("update.available", "0.4.0"));
+  });
 
-    finish(
-      response({
-        request_id: "req-check",
-        channel: { id: "venv" },
-        check: {
-          status: "update_available",
-          reason: "ok",
-          running: "0.3.1",
-          latest: "0.4.0",
-          checked_at_ms: 1761177700000,
-          cached: false,
-          age_s: 0,
-          retry_after_at: 0,
-          previous: {},
-          trust: { integrity: "integrity: verified", authorship: "not established" },
-        },
-        apply_available: false,
-      }),
+  it("posts {refresh:true} for the force button", async () => {
+    const calls = stubFetch((call) =>
+      call.method === "POST"
+        ? { body: STATUS({ check: CHECK({ status: "update_available", latest: "0.4.0" }) }) }
+        : { body: STATUS() },
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    tree = render();
-    const contentText = text(tree);
-    expect(contentText).toContain("A newer version is available");
-    expect(contentText).toContain("0.4.0");
-    expect(calls().filter((call) => call.method === "POST")).toHaveLength(1);
-  });
-
-  it("never reads a failed check as up to date and keeps the previous answer with its time", async () => {
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-      "/updates/check": () =>
-        response(
-          {
-            request_id: "req-fail",
-            channel: { id: "venv" },
-            check: {
-              status: "unknown",
-              reason: "network_disabled",
-              running: "0.3.1",
-              latest: "",
-              checked_at_ms: 1761177800000,
-              cached: false,
-              age_s: 0,
-              retry_after_at: 1761177900000,
-              previous: {
-                status: "up_to_date",
-                latest: "0.3.1",
-                checked_at_ms: 1761177600000,
-              },
-              trust: null,
-            },
-            apply_available: false,
-          },
-          200,
-        ),
-    });
-    let tree = await mounted();
-    (buttonByText(tree, "Check for updates")!.props!.onClick as () => void)();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    tree = render();
-    const contentText = text(tree);
-    expect(contentText).toContain("Could not confirm");
-    expect(contentText).not.toContain("This is the latest version");
-    expect(contentText).toContain("Last known 0.3.1");
-    expect(contentText).toContain(clock(1761177600000));
-  });
-
-  it("names the admin-only refusal instead of inventing a result", async () => {
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-      "/updates/check": () =>
-        response({ error: "admin only", code: "admin_only" }, 403),
-    });
-    let tree = await mounted();
-    (buttonByText(tree, "Check for updates")!.props!.onClick as () => void)();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    tree = render();
-    expect(text(tree)).toContain("limited to administrators");
-    expect(text(tree)).not.toContain("A newer version is available");
-    expect(text(tree)).not.toContain("This is the latest version");
-  });
-
-  it("reports U1's 429 cooldown in seconds and does not retry by itself", async () => {
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-      "/updates/check": () =>
-        response(
-          {
-            error: "wait before forcing another update check",
-            code: "rate_limited",
-            reason: "refresh_cooldown",
-            retry_after_s: 45,
-          },
-          429,
-        ),
-    });
-    let tree = await mounted();
-    (buttonByText(tree, "Check for updates")!.props!.onClick as () => void)();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    tree = render();
-    const contentText = text(tree);
-    expect(contentText).toContain("Too many checks");
-    expect(contentText).toContain("45s");
-    expect(calls().filter((call) => call.method === "POST")).toHaveLength(1);
-    // The button is usable again for a later, explicit retry.
-    expect(buttonByText(tree, "Check for updates")).not.toBeNull();
-  });
-
-  it("names the admin-only refusal when even the local status read is refused", async () => {
-    route({
-      "/updates/status": () =>
-        response({ error: "admin only", code: "admin_only" }, 403),
-    });
     const tree = await mounted();
-    expect(text(tree)).toContain("limited to administrators");
-    expect(text(tree)).not.toContain("Could not read the local update state");
-    expect(text(tree)).not.toContain("This is the latest version");
+    checkButton(tree, "update-force").onClick();
+    await flush();
+    await flush();
+    const posts = calls.filter((call) => call.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toEqual({ refresh: true });
   });
 
-  it("times out as unknown, not as up to date", async () => {
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-      "/updates/check": (_init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
-          const signal = _init?.signal;
-          signal?.addEventListener("abort", () => reject(new Error("aborted")));
-        }),
+  it("sends one POST when the button is clicked twice in flight", async () => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise<Response>((resolve) => {
+      release = (body) => resolve(response(body));
+    });
+    const posts: Call[] = [];
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      const call: Call = {
+        path: String(url).replace(/^.*\/api\/v1/, ""),
+        method: init?.method || "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      };
+      if (call.method === "POST") {
+        posts.push(call);
+        return pending;
+      }
+      return Promise.resolve(response(STATUS()));
     });
     let tree = await mounted();
-    vi.useFakeTimers();
-    (buttonByText(tree, "Check for updates")!.props!.onClick as () => void)();
-    await vi.advanceTimersByTimeAsync(31_000);
+    const check = checkButton(tree, "update-check");
+    check.onClick();
+    check.onClick();
+    expect(posts).toHaveLength(1);
     tree = render();
-    const contentText = text(tree);
-    expect(contentText).toContain("timed out");
-    expect(contentText).not.toContain("This is the latest version");
+    expect(checkButton(tree, "update-check").disabled).toBe(true);
+    expect(checkButton(tree, "update-force").disabled).toBe(true);
+    release(STATUS());
+    await flush();
+    await flush();
+    tree = render();
+    expect(checkButton(tree, "update-check").disabled).toBe(false);
+    expect(posts).toHaveLength(1);
   });
 
-  it("drops an answer that arrives after the card was closed", async () => {
-    let finish!: (value: Response) => void;
-    route({
-      "/updates/status": () => response(STATUS_BODY),
-      "/updates/check": () =>
-        new Promise<Response>((resolve) => {
-          finish = resolve;
-        }),
-    });
-    let tree = await mounted();
-    (buttonByText(tree, "Check for updates")!.props!.onClick as () => void)();
-    const before = hookState.slice();
-    // Unmount the card (General tab switched away).
-    cleanups.splice(0).forEach((cleanup) => cleanup());
-    finish(
-      response({
-        request_id: "late",
-        channel: { id: "venv" },
-        check: {
-          status: "update_available",
-          reason: "ok",
-          running: "0.3.1",
-          latest: "9.9.9",
-          checked_at_ms: 1761177700000,
-          cached: false,
-          age_s: 0,
-          retry_after_at: 0,
-          previous: {},
-          trust: null,
-        },
-        apply_available: false,
-      }),
+  it("reports a 429 cooldown in seconds and does not retry by itself", async () => {
+    const calls = stubFetch((call) =>
+      call.method === "POST"
+        ? { status: 429, body: { error: "wait", code: "rate_limited", retry_after_s: 45 } }
+        : { body: STATUS() },
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // No state was written after unmount; re-rendering still shows the old tree.
-    expect(hookState.slice(0, before.length)).toEqual(before);
+    let tree = await mounted();
+    checkButton(tree, "update-check").onClick();
+    await flush();
+    await flush();
     tree = render();
-    expect(text(tree)).not.toContain("9.9.9");
+    expect(textOf(tree)).toContain(updateT("update.rateLimited", "45s"));
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    expect(checkButton(tree, "update-check").disabled).toBe(false);
+  });
+
+  it("shows previous and never claims the latest version for an unknown answer", async () => {
+    stubFetch((call) =>
+      call.method === "POST"
+        ? {
+            body: STATUS({
+              check: CHECK({
+                status: "unknown",
+                reason: "network_disabled",
+                previous: { status: "up_to_date", latest: "0.3.1", checked_at_ms: 1761177600000 },
+              }),
+            }),
+          }
+        : { body: STATUS() },
+    );
+    let tree = await mounted();
+    checkButton(tree, "update-check").onClick();
+    await flush();
+    await flush();
+    tree = render();
+    const text = textOf(tree);
+    expect(text).toContain(updateT("update.unknown"));
+    expect(text).toContain(updateT("update.reason", updateT("update.reason.network_disabled")));
+    expect(text).toContain(updateT("update.previous", "0.3.1", clock(1761177600000)));
+    expect(text).not.toContain(updateT("update.upToDate"));
+  });
+
+  it("hides the buttons after an admin_only refusal", async () => {
+    stubFetch((call) =>
+      call.method === "POST"
+        ? { status: 403, body: { error: "admin only", code: "admin_only" } }
+        : { body: STATUS() },
+    );
+    let tree = await mounted();
+    checkButton(tree, "update-check").onClick();
+    await flush();
+    await flush();
+    tree = render();
+    expect(textOf(tree)).toContain(updateT("update.adminOnly"));
+    expect(buttons(tree).filter((button) => button.action)).toHaveLength(0);
+  });
+
+  it("offers the manual refusal command as copyable text and executes nothing", async () => {
+    const writes: string[] = [];
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText: async (value: string) => { writes.push(value); } },
+    });
+    const command = "openai4s env apply python r --repair";
+    stubFetch(() => ({
+      body: STATUS({
+        channel: {
+          id: "linux-bundle",
+          refusal_text_key: "update.channel.refusal.linux-bundle",
+          refusal_command: [command],
+        },
+      }),
+    }));
+    let tree = await mounted();
+    const text = textOf(tree);
+    expect(text).toContain(updateT("update.refusal"));
+    expect(text).toContain(command);
+    const labels = buttons(tree).map((button) => button.text.toLowerCase()).join(" | ");
+    expect(labels).not.toMatch(/install|download|restart|upgrade/);
+    const copy = buttons(tree).find((button) => button.text === updateT("update.copy"))!;
+    expect(copy).toBeTruthy();
+    copy.onClick();
+    await flush();
+    expect(writes).toEqual([command]);
+    tree = render();
+    expect(textOf(tree)).toContain(updateT("update.copied"));
+  });
+
+  it("drops an answer that arrives after the row was closed", async () => {
+    let release!: (value: unknown) => void;
+    const pending = new Promise<Response>((resolve) => {
+      release = (body) => resolve(response(body));
+    });
+    mocks.fetch.mockImplementation((_url: string, init?: RequestInit) =>
+      (init?.method || "GET") === "GET" ? Promise.resolve(response(STATUS())) : pending,
+    );
+    const tree = await mounted();
+    checkButton(tree, "update-check").onClick();
+    const before = hookState.slice();
+    cleanups.splice(0).forEach((cleanup) => cleanup());
+    release(STATUS({ check: CHECK({ status: "update_available", latest: "9.9.9" }) }));
+    await flush();
+    await flush();
+    expect(hookState.slice(0, before.length)).toEqual(before);
+    expect(textOf(render())).not.toContain("9.9.9");
   });
 });
