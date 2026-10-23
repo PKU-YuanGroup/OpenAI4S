@@ -67,8 +67,7 @@ EXCLUDE = {"github-actions[bot]", "dependabot[bot]", "actions-user"}
 # Publicly accepted contributions that are not represented in the commit graph.
 # Keep this list limited to GitHub logins whose recognition is already public.
 #
-# `difficulttopickaname` is a maintainer (CODEOWNERS: /openai4s/server/,
-# /tests/browser_smoke.mjs) whose commits ARE in the history -- authored as
+# `difficulttopickaname` has contributions in the history -- authored as
 # `minhan.tang <minhan.tang19@gmail.com>` -- but the /contributors API returns
 # them with no linked account, so the graph cannot see them. The durable fix is
 # on their side: adding that address to their GitHub account retroactively
