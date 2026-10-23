@@ -100,16 +100,18 @@ def get_tags(obj: Any) -> frozenset:
 
 #: Values a library hands out as one object: every missing string a CSV parses
 #: is `numpy.nan`, every element of a boolean column `numpy.True_` or
-#: `numpy.False_`, every missing timestamp `pandas.NaT`. Looked up in
-#: `sys.modules`, never imported.
+#: `numpy.False_`, every missing timestamp `pandas.NaT`. The stdlib JSON
+#: decoder also reuses its non-finite floats across independent parses.
+#: Looked up in `sys.modules`, never imported.
 _LIBRARY_CONSTANTS = (
+    ("json.decoder", ("NaN", "PosInf", "NegInf")),
     ("numpy", ("True_", "False_", "nan")),
     ("pandas", ("NaT", "NA")),
 )
 
 
 def _shared_by_identity(obj: Any) -> bool:
-    """Whether this very object also reaches code that never read the source.
+    """Whether this object is one of the known shared constants.
 
     A tag lives on an object's identity -- attribute or side-table entry alike
     -- so it is a claim about this read only while the object is this read's
@@ -119,6 +121,9 @@ def _shared_by_identity(obj: Any) -> bool:
     `false`, `null`, `1` or `"\\n"` tag every such value in the process, and a
     later write of one reported that file as its input. Refusing loses a tag,
     which is the safe direction: absent, never wrong.
+
+    This is not a general alias detector: longer interned strings and other
+    user-shared values still need separate handling (see docs/TODO.md).
     """
     if any(obj is single for single in (None, True, False, Ellipsis, NotImplemented)):
         return True
@@ -143,7 +148,7 @@ def _shared_by_identity(obj: Any) -> bool:
 def set_tags(obj: Any, tags: frozenset) -> Any:
     """Attach tags to obj; fall back to the side table for atomic objects.
 
-    An object other code also holds by identity is left untagged."""
+    Known shared constants are left untagged."""
     if not tags or _shared_by_identity(obj):
         return obj
     try:

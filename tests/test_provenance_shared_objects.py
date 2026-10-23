@@ -109,6 +109,19 @@ def test_a_shared_value_from_a_tracked_file_is_no_input_of_an_unrelated_write(
     assert _inputs(lineage) == [], "a write that never read the file named it"
 
 
+@pytest.mark.parametrize("document", ["NaN", "Infinity", "-Infinity"])
+def test_json_nonfinite_constants_do_not_contaminate_an_independent_parse(
+    lineage, document
+):
+    loaded = _read_tracked(lineage, document)
+    unrelated = json.loads(document)
+    assert loaded is unrelated, "precondition: the decoder reused its constant"
+
+    _write(lineage, unrelated, "unrelated.out")
+
+    assert _inputs(lineage) == [], "an independent parse inherited the tracked source"
+
+
 @pytest.mark.parametrize("shared", [(), b""], ids=["empty tuple", "empty bytes"])
 def test_a_shared_value_from_a_tracked_pickle_is_no_input_of_an_unrelated_write(
     lineage, shared
@@ -212,7 +225,12 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
     frame_id = store.new_frame(kind="turn", project_id="default")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    sources = {"tracked.json": '"\\n"', "tracked.csv": "name,flag\nx,True\n,False\n"}
+    constants = {"nan": "NaN", "inf": "Infinity", "neg-inf": "-Infinity"}
+    sources = {
+        "tracked.json": '"\\n"',
+        "tracked.csv": "name,flag\nx,True\n,False\n",
+        **{f"{name}.json": token for name, token in constants.items()},
+    }
     versions = {}
     for filename, text in sources.items():
         (workspace / filename).write_text(text)
@@ -233,6 +251,8 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
             "import numpy as np\n"
             "import pandas as pd\n"
             "newline = json.loads(open('tracked.json').read())\n"
+            "for name in ('nan', 'inf', 'neg-inf'):\n"
+            "    value = json.loads(open(name + '.json').read())\n"
             "frame = pd.read_csv('tracked.csv')\n"
             "missing, flag = frame['name'][1], frame['flag'][0]\n"
             "frame.to_csv('derived.csv')\n"
@@ -242,7 +262,14 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
             "np.save('missing.npy', np.nan)\n",
             cell_id="cell-shared",
         )
-    assert result["error"] is None, result["error"]
+        assert result["error"] is None, result["error"]
+        result = kernel.execute(
+            "for name, token in [('nan', 'NaN'), ('inf', 'Infinity'), "
+            "('neg-inf', '-Infinity')]:\n"
+            "    np.save('unrelated-' + name + '.npy', json.loads(token))\n",
+            cell_id="cell-unrelated",
+        )
+        assert result["error"] is None, result["error"]
 
     def inputs(filename):
         artifact = store.artifact_by_filename(filename, frame_id, strict=True)
@@ -254,7 +281,13 @@ def test_real_kernel_reports_no_lineage_for_values_it_never_read(tmp_path):
         ]
 
     assert inputs("derived.csv") == [versions["tracked.csv"]]
-    unrelated = ("note.txt", "flag.npy", "missing.npy")
+    unrelated = (
+        "note.txt",
+        "flag.npy",
+        "missing.npy",
+        *(f"unrelated-{name}.npy" for name in constants),
+    )
+    assert all((workspace / name).is_file() for name in unrelated)
     assert {name: inputs(name) for name in unrelated} == {
         name: [] for name in unrelated
     }, "a file named an input it never read"
