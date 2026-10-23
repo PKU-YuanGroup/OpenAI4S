@@ -1507,7 +1507,7 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
-        self.reload_model_capability_evidence()
+        self._load_capability_receipt_overlays()
 
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
@@ -2760,47 +2760,45 @@ class Store:
             cache_scope=datapro.runtime_cache_scope(self),
         )
 
-    def reload_model_capability_evidence(self) -> int:
-        """Re-derive in-process probe evidence from the durable receipts.
+    def _load_capability_receipt_overlays(self) -> None:
+        """Rebuild the in-process probe evidence from the durable receipts.
 
-        Called when this Store opens and again after a profile's configuration
-        moves (edit/delete/provider migration).  Only receipts that still
-        describe a current, non-deleted profile's exact identity -- revision,
-        endpoint, model, wire and probe version -- are eligible, and the latest
-        observation per identity is adopted.  That is precisely what a restart
-        would read from the same rows, so the process cannot hold a promotion a
-        restart would drop (or vice versa).  Returns the number of identities
-        holding adopted positive evidence.
+        Opening a Store is the restart path, so this must land on exactly the
+        capability a running probe sequence would have: walk the receipts that
+        are still valid evidence (profile not deleted, that profile's current
+        revision, current probe version) in *ascending* ``observed_at`` order --
+        ties by ``receipt_id`` -- and let ``replace_receipt_overlay`` apply each
+        one.  Later entries therefore win, which is F10's rule, and a
+        non-positive latest receipt withdraws an older positive promotion just
+        as it would at runtime.
         """
         from openai4s.llm.capabilities import (
             PROBE_VERSION,
-            profile_receipt_identity,
-            reload_receipt_evidence,
+            drop_receipt_overlays,
+            replace_receipt_overlay,
         )
 
-        receipts: list[dict[str, Any]] = []
-        for profile in self.list_model_profiles():
-            if profile.get("deleted_at"):
-                continue
-            identity = profile_receipt_identity(profile)
-            if not identity["profile_id"] or not identity["wire"]:
-                continue
-            if int(identity["revision"] or 0) <= 0:
-                # A profile written before revisions existed has no exact
-                # identity to attribute an old receipt to; `_seal_revision`
-                # backfills one on the first edit.
-                continue
-            exact = self._model_capability_receipts.get_exact(
-                profile_id=identity["profile_id"],
-                revision=identity["revision"],
-                endpoint_sha256=identity["endpoint_sha256"],
-                model=identity["model"],
-                wire=identity["wire"],
-                probe_version=PROBE_VERSION,
+        drop_receipt_overlays()
+        current = {
+            str(profile.get("id") or ""): int(profile.get("revision") or 0)
+            for profile in self.list_model_profiles()
+            if not profile.get("deleted_at")
+        }
+        receipts = [
+            receipt
+            for receipt in self._model_capability_receipts.list_all()
+            if int(receipt.get("probe_version") or 0) == PROBE_VERSION
+            and current.get(str(receipt.get("profile_id") or ""))
+            == int(receipt.get("revision") or 0)
+        ]
+        receipts.sort(
+            key=lambda receipt: (
+                int(receipt.get("observed_at") or 0),
+                str(receipt.get("receipt_id") or ""),
             )
-            if exact is not None:
-                receipts.append(exact)
-        return reload_receipt_evidence(receipts)
+        )
+        for receipt in receipts:
+            replace_receipt_overlay(receipt)
 
     # --- frames ----------------------------------------------------------
     def new_frame(

@@ -51,7 +51,7 @@ def request_capabilities(cfg: LLMConfig) -> Any:
 
     One named seam for the request decision.  ``model_profiles`` publishes the
     read-only ``effective_capabilities`` projection through
-    :func:`openai4s.llm.capabilities.effective_capabilities`, which resolves
+    :func:`openai4s.llm.capabilities.explain_model_capabilities`, which resolves
     through the same function below -- so a badge saying "tools will be sent"
     and a request that omits them cannot both be true.
     """
@@ -99,8 +99,8 @@ def chat(
         spec = provider_spec(cfg.provider)
         base = cfg.base_url or spec["base_url"]
         model = cfg.model or spec["model"]
-        # The same resolver `effective_capabilities` projects, so the tools and
-        # streaming this call decides are the ones the UI can explain.
+        # The same resolver `explain_model_capabilities` projects, so the tools
+        # and streaming this call decides are the ones the UI can explain.
         capabilities = request_capabilities(cfg)
         if not cfg.api_key and not capabilities.local_endpoint:
             raise MissingCredentialError(
