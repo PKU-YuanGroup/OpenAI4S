@@ -157,40 +157,55 @@ const ONBOARDING = {
   },
 } as unknown as OnboardingStatus;
 
-function readState(overrides: Record<string, unknown> = {}) {
-  return { busy: false, error: "", lastReadAt: null, onRefresh: vi.fn(), ...overrides };
-}
-
 /** Invoke the EnvironmentCard child; its head (and the action slot) is inside it. */
 function environmentCard(panel: Node): Node {
   const card = find(panel, (node) => node.type === EnvironmentCard)!;
-  return (card.type as (props: unknown) => unknown)(card.props) as Node;
+  const built = (card.type as (props: unknown) => unknown)(card.props) as Node;
+  return built;
 }
 
 describe("readiness in-place refresh", () => {
   it("puts the refresh action in the readiness card head and reports the last read", () => {
-    const refresh = readState({ lastReadAt: Date.UTC(2026, 0, 2, 3, 4, 5) });
-    const panel = ReadinessPanel({ status: ONBOARDING, refresh }) as Node;
+    const onRefresh = vi.fn();
+    const panel = ReadinessPanel({
+      status: ONBOARDING,
+      onRefresh,
+      refreshing: false,
+      // The plan's timestamp is the client time of the last successful
+      // refresh; it is shown as "last read: <time>".
+      refreshedAt: Date.UTC(2026, 0, 2, 3, 4, 5),
+      refreshError: "",
+    }) as Node;
     const head = find(environmentCard(panel), (node) => node.props?.class === "standard-readiness-head")!;
     const button = find(head, (node) => node.type === "button")!;
     expect(text(button)).toBe("onboarding.readiness.refresh");
     expect(button.props?.disabled).toBe(false);
     (button.props!.onClick as () => void)();
-    expect(refresh.onRefresh).toHaveBeenCalledTimes(1);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
     expect(text(panel)).toContain("onboarding.readiness.lastRead");
   });
 
   it("disables the action and says it is refreshing while a read is in flight", () => {
-    const panel = ReadinessPanel({ status: ONBOARDING, refresh: readState({ busy: true }) }) as Node;
+    const panel = ReadinessPanel({
+      status: ONBOARDING,
+      onRefresh: vi.fn(),
+      refreshing: true,
+    }) as Node;
     const button = find(environmentCard(panel), (node) => node.type === "button")!;
     expect(button.props?.disabled).toBe(true);
     expect(text(button)).toBe("onboarding.readiness.refreshing");
     expect(text(panel)).toContain("onboarding.readiness.refreshing");
   });
 
-  it("keeps the old snapshot visible and the action retryable when the read fails", () => {
-    const refresh = readState({ error: "disconnected", lastReadAt: Date.UTC(2026, 0, 2, 3, 4, 5) });
-    const panel = ReadinessPanel({ status: ONBOARDING, refresh }) as Node;
+  it("keeps the old snapshot visible, says it was not refreshed, and stays retryable", () => {
+    const onRefresh = vi.fn();
+    const panel = ReadinessPanel({
+      status: ONBOARDING,
+      onRefresh,
+      refreshing: false,
+      refreshedAt: Date.UTC(2026, 0, 2, 3, 4, 5),
+      refreshError: "disconnected",
+    }) as Node;
     const button = find(environmentCard(panel), (node) => node.type === "button")!;
     expect(button.props?.disabled).toBe(false);
     const alert = find(panel, (node) => node.props?.role === "alert")!;
@@ -198,16 +213,19 @@ describe("readiness in-place refresh", () => {
     expect(text(alert)).toContain("disconnected");
     // The previous readiness result is still rendered, not cleared.
     expect(text(environmentCard(panel))).toContain("environment.readiness.needsSetup");
+    // The action is the retry.
+    (button.props!.onClick as () => void)();
+    expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("still offers the action when the daemon reports no environment card", () => {
     const status = { ...ONBOARDING, environment: null } as unknown as OnboardingStatus;
-    const refresh = readState();
-    const panel = ReadinessPanel({ status, refresh }) as Node;
+    const onRefresh = vi.fn();
+    const panel = ReadinessPanel({ status, onRefresh }) as Node;
     const button = find(panel, (node) => node.type === "button")!;
     expect(text(button)).toBe("onboarding.readiness.refresh");
     (button.props!.onClick as () => void)();
-    expect(refresh.onRefresh).toHaveBeenCalled();
+    expect(onRefresh).toHaveBeenCalled();
   });
 
   it("renders the old panel unchanged when no refresh action is supplied", () => {
