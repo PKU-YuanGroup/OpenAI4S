@@ -10,6 +10,16 @@
 [`docs/next-version-progress.md`](next-version-progress.md)；那份文档是
 v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本文件收的是线头。
 
+## 溯源
+
+- [ ] **避免驻留字符串污染按对象身份记录的血缘。** PR #235 排除了已知的
+      解释器和库常量，但不能识别任意共享值。例如，向已追踪的 DataFrame
+      广播 `"control"` 后索引该单元格，仍会给驻留字面量打标签；之后无关的
+      `"control"` 写出操作便会错误地把 CSV 记成输入。需要选择跨版本的字符串
+      传播策略，例如旁表拒绝精确 `str`，在读取和索引边界返回 `_TaggedStr`。
+      *完成标准：* 所有受支持 Python 版本中，无关的驻留字符串写出都没有
+      来源边，同时真实常驻内核测试证明派生字符串仍能保留血缘。
+
 ## 发布
 
 - [x] **把 `@pku-yuangroup/openai4s-skills` 发布到 npm。**
