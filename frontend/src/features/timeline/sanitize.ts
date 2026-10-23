@@ -1064,11 +1064,11 @@ const COMPUTE_TASK_PAGE_LIMIT = 200;
 const COMPUTE_CURSOR_LIMIT = 300;
 
 /**
- * A same-owner total is optional. `null` is "this service did not say", which
- * is not the same as zero and must not become one downstream.
+ * A same-owner total is optional. `undefined` is "this service did not say",
+ * which is not the same as zero and must not become one downstream.
  */
-function optionalCount(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+function optionalCount(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.max(0, Math.floor(value));
 }
 
@@ -1141,9 +1141,9 @@ export function mergeComputeTaskPages(
     polled: next.polled,
     live_count: tasks.filter((task) => task.live).length,
     total_live_count:
-      next.total_live_count != null
+      next.total_live_count !== undefined
         ? next.total_live_count
-        : (previous?.total_live_count ?? null),
+        : previous?.total_live_count,
     has_more: next.has_more,
     next_cursor: next.next_cursor,
     tasks,

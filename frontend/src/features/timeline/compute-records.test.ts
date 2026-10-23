@@ -1,192 +1,388 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetStoreFields } from "../../stores/signal-field";
+import { activeTab } from "../../stores/ui";
+import { computeRecordsT } from "./copy";
+import { loadComputeTasks, renderComputeTasksPanel, resetComputeTasks } from "./island";
+import { S } from "./s";
+import type { ComputeTasksView } from "./types";
 
-// C2: the Timeline's remote-task panel owns its own read.
+// C2 / PLAN §6: the remote-task panel is its own read of the C1 listing.
 //
-// It is not one more entry in the workbench's `optionalApi` fan-out: a 503 has
-// to stay a visible "records unavailable", not vanish into `undefined` (which
-// the panel used to render as "no tasks", and a stale page used to render as
-// the next session's tasks). The controller below is the whole ownership
-// rule: a session, a filter, and a monotonic request token.
-import { ApiError } from "./api";
-import {
-  computeRecordsPath,
-  createComputeRecordsController,
-} from "./compute-records";
+// These are behaviour tests over an HTTP stand-in: the read state lands in
+// `S.computeTasks` exactly as appendix B.1 / §6 item 1 describe it, and the
+// panel renders the states (loading, unknown, unavailable, successful empty,
+// list) with the session/filter/paging rules. No source-string assertions.
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((done, fail) => {
-    resolve = done;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
+class FakeEl {
+  tag: string;
+  className = "";
+  text = "";
+  id = "";
+  title = "";
+  type = "";
+  disabled = false;
+  dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
+  attrs = new Map<string, string>();
+  children: FakeEl[] = [];
+  parentNode: FakeEl | null = null;
+  onclick: (() => void) | null = null;
+  classList = {
+    contains: (name: string) => this.className.split(" ").includes(name),
+    add: (...names: string[]) => {
+      const list = this.className.split(" ").filter(Boolean);
+      names.forEach((name) => {
+        if (!list.includes(name)) list.push(name);
+      });
+      this.className = list.join(" ");
+    },
+    remove: (...names: string[]) => {
+      this.className = this.className
+        .split(" ")
+        .filter((name) => name && !names.includes(name))
+        .join(" ");
+    },
+    toggle: (name: string, force?: boolean) => {
+      const on = force ?? !this.classList.contains(name);
+      if (on) this.classList.add(name);
+      else this.classList.remove(name);
+      return on;
+    },
+  };
+  constructor(tag: string) {
+    this.tag = tag;
+  }
+  get firstChild(): FakeEl | null {
+    return this.children[0] || null;
+  }
+  set innerHTML(_value: string) {
+    this.children = [];
+  }
+  set textContent(value: string) {
+    this.text = String(value);
+  }
+  get textContent(): string {
+    return [this.text, ...this.children.map((child) => child.textContent)].join("");
+  }
+  appendChild(child: FakeEl): FakeEl {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+  insertBefore(child: FakeEl, before: FakeEl | null): FakeEl {
+    child.parentNode = this;
+    const at = before ? this.children.indexOf(before) : -1;
+    if (at < 0) this.children.push(child);
+    else this.children.splice(at, 0, child);
+    return child;
+  }
+  remove(): void {
+    if (this.parentNode) {
+      this.parentNode.children = this.parentNode.children.filter((node) => node !== this);
+    }
+    this.parentNode = null;
+  }
+  setAttribute(name: string, value: string): void {
+    this.attrs.set(name, String(value));
+  }
+  getAttribute(name: string): string | null {
+    return this.attrs.has(name) ? this.attrs.get(name)! : null;
+  }
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
+  contains(): boolean {
+    return true;
+  }
 }
 
-function page(tasks: unknown[], extras: Record<string, unknown> = {}) {
-  return { tasks, live_count: tasks.length, ...extras };
+function installDom(): void {
+  vi.stubGlobal("document", {
+    createElement: (tag: string) => new FakeEl(tag),
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    querySelector: () => null,
+    activeElement: null,
+    body: new FakeEl("div"),
+  });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
 }
 
-describe("compute records read ownership", () => {
-  it("keeps the last successful page and marks it stale when a reread fails", async () => {
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(page([{ job_id: "a", live: true }], { total_live_count: 1 }))
-      .mockRejectedValueOnce(new Error("HTTP 503"));
-    const controller = createComputeRecordsController({ read, now: () => 42 });
+function textOf(node: unknown): string {
+  return node instanceof FakeEl ? node.textContent : "";
+}
 
-    await controller.read("f");
-    expect(controller.state?.phase).toBe("ready");
-    expect(controller.state?.stale).toBe(false);
-    expect(controller.state?.updatedAt).toBe(42);
-    expect(controller.state?.page?.tasks).toHaveLength(1);
+function findAction(node: FakeEl, action: string): FakeEl | null {
+  if (node.dataset.action === action) return node;
+  for (const child of node.children) {
+    const found = findAction(child, action);
+    if (found) return found;
+  }
+  return null;
+}
 
-    await controller.read("f");
-    expect(controller.state?.phase).toBe("error");
-    expect(controller.state?.stale).toBe(true);
-    expect(controller.state?.page?.tasks).toHaveLength(1);
-    expect(controller.state?.error).toContain("503");
+type Reply = { status?: number; body: unknown };
+
+function stubFetch(handler: (path: string) => Reply): string[] {
+  const calls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      const path = String(url).replace(/^.*\/api\/v1/, "");
+      calls.push(path);
+      const reply = handler(path);
+      const status = reply.status ?? 200;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        text: async () => JSON.stringify(reply.body),
+      };
+    }),
+  );
+  return calls;
+}
+
+function deferredReply(): { promise: Promise<unknown>; release: (body: unknown) => void } {
+  let release!: (body: unknown) => void;
+  const promise = new Promise((resolve) => {
+    release = (body) =>
+      resolve({ ok: true, status: 200, text: async () => JSON.stringify(body) });
   });
+  return { promise, release };
+}
 
-  it("clears the old session's rows the moment another session is read", async () => {
-    const late = deferred<unknown>();
-    const read = vi
-      .fn()
-      .mockReturnValueOnce(late.promise)
-      .mockResolvedValueOnce(page([]));
-    const controller = createComputeRecordsController({ read });
-    const first = controller.read("f");
-    const second = controller.read("g");
-    // The new session starts from unknown, not from f's records.
-    expect(controller.state?.fid).toBe("g");
-    expect(controller.state?.page).toBeNull();
-    late.resolve(page([{ job_id: "f-task", live: true }]));
-    await Promise.all([first, second]);
-    expect(controller.state?.fid).toBe("g");
-    expect(controller.state?.page?.tasks).toHaveLength(0);
-  });
+function task(jobId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    job_id: jobId,
+    provider: "byoc-test",
+    status: "running",
+    live: true,
+    terminal: false,
+    updated_at: Date.now() - 300_000,
+    outputs: { file_count: 0, total_bytes: 0 },
+    ...overrides,
+  };
+}
 
-  it("drops a late answer for a filter the user has left", async () => {
-    const late = deferred<unknown>();
-    const read = vi
-      .fn()
-      .mockReturnValueOnce(late.promise)
-      .mockResolvedValueOnce(page([], { total_live_count: 0 }));
-    const controller = createComputeRecordsController({ read });
+function page(tasks: unknown[], overrides: Record<string, unknown> = {}) {
+  return {
+    tasks,
+    live_count: tasks.filter((row) => (row as { live?: boolean }).live).length,
+    polled: false,
+    total_live_count: tasks.filter((row) => (row as { live?: boolean }).live).length,
+    has_more: false,
+    next_cursor: null,
+    ...overrides,
+  };
+}
 
-    const all = controller.read("f");
-    const live = controller.read("f", { filter: "live" });
-    expect(controller.state?.filter).toBe("live");
-    expect(controller.state?.page).toBeNull();
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-    late.resolve(page([{ job_id: "old", live: true }], { total_live_count: 1 }));
-    await Promise.all([all, live]);
-    expect(controller.state?.filter).toBe("live");
-    expect(controller.state?.page?.tasks).toHaveLength(0);
-    expect(read).toHaveBeenLastCalledWith("f", "live", null);
-  });
-
-  it("starts each filter from unknown instead of reusing another filter's rows", async () => {
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(page([{ job_id: "a", live: true }], { total_live_count: 1 }))
-      .mockResolvedValueOnce(page([], { total_live_count: 1 }));
-    const controller = createComputeRecordsController({ read });
-    await controller.read("f");
-    const pending = controller.read("f", { filter: "live" });
-    expect(controller.state?.filter).toBe("live");
-    expect(controller.state?.page).toBeNull();
-    await pending;
-    expect(controller.state?.page?.tasks).toHaveLength(0);
-  });
-
-  it("loads the next page from the cursor and appends without duplicates", async () => {
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(
-        page([{ job_id: "a", live: true }], {
-          total_live_count: 2,
-          has_more: true,
-          next_cursor: "c1",
-        }),
-      )
-      .mockResolvedValueOnce(
-        page([{ job_id: "b", live: true }], {
-          total_live_count: 2,
-          has_more: false,
-          next_cursor: null,
-        }),
-      );
-    const controller = createComputeRecordsController({ read });
-    await controller.read("f");
-    await controller.read("f", { append: true });
-
-    expect(read).toHaveBeenLastCalledWith("f", "all", "c1");
-    expect(controller.state?.page?.tasks.map((task) => task.job_id)).toEqual(["a", "b"]);
-    expect(controller.state?.page?.total_live_count).toBe(2);
-    expect(controller.state?.loadingMore).toBe(false);
-    expect(controller.state?.phase).toBe("ready");
-  });
-
-  it("does not load more when the page has no cursor", async () => {
-    const read = vi.fn().mockResolvedValueOnce(
-      page([], { has_more: false, next_cursor: null }),
-    );
-    const controller = createComputeRecordsController({ read });
-    await controller.read("f");
-    await controller.read("f", { append: true });
-    expect(read).toHaveBeenCalledTimes(1);
-  });
-
-  it("exposes an in-flight load-more state without clearing the loaded page", async () => {
-    const gate = deferred<unknown>();
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(
-        page([{ job_id: "a", live: true }], { has_more: true, next_cursor: "c1" }),
-      )
-      .mockReturnValueOnce(gate.promise);
-    const controller = createComputeRecordsController({ read });
-    await controller.read("f");
-    const more = controller.read("f", { append: true });
-    expect(controller.state?.loadingMore).toBe(true);
-    expect(controller.state?.page?.tasks).toHaveLength(1);
-    gate.resolve(page([{ job_id: "b", live: true }], { has_more: false }));
-    await more;
-    expect(controller.state?.loadingMore).toBe(false);
-    expect(controller.state?.page?.tasks).toHaveLength(2);
-  });
-
-  it("builds the documented query parameters, encoding the session id", () => {
-    expect(computeRecordsPath("f", "all", null)).toBe("/frames/f/compute/tasks");
-    expect(computeRecordsPath("f/1", "live", "c 2")).toBe(
-      "/frames/f%2F1/compute/tasks?state=live&cursor=c+2",
-    );
-  });
+beforeEach(() => {
+  resetStoreFields();
+  installDom();
+  resetComputeTasks();
+  S.currentId = "f";
+  activeTab.value = "timeline";
 });
 
-describe("C2 contract: the real 503 envelope", () => {
-  it("turns the route's 503 into a visible failure instead of an empty page", async () => {
-    // Verbatim shape from the merged route:
-    // GatewayError(503, "compute records are unavailable right now",
-    //              "compute_record_unavailable").
-    const read = vi.fn().mockRejectedValue(
-      new ApiError(
-        {
-          error: "compute records are unavailable right now",
-          code: "compute_record_unavailable",
-          status: 503,
-        },
-        503,
-      ),
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("compute task read states", () => {
+  it("turns a 503 into 'records unavailable' with a retry, never 'no tasks'", async () => {
+    stubFetch(() => ({
+      status: 503,
+      body: {
+        error: "compute records are temporarily unavailable",
+        code: "compute_record_unavailable",
+      },
+    }));
+    await loadComputeTasks("f");
+
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.status).toBe("error");
+    expect("stale" in view).toBe(false);
+    const panel = renderComputeTasksPanel();
+    const text = textOf(panel);
+    expect(text).toContain(computeRecordsT("compute.recordsUnavailable"));
+    expect(text).not.toContain(computeRecordsT("compute.recordsNone"));
+    expect(findAction(panel as unknown as FakeEl, "compute-retry")).not.toBeNull();
+  });
+
+  it("keeps the last successful page as stale for the same session and filter", async () => {
+    stubFetch(() => ({ body: page([task("job-a")], { total_live_count: 1 }) }));
+    await loadComputeTasks("f");
+    expect((S.computeTasks as ComputeTasksView).status).toBe("ok");
+
+    stubFetch(() => ({ status: 503, body: { error: "unavailable" } }));
+    await loadComputeTasks("f");
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.status).toBe("error");
+    expect(view.status === "error" && view.stale?.data.tasks[0]?.job_id).toBe("job-a");
+
+    const panel = renderComputeTasksPanel();
+    const text = textOf(panel);
+    expect(text).toContain("job-a");
+    expect(text).toContain(computeRecordsT("compute.recordsStale", ""));
+    expect(text).not.toContain(computeRecordsT("compute.recordsNone"));
+    expect(findAction(panel as unknown as FakeEl, "compute-retry")).not.toBeNull();
+  });
+
+  it("does not show session A's tasks when session B's read fails", async () => {
+    stubFetch(() => ({ body: page([task("job-a")], { total_live_count: 1 }) }));
+    await loadComputeTasks("f");
+    expect(textOf(renderComputeTasksPanel())).toContain("job-a");
+
+    S.currentId = "g";
+    stubFetch(() => ({ status: 503, body: { error: "unavailable" } }));
+    await loadComputeTasks("g");
+
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.fid).toBe("g");
+    const text = textOf(renderComputeTasksPanel());
+    expect(text).not.toContain("job-a");
+    expect(text).toContain(computeRecordsT("compute.recordsUnavailable"));
+  });
+
+  it("shows 'no remote tasks' only for a successful empty page", async () => {
+    stubFetch(() => ({ body: page([], { total_live_count: 0 }) }));
+    await loadComputeTasks("f");
+    const text = textOf(renderComputeTasksPanel());
+    expect(text).toContain(computeRecordsT("compute.recordsNone"));
+    expect(text).not.toContain(computeRecordsT("compute.recordsUnavailable"));
+  });
+
+  it("says 'in flight on this page' when an old service omits total_live_count", async () => {
+    stubFetch(() => ({
+      body: {
+        tasks: [task("job-a")],
+        live_count: 1,
+        polled: false,
+        has_more: false,
+        next_cursor: null,
+      },
+    }));
+    await loadComputeTasks("f");
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.status === "ok" ? view.data.total_live_count : null).toBeUndefined();
+    const text = textOf(renderComputeTasksPanel());
+    expect(text).toContain(computeRecordsT("compute.recordsPageLive", 1));
+    expect(text).not.toContain(computeRecordsT("compute.recordsTotalLive", 1));
+  });
+
+  it("appends the next page by cursor and de-duplicates by job_id", async () => {
+    const calls = stubFetch((path) =>
+      path.includes("cursor=c1")
+        ? {
+            body: page([task("job-b", { live: false }), task("job-c")], {
+              total_live_count: 2,
+              has_more: false,
+              next_cursor: null,
+            }),
+          }
+        : {
+            body: page([task("job-a"), task("job-b")], {
+              total_live_count: 2,
+              has_more: true,
+              next_cursor: "c1",
+            }),
+          },
     );
-    const controller = createComputeRecordsController({ read });
-    await controller.read("f");
-    expect(controller.state?.phase).toBe("error");
-    expect(controller.state?.page).toBeNull();
-    expect(controller.state?.stale).toBe(false);
-    expect(controller.state?.error).toContain(
-      "compute records are unavailable right now",
+    await loadComputeTasks("f");
+    const panel = renderComputeTasksPanel();
+    expect(findAction(panel as unknown as FakeEl, "compute-load-more")).not.toBeNull();
+    findAction(panel as unknown as FakeEl, "compute-load-more")!.onclick!();
+    await flush();
+    await flush();
+
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.status).toBe("ok");
+    if (view.status === "ok") {
+      expect(view.data.tasks.map((row) => row.job_id)).toEqual(["job-a", "job-b", "job-c"]);
+      expect(view.nextCursor).toBeNull();
+    }
+    expect(calls.some((path) => path.includes("cursor=c1"))).toBe(true);
+    // Paging is a read: no POST.
+    expect(
+      vi.mocked(fetch).mock.calls.every(([, init]) => !(init as RequestInit)?.method),
+    ).toBe(true);
+  });
+
+  it("filters to in-flight tasks with state=live and starts from the first page", async () => {
+    const calls = stubFetch((path) =>
+      path.includes("state=live")
+        ? { body: page([task("job-live")], { total_live_count: 1 }) }
+        : {
+            body: page([task("job-live"), task("job-done", { live: false })], {
+              total_live_count: 1,
+            }),
+          },
     );
+    await loadComputeTasks("f");
+    const all = renderComputeTasksPanel();
+    expect(textOf(all)).toContain("job-done");
+    findAction(all as unknown as FakeEl, "compute-filter-live")!.onclick!();
+    await flush();
+    await flush();
+
+    expect(calls.some((path) => path.includes("state=live"))).toBe(true);
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.state).toBe("live");
+    const filtered = renderComputeTasksPanel();
+    expect(textOf(filtered)).toContain("job-live");
+    expect(textOf(filtered)).not.toContain("job-done");
+  });
+
+  it("shows loading before the first answer and unknown after a reset", async () => {
+    const gate = deferredReply();
+    vi.stubGlobal("fetch", vi.fn(() => gate.promise));
+    const reading = loadComputeTasks("f");
+    expect(textOf(renderComputeTasksPanel())).toContain(
+      computeRecordsT("compute.recordsLoading"),
+    );
+    gate.release(page([], { total_live_count: 0 }));
+    await reading;
+    resetComputeTasks();
+    expect(textOf(renderComputeTasksPanel())).toContain(
+      computeRecordsT("compute.recordsUnknown"),
+    );
+  });
+
+  it("drops a late answer after the session changed", async () => {
+    const gate = deferredReply();
+    vi.stubGlobal("fetch", vi.fn(() => gate.promise));
+    const readingA = loadComputeTasks("f");
+    S.currentId = "g";
+    stubFetch(() => ({ body: page([task("job-b")], { total_live_count: 1 }) }));
+    await loadComputeTasks("g");
+    gate.release(page([task("job-a")], { total_live_count: 1 }));
+    await readingA;
+
+    const view = S.computeTasks as ComputeTasksView;
+    expect(view.fid).toBe("g");
+    const text = textOf(renderComputeTasksPanel());
+    expect(text).toContain("job-b");
+    expect(text).not.toContain("job-a");
+  });
+
+  it("labels a row with the record's own update time, not a fresh check", async () => {
+    stubFetch(() => ({ body: page([task("job-a")], { total_live_count: 1 }) }));
+    await loadComputeTasks("f");
+    const text = textOf(renderComputeTasksPanel());
+    expect(text).toContain(computeRecordsT("compute.recordsUpdated", "5m"));
+    expect(text).not.toContain("just now");
+  });
+
+  it("drops an in-flight answer after the session-reset hook", async () => {
+    const gate = deferredReply();
+    vi.stubGlobal("fetch", vi.fn(() => gate.promise));
+    const reading = loadComputeTasks("f");
+    resetComputeTasks();
+    gate.release(page([task("job-a")], { total_live_count: 1 }));
+    await reading;
+    expect(S.computeTasks).toBeNull();
   });
 });

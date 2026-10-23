@@ -9,9 +9,8 @@ F-15 Action Timeline 内核。`sanitize*` / `mergeActionTimelines` 是纯函数�
 | 文件 | 职责 |
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 `/api/v1` fetch、`optionalApi`、`hint` / 后续车道 `isReady` 调用。 |
-| [`compute-copy.ts`](compute-copy.ts) | C2 远程任务面板的 zh/en 文案（车道本地：生成的 `i18n` 词典来自冻结的 `app.js`）。 |
-| [`compute-records.ts`](compute-records.ts) | C2 远程任务读取归属：会话 + 筛选 + 单调请求令牌；失败保留上次成功页并标过期；游标分页；GET 构造器加 `state=live` / `cursor`。 |
-| [`compute-records.test.ts`](compute-records.test.ts) | Vitest：失败时旧页显式标过期；另一会话/筛选或迟到页不会落盘；分页从游标追加。 |
+| [`copy.ts`](copy.ts) | C2 远程任务面板的 zh/en 文案（车道本地：生成的 `i18n` 词典来自冻结的 `app.js`）。 |
+| [`compute-records.test.ts`](compute-records.test.ts) | C2 行为测试（HTTP 替身）：503 为「任务记录暂不可用」（非「无任务」）且有重试；同会话失败保留过期页；切会话/筛选清空；仅成功空页显示无任务；缺 `total_live_count` 保持本页口径；加载更多按游标追加并按 job_id 去重；行显示记录自身更新时间。 |
 | [`dom.ts`](dom.ts) | `el` / `iconEl` / `ghostIconBtn` / `svgElement` / `$` / `bytes`。 |
 | [`execution-request.ts`](execution-request.ts) | `exactExecutionIdentity` / `scopedExecutionRequest`（app.js:3021-3041）：中断必须指名它要停的那一次执行。 |
 | [`execution-request.test.ts`](execution-request.test.ts) | Vitest：中断必须指名具体执行；找不到属主时拒绝发送。 |
