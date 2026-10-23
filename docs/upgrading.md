@@ -101,6 +101,11 @@ old data.
 | 34 | `background_exec_receipts`: add the table; existing rows stay as they are |
 | 35 | `project_source_folder`: add nullable `projects.folder_path`; existing projects have no folder attached |
 
+An unreleased checkout of this repository also advances to schema **36** with
+`dataset_verification_receipts`. It creates an empty Host-owned receipt table;
+historical source metadata does not gain inferred verification. The published
+0.3.1 package stops at schema 35.
+
 During the rewrite the connection sets `PRAGMA secure_delete = ON`, then
 restores the previous mode by name (`OFF`, `ON`, or `FAST`) before the
 transaction commits. With `secure_delete` on, SQLite overwrites the bytes

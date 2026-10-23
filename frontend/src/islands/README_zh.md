@@ -20,5 +20,5 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`locator.ts`](locator.ts) | PDF / HTML locator 评论（app.js:10835-10897）。 |
 | [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` 懒注入（app.js:9610-9673）。 |
 | [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src；只有最新且仍在页面上的结构创建 viewer，脚本只注入一次。 |
-| [`viewer.ts`](viewer.ts) | Dock Viewer 铬、编辑器、版本（app.js:9430-9609）。 |
-| [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` 扩展名 / content-type 门。 |
+| [`viewer.ts`](viewer.ts) | Dock Viewer 界面、编辑器、版本历史及记录来源面板，包括明确的核验未知状态（app.js:9430-9609）。 |
+| [`viewer.test.ts`](viewer.test.ts) | 文本编辑门禁、元数据/来源渲染及双语核验状态合同。 |

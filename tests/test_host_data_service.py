@@ -753,7 +753,7 @@ def test_a_cell_cannot_claim_the_importers_verification(tmp_path, encode):
         assert "file_verification" not in stored["dataset"]
         assert stored["dataset"]["record_doi"] == "10.5281/zenodo.123"
         projected = public_source(stored)["dataset"]
-        assert "file_verification" not in projected
+        assert projected["file_verification"] is None
         assert projected["file_key"] == "forged.csv"
     finally:
         store.close()

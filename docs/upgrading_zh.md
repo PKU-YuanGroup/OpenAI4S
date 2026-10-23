@@ -54,6 +54,10 @@ Linux 与 Windows/WSL2 安装包、`SHA256SUMS` 和验证资料归档均在 [Git
 | 34 | `background_exec_receipts`：新增表；已有行保持原样 |
 | 35 | `project_source_folder`：新增可为空的 `projects.folder_path` 列；已有项目默认不绑定文件夹 |
 
+本仓库尚未发布的源码构建还会升级到 schema **36**，新增
+`dataset_verification_receipts`。这一步创建空的、由 Host 持有的凭据表；
+不会根据历史来源元数据推断核验已通过。已发布的 0.3.1 安装包止于 schema 35。
+
 改写期间连接会执行 `PRAGMA secure_delete = ON`，并在事务提交前按名字恢复原先的模式（`OFF`、`ON` 或 `FAST`）。开着 `secure_delete` 时，SQLite 会用零覆盖这次 `UPDATE` 换下来的旧字节。
 
 与新写入逐字节相同的预览保持不变，包括 `<invalid template>`、`<unknown template>` 和 params 标记。写着模板 id 的预览，只有注册表仍能解析这个 id 时才算投影；否则按原文处理，记为 `<unknown template>`，并丢掉 params 标记。原文预览若以注册表能解析的模板 id 开头，保留该 id，state 换成 `<redacted judge state>`，并丢掉 params。原文预览若以匹配 `^[A-Za-z0-9_.:-]{1,100}$`、但注册表解析不了的 id 开头，记为 `<unknown template>`。其余原文变成只含 state 标记的 `[{"state": "<redacted judge state>"}]`。

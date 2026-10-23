@@ -8123,6 +8123,9 @@
                     },
                     "dataset": {
                       "properties": {
+                        "access_right": {
+                          "type": "string"
+                        },
                         "concept_doi": {
                           "type": "string"
                         },
@@ -8145,7 +8148,10 @@
                           "type": "string"
                         },
                         "file_verification": {
-                          "type": "string"
+                          "type": [
+                            "null",
+                            "string"
+                          ]
                         },
                         "local_sha256": {
                           "type": "string"
@@ -8163,15 +8169,7 @@
                           "type": "integer"
                         }
                       },
-                      "required": [
-                        "concept_doi",
-                        "declared_license",
-                        "file_key",
-                        "local_sha256",
-                        "record_doi",
-                        "record_id",
-                        "undisclosed_field_count"
-                      ],
+                      "required": [],
                       "type": "object"
                     },
                     "record_count": {
@@ -8187,9 +8185,7 @@
                       "type": "integer"
                     }
                   },
-                  "required": [
-                    "database"
-                  ],
+                  "required": [],
                   "type": "object"
                 },
                 "size_bytes": {

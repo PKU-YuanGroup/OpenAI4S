@@ -227,11 +227,11 @@
       "integrated": "P1-A",
       "plan_conclusion": "提前为只读 P1，依赖 scoped source",
       "status": "closed",
-      "status_note": "the Artifact version retrieval-source panel remains allowlisted, length-capped, redacted and bound to its version; the route omits credentials. frontend/src/islands/viewer.ts renders recorded dataset identity and verification fields as source information, not as an attestation. The previous `open` label predated the work.",
+      "status_note": "the Artifact version retrieval-source panel remains allowlisted, length-capped, redacted and bound to its version; the route omits credentials. frontend/src/islands/viewer.ts renders recorded dataset identity; a matched verification check requires a local Host-owned receipt for that exact version, while unattested historical or imported sources show an unknown check. The previous `open` label predated the work.",
       "tests": "tests/test_retrieval_source.py,tests/test_retrieval_provenance.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c9b04e56f9c936b5a3ef85e9579469e771f94d39cceab90f599c696879f63b78"
+      "evidence_digest": "c5e05638baf8c275e2c756f842377026760f1732f9b3e97155b08997d91b4309"
     },
     {
       "source": "R3",
