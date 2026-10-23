@@ -75,6 +75,35 @@ BUNDLE_SMOKE_CHECKS = (
     "processes",
 )
 
+#: R6's frozen browser-acceptance budgets, in seconds. The harness echoes them
+#: in its report and the gate requires that echo to match: otherwise a run that
+#: quietly doubled a timeout would still produce an acceptable-looking report.
+BUNDLE_SMOKE_BUDGETS = {
+    "service": 90,
+    "cell": 60,
+    "browser": 120,
+    "cleanup": 30,
+    "total": 420,
+}
+
+#: The environment knobs the browser acceptance must have handed its daemon.
+#: Names only: the report records the variable names, never their values.
+BUNDLE_SMOKE_DAEMON_ENV = (
+    "HOME",
+    "OPENAI4S_DATA_DIR",
+    "OPENAI4S_HOST",
+    "OPENAI4S_NOTEBOOK_REPL",
+    "OPENAI4S_PORT",
+    "PATH",
+    "TMPDIR",
+)
+
+#: A credential-shaped value that survived redaction. A diagnostic quoting a
+#: live `?token=` or bearer value is a refusal, not a cosmetic flaw.
+_LEAKED_CREDENTIAL = re.compile(
+    r"(?i)(?:[?&]token=|x-openai4s-token:\s*|bearer\s+)(?!<redacted)"
+)
+
 #: A receipt kind that must carry executed-runtime evidence, and the archive
 #: suffix that names its arch.
 _LINUX_TARBALL = re.compile(r"-linux-(?P<arch>x86_64|aarch64)\.tar\.gz$")
@@ -405,12 +434,66 @@ def normalize_bundle_smoke(
         raise ReceiptError(
             "bundle browser evidence records no Artifact version SHA-256"
         )
+    timings = raw.get("timings")
+    if not isinstance(timings, Mapping):
+        raise ReceiptError("bundle browser evidence records no timings")
+    budgets = timings.get("budgets_s")
+    if not isinstance(budgets, Mapping):
+        raise ReceiptError("bundle browser evidence records no time budgets")
+    for name, seconds in BUNDLE_SMOKE_BUDGETS.items():
+        try:
+            recorded = float(budgets.get(name))
+        except (TypeError, ValueError):
+            raise ReceiptError(
+                f"bundle browser evidence records no {name} time budget"
+            ) from None
+        if recorded != float(seconds):
+            raise ReceiptError(
+                f"bundle browser evidence ran with a {name} budget of {recorded:g}s, "
+                f"not the frozen {seconds}s; rerun the acceptance under the R6 limits"
+            )
+    try:
+        total_s = float(timings.get("total_s"))
+    except (TypeError, ValueError):
+        raise ReceiptError(
+            "bundle browser evidence records no total duration"
+        ) from None
+    if total_s <= 0 or total_s > BUNDLE_SMOKE_BUDGETS["total"]:
+        raise ReceiptError(
+            f"bundle browser evidence took {total_s:g}s, outside the "
+            f"{BUNDLE_SMOKE_BUDGETS['total']}s total budget"
+        )
+    posture = raw.get("posture")
+    environment_names = (
+        posture.get("daemon_environment") if isinstance(posture, Mapping) else None
+    )
+    if not isinstance(environment_names, list) or not all(
+        isinstance(item, str) for item in environment_names
+    ):
+        raise ReceiptError(
+            "bundle browser evidence records no daemon environment; the gate "
+            "cannot tell what the run handed the packaged daemon"
+        )
+    missing_environment = sorted(set(BUNDLE_SMOKE_DAEMON_ENV) - set(environment_names))
+    if missing_environment:
+        raise ReceiptError(
+            "bundle browser acceptance did not hand its daemon: "
+            + ", ".join(missing_environment)
+        )
     diagnostics = raw.get("diagnostics")
     if diagnostics is not None:
         if not isinstance(diagnostics, list) or not all(
             isinstance(item, str) for item in diagnostics
         ):
             raise ReceiptError("bundle browser evidence has malformed diagnostics")
+        if len(diagnostics) > 8:
+            raise ReceiptError("bundle browser evidence carries too many diagnostics")
+        for item in diagnostics:
+            if _LEAKED_CREDENTIAL.search(item):
+                raise ReceiptError(
+                    "bundle browser evidence carries a credential-shaped value in "
+                    "its diagnostics; the log was not redacted"
+                )
     return dict(raw)
 
 

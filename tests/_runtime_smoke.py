@@ -148,6 +148,15 @@ def bundle_report(
         "figure_tool": "matplotlib",
         "checks": {name: True for name in release_receipts.BUNDLE_SMOKE_CHECKS},
         "artifact": {"version_id": "v-browser", "sha256": "c" * 64},
-        "timings": {"total_s": 123.4},
+        "timings": {
+            "total_s": 123.4,
+            "budgets_s": dict(release_receipts.BUNDLE_SMOKE_BUDGETS),
+        },
+        "posture": {
+            "notebook_repl": "enabled for this run only",
+            "kernel_sandbox": "off (the OS boundary has its own release gate)",
+            "model_calls": "none",
+            "daemon_environment": sorted(release_receipts.BUNDLE_SMOKE_DAEMON_ENV),
+        },
         "diagnostics": [],
     }

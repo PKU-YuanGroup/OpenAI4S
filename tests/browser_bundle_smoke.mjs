@@ -326,6 +326,10 @@ function daemonEnvironment(runtime, { dataDir, home, tempDir, port }) {
     MPLBACKEND: "Agg",
     HOME: home,
     TMPDIR: tempDir,
+    // The bundled launcher sets this so an on-demand `pip install` from a Cell
+    // lands in a private user site under the data directory; the kernel
+    // allowlists it, so set it here too rather than inheriting a bare ~/.local.
+    PYTHONUSERBASE: path.join(dataDir, "pysite"),
   });
   if (runtime.pythonPath) environment.PYTHONPATH = runtime.pythonPath;
   return environment;
@@ -613,6 +617,7 @@ class Acceptance {
     this.diagnostics = [];
     this.checks = Object.fromEntries(CHECKS.map((name) => [name, false]));
     this.checks.figure_tool = "";
+    this.daemonEnvironmentNames = [];
     this.daemons = [];
     this.timings = {};
     this.runtime = null;
@@ -722,9 +727,15 @@ class Acceptance {
   async launchDaemon(suffix) {
     const dataDir = path.join(this.workRoot, "data");
     const port = await freeLoopbackPort();
+    const environment = this.environment(dataDir, port);
+    if (this.daemonEnvironmentNames.length === 0) {
+      // Variable names only, sorted: the receipt gate requires the knobs the
+      // run actually handed the daemon, not a claim in prose.
+      this.daemonEnvironmentNames = Object.keys(environment).sort();
+    }
     const daemon = new Daemon({
       runtime: this.runtime,
-      environment: this.environment(dataDir, port),
+      environment,
       cwd: this.workRoot,
       logPath: path.join(this.workRoot, "logs", `daemon-${suffix}.log`),
       port,
@@ -1105,6 +1116,7 @@ class Acceptance {
         notebook_repl: "enabled for this run only",
         kernel_sandbox: "off (the OS boundary has its own release gate)",
         model_calls: "none",
+        daemon_environment: this.daemonEnvironmentNames,
       },
     };
   }

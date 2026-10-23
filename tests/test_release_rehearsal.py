@@ -498,3 +498,59 @@ def test_a_browser_acceptance_without_the_packaged_matplotlib_is_refused():
             source_sha=SHA,
             platform=("linux", "x86_64"),
         )
+
+
+def test_a_browser_acceptance_must_echo_the_frozen_time_budgets():
+    from tests._runtime_smoke import bundle_report
+
+    report = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    report["timings"]["budgets_s"]["cell"] = 120
+    with pytest.raises(ReceiptError, match="cell budget"):
+        release_receipts.normalize_bundle_smoke(
+            report,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_browser_acceptance_that_blew_the_total_budget_is_refused():
+    from tests._runtime_smoke import bundle_report
+
+    report = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    report["timings"]["total_s"] = 421
+    with pytest.raises(ReceiptError, match="total budget"):
+        release_receipts.normalize_bundle_smoke(
+            report,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_browser_acceptance_must_record_the_daemon_environment():
+    from tests._runtime_smoke import bundle_report
+
+    report = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    report["posture"]["daemon_environment"].remove("OPENAI4S_NOTEBOOK_REPL")
+    with pytest.raises(ReceiptError, match="OPENAI4S_NOTEBOOK_REPL"):
+        release_receipts.normalize_bundle_smoke(
+            report,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )
+
+
+def test_a_browser_acceptance_whose_diagnostics_leaked_a_token_is_refused():
+    from tests._runtime_smoke import bundle_report
+
+    report = bundle_report(artifact_sha256=_TARBALL_SHA, source_sha=SHA)
+    report["diagnostics"] = ["sign in: http://127.0.0.1:8760/?token=live-secret-value"]
+    with pytest.raises(ReceiptError, match="credential-shaped"):
+        release_receipts.normalize_bundle_smoke(
+            report,
+            artifact_sha256=_TARBALL_SHA,
+            source_sha=SHA,
+            platform=("linux", "x86_64"),
+        )

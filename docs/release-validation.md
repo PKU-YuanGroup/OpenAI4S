@@ -258,8 +258,12 @@ execution history back in a fresh browser, and confirms no daemon or kernel
 worker survives. It calls no model and reaches nothing but loopback. Its report
 is `bundle_smoke` in the receipt; the run is bounded by R6's budgets (90 s per
 service start, 60 s per Cell, 120 s per browser scene, 30 s cleanup, 420 s
-total), and a host that cannot execute the bundle records `not_run` rather than
-claiming a pass.
+total), and the report echoes those budgets, the total it actually took and the
+variable names it handed the daemon. The receipt gate refuses an acceptance
+whose budgets were relaxed, whose total exceeded the limit, that omitted a
+required environment knob, or whose diagnostics carry an unredacted credential;
+a host that cannot execute the bundle records `not_run` rather than claiming a
+pass.
 
 ## Windows package
 
