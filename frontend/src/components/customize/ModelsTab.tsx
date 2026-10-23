@@ -17,8 +17,10 @@ import {
   modelProtocolOptions,
   protocolLabelOf,
   readCapabilityReceipt,
+  readEffectiveCapabilities,
   sanitizeLocalModelDiscovery,
   type CapabilityReceipt,
+  type EffectiveCapabilities,
   type LocalDiscovery,
   type ProtocolOption,
 } from "../../features/customize/models";
@@ -482,6 +484,11 @@ export function ProfileRow({
   const [receipt, setReceipt] = useState<CapabilityReceipt | null>(
     readCapabilityReceipt(p.capability_receipt),
   );
+  // What the next request will use, with its provenance. Absent on an old
+  // service; the badges then keep their previous (observation-only) display.
+  const [effective, setEffective] = useState<EffectiveCapabilities | null>(
+    readEffectiveCapabilities(p),
+  );
   const [testing, setTesting] = useState(false);
   const bits: string[] = [];
   if (p.provider) bits.push(protocolLabelOf(protocols, p.provider));
@@ -505,7 +512,11 @@ export function ProfileRow({
         {rd.state && rd.state !== "ready" ? (
           <div class="ds prof-warn">{publicText(rd.detail || rd.state, 200)}</div>
         ) : null}
-        <CapabilityBadges receipt={receipt} unknownReason={probeReason} />
+        <CapabilityBadges
+          receipt={receipt}
+          unknownReason={probeReason}
+          effective={effective}
+        />
         {probe != null ? <div class={probeClass}>{probe}</div> : null}
       </div>
       {!isActive ? (
@@ -551,6 +562,10 @@ export function ProfileRow({
             setProbeReason(r.reachable ? "" : detail);
             const next = readCapabilityReceipt(r.capability_receipt);
             if (next) setReceipt(next);
+            // The probe answers with the post-persist projection: the next
+            // request must be explained by this answer, not by a previous one.
+            const nextEffective = readEffectiveCapabilities(r);
+            if (nextEffective) setEffective(nextEffective);
           } catch (e) {
             setProbeClass("ds prof-probe bad");
             const text = apiErrorText(e);

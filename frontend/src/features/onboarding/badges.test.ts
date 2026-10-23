@@ -5,7 +5,7 @@ import {
   capabilityBadgeRows,
   capabilityBadgeText,
 } from "./badges";
-import type { CapabilityReceipt } from "../customize/models";
+import type { CapabilityReceipt, EffectiveCapabilities } from "../customize/models";
 
 type Pill = { props: Record<string, string> & { children: string } };
 
@@ -85,5 +85,75 @@ describe("M-01 capability badges", () => {
   it("returns no badges when there is no receipt", () => {
     expect(capabilityBadgeRows(null)).toEqual([]);
     expect(badgesFromProbe(null)).toEqual([]);
+  });
+});
+
+// M2 / P0-01: one badge states the last probe observation, the other what the
+// next request will use. A catalogue default is not a measured pass, so its
+// provenance has to be on the text; without the additive projection the old
+// display is unchanged.
+describe("M2 observation vs next-request badge", () => {
+  const RECEIPT: CapabilityReceipt = {
+    native_tool_call: "unknown",
+    streaming: "unknown",
+    stale: false,
+    native_completion: false,
+    reachable: true,
+    observed_at: 1761177600000,
+  };
+  const CATALOG: EffectiveCapabilities = {
+    native_tool_call: { value: true, source: "catalog" },
+  };
+
+  it("states the next request separately and never presents a catalogue default as measured", () => {
+    const rows = capabilityBadgeRows(RECEIPT, "", CATALOG);
+    const native = rows[0]!;
+    expect(native.effective).toEqual({ value: true, source: "catalog" });
+    expect(native.observedAt).toBe(1761177600000);
+    const text = capabilityBadgeText(native);
+    expect(text).toContain("next request: on");
+    expect(text).toContain("catalogue default");
+    expect(text).not.toContain("tested");
+    // The observation time is shown, so "unknown" cannot read as "just asked".
+    expect(text).toContain("observed ");
+  });
+
+  it("labels probe and explicit-override provenance, and never claims a probe it did not do", () => {
+    const probe = capabilityBadgeText(
+      capabilityBadgeRows(RECEIPT, "", {
+        streaming: { value: false, source: "probe" },
+      })[1]!,
+    );
+    expect(probe).toContain("next request: off");
+    expect(probe).toContain("tested");
+    expect(probe).not.toContain("catalogue");
+
+    const explicit = capabilityBadgeText(
+      capabilityBadgeRows(RECEIPT, "", {
+        native_tool_call: { value: true, source: "explicit_override" },
+      })[0]!,
+    );
+    expect(explicit).toContain("explicit config");
+    expect(explicit).not.toContain("tested");
+  });
+
+  it("shows the next-request decision even when nothing was ever probed", () => {
+    const rows = capabilityBadgeRows(null, "", CATALOG);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.cap).toBe("native_tool_call");
+    expect(rows[0]!.state).toBe("unknown");
+    expect(rows[0]!.observed).toBe(false);
+    const text = capabilityBadgeText(rows[0]!);
+    expect(text).toContain("catalogue default");
+    expect(text).not.toContain("tested");
+  });
+
+  it("keeps the old display when the service sends no projection", () => {
+    const rows = capabilityBadgeRows(RECEIPT, "");
+    expect(rows.every((row) => row.effective == null)).toBe(true);
+    expect(capabilityBadgeText(rows[0]!)).not.toContain("next request");
+    // The observation time still shows: it is a fact about the receipt, not
+    // part of the additive next-request projection.
+    expect(capabilityBadgeText(rows[0]!)).toContain("observed ");
   });
 });

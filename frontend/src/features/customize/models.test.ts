@@ -3,7 +3,13 @@ import { defaultModel, defaultModelName, models } from "../../stores/customize";
 import { resetStoreFields } from "../../stores/signal-field";
 import { loadModels } from "./host";
 import { currentId } from "../../stores/session";
-import { resetSessionModelState, sessionModelPin, watchSessionModelPin } from "./models";
+import {
+  readCapabilityReceipt,
+  readEffectiveCapabilities,
+  resetSessionModelState,
+  sessionModelPin,
+  watchSessionModelPin,
+} from "./models";
 import { bootCustomize } from "./index";
 
 const fetchMock = vi.fn();
@@ -178,5 +184,70 @@ describe("the open session's model pin", () => {
     bootCustomize({});
     await vi.waitFor(() => expect(calls()).toContainEqual(["/api/v1/frames/frame_9", "GET"]));
     await vi.waitFor(() => expect(sessionModelPin.value?.profileId).toBe("mp-claude"));
+  });
+});
+
+// M2 / P0-01: the badge shows two different facts -- what the last probe
+// observed, and what the next request will actually use. The projection is an
+// additive server field; without it the old display is unchanged.
+describe("effective capability projection", () => {
+  it("reads each field's effective boolean with its provenance", () => {
+    const effective = readEffectiveCapabilities({
+      effective_capabilities: {
+        native_tool_call: { value: true, source: "probe" },
+        streaming: { effective: false, source: "catalog" },
+      },
+    });
+    expect(effective).toEqual({
+      native_tool_call: { value: true, source: "probe" },
+      streaming: { value: false, source: "catalog" },
+    });
+  });
+
+  it("accepts the projection nested with the receipt", () => {
+    const effective = readEffectiveCapabilities({
+      capability_receipt: {
+        native_tool_call: "true",
+        streaming: "unknown",
+        effective_capabilities: {
+          native_tool_call: { value: true, source: "explicit_override" },
+        },
+      },
+    });
+    expect(effective?.native_tool_call).toEqual({
+      value: true,
+      source: "explicit_override",
+    });
+    expect(effective?.streaming).toBeUndefined();
+  });
+
+  it("returns null without the field, so an old service keeps its display", () => {
+    expect(readEffectiveCapabilities(null)).toBeNull();
+    expect(readEffectiveCapabilities({})).toBeNull();
+    expect(
+      readEffectiveCapabilities({
+        capability_receipt: { native_tool_call: "true", streaming: "unknown" },
+      }),
+    ).toBeNull();
+  });
+
+  it("does not turn a malformed entry or an unknown source into a claim", () => {
+    expect(
+      readEffectiveCapabilities({
+        effective_capabilities: {
+          native_tool_call: { value: "true", source: "probe" },
+          streaming: { value: true, source: "guessed" },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the probe observation time on the receipt", () => {
+    const receipt = readCapabilityReceipt({
+      native_tool_call: "true",
+      streaming: "unknown",
+      observed_at: 1761177600000,
+    });
+    expect(receipt?.observed_at).toBe(1761177600000);
   });
 });

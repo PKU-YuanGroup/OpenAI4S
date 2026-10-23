@@ -40,6 +40,7 @@ vi.mock("../../features/customize/actions", async (importOriginal) => ({
   custTab: () => undefined,
 }));
 
+import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { LocalEndpointRow, ModelsTab, ProfileRow, profileKeyLabel } from "./ModelsTab";
 
 type Node = { type?: unknown; props?: Record<string, unknown> & { children?: unknown } };
@@ -288,5 +289,164 @@ describe("profile key label", () => {
     expect(profileKeyLabel({ has_api_key: false, credential_source: "missing" })).toBe("cust.models.noKey");
     // An older daemon sends no `credential_source`: the loopback rule still applies.
     expect(profileKeyLabel({ has_api_key: false, base_url: "http://127.0.0.1:11434/v1" })).toBe("cust.models.local.keyless");
+  });
+});
+
+// M2 / P0-01: the row must explain the next request from the server's
+// effective-capability projection, with provenance, instead of leaving the
+// last probe observation to speak for it.
+function findNode(node: unknown, match: (node: Node) => boolean): Node | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findNode(child, match);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!node || typeof node !== "object") return null;
+  const current = node as Node;
+  if (match(current)) return current;
+  return findNode(current.props?.children, match);
+}
+
+function badgeTree(tree: unknown): Node | null {
+  const vnode = findNode(tree, (node) => node.type === CapabilityBadges);
+  return vnode
+    ? ((vnode.type as (props: unknown) => unknown)(vnode.props) as Node)
+    : null;
+}
+
+function badgeText(tree: unknown): string {
+  const rendered = badgeTree(tree);
+  return rendered ? content(rendered) : "";
+}
+
+function buttonByText(tree: unknown, label: string): Node | null {
+  return findNode(
+    tree,
+    (node) => node.type === "button" && content(node).trim() === label,
+  );
+}
+
+function savedProfile(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "mp-1",
+    name: "Saved",
+    provider: "ark",
+    model: "m",
+    base_url: "",
+    has_api_key: true,
+    ...overrides,
+  };
+}
+
+function renderProfile(p: Record<string, unknown>): Node {
+  hookCursor = 0;
+  return ProfileRow({ p, activeId: "", protocols: [], onEdit: () => undefined }) as Node;
+}
+
+describe("M2 model capability provenance", () => {
+  it("shows the next request's decision and source beside the last observation", () => {
+    hookState.length = 0;
+    const tree = renderProfile(
+      savedProfile({
+        capability_receipt: {
+          native_tool_call: "unknown",
+          streaming: "true",
+          stale: false,
+          native_completion: false,
+          reachable: true,
+          observed_at: 1761177600000,
+        },
+        effective_capabilities: {
+          native_tool_call: { value: true, source: "catalog" },
+          streaming: { value: true, source: "probe" },
+        },
+      }),
+    );
+    const text = badgeText(tree);
+    // A catalogue default is labelled as such; it is not a measured pass.
+    expect(text).toContain("native tool call · unknown");
+    expect(text).toContain("next request: on (catalogue default)");
+    expect(text).toContain("next request: on (tested)");
+    expect(text).toContain("observed ");
+    const pills = tagged(badgeTree(tree), "data-cap");
+    expect(pills.map((pill) => pill.props!["data-source"])).toEqual([
+      "catalog",
+      "probe",
+    ]);
+    expect(pills.map((pill) => pill.props!["data-effective"])).toEqual(["true", "true"]);
+  });
+
+  it("adopts the projection returned by a probe instead of the previous one", async () => {
+    hookState.length = 0;
+    const p = savedProfile({
+      capability_receipt: {
+        native_tool_call: "unknown",
+        streaming: "unknown",
+        stale: false,
+        native_completion: false,
+        reachable: false,
+      },
+    });
+    let tree = renderProfile(p);
+    expect(badgeText(tree)).not.toContain("next request");
+
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/model-profiles/mp-1/probe" && init?.method === "POST") {
+        return Promise.resolve(
+          response({
+            reachable: true,
+            capability_receipt: {
+              native_tool_call: "true",
+              streaming: "unknown",
+              stale: false,
+              native_completion: false,
+              reachable: true,
+              observed_at: 1761177600000,
+            },
+            effective_capabilities: {
+              native_tool_call: { value: true, source: "probe" },
+              streaming: { value: false, source: "catalog" },
+            },
+          }),
+        );
+      }
+      return Promise.resolve(response({ ok: true }));
+    });
+
+    const test = buttonByText(tree, "cust.models.test")!;
+    expect(test).toBeTruthy();
+    await (test.props!.onClick as () => Promise<void>)();
+    await vi.waitFor(() => expect(badgeText(renderProfile(p))).toContain("next request"));
+
+    tree = renderProfile(p);
+    const text = badgeText(tree);
+    expect(text).toContain("next request: on (tested)");
+    expect(text).toContain("next request: off (catalogue default)");
+  });
+
+  it("keeps the previous display when the service sends no projection", () => {
+    hookState.length = 0;
+    const tree = renderProfile(
+      savedProfile({
+        capability_receipt: {
+          native_tool_call: "true",
+          streaming: "false",
+          stale: false,
+          native_completion: true,
+          reachable: true,
+        },
+      }),
+    );
+    const text = badgeText(tree);
+    expect(text).toContain("native tool call · true");
+    expect(text).toContain("streaming · false");
+    expect(text).not.toContain("next request");
+    expect(
+      tagged(badgeTree(tree), "data-source").every(
+        (node) => node.props!["data-source"] === undefined,
+      ),
+    ).toBe(true);
   });
 });
