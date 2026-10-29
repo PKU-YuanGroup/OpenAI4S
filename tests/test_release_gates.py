@@ -2571,7 +2571,12 @@ def test_the_desktop_packages_are_built_and_verified_before_anything_publishes()
         ]
         needs = re.search(r"^    needs: (.+)$", section, re.MULTILINE)
         assert needs, f"{job} must declare what it waits for"
-        for required in ("linux-app", "windows-package", "windows-launcher"):
+        for required in (
+            "linux-app",
+            "linux-runtime-smoke",
+            "windows-package",
+            "windows-launcher",
+        ):
             assert required in needs.group(1), (
                 f"{job} must not run before {required!r}: a package that failed "
                 "to build or failed verification would only skip its own job"

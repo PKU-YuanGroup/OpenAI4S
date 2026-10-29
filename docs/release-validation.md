@@ -225,14 +225,19 @@ only, and bytecode magic tracks the CPython version rather than the machine.
 What a foreign host cannot do is *execute* the result, so the verifier reports
 two depths and names which one it reached — a static inspection anywhere, and on
 a matching Linux host the import probe that proves the science stack imports
-rather than merely being present on disk. The release job therefore runs on a
+rather than merely being present on disk. The release build therefore runs on a
 Linux runner, and a cross-build says out loud that it has not been run.
 
-On that matching host the verifier also runs the shipped `install.sh`, and the
-same release job then runs
+On that matching host the verifier also runs the shipped `install.sh`. The
+following `linux-runtime-smoke` job downloads that tarball and runs
 [`scripts/installed_runtime_smoke.py`](../scripts/installed_runtime_smoke.py)
-against the tarball it is about to publish. Verification proves the bytes are
-well-formed; the smoke proves they execute. It unpacks the archive into a
+against the archive the release is about to publish. It checks out the
+workflow commit, not the product tree the dispatch selected: the smoke and
+receipt scripts are release tooling, and running the product tree's package
+scripts in that job would execute a dispatch-selected ref where it can write
+the default branch's Actions cache. The receipt still names the frozen product
+commit. Verification proves the bytes are well-formed; the smoke proves they
+execute. It unpacks the archive into a
 temporary directory whose name contains a space and starts the bundle's own
 daemon on an isolated data directory and a random loopback port, with the
 caller's `PYTHONPATH`, `PYTHONHOME`, `VIRTUAL_ENV`, `OPENAI4S_WEBUI`, model keys
@@ -264,9 +269,10 @@ browser layer, 30 s to clean up and 420 s overall; a timeout fails the run with
 a bounded diagnostic. The JSON report — scenario version, target, the input
 tarball's SHA-256, platform, arch, interpreter version, the ten check results,
 status, duration and at most one redacted failure — is written to
-`dist/runtime-smoke-linux.json` by the release job between "Verify the bundle"
-and the receipt step, and the nightly `linux-bundle-smoke` job runs the same
-command so a packaging regression shows up before release day. A host that
+`dist/runtime-smoke-linux.json` by `linux-runtime-smoke` after it downloads the
+tarball `linux-app` verified and before that job writes the build receipt.
+The nightly `linux-bundle-smoke` job runs the same command so a packaging
+regression shows up before release day. A host that
 cannot execute a linux-x86_64 bundle fails the check with the missing runner
 named rather than reporting a pass.
 
@@ -294,13 +300,13 @@ made to be loopback. A failure prints a bounded, credential-redacted diagnostic
 and exits non-zero, which the scenario records as `browser_open: failed`; a host
 without a browser records `not_run`, never a pass.
 
-The release job installs the driver for this layer by copying the PR browser
-job's `actions/setup-node` pin and its `npm ci --ignore-scripts` plus
+`linux-runtime-smoke` installs the driver for this layer by copying the PR
+browser job's `actions/setup-node` pin and its `npm ci --ignore-scripts` plus
 `playwright install --with-deps chromium` commands — no new action is
 introduced, because `release.yml` is a privileged workflow whose action majors
 are an explicit decision (`tests/test_governance.py`). The layer runs only in
-the release job (the nightly bundle smoke exercises the HTTP scenario without
-it), and `browser_open` is part of the same report the receipt binds.
+that job (the nightly bundle smoke exercises the HTTP scenario without it),
+and `browser_open` is part of the same report the receipt binds.
 
 ## Windows package
 
@@ -308,7 +314,7 @@ Not a native Windows build. `openai4s/platform_support.py` refuses to start a
 kernel on `win32`, so the Windows deliverable is a Windows launcher wrapped
 around the Linux bundle, which it installs into WSL2 on first run — see
 [`platforms.md`](platforms.md) for why that is the honest packaging rather than
-a workaround. The release job consumes the Linux job's artifact instead of
+a workaround. The Windows job consumes the receipted Linux artifact instead of
 rebuilding, which is what makes the payload byte-identical to the Linux tarball
 the same release publishes rather than a second build that ought to match.
 
