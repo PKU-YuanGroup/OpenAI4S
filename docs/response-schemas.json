@@ -8237,11 +8237,19 @@
                         "record_id": {
                           "type": "string"
                         },
+                        "redacted_fields": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
                         "undisclosed_field_count": {
                           "type": "integer"
                         }
                       },
-                      "required": [],
+                      "required": [
+                        "file_verification"
+                      ],
                       "type": "object"
                     },
                     "legacy_normalized": {
