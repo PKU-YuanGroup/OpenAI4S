@@ -333,20 +333,34 @@ describe("thumbnail read budget, concurrency and consumers (A1)", () => {
       walk(tile as unknown as Node)
         .map((node) => node.src)
         .find(Boolean);
+    const mount = (tile: HTMLElement) => {
+      (tile as unknown as Node).isConnected = true;
+    };
+    vi.stubGlobal("document", {
+      createElement: () => {
+        const node = new Node();
+        node.isConnected = false;
+        return node;
+      },
+    });
     const first = tileThumb(image);
+    mount(first);
     await vi.waitFor(() => expect(srcOf(first)).toBe("blob:1"));
     const cache = _thumbCache.value as Record<string, unknown>;
     for (const key of Object.keys(cache)) delete cache[key];
     const second = tileThumb(image);
+    expect(srcOf(second)).toBeUndefined();
+    mount(second);
+    await vi.waitFor(() => expect(srcOf(second)).toBe("blob:1"));
     expect(revoked).toEqual([]);
     expect(n).toBe(1);
     expect(srcOf(first)).toBe("blob:1");
-    expect(srcOf(second)).toBe("blob:1");
     (first as unknown as Node).isConnected = false;
     (second as unknown as Node).isConnected = false;
     for (const key of Object.keys(cache)) delete cache[key];
     const third = tileThumb(image);
     expect(revoked).toEqual(["blob:1"]);
+    mount(third);
     await vi.waitFor(() => expect(srcOf(third)).toBe("blob:2"));
     (third as unknown as Node).isConnected = false;
   });

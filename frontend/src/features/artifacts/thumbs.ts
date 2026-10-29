@@ -430,8 +430,12 @@ function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
     previous.consumers.add(tile);
     if (previous.objectUrl) {
       const url = previous.objectUrl;
-      cache[key] = Promise.resolve(url);
-      apply(url);
+      const restored = Promise.resolve(url);
+      cache[key] = restored;
+      // The tile is created, then inserted. A synchronous paint sees
+      // `isConnected === false` and skips it, so the thumb stays empty.
+      // The in-flight join below already waits for that insertion.
+      restored.then(apply).catch(fail);
       evictThumbCache(cache);
       return;
     }
