@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   ApiError,
@@ -7,6 +7,9 @@ import {
   isArtifactReadAborted,
   PREVIEW_READ_MAX_BYTES,
   PREVIEW_READ_TIMEOUT_MS,
+  abortPreviewReads,
+  beginPreviewRead,
+  previewObjectUrl,
   readArtifactPrefix,
   readArtifactBytes,
   fetchArtifactText,
@@ -251,6 +254,35 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
     expect(read.truncated).toBe(true);
     expect(read.text).toBe("AAAAAAAAA");
     expect(read.text).not.toContain("\uFFFD");
+  });
+
+  it("revokes blob URLs only for the preview being repainted or already detached", () => {
+    const revoked: string[] = [];
+    let n = 0;
+    vi.stubGlobal("URL", {
+      createObjectURL: () => `blob:${++n}`,
+      revokeObjectURL: (url: string) => {
+        revoked.push(url);
+      },
+    });
+    class Owner {
+      isConnected = true;
+      private kids: Owner[] = [];
+      contains(node: unknown): boolean {
+        return node === this || this.kids.some((kid) => kid.contains(node));
+      }
+    }
+    const dock = new Owner();
+    const modal = new Owner();
+    const dockUrl = previewObjectUrl(new Uint8Array([1]), "image/png", dock as unknown as Element);
+    const modalUrl = previewObjectUrl(new Uint8Array([2]), "application/pdf", modal as unknown as Element);
+    beginPreviewRead(modal as unknown as Element);
+    expect(revoked).toEqual([modalUrl]);
+    dock.isConnected = false;
+    abortPreviewReads();
+    expect(revoked).toContain(dockUrl);
+    expect(revoked.filter((url) => url === dockUrl)).toHaveLength(1);
+    vi.unstubAllGlobals();
   });
 
   it("returns every byte of a binary body and rejects a body past the budget", async () => {

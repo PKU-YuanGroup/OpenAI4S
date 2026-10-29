@@ -313,6 +313,33 @@ describe("thumbnail read budget, concurrency and consumers (A1)", () => {
     (tile as unknown as Node).isConnected = false;
   });
 
+  it("revokes the previous image blob when the same version is read again after eviction", async () => {
+    const revoked: string[] = [];
+    let n = 0;
+    vi.stubGlobal("URL", {
+      createObjectURL: () => `blob:${++n}`,
+      revokeObjectURL: (url: string) => {
+        revoked.push(url);
+      },
+    });
+    setArtifactsFetch(async () => new Response(new Uint8Array([1, 2, 3, 4])));
+    const image = {
+      id: "pic2",
+      filename: "plot.png",
+      content_type: "image/png",
+      version_id: "v1",
+    };
+    const first = tileThumb(image);
+    await vi.waitFor(() => expect(n).toBe(1));
+    const cache = _thumbCache.value as Record<string, unknown>;
+    for (const key of Object.keys(cache)) delete cache[key];
+    const second = tileThumb(image);
+    expect(revoked).toEqual(["blob:1"]);
+    await vi.waitFor(() => expect(n).toBe(2));
+    (first as unknown as Node).isConnected = false;
+    (second as unknown as Node).isConnected = false;
+  });
+
   it("does not fall back to the artifact URL when an image is over the preview cap", async () => {
     vi.stubGlobal("URL", {
       createObjectURL: () => {

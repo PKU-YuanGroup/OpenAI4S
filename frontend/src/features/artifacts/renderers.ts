@@ -665,7 +665,11 @@ function renderImageGlue(content: HTMLElement, a: ArtifactRow, url: string): voi
   readArtifactBytes(url, { signal: previewReadSignal() })
     .then((bytes) => {
       if (!content.isConnected) return;
-      img.src = previewObjectUrl(bytes, artifactMediaType(a.filename, a.content_type, "application/octet-stream"));
+      img.src = previewObjectUrl(
+        bytes,
+        artifactMediaType(a.filename, a.content_type, "application/octet-stream"),
+        content,
+      );
     })
     .catch(readFailure(content, a, url, () => renderImageGlue(content, a, url)));
 }
@@ -678,7 +682,7 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
   readArtifactBytes(url, { signal: previewReadSignal() })
     .then((bytes) => {
       if (!content.isConnected) return;
-      frame.src = previewObjectUrl(bytes, "application/pdf");
+      frame.src = previewObjectUrl(bytes, "application/pdf", content);
     })
     .catch(readFailure(content, a, url, () => renderPdfGlue(content, a, url)));
   if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);

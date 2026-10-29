@@ -16,7 +16,7 @@ import {
   previewReadSignal,
   readArtifactBytes,
 } from "../features/artifacts/api";
-import { readFailureText } from "../features/artifacts/copy";
+import { rendererFailure } from "../features/artifacts/renderers";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { openViewer } from "../features/artifacts/ui";
 import { hint } from "../features/sessions/chrome";
@@ -468,15 +468,19 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
   body.appendChild(wrap);
   readArtifactBytes(url, { signal: previewReadSignal() })
     .then((bytes) => {
-      if (!body.isConnected) return;
+      if (body.isConnected === false) return;
       img.src = previewObjectUrl(
         bytes,
         artifactMediaType(a.filename, a.content_type, "application/octet-stream"),
+        body,
       );
     })
     .catch((error: unknown) => {
-      if (!body.isConnected || isArtifactReadAborted(error)) return;
-      img.alt = readFailureText(error);
+      if (body.isConnected === false || isArtifactReadAborted(error)) return;
+      // The island is the production image viewer, so a failed read has to
+      // say why and offer retry here. The glue's failure card never runs
+      // once this function has taken the container.
+      rendererFailure(body, a, url, error, () => renderAnnotatableImage(body, a, url));
     });
 
   const zs = { z: 1, fitW: 0, max: 8 };

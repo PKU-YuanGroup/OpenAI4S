@@ -621,26 +621,56 @@ export function readArtifactBytes(
   return readArtifactText(url, options, false, true).then((read) => read.raw ?? new Uint8Array());
 }
 
-const previewObjectUrls = new Set<string>();
+const previewObjectUrls = new Map<Element, Set<string>>();
 
-/** A blob URL for bytes this preview already bounded. Revoked with the view. */
-export function previewObjectUrl(bytes: Uint8Array, type: string): string {
-  const blob = new Blob([bytes], { type });
-  const url = URL.createObjectURL(blob);
-  previewObjectUrls.add(url);
-  return url;
+function dropPreviewUrl(url: string): void {
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    /* already revoked or unsupported */
+  }
 }
 
-/** Drop blob URLs owned by the previous preview so their bytes can be freed. */
-export function revokePreviewObjectUrls(): void {
-  for (const url of previewObjectUrls) {
-    try {
-      URL.revokeObjectURL(url);
-    } catch {
-      /* already revoked or unsupported */
+/** Forget every blob URL registered to `owner`. */
+function revokePreviewOwner(owner: Element): void {
+  const urls = previewObjectUrls.get(owner);
+  if (!urls) return;
+  for (const url of urls) dropPreviewUrl(url);
+  previewObjectUrls.delete(owner);
+}
+
+/**
+ * A repaint of `root` replaces the bytes it was showing. Blob URLs that belong
+ * to another still-mounted preview (the dock while the modal opens, or the
+ * reverse) stay valid.
+ */
+function revokePreviewUrlsWithin(root: Element): void {
+  for (const owner of [...previewObjectUrls.keys()]) {
+    if (owner === root || (typeof root.contains === "function" && root.contains(owner))) {
+      revokePreviewOwner(owner);
     }
   }
-  previewObjectUrls.clear();
+}
+
+/** A view that has left the document no longer needs the bytes it decoded. */
+function revokeDetachedPreviewUrls(): void {
+  for (const owner of [...previewObjectUrls.keys()]) {
+    if (owner.isConnected === false) revokePreviewOwner(owner);
+  }
+}
+
+/**
+ * A blob URL for bytes this preview already bounded. `owner` is the element
+ * that displays them; revoking is scoped to that element, not to every preview
+ * on the page.
+ */
+export function previewObjectUrl(bytes: Uint8Array, type: string, owner: Element): string {
+  const blob = new Blob([bytes], { type });
+  const url = URL.createObjectURL(blob);
+  const urls = previewObjectUrls.get(owner) ?? new Set<string>();
+  urls.add(url);
+  previewObjectUrls.set(owner, urls);
+  return url;
 }
 
 /** image/* or application/pdf from the row, else a filename guess, else fallback. */
@@ -686,9 +716,13 @@ type PreviewRead = { container: Element; controller: AbortController };
  */
 let activePreviewRead: PreviewRead | null = null;
 
-/** Start this render's preview read; the previous one is cancelled. */
+/** Start this render's preview read; the previous in-flight read is cancelled. */
 export function beginPreviewRead(container: Element): AbortSignal {
-  revokePreviewObjectUrls();
+  // This container is being painted again. Drop only its previous bytes, and
+  // any preview whose element has already left the document. A second mounted
+  // viewer keeps the blob URL its <img> or PDF frame is still using.
+  revokePreviewUrlsWithin(container);
+  revokeDetachedPreviewUrls();
   activePreviewRead?.controller.abort();
   abortDetachedPreviews();
   activePreviewRead = { container, controller: new AbortController() };
@@ -710,7 +744,9 @@ export function abortDetachedPreviews(): void {
 
 /** Abort the current preview read (closing the viewer, switching away from it). */
 export function abortPreviewReads(): void {
-  revokePreviewObjectUrls();
+  // The in-flight read stops. Blob URLs stay with whatever element still
+  // shows them; a hidden dock and an open modal are not the same view.
+  revokeDetachedPreviewUrls();
   activePreviewRead?.controller.abort();
   activePreviewRead = null;
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { annotationId, annotationIsHeld, annotationStatus, openAnnotations, updateAnnotBadge } from "./annot";
+import { annotationId, annotationIsHeld, annotationStatus, openAnnotations, renderAnnotatableImage, updateAnnotBadge } from "./annot";
 import { setArtifactsFetch } from "../features/artifacts/api";
+import { filesT } from "../features/artifacts/copy";
 import { annotations } from "../stores/session";
 import { resetStoreFields } from "../stores/signal-field";
 
@@ -50,6 +51,11 @@ describe("composer comment list (AUDIT A47)", () => {
     parent: FakeEl | null = null;
     id = ""; className = ""; title = ""; textContent = ""; disabled = false;
     classList = { add() {}, remove() {} };
+    isConnected = true;
+    attrs: Record<string, string> = {};
+    setAttribute(name: string, value: string): void { this.attrs[name] = value; }
+    addEventListener(): void {}
+    removeEventListener(): void {}
     onclick: ((event: { stopPropagation(): void; preventDefault(): void }) => unknown) | null = null;
     get parentElement(): FakeEl | null { return this.parent; }
     set innerHTML(_value: string) {
@@ -102,5 +108,29 @@ describe("composer comment list (AUDIT A47)", () => {
     await vi.waitFor(() => expect(list()).toBeDefined());
     const rows = walk(list()!).filter((node) => node.className === "annot-list-row");
     expect(rows).toHaveLength(1);
+  });
+
+  it("shows the classified failure card when an image preview read is refused", async () => {
+    const body = new FakeEl();
+    vi.stubGlobal("document", {
+      createElement: () => new FakeEl(),
+      addEventListener() {},
+      removeEventListener() {},
+      querySelectorAll: () => [],
+      querySelector: () => null,
+    });
+    setArtifactsFetch(async () => new Response("no", { status: 413 }));
+    renderAnnotatableImage(
+      body as unknown as HTMLElement,
+      { id: "pic", filename: "plot.png", content_type: "image/png" },
+      "/api/v1/artifacts/pic",
+    );
+    await vi.waitFor(() =>
+      expect(walk(body).some((node) => (node.className || "").includes("renderer-fallback"))).toBe(true),
+    );
+    expect(walk(body).some((node) => node.textContent === filesT("viewer.read.retry"))).toBe(true);
+    expect(walk(body).some((node) => node.textContent === "plot.png" && (node.className || "").includes("annot-img"))).toBe(
+      false,
+    );
   });
 });

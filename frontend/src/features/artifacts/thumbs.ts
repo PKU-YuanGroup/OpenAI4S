@@ -418,6 +418,21 @@ function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
     hit.then(apply).catch(fail);
     return;
   }
+  // A cache miss is not a new artifact. Eviction drops the cache slot while a
+  // tile is still showing and leaves the blob on `thumbReads`. Replacing that
+  // entry without revoking it would leak the previous image.
+  const previous = thumbReads.get(key);
+  if (previous) {
+    previous.controller.abort();
+    if (previous.objectUrl) {
+      try {
+        URL.revokeObjectURL(previous.objectUrl);
+      } catch {
+        /* already revoked */
+      }
+    }
+    thumbReads.delete(key);
+  }
   const controller = new AbortController();
   const read: ThumbRead = { key, controller, consumers: new Set([tile]) };
   thumbReads.set(key, read);
