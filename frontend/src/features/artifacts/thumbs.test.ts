@@ -313,7 +313,7 @@ describe("thumbnail read budget, concurrency and consumers (A1)", () => {
     (tile as unknown as Node).isConnected = false;
   });
 
-  it("revokes the previous image blob when the same version is read again after eviction", async () => {
+  it("keeps a live image tile's blob after eviction and revokes it only once every tile has left", async () => {
     const revoked: string[] = [];
     let n = 0;
     vi.stubGlobal("URL", {
@@ -329,15 +329,26 @@ describe("thumbnail read budget, concurrency and consumers (A1)", () => {
       content_type: "image/png",
       version_id: "v1",
     };
+    const srcOf = (tile: HTMLElement) =>
+      walk(tile as unknown as Node)
+        .map((node) => node.src)
+        .find(Boolean);
     const first = tileThumb(image);
-    await vi.waitFor(() => expect(n).toBe(1));
+    await vi.waitFor(() => expect(srcOf(first)).toBe("blob:1"));
     const cache = _thumbCache.value as Record<string, unknown>;
     for (const key of Object.keys(cache)) delete cache[key];
     const second = tileThumb(image);
-    expect(revoked).toEqual(["blob:1"]);
-    await vi.waitFor(() => expect(n).toBe(2));
+    expect(revoked).toEqual([]);
+    expect(n).toBe(1);
+    expect(srcOf(first)).toBe("blob:1");
+    expect(srcOf(second)).toBe("blob:1");
     (first as unknown as Node).isConnected = false;
     (second as unknown as Node).isConnected = false;
+    for (const key of Object.keys(cache)) delete cache[key];
+    const third = tileThumb(image);
+    expect(revoked).toEqual(["blob:1"]);
+    await vi.waitFor(() => expect(srcOf(third)).toBe("blob:2"));
+    (third as unknown as Node).isConnected = false;
   });
 
   it("does not fall back to the artifact URL when an image is over the preview cap", async () => {

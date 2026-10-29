@@ -44,6 +44,8 @@ type ThumbRead = {
   consumers: Set<Element>;
   /** Blob URL for an image tile. Revoked when every consumer has left. */
   objectUrl?: string;
+  /** The in-flight read, so a tile can join after the cache slot was dropped. */
+  promise?: Promise<string>;
 };
 
 const thumbReads = new Map<string, ThumbRead>();
@@ -418,11 +420,28 @@ function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
     hit.then(apply).catch(fail);
     return;
   }
-  // A cache miss is not a new artifact. Eviction drops the cache slot while a
-  // tile is still showing and leaves the blob on `thumbReads`. Replacing that
-  // entry without revoking it would leak the previous image.
+  // Eviction drops the cache slot and leaves the blob on `thumbReads` so a
+  // tile still on screen can keep showing it. A later paint of the same
+  // version must join that blob. Revoking it here would blank those tiles
+  // and never hand them the replacement. The blob is released only once
+  // every consumer has left.
   const previous = thumbReads.get(key);
-  if (previous) {
+  if (previous && !allConsumersDetached(previous)) {
+    previous.consumers.add(tile);
+    if (previous.objectUrl) {
+      const url = previous.objectUrl;
+      cache[key] = Promise.resolve(url);
+      apply(url);
+      evictThumbCache(cache);
+      return;
+    }
+    if (previous.promise) {
+      cache[key] = previous.promise;
+      previous.promise.then(apply).catch(fail);
+      evictThumbCache(cache);
+      return;
+    }
+  } else if (previous) {
     previous.controller.abort();
     if (previous.objectUrl) {
       try {
@@ -463,6 +482,7 @@ function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
     .finally(() => {
       releaseThumbSlot();
     });
+  read.promise = promise;
   cache[key] = promise;
   promise.then(apply).catch((error: unknown) => {
     if (cache[key] === promise) delete cache[key];

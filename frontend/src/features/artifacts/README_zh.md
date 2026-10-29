@@ -39,7 +39,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
-| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时先释放上一份 blob 再替换；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`。 |
+| [`thumbs.ts`](thumbs.ts) | 由按版本、有上限的预览缓存生成磁贴缩略图、`parseMolPoints` / `molSvg`。全局 FIFO 前缀队列（最多 4 个在途、共享 15 秒期限），每个磁贴 DOM 元素登记为缓存键的消费者，`pruneThumbReads()` 只在全部消费者都离开文档时中止并释放图片 blob URL；同一版本缓存未命中时，仍有磁贴在显示则复用那份 blob，全部消费者离开后才释放；被截断的文本/分子磁贴标“部分预览”，被截断的数据磁贴只显示列名、不显示行数。图片磁贴按 8 MiB 主预览上限整文件读取（前缀无法解码），绝不把产物 URL 赋给 `img.src`。 |
 | [`thumbs.test.ts`](thumbs.test.ts) | 每个产物版本只读一次；错误页和失败的读取不缓存；LRU 上限。 |
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
 | [`ui.ts`](ui.ts) | Files 网格、dock 标签、`openViewer`、深链；`renderViewer` 交给 islands 的 Viewer。提供 `version_id` 时绝不静默 latest。 |
