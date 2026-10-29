@@ -18,9 +18,11 @@
  * next page, the record list never claims to be a database total, and the raw
  * JSON stays one click away on the same exact version.
  *
- * Everything the file supplies is untrusted: titles/attributes render as text,
- * external links must parse as http(s) without credentials and lose
- * credential-shaped query parameters, and their display text is scrubbed.
+ * Everything the file supplies is untrusted: titles, ids, types and attributes
+ * render as scrubbed text (credential-shaped substrings removed), external
+ * links must parse as http(s) without credentials and lose credential-shaped
+ * query parameters, and their display text is scrubbed. The raw JSON tab keeps
+ * the original bytes.
  */
 
 import { publicText as scrubbedText } from "../scrub/scrub";
@@ -338,9 +340,11 @@ function recordLinkCell(record: ScienceRecord): HTMLElement {
 
 function renderRecord(record: ScienceRecord): HTMLElement {
   const row = el("div", "science-record");
-  row.appendChild(el("span", "science-record-id", record.id));
-  row.appendChild(el("span", "science-record-title", record.title));
-  row.appendChild(el("span", "science-record-type", record.type));
+  // Scrub at paint time. The parser keeps the saved strings so the raw JSON
+  // tab can still show the original bytes.
+  row.appendChild(el("span", "science-record-id", publicText(record.id, 120)));
+  row.appendChild(el("span", "science-record-title", publicText(record.title, 500)));
+  row.appendChild(el("span", "science-record-type", publicText(record.type, 80)));
   row.appendChild(recordLinkCell(record));
   const attributes = scalarAttributes(record.attributes);
   if (attributes.length) {
@@ -348,8 +352,8 @@ function renderRecord(record: ScienceRecord): HTMLElement {
     details.appendChild(el("summary", null, filesT("science.record.attributes", attributes.length)));
     for (const [key, value] of attributes) {
       const line = el("div", "science-record-attribute");
-      line.appendChild(el("span", "science-record-attribute-key", key));
-      line.appendChild(el("span", "science-record-attribute-value", value));
+      line.appendChild(el("span", "science-record-attribute-key", publicText(key, 80)));
+      line.appendChild(el("span", "science-record-attribute-value", publicText(value, 300)));
       details.appendChild(line);
     }
     row.appendChild(details);

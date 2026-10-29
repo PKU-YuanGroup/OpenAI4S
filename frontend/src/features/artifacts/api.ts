@@ -396,20 +396,34 @@ async function cancelReader(
 }
 
 /**
- * One streaming reader behind both entry points. The budget is enforced on the
- * bytes that actually arrive (after HTTP content decoding, before UTF-8
- * decoding), so a missing, wrong or compressed Content-Length cannot bypass it.
+ * One streaming reader behind the text and byte entry points. The budget is
+ * enforced on the bytes that actually arrive (after HTTP content decoding,
+ * before UTF-8 decoding), so a missing, wrong or compressed Content-Length
+ * cannot bypass it.
  *
- * Strict mode (`prefix: false`) returns only a complete file: a parse result can
- * never be a half document. Prefix mode (`prefix: true`) stops at `maxBytes`,
+ * Strict text (`prefix: false`, `binary: false`) returns only a complete file:
+ * a parse result can never be a half document. Prefix mode stops at `maxBytes`,
  * cancels the transport and returns the prefix; an incomplete trailing UTF-8
- * sequence is dropped instead of decoded into U+FFFD.
+ * sequence is dropped instead of decoded into U+FFFD. Strict bytes is the same
+ * complete-or-reject rule for image and PDF previews, which cannot be decoded
+ * from a cut-off prefix and must not be loaded through an unbounded element URL.
  */
+function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
 async function readArtifactText(
   url: string,
   options: ArtifactReadOptions,
   prefix: boolean,
-): Promise<{ text: string; bytes: number; truncated: boolean }> {
+  binary = false,
+): Promise<{ text: string; bytes: number; truncated: boolean; raw?: Uint8Array }> {
   const requestedMax = options.maxBytes;
   const maxBytes =
     requestedMax != null && Number.isFinite(requestedMax) && requestedMax > 0
@@ -480,6 +494,17 @@ async function readArtifactText(
       // No readable stream: only a response whose size can be proven bounded
       // may fall back to Response.text(); otherwise automatic preview is refused.
       if (!prefix && identityEncoding(response) && declared !== null && declared <= maxBytes) {
+        if (binary) {
+          const raw = new Uint8Array(await response.arrayBuffer());
+          if (raw.byteLength > maxBytes) {
+            throw new ArtifactReadError(
+              "too_large",
+              `artifact exceeds the ${maxBytes}-byte preview limit`,
+              { maxBytes, bytes: raw.byteLength },
+            );
+          }
+          return { text: "", bytes: raw.byteLength, truncated: false, raw };
+        }
         const text = await response.text();
         return { text, bytes: declared, truncated: false };
       }
@@ -491,6 +516,7 @@ async function readArtifactText(
     }
     const reader = body.getReader();
     const decoder = new TextDecoder();
+    const parts: Uint8Array[] = [];
     let bytes = 0;
     let text = "";
     // A body read may stay pending forever on a stalled transport; racing the
@@ -512,8 +538,26 @@ async function readArtifactText(
           throw stopReason();
         }
         const { done, value } = step;
-        if (done) break;
+        if (done) {
+          if (binary) return { text: "", bytes, truncated: false, raw: concatBytes(parts, bytes) };
+          break;
+        }
         if (!value || !value.byteLength) continue;
+        if (binary) {
+          const remaining = maxBytes - bytes;
+          if (value.byteLength > remaining) {
+            await cancelReader(reader);
+            throw new ArtifactReadError(
+              "too_large",
+              `artifact exceeds the ${maxBytes}-byte preview limit`,
+              { maxBytes, bytes: maxBytes },
+            );
+          }
+          // Copy: the stream may reuse this buffer on the next pull.
+          parts.push(value.slice());
+          bytes += value.byteLength;
+          continue;
+        }
         const remaining = maxBytes - bytes;
         if (value.byteLength > remaining) {
           if (prefix) {
@@ -565,6 +609,59 @@ export function fetchArtifactText(url: string, options: ArtifactReadOptions = {}
 }
 
 /**
+ * Strict bytes: the complete file inside the preview budget, or a rejection.
+ * Image and PDF previews use this. A cut-off image is not a preview, and an
+ * element `src` pointed at the artifact URL would download the whole file
+ * with no budget and no cancel.
+ */
+export function readArtifactBytes(
+  url: string,
+  options: ArtifactReadOptions = {},
+): Promise<Uint8Array> {
+  return readArtifactText(url, options, false, true).then((read) => read.raw ?? new Uint8Array());
+}
+
+const previewObjectUrls = new Set<string>();
+
+/** A blob URL for bytes this preview already bounded. Revoked with the view. */
+export function previewObjectUrl(bytes: Uint8Array, type: string): string {
+  const blob = new Blob([bytes], { type });
+  const url = URL.createObjectURL(blob);
+  previewObjectUrls.add(url);
+  return url;
+}
+
+/** Drop blob URLs owned by the previous preview so their bytes can be freed. */
+export function revokePreviewObjectUrls(): void {
+  for (const url of previewObjectUrls) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      /* already revoked or unsupported */
+    }
+  }
+  previewObjectUrls.clear();
+}
+
+/** image/* or application/pdf from the row, else a filename guess, else fallback. */
+export function artifactMediaType(
+  filename: string | null | undefined,
+  contentType: string | null | undefined,
+  fallback: string,
+): string {
+  const declared = String(contentType || "").split(";", 1)[0]?.trim().toLowerCase() || "";
+  if (declared.startsWith("image/") || declared === "application/pdf") return declared;
+  const name = String(filename || "").toLowerCase();
+  if (name.endsWith(".svg")) return "image/svg+xml";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".pdf")) return "application/pdf";
+  return fallback;
+}
+
+/**
  * Prefix mode: the first `maxBytes` bytes (UTF-8 boundary respected) plus the
  * fact that the file continues. Only thumbnail previews may use this.
  */
@@ -591,6 +688,7 @@ let activePreviewRead: PreviewRead | null = null;
 
 /** Start this render's preview read; the previous one is cancelled. */
 export function beginPreviewRead(container: Element): AbortSignal {
+  revokePreviewObjectUrls();
   activePreviewRead?.controller.abort();
   abortDetachedPreviews();
   activePreviewRead = { container, controller: new AbortController() };
@@ -612,6 +710,7 @@ export function abortDetachedPreviews(): void {
 
 /** Abort the current preview read (closing the viewer, switching away from it). */
 export function abortPreviewReads(): void {
+  revokePreviewObjectUrls();
   activePreviewRead?.controller.abort();
   activePreviewRead = null;
 }

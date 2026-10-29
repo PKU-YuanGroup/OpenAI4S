@@ -3,7 +3,7 @@ import {
   rendererCatalog,
   rendererDescriptors,
 } from "../../stores/artifacts";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { artifactRendererVersion } from "./cache";
 import type { ArtifactRow, RendererCatalogItem, RendererDescriptor } from "./types";
 import { TEXT_EXT } from "./types";
@@ -78,10 +78,13 @@ export function scientificRenderers(): ScientificRenderersApi | null {
  *
  * A failed catalog read is never cached as a successful empty directory: the
  * in-flight promise is cleared and the request rejects, so the next call
- * refetches. Descriptors resolved from that catalog are dropped with it, so a
- * manual retry re-resolves the artifact instead of keeping a view-only
- * fallback until the page reloads. The server's capability whitelist is not
- * widened by a retry — a missing catalog entry still falls back conservatively.
+ * refetches. A 200 whose `renderers` field is missing or not an array is that
+ * same failure — caching it as `[]` made Retry a no-op until reload. An array,
+ * including an empty one, is a real catalog and stays cached. Descriptors
+ * resolved from a failed catalog are dropped with it, so a manual retry
+ * re-resolves the artifact instead of keeping a view-only fallback until the
+ * page reloads. The server's capability whitelist is not widened by a retry —
+ * a missing catalog entry still falls back conservatively.
  */
 export function loadRendererCatalog(): Promise<RendererCatalogItem[]> {
   if (Array.isArray(rendererCatalog.value)) {
@@ -91,14 +94,18 @@ export function loadRendererCatalog(): Promise<RendererCatalogItem[]> {
   if (pending) return pending;
   const request = api("/renderers").then((result) => {
     const rec = result && typeof result === "object" ? (result as { renderers?: unknown }) : null;
-    const catalog = rec && Array.isArray(rec.renderers)
-      ? rec.renderers.filter(
-          (item): item is RendererCatalogItem =>
-            !!item &&
-            typeof item === "object" &&
-            typeof (item as RendererCatalogItem).renderer_id === "string",
-        )
-      : [];
+    if (!rec || !Array.isArray(rec.renderers)) {
+      throw new ApiError(
+        { error: "renderer catalog has no renderers list", code: "malformed_catalog" },
+        502,
+      );
+    }
+    const catalog = rec.renderers.filter(
+      (item): item is RendererCatalogItem =>
+        !!item &&
+        typeof item === "object" &&
+        typeof (item as RendererCatalogItem).renderer_id === "string",
+    );
     rendererCatalog.value = catalog;
     return catalog;
   });

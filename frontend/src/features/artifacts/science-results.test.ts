@@ -394,6 +394,31 @@ describe("saved-search result view (A5)", () => {
     expect(joined.some((line) => line.includes("list"))).toBe(false);
   });
 
+  it("scrubs credential-shaped text in titles, ids, types and attributes", () => {
+    const root = mount(
+      JSON.stringify({
+        query: "q",
+        request_url: "https://api.example.org/x",
+        result: {
+          results: [
+            {
+              id: "sk-SECRETKEY12345678",
+              title: "Bearer SECRETTOKEN value",
+              type: "api_key-SECRETKEY99",
+              attributes: { note: "token=sk-ATTRIBUTESECRET1234" },
+            },
+          ],
+        },
+      }),
+    );
+    const text = texts(root).join("\n");
+    expect(text).toContain("[redacted]");
+    expect(text).toContain("Bearer [redacted]");
+    expect(text).not.toContain("SECRETKEY12345678");
+    expect(text).not.toContain("SECRETTOKEN");
+    expect(text).not.toContain("ATTRIBUTESECRET1234");
+  });
+
   it("shows the canonical/legacy conflict notice in the records view", () => {
     const root = mount(
       JSON.stringify({

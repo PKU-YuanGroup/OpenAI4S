@@ -180,4 +180,21 @@ describe("renderer catalog failure recovery (R1)", () => {
     // the conservative view capability; it must never invent copy/edit rights.
     expect(descriptor.renderer?.capabilities).toEqual(["view"]);
   });
+
+  it("does not cache a 200 whose renderers field is missing, so retry refetches", async () => {
+    resetStoreFields();
+    let requests = 0;
+    setArtifactsFetch(async (url) => {
+      requests += 1;
+      expect(url).toBe("/api/v1/renderers");
+      if (requests === 1) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      return new Response(JSON.stringify({ renderers: [{ renderer_id: "sequence", label: "Sequence" }] }));
+    });
+    const failure = await loadRendererCatalog().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(rendererCatalog.value).toBeNull();
+    expect(_rendererCatalogPromise.value).toBeNull();
+    await expect(loadRendererCatalog()).resolves.toEqual([{ renderer_id: "sequence", label: "Sequence" }]);
+    expect(requests).toBe(2);
+  });
 });

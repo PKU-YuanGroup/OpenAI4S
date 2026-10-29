@@ -3319,6 +3319,9 @@ class SessionRunner:
         session resolves to "no such job" through the manager's own
         owner-scoped `_jobs` map -- the same predicate `job_history` uses, and
         for the same reason: a distinct refusal would confirm the job exists.
+        A finished job this session owns is not in that map (only live work is
+        rehydrated). Refresh answers with the recorded row and does not probe:
+        "no such job" would deny a row the listing is showing.
         """
         workspace = self.active_workspace_for(root_frame_id)
         dispatcher = build_dispatcher(
@@ -3342,29 +3345,73 @@ class SessionRunner:
         before = self.artifacts.snapshot(workspace)
         self.artifacts.protect_latest(st)
         outcome: dict[str, Any] | None = None
+        recorded_row: dict[str, Any] | None = None
         harvest_evidence_error: Exception | None = None
+
+        def _missing(error: BaseException) -> bool:
+            # ComputeError stores the code on `error_kind`. `kind` / `code`
+            # are what other failures use. Checking only those two turned
+            # every missing job into a 502 that looked like a remote outage.
+            kind = (
+                getattr(error, "error_kind", "")
+                or getattr(error, "kind", "")
+                or getattr(error, "code", "")
+            )
+            return str(kind) == "not_found"
+
         try:
             outcome = manager.result({"job_id": job_id})
         except Exception as error:  # noqa: BLE001
             # `not_found` is a client error, not a server fault; anything else
             # is the remote or the transport failing, which the user can retry.
-            code = getattr(error, "kind", "") or getattr(error, "code", "")
-            if str(code) == "not_found":
-                raise GatewayError(404, f"no such job {job_id}", "not_found") from error
-            # The provider's own text does not go in. A remote SDK's error
-            # quotes the endpoint it called, the credential prefix it used and
-            # the *provider's* request id -- and that last one is the worst of
-            # the three, because it reads like the id to quote in a support
-            # ticket while naming a request neither the user nor this daemon
-            # can look up. `public_exception` answers with this daemon's local
-            # correlation id instead, and the original reaches the operator
-            # diagnostic only.
-            record_diagnostic(
-                error, surface="compute:refresh", request_id=correlation_id()
-            )
-            raise GatewayError(
-                502, "remote compute refresh failed", "refresh_failed"
-            ) from error
+            if _missing(error):
+                from openai4s.compute.manager import ComputeManager
+                from openai4s.compute.states import is_terminal
+
+                owned = self.store.compute_job_for_owner(str(workspace), job_id)
+                if isinstance(owned, dict) and is_terminal(owned.get("status")):
+                    recorded_row = owned
+                elif (
+                    isinstance(owned, dict)
+                    and isinstance(manager, ComputeManager)
+                    and manager.adopt_record(owned)
+                ):
+                    try:
+                        outcome = manager.result({"job_id": job_id})
+                    except Exception as retry_error:  # noqa: BLE001
+                        if _missing(retry_error):
+                            raise GatewayError(
+                                404, f"no such job {job_id}", "not_found"
+                            ) from retry_error
+                        record_diagnostic(
+                            retry_error,
+                            surface="compute:refresh",
+                            request_id=correlation_id(),
+                        )
+                        raise GatewayError(
+                            502,
+                            "remote compute refresh failed",
+                            "refresh_failed",
+                        ) from retry_error
+                else:
+                    raise GatewayError(
+                        404, f"no such job {job_id}", "not_found"
+                    ) from error
+            else:
+                # The provider's own text does not go in. A remote SDK's error
+                # quotes the endpoint it called, the credential prefix it used and
+                # the *provider's* request id -- and that last one is the worst of
+                # the three, because it reads like the id to quote in a support
+                # ticket while naming a request neither the user nor this daemon
+                # can look up. `public_exception` answers with this daemon's local
+                # correlation id instead, and the original reaches the operator
+                # diagnostic only.
+                record_diagnostic(
+                    error, surface="compute:refresh", request_id=correlation_id()
+                )
+                raise GatewayError(
+                    502, "remote compute refresh failed", "refresh_failed"
+                ) from error
         finally:
             # In `finally`, not after: a harvest that extracted some outputs and
             # then failed has still written real bytes into the workspace, and
@@ -3414,6 +3461,12 @@ class SessionRunner:
                     # refresh durably bound those exact bytes. Returning success
                     # after that binding failed would be the old fail-open gap.
                     harvest_evidence_error = error
+        if recorded_row is not None:
+            task = compute_tasks.public_task(recorded_row)
+            # The map does not hold finished jobs, so this did not probe. The
+            # listing's `polled: false` means the same thing.
+            task["polled"] = False
+            return task
         if harvest_evidence_error is not None:
             # The bytes have still been registered above, but a successful
             # Stage 11 response must not claim a harvest whose manifest cannot

@@ -3,6 +3,7 @@ import { _thumbCache } from "../../stores/artifacts";
 import { resetStoreFields } from "../../stores/signal-field";
 import {
   setArtifactsFetch,
+  PREVIEW_READ_MAX_BYTES,
   THUMB_READ_CONCURRENCY,
   THUMB_READ_MAX_BYTES,
 } from "./api";
@@ -280,5 +281,64 @@ describe("thumbnail read budget, concurrency and consumers (A1)", () => {
       () => expect(texts(tile)).toContain(filesT("files.thumb.partial")),
       { timeout: 2000 },
     );
+  });
+
+  it("loads an image tile through the byte budget and never assigns the artifact URL", async () => {
+    const created: string[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: (blob: Blob) => {
+        created.push(blob.type);
+        return "blob:preview";
+      },
+      revokeObjectURL: () => undefined,
+    });
+    const fetched: string[] = [];
+    setArtifactsFetch(async (url) => {
+      fetched.push(url);
+      return new Response(new Uint8Array([1, 2, 3, 4]));
+    });
+    const tile = tileThumb({
+      id: "pic",
+      filename: "plot.png",
+      content_type: "image/png",
+      version_id: "v1",
+    });
+    await vi.waitFor(() => expect(created).toEqual(["image/png"]));
+    const sources = walk(tile as unknown as Node)
+      .map((node) => node.src)
+      .filter(Boolean);
+    expect(sources).toEqual(["blob:preview"]);
+    expect(fetched.some((url) => url.includes("/api/v1/artifacts"))).toBe(true);
+    expect(sources.some((src) => src.includes("/api/"))).toBe(false);
+    (tile as unknown as Node).isConnected = false;
+  });
+
+  it("does not fall back to the artifact URL when an image is over the preview cap", async () => {
+    vi.stubGlobal("URL", {
+      createObjectURL: () => {
+        throw new Error("must not build a URL for an over-cap image");
+      },
+      revokeObjectURL: () => undefined,
+    });
+    setArtifactsFetch(
+      async () =>
+        new Response(new Uint8Array([1]), {
+          headers: { "content-length": String(PREVIEW_READ_MAX_BYTES + 1) },
+        }),
+    );
+    const tile = tileThumb({
+      id: "huge",
+      filename: "huge.png",
+      content_type: "image/png",
+      version_id: "v1",
+    });
+    await vi.waitFor(() =>
+      expect(walk(tile as unknown as Node).some((node) => node.className === "big")).toBe(true),
+    );
+    const sources = walk(tile as unknown as Node)
+      .map((node) => node.src)
+      .filter(Boolean);
+    expect(sources).toEqual([]);
+    (tile as unknown as Node).isConnected = false;
   });
 });

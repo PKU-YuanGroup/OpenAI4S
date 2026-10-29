@@ -293,6 +293,46 @@ def test_refresh_is_a_post_because_it_harvests(client):
     assert status in (404, 405), "the harvesting action answered a GET"
 
 
+def test_refresh_of_an_owned_terminal_job_returns_the_record_without_a_probe(
+    client, monkeypatch
+):
+    """The listing shows finished jobs. The manager map does not: only live
+    work is rehydrated, and ``ComputeError`` stores the miss on ``error_kind``.
+
+    Refresh used to treat that miss as a remote failure (502), or, when the
+    code was read off the wrong attribute, as "no such job". The recorded row
+    is the answer, and it does not contact a provider. Another session's id
+    stays indistinguishable from one that does not exist.
+    """
+    mine, theirs = client.session(), client.session()
+    client.seed(mine, job_id="job-done", status=SUCCEEDED, reason="finished cleanly")
+    client.seed(theirs, job_id="job-theirs", status=SUCCEEDED)
+
+    def boom(*_a, **_k):
+        raise AssertionError("a recorded terminal job must not contact a provider")
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+
+    status, body = client.post(f"/frames/{mine}/compute/tasks/job-done/refresh")
+    assert status == 200, body
+    assert body["polled"] is False
+    assert body["job_id"] == "job-done"
+    assert body["status"] == SUCCEEDED
+    assert body.get("reason") == "finished cleanly"
+
+    foreign_status, foreign = client.post(
+        f"/frames/{mine}/compute/tasks/job-theirs/refresh"
+    )
+    unknown_status, unknown = client.post(
+        f"/frames/{mine}/compute/tasks/job-missing/refresh"
+    )
+    assert foreign_status == unknown_status == 404
+    assert foreign.get("code") == unknown.get("code") == "not_found"
+    assert foreign["error"].replace("job-theirs", "<job>") == unknown["error"].replace(
+        "job-missing", "<job>"
+    )
+
+
 def test_a_session_that_does_not_exist_is_not_a_blank_page(client):
     status, _body = client.get("/frames/f-nope/compute/tasks")
     assert status == 404

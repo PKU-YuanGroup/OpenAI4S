@@ -401,6 +401,27 @@ class ComputeJobRepository:
             return None
         return int(row[0])
 
+    def get_for_owner(self, owner_key: str | None, job_id: str) -> dict | None:
+        """One job if it belongs to this owner, else None.
+
+        Same predicate as `owner_job_created_at`: the workspace path is not a
+        value a caller can supply to widen the query. A miss is indistinguishable
+        from a job that does not exist.
+        """
+        if not job_id:
+            return None
+        if owner_key is None:
+            owner_sql, params = "owner_key IS NULL", (job_id,)
+        else:
+            owner_sql, params = "owner_key=?", (job_id, owner_key)
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT {','.join(_FIELDS)} FROM compute_jobs "
+                f"WHERE job_id=? AND {owner_sql}",
+                params,
+            ).fetchone()
+        return self._decode(row)
+
     def list(self, limit: int = 200) -> list[dict]:
         with self._lock:
             rows = self._connection.execute(

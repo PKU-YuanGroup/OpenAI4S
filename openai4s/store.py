@@ -5801,6 +5801,10 @@ class Store:
         """A cursor anchor check: this owner's ``created_at`` for one job."""
         return self._compute_jobs.owner_job_created_at(owner_key, job_id)
 
+    def compute_job_for_owner(self, owner_key: str | None, job_id: str) -> dict | None:
+        """This owner's job row, or None. Never another session's row."""
+        return self._compute_jobs.get_for_owner(owner_key, job_id)
+
     def append_compute_job_event(self, job_id: str, kind: str, payload=None) -> int:
         return self._compute_jobs.append_event(job_id, kind, payload)
 

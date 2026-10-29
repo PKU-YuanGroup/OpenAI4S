@@ -36441,6 +36441,67 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/compute/tasks/([^/]+)/refresh [ok]": {
+      "schema": {
+        "properties": {
+          "created_at": {
+            "type": "integer"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "outputs": {
+            "properties": {
+              "file_count": {
+                "type": "integer"
+              },
+              "total_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file_count",
+              "total_bytes"
+            ],
+            "type": "object"
+          },
+          "polled": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "job_id",
+          "live",
+          "outputs",
+          "polled",
+          "provider",
+          "reason",
+          "status",
+          "terminal",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/context [error]": {
       "schema": {
         "properties": {

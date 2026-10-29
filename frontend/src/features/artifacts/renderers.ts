@@ -4,7 +4,9 @@ import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { readWorkbenchFlag, renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { applyArtifactIframeSandbox } from "../../islands/frames";
+import { molTeardown } from "../../islands/mol";
 import {
+  artifactMediaType,
   beginPreviewRead,
   callWindow,
   CHEMISTRY_SOURCE_PREVIEW_CHARACTERS,
@@ -18,7 +20,9 @@ import {
   looksBinary,
   MARKDOWN_PREVIEW_CHARACTERS,
   MOLECULE_FALLBACK_PREVIEW_CHARACTERS,
+  previewObjectUrl,
   previewReadSignal,
+  readArtifactBytes,
   svgElement,
   translate,
   TEXT_SOURCE_PREVIEW_CHARACTERS,
@@ -656,17 +660,27 @@ function runIsland(name: string, ...args: unknown[]): boolean {
 function renderImageGlue(content: HTMLElement, a: ArtifactRow, url: string): void {
   if (runIsland("renderAnnotatableImage", content, a, url)) return;
   const img = el("img");
-  img.src = url;
   img.alt = a.filename || "artifact";
   content.appendChild(img);
+  readArtifactBytes(url, { signal: previewReadSignal() })
+    .then((bytes) => {
+      if (!content.isConnected) return;
+      img.src = previewObjectUrl(bytes, artifactMediaType(a.filename, a.content_type, "application/octet-stream"));
+    })
+    .catch(readFailure(content, a, url, () => renderImageGlue(content, a, url)));
 }
 
 function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void {
   const frame = el("iframe");
   applyArtifactIframeSandbox(frame, "pdf");
   frame.dataset.currentPage = "1";
-  frame.src = url + "#page=1";
   content.appendChild(frame);
+  readArtifactBytes(url, { signal: previewReadSignal() })
+    .then((bytes) => {
+      if (!content.isConnected) return;
+      frame.src = previewObjectUrl(bytes, "application/pdf");
+    })
+    .catch(readFailure(content, a, url, () => renderPdfGlue(content, a, url)));
   if (readWorkbenchFlag()) callWindow("renderLocatorComments", content, a, "pdf", frame);
 }
 
@@ -775,6 +789,10 @@ export function renderArtifactBody(body: HTMLElement, a: ArtifactRow): void {
   // URLs it created. The new read is bound to this body, so replacing the body
   // (or closing the viewer) aborts exactly that read.
   closeNotebookPreview();
+  // The molecule island keeps its own abort controller. Replacing the view
+  // has to cancel that read here: the next renderer may not be a structure,
+  // so waiting for `molecule()` would leave the previous bytes downloading.
+  molTeardown();
   beginPreviewRead(body);
   body.innerHTML = "";
   const loading = el("div", "renderer-loading");

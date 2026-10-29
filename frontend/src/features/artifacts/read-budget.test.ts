@@ -8,6 +8,7 @@ import {
   PREVIEW_READ_MAX_BYTES,
   PREVIEW_READ_TIMEOUT_MS,
   readArtifactPrefix,
+  readArtifactBytes,
   fetchArtifactText,
   setArtifactsFetch,
   THUMB_READ_CONCURRENCY,
@@ -250,6 +251,18 @@ describe("readArtifactPrefix: prefix mode (F2)", () => {
     expect(read.truncated).toBe(true);
     expect(read.text).toBe("AAAAAAAAA");
     expect(read.text).not.toContain("\uFFFD");
+  });
+
+  it("returns every byte of a binary body and rejects a body past the budget", async () => {
+    const raw = new Uint8Array([0xff, 0xfe, 0x00, 0x41]);
+    setArtifactsFetch(async () => responseOf([raw]));
+    await expect(readArtifactBytes("/api/v1/artifacts/b", { maxBytes: 4 })).resolves.toEqual(raw);
+    setArtifactsFetch(async () => responseOf([raw]));
+    const error = await readArtifactBytes("/api/v1/artifacts/b", { maxBytes: 3 }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(ArtifactReadError);
+    expect((error as ArtifactReadError).kind).toBe("too_large");
   });
 
   it("decodes multi-byte characters that fit wholly inside the prefix", async () => {

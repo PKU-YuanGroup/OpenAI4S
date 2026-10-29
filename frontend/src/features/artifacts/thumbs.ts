@@ -3,10 +3,13 @@ import { _thumbCache } from "../../stores/artifacts";
 import { artifactCacheKey, artUrl } from "./cache";
 import {
   ArtifactReadError,
+  artifactMediaType,
   el,
   icon,
   isArtifactReadAborted,
   looksBinary,
+  PREVIEW_READ_MAX_BYTES,
+  readArtifactBytes,
   readArtifactPrefix,
   THUMB_READ_CONCURRENCY,
   THUMB_READ_MAX_BYTES,
@@ -27,7 +30,7 @@ export const THUMB_CACHE_LIMIT = 64;
  */
 export { THUMB_READ_CONCURRENCY, THUMB_READ_MAX_BYTES };
 
-type ThumbKind = "text" | "data" | "mol";
+type ThumbKind = "text" | "data" | "mol" | "image";
 
 /**
  * One in-flight or queued tile read. Every tile DOM element showing the same
@@ -39,6 +42,8 @@ type ThumbRead = {
   key: string;
   controller: AbortController;
   consumers: Set<Element>;
+  /** Blob URL for an image tile. Revoked when every consumer has left. */
+  objectUrl?: string;
 };
 
 const thumbReads = new Map<string, ThumbRead>();
@@ -86,9 +91,37 @@ export function pruneThumbReads(): void {
   for (const [key, read] of thumbReads) {
     if (!allConsumersDetached(read)) continue;
     read.controller.abort();
+    if (read.objectUrl) {
+      try {
+        URL.revokeObjectURL(read.objectUrl);
+      } catch {
+        /* already revoked */
+      }
+    }
     thumbReads.delete(key);
     const cache = _thumbCache.value as Record<string, Promise<unknown>>;
     delete cache[key];
+  }
+}
+
+/** Drop the oldest cached previews down to the frozen limit. */
+function evictThumbCache(cache: Record<string, Promise<unknown>>): void {
+  const keys = Object.keys(cache);
+  for (const stale of keys.slice(0, Math.max(0, keys.length - THUMB_CACHE_LIMIT))) {
+    delete cache[stale];
+    const held = thumbReads.get(stale);
+    // A tile still on screen keeps its blob URL; the cache slot is what the
+    // limit counts. pruneThumbReads revokes the URL once every consumer leaves.
+    if (!held || !allConsumersDetached(held)) continue;
+    if (held.objectUrl) {
+      try {
+        URL.revokeObjectURL(held.objectUrl);
+      } catch {
+        /* already revoked */
+      }
+    }
+    held.controller.abort();
+    thumbReads.delete(stale);
   }
 }
 
@@ -144,8 +177,7 @@ function thumbRead<T>(
   promise.catch(() => {
     if (cache[key] === promise) delete cache[key];
   });
-  const keys = Object.keys(cache);
-  for (const stale of keys.slice(0, Math.max(0, keys.length - THUMB_CACHE_LIMIT))) delete cache[stale];
+  evictThumbCache(cache);
   return promise;
 }
 
@@ -353,15 +385,85 @@ function fillMolPreview(d: HTMLElement, a: ArtifactRow): void {
     });
 }
 
+/**
+ * Image tiles cannot use a 256 KiB prefix: a cut-off PNG does not decode.
+ * They still share the four-wide queue and the 15 s deadline, and they stop
+ * at the main preview cap (8 MiB). Over that, the tile is the file glyph and
+ * the download remains the way to get the bytes. The artifact URL is never
+ * assigned to `img.src`.
+ */
+function fillImageThumb(tile: HTMLElement, a: ArtifactRow): void {
+  const cache = _thumbCache.value as Record<string, Promise<unknown>>;
+  const key = `image|${artifactCacheKey(a)}|${a.size_bytes ?? ""}`;
+  const apply = (objectUrl: string) => {
+    if (tile.isConnected === false) return;
+    tile.innerHTML = "";
+    const im = el("img");
+    im.alt = a.filename || "";
+    im.src = objectUrl;
+    tile.appendChild(im);
+  };
+  const fail = (error: unknown) => {
+    if (tile.isConnected === false || isArtifactReadAborted(error)) return;
+    tile.innerHTML = "";
+    const holder = el("div");
+    tile.appendChild(holder);
+    thumbFallback(holder, "file");
+  };
+  const hit = cache[key] as Promise<string> | undefined;
+  if (hit) {
+    delete cache[key];
+    cache[key] = hit;
+    thumbReads.get(key)?.consumers.add(tile);
+    hit.then(apply).catch(fail);
+    return;
+  }
+  const controller = new AbortController();
+  const read: ThumbRead = { key, controller, consumers: new Set([tile]) };
+  thumbReads.set(key, read);
+  const promise = acquireThumbSlot()
+    .then(() => {
+      if (allConsumersDetached(read)) {
+        throw new ArtifactReadError("aborted", "thumbnail read has no attached consumer", {
+          maxBytes: PREVIEW_READ_MAX_BYTES,
+        });
+      }
+      return readArtifactBytes(artUrl(a), {
+        maxBytes: PREVIEW_READ_MAX_BYTES,
+        signal: controller.signal,
+      });
+    })
+    .then((bytes) => {
+      if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+        throw new Error("object URLs are unavailable");
+      }
+      const objectUrl = URL.createObjectURL(
+        new Blob([bytes], {
+          type: artifactMediaType(a.filename, a.content_type, "application/octet-stream"),
+        }),
+      );
+      read.objectUrl = objectUrl;
+      return objectUrl;
+    })
+    .finally(() => {
+      releaseThumbSlot();
+    });
+  cache[key] = promise;
+  promise.then(apply).catch((error: unknown) => {
+    if (cache[key] === promise) delete cache[key];
+    if (thumbReads.get(key) === read && !read.objectUrl) thumbReads.delete(key);
+    fail(error);
+  });
+  evictThumbCache(cache);
+}
+
 /** app.js:8416-8424 */
 export function tileThumb(a: ArtifactRow): HTMLElement {
   const t = el("div", "thumb");
   const ct = a.content_type || "";
   const nm = (a.filename || "").toLowerCase();
   if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm)) {
-    const im = el("img");
-    im.src = artUrl(a);
-    t.appendChild(im);
+    fillImageThumb(t, a);
   } else if (/csv|tsv/.test(ct) || /\.(csv|tsv)$/i.test(nm)) {
     const d = el("div", "data");
     d.appendChild(el("div", "rc", "…"));
