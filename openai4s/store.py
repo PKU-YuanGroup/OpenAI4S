@@ -70,7 +70,10 @@ from openai4s.storage.annotations import AnnotationRepository
 from openai4s.storage.artifact_observations import (
     create_artifact_observations_schema,
 )
-from openai4s.storage.artifacts import ArtifactRepository
+from openai4s.storage.artifacts import (
+    ArtifactRepository,
+    create_dataset_verification_schema,
+)
 from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.auto_mode import (
@@ -774,6 +777,8 @@ QUERY_DENYLIST = frozenset(
         # Background-cell stdout. The peek projection is the read path; agent
         # SQL must not select the receipt table.
         "background_exec_receipts",
+        # Local dataset verification authority is never agent working data.
+        "dataset_verification_receipts",
         "skill_blobs",
         "skill_versions",
         "skill_version_files",
@@ -1686,6 +1691,10 @@ class Store:
                         self._apply_background_exec_receipts,
                     ),
                     35: ("project_source_folder", self._apply_project_source_folder),
+                    36: (
+                        "dataset_verification_receipts",
+                        self._apply_dataset_verification_receipts,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1938,6 +1947,10 @@ class Store:
         """
 
         create_background_exec_receipts_schema(conn)
+
+    def _apply_dataset_verification_receipts(self, conn: sqlite3.Connection) -> None:
+        """Version 36: exact native-input receipts; legacy JSON stays unmodified."""
+        create_dataset_verification_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -4384,6 +4397,25 @@ class Store:
 
     def version_meta(self, version_id: str) -> dict | None:
         return self._artifacts.version_meta(version_id)
+
+    def record_dataset_verification(
+        self,
+        version_id: str,
+        source: Any,
+        *,
+        root_frame_id: str | None,
+        project_id: str,
+    ) -> None:
+        self._artifacts.record_dataset_verification(
+            version_id, source, root_frame_id=root_frame_id, project_id=project_id
+        )
+
+    def dataset_input_is_verified(
+        self, version: dict | None, *, root_frame_id: str | None, project_id: str
+    ) -> bool:
+        return self._artifacts.dataset_input_is_verified(
+            version, root_frame_id=root_frame_id, project_id=project_id
+        )
 
     def set_version_source(self, version_id: str, source: Any) -> None:
         self._artifacts.set_version_source(version_id, source)

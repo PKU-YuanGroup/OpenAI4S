@@ -211,7 +211,9 @@ def _is_public_identifier(field: str, value: str) -> bool:
     return False
 
 
-def _public_dataset(value: Any, artifact_sha256: str | None) -> dict[str, Any] | None:
+def _public_dataset(
+    value: Any, artifact_sha256: str | None, *, dataset_verified: bool
+) -> dict[str, Any] | None:
     """Project recorded source data without treating it as an attestation.
 
     The source column can also be supplied by a script. Consumers display the
@@ -223,8 +225,13 @@ def _public_dataset(value: Any, artifact_sha256: str | None) -> dict[str, Any] |
     result: dict[str, Any] = {}
     clipped: list[str] = []
     redacted: list[str] = []
-    dropped = len(set(value) - DATASET_FIELDS)
-    for field in sorted(DATASET_FIELDS & value.keys()):
+    allowed = (
+        DATASET_FIELDS
+        if dataset_verified is True
+        else DATASET_FIELDS - {"file_verification"}
+    )
+    dropped = len(set(value) - allowed)
+    for field in sorted(allowed & value.keys()):
         item = value[field]
         if item is None:
             result[field] = None
@@ -260,6 +267,10 @@ def _public_dataset(value: Any, artifact_sha256: str | None) -> dict[str, Any] |
                 clipped.append(field)
         else:
             dropped += 1
+    if dataset_verified is not True and (result or "file_verification" in value):
+        # Missing local evidence is unknown, not a failed or fabricated import.
+        # A null keeps that state visible through the existing viewer renderer.
+        result["file_verification"] = None
     if not result:
         return None
     if clipped:
@@ -272,7 +283,7 @@ def _public_dataset(value: Any, artifact_sha256: str | None) -> dict[str, Any] |
 
 
 def public_source(
-    envelope: Any, *, artifact_sha256: str | None = None
+    envelope: Any, *, artifact_sha256: str | None = None, dataset_verified: bool = False
 ) -> dict[str, Any] | None:
     """The client-safe projection of one version's retrieval provenance.
 
@@ -306,7 +317,9 @@ def public_source(
             continue
         value = working[field]
         if field == "dataset":
-            dataset = _public_dataset(value, artifact_sha256)
+            dataset = _public_dataset(
+                value, artifact_sha256, dataset_verified=dataset_verified
+            )
             if dataset is not None:
                 out[field] = dataset
             elif value not in (None, "", {}, []):

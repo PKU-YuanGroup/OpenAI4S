@@ -20,5 +20,5 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`locator.ts`](locator.ts) | PDF / HTML locator 评论（app.js:10835-10897）。 |
 | [`mol.ts`](mol.ts) | `_molTeardown` + `molecule` 懒注入（app.js:9610-9673）。两条真实分子读取都走有界预览读取并绑定每结构的 AbortSignal；关闭视图会取消在途读取，读取失败显示原因、重试与确切版本下载。 |
 | [`mol.test.ts`](mol.test.ts) | 无 3Dmol 静态 import；无活 CDN URL；自带 src；只有最新且仍在页面上的结构创建 viewer，脚本只注入一次。 |
-| [`viewer.ts`](viewer.ts) | Dock Viewer 铬、编辑器、版本（app.js:9430-9609）。检索来源面板把被隐藏的响应摘要显示为“已隐藏”（并说明它与可核验的文件摘要不同），显式列出冲突字段与被规范化的旧别名，不再静默择值。 |
-| [`viewer.test.ts`](viewer.test.ts) | `isTextEditable` 扩展名 / content-type 门。 |
+| [`viewer.ts`](viewer.ts) | Dock Viewer 界面、编辑器、版本历史及记录来源面板（app.js:9430-9609）。检索来源面板把被隐藏的响应摘要显示为“已隐藏”（并说明它与可核验的文件摘要不同），显式列出冲突字段与被规范化的旧别名，不再静默择值；记录来源面板同时显示明确的核验未知与元数据未提供状态。 |
+| [`viewer.test.ts`](viewer.test.ts) | 文本编辑门禁、元数据/来源渲染、双语核验状态合同，以及检索来源的隐藏摘要/别名/冲突合同。 |

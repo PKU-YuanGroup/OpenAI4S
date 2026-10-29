@@ -18,7 +18,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`cache.ts`](cache.ts) | `artifactCacheKey` / `syncArtifactVersion` / `artUrl`（精确 version 不走 latest）；`previewSlice(text, limit)` 是共享的 F3 显示截取（`{shown, truncated}`，不拆代理对），所有受限预览与旧表格兜底共用。 |
 | [`catalog.test.ts`](catalog.test.ts) | UMD 空值防御、兼容渲染器 id、PDB CA 点。 |
 | [`catalog.ts`](catalog.ts) | `scientificRenderers()` 空值防御、catalog 与 descriptor 拉取；目录失败不缓存为空成功、`rendererCatalog.value` 保持 null、清在途 promise 并以原错误拒绝，由该目录算出的描述符一并失效；并发调用共享一次 `/renderers` 请求，成功目录保持缓存。兼容映射让 `.ipynb` 走 notebook 渲染器而不是通用文本路径。 |
-| [`copy.ts`](copy.ts) | M-03 搜索/过滤/深链文案、provenance Environment 面板的无快照与包数量未知/不适用文案、读取失败/完整性状态文案，以及只读 Notebook 标签与省略提示（不改生成的 i18n 字典）。 |
+| [`copy.ts`](copy.ts) | M-03 搜索/过滤/深链文案；区分核验未知与元数据未提供的数据集来源文案；provenance Environment 面板的无快照与包数量未知/不适用文案；读取失败/完整性状态文案；以及只读 Notebook 标签与省略提示（不改生成的 i18n 字典）。 |
 | [`deeplink.test.ts`](deeplink.test.ts) | 查询串解析；精确 version；禁止静默降级 latest。 |
 | [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。空 versions → not-found。 |
 | [`events.test.ts`](events.test.ts) | `artifact_created` 版本同步 + 现场插图；跳过 stub 的 `nbRender`。 |

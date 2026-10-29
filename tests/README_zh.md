@@ -27,7 +27,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`browser_project_folders.mjs`](browser_project_folders.mjs) | 独立真实浏览器验证项目目录选择、预览，以及导入源文件后的 Python 分析。 |
 | [`test_compute_job_routes.py`](test_compute_job_routes.py) | compute-jobs 路由必须给领域失败一个 HTTP 状态：读取或取消不存在的作业、以及每一次被拒绝的提交，过去都被序列化为携带软 `{"error": ...}` 的 200——于是工作台把不存在的作业显示为「输出为空」，把被拒绝的提交显示为已接受。现在不存在的作业是 404；未能停止一个仍在运行的作业的取消是 500（不是 404——它存在）；客户端输入错误（含字段类型错误与 `NaN` 截止时间）是 400；容量/工作区/关停分别是 429/500/503；未登记的 code 是 400 而不是 200——与 skills 共用同一个按 code 投影的 `_soft_failure_status`，且管理器返回的每个 code 都必须登记在 `JOB_FAILURE_STATUS` 中。 |
 | [`test_dataset_import_live.py`](test_dataset_import_live.py) | 显式启用的真实 PaRoutes 原生导入与 Store 重开验收；不属于默认离线套件。 |
-| [`test_dataset_import.py`](test_dataset_import.py) | 离线发现/选择、权限、取消、原生捕获、来源不可变/重开及捕获失败/重试否决合同；真实内核分析在同字节再次导入、替换被拒和 Store 重开后仍绑定精确输入版本与自动血缘。 |
+| [`test_dataset_import.py`](test_dataset_import.py) | 离线覆盖发现/选择、权限、取消、原生捕获、Host 自有核验收据、来源不可变/重开、完整 Session-package 隔离及捕获失败/重试否决合同；真实内核分析在同字节再次导入、替换被拒和 Store 重开后仍绑定精确输入版本与自动血缘。 |
 | [`test_download_integrity.py`](test_download_integrity.py) | 来源大小/checksum、有界传输、取消及发布顺序。 |
 | [`test_live_ark_calls.py`](test_live_ark_calls.py) | 显式 live_llm Ark 流式停止与下一调用恢复；凭据通过继承描述符传递、输出脱敏凭证，不进入离线 CI。 |
 | [`test_llm_usage_evidence.py`](test_llm_usage_evidence.py) | 原始用量证据、未知计量、安全错误投影与旧调用结算回归。 |
