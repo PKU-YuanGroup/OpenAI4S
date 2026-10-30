@@ -378,6 +378,7 @@ describe("read-only notebook rendering (A4)", () => {
     expect(texts(dock)).toContain(filesT("notebook.readonly"));
     expect(revokeObjectURL).not.toHaveBeenCalled();
     abortPreviewReads(host(modal));
+    expect(modal.children).toHaveLength(0);
     expect(texts(dock)).toContain(filesT("notebook.readonly"));
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     abortPreviewReads(host(dock));
@@ -558,7 +559,7 @@ describe("read-only notebook rendering (A4)", () => {
     expect(attempts).toBe(2);
   });
 
-  it("aborts the read and revokes image URLs when only the render root is closed", async () => {
+  it("aborts the read, revokes image URLs and clears the cells when only the render root closes", async () => {
     let aborted = false;
     setArtifactsFetch(
       (_url, init) =>
@@ -574,7 +575,8 @@ describe("read-only notebook rendering (A4)", () => {
     const root = new FakeNode("div");
     root.page = true;
     beginPreviewRead(host(root));
-    renderNotebookArtifact(host(root.appendChild(new FakeNode("div"))), notebook, url);
+    const pending = root.appendChild(new FakeNode("div"));
+    renderNotebookArtifact(host(pending), notebook, url);
     await settle();
     expect(aborted).toBe(false);
     abortPreviewReads(host(root));
@@ -586,9 +588,12 @@ describe("read-only notebook rendering (A4)", () => {
     const painted = new FakeNode("div");
     painted.page = true;
     beginPreviewRead(host(painted));
-    renderNotebookArtifact(host(painted.appendChild(new FakeNode("div"))), notebook, url);
+    const cells = painted.appendChild(new FakeNode("div"));
+    renderNotebookArtifact(host(cells), notebook, url);
     await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect(cells.children.length).toBeGreaterThan(0);
     abortPreviewReads(host(painted));
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(cells.children).toHaveLength(0);
   });
 });

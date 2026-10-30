@@ -529,6 +529,15 @@ export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, u
   // `abortPreviewReads` every close path already calls cancels both. A direct
   // caller with no root gets one of its own.
   const signal = previewReadSignal(container) ?? beginPreviewRead(container);
+  // The same close also clears the rendered cells: a hidden modal must not keep
+  // up to 200 cells and their decoded images alive.
+  signal.addEventListener(
+    "abort",
+    () => {
+      container.innerHTML = "";
+    },
+    { once: true },
+  );
   const retry = (): void => {
     renderNotebookArtifact(container, a, url);
   };
