@@ -655,19 +655,27 @@ class ModelProfileService:
         """
         if not keys:
             return
-        chosen: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for row in self._valid_receipts():
-            key = receipt_evidence_key(row)
-            if key is None or key not in keys:
-                continue
-            best = chosen.get(key)
-            if best is None or receipt_evidence_rank(row) > receipt_evidence_rank(best):
-                chosen[key] = row
-        for key in keys:
-            reset_receipt_overlay(key)
-            survivor = chosen.get(key)
-            if survivor is not None:
-                replace_receipt_overlay(survivor)
+        repo = self._receipts()
+        if repo is None:
+            return
+        # A concurrent probe must publish either before this snapshot or after
+        # its replacement, never between the read and reset of the overlay.
+        with repo.locked():
+            chosen: dict[tuple[str, str, str], dict[str, Any]] = {}
+            for row in self._valid_receipts():
+                key = receipt_evidence_key(row)
+                if key is None or key not in keys:
+                    continue
+                best = chosen.get(key)
+                if best is None or receipt_evidence_rank(row) > receipt_evidence_rank(
+                    best
+                ):
+                    chosen[key] = row
+            for key in keys:
+                reset_receipt_overlay(key)
+                survivor = chosen.get(key)
+                if survivor is not None:
+                    replace_receipt_overlay(survivor)
 
     def capability_receipt(self, profile: Mapping[str, Any]) -> dict[str, Any] | None:
         """The profile's exact probe receipt, or its stale predecessor.
@@ -743,23 +751,26 @@ class ModelProfileService:
         identity = self._receipt_identity(profile)
         if repo is None or not identity["wire"] or not identity["profile_id"]:
             return None
-        row = repo.put(
-            profile_id=identity["profile_id"],
-            revision=identity["revision"],
-            endpoint_sha256=identity["endpoint_sha256"],
-            model=identity["model"],
-            wire=identity["wire"],
-            probe_version=PROBE_VERSION,
-            reachable=reachable,
-            native_tool_call=native_tool_call,
-            streaming=streaming,
-            observed_at=observed_at,
-        )
-        row["endpoint"] = identity["endpoint"]
-        current = self._receipt_matches_current_revision(identity)
-        if current:
-            replace_receipt_overlay(row)
-        return public_receipt(row, stale=not current, probe_version=PROBE_VERSION)
+        # Share the profile mutation lock through adoption: a revision check
+        # alone leaves a window for deletion/edit to finish before installation.
+        with repo.locked():
+            row = repo.put(
+                profile_id=identity["profile_id"],
+                revision=identity["revision"],
+                endpoint_sha256=identity["endpoint_sha256"],
+                model=identity["model"],
+                wire=identity["wire"],
+                probe_version=PROBE_VERSION,
+                reachable=reachable,
+                native_tool_call=native_tool_call,
+                streaming=streaming,
+                observed_at=observed_at,
+            )
+            row["endpoint"] = identity["endpoint"]
+            current = self._receipt_matches_current_revision(identity)
+            if current:
+                replace_receipt_overlay(row)
+            return public_receipt(row, stale=not current, probe_version=PROBE_VERSION)
 
     def probe(
         self, profile_id: str, *, actor_user_id: str | None = None

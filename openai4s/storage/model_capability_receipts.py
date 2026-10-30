@@ -17,7 +17,8 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from typing import Any, Callable, Mapping
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Mapping
 
 from openai4s.storage.migrations import apply_ddl_script
 
@@ -132,6 +133,16 @@ class ModelCapabilityReceiptRepository:
         self._lock = lock
         self._clock_ms = clock_ms
         self._id_factory = id_factory or (lambda: "mcr-" + uuid.uuid4().hex)
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Keep profile validity, durable evidence and overlay updates together.
+
+        This is the Store's reentrant lock, also held by profile mutations.
+        Callers must only hold it for local bookkeeping, never a probe request.
+        """
+        with self._lock:
+            yield
 
     def put(
         self,

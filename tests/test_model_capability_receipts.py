@@ -923,6 +923,135 @@ def test_shared_endpoint_latest_observation_wins_and_deletion_restores_survivor(
     assert _explain() == before
 
 
+def test_profile_deletion_cannot_restore_a_snapshot_older_than_a_concurrent_probe(
+    tmp_path, monkeypatch
+):
+    store, service = _service(tmp_path)
+    first = _create_profile(service, provider="chatgpt", base_url=LOCAL_BASE)
+    second = _create_profile(service, provider="chatgpt", base_url=LOCAL_BASE)
+    service._persist_receipt(
+        first,
+        reachable=True,
+        native_tool_call=EVIDENCE_TRUE,
+        streaming=EVIDENCE_UNKNOWN,
+        observed_at=1,
+    )
+    service._persist_receipt(
+        second,
+        reachable=False,
+        native_tool_call=EVIDENCE_UNKNOWN,
+        streaming=EVIDENCE_UNKNOWN,
+        observed_at=2,
+    )
+    selected = threading.Event()
+    probe_started = threading.Event()
+    probe_done = threading.Event()
+    errors = []
+    read = service._valid_receipts
+
+    def hold_snapshot():
+        rows = read()
+        selected.set()
+        assert probe_started.wait(10)
+        # Before the fix the probe commits here, then deletion republishes
+        # these old rows. With the shared lock the probe waits until this
+        # bounded hold ends and publishes after the rebuild instead.
+        probe_done.wait(0.5)
+        return rows
+
+    monkeypatch.setattr(service, "_valid_receipts", hold_snapshot)
+
+    def deleting():
+        try:
+            service.delete(second["id"])
+        except BaseException as error:
+            errors.append(error)
+
+    def probing():
+        try:
+            assert selected.wait(10)
+            probe_started.set()
+            service._persist_receipt(
+                first,
+                reachable=False,
+                native_tool_call=EVIDENCE_UNKNOWN,
+                streaming=EVIDENCE_UNKNOWN,
+                observed_at=3,
+            )
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            probe_done.set()
+
+    threads = [threading.Thread(target=deleting), threading.Thread(target=probing)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert _explain()["tool_calling"] == {"value": False, "source": "catalog"}
+    before = _explain()
+    store._load_capability_receipt_overlays()
+    assert _explain() == before
+
+
+def test_receipt_adoption_cannot_outlive_concurrent_profile_deletion(
+    tmp_path, monkeypatch
+):
+    store, service = _service(tmp_path)
+    created = _create_profile(service, provider="chatgpt", base_url=LOCAL_BASE)
+    adopting = threading.Event()
+    deleting = threading.Event()
+    deleted = threading.Event()
+    errors = []
+
+    def hold_adoption(row):
+        adopting.set()
+        assert deleting.wait(10)
+        deleted.wait(0.5)
+        return replace_receipt_overlay(row)
+
+    monkeypatch.setattr(
+        "openai4s.server.model_profiles.replace_receipt_overlay", hold_adoption
+    )
+
+    def probing():
+        try:
+            service._persist_receipt(
+                created,
+                reachable=True,
+                native_tool_call=EVIDENCE_TRUE,
+                streaming=EVIDENCE_UNKNOWN,
+                observed_at=1,
+            )
+        except BaseException as error:
+            errors.append(error)
+
+    def remove():
+        try:
+            assert adopting.wait(10)
+            deleting.set()
+            service.delete(created["id"])
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            deleted.set()
+
+    threads = [threading.Thread(target=probing), threading.Thread(target=remove)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert adopted_receipts() == []
+    assert _explain()["tool_calling"] == {"value": False, "source": "catalog"}
+    before = _explain()
+    store._load_capability_receipt_overlays()
+    assert _explain() == before
+
+
 def test_a_positive_probe_never_rewrites_an_explicit_override(tmp_path, monkeypatch):
     store, service = _service(tmp_path)
     created = _create_profile(

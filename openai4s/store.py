@@ -2791,27 +2791,30 @@ class Store:
             replace_receipt_overlay,
         )
 
-        drop_receipt_overlays()
-        current = {
-            str(profile.get("id") or ""): int(profile.get("revision") or 0)
-            for profile in self.list_model_profiles()
-            if not profile.get("deleted_at")
-        }
-        receipts = [
-            receipt
-            for receipt in self._model_capability_receipts.list_all()
-            if int(receipt.get("probe_version") or 0) == PROBE_VERSION
-            and current.get(str(receipt.get("profile_id") or ""))
-            == int(receipt.get("revision") or 0)
-        ]
-        receipts.sort(
-            key=lambda receipt: (
-                int(receipt.get("observed_at") or 0),
-                str(receipt.get("receipt_id") or ""),
+        # Reload uses the same lock as live receipt publication and profile
+        # mutations, including when called after a provider-alias migration.
+        with self._lock:
+            drop_receipt_overlays()
+            current = {
+                str(profile.get("id") or ""): int(profile.get("revision") or 0)
+                for profile in self.list_model_profiles()
+                if not profile.get("deleted_at")
+            }
+            receipts = [
+                receipt
+                for receipt in self._model_capability_receipts.list_all()
+                if int(receipt.get("probe_version") or 0) == PROBE_VERSION
+                and current.get(str(receipt.get("profile_id") or ""))
+                == int(receipt.get("revision") or 0)
+            ]
+            receipts.sort(
+                key=lambda receipt: (
+                    int(receipt.get("observed_at") or 0),
+                    str(receipt.get("receipt_id") or ""),
+                )
             )
-        )
-        for receipt in receipts:
-            replace_receipt_overlay(receipt)
+            for receipt in receipts:
+                replace_receipt_overlay(receipt)
 
     # --- frames ----------------------------------------------------------
     def new_frame(
