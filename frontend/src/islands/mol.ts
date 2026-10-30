@@ -58,8 +58,27 @@ type MolSession = {
   viewer: MolViewer | null;
   detach: () => void;
 };
-/** Dock and fullscreen own separate reads and WebGL contexts. */
+/** Dock and fullscreen own separate reads and scenes. */
 const molSessions = new Map<HTMLElement, MolSession>();
+
+function syncMolBridge(): void {
+  // Opening order, not asynchronous completion order, selects the bridge.
+  const latest = [...molSessions.values()].filter((session) => session.viewer).at(-1);
+  _molViewer.value = latest?.viewer ?? null;
+  _molView.value = latest?.view ?? null;
+}
+
+export function molRetheme(dark: boolean): void {
+  for (const session of molSessions.values()) {
+    if (!session.view.isConnected || session.controller.signal.aborted) continue;
+    try {
+      session.viewer?.setBackgroundColor?.(dark ? "#1c1c19" : "white");
+      session.viewer?.render();
+    } catch {
+      /* one disposed renderer must not prevent the other view updating */
+    }
+  }
+}
 /** The one in-flight load of the vendored script, shared by every caller. */
 let molScript: Promise<boolean> | null = null;
 
@@ -118,9 +137,7 @@ export function molTeardown(root?: Element | null): void {
     }
   }
   // Keep the compatibility bridge pointed at a surviving viewer.
-  const latest = [...molSessions.values()].filter((session) => session.viewer).at(-1);
-  _molViewer.value = latest?.viewer ?? null;
-  _molView.value = latest?.view ?? null;
+  syncMolBridge();
 }
 
 /** app.js:9622-9673 — container-agnostic, style selector, atom count, download, label. */
@@ -245,8 +262,7 @@ export function molecule(container: HTMLElement, url: string, nm: string): void 
             backgroundColor: themeIsDark() ? "#1c1c19" : "white",
           });
           session.viewer = viewer;
-          _molViewer.value = viewer;
-          _molView.value = view;
+          syncMolBridge();
           const model = viewer.addModel(data, fmt);
           let atoms: Array<{ atom?: string; name?: string }> = [];
           try {

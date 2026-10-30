@@ -6,7 +6,7 @@ import { _molView } from "../stores/artifacts";
 import { resetStoreFields } from "../stores/signal-field";
 import { filesT, readFailureText } from "../features/artifacts/copy";
 import { abortPreviewReads, beginPreviewRead } from "../features/artifacts/api";
-import { MOL_VENDOR_SRC, molTeardown, molecule } from "./mol";
+import { MOL_VENDOR_SRC, molRetheme, molTeardown, molecule } from "./mol";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactsDir = join(here, "../features/artifacts");
@@ -130,7 +130,8 @@ describe("3Dmol viewer lifetimes (AUDIT A37)", () => {
           getContext: () => null, // 3Dmol may own an offscreen WebGL2 context.
         }));
         return {
-          addModel: () => ({ selectedAtoms: () => [] }), setStyle() {}, zoomTo() {}, render() {}, clear: vi.fn(), loseContext,
+          addModel: () => ({ selectedAtoms: () => [] }), setStyle() {}, zoomTo() {}, render: vi.fn(), clear: vi.fn(), loseContext,
+          setBackgroundColor: vi.fn(),
           getRenderer: () => ({ getContext: () => gl }),
         };
       }),
@@ -183,14 +184,22 @@ describe("3Dmol viewer lifetimes (AUDIT A37)", () => {
     await vi.waitFor(() => expect(views).toHaveLength(2));
     const modalViewer = runtime.createViewer.mock.results[0]!.value;
     const dockViewer = runtime.createViewer.mock.results[1]!.value;
+    // The dock completed last, but the modal was the last view opened.
+    expect(_molView.value).toBe(views[0]);
     expect(modalViewer.clear).not.toHaveBeenCalled();
     expect(dockViewer.clear).not.toHaveBeenCalled();
+    molRetheme(true);
+    expect(modalViewer.setBackgroundColor).toHaveBeenLastCalledWith("#1c1c19");
+    expect(dockViewer.setBackgroundColor).toHaveBeenLastCalledWith("#1c1c19");
     abortPreviewReads(host(modal));
     expect(modalViewer.clear).toHaveBeenCalledTimes(1);
     expect(modalViewer.loseContext).toHaveBeenCalledTimes(shared ? 0 : 1);
     expect(dockViewer.clear).not.toHaveBeenCalled();
     expect(dockViewer.loseContext).not.toHaveBeenCalled();
     expect(_molView.value).toBe(views[1]);
+    molRetheme(false);
+    expect(dockViewer.setBackgroundColor).toHaveBeenLastCalledWith("white");
+    expect(modalViewer.setBackgroundColor).toHaveBeenCalledTimes(1);
     molTeardown(host(dock));
     expect(dockViewer.clear).toHaveBeenCalledTimes(1);
     expect(dockViewer.loseContext).toHaveBeenCalledTimes(1);

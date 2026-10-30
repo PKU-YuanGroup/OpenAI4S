@@ -255,6 +255,17 @@ describe("F-09 theme", () => {
   });
 
   describe("instant + 3Dmol + toggle buttons", () => {
+    it("updates all molecule views through the island's theme hook", async () => {
+      const h = installHarness({ theme: "light" });
+      const retheme = vi.fn();
+      Object.assign(window, { _molRetheme: retheme });
+      const api = await loadTheme();
+      api.applyTheme("dark");
+      api.applyTheme("light");
+      expect(retheme.mock.calls).toEqual([[true], [false]]);
+      expect(h.mol.setBackgroundColor).not.toHaveBeenCalled();
+    });
+
     it("sets data-theme-instant and clears it on the next animation frame", async () => {
       const h = installHarness({ theme: "dark" });
       const api = await loadTheme();

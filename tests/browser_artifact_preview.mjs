@@ -387,6 +387,14 @@ async function main() {
         assertion(await modalContext.evaluate(contextAlive), "fullscreen did not create a live WebGL context");
         assertion(await dockModel.evaluate(atomCount) > 0, "fullscreen cleared the dock molecule");
         assertion(await modalModel.evaluate(atomCount) > 0, "fullscreen molecule has no atoms");
+        for (const [theme, color] of [["dark", 0x1c1c19], ["light", 0xffffff]]) {
+          // The fresh profile follows the system theme, including while a
+          // fullscreen modal covers the toolbar's manual toggle.
+          await page.emulateMedia({ colorScheme: theme });
+          await waitUntil(`both molecule backgrounds follow ${theme}`, async () =>
+            await dockModel.evaluate((viewer) => viewer.bgColor) === color &&
+            await modalModel.evaluate((viewer) => viewer.bgColor) === color, 5000, 50);
+        }
       } finally {
         await page.locator("#modal-close").click();
       }
