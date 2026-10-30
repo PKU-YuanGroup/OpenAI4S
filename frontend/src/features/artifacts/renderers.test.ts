@@ -238,6 +238,9 @@ describe("preview read budget in the real preview paths (R1)", () => {
       this.children.push(child);
       return child;
     }
+    contains(node: unknown): boolean {
+      return node === this || this.children.some((child) => child.contains(node));
+    }
     remove(): void {
       if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this);
       this.parent = null;
@@ -425,6 +428,58 @@ describe("preview read budget in the real preview paths (R1)", () => {
       () => expect(walk(body).some((node) => node.textContent === "artifact B text\n")).toBe(true),
       { timeout: 2000 },
     );
+  });
+
+  it("keeps a pending dock read alive while the fullscreen preview opens and closes", async () => {
+    let finishDock!: (value: string) => void;
+    const pendingDock = new Promise<string>((resolve) => { finishDock = resolve; });
+    let dockSignal: AbortSignal | null | undefined;
+    setArtifactsFetch(async (url, init) => {
+      if (url === "/api/v1/renderers") return new Response(JSON.stringify({ renderers: [] }));
+      if (url.includes("/renderer")) return new Response(JSON.stringify({
+        matched_by: "extension", renderer: { renderer_id: "text" },
+      }));
+      if (url.endsWith("/A")) {
+        dockSignal = init?.signal;
+        return new Response(await pendingDock);
+      }
+      return new Response("modal text");
+    });
+    const dock = new Dom();
+    const modal = new Dom();
+    dock.page = modal.page = true;
+    renderArtifactBody(host(dock), { id: "A", filename: "a.txt" });
+    await vi.waitFor(() => expect(dockSignal).toBeDefined());
+    renderArtifactBody(host(modal), { id: "B", filename: "b.txt" });
+    await vi.waitFor(() => expect(walk(modal).some((n) => n.textContent === "modal text")).toBe(true));
+    abortPreviewReads(host(modal));
+    finishDock("dock text");
+    expect(dockSignal?.aborted).toBe(false);
+    await vi.waitFor(() => expect(walk(dock).some((n) => n.textContent === "dock text")).toBe(true));
+  });
+
+  it.each([200, 503])("does not read bytes after a closed view's delayed descriptor returns %s", async (status) => {
+    let finishDescriptor!: () => void;
+    const pendingDescriptor = new Promise<void>((resolve) => { finishDescriptor = resolve; });
+    const reads: string[] = [];
+    setArtifactsFetch(async (url) => {
+      if (url === "/api/v1/renderers") return new Response(JSON.stringify({ renderers: [] }));
+      if (url.includes("/renderer")) {
+        await pendingDescriptor;
+        return new Response(JSON.stringify({
+          matched_by: "extension", renderer: { renderer_id: "text" },
+        }), { status });
+      }
+      reads.push(url);
+      return new Response("closed view");
+    });
+    const body = new Dom();
+    body.page = true; // Closing a dock/modal hides it; it remains mounted.
+    renderArtifactBody(host(body), { id: "closed", filename: "closed.txt" });
+    abortPreviewReads(host(body));
+    finishDescriptor();
+    for (let i = 0; i < 5; i++) await settle();
+    expect(reads).toEqual([]);
   });
 });
 

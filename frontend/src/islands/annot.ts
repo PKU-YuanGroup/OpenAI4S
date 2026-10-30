@@ -466,7 +466,7 @@ export function renderAnnotatableImage(body: HTMLElement, a: ArtifactRow, url: s
   zoom.appendChild(stage);
   wrap.appendChild(zoom);
   body.appendChild(wrap);
-  readArtifactBytes(url, { signal: previewReadSignal() })
+  readArtifactBytes(url, { signal: previewReadSignal(body) })
     .then((bytes) => {
       if (body.isConnected === false) return;
       img.src = previewObjectUrl(

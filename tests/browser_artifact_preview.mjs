@@ -523,6 +523,53 @@ async function main() {
       );
     });
 
+    await runCase(page, "fullscreen notebook leaves the dock preview intact", async () => {
+      await open(notebook, "session.python.ipynb");
+      await page.locator("#dock-viewer .notebook-preview").waitFor();
+      await page.locator("#dock-viewer").getByTitle(/Full.?screen|全屏/i).click();
+      await page.locator("#modal .notebook-preview").waitFor();
+      assertion(await page.locator("#dock-viewer .notebook-preview").count() === 1,
+        "opening fullscreen cleared the dock notebook");
+      await page.locator("#modal-close").click();
+      assertion(await page.locator("#dock-viewer .notebook-preview").count() === 1,
+        "closing fullscreen cleared the dock notebook");
+      assertion(await page.locator("#modal .notebook-preview").count() === 0,
+        "closing fullscreen kept the notebook resources alive");
+    });
+
+    await runCase(page, "closing a preview rejects its delayed descriptor", async () => {
+      const delayed = await upload("delayed.ipynb", "application/x-ipynb+json", NOTEBOOK);
+      const descriptorUrl = `${appOrigin}/api/v1/artifacts/${delayed.artifactId}/renderer?version=${delayed.versionId}`;
+      const byteUrl = `${appOrigin}/api/v1/artifacts/versions/${delayed.versionId}`;
+      let release;
+      let started;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const requested = new Promise((resolve) => { started = resolve; });
+      await page.route(descriptorUrl, async (route) => {
+        started();
+        await gate;
+        await route.continue();
+      });
+      const before = requests.length;
+      try {
+        await page.evaluate((a) => window.openArtifact(a),
+          { id: delayed.artifactId, filename: "delayed.ipynb",
+            version_id: delayed.versionId, _exactVersion: true });
+        await Promise.race([requested, new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("descriptor request did not start")), 5000))]);
+        await page.locator("#modal-close").click();
+        const responded = page.waitForResponse(descriptorUrl);
+        release();
+        await responded;
+        await page.waitForTimeout(100);
+        assertion(!requests.slice(before).includes(byteUrl),
+          "the closed modal started downloading its notebook");
+      } finally {
+        release();
+        await page.unroute(descriptorUrl);
+      }
+    });
+
     await runCase(page, "fixed-version preview and download keep version one", async () => {
       await open(
         { artifactId: history.artifactId, versionId: firstVersion.version_id },

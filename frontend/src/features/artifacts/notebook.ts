@@ -263,28 +263,32 @@ type NotebookSession = {
   container: HTMLElement | null;
 };
 
-let activeSession: NotebookSession | null = null;
+const activeSessions = new Set<NotebookSession>();
 
 /**
  * Leaving the notebook (closing the dock, opening another artifact, or a new
  * render) cancels its read, releases every image object URL it created and
  * clears the rendered cells.
  */
-export function closeNotebookPreview(): void {
-  const session = activeSession;
-  activeSession = null;
-  if (!session) return;
-  session.controller.abort();
-  for (const url of session.urls) {
-    try {
-      URL.revokeObjectURL(url);
-    } catch {
-      /* already released or unsupported */
+export function closeNotebookPreview(root?: Element | null): void {
+  if (root === null) return;
+  for (const session of activeSessions) {
+    const container = session.container;
+    if (root && container && container.isConnected !== false &&
+        root !== container && !root.contains?.(container)) continue;
+    session.controller.abort();
+    for (const url of session.urls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* already released or unsupported */
+      }
     }
+    session.urls.clear();
+    if (container) container.innerHTML = "";
+    session.container = null;
+    activeSessions.delete(session);
   }
-  session.urls.clear();
-  if (session.container) session.container.innerHTML = "";
-  session.container = null;
 }
 
 function note(text: string): HTMLElement {
@@ -403,7 +407,7 @@ function schedulePng(
     // The preview may have been closed between scheduling and this microtask
     // (dock closed, another artifact opened). Creating an object URL then would
     // leak an image the session no longer tracks.
-    if (activeSession !== queue.session) return;
+    if (queue.session.controller.signal.aborted) return;
     const checked = inspectPng(base64);
     if (!checked.ok) {
       omittedImage(holder, a, url);
@@ -551,20 +555,19 @@ function renderParsedNotebook(
  * "cannot preview (not nbformat 4)" with the original text and download.
  */
 export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  closeNotebookPreview();
+  closeNotebookPreview(container);
   const session: NotebookSession = {
     controller: new AbortController(),
     urls: new Set<string>(),
     container,
   };
-  activeSession = session;
+  activeSessions.add(session);
   const retry = (): void => {
-    closeNotebookPreview();
     renderNotebookArtifact(container, a, url);
   };
   fetchArtifactText(url, { signal: session.controller.signal })
     .then((text) => {
-      if (!container.isConnected || activeSession !== session) return;
+      if (!container.isConnected || session.controller.signal.aborted) return;
       const parsed = parseNotebook(text);
       if (!parsed.ok) {
         container.innerHTML = "";
@@ -575,7 +578,7 @@ export function renderNotebookArtifact(container: HTMLElement, a: ArtifactRow, u
       renderParsedNotebook(container, a, url, parsed.notebook, session);
     })
     .catch((error: unknown) => {
-      if (isArtifactReadAborted(error) || activeSession !== session) return;
+      if (isArtifactReadAborted(error) || session.controller.signal.aborted) return;
       if (!container.isConnected) return;
       container.innerHTML = "";
       const card = el("div", "renderer-fallback");

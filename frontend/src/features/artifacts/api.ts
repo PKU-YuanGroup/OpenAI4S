@@ -707,48 +707,48 @@ export function isArtifactReadAborted(error: unknown): boolean {
   return error instanceof ArtifactReadError && error.kind === "aborted";
 }
 
-type PreviewRead = { container: Element; controller: AbortController };
+// The dock and fullscreen modal may both be mounted and loading. A controller
+// belongs to one render root, never to whichever preview happened to open last.
+const previewReads = new Map<Element, AbortController>();
 
-/**
- * The read of the artifact currently open in the dock Viewer. `renderArtifactBody`
- * starts one per render; replacing the artifact (or a repaint) aborts the
- * previous read, so a late response can neither keep downloading nor parse.
- */
-let activePreviewRead: PreviewRead | null = null;
-
-/** Start this render's preview read; the previous in-flight read is cancelled. */
+/** Replace this container's read while keeping other mounted previews alive. */
 export function beginPreviewRead(container: Element): AbortSignal {
-  // This container is being painted again. Drop only its previous bytes, and
-  // any preview whose element has already left the document. A second mounted
-  // viewer keeps the blob URL its <img> or PDF frame is still using.
-  revokePreviewUrlsWithin(container);
-  revokeDetachedPreviewUrls();
-  activePreviewRead?.controller.abort();
+  abortPreviewReads(container);
   abortDetachedPreviews();
-  activePreviewRead = { container, controller: new AbortController() };
-  return activePreviewRead.controller.signal;
+  const controller = new AbortController();
+  previewReads.set(container, controller);
+  return controller.signal;
 }
 
-/** The signal for the preview read currently owned by the Viewer render. */
-export function previewReadSignal(): AbortSignal | undefined {
-  return activePreviewRead?.controller.signal;
+/** The signal of the render containing this renderer or island. */
+export function previewReadSignal(container: Element): AbortSignal | undefined {
+  for (const [root, controller] of previewReads) {
+    if (root === container || root.contains?.(container)) return controller.signal;
+  }
+  return undefined;
 }
 
 /** Abort the read whose container has left the document (viewer closed/replaced). */
 export function abortDetachedPreviews(): void {
-  if (activePreviewRead && !activePreviewRead.container.isConnected) {
-    activePreviewRead.controller.abort();
-    activePreviewRead = null;
+  for (const [container, controller] of previewReads) {
+    if (container.isConnected !== false) continue;
+    controller.abort();
+    previewReads.delete(container);
   }
+  revokeDetachedPreviewUrls();
 }
 
-/** Abort the current preview read (closing the viewer, switching away from it). */
-export function abortPreviewReads(): void {
-  // The in-flight read stops. Blob URLs stay with whatever element still
-  // shows them; a hidden dock and an open modal are not the same view.
+/** Close one view's reads/URLs. Omitting the root cleans up every preview. */
+export function abortPreviewReads(root?: Element | null): void {
+  if (root === null) return;
+  for (const [container, controller] of previewReads) {
+    if (root && root !== container && !root.contains?.(container)) continue;
+    controller.abort();
+    previewReads.delete(container);
+  }
+  if (root) revokePreviewUrlsWithin(root);
+  else for (const owner of [...previewObjectUrls.keys()]) revokePreviewOwner(owner);
   revokeDetachedPreviewUrls();
-  activePreviewRead?.controller.abort();
-  activePreviewRead = null;
 }
 
 export function isApiStatus(e: unknown, status: number, code?: string): boolean {

@@ -8,7 +8,7 @@
 import { _artBust, _editing, dockArtifact } from "../stores/artifacts";
 import { currentId } from "../stores/session";
 import { _modalMode, provMode } from "../stores/ui";
-import { api, apiErrorText, bytes } from "../features/artifacts/api";
+import { abortPreviewReads, api, apiErrorText, bytes } from "../features/artifacts/api";
 import { artifactMetadataTarget, artifactMetadataUrl, artifactTabKey, artUrl, syncArtifactVersion } from "../features/artifacts/cache";
 import { validateArtifactVersions } from "../features/artifacts/validation";
 import { validateLineage } from "../features/execution/validation";
@@ -16,6 +16,7 @@ import { filesT } from "../features/artifacts/copy";
 import { artifactDeepLinkHref, versionResolveMessage } from "../features/artifacts/deeplink";
 import { loadArtifacts } from "../features/artifacts/load";
 import { renderArtifactBody } from "../features/artifacts/renderers";
+import { closeNotebookPreview } from "../features/artifacts/notebook";
 import { scienceSourceStatus } from "../features/artifacts/science-results";
 import { publicText } from "../features/scrub/scrub";
 import { viewerVersionState } from "../features/artifacts/state";
@@ -509,6 +510,8 @@ export function renderViewer(): void {
   const a = dockArtifact.value as ArtifactRow | null;
   const v = document.getElementById("dock-viewer");
   if (!v) return;
+  abortPreviewReads(v);
+  closeNotebookPreview(v);
   edacTeardown();
   detachArtifactEditor();
   v.innerHTML = "";

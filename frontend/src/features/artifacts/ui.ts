@@ -111,12 +111,17 @@ export function showDockPane(pane: string): void {
   // Leaving Files drops every tile read no mounted card still uses; leaving the
   // Viewer aborts the preview read that was only for it.
   if (pane !== "files") pruneThumbReads();
-  if (pane !== "viewer") abortPreviewReads();
+  if (pane !== "viewer") abortPreviewReads(viewerEl());
 }
 
 function dockEl(): HTMLElement | null {
   if (typeof document === "undefined") return null;
   return document.getElementById("rightdock");
+}
+
+function viewerEl(): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  return document.getElementById("dock-viewer");
 }
 
 export function dockOpen(): void {
@@ -128,9 +133,9 @@ export function dockOpen(): void {
 export function dockClose(): void {
   // Closing the dock leaves both preview kinds: cancel the artifact read, the
   // tile reads no card shows any more, and the notebook's image URLs.
-  abortPreviewReads();
+  abortPreviewReads(viewerEl());
   pruneThumbReads();
-  closeNotebookPreview();
+  closeNotebookPreview(viewerEl());
   const d = dock.value as { open: boolean; tab: string };
   dock.value = { ...d, open: false, tab: d.tab };
   dockEl()?.classList.add("collapsed");
@@ -155,8 +160,8 @@ export function setActiveTab(tab: string, selectArtifact = true): void {
   const pane =
     tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
   if (pane !== "viewer") {
-    abortPreviewReads();
-    closeNotebookPreview();
+    abortPreviewReads(viewerEl());
+    closeNotebookPreview(viewerEl());
   }
   showDockPane(pane);
   if (tab === "notebook") callWindow("renderNotebook");
@@ -320,7 +325,7 @@ export function setRenderViewerImpl(fn: (() => void) | null): void {
 export function renderViewer(): void {
   // A repaint/replacement owns the Viewer: abort the previous render's read
   // before the new body is built (the new render starts its own controller).
-  abortPreviewReads();
+  abortPreviewReads(viewerEl());
   if (renderViewerImpl) renderViewerImpl();
 }
 

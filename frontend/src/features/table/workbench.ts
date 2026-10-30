@@ -104,7 +104,7 @@ function legacySourceStatus(
 
 /** Flag-off path: client parse + capped sheet. Never hits /table/profile or /export.csv. */
 export function renderLegacyTable(container: HTMLElement, a: ArtifactRow, url: string): void {
-  fetchArtifactText(url, { signal: previewReadSignal() })
+  fetchArtifactText(url, { signal: previewReadSignal(container) })
     .then((text) => {
       if (!container.isConnected) return;
       if (looksBinary(text)) {

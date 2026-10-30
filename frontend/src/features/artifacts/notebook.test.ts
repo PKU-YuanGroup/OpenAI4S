@@ -366,6 +366,22 @@ describe("read-only notebook rendering (A4)", () => {
     expect(reads).toHaveLength(1);
   });
 
+  it("keeps the dock notebook and its images when a fullscreen notebook opens and closes", async () => {
+    const doc = notebookDoc([codeCell("saved", [displayOf({ "image/png": base64(png(1, 1)) })])]);
+    const dock = await mount(doc);
+    await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    const modal = await mount(doc);
+    await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
+    expect(texts(dock)).toContain(filesT("notebook.readonly"));
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    closeNotebookPreview(host(modal));
+    expect(modal.children).toHaveLength(0);
+    expect(texts(dock)).toContain(filesT("notebook.readonly"));
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    closeNotebookPreview(host(dock));
+    expect(revokeObjectURL).toHaveBeenCalledTimes(2);
+  });
+
   it("renders code with the copy-enabled code block and markdown without resources", async () => {
     const markdown = [
       "# [title](https://example.com/page)",
